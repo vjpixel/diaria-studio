@@ -12,7 +12,9 @@ cd ComfyUI
 pip install -r requirements.txt
 ```
 
-Requer Python 3.10+ e uma GPU com suporte a CUDA (ou CPU, mais lento). [Docs oficiais](https://github.com/comfyanonymous/ComfyUI).
+Requer **Python 3.12** e uma GPU com suporte a CUDA (ou CPU, mais lento). [Docs oficiais](https://github.com/comfyanonymous/ComfyUI).
+
+> **Atenção:** PyTorch CUDA tem wheels apenas para Python 3.9–3.13. Se o seu Python padrão for 3.14+, veja a seção "Python 3.14" antes de continuar.
 
 ---
 
@@ -145,10 +147,44 @@ A solução padrão é **hires.fix**: gerar em resolução nativa e depois refin
 
 ---
 
+## Python 3.14 — criar virtualenv com Python 3.12
+
+PyTorch CUDA tem wheels para Python 3.9–3.13. Se o Python do sistema for 3.14+, o `pip install` vai dizer "Requirement already satisfied" (encontra o torch CPU-only existente) mas o CUDA não vai funcionar.
+
+Solução: criar um virtualenv com Python 3.12 dentro da pasta do ComfyUI.
+
+**1. Instalar Python 3.12** (se não tiver): [python.org/downloads](https://www.python.org/downloads/release/python-3120/)
+
+**2. Criar venv e instalar dependências:**
+```powershell
+cd C:\Users\vjpix\ComfyUI
+python3.12 -m venv venv
+venv\Scripts\activate
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements.txt
+```
+
+**3. Verificar CUDA:**
+```powershell
+python -c "import torch; print(torch.cuda.is_available())"
+# deve retornar: True
+```
+
+**4. Sempre ativar o venv antes de iniciar:**
+```powershell
+cd C:\Users\vjpix\ComfyUI
+venv\Scripts\activate
+python main.py --listen 127.0.0.1 --port 8188
+```
+
+---
+
 ## Resolução de problemas
 
 | Erro | Causa provável | Solução |
 |---|---|---|
+| `AssertionError: Torch not compiled with CUDA enabled` | PyTorch CPU-only instalado | Criar venv com Python 3.12 (seção acima) |
+| `pip install` diz "already satisfied" mas CUDA não funciona | Python 3.14 sem wheels CUDA | Criar venv com Python 3.12 (seção acima) |
 | `curl: (7) Failed to connect` | ComfyUI não está rodando | Iniciar `python main.py` |
 | `{"error":"...ckpt_name..."}` | Nome do checkpoint errado | Verificar nome exato com o comando da seção 5 |
 | `{"error":"...lora_name..."}` | Nome da LoRA errado | Verificar nome exato com o comando da seção 5 |
