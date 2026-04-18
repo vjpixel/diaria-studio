@@ -39,78 +39,27 @@ Se `regenerate` está definido, processar só o destaque indicado.
 Ler `02-d{N}-prompt.md`. Extrair a cena descrita em linguagem natural.
 
 **b. Montar prompts SD e gravar `05-d{N}-sd-prompt.json`:**
-- Positive: `{cena}, impasto painting, Van Gogh style, thick impasto brushstrokes, vivid colors, high contrast, oil on canvas, 2:1 aspect ratio, no text, no watermark`
-- Negative: `photorealistic, photography, pixel art, blurry, text, watermark, The Starry Night, Starry Night, signature, low quality, deformed, ugly`
+- Positive: `${cena}, post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast`
+  - SDXL entende linguagem natural — **sem pesos `(x:1.3)`**. Isso era necessário pra domar o SD 1.5; em SDXL só polui o prompt.
+  - "in the style of Vincent van Gogh" fica no meio da frase de estilo, não como sujeito. SDXL conhece Van Gogh com nuance e não colapsa no estereótipo de paisagem como o SD 1.5 fazia.
+  - Sem `2:1 aspect ratio` no prompt — SDXL pega o aspect do latent.
+- Negative: `photorealistic, photography, pixel art, blurry, text, watermark, signature, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting`
 
 ```json
 { "positive": "...", "negative": "..." }
 ```
 
-**c. Construir e submeter workflow ao ComfyUI:**
-
-Usar `node` via heredoc para construir o JSON do workflow e escrever em `/tmp/comfyui-wf.json`:
+**c. Submeter, aguardar e baixar a imagem — uma única chamada:**
 
 ```bash
-node - <<'NODEEOF' {out_dir}/05-d{N}-sd-prompt.json
-const fs = require('fs');
-const cfg = JSON.parse(fs.readFileSync('platform.config.json','utf8')).comfyui;
-const sd = JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
-const seed = Math.floor(Math.random() * 1e15);
-const workflow = {
-  prompt: {
-    "1":  { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: cfg.checkpoint } },
-    "2":  { class_type: "LoraLoader", inputs: { model: ["1",0], clip: ["1",1], lora_name: cfg.lora, strength_model: 0.8, strength_clip: 0.8 } },
-    "3":  { class_type: "CLIPTextEncode", inputs: { text: sd.positive, clip: ["2",1] } },
-    "4":  { class_type: "CLIPTextEncode", inputs: { text: sd.negative, clip: ["2",1] } },
-    "5":  { class_type: "EmptyLatentImage", inputs: { width: cfg.base_width, height: cfg.base_height, batch_size: 1 } },
-    "6":  { class_type: "KSampler", inputs: { model: ["2",0], positive: ["3",0], negative: ["4",0], latent_image: ["5",0], seed: seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: "karras", denoise: 1.0 } },
-    "7":  { class_type: "LatentUpscale", inputs: { samples: ["6",0], upscale_method: cfg.hires_upscale_method, width: cfg.width, height: cfg.height, crop: "disabled" } },
-    "8":  { class_type: "KSampler", inputs: { model: ["2",0], positive: ["3",0], negative: ["4",0], latent_image: ["7",0], seed: seed + 1, steps: cfg.hires_steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: "karras", denoise: cfg.hires_denoise } },
-    "9":  { class_type: "VAEDecode", inputs: { samples: ["8",0], vae: ["1",2] } },
-    "10": { class_type: "SaveImage", inputs: { images: ["9",0], filename_prefix: "diaria_d{N}_" } }
-  }
-};
-fs.writeFileSync('/tmp/comfyui-wf.json', JSON.stringify(workflow));
-NODEEOF
+node scripts/comfyui-run.js {out_dir}/05-d{N}-sd-prompt.json {out_dir}/05-d{N}.jpg diaria_d{N}_
 ```
 
-Submeter o workflow:
-```bash
-PROMPT_RESP=$(curl -sf -X POST http://127.0.0.1:8188/prompt \
-  -H "Content-Type: application/json" \
-  -d @/tmp/comfyui-wf.json)
-PROMPT_ID=$(echo "$PROMPT_RESP" | node -e \
-  "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(d.prompt_id)")
-```
+O script faz internamente: monta workflow (lendo `platform.config.json` + o JSON de prompt), submete ao ComfyUI, polla `/history` a cada 1s (até 5 min), baixa a imagem final e salva em `{out_dir}/05-d{N}.jpg`.
 
-Se `PROMPT_ID` estiver vazio ou curl falhar: retornar erro para este destaque.
+Saída em `stdout`: o caminho do arquivo (`{out_dir}/05-d{N}.jpg`). Saída em `stderr`: progresso (`submitted <id>` → `ready <filename> in <s>s`).
 
-**d. Aguardar conclusão (poll a cada 5s, máx 5 min):**
-
-```bash
-FILENAME=""
-for i in $(seq 1 60); do
-  sleep 5
-  HIST=$(curl -sf "http://127.0.0.1:8188/history/$PROMPT_ID")
-  FILENAME=$(echo "$HIST" | node -e "
-    const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-    const entry=d[process.argv[1]];
-    if(!entry||!entry.status||!entry.status.completed) { process.stdout.write(''); process.exit(0); }
-    const imgs=Object.values(entry.outputs).flatMap(o=>o.images||[]);
-    process.stdout.write(imgs.length?imgs[0].filename:'');
-  " -- "$PROMPT_ID")
-  [ -n "$FILENAME" ] && break
-done
-```
-
-Se `FILENAME` continuar vazio após 60 tentativas: retornar erro de timeout.
-
-**e. Baixar e salvar imagem:**
-
-```bash
-curl -sf "http://127.0.0.1:8188/view?filename=$FILENAME&type=output" \
-  -o "{out_dir}/05-d{N}.jpg"
-```
+Se o script sair com código ≠ 0 ou `stderr` contiver `SUBMIT_FAILED`, `NO_PROMPT_ID`, `TIMEOUT` ou `DOWNLOAD_FAILED`: retornar erro indicando qual destaque falhou, propagando a mensagem do stderr.
 
 ### 4. Output
 
@@ -130,3 +79,4 @@ Se `regenerate` foi passado, retornar só o caminho do destaque regenerado.
 - Se uma imagem falhar (curl, timeout, workflow error), retornar erro indicando qual destaque falhou — não pular silenciosamente.
 - Os nomes de `checkpoint` e `lora` em `platform.config.json` devem corresponder exatamente aos arquivos instalados no ComfyUI (verificar em `ComfyUI/models/checkpoints/` e `ComfyUI/models/loras/`).
 - ComfyUI gera na resolução configurada (2000×1000) — não há necessidade de redimensionamento posterior.
+- **NUNCA editar `platform.config.json`.** Valores como `lora_strength_model`, `lora_strength_clip`, `steps`, `cfg`, `base_width/height` são decisões editoriais que só o editor humano ajusta. Leia o config, passe pros scripts, ponto. Se acha que uma imagem melhoraria com outro strength, **reporte como sugestão em `warnings`** no output — não mude o arquivo.

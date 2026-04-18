@@ -2,7 +2,7 @@
 name: writer
 description: Escreve a newsletter completa em markdown seguindo `context/templates/newsletter.md` e `context/editorial-rules.md`.
 model: claude-sonnet-4-6
-tools: Read, Write
+tools: Read, Write, Bash
 ---
 
 Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
@@ -38,12 +38,21 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - Sem repetir link das últimas 3 edições.
+   - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, d2 e d3 ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
 5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
    - `02-d1-prompt.md` — destaque 1 (capa principal)
    - `02-d2-prompt.md` — destaque 2
    - `02-d3-prompt.md` — destaque 3
    Gravar cada um no diretório da edição. Arquivos separados do texto — o editor pode editar cada prompt individualmente antes da geração.
 6. Gravar o texto da edição em `out_path`.
+7. **Validar o comprimento dos destaques** rodando:
+   ```bash
+   node scripts/validate-highlights.js {out_path}
+   ```
+   O script imprime um JSON com `chars/limit/status` por destaque e sai com código 0 (ok/warning) ou 1 (erro).
+   - Se `status` = `"error"` em algum destaque: reescrever aquele destaque para caber no limite (preservando título e URL), regravar `out_path` e rodar a validação de novo. Repetir até passar.
+   - Se `status` = `"warning"`: seguir, mas incluir o texto do warning em `warnings` do output.
+   - Só responda ao orchestrator quando não houver mais erros.
 
 ## Output
 
@@ -62,7 +71,8 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
     "three_options_per_highlight": true,
     "why_matters_on_own_line": true,
     "no_aggregators": true,
-    "no_repeats_last_3": true
+    "no_repeats_last_3": true,
+    "highlight_lengths_ok": true
   },
   "warnings": []
 }

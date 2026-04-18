@@ -17,17 +17,34 @@
   },
   "comfyui": {
     "host": "http://127.0.0.1:8188",
-    "checkpoint": "v1-5-pruned-emaonly.safetensors",
-    "lora": "van-gogh-impasto-v1.safetensors",
-    "steps": 30,
-    "cfg": 7.5,
+    "checkpoint": "sd_xl_base_1.0.safetensors",
+    "lora": "",
+    "steps": 28,
+    "cfg": 6.5,
     "sampler": "dpmpp_2m",
-    "base_width": 768,
-    "base_height": 384,
+    "base_width": 1344,
+    "base_height": 672,
     "width": 2000,
     "height": 1000,
-    "hires_steps": 15,
-    "hires_denoise": 0.5,
-    "hires_upscale_method": "bislerp"
+    "hires_steps": 12,
+    "hires_denoise": 0.4,
+    "hires_upscale_method": "bislerp",
+    "lora_strength_model": 0,
+    "lora_strength_clip": 0
+  },
+  "publishing": {
+    "newsletter": {
+      "mode": "draft",
+      "template": "Default",
+      "test_email": "vjpixel@gmail.com"
+    },
+    "social": {
+      "mode": "draft_or_schedule",
+      "fallback_schedule": {
+        "linkedin": { "d1_time": "09:00", "d2_time": "12:30", "d3_time": "16:00", "day_offset": 1 },
+        "facebook": { "d1_time": "10:00", "d2_time": "13:30", "d3_time": "17:00", "day_offset": 1 }
+      },
+      "timezone": "America/Sao_Paulo"
+    }
   }
 }

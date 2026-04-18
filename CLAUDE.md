@@ -92,7 +92,7 @@ context/          # carregado no system prompt → cacheado
   past-editions.md       # gerado
   sources.md             # gerado de seed/sources.csv
   templates/
-  publishers/            # roteiros Playwright por plataforma
+  publishers/            # roteiros Claude in Chrome por plataforma (Beehiiv, LinkedIn, Facebook)
 seed/sources.csv  # 35 fontes iniciais
 scripts/          # utilitários TypeScript (Node)
 data/editions/{YYMMDD}/  # outputs por edição

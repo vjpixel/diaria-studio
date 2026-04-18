@@ -14,7 +14,20 @@
       "Bash(npm list:*)",
       "mcp__claude_ai_Beehiiv__list_posts",
       "mcp__claude_ai_Beehiiv__get_post_content",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(curl -sf http://127.0.0.1:8188/system_stats)",
+      "Bash(curl -sf 'http://127.0.0.1:8188/view?filename=diaria_d1__00001_.png&type=output' -o data/editions/260417/05-d1.jpg)",
+      "Bash(curl -sf -X POST http://127.0.0.1:8188/prompt -H 'Content-Type: application/json' --data @/tmp/comfyui-wf.json)",
+      "Bash(curl -sf http://127.0.0.1:8188/history/b837e825-a932-45cd-86da-ed3e32e2cdf1)",
+      "Bash(curl -sf \"http://127.0.0.1:8188/history/807f79fa-9f6e-442b-b10d-c71a35816321\")",
+      "Bash(curl -sf http://127.0.0.1:8188/history/807f79fa-9f6e-442b-b10d-c71a35816321)",
+      "Read(//tmp/**)",
+      "Bash(curl -sf http://127.0.0.1:8188/api/)",
+      "Bash(curl -sf http://127.0.0.1:8188/queue)",
+      "Bash(python3 -m json.tool)",
+      "Bash(ffmpeg -y -i diaria_d1__00004_.png -q:v 3 /c/Users/vjpix/OneDrive/Documentos/Diaria/diaria-studio/data/editions/260417/05-d1.jpg)",
+      "Bash(convert:*)",
+      "Bash(python3:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

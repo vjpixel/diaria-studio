@@ -10,21 +10,61 @@
       "WebSearch",
       "Task",
       "Bash(node scripts/*.ts)",
+      "Bash(node scripts/*.js)",
+      "Bash(node scripts/*.js *)",
       "Bash(npx tsx scripts/*.ts)",
       "Bash(npm install)",
       "Bash(npm run *)",
       "Bash(mkdir -p data/editions/*)",
       "Bash(ls *)",
+      "Bash(node -e *)",
+      "Bash(node - *)",
+      "Bash(curl -sf *)",
+      "Bash(curl -sL *)",
+      "Bash(sleep *)",
+      "Bash(date *)",
+      "mcp__97acb66c-8605-4263-be7b-984868a4547a__*",
       "mcp__ed929847-ab29-43d9-a6ba-60b687b65702__*",
-      "mcp__clarice__correct_text"
+      "mcp__clarice__correct_text",
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__read_page",
+      "mcp__Claude_in_Chrome__get_page_text",
+      "mcp__Claude_in_Chrome__find",
+      "mcp__Claude_in_Chrome__form_input",
+      "mcp__Claude_in_Chrome__file_upload",
+      "mcp__Claude_in_Chrome__tabs_create_mcp",
+      "mcp__Claude_in_Chrome__tabs_close_mcp"
     ],
     "ask": [
       "mcp__playwright__*",
-      "mcp__stable-diffusion-local__*"
+      "mcp__stable-diffusion-local__*",
+      "mcp__Claude_in_Chrome__javascript_tool"
     ],
     "deny": [
       "Bash(rm -rf *)",
       "Bash(git push *)"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\Windows Notify System Generic.wav').PlaySync()\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\Windows Notify Messaging.wav').PlaySync()\""
+          }
+        ]
+      }
     ]
   }
 }

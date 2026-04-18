@@ -22,7 +22,10 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 - Converter `YYYY-MM-DD` em diretório `data/editions/{YYMMDD}/`.
 - Criar o diretório se não existir.
 - **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. Regras (verificar de baixo para cima — parar na primeira condição verdadeira):
-  - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem → Stage 5 completo. Stages 6–7 ainda não implementados — informar.
+  - Se `07-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 7 completo. Pipeline finalizado.
+  - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar `publish-social` (resume-aware ele mesmo).
+  - Se `06-published.json` existe (mas não `07-social-published.json`) → pular para Stage 7.
+  - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem (mas não `06-published.json`) → pular para Stage 6.
   - Se `04-eai.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
   - Se `03-social.md` existe (mas não `04-eai.md`) → pular para Stage 4. Avisar: "Retomando no Stage 4 (É AI?).".
   - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
@@ -206,9 +209,60 @@ Este stage é **sequencial** (scorer → writer → clarice) porque cada etapa d
     ```
     Setar `session_end = <now>` no objeto raiz.
 
-### 6–7 (Fase 3 — ainda não implementada)
+### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
-Se o usuário pedir stages 6+, responder: "Fase 3 (publicação via Playwright) ainda não implementada. Outputs até Stage 5 disponíveis em `data/editions/{YYMMDD}/`."
+- Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish newsletter started'`.
+- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
+- Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
+- Se falhar com erro de login, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
+- Ler `06-published.json` retornado.
+- **GATE HUMANO:** mostrar:
+  - URL do rascunho Beehiiv (`draft_url`)
+  - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
+  - Template usado (`template_used`)
+  - Instrução: "Revise o email de teste e publique manualmente do dashboard Beehiiv quando aprovado."
+  - Opções: aprovar (segue para Stage 7) / regerar (re-disparar `publish-newsletter`).
+  - **Atualizar cost.json.** Append entry de Stage 6, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 6,
+      "stage_start": "<ts_antes_de_disparar_publish_newsletter>",
+      "stage_end": "<now>",
+      "calls": { "publish_newsletter": 1 },
+      "models": { "haiku": 0, "sonnet": 1 }
+    }
+    ```
+
+### 7. Stage 7 — Publicar social (LinkedIn + Facebook)
+
+- Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 7 --agent orchestrator --level info --message 'stage 7 publish social started'`.
+- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-linkedin-d{1,2,3}.md` e `03-facebook-d{1,2,3}.md` (Stage 3), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar — não disparar `publish-social` incompleto.
+- Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true` (resume-aware).
+- O agente itera 6 posts (linkedin × d1/d2/d3 + facebook × d1/d2/d3), tentando rascunho primeiro e agendando como fallback. Append imediato em `07-social-published.json` após cada post — re-rodar é seguro.
+- Se algum post retornar `status: "failed"` (ex: login expirado em uma plataforma), logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
+- Ler `07-social-published.json` final.
+- **GATE HUMANO:** mostrar tabela com 6 linhas:
+  ```
+  LinkedIn  D1  draft      https://www.linkedin.com/...
+  LinkedIn  D2  draft      https://www.linkedin.com/...
+  LinkedIn  D3  scheduled  2026-04-19 16:00 BRT
+  Facebook  D1  draft      https://business.facebook.com/...
+  ...
+  ```
+  - Posts com `status: "failed"` aparecem destacados com `reason`.
+  - Instrução: "Revise os rascunhos no dashboard de cada plataforma e publique manualmente quando aprovados. Posts agendados serão publicados automaticamente no horário."
+  - Opções: aprovar (encerra pipeline) / re-rodar (recupera failed) / regenerar individual (TODO).
+  - **Atualizar cost.json.** Append entry de Stage 7, setar `session_end`, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 7,
+      "stage_start": "<ts_antes_de_disparar_publish_social>",
+      "stage_end": "<now>",
+      "calls": { "publish_social": 1 },
+      "models": { "haiku": 0, "sonnet": 1 }
+    }
+    ```
+    Setar `session_end = <now>` no objeto raiz.
 
 ## Formato de relatório ao usuário
 
