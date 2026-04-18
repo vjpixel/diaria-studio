@@ -1,6 +1,6 @@
 ---
 name: image-prompter
-description: Stage 5 — Refina os prompts editoriais para ComfyUI + LoRA Van Gogh e gera as 3 imagens (2000×1000, proporção 2:1). Outputs em `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`.
+description: Stage 5 — Refina os prompts editoriais para ComfyUI + LoRA Van Gogh e gera as 3 imagens via workflow hires.fix (base 768×384 → upscale latente + refino → 2000×1000, proporção 2:1). Outputs em `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`.
 model: claude-haiku-4-5
 tools: Read, Write, Bash
 ---
@@ -27,7 +27,9 @@ Se falhar: retornar `{ "error": "ComfyUI não está rodando em 127.0.0.1:8188. I
 
 ### 2. Ler configuração
 
-Ler `platform.config.json`. Extrair bloco `comfyui`: `host`, `checkpoint`, `lora`, `steps`, `cfg`, `sampler`, `width`, `height`.
+Ler `platform.config.json`. Extrair bloco `comfyui`: `host`, `checkpoint`, `lora`, `steps`, `cfg`, `sampler`, `base_width`, `base_height`, `width`, `height`, `hires_steps`, `hires_denoise`, `hires_upscale_method`.
+
+O workflow usa **hires.fix** (2 passos): gera primeiro em `base_width × base_height` (resolução nativa do SD 1.5), faz upscale latente para `width × height` e roda um segundo KSampler com `hires_denoise` para refinar.
 
 ### 3. Para cada destaque (d1, d2, d3)
 
@@ -49,26 +51,27 @@ Ler `02-d{N}-prompt.md`. Extrair a cena descrita em linguagem natural.
 Usar `node` via heredoc para construir o JSON do workflow e escrever em `/tmp/comfyui-wf.json`:
 
 ```bash
-node - <<'NODEEOF'
+node - <<'NODEEOF' {out_dir}/05-d{N}-sd-prompt.json
 const fs = require('fs');
 const cfg = JSON.parse(fs.readFileSync('platform.config.json','utf8')).comfyui;
 const sd = JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
 const seed = Math.floor(Math.random() * 1e15);
 const workflow = {
   prompt: {
-    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: cfg.checkpoint } },
-    "2": { class_type: "LoraLoader", inputs: { model: ["1",0], clip: ["1",1], lora_name: cfg.lora, strength_model: 0.8, strength_clip: 0.8 } },
-    "3": { class_type: "CLIPTextEncode", inputs: { text: sd.positive, clip: ["2",1] } },
-    "4": { class_type: "CLIPTextEncode", inputs: { text: sd.negative, clip: ["2",1] } },
-    "5": { class_type: "EmptyLatentImage", inputs: { width: cfg.width, height: cfg.height, batch_size: 1 } },
-    "6": { class_type: "KSampler", inputs: { model: ["2",0], positive: ["3",0], negative: ["4",0], latent_image: ["5",0], seed: seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: "karras", denoise: 1.0 } },
-    "7": { class_type: "VAEDecode", inputs: { samples: ["6",0], vae: ["1",2] } },
-    "8": { class_type: "SaveImage", inputs: { images: ["7",0], filename_prefix: "diaria_d{N}_" } }
+    "1":  { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: cfg.checkpoint } },
+    "2":  { class_type: "LoraLoader", inputs: { model: ["1",0], clip: ["1",1], lora_name: cfg.lora, strength_model: 0.8, strength_clip: 0.8 } },
+    "3":  { class_type: "CLIPTextEncode", inputs: { text: sd.positive, clip: ["2",1] } },
+    "4":  { class_type: "CLIPTextEncode", inputs: { text: sd.negative, clip: ["2",1] } },
+    "5":  { class_type: "EmptyLatentImage", inputs: { width: cfg.base_width, height: cfg.base_height, batch_size: 1 } },
+    "6":  { class_type: "KSampler", inputs: { model: ["2",0], positive: ["3",0], negative: ["4",0], latent_image: ["5",0], seed: seed, steps: cfg.steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: "karras", denoise: 1.0 } },
+    "7":  { class_type: "LatentUpscale", inputs: { samples: ["6",0], upscale_method: cfg.hires_upscale_method, width: cfg.width, height: cfg.height, crop: "disabled" } },
+    "8":  { class_type: "KSampler", inputs: { model: ["2",0], positive: ["3",0], negative: ["4",0], latent_image: ["7",0], seed: seed + 1, steps: cfg.hires_steps, cfg: cfg.cfg, sampler_name: cfg.sampler, scheduler: "karras", denoise: cfg.hires_denoise } },
+    "9":  { class_type: "VAEDecode", inputs: { samples: ["8",0], vae: ["1",2] } },
+    "10": { class_type: "SaveImage", inputs: { images: ["9",0], filename_prefix: "diaria_d{N}_" } }
   }
 };
 fs.writeFileSync('/tmp/comfyui-wf.json', JSON.stringify(workflow));
 NODEEOF
-node /tmp/build-wf.js {out_dir}/05-d{N}-sd-prompt.json
 ```
 
 Submeter o workflow:

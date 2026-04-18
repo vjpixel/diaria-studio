@@ -22,7 +22,12 @@
     "steps": 30,
     "cfg": 7.5,
     "sampler": "dpmpp_2m",
+    "base_width": 768,
+    "base_height": 384,
     "width": 2000,
-    "height": 1000
+    "height": 1000,
+    "hires_steps": 15,
+    "hires_denoise": 0.5,
+    "hires_upscale_method": "bislerp"
   }
 }

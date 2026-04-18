@@ -96,12 +96,50 @@ Os nomes listados devem corresponder ao que está em `platform.config.json`.
   "steps": 30,
   "cfg": 7.5,
   "sampler": "dpmpp_2m",
+  "base_width": 768,
+  "base_height": 384,
   "width": 2000,
-  "height": 1000
+  "height": 1000,
+  "hires_steps": 15,
+  "hires_denoise": 0.5,
+  "hires_upscale_method": "bislerp"
 }
 ```
 
 Ajuste `steps` (mais steps = mais qualidade, mais tempo) e `cfg` (escala de aderência ao prompt, 6–8 é um bom range) conforme preferência.
+
+---
+
+## 7. Por que hires.fix? (workflow de 2 passos)
+
+SD 1.5 foi treinado em **512×512**. Se pedir direto uma imagem 2000×1000 ao modelo, o resultado tem artefatos clássicos: anatomia duplicada, mesmos objetos repetidos pela tela, composição quebrada. A rede "não enxerga" a imagem inteira de uma vez em alta resolução.
+
+A solução padrão é **hires.fix**: gerar em resolução nativa e depois refinar em alta.
+
+```
+[passo 1] EmptyLatent 768×384 → KSampler (steps=30, denoise=1.0)
+              ↓
+[passo 2] LatentUpscale → 2000×1000 (bislerp)
+              ↓
+[passo 3] KSampler (steps=15, denoise=0.5) → VAEDecode → SaveImage
+```
+
+### Parâmetros que importam
+
+| Param | Função | Valores típicos |
+|---|---|---|
+| `base_width` × `base_height` | Resolução do 1º passo. Deve ficar próxima de 512×512 em área total. 768×384 = 295k pixels ≈ 512×512 = 262k pixels. | `768×384` (2:1), `512×512` (1:1), `640×512` (5:4) |
+| `width` × `height` | Resolução final após upscale latente. | `2000×1000` |
+| `hires_denoise` | Quanto o 2º passo "refaz" a imagem upscaled. Baixo demais = imagem borrada; alto demais = perde a composição do 1º passo. | `0.3`–`0.7` (default `0.5`) |
+| `hires_steps` | Passos do 2º KSampler. Menos que `steps` porque só refina detalhes. | `10`–`20` |
+| `hires_upscale_method` | Algoritmo do upscale latente. `bislerp` é o padrão e costuma produzir os melhores resultados; `nearest-exact` preserva mais o 1º passo; `bicubic`/`bilinear` suavizam mais. | `bislerp` |
+
+### Quando ajustar
+
+- **Composição mudando demais no 2º passo** → baixar `hires_denoise` para `0.4` ou menos
+- **Imagem muito borrada ou sem detalhes finos** → subir `hires_denoise` para `0.6`
+- **Ainda vendo elementos duplicados** → baixar `base_width`/`base_height` para `640×320` (mais perto de 512×512)
+- **Tempo de geração muito longo** → baixar `hires_steps` para 10, ou `steps` para 25
 
 ---
 
