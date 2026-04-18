@@ -21,9 +21,11 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 ### 0. Setup
 - Converter `YYYY-MM-DD` em diretório `data/editions/{YYMMDD}/`.
 - Criar o diretório se não existir.
-- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. Regras:
-  - Se `03-social.md` existe → edição completa, perguntar ao usuário se quer re-rodar do zero ou abortar.
-  - Se `02-reviewed.md` existe (mas não `03-social.md`) → Stages 0–2 prontos, pular direto para Stage 3. Avisar: "Retomando a edição {YYMMDD} no Stage 3 (Social). Refazer desde o início? (não/sim)".
+- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. Regras (verificar de baixo para cima — parar na primeira condição verdadeira):
+  - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem → Stage 5 completo. Stages 6–7 ainda não implementados — informar.
+  - Se `04-eai.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
+  - Se `03-social.md` existe (mas não `04-eai.md`) → pular para Stage 4. Avisar: "Retomando no Stage 4 (É AI?).".
+  - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
   - Se `01-approved.json` existe (mas não `02-reviewed.md`) → pular para Stage 2.
   - Se `01-categorized.json` existe mas não `01-approved.json` → Stage 1 foi interrompido no gate humano; reapresentar o gate.
   - Caso contrário → começar do Stage 0 normalmente.
@@ -168,9 +170,45 @@ Este stage é **sequencial** (scorer → writer → clarice) porque cada etapa d
     ```
     Setar `session_end = <now>` no objeto raiz. `total_calls` inclui +1 pelo orchestrator.
 
-### 4–7 (Fases 2 e 3 — ainda não implementadas)
+### 4. Stage 4 — É AI?
 
-Se o usuário pedir stages 4+, responder: "Fase 2/3 ainda não implementada. Outputs até Stage 3 disponíveis em `data/editions/{YYMMDD}/`."
+- Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 eai started'`.
+- Disparar `eai-composer` com `edition_date`, `newsletter_path = data/editions/{YYMMDD}/02-reviewed.md`, `out_dir = data/editions/{YYMMDD}/`.
+- Se falhar, logar erro e reportar ao usuário.
+- **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Imagem: data/editions/{YYMMDD}/04-eai.jpg"`. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data).
+  - **Atualizar cost.json.** Append entry de Stage 4, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 4,
+      "stage_start": "<ts_antes_de_disparar_eai_composer>",
+      "stage_end": "<now>",
+      "calls": { "eai_composer": 1 },
+      "models": { "haiku": 1, "sonnet": 0 }
+    }
+    ```
+
+### 5. Stage 5 — Imagens
+
+- Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 images started'`.
+- Verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI (ver `docs/comfyui-setup.md`).
+- Disparar `image-prompter` com `d1_prompt_path`, `d2_prompt_path`, `d3_prompt_path`, `out_dir`.
+- Se falhar, logar erro e reportar ao usuário.
+- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Opções: aprovar / regenerar individual (re-disparar `image-prompter` com `regenerate = "d{N}"`).
+  - **Atualizar cost.json.** Append entry de Stage 5, setar `session_end`, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 5,
+      "stage_start": "<ts_antes_de_disparar_image_prompter>",
+      "stage_end": "<now>",
+      "calls": { "image_prompter": 1 },
+      "models": { "haiku": 1, "sonnet": 0 }
+    }
+    ```
+    Setar `session_end = <now>` no objeto raiz.
+
+### 6–7 (Fase 3 — ainda não implementada)
+
+Se o usuário pedir stages 6+, responder: "Fase 3 (publicação via Playwright) ainda não implementada. Outputs até Stage 5 disponíveis em `data/editions/{YYMMDD}/`."
 
 ## Formato de relatório ao usuário
 

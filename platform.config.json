@@ -14,5 +14,15 @@
   },
   "logging": {
     "path": "data/run-log.jsonl"
+  },
+  "comfyui": {
+    "host": "http://127.0.0.1:8188",
+    "checkpoint": "v1-5-pruned-emaonly.safetensors",
+    "lora": "van-gogh-impasto-v1.safetensors",
+    "steps": 30,
+    "cfg": 7.5,
+    "sampler": "dpmpp_2m",
+    "width": 2000,
+    "height": 1000
   }
 }
