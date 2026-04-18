@@ -6,15 +6,18 @@ Guia para instalar e configurar o ComfyUI com LoRA Van Gogh impasto para geraç�
 
 ## 1. Instalar ComfyUI
 
-```bash
+```powershell
 git clone https://github.com/comfyanonymous/ComfyUI
 cd ComfyUI
+py -3.12 -m venv venv
+venv\Scripts\activate
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
 ```
 
-Requer **Python 3.12** e uma GPU com suporte a CUDA (ou CPU, mais lento). [Docs oficiais](https://github.com/comfyanonymous/ComfyUI).
+Requer **Python 3.12** e uma GPU com suporte a CUDA. [Docs oficiais](https://github.com/comfyanonymous/ComfyUI).
 
-> **Atenção:** PyTorch CUDA tem wheels apenas para Python 3.9–3.13. Se o seu Python padrão for 3.14+, veja a seção "Python 3.14" antes de continuar.
+> **Atenção:** Use sempre `py -3.12 -m venv venv` para criar o virtualenv — PyTorch CUDA tem wheels apenas para Python 3.9–3.13 e o Python padrão do sistema pode ser mais recente.
 
 ---
 
@@ -53,14 +56,16 @@ O nome deve corresponder **exatamente** ao arquivo (incluindo extensão).
 
 ## 4. Iniciar ComfyUI
 
-```bash
-cd ComfyUI
+```powershell
+cd C:\Users\vjpix\ComfyUI
+venv\Scripts\activate
 python main.py --listen 127.0.0.1 --port 8188
 ```
 
 Para rodar em background (Windows):
 ```powershell
-Start-Process python -ArgumentList "main.py --listen 127.0.0.1 --port 8188" -WindowStyle Minimized
+cd C:\Users\vjpix\ComfyUI
+Start-Process "venv\Scripts\python" -ArgumentList "main.py --listen 127.0.0.1 --port 8188" -WindowStyle Minimized
 ```
 
 ---
