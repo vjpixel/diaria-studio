@@ -18,7 +18,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 ## 2. Prompt da imagem de capa
 
-- Estilo **Van Gogh impasto**, alto contraste, proporção **16:9**.
+- Estilo **Van Gogh impasto**, alto contraste, proporção **2:1**.
 - **NUNCA** incluir resolução em pixels (ex: "1600x900px", "1920x1080px"). Proibido.
 - **Não** mencionar "Noite Estrelada" ou obras reconhecíveis de Van Gogh.
 - Descrição em português, concreta, com elementos visuais claros.
@@ -81,7 +81,7 @@ Audiência detalhada: ver `context/audience-profile.md` (gerado do Beehiiv MCP).
 
 Antes de aprovar o texto final da edição, validar:
 
-- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 16:9, não menciona Noite Estrelada.
+- [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada.
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
 - [ ] Todos os links ausentes em `context/past-editions.md`.
 - [ ] Todos os links dentro da janela de datas da edição.

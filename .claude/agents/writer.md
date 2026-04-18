@@ -38,7 +38,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - Sem repetir link das últimas 3 edições.
-5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 16:9, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
+5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
    - `02-d1-prompt.md` — destaque 1 (capa principal)
    - `02-d2-prompt.md` — destaque 2
    - `02-d3-prompt.md` — destaque 3
