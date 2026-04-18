@@ -1,0 +1,24 @@
+{
+  "name": "diaria-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pipeline Claude Code para produção da newsletter Diar.ia",
+  "scripts": {
+    "sync-sources": "tsx scripts/sync-sources.ts",
+    "update-audience": "tsx scripts/update-audience.ts",
+    "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
+    "verify-accessibility": "tsx scripts/verify-accessibility.ts"
+  },
+  "dependencies": {
+    "papaparse": "^5.4.1",
+    "undici": "^7.0.0",
+    "sharp": "^0.34.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/papaparse": "^5.3.15",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

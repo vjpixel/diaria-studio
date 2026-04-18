@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm i:*)",
+      "mcp__claude_ai_Beehiiv__list_publications",
+      "mcp__claude_ai_Beehiiv__list_surveys",
+      "mcp__claude_ai_Beehiiv__list_survey_responses",
+      "Bash(node -e ':*)",
+      "Bash(npx tsx:*)",
+      "Bash(node:*)",
+      "Bash(mcp call:*)",
+      "Bash(xargs grep:*)",
+      "Bash(env)",
+      "Bash(npm list:*)",
+      "mcp__claude_ai_Beehiiv__list_posts",
+      "mcp__claude_ai_Beehiiv__get_post_content",
+      "Bash(echo \"EXIT:$?\")"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "clarice"
+  ]
+}

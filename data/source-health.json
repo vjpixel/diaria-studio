@@ -1,0 +1,4 @@
+{
+  "sources": {},
+  "notes": "Mapa { sourceName: { attempts, successes, failures, timeouts, last_success_iso, last_failure_iso, last_duration_ms, recent_outcomes: ['ok'|'fail'|'timeout'...] (últimos 10) } }. Atualizado pelo orchestrator ao final do Stage 1."
+}

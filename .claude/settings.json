@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "Bash(node scripts/*.ts)",
+      "Bash(npx tsx scripts/*.ts)",
+      "Bash(npm install)",
+      "Bash(npm run *)",
+      "Bash(mkdir -p data/editions/*)",
+      "Bash(ls *)",
+      "mcp__ed929847-ab29-43d9-a6ba-60b687b65702__*",
+      "mcp__clarice__correct_text"
+    ],
+    "ask": [
+      "mcp__playwright__*",
+      "mcp__stable-diffusion-local__*"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push *)"
+    ]
+  }
+}
