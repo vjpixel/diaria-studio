@@ -88,6 +88,8 @@ Os nomes listados devem corresponder ao que está em `platform.config.json`.
 
 ## 6. Configuração final em `platform.config.json`
 
+Arquivo fica na raiz do projeto: `diaria-studio/platform.config.json`.
+
 ```json
 "comfyui": {
   "host": "http://127.0.0.1:8188",
