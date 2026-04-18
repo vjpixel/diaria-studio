@@ -29,6 +29,18 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - Caso contrário → começar do Stage 0 normalmente.
   - Se o usuário responder "sim, refazer do zero", renomear a pasta para `{YYMMDD}-backup-{timestamp}/` antes de começar (nunca deletar trabalho). Nunca sobrescreva arquivos de stages anteriores sem essa confirmação.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
+- **Inicializar cost.json.** Se `data/editions/{YYMMDD}/cost.json` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
+  ```json
+  {
+    "edition": "YYMMDD",
+    "orchestrator_model": "claude-opus-4-7",
+    "session_start": "<ISO>",
+    "session_end": null,
+    "total_calls": 0,
+    "stages": []
+  }
+  ```
+  Se já existe (resume), não sobrescrever — manter `session_start` e stages anteriores intactos.
 - **Refresh automático de dedup (sempre roda).** Disparar o subagente `refresh-dedup-runner` via `Task` (sem argumentos — ele se auto-configura). O subagente:
   - Garante `publicationId` em `platform.config.json` (descobre via `list_publications` se necessário).
   - Detecta se é bootstrap (primeira vez) ou incremental (dia a dia).
@@ -90,6 +102,25 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   Quando aprovado:
   - Salvar em `01-approved.json` (pode ser idêntico a `01-categorized.json` se nenhuma edição humana).
   - **Arquivar o inbox**: mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar um `data/inbox.md` vazio (com o cabeçalho padrão). Isso garante que submissões do dia não voltem na próxima edição.
+  - **Atualizar cost.json.** Ler `cost.json`, append entry de Stage 1, recalcular `total_calls`, gravar com `Write`:
+    ```json
+    {
+      "stage": 1,
+      "stage_start": "<ts_antes_de_disparar_inbox_drainer>",
+      "stage_end": "<now>",
+      "calls": {
+        "inbox_drainer": 1,
+        "refresh_dedup_runner": 1,
+        "source_researcher": <N>,
+        "discovery_searcher": <M>,
+        "link_verifier": <chunks>,
+        "deduplicator": 1,
+        "categorizer": 1
+      },
+      "models": { "haiku": <soma_de_todos_calls_acima>, "sonnet": 0 }
+    }
+    ```
+    `total_calls` = soma de todos os `calls` values em todos os stages + 1 (orchestrator).
 
 ### 2. Stage 2 — Writing
 
@@ -108,6 +139,16 @@ Este stage é **sequencial** (scorer → writer → clarice) porque cada etapa d
 - Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para Clarice.
 - Disparar `clarice-runner` com `in_path = 02-draft.md`, `out_reviewed_path = 02-reviewed.md`, `out_diff_path = 02-clarice-diff.md`.
 - **GATE HUMANO:** mostrar `02-clarice-diff.md`. Quando aprovado, `02-reviewed.md` é o final.
+  - **Atualizar cost.json.** Append entry de Stage 2, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 2,
+      "stage_start": "<ts_antes_de_disparar_scorer>",
+      "stage_end": "<now>",
+      "calls": { "scorer": 1, "writer": 1, "clarice_runner": 1 },
+      "models": { "haiku": 1, "sonnet": 2 }
+    }
+    ```
 
 ### 3. Stage 3 — Social
 
@@ -115,6 +156,17 @@ Este stage é **sequencial** (scorer → writer → clarice) porque cada etapa d
 - Após os 2 retornarem, disparar em paralelo 6 `clarice-runner` — um por arquivo, sobrescrevendo inline (diff não necessário aqui).
 - Montar `03-social.md` agregado: concatenar os 6 posts com cabeçalho por plataforma e destaque (`## LinkedIn — D1`, etc.).
 - **GATE HUMANO:** mostrar `03-social.md`, aprovar.
+  - **Atualizar cost.json.** Append entry de Stage 3, setar `session_end`, recalcular `total_calls`, gravar:
+    ```json
+    {
+      "stage": 3,
+      "stage_start": "<ts_antes_de_disparar_social_agents>",
+      "stage_end": "<now>",
+      "calls": { "social_linkedin": 1, "social_facebook": 1, "clarice_runner": 6 },
+      "models": { "haiku": 6, "sonnet": 2 }
+    }
+    ```
+    Setar `session_end = <now>` no objeto raiz. `total_calls` inclui +1 pelo orchestrator.
 
 ### 4–7 (Fases 2 e 3 — ainda não implementadas)
 
