@@ -62,4 +62,4 @@ JSON puro:
 ```
 
 - `discovered_source: true` sempre — marca que veio da camada 2.
-- Se o veículo já é cadastrado (match em `context/sources.md`), ainda retorne — o deduplicator resolve colisões depois.
+- Se o veículo já é cadastrado (match em `context/sources.md`), ainda retorne — `scripts/dedup.ts` resolve colisões depois.

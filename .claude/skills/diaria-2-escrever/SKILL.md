@@ -19,7 +19,7 @@ Executa só o Stage 2.
 
 Dispare o `orchestrator` com instrução: rodar **somente Stage 2** a partir de `01-approved.json`.
 
-O orchestrator lê `highlights[]` de `01-approved.json` (scorer já rodou no Stage 1) e chama `writer` (Sonnet) → `clarice-runner`.
+O orchestrator lê `highlights[]` de `01-approved.json` (scorer já rodou no Stage 1) e chama `writer` (Sonnet) → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`).
 
 ## Output
 

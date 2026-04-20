@@ -16,6 +16,10 @@ const PAYWALL_DOMAINS = new Set([
 // news.google.com NÃO está aqui — é indexador que aponta para o original.
 // Quando um desses domínios aparece, o verificador tenta resolver a fonte primária
 // antes de descartar. Se não conseguir, verdict = "aggregator".
+// Note: thedeepview.com foi removido daqui — é newsletter editorial com conteúdo
+// próprio (listada como Secundária em sources.csv). Manter aqui fazia o resolver
+// tentar achar "fonte primária" em og:url/canonical, que apontam de volta pra eles
+// mesmos — resultado: verdict virava "aggregator" e artigos eram descartados.
 const AGGREGATOR_DOMAINS = new Set([
   "crescendo.ai",
   "techstartups.com",
@@ -23,7 +27,6 @@ const AGGREGATOR_DOMAINS = new Set([
   "alltop.com",
   "feedly.com",
   "inoreader.com",
-  "thedeepview.com",
 ]);
 
 // Domínios de redes sociais — ignorados na busca por fonte primária.

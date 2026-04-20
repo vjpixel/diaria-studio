@@ -211,7 +211,6 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
         "source_researcher": <N>,
         "discovery_searcher": <M>,
         "link_verifier": <chunks>,
-        "deduplicator": 1,
         "categorizer": 1,
         "research_reviewer": 1,
         "scorer": 1

@@ -5,7 +5,7 @@ description: (Opcional) Regenera manualmente `context/past-editions.md`. Normalm
 
 # /diaria-refresh-dedup (manual / opcional)
 
-Atualiza o cache de edições passadas usado pelo `deduplicator`.
+Atualiza o cache de edições passadas usado pelo `scripts/dedup.ts`.
 
 **Normalmente não precisa ser invocado manualmente** — o orchestrator dispara esse mesmo fluxo como primeira etapa de `/diaria-1-pesquisa` e `/diaria-edicao`. Use esta skill apenas para:
 

@@ -3,7 +3,7 @@
 **atualizado em:** 2026-04-19
 **edições carregadas:** 2
 
-Usado pelo `deduplicator` para evitar repetir links ou temas das últimas edições.
+Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
 
 ---
 

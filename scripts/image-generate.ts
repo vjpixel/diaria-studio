@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Estilo fixo Van Gogh impasto — mesma especificação do image-prompter.md
+// Estilo fixo Van Gogh impasto — ver context/editorial-rules.md para a regra editorial.
 const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast";
 

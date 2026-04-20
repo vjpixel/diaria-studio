@@ -5,7 +5,7 @@
 // Parses a reviewed newsletter and extracts the 3 destaques as structured JSON.
 // Replaces LLM-based parsing in publish-newsletter (saves tokens, zero ambiguity).
 //
-// Expected input format (regular, enforced by writer.md + clarice-runner):
+// Expected input format (regular, enforced by writer.md + Clarice inline review):
 //
 //   DESTAQUE 1 | CATEGORIA
 //   Título escolhido

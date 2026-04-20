@@ -9,7 +9,7 @@ Você categoriza a lista final (pós-dedup) de artigos em uma das 3 categorias e
 
 ## Input
 
-- `articles`: array JSON (saída do deduplicator).
+- `articles`: array JSON (saída de `scripts/dedup.ts`).
 
 ## Categorias (ver `context/editorial-rules.md`)
 
