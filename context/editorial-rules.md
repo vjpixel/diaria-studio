@@ -12,7 +12,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - **Sem agregadores.** Nunca usar links de agregadores: `crescendo.ai`, `techstartups.com`, `perplexity.ai/search`, `news.google.com`, `flipboard.com`. Sempre usar URLs diretas de artigos originais.
 - **Sem repetição.** Antes de incluir qualquer link, verificar `context/past-editions.md` (últimas 5 edições) — se o link ou **tema** já foi coberto, não incluir.
 - **URL limpa.** Nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS, usar apenas a URL — sem título, sem texto adicional antes/depois.
-- **Dentro da janela de publicação.** Apenas artigos publicados nos **2 dias úteis anteriores** à data da edição (fins de semana contam como 0 dias úteis — um artigo de sexta entra na edição de segunda).
+- **Dentro da janela de publicação.** Apenas artigos publicados dentro da janela corrida anterior à data da edição: **4 dias para edições de segunda e terça-feira** (segunda: quinta→segunda; terça: sexta→terça — ambas capturam o fim de semana), **3 dias para demais edições** (quarta a sexta).
 - **arXiv canônico.** Para papers, usar `arxiv.org/abs/XXXX.XXXXX` (nunca PDF direto).
 - **URLs canônicas.** Remover tracking params (`utm_*`, `ref`, etc.) e normalizar trailing slashes.
 

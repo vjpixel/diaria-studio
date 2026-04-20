@@ -57,12 +57,12 @@ Se `curl` retornar exit code != 0, retornar erro imediatamente — não prossegu
 Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json`:
 
 ```bash
-node -e "
+EAI_EDITION='{YYMMDD}' EAI_TITLE='{image_title}' EAI_URL='{image_url}' node -e "
   const fs=require('fs');
-  const path='data/eai-used.json';
-  const log=fs.existsSync(path)?JSON.parse(fs.readFileSync(path,'utf8')):{used:[]};
-  log.used.push({ edition:'{YYMMDD}', title:'{image_title}', source_url:'{image_url}', used_at:new Date().toISOString() });
-  fs.writeFileSync(path, JSON.stringify(log, null, 2));
+  const p='data/eai-used.json';
+  const log=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):{used:[]};
+  log.used.push({ edition:process.env.EAI_EDITION, title:process.env.EAI_TITLE, source_url:process.env.EAI_URL, used_at:new Date().toISOString() });
+  fs.writeFileSync(p, JSON.stringify(log, null, 2));
 "
 ```
 
