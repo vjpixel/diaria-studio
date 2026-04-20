@@ -14,9 +14,8 @@ const PAYWALL_DOMAINS = new Set([
 
 // Sites que redistribuem conteúdo de terceiros sem produção editorial própria.
 // news.google.com NÃO está aqui — é indexador que aponta para o original.
-// Quando um desses domínios aparece no input, o verdict "aggregator" sinaliza
-// que o agente upstream deve ter resolvido a fonte primária antes; se chegou
-// até aqui sem resolução, o orchestrator descarta.
+// Quando um desses domínios aparece, o verificador tenta resolver a fonte primária
+// antes de descartar. Se não conseguir, verdict = "aggregator".
 const AGGREGATOR_DOMAINS = new Set([
   "crescendo.ai",
   "techstartups.com",
@@ -24,6 +23,18 @@ const AGGREGATOR_DOMAINS = new Set([
   "alltop.com",
   "feedly.com",
   "inoreader.com",
+  "thedeepview.com",
+]);
+
+// Domínios de redes sociais — ignorados na busca por fonte primária.
+const SOCIAL_DOMAINS = new Set([
+  "twitter.com",
+  "x.com",
+  "facebook.com",
+  "linkedin.com",
+  "instagram.com",
+  "youtube.com",
+  "t.co",
 ]);
 
 // Prefixos de URL que são fontes primárias dentro de domínios parcialmente
@@ -46,6 +57,13 @@ const PAYWALL_MARKERS = [
 ];
 
 type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain";
+
+type VerifyResult = {
+  verdict: Verdict;
+  finalUrl: string;
+  note?: string;
+  resolvedFrom?: string; // set when an aggregator URL was resolved to its primary source
+};
 
 export function canonicalize(url: string): string {
   try {
@@ -72,7 +90,69 @@ export function domain(url: string): string {
   }
 }
 
-export async function verify(url: string, timeoutMs = 8000): Promise<{ verdict: Verdict; finalUrl: string; note?: string }> {
+/**
+ * Tenta extrair a URL da fonte primária de uma página agregadora.
+ * Estratégia em ordem de confiança:
+ *   1. <meta property="og:url"> apontando para domínio diferente
+ *   2. <link rel="canonical"> apontando para domínio diferente
+ *   3. Primeiro link externo relevante dentro de <article> ou <main>
+ * Retorna null se não encontrar fonte primária confiável.
+ */
+async function resolveAggregator(url: string, aggregatorHost: string, timeoutMs: number): Promise<string | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await request(url, {
+      method: "GET",
+      signal: ctrl.signal,
+      headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
+    });
+    if (res.statusCode >= 400) return null;
+
+    const body = await res.body.text();
+
+    // 1. og:url
+    const ogUrl =
+      body.match(/<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i)?.[1] ??
+      body.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:url["']/i)?.[1];
+    if (ogUrl) {
+      const h = domain(ogUrl);
+      if (h && h !== aggregatorHost && !SOCIAL_DOMAINS.has(h)) return canonicalize(ogUrl);
+    }
+
+    // 2. canonical
+    const canonical =
+      body.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i)?.[1] ??
+      body.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']canonical["']/i)?.[1];
+    if (canonical) {
+      const h = domain(canonical);
+      if (h && h !== aggregatorHost && !SOCIAL_DOMAINS.has(h)) return canonicalize(canonical);
+    }
+
+    // 3. Primeiro link externo em <article> ou <main>
+    const contentArea =
+      body.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1] ??
+      body.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1] ??
+      body;
+
+    const externalLinks = [...contentArea.matchAll(/href=["'](https?:\/\/[^"'#?]+)["']/gi)]
+      .map((m) => m[1])
+      .filter((href) => {
+        const h = domain(href);
+        return h && h !== aggregatorHost && !SOCIAL_DOMAINS.has(h);
+      });
+
+    if (externalLinks.length > 0) return canonicalize(externalLinks[0]);
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function verify(url: string, timeoutMs = 8000, isRetry = false): Promise<VerifyResult> {
   const finalUrl = canonicalize(url);
   const host = domain(finalUrl);
 
@@ -81,8 +161,17 @@ export async function verify(url: string, timeoutMs = 8000): Promise<{ verdict: 
   const isPrimarySource = PRIMARY_SOURCE_PREFIXES.some((prefix) => urlWithoutProtocol.startsWith(prefix));
 
   if (!isPrimarySource) {
-    // perplexity.ai/* (except hub/ and research subdomain) is an aggregator.
     if (host === "perplexity.ai" || AGGREGATOR_DOMAINS.has(host)) {
+      // Attempt to resolve to the primary source (first call only — no infinite recursion).
+      if (!isRetry) {
+        const primary = await resolveAggregator(finalUrl, host, timeoutMs);
+        if (primary) {
+          const primaryResult = await verify(primary, timeoutMs, true);
+          if (primaryResult.verdict !== "aggregator") {
+            return { ...primaryResult, resolvedFrom: finalUrl };
+          }
+        }
+      }
       return { verdict: "aggregator", finalUrl };
     }
   }

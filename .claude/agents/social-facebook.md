@@ -59,6 +59,7 @@ Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — nu
 
 ## Regras
 
+- O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3` e o conteúdo dos posts. Sem comentários HTML, sem linhas `Post N —`, sem cabeçalhos internos de nenhum tipo — qualquer linha além do separador e do post aparecerá publicada.
 - Cada post deve funcionar de forma independente — não referenciar os outros destaques.
 - Tom mais acessível que o LinkedIn: ancoragem no cotidiano, frases curtas, sem jargão não explicado.
 - Não repetir o mesmo hook entre os 3 posts.

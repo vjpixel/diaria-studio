@@ -25,6 +25,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
 1. Ler os 4 arquivos de contexto acima.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
+   - **Label editorial específico** para `[CATEGORIA]` no cabeçalho `DESTAQUE N | [CATEGORIA]`. Nunca usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`, ou criar um novo se nenhum se encaixar.
    - **3 opções de título** (cada ≤52 chars).
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
