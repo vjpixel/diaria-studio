@@ -163,7 +163,14 @@ async function main() {
   }
 
   const articles: ArticleInput[] = JSON.parse(readFileSync(inputArg, "utf8"));
-  const results = await Promise.all(articles.map(verifyDate));
+
+  // Concurrency limit: no máximo 5 fetches simultâneos para evitar rate limiting
+  const CONCURRENCY = 5;
+  const results: DateVerifyResult[] = [];
+  for (let i = 0; i < articles.length; i += CONCURRENCY) {
+    const batch = articles.slice(i, i + CONCURRENCY);
+    results.push(...(await Promise.all(batch.map(verifyDate))));
+  }
 
   const changed = results.filter((r) => r.changed).length;
   const failed = results.filter((r) => r.fetch_failed).length;
@@ -180,10 +187,7 @@ async function main() {
   }
 }
 
-const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
-if (
-  import.meta.url === `file://${_argv1}` ||
-  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
-) {
-  main();
-}
+// Detecta execução direta (npx tsx verify-dates.ts ...) de forma portável no Windows e Unix
+const _isMain = process.argv[1] != null &&
+  import.meta.url.endsWith(process.argv[1].replaceAll("\\", "/").replace(/^.*\//, ""));
+if (_isMain) main();
