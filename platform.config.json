@@ -12,6 +12,7 @@
     "gmailQuery": "label:Diaria",
     "enabled": true
   },
+  "drive_sync": true,
   "logging": {
     "path": "data/run-log.jsonl"
   },

@@ -14,7 +14,7 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 
 ## Pré-requisitos
 
-- Stage 3 completo (`03-linkedin-d1.md`, `03-linkedin-d2.md`, `03-linkedin-d3.md`, `03-facebook-d1.md`, `03-facebook-d2.md`, `03-facebook-d3.md`).
+- Stage 3 completo (`03-social.md` — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`).
 - Stage 5 completo (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`).
 - Chrome com Claude in Chrome ativo, logado em LinkedIn e Facebook (ver `docs/browser-publish-setup.md`).
 
@@ -24,8 +24,7 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 
 Verificar existência dos seguintes arquivos. Se algum faltar, retornar erro imediatamente indicando qual arquivo está faltando e qual stage precisa ser re-rodado:
 
-- `{edition_dir}/03-linkedin-d1.md`, `03-linkedin-d2.md`, `03-linkedin-d3.md` (Stage 3)
-- `{edition_dir}/03-facebook-d1.md`, `03-facebook-d2.md`, `03-facebook-d3.md` (Stage 3)
+- `{edition_dir}/03-social.md` (Stage 3 — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`)
 - `{edition_dir}/05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` (Stage 5)
 
 ### 2. Ler estado atual
@@ -60,7 +59,22 @@ Para cada combinação:
 - Se `status = "failed"`: **retentar** — remover a entry existente de `posts[]` (reler → filtrar → gravar), depois processar normalmente. Não pular post falhado; o re-despacho pelo orchestrator é justamente para recuperar esses casos.
 
 **b. Ler conteúdo do post:**
-- Texto: `{edition_dir}/03-{platform}-d{N}.md`
+- Texto: ler `{edition_dir}/03-social.md`, primeiro isolar a seção da plataforma (`# LinkedIn` ou `# Facebook`), depois extrair `## d{N}` dentro dela. Exemplo de parse (em Bash, uma vez por post; substituir `{PLATFORM_TITLE}` por `LinkedIn` ou `Facebook` e `{N}` pelo número do destaque):
+  ```bash
+  node -e "
+    const fs=require('fs');
+    const md=fs.readFileSync('{edition_dir}/03-social.md','utf8');
+    const platRe=new RegExp('(?:^|\\n)# {PLATFORM_TITLE}\\n([\\s\\S]*?)(?=\\n# |$)','i');
+    const platM=md.match(platRe);
+    if(!platM){process.stderr.write('platform section not found');process.exit(1);}
+    const plat=platM[1];
+    const dRe=new RegExp('(?:^|\\n)## d{N}\\n([\\s\\S]*?)(?=\\n## d\\d|\\n# |$)','i');
+    const dM=plat.match(dRe);
+    if(!dM){process.stderr.write('destaque d{N} not found');process.exit(1);}
+    let body=dM[1].replace(/<!--[\\s\\S]*?-->/g,'').trim();
+    process.stdout.write(body);
+  "
+  ```
 - Imagem: `{edition_dir}/05-d{N}.jpg`
 
 **c. Ler playbook:** `context/publishers/{platform}.md`.

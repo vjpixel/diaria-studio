@@ -1,13 +1,13 @@
 ---
 name: diaria-refresh-dedup
-description: (Opcional) Regenera manualmente `context/past-editions.md`. Normalmente não é necessário — `/diaria-research` e `/diaria-edicao` já fazem isso automaticamente no Stage 0. Útil para testar a conexão Beehiiv MCP, forçar refresh fora do fluxo, ou inspecionar o diff.
+description: (Opcional) Regenera manualmente `context/past-editions.md`. Normalmente não é necessário — `/diaria-1-pesquisa` e `/diaria-edicao` já fazem isso automaticamente no Stage 0. Útil para testar a conexão Beehiiv MCP, forçar refresh fora do fluxo, ou inspecionar o diff.
 ---
 
 # /diaria-refresh-dedup (manual / opcional)
 
 Atualiza o cache de edições passadas usado pelo `deduplicator`.
 
-**Normalmente não precisa ser invocado manualmente** — o orchestrator dispara esse mesmo fluxo como primeira etapa de `/diaria-research` e `/diaria-edicao`. Use esta skill apenas para:
+**Normalmente não precisa ser invocado manualmente** — o orchestrator dispara esse mesmo fluxo como primeira etapa de `/diaria-1-pesquisa` e `/diaria-edicao`. Use esta skill apenas para:
 
 - Testar se o MCP Beehiiv está autenticado e respondendo.
 - Inspecionar o conteúdo do `context/past-editions.md` fora do fluxo de edição.

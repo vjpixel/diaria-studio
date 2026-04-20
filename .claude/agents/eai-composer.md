@@ -15,7 +15,7 @@ Você compõe o bloco "É AI?" da edição Diar.ia: a Foto do Dia da Wikimedia r
 
 ## Processo
 
-### 1. Buscar POTD da Wikimedia
+### 1. Buscar POTD da Wikimedia (com fallback por elegibilidade)
 
 ```bash
 curl -sf \
@@ -26,10 +26,23 @@ curl -sf \
 Substituir `YYYY/MM/DD` pela data da edição. Do JSON retornado, extrair via `node -e`:
 - `image.title`
 - `image.description.text`
-- `image.thumbnail.source` (URL da imagem — usar `.thumbnail.source` se existir, senão `.image.source`)
+- `image.thumbnail.source` (URL da thumbnail) e `image.image.source` (URL da imagem cheia, quando disponível)
 - `image.artist.text` ou `image.credit.text` (crédito)
+- **`image.image.width` e `image.image.height`** — orientação. Fallback: `image.thumbnail.width`/`height`.
 
-Se a API retornar erro ou o campo `image` não existir, tentar o dia anterior (máx 2 tentativas, decrementando 1 dia).
+**Critérios de elegibilidade** (a imagem do dia deve passar TODOS):
+
+1. **API retornou com sucesso** e `image` existe no payload.
+2. **Orientação horizontal** — `width >= height`. Se `height > width` (vertical, ex: 4:5, 3:4, 9:16), rejeitar. A newsletter é paisagem 16:9; imagem vertical quebra o layout.
+3. **Não foi usada em edição anterior da Diar.ia.** Manter log em `data/eai-used.json`:
+   ```json
+   { "used": [ { "edition": "260418", "title": "File:Example.jpg", "source_url": "https://..." } ] }
+   ```
+   Rejeitar se `image.title` já aparece em `used[]` (comparação case-insensitive por `title`).
+
+Se a imagem do dia **reprovar em qualquer critério**, decrementar 1 dia e tentar de novo. Limite de **7 tentativas** (uma semana para trás). Se esgotar sem encontrar imagem elegível, retornar erro ao orchestrator com detalhes (`{ reason: "no_eligible_potd", tried_dates: [...], rejections: [...] }`).
+
+Registrar cada rejeição em memória para o relatório final (por ex: `{ date: "2026-04-18", reason: "vertical", width: 1200, height: 1500 }`).
 
 ### 2. Baixar a imagem
 
@@ -38,6 +51,22 @@ curl -sL "{url}" -o "{out_dir}/04-eai.jpg"
 ```
 
 Se `curl` retornar exit code != 0, retornar erro imediatamente — não prosseguir sem imagem.
+
+### 2b. Registrar uso no log
+
+Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json`:
+
+```bash
+node -e "
+  const fs=require('fs');
+  const path='data/eai-used.json';
+  const log=fs.existsSync(path)?JSON.parse(fs.readFileSync(path,'utf8')):{used:[]};
+  log.used.push({ edition:'{YYMMDD}', title:'{image_title}', source_url:'{image_url}', used_at:new Date().toISOString() });
+  fs.writeFileSync(path, JSON.stringify(log, null, 2));
+"
+```
+
+Isso impede que a mesma POTD seja repetida numa edição futura (a API da Wikimedia às vezes recicla destaques em ciclos longos).
 
 ### 3. Ler contexto da newsletter
 
@@ -69,6 +98,14 @@ Regras do texto:
   "out_md": "data/editions/260418/04-eai.md",
   "out_jpg": "data/editions/260418/04-eai.jpg",
   "image_title": "...",
-  "image_credit": "..."
+  "image_credit": "...",
+  "image_date_used": "2026-04-15",
+  "rejections": [
+    { "date": "2026-04-18", "reason": "vertical", "width": 1200, "height": 1500 },
+    { "date": "2026-04-17", "reason": "already_used", "previous_edition": "260103" },
+    { "date": "2026-04-16", "reason": "vertical", "width": 900, "height": 1600 }
+  ]
 }
 ```
+
+`rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados) — orchestrator usa isso no relatório do gate humano para explicar por que a imagem é de N dias atrás.

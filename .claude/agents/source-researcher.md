@@ -15,21 +15,27 @@ Você pesquisa **uma única fonte** cadastrada do Diar.ia e retorna candidatos e
 - `window_days`: janela em dias para trás (default `3`)
 - `timeout_seconds`: orçamento total de tempo (default `180`). **Respeite**.
 
-## Orçamento de tempo (crítico)
+## Orçamento de operações (crítico — hard limit)
 
-Antes do passo 1, execute: `Bash("date +%s")` e guarde como `start_ts`.
+Mantenha dois contadores internos desde o início:
+- `fetch_count` = número de `WebFetch` já executados (inicia em 0).
+- `search_count` = número de `WebSearch` já executados (inicia em 0).
 
-Antes de **cada** `WebFetch` novo, execute `Bash("date +%s")` de novo e calcule `elapsed = now - start_ts`. Se `elapsed > timeout_seconds - 15` (15s de margem), **pare imediatamente**: não inicie mais fetches, devolva o que tem até agora com `status: "timeout"`.
+**Antes de cada `WebFetch`**: se `fetch_count >= 5`, **pare imediatamente** — não execute o fetch. Devolva o que tem até agora com `status: "ok"`. Este limite é inegociável — não há exceções.
 
-Critérios adicionais de desistência (antes de estourar o timeout):
-- Depois de 2 `WebSearch` consecutivos sem nenhum resultado relevante → parar, `status: "ok"`, `articles: []`.
-- Depois de 3 `WebFetch` consecutivos retornando erro (403, 5xx, timeout) → parar, `status: "fail"`, `reason: "consecutive_fetch_errors"`.
+**Antes de cada `WebSearch`**: se `search_count >= 2`, **pare** — não faça mais buscas.
+
+Critérios adicionais de desistência:
+- 2 `WebSearch` consecutivos sem nenhum resultado relevante → parar, `status: "ok"`, `articles: []`.
+- 3 `WebFetch` consecutivos retornando erro (403, 5xx, timeout) → parar, `status: "fail"`, `reason: "consecutive_fetch_errors"`.
+
+O campo `timeout_seconds` do input é mantido por compatibilidade mas **não é usado** — o controle é por contagem de operações.
 
 ## Processo
 
 1. Montar query: `{site_query} AI OR "inteligência artificial" OR "artificial intelligence"` restringida à janela.
 2. `WebSearch` com essa query. Pegar top 10-15 resultados.
-3. Para cada resultado que parecer relevante a IA (máximo 8 fetches), `WebFetch` para extrair título, data real de publicação, e autor. Respeitando o orçamento.
+3. Para cada resultado que parecer relevante a IA, `WebFetch` para extrair título, data real de publicação, e autor. **Hard limit: máximo 5 `WebFetch` no total** — quando `fetch_count` atingir 5, pare mesmo que haja mais resultados na lista.
 4. Para cada resultado:
    - **Se a URL for de um agregador** (site que redistribui conteúdo de terceiros sem produção própria — ex: crescendo.ai, flipboard.com, techstartups.com, newsletters de pura curadoria, posts do LinkedIn/Twitter que resumem artigo alheio; `perplexity.ai/*` exceto `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity): fazer `WebFetch` na página e tentar extrair a URL da fonte primária (procurar `<link rel="canonical">`, link principal do artigo original, ou menção explícita da fonte). Se encontrar → usar a URL primária em vez da do agregador. Se não encontrar → descartar.
    - Descartar se publicado fora da janela `[edition_date - window_days, edition_date]`.

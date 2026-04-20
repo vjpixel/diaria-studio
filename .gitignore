@@ -3,5 +3,9 @@ dist/
 .env
 .env.local
 data/editions/
+!data/editions/*/01-categorized.md
+!data/editions/*/01-categorized.json
+!data/editions/*/01-approved.json
 data/*-raw.json
+data/drive-cache.json
 .DS_Store
