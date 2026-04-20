@@ -63,6 +63,23 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
 ### 1. Stage 1 — Research
 
+- **Confirmar janela de pesquisa.** Calcular o default de `window_days` com base no dia da semana da edição:
+  ```bash
+  node -e "const d=new Date('{edition_date}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))"
+  ```
+  - Segunda (`getDay()===1`): `window_days = 4` (quinta → segunda — captura sexta + fim de semana).
+  - Terça (`getDay()===2`): `window_days = 4` (sexta → terça — captura fim de semana + segunda).
+  - Quarta a sexta: `window_days = 3`.
+
+  Calcular `window_start = edition_date − window_days dias`. Exibir ao usuário **antes de qualquer outro passo**:
+
+  ```
+  📅 Janela de pesquisa: {window_start} → {edition_date} ({window_days} dias)
+  Pressione Enter para confirmar ou digite outro número de dias:
+  ```
+
+  Se o usuário digitar um número N válido (inteiro ≥ 1): atualizar `window_days = N` e recalcular `window_start`. Se pressionar Enter sem digitar nada: manter o default calculado. Usar `window_days` confirmado em todo o restante do Stage 1.
+
 - **Inbox drain (sempre roda, antes da pesquisa).** Disparar o subagente `inbox-drainer` via `Task` (sem argumentos). Ele lê novos e-mails de `diariaeditor@gmail.com` via Gmail MCP e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped }`.
   - Se `skipped: true` com `reason: "gmail_mcp_error"`: logar `warn` e prosseguir sem inbox (não aborta a pipeline — o editor pode continuar sem submissões externas).
   - Se `skipped: true` com `reason: "inbox_disabled"`: prosseguir silenciosamente.
@@ -73,7 +90,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - nome da fonte
   - site query
   - data da edição
-  - janela (default 3 dias)
+  - janela: `window_days` (confirmado pelo usuário acima)
   - `timeout_seconds: 180` (soft budget — subagente se auto-disciplina)
 - Em paralelo, disparar M chamadas `Task` com subagent `discovery-searcher` para queries temáticas (derivadas de `audience-profile.md` — temas de alta tração). Usar ~5 queries PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais (prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180` também.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
@@ -91,10 +108,24 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   Isso atualiza `data/source-health.json` + anexa linha JSONL em `data/sources/{slug}.jsonl` (auditoria por fonte).
 - Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 - **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. Link-verifier ainda decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
-- **Link verification (paralelo com chunking):** agrupar a lista agregada em chunks de 10 URLs; disparar 1 `Task` por chunk com subagent `link-verifier`, passando `urls[]` e `out_path`. Agregar os resultados e **remover** artigos com verdict `paywall`, `blocked` ou `aggregator`.
-- Disparar `deduplicator` com a lista filtrada + caminho de `context/past-editions.md` (o subagente lê só as **últimas 3 edições** para dedup, mesmo que 5 estejam carregadas).
+- **Link verification (paralelo com chunking):** agrupar a lista agregada em chunks de 10 URLs; disparar 1 `Task` por chunk com subagent `link-verifier`, passando `urls[]` e `out_path`. Agregar os resultados e:
+  - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
+  - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente.
+- **Deduplicar** a lista filtrada rodando:
+  ```bash
+  npx tsx scripts/dedup.ts \
+    --articles {tmp-articles.json} \
+    --past-editions context/past-editions.md \
+    --window {window_days} \
+    --out {tmp-dedup-output.json}
+  ```
+  Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
 - Disparar `categorizer` com a lista pós-dedup para classificar em `lancamento` / `pesquisa` / `noticias`.
-- Disparar `scorer` (Sonnet) passando `categorized` (saída do categorizer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+- Disparar `research-reviewer` passando `{ categorized, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). Aplica dois filtros em sequência:
+  1. **Datas**: verifica datas reais via fetch, corrige campos `date`, remove artigos fora da janela de 3 dias.
+  2. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
+  Retorna `categorized` limpo + `stats` com contagens de removidos/corrigidos. Usar esse `categorized` daqui em diante. Logar `stats.removals[]` em caso de remoções para rastreabilidade.
+- Disparar `scorer` (Sonnet) passando `categorized` (saída do date-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
 - **Strip do campo `verifier`**: antes de salvar, remover o campo `verifier` de cada artigo (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON).
 - Estrutura final de `01-categorized.json`:
@@ -150,7 +181,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
      📁 Drive: startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/01-categorized.md
 
      ✏️  O scorer indicou 6 candidatos a destaque (⭐ D1–D6).
-         Antes de aprovar, edite o arquivo e mantenha apenas 3 (remova os marcadores ⭐ dos que não entram).
+         Edite o arquivo e mantenha exatamente 3 marcadores ⭐ (remova os demais).
          Se não editar, os 3 primeiros por rank (D1, D2, D3) serão usados automaticamente.
      ```
 
@@ -161,8 +192,12 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
      - Se tudo OK: "Todas as fontes responderam normalmente."
 
   Quando aprovado:
-  - Ler o `highlights[]` que o editor eventualmente editou no arquivo. **Se `highlights[]` tiver mais de 3 entradas, truncar para as 3 primeiras (por `rank`)** e avisar: `"ℹ️ Mantidos d1, d2, d3 (primeiros por rank). Os demais candidatos foram descartados."`.
-  - Salvar em `01-approved.json` com exatamente 3 entradas em `highlights[]`.
+  - **Fazer pull do MD** (o editor pode ter editado no Drive): disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 1, files: ["01-categorized.md"] }`. Se o pull falhar, usar a versão local.
+  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐ D{N}` (formato: `- [score] Título ⭐ D{N} — https://url`). Ordenar por N crescente (D1 < D2 < D3).
+  - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD, buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
+  - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com D{N+1} do scorer."`.
+  - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (menor N), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas D1, D2, D3."`.
+  - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]`, preservando toda a estrutura do JSON original (buckets, runners_up etc.).
   - **Arquivar o inbox**: mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar um `data/inbox.md` vazio (com o cabeçalho padrão). Isso garante que submissões do dia não voltem na próxima edição.
   - **Atualizar cost.json.** Ler `cost.json`, append entry de Stage 1, recalcular `total_calls`, gravar com `Write`:
     ```json
@@ -178,6 +213,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
         "link_verifier": <chunks>,
         "deduplicator": 1,
         "categorizer": 1,
+        "research_reviewer": 1,
         "scorer": 1
       },
       "models": { "haiku": <soma_haiku>, "sonnet": 1 }
@@ -199,18 +235,38 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - `d2_prompt_path = data/editions/{YYMMDD}/02-d2-prompt.md`
   - `d3_prompt_path = data/editions/{YYMMDD}/02-d3-prompt.md`
 - Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para Clarice.
-- Disparar `clarice-runner` com `in_path = 02-draft.md`, `out_reviewed_path = 02-reviewed.md`, `out_diff_path = 02-clarice-diff.md`.
+- **Revisar com Clarice (inline — sem Task):**
+  1. Ler conteúdo de `data/editions/{YYMMDD}/02-draft.md`.
+  2. Chamar `mcp__clarice__correct_text` passando o texto completo.
+  3. Gravar resultado em `data/editions/{YYMMDD}/02-reviewed.md`.
+  4. Gerar diff legível:
+     ```bash
+     npx tsx scripts/clarice-diff.ts \
+       data/editions/{YYMMDD}/02-draft.md \
+       data/editions/{YYMMDD}/02-reviewed.md \
+       data/editions/{YYMMDD}/02-clarice-diff.md
+     ```
+  Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
 - **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 2, files: ["02-reviewed.md", "02-clarice-diff.md"] }`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
-- **GATE HUMANO:** mostrar `02-clarice-diff.md`. Mencionar: "📁 Rascunho já disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/02-reviewed.md` para revisão remota." Quando aprovado, `02-reviewed.md` é o final.
-  - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor no Drive.)
+- **GATE HUMANO:** mostrar `02-clarice-diff.md` e instruir:
+  ```
+  ✏️  Edite data/editions/{YYMMDD}/02-reviewed.md antes de aprovar:
+      — Mantenha exatamente 1 título por destaque (delete os outros 2).
+      — Ajuste qualquer texto que queira alterar.
+
+  📁 Drive: startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/02-reviewed.md
+      (pode editar direto no Drive — o Stage 3 faz pull antes de começar)
+  ```
+  Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
+  - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
   - **Atualizar cost.json.** Append entry de Stage 2, recalcular `total_calls`, gravar:
     ```json
     {
       "stage": 2,
       "stage_start": "<ts_antes_de_disparar_writer>",
       "stage_end": "<now>",
-      "calls": { "writer": 1, "clarice_runner": 1, "drive_syncer": 1 },
-      "models": { "haiku": 2, "sonnet": 1 }
+      "calls": { "writer": 1, "drive_syncer": 1 },
+      "models": { "haiku": 1, "sonnet": 1 }
     }
     ```
 
@@ -230,7 +286,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
     fs.unlinkSync(dir+'03-facebook.tmp.md');
   "
   ```
-- Disparar **1 `clarice-runner`** no arquivo final: `in_path = 03-social.md`, `out_reviewed_path = 03-social.md` (inline), `out_diff_path` omitido. As seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3` são preservadas — Clarice só mexe em texto corrido.
+- **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo, sobrescrever `03-social.md` com o resultado. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
 - **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 3, files: ["03-social.md"] }`. Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
   - **Atualizar cost.json.** Append entry de Stage 3, setar `session_end`, recalcular `total_calls`, gravar:
@@ -239,8 +295,8 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
       "stage": 3,
       "stage_start": "<ts_antes_de_disparar_social_agents>",
       "stage_end": "<now>",
-      "calls": { "social_linkedin": 1, "social_facebook": 1, "clarice_runner": 1, "drive_syncer": 1 },
-      "models": { "haiku": 3, "sonnet": 2 }
+      "calls": { "social_linkedin": 1, "social_facebook": 1, "drive_syncer": 1 },
+      "models": { "haiku": 2, "sonnet": 2 }
     }
     ```
     Setar `session_end = <now>` no objeto raiz. `total_calls` inclui +1 pelo orchestrator.
@@ -268,18 +324,24 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 images started'`.
 - **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 5, files: ["02-reviewed.md"] }` — prompts de imagem derivam dos destaques, então edições do editor em `02-reviewed.md` precisam chegar aqui.
 - Verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI (ver `docs/comfyui-setup.md`).
-- Disparar `image-prompter` com `d1_prompt_path`, `d2_prompt_path`, `d3_prompt_path`, `out_dir`.
-- Se falhar, logar erro e reportar ao usuário.
+- **Gerar imagens via script (sem Task).** Para cada destaque d1, d2, d3 sequencialmente (ComfyUI processa uma por vez):
+  ```bash
+  npx tsx scripts/image-generate.ts \
+    --editorial data/editions/{YYMMDD}/02-d{N}-prompt.md \
+    --out-dir data/editions/{YYMMDD}/ \
+    --destaque d{N}
+  ```
+  Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 - **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 5, files: ["05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }`. Anotar em `sync_results[5]`; ignorar falhas.
-- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-disparar `image-prompter` com `regenerate = "d{N}"` e re-disparar o push para o arquivo regenerado).
+- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar cost.json.** Append entry de Stage 5, setar `session_end`, recalcular `total_calls`, gravar:
     ```json
     {
       "stage": 5,
-      "stage_start": "<ts_antes_de_disparar_image_prompter>",
+      "stage_start": "<ts_antes_de_gerar_imagens>",
       "stage_end": "<now>",
-      "calls": { "image_prompter": 1, "drive_syncer": 1 },
-      "models": { "haiku": 2, "sonnet": 0 }
+      "calls": { "drive_syncer": 1 },
+      "models": { "haiku": 1, "sonnet": 0 }
     }
     ```
     Setar `session_end = <now>` no objeto raiz.
