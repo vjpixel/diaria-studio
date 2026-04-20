@@ -54,16 +54,15 @@ Se `curl` retornar exit code != 0, retornar erro imediatamente — não prossegu
 
 ### 2b. Registrar uso no log
 
-Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json`:
+Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json` via script dedicado (args passados pelo shell — imune a aspas/entidades nos metadados da Wikimedia):
 
 ```bash
-node -e "
-  const fs=require('fs');
-  const p='data/eai-used.json';
-  const log=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):[];
-  log.push({ edition_date:'{YYMMDD}', image_date:'{image_date}', title:'{image_title}', credit:'{credit}', url:'{image_url}', used_at:new Date().toISOString() });
-  fs.writeFileSync(p, JSON.stringify(log, null, 2));
-"
+npx tsx scripts/eai-log-used.ts \
+  --edition {YYMMDD} \
+  --image-date {image_date} \
+  --title "{image_title}" \
+  --credit "{credit}" \
+  --url "{image_url}"
 ```
 
 ### 3. Gerar versão AI (Gemini)

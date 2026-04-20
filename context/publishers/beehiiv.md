@@ -38,9 +38,9 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 - O editor do Beehiiv tem áreas/blocos pré-definidos pelo template. Para cada destaque (D1, D2, D3):
   - Colar o texto do destaque (extraído de `02-reviewed.md`).
   - Inserir imagem inline correspondente (`05-d{N}.jpg`).
-- Bloco **É AI?**:
-  - Colar texto de `04-eai.md`.
-  - Inserir `04-eai.jpg` como imagem.
+- Bloco **É AI?** (duas imagens — o leitor adivinha qual é IA):
+  - Colar texto de `04-eai.md` (só a linha de crédito — sem parágrafo editorial).
+  - Inserir `04-eai-real.jpg` (foto real da Wikimedia POTD) e, logo em seguida, `04-eai-ia.jpg` (versão gerada por IA). Ordem fixa: real primeiro, IA depois — empilhadas verticalmente, lado a lado se o template suportar. Ambas precisam ficar visíveis na mesma tela sem scroll separado.
 - Outros blocos do template (Lançamentos, Pesquisa, Outras): preencher com seções correspondentes de `02-reviewed.md`.
 
 ### 6. Salvar como rascunho

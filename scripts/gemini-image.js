@@ -24,9 +24,11 @@ if (!promptPath || !outPath) {
 const cfg = JSON.parse(fs.readFileSync('platform.config.json', 'utf8'));
 const sd  = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
 
-const apiKey = process.env.GEMINI_API_KEY || cfg.gemini?.api_key;
+// API key comes ONLY from env var — never from platform.config.json (which is tracked
+// in git; putting a key there leaks it in commit history).
+const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
-  console.error('GEMINI_API_KEY not set. Export the env var before running.');
+  console.error('GEMINI_API_KEY not set. Export the env var before running (see .env.example).');
   process.exit(1);
 }
 

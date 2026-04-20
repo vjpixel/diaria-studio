@@ -40,12 +40,22 @@ Ler `platform.config.json` → bloco `publishing.newsletter`:
 
 Ler `context/publishers/beehiiv.md` (playbook semântico — você vai segui-lo passo a passo).
 
-### 3. Extrair título e subtítulo
+### 3. Extrair título, subtítulo e destaques
 
-De `02-reviewed.md`, extrair:
-- **Título** (`title`): título escolhido do D1 (primeiro destaque). É a manchete principal da edição.
-- **Subtítulo** (`subtitle`): títulos de D2 e D3 separados por ` | `, max 80 chars. **Não incluir D1** — ele já está no título. Exemplo: `"Google Skills no Chrome | IA invade Bollywood"`.
-- **Destaques**: blocos D1, D2, D3 (separados por marcadores tipo "DESTAQUE 1", "DESTAQUE 2" ou similar — verificar formato em `02-reviewed.md`).
+Rodar o script de parsing determinístico — **sem LLM**, zero ambiguidade:
+
+```bash
+npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
+```
+
+Output é JSON com `{title, subtitle, destaques: [d1, d2, d3]}` onde cada destaque tem `{n, category, title, body, why, url}`.
+
+Regras aplicadas pelo script:
+- **`title`**: título do D1 (primeiro destaque).
+- **`subtitle`**: `"{D2.title} | {D3.title}"` se couber em 80 chars; caso contrário só `D2.title`; se D2 sozinho passar de 80, truncado em 77 chars + `"..."`.
+- **`destaques`**: separados por `---` no markdown; header regex é `^DESTAQUE (1|2|3) \| (CATEGORIA)$`; corpo vai até `"Por que isso importa:"`; URL é a última linha começando com `http`.
+
+Se o script retornar exit code != 0, abortar com o erro no stderr — formato do `02-reviewed.md` precisa ser corrigido manualmente antes de re-rodar.
 
 ### 4. Operar Beehiiv via Claude in Chrome
 
