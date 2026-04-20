@@ -349,8 +349,8 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 ### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish newsletter started'`.
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 6, files: ["02-reviewed.md", "04-eai.md", "04-eai.jpg", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
-- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
+- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 6, files: ["02-reviewed.md", "04-eai.md", "04-eai-real.jpg", "04-eai-ia.jpg", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
+- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
 - Se falhar com erro de login, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
 - Ler `06-published.json` retornado.
@@ -358,7 +358,16 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
   - Template usado (`template_used`)
-  - Instrução: "Revise o email de teste e publique manualmente do dashboard Beehiiv quando aprovado."
+  - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
+    ```
+    📎 Suba as imagens manualmente no rascunho antes de publicar:
+       • Cover + D1 → 05-d1.jpg
+       • Inline D2  → 05-d2.jpg
+       • Inline D3  → 05-d3.jpg
+       • É AI? (A)  → 04-eai-real.jpg
+       • É AI? (B)  → 04-eai-ia.jpg
+    ```
+  - Instrução: "Revise o email de teste, suba as imagens e publique manualmente do dashboard Beehiiv quando aprovado."
   - Opções: aprovar (segue para Stage 7) / regerar (re-disparar `publish-newsletter`).
   - **Atualizar cost.json.** Append entry de Stage 6, recalcular `total_calls`, gravar:
     ```json

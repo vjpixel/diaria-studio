@@ -95,24 +95,16 @@ Ler `newsletter_path`. Extrair os títulos escolhidos dos 3 destaques (linhas qu
 
 ### 5. Escrever `{out_dir}/04-eai.md`
 
+O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É AI? é só as duas imagens + poll + crédito.
+
 Estrutura:
 ```
 É AI?
 
-{parágrafo de 3–5 frases relacionando a imagem com o dia}
-
 {descrição em uma frase com links} — [Fotógrafo](https://commons.wikimedia.org/wiki/User:Username) / Licença.
 ```
 
-Regras do texto:
-- Tom leve, curioso — diferente do resto da newsletter (que é analítico).
-- Não começar com "Hoje" ou "Nesta foto".
-- A relação com os destaques pode ser tangencial, por analogia ou por contraste — não precisa ser direta.
-- Máx 100 palavras no parágrafo.
-- Sem markdown no corpo (sem `**`, `#`, listas).
-- Evitar "IA" e "inteligência artificial" — usar sujeito concreto quando possível.
-
-Regras da linha de crédito (última linha, sem prefixo "Foto:"):
+Regras da linha de crédito (sem prefixo "Foto:"):
 - **Uma frase única** descrevendo a cena.
 - **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (pt ou en); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
 - Exemplo: `Pastor do [Rajastão](https://pt.wikipedia.org/wiki/Rajastão) guiando seu rebanho pelas planícies do noroeste da Índia — [Paramanu Sarkar](https://commons.wikimedia.org/wiki/User:Paramanu_Sarkar) / CC BY-SA 4.0.`
