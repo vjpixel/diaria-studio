@@ -55,7 +55,7 @@ OUTRAS NOTÍCIAS
 
 ## Regras de preenchimento
 
-- CATEGORIA dos destaques: `NOTÍCIA`, `OPINIÃO`, `FERRAMENTA`, ou `PESQUISA` (em caps).
+- CATEGORIA dos destaques: label editorial específico ao conteúdo do artigo, em caps. Não usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real da história. Exemplos: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`. Se nenhum se encaixar bem, criar um novo que faça sentido editorial.
 - Ordenar destaques por relevância editorial (scorer decide).
 - LANÇAMENTOS: itens da categoria `ferramenta` que não viraram destaque.
 - PESQUISAS: itens da categoria `pesquisa` (papers, estudos).

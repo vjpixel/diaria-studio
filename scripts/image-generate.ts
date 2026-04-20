@@ -2,7 +2,7 @@
  * image-generate.ts
  *
  * Converte um prompt editorial (02-d1-prompt.md) em prompt SD (positive + negative),
- * grava o JSON de prompt e chama comfyui-run.js para gerar a imagem.
+ * grava o JSON de prompt e chama gemini-image.js para gerar a imagem.
  *
  * Uso:
  *   npx tsx scripts/image-generate.ts \
@@ -10,7 +10,7 @@
  *     --out-dir data/editions/260418/ \
  *     --destaque d1
  *
- * Saída: data/editions/260418/05-d1.jpg (via comfyui-run.js)
+ * Saída: data/editions/260418/05-d1.jpg (via gemini-image.js)
  *        Imprime o caminho do JPG em stdout.
  */
 
@@ -88,17 +88,17 @@ function main() {
   console.error(`Prompt gravado em ${sdPromptPath}`);
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
-  // Chamar comfyui-run.js (script JS pré-existente)
-  const comfyuiScript = resolve(ROOT, "scripts/comfyui-run.js");
+  // Chamar gemini-image.js
+  const imageScript = resolve(ROOT, "scripts/gemini-image.js");
   try {
     execFileSync(
       process.execPath, // node
-      [comfyuiScript, sdPromptPath, outJpgPath, filenamePrefix],
+      [imageScript, sdPromptPath, outJpgPath, filenamePrefix],
       { stdio: "inherit", cwd: ROOT }
     );
   } catch (e: unknown) {
     const code = (e as { status?: number }).status ?? 1;
-    console.error(`comfyui-run.js falhou com código ${code}`);
+    console.error(`gemini-image.js falhou com código ${code}`);
     process.exit(code);
   }
 
