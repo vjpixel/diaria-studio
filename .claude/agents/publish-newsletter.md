@@ -76,7 +76,7 @@ Seguir `context/publishers/beehiiv.md` na ordem:
    - Title = `title` extraído
    - Subtitle = `subtitle` (se houver campo)
    - Cover image = upload de `{edition_dir}/05-d1.jpg`
-7. **Preencher corpo** seguindo o template. Para cada destaque (D1/D2/D3): colar texto + inserir `05-d{N}.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` (nessa ordem, lado a lado ou em sequência — o leitor deve ver as duas imagens para adivinhar qual é a gerada por IA).
+7. **Preencher corpo** seguindo o template. Para cada destaque (D1/D2/D3): colar texto + inserir `05-d{N}.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (não tentar layout side-by-side — mobile quebra). O leitor adivinha qual das duas é IA.
 8. **Salvar como rascunho**: clicar em "Save draft" / "Save as draft". **NÃO clicar em Schedule, Publish ou Send.**
 9. **Capturar `draft_url`**: ler URL atual da aba — deve conter `/posts/{id}/edit`.
 10. **Enviar email de teste**: abrir menu de testes → enviar para `test_email` → confirmar.

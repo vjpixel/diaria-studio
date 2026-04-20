@@ -40,7 +40,7 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
   - Inserir imagem inline correspondente (`05-d{N}.jpg`).
 - Bloco **É AI?** (duas imagens — o leitor adivinha qual é IA):
   - Colar texto de `04-eai.md` (só a linha de crédito — sem parágrafo editorial).
-  - Inserir `04-eai-real.jpg` (foto real da Wikimedia POTD) e, logo em seguida, `04-eai-ia.jpg` (versão gerada por IA). Ordem fixa: real primeiro, IA depois — empilhadas verticalmente, lado a lado se o template suportar. Ambas precisam ficar visíveis na mesma tela sem scroll separado.
+  - Inserir `04-eai-real.jpg` (foto real da Wikimedia POTD) e, logo em seguida, `04-eai-ia.jpg` (versão gerada por IA). **Ordem fixa: real primeiro, IA depois — empilhadas verticalmente como dois blocos de imagem separados**, sem tentar layout side-by-side (nem todo template suporta grid inline, e empilhar garante que ambas rendam em mobile). Rótulos A/B nas imagens são opcionais e ficam a cargo do poll, não do upload.
 - Outros blocos do template (Lançamentos, Pesquisa, Outras): preencher com seções correspondentes de `02-reviewed.md`.
 
 ### 6. Salvar como rascunho

@@ -43,6 +43,8 @@ if (sd.negative) {
 }
 
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+const REQUEST_TIMEOUT_MS = 120_000; // generation can legitimately take 30-60s; 120s is the hard ceiling
+const MAX_RETRIES = 2;              // up to 3 total attempts on 429
 
 async function callApi() {
   const body = {
@@ -50,17 +52,25 @@ async function callApi() {
     generationConfig: { responseModalities: ['IMAGE'] }
   };
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    // Use header instead of query param to avoid key appearing in process lists / logs.
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey
-    },
-    body: JSON.stringify(body)
-  });
+  // AbortController ensures we never hang forever if the API stalls.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  return res;
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      // Use header instead of query param to avoid key appearing in process lists / logs.
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 (async () => {
@@ -68,14 +78,29 @@ async function callApi() {
 
   process.stderr.write(`submitting to ${model}...\n`);
 
-  // Retry once on rate-limit (429) after a 35 s backoff.
-  let res = await callApi();
-  if (res.status === 429) {
+  // Retry up to MAX_RETRIES times on 429. Backoff respects Retry-After header;
+  // falls back to exponential (35s, 70s, ...) if the header is absent.
+  let res;
+  let attempt = 0;
+  while (true) {
+    try {
+      res = await callApi();
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        console.error(`API_TIMEOUT after ${REQUEST_TIMEOUT_MS / 1000}s`);
+        process.exit(1);
+      }
+      throw err;
+    }
+
+    if (res.status !== 429 || attempt >= MAX_RETRIES) break;
+
     const retryAfterHeader = res.headers.get('retry-after');
-    const waitMs = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 35_000;
-    process.stderr.write(`rate limited — retrying in ${waitMs / 1000}s...\n`);
+    const baseWait = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 35_000;
+    const waitMs = baseWait * Math.pow(2, attempt); // exponential when no Retry-After
+    attempt += 1;
+    process.stderr.write(`rate limited (attempt ${attempt}/${MAX_RETRIES}) — retrying in ${waitMs / 1000}s...\n`);
     await new Promise(r => setTimeout(r, waitMs));
-    res = await callApi();
   }
 
   if (!res.ok) {
