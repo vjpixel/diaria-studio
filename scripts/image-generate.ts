@@ -88,8 +88,13 @@ function main() {
   console.error(`Prompt gravado em ${sdPromptPath}`);
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
-  // Chamar gemini-image.js
-  const imageScript = resolve(ROOT, "scripts/gemini-image.js");
+  // Escolher backend de geração com base em platform.config.json > image_generator.
+  // Suporta "gemini" (padrão) e "comfyui".
+  const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const generator = (platformCfg.image_generator ?? "gemini") as string;
+  const scriptName = generator === "comfyui" ? "comfyui-run.js" : "gemini-image.js";
+  const imageScript = resolve(ROOT, "scripts", scriptName);
+
   try {
     execFileSync(
       process.execPath, // node
@@ -98,7 +103,7 @@ function main() {
     );
   } catch (e: unknown) {
     const code = (e as { status?: number }).status ?? 1;
-    console.error(`gemini-image.js falhou com código ${code}`);
+    console.error(`${scriptName} falhou com código ${code}`);
     process.exit(code);
   }
 

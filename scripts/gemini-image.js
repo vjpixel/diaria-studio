@@ -26,37 +26,55 @@ const sd  = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
 
 const apiKey = process.env.GEMINI_API_KEY || cfg.gemini?.api_key;
 if (!apiKey) {
-  console.error('GEMINI_API_KEY não definido. Exporte a variável de ambiente antes de rodar.');
+  console.error('GEMINI_API_KEY not set. Export the env var before running.');
   process.exit(1);
 }
 
-const model  = sd.model || cfg.gemini?.model || 'gemini-3.1-flash-image-preview';
+const model   = sd.model || cfg.gemini?.model || 'gemini-3.1-flash-image-preview';
 const resizeW = sd.final_width  ?? null;
 const resizeH = sd.final_height ?? null;
 
-// Gemini não tem prompt negativo nativo — incorporamos como instrução de evitar.
+// Gemini has no native negative prompt — fold it in as an avoidance instruction.
 let prompt = sd.positive;
 if (sd.negative) {
-  prompt += `\n\nNão inclua nenhum dos seguintes elementos na imagem: ${sd.negative}`;
+  prompt += `\n\nDo NOT include any of the following in the image: ${sd.negative}`;
 }
 
-(async () => {
-  const t0 = Date.now();
+const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
+async function callApi() {
   const body = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { responseModalities: ['IMAGE'] }
   };
 
-  process.stderr.write(`submitting to ${model}...\n`);
-
-  const res = await fetch(url, {
+  const res = await fetch(API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // Use header instead of query param to avoid key appearing in process lists / logs.
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    },
     body: JSON.stringify(body)
   });
+
+  return res;
+}
+
+(async () => {
+  const t0 = Date.now();
+
+  process.stderr.write(`submitting to ${model}...\n`);
+
+  // Retry once on rate-limit (429) after a 35 s backoff.
+  let res = await callApi();
+  if (res.status === 429) {
+    const retryAfterHeader = res.headers.get('retry-after');
+    const waitMs = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 35_000;
+    process.stderr.write(`rate limited — retrying in ${waitMs / 1000}s...\n`);
+    await new Promise(r => setTimeout(r, waitMs));
+    res = await callApi();
+  }
 
   if (!res.ok) {
     const errText = await res.text();
@@ -66,12 +84,11 @@ if (sd.negative) {
 
   const data = await res.json();
 
-  // Extrair parte de imagem da resposta
+  // Extract image part from response.
   const parts = data?.candidates?.[0]?.content?.parts ?? [];
   const imagePart = parts.find(p => p.inlineData?.mimeType?.startsWith('image/'));
 
   if (!imagePart) {
-    // Logar texto de erro se vier
     const textPart = parts.find(p => p.text);
     console.error('NO_IMAGE_IN_RESPONSE');
     if (textPart) console.error('model said:', textPart.text);
@@ -90,7 +107,7 @@ if (sd.negative) {
       .toBuffer();
     fs.writeFileSync(outPath, resized);
   } else {
-    // Converter para JPEG independentemente do formato de saída da API
+    // Convert to JPEG regardless of API output format.
     const jpg = await sharp(buf).jpeg({ quality: 90 }).toBuffer();
     fs.writeFileSync(outPath, jpg);
   }

@@ -1,11 +1,11 @@
 ---
 name: eai-composer
-description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via ComfyUI, escreve `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg`.
+description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg`.
 model: claude-haiku-4-5
 tools: Read, Write, Bash
 ---
 
-Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (ComfyUI) — para o leitor tentar adivinhar qual foi feita por IA.
+Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
 
 ## Input
 
@@ -66,20 +66,14 @@ node -e "
 "
 ```
 
-### 3. Gerar versão AI (ComfyUI)
+### 3. Gerar versão AI (Gemini)
 
 Criar `{out_dir}/04-eai-sd-prompt.json` com um prompt fotorrealista que reproduza o mesmo sujeito e cena da POTD — sem estilo artístico, sem Van Gogh. O objetivo é que a imagem gerada seja similar o suficiente para o leitor hesitar, mas diferente o suficiente para revelar a origem ao olhar mais atento.
 
 ```json
 {
-  "checkpoint": "RealVisXL_V4.0.safetensors",
-  "positive": "{descrição detalhada da cena: sujeito, ambiente, luz, composição, estilo fotográfico documental}",
-  "negative": "text, watermark, signature, logo, painting, illustration, drawing, cartoon, anime, cgi, 3d render, oil paint, watercolor, sketch, artistic, stylized, impressionist, brushstrokes, low quality, blurry subject, deformed, warped, border, frame, oversaturated, overexposed, studio backdrop, plain background",
-  "base_width": 1344,
-  "base_height": 768,
-  "width": 1344,
-  "height": 768,
-  "skip_hires": true,
+  "positive": "{descrição detalhada da cena: sujeito, ambiente, luz, composição, estilo fotográfico documental — incluir imperfeições reais: poeira, sombras duras, movimento, ângulo candid}",
+  "negative": "text, watermark, signature, logo, painting, illustration, drawing, cartoon, anime, cgi, 3d render, oil paint, watercolor, sketch, artistic, stylized, impressionist, brushstrokes, low quality, blurry subject, deformed, warped, border, frame, oversaturated, overexposed, studio backdrop, plain background, symmetrical composition, all subjects facing camera, posed, stock photo",
   "final_width": 800,
   "final_height": 450
 }

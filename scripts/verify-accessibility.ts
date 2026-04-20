@@ -152,7 +152,7 @@ async function resolveAggregator(url: string, aggregatorHost: string, timeoutMs:
   }
 }
 
-export async function verify(url: string, timeoutMs = 8000, _depth = 0): Promise<VerifyResult> {
+export async function verify(url: string, timeoutMs = 8000, isRetry = false): Promise<VerifyResult> {
   const finalUrl = canonicalize(url);
   const host = domain(finalUrl);
 
@@ -162,11 +162,11 @@ export async function verify(url: string, timeoutMs = 8000, _depth = 0): Promise
 
   if (!isPrimarySource) {
     if (host === "perplexity.ai" || AGGREGATOR_DOMAINS.has(host)) {
-      // Tentar resolver para a fonte primária (apenas na primeira chamada — sem recursão infinita).
-      if (_depth === 0) {
+      // Attempt to resolve to the primary source (first call only — no infinite recursion).
+      if (!isRetry) {
         const primary = await resolveAggregator(finalUrl, host, timeoutMs);
         if (primary) {
-          const primaryResult = await verify(primary, timeoutMs, 1);
+          const primaryResult = await verify(primary, timeoutMs, true);
           if (primaryResult.verdict !== "aggregator") {
             return { ...primaryResult, resolvedFrom: finalUrl };
           }
