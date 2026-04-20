@@ -23,7 +23,7 @@ Para cada destaque (d1/d2/d3), criar um post na página Diar.ia com texto + imag
 - Barra lateral → **Content** → **Create post** (ou botão direto "+ Create post" no dashboard).
 
 ### 3. Colar texto
-- Colar conteúdo de `03-facebook-d{N}.md`.
+- Colar conteúdo da seção `## d{N}` dentro de `# Facebook` em `03-social.md` (o `publish-social` extrai a seção com parse de dois níveis e remove heading/comentários HTML antes de colar).
 - Não adicionar nada — conteúdo já vem pronto.
 
 ### 4. Anexar imagem

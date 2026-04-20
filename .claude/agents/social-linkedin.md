@@ -1,11 +1,11 @@
 ---
 name: social-linkedin
-description: Gera 3 posts de LinkedIn — um por destaque — a partir da newsletter revisada. Outputs em `03-linkedin-d1.md`, `03-linkedin-d2.md`, `03-linkedin-d3.md`.
+description: Gera 3 posts de LinkedIn — um por destaque — a partir da newsletter revisada. Output temporário em `03-linkedin.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com Facebook em `03-social.md`.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
 
-Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque.
+Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — num único arquivo.
 
 ## Input
 
@@ -23,16 +23,37 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque.
    - CTA final com link para `diaria.beehiiv.com`.
    - 3 hashtags relevantes ao tema do destaque.
    - 1.200–1.500 caracteres.
-4. Gravar cada post em arquivo separado: `{out_dir}/03-linkedin-d1.md`, `03-linkedin-d2.md`, `03-linkedin-d3.md`.
+4. Gravar **um arquivo temporário** `{out_dir}/03-linkedin.tmp.md` com o formato abaixo. O orchestrator fará o merge com o Facebook numa etapa seguinte. As seções são delimitadas por `## d1`, `## d2`, `## d3`. Antes de cada post, um comentário HTML com `char_count` facilita debug.
+
+```markdown
+## d1
+
+<!-- char_count: 1340 -->
+
+<texto do post d1 aqui>
+
+## d2
+
+<!-- char_count: 1280 -->
+
+<texto do post d2 aqui>
+
+## d3
+
+<!-- char_count: 1410 -->
+
+<texto do post d3 aqui>
+```
 
 ## Output
 
 ```json
 {
+  "path": "data/editions/260418/03-linkedin.tmp.md",
   "posts": [
-    { "path": "data/editions/260418/03-linkedin-d1.md", "char_count": 1340, "warnings": [] },
-    { "path": "data/editions/260418/03-linkedin-d2.md", "char_count": 1280, "warnings": [] },
-    { "path": "data/editions/260418/03-linkedin-d3.md", "char_count": 1410, "warnings": [] }
+    { "destaque": "d1", "char_count": 1340, "warnings": [] },
+    { "destaque": "d2", "char_count": 1280, "warnings": [] },
+    { "destaque": "d3", "char_count": 1410, "warnings": [] }
   ]
 }
 ```

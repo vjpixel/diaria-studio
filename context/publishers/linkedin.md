@@ -24,7 +24,7 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 - Se o composer mostrar dropdown de autor, escolher página **Diar.ia** se existir; senão, perfil pessoal.
 
 ### 3. Colar texto
-- Colar conteúdo de `03-linkedin-d{N}.md` (já com hashtags e quebras de linha).
+- Colar conteúdo da seção `## d{N}` dentro de `# LinkedIn` em `03-social.md` (já com hashtags e quebras de linha; o `publish-social` extrai a seção e remove o heading/comentários HTML antes de colar).
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
 ### 4. Anexar imagem

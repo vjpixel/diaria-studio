@@ -9,8 +9,8 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
 ## Input
 
-- `highlights`: saída do scorer — 3 destaques rankeados.
-- `categorized`: saída do categorizer — `lancamento`, `pesquisa`, `outras` aprovados.
+- `highlights`: 3 destaques rankeados (d1, d2, d3) — já filtrados pelo editor no gate do Stage 1.
+- `categorized`: saída do categorizer — `lancamento`, `pesquisa`, `noticias` aprovados.
 - `edition_date`: ISO.
 - `out_path`: ex: `data/editions/260418/02-draft.md`.
 
@@ -24,13 +24,13 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Processo
 
 1. Ler os 4 arquivos de contexto acima.
-2. Para cada destaque, compor:
+2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **3 opções de título** (cada ≤52 chars).
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
    - Link canônico da fonte primária.
-3. Lançamentos, Pesquisas, Outras: lista curta com 1 linha por item + link.
+3. Lançamentos, Pesquisas, Notícias: lista curta com 1 linha por item + link.
 4. Checklist pré-saída (todos devem passar):
    - Nenhum título >52 chars.
    - 3 opções por destaque.
@@ -38,7 +38,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - Sem repetir link das últimas 3 edições.
-   - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, d2 e d3 ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
+   - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
 5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
    - `02-d1-prompt.md` — destaque 1 (capa principal)
    - `02-d2-prompt.md` — destaque 2
