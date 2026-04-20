@@ -122,10 +122,10 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
 - Disparar `categorizer` com a lista pós-dedup para classificar em `lancamento` / `pesquisa` / `noticias`.
 - Disparar `research-reviewer` passando `{ categorized, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). Aplica dois filtros em sequência:
-  1. **Datas**: verifica datas reais via fetch, corrige campos `date`, remove artigos fora da janela de 3 dias.
+  1. **Datas**: verifica datas reais via fetch, corrige campos `date`, remove artigos fora da janela de `window_days` dias.
   2. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
   Retorna `categorized` limpo + `stats` com contagens de removidos/corrigidos. Usar esse `categorized` daqui em diante. Logar `stats.removals[]` em caso de remoções para rastreabilidade.
-- Disparar `scorer` (Sonnet) passando `categorized` (saída do date-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+- Disparar `scorer` (Sonnet) passando `categorized` (saída do research-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
 - **Strip do campo `verifier`**: antes de salvar, remover o campo `verifier` de cada artigo (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON).
 - Estrutura final de `01-categorized.json`:
