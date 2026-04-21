@@ -1,7 +1,7 @@
 ---
 name: source-researcher
 description: Pesquisa uma fonte cadastrada (com `site:` query) e retorna artigos candidatos em JSON. Invocado em paralelo — um por fonte ativa. Respeita timeout de 180s por auto-disciplina.
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 tools: WebSearch, WebFetch, Bash
 ---
 

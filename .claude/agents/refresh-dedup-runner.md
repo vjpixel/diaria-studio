@@ -1,7 +1,7 @@
 ---
 name: refresh-dedup-runner
 description: Regenera `context/past-editions.md` a partir do Beehiiv MCP. Detecta automaticamente bootstrap (primeira execução) vs refresh incremental (só traz edições mais novas que a última já na base).
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 tools: Read, Write, Bash, mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_publications, mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts, mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content
 ---
 

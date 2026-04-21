@@ -45,7 +45,7 @@ Outputs ficam em `data/editions/{YYMMDD}/` (formato `YYMMDD` = AAMMDD; ex: ediç
 
 | # | Stage | Subagentes | Output |
 |---|---|---|---|
-| 1 | Research | orchestrator → N× `source-researcher` + M× `discovery-searcher` (paralelo) → `link-verifier` (chunks) → `scripts/dedup.ts` → `categorizer` | `01-categorized.json` → `01-approved.json` |
+| 1 | Research | orchestrator → N× `source-researcher` + M× `discovery-searcher` (paralelo) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` (datas + temas) → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.json` + `01-categorized.md` → `01-approved.json` (re-renderiza MD após edits) |
 | 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`) | `02-reviewed.md` |
 | 3 | Social | 2× social writers paralelos (LinkedIn, Facebook) + 6× Clarice | `03-social.md` + `03-{plataforma}-d{N}.md` |
 | 4 | É AI? | `eai-composer` — Wikimedia POTD + texto criativo | `04-eai.md` + `04-eai.jpg` |
@@ -53,7 +53,7 @@ Outputs ficam em `data/editions/{YYMMDD}/` (formato `YYMMDD` = AAMMDD; ex: ediç
 | 6 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) | `06-published.json` |
 | 7 | Publish social | `publish-social` — Claude in Chrome → LinkedIn × 3 + Facebook × 3 (rascunho ou agendado) | `07-social-published.json` |
 
-**Sync com Google Drive (entre stages):** **antes de cada gate** (stages 1–5), o agente Haiku `drive-syncer` sobe os outputs do stage para `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada stage** que consome inputs que podem ter sido editados no Drive (3, 5, 6, 7), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (API não expõe delete/overwrite; versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored).
+**Sync com Google Drive (entre stages):** **antes de cada gate** (stages 1–5), `scripts/drive-sync.ts` sobe os outputs do stage para `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada stage** que consome inputs que podem ter sido editados no Drive (3, 5, 6, 7), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 
 ---
 
@@ -76,7 +76,7 @@ Todo arquivo em `context/` entra no prompt cache. Mantenha esses arquivos **cura
 Model mix (definido no frontmatter de cada agente):
 - **Opus 4.7** — `orchestrator`
 - **Sonnet 4.6** — `scorer`, `writer`, `publish-newsletter`, `publish-social`
-- **Haiku 4.5** — todos os outros (`source-researcher`, `discovery-searcher`, `link-verifier`, `categorizer`, `social-*`, `eai-composer`, `drive-syncer`). Dedup, Clarice e geração de imagem foram migrados para scripts TS — não são mais agentes LLM.
+- **Haiku 4.5** — `source-researcher`, `discovery-searcher`, `social-*`, `eai-composer`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync e inbox-drain foram migrados para scripts TS — não são mais agentes LLM.
 
 ---
 

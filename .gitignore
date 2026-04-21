@@ -10,6 +10,7 @@ data/editions/**
 !data/editions/*/01-approved.json
 data/*-raw.json
 data/drive-cache.json
+data/.credentials.json
 data/run-log.jsonl
 data/inbox-drainer-result.json
 data/push-*-plan.json
