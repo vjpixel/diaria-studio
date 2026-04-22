@@ -32,7 +32,7 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 ### 4. Preencher cabeçalho
 - **Title**: primeiro título da edição (linha de assunto da newsletter — extrair do `02-reviewed.md`).
 - **Subtitle** (se o template tiver): subtítulo curto da edição (≤80 chars).
-- **Cover image** (Thumbnail): upload de `05-d1.jpg` (a imagem do destaque 1 é a capa).
+- **Cover image** (Thumbnail): upload de `05-d1-2x1.jpg` (1600×800 — a imagem wide do destaque 1 é a capa).
 
 ### 5. Preencher corpo
 
@@ -40,7 +40,7 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 
 - **Destaques (D1, D2, D3):** cada destaque vai em seu **próprio bloco** do template (não juntar dois destaques no mesmo container):
   - Colar o texto do destaque (extraído de `02-reviewed.md`).
-  - Inserir imagem inline correspondente (`05-d{N}.jpg`).
+  - Inserir imagem inline correspondente: D1 usa `05-d1-2x1.jpg` (wide), D2 usa `05-d2.jpg`, D3 usa `05-d3.jpg`.
   - **Preservar a formatação do template.** Em particular, o label de categoria (ex: `LANÇAMENTO`, `PESQUISA`) que aparece no topo de cada box deve **manter a cor original do template** (normalmente verde). Ao colar texto:
     - Se o template tem um campo/placeholder para o label de categoria, preencher apenas o texto — não alterar estilo/cor.
     - Se colar sobre um placeholder apaga a formatação, usar **undo** ou re-aplicar a cor manualmente (selecionar o label → trocar cor para a original do template).

@@ -33,8 +33,8 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - Se `07-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 7 completo. Pipeline finalizado.
   - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar 7a (script Facebook) e 7b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados.
   - Se `06-published.json` existe (mas não `07-social-published.json`) → pular para Stage 7.
-  - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem (mas não `06-published.json`) → pular para Stage 6.
-  - Se `03-social.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
+  - Se `05-d1-2x1.jpg` + `05-d1-1x1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem (mas não `06-published.json`) → pular para Stage 6.
+  - Se `03-social.md` existe (mas não `05-d1-2x1.jpg`) → pular para Stage 5.
   - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
   - Se `01-approved.json` existe (mas não `02-reviewed.md`) → pular para Stage 2.
   - Se `01-categorized.json` existe mas não `01-approved.json` → Stage 1 foi interrompido no gate humano; reapresentar o gate.
@@ -287,8 +287,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 images started'`.
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 02-reviewed.md")` — prompts de imagem derivam dos destaques, então edições do editor em `02-reviewed.md` precisam chegar aqui.
-- Verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI (ver `docs/comfyui-setup.md`).
-- **Gerar imagens via script (sem Task).** Para cada destaque d1, d2, d3 sequencialmente (ComfyUI processa uma por vez):
+- Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
+- **Gerar imagens via script (sem Task).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default):
   ```bash
   npx tsx scripts/image-generate.ts \
     --editorial data/editions/{YYMMDD}/02-d{N}-prompt.md \
@@ -296,8 +296,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
     --destaque d{N}
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 05-d1.jpg,05-d2.jpg,05-d3.jpg")`. Anotar em `sync_results[5]`; ignorar falhas.
-- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 05-d1-2x1.jpg,05-d1-1x1.jpg,05-d2.jpg,05-d3.jpg")`. Anotar em `sync_results[5]`; ignorar falhas.
+- **GATE HUMANO:** mostrar os 4 paths gerados (`05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar cost.md.** Append linha na tabela de Stage 5, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
     | 5 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
@@ -307,8 +307,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 ### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish newsletter started'`.
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 6 --files 02-reviewed.md,04-eai.md,04-eai-real.jpg,04-eai-ia.jpg,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
-- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 6 --files 02-reviewed.md,04-eai.md,04-eai-real.jpg,04-eai-ia.jpg,05-d1-2x1.jpg,05-d1-1x1.jpg,05-d2.jpg,05-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
+- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
 - **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
   1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
@@ -371,7 +371,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
     ```
     📎 Suba as imagens manualmente no rascunho antes de publicar:
-       • Cover + D1 → 05-d1.jpg
+       • Cover/Thumbnail → 05-d1-2x1.jpg (1600×800)
+       • Inline D1  → 05-d1-2x1.jpg
        • Inline D2  → 05-d2.jpg
        • Inline D3  → 05-d3.jpg
        • É AI? (A)  → 04-eai-real.jpg
@@ -387,8 +388,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 ### 7. Stage 7 — Publicar social (LinkedIn + Facebook)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 7 --agent orchestrator --level info --message 'stage 7 publish social started'`.
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 7 --files 03-social.md,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
-- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 7 --files 03-social.md,05-d1-1x1.jpg,05-d2.jpg,05-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
+- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
 
 #### 7a. Facebook — via Graph API (script, ~30s)
 

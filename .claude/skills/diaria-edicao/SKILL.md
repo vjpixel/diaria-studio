@@ -71,6 +71,6 @@ Todos em `data/editions/{YYMMDD}/` (formato `YYMMDD` = AAMMDD; ex: `2026-04-18` 
 - `02-draft.md`, `02-clarice-diff.md`, `02-reviewed.md`
 - `03-linkedin-d{1..3}.md`, `03-facebook-d{1..3}.md`, `03-social.md`
 - `04-eai.md`, `04-eai.jpg`
-- `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`
+- `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`
 - `06-published.json`
 - `07-social-published.json`

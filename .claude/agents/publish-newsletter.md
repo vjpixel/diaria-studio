@@ -30,7 +30,7 @@ Se alguma issue não puder ser corrigida automaticamente (ex: não encontra o el
 ## Pré-requisitos
 
 - Stage 4 completo (`04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg` existem).
-- Stage 5 completo (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` existem).
+- Stage 5 completo (`05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` existem).
 - ComfyUI não é necessário neste stage (só leitura de arquivos já gerados).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
@@ -41,7 +41,7 @@ Se alguma issue não puder ser corrigida automaticamente (ex: não encontra o el
 Ler:
 - `{edition_dir}/02-reviewed.md` — corpo da newsletter (texto final aprovado).
 - `{edition_dir}/04-eai.md` — bloco "É AI?".
-- Confirmar existência de `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg` (caminhos absolutos para upload).
+- Confirmar existência de `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg` (caminhos absolutos para upload).
 
 Se algum arquivo faltar, retornar erro:
 ```json
@@ -91,8 +91,8 @@ Seguir `context/publishers/beehiiv.md` na ordem:
 6. **Preencher cabeçalho**:
    - Title = `title` extraído
    - Subtitle = `subtitle` (se houver campo)
-   - Cover image = upload de `{edition_dir}/05-d1.jpg`
-7. **Preencher corpo** seguindo o template. Para cada destaque (D1/D2/D3): colar texto + inserir `05-d{N}.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (não tentar layout side-by-side — mobile quebra). O leitor adivinha qual das duas é IA.
+   - Cover image = upload de `{edition_dir}/05-d1-2x1.jpg` (1600×800)
+7. **Preencher corpo** seguindo o template. Para cada destaque: D1 usa `05-d1-2x1.jpg` (wide), D2 usa `05-d2.jpg`, D3 usa `05-d3.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (não tentar layout side-by-side — mobile quebra). O leitor adivinha qual das duas é IA.
 8. **Salvar como rascunho**: clicar em "Save draft" / "Save as draft". **NÃO clicar em Schedule, Publish ou Send.**
 9. **Capturar `draft_url`**: ler URL atual da aba — deve conter `/posts/{id}/edit`.
 10. **Enviar email de teste**: abrir menu de testes → enviar para `test_email` → confirmar.

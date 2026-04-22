@@ -10,11 +10,12 @@
  *     --out-dir data/editions/260418/ \
  *     --destaque d1
  *
- * Saída: data/editions/260418/05-d1.jpg (via gemini-image.js)
- *        Imprime o caminho do JPG em stdout.
+ * Saída: D1 → 05-d1-2x1.jpg (1600×800) + 05-d1-1x1.jpg (800×800 center crop)
+ *        D2/D3 → 05-d{N}.jpg (1024×1024 native Gemini)
+ *        Imprime o caminho do JPG principal em stdout.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,13 +74,13 @@ function main() {
   const positivePrompt = buildPositivePrompt(editorialText);
 
   // Montar SD prompt JSON.
-  // D1 é gerada em 2000×1000 (2:1) e depois cropada para 1000×1000 (cover da newsletter).
-  // D2/D3 são geradas sem dimensões forçadas (Gemini escolhe).
+  // D1 é gerada em 1600×800 (2:1). Depois gera crop 1:1 (800×800).
+  // D2/D3 são geradas em 1024×1024 (Gemini default).
   const isD1 = destaque === "d1";
   const sdPrompt: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
-    ...(isD1 ? { final_width: 2000, final_height: 1000 } : {}),
+    ...(isD1 ? { final_width: 1600, final_height: 800 } : {}),
   };
 
   // Gravar JSON de prompt
@@ -111,16 +112,24 @@ function main() {
     process.exit(code);
   }
 
-  // D1: crop centro de 2000×1000 → 1000×1000 (cover da newsletter)
+  // D1: salvar 1600×800 como 05-d1-2x1.jpg, crop centro para 800×800 como 05-d1-1x1.jpg
   if (isD1) {
+    const wideJpgPath = `${normalizedOutDir}05-${destaque}-2x1.jpg`;
+    const squareJpgPath = `${normalizedOutDir}05-${destaque}-1x1.jpg`;
     const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
+
+    // Renomear o output original (1600×800) para -2x1
+    renameSync(outJpgPath, wideJpgPath);
+    console.error(`D1 wide: ${wideJpgPath} (1600×800)`);
+
+    // Crop centro para 1:1 (800×800)
     try {
       execFileSync(
         "npx",
-        ["tsx", cropScript, outJpgPath, outJpgPath, "--width", "1000", "--height", "1000"],
+        ["tsx", cropScript, wideJpgPath, squareJpgPath, "--width", "800", "--height", "800"],
         { stdio: "inherit", cwd: ROOT, shell: true }
       );
-      console.error(`D1 cropada para 1000×1000`);
+      console.error(`D1 square: ${squareJpgPath} (800×800)`);
     } catch (e: unknown) {
       const code = (e as { status?: number }).status ?? 1;
       console.error(`crop-resize falhou com código ${code}`);
@@ -128,8 +137,15 @@ function main() {
     }
   }
 
-  // Sucesso — imprimir caminho do JPG em stdout (compatível com orchestrator)
-  process.stdout.write(outJpgPath + "\n");
+  // Sucesso — imprimir caminhos dos JPGs em stdout (compatível com orchestrator)
+  if (isD1) {
+    const wideJpgPath = `${normalizedOutDir}05-${destaque}-2x1.jpg`;
+    const squareJpgPath = `${normalizedOutDir}05-${destaque}-1x1.jpg`;
+    process.stdout.write(wideJpgPath + "\n");
+    process.stdout.write(squareJpgPath + "\n");
+  } else {
+    process.stdout.write(outJpgPath + "\n");
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

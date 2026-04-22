@@ -229,17 +229,18 @@ async function main() {
       continue;
     }
 
-    // Check image
-    const imagePath = resolve(editionDir, `05-${d}.jpg`);
+    // Check image — D1 uses square variant (1x1), D2/D3 use standard
+    const imageFile = d === "d1" ? `05-${d}-1x1.jpg` : `05-${d}.jpg`;
+    const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
-      console.error(`ERROR: Image 05-${d}.jpg not found`);
+      console.error(`ERROR: Image ${imageFile} not found`);
       const entry: PostEntry = {
         platform: "facebook",
         destaque: d,
         url: null,
         status: "failed",
         scheduled_at: null,
-        reason: `05-${d}.jpg not found`,
+        reason: `${imageFile} not found`,
       };
       published.posts.push(entry);
       savePublished(publishedPath, published);
