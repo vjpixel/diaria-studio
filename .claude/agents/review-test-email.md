@@ -55,6 +55,13 @@ Verificar cada item e registrar como `ok` ou `issue`:
 6. **Estrutura geral.** O email deve ter os 3 destaques, secao E AI?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
 
+7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
+   - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
+   - Para cada URL esperada (destaques + itens de Lancamentos/Pesquisas/Outras), verificar se aparece no email (match exato ou match apos resolver redirects do Beehiiv tracking — o Beehiiv pode encapsular links em `https://link.diaria.beehiiv.com/...`; nesse caso, verificar se o texto do link ou o texto ao redor corresponde ao item correto).
+   - Se uma URL esperada nao aparece no email: `"link_missing: URL '{url}' esperada no destaque/secao '{contexto}' nao encontrada no email"`
+   - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
+   - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
+
 ### 4. Fechar aba e retornar
 
 Fechar a aba do Gmail (`mcp__Claude_in_Chrome__tabs_close_mcp`).
