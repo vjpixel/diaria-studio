@@ -46,8 +46,8 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 6 completo. Pipeline finalizado.
   - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 6 parcial; re-disparar 6a (script Facebook) e 6b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados.
   - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para Stage 6.
+  - Se `05-published.json` existe mas `template_used` !== template esperado → Stage 5 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Stage 5 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
   - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Stage 5 incompleto: pular publish-newsletter (rascunho já existe), rodar apenas o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true` e prosseguir.
-  - Se `05-published.json` existe mas `template_used` !== template esperado → Stage 5 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Stage 5 do zero.
   - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Stage 5.
   - Se `03-social.md` existe (mas não `04-d1-2x1.jpg`) → pular para Stage 4.
   - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
@@ -344,9 +344,10 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - Ler `05-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`, `template_used`.
 - **Validar template (obrigatório).** Ler `publishing.newsletter.template` de `platform.config.json` (ex: `"Default"`). Se `template_used` !== template esperado:
   1. Logar erro: `"Template incorreto: esperado '{expected}', usado '{template_used}'. Re-disparando publish-newsletter."`.
-  2. Re-disparar `publish-newsletter` com os mesmos parâmetros (até 3 tentativas).
-  3. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
-  4. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É AI? ausente, boxes não separados, etc.).
+  2. Instruir o usuário a **deletar o rascunho incorreto** no Beehiiv antes do retry (rascunhos órfãos poluem a lista de posts): `"⚠️ Delete o rascunho '{title}' em {draft_url} antes do retry."`.
+  3. Re-disparar `publish-newsletter` com os mesmos parâmetros (até 3 tentativas).
+  4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
+  5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É AI? ausente, boxes não separados, etc.).
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral do Stage 5. O Stage 5 só está completo quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
@@ -408,7 +409,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - Opções: aprovar (segue para Stage 6) / regerar (re-disparar `publish-newsletter`).
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
     ```
-    | 5 | {stage_start} | {now} | publish_newsletter:1, review_test_email:{review_attempts} | 0 | 1+{review_attempts} |
+    | 5 | {stage_start} | {now} | publish_newsletter:1, review_test_email:{review_attempts} | 0 | {1 + review_attempts} |
     ```
 
 ### 6. Stage 6 — Publicar social (LinkedIn + Facebook)
