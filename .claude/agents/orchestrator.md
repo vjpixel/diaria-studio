@@ -334,7 +334,14 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 6 --files 02-reviewed.md,04-eai.md,04-eai-real.jpg,04-eai-ia.jpg,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
 - Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
-- Se falhar com erro de login, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
+- Se retornar `error: "chrome_disconnected"`, logar erro e pausar com a mensagem:
+  ```
+  🔌 Claude in Chrome desconectou durante o Stage 6 (passo: {last_step}).
+     Reconecte a extensão no Chrome e responda "retry" para re-disparar.
+     ⚠️  Se o rascunho foi criado parcialmente no Beehiiv, delete-o manualmente antes do retry.
+  ```
+  Quando o usuário responder "retry", re-disparar `publish-newsletter` normalmente.
+- Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
 - Ler `06-published.json` retornado.
 - **GATE HUMANO:** mostrar:
   - URL do rascunho Beehiiv (`draft_url`)
@@ -369,7 +376,13 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar — não disparar `publish-social` incompleto.
 - Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true` (resume-aware).
 - O agente itera 6 posts (linkedin × d1/d2/d3 + facebook × d1/d2/d3), tentando rascunho primeiro e agendando como fallback. Append imediato em `07-social-published.json` após cada post — re-rodar é seguro.
-- Se algum post retornar `status: "failed"` (ex: login expirado em uma plataforma), logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
+- Se retornar `error: "chrome_disconnected"`, logar warn e pausar com a mensagem:
+  ```
+  🔌 Claude in Chrome desconectou durante o Stage 7 (último post: {last_post.platform} {last_post.destaque}).
+     Reconecte a extensão no Chrome e responda "retry" — o agente é resume-aware e pulará os posts já publicados.
+  ```
+  Quando o usuário responder "retry", re-disparar `publish-social` com `skip_existing = true`.
+- Se algum post retornar `status: "failed"` com `reason` de login expirado, logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
 - Ler `07-social-published.json` final.
 - **GATE HUMANO:** mostrar tabela com 6 linhas:
   ```

@@ -114,6 +114,11 @@ Seguir `context/publishers/beehiiv.md` na ordem:
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
 - **Template é obrigatório.** Se o nome não bater, abortar — não usar fallback.
 - **Login expirado = abortar.** Não tente re-logar; é responsabilidade do editor.
+- **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro indicando desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
+  ```json
+  { "error": "chrome_disconnected", "last_step": "<nome do passo onde falhou>", "details": "<mensagem de erro bruta>" }
+  ```
+  Não tente continuar nem reiniciar o fluxo — o orchestrator detecta esse código, orienta o usuário a reconectar a extensão e re-dispara o agente.
 - **Upload de imagem**: aguardar conclusão antes do próximo bloco (sob risco de perder o upload).
 - **Sem JS arbitrário.** Use `form_input` e `find` semanticamente — `javascript_tool` está em `ask` por segurança.
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.
