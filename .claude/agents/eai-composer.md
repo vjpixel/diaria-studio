@@ -10,7 +10,6 @@ Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeit
 ## Input
 
 - `edition_date`: `YYYY-MM-DD` (ex: `2026-04-18`)
-- `newsletter_path`: ex: `data/editions/260418/02-reviewed.md`
 - `out_dir`: ex: `data/editions/260418/`
 
 ## Processo
@@ -99,11 +98,7 @@ node scripts/gemini-image.js \
 
 Se falhar com exit code != 0, retornar erro — não prosseguir sem a imagem IA.
 
-### 4. Ler contexto da newsletter
-
-Ler `newsletter_path`. Extrair os títulos escolhidos dos 3 destaques (linhas que contenham `DESTAQUE 1`, `DESTAQUE 2`, `DESTAQUE 3`).
-
-### 5. Escrever `{out_dir}/04-eai.md`
+### 4. Escrever `{out_dir}/04-eai.md`
 
 O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É AI? é só as duas imagens + poll + crédito.
 
