@@ -19,8 +19,8 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { gFetch } from "./google-auth.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -198,6 +198,40 @@ function saveCursor(iso: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Run log (fallback para stderr quando a pipeline swallow o exit code)
+// ---------------------------------------------------------------------------
+
+function getRunLogPath(): string {
+  const cfgPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(cfgPath)) return resolve(ROOT, "data/run-log.jsonl");
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    return resolve(ROOT, cfg?.logging?.path ?? "data/run-log.jsonl");
+  } catch {
+    return resolve(ROOT, "data/run-log.jsonl");
+  }
+}
+
+function logDrainError(err: Error): void {
+  try {
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: 1,
+      agent: "inbox-drainer",
+      level: "error",
+      message: err.message,
+      details: { stack: err.stack ?? null },
+    };
+    const logPath = getRunLogPath();
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // swallow — logging must never mask the original error
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Inbox.md append
 // ---------------------------------------------------------------------------
 
@@ -371,6 +405,7 @@ main().catch((err) => {
     reason: "gmail_mcp_error",
   };
   console.error("inbox-drain error:", err.message);
+  logDrainError(err);
   // Output de fallback para o orchestrator não quebrar
   console.log(JSON.stringify({ ...result, error: err.message }, null, 2));
   process.exit(0); // exit 0 para não abortar a pipeline
