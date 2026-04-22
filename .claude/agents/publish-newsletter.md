@@ -16,37 +16,44 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 
 ## Modos de operação
 
-**Modo `create`** (default): cria o rascunho do zero, preenche, salva e envia teste. É o fluxo completo descrito abaixo.
+**Modo `create`** (default): cria o rascunho do zero usando HTML pré-renderizado, salva e envia teste. Fluxo completo descrito abaixo.
 
-**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Abre o rascunho existente, corrige cada issue, salva e reenvia o email de teste. Pular etapas 1–5 (seleção de template, criação, preenchimento inicial) e ir direto para:
+**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Abre o rascunho existente, corrige cada issue, salva e reenvia o email de teste. Pular etapas 1–5 e ir direto para:
 1. Navegar para `draft_url`.
-2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv (ex: re-aplicar cor verde no label, separar boxes fundidos, deletar bloco duplicado).
+2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv.
 3. Salvar o rascunho.
-4. Reenviar email de teste (mesmo fluxo do passo 10 no modo create).
+4. Reenviar email de teste (mesmo fluxo do passo 7 no modo create).
 5. Gravar `06-published.json` atualizado (incrementar `fix_attempts`).
 
-Se alguma issue não puder ser corrigida automaticamente (ex: não encontra o elemento no editor), registrar em `unfixable_issues[]` no output — o orchestrator reporta ao editor.
+Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixable_issues[]` no output.
 
 ## Pré-requisitos
 
 - Stage 4 completo (`04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg` existem).
 - Stage 5 completo (`05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` existem).
-- ComfyUI não é necessário neste stage (só leitura de arquivos já gerados).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
-## Processo
+## Processo (modo create)
 
-### 1. Ler inputs da edição
+### 1. Pré-render — rodar ANTES de abrir o browser
 
-Ler:
-- `{edition_dir}/02-reviewed.md` — corpo da newsletter (texto final aprovado).
-- `{edition_dir}/04-eai.md` — bloco "É AI?".
-- Confirmar existência de `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg` (caminhos absolutos para upload).
+**Este passo é crítico para performance.** Extrair todo o conteúdo e gerar HTML ANTES de iniciar qualquer interação com o browser.
 
-Se algum arquivo faltar, retornar erro:
-```json
-{ "error": "Arquivo {path} não encontrado. Stage 5 (imagens) precisa estar completo antes do Stage 6." }
+```bash
+# Extrair título, subtítulo, destaques (JSON)
+npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 ```
+
+Se o script retornar exit code != 0, abortar — formato do `02-reviewed.md` precisa ser corrigido manualmente.
+
+```bash
+# Gerar HTML pré-renderizado do corpo da newsletter
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out {edition_dir}/06-newsletter-body.html
+```
+
+Gravar o JSON extraído em variável para uso nos passos seguintes (`title`, `subtitle`).
+
+Confirmar existência de todas as imagens: `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg`.
 
 ### 2. Ler configuração
 
@@ -54,55 +61,86 @@ Ler `platform.config.json` → bloco `publishing.newsletter`:
 - `template` (ex: `"Default"`)
 - `test_email` (ex: `"vjpixel@gmail.com"`)
 
-Ler `context/publishers/beehiiv.md` (playbook semântico — você vai segui-lo passo a passo).
+Ler `context/publishers/beehiiv.md` (playbook semântico).
 
-### 3. Extrair título, subtítulo e destaques
+### 3. Abrir Beehiiv e criar post
 
-Rodar o script de parsing determinístico — **sem LLM**, zero ambiguidade:
-
-```bash
-npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
-```
-
-Output é JSON com `{title, subtitle, destaques: [d1, d2, d3]}` onde cada destaque tem `{n, category, title, body, why, url}`.
-
-Regras aplicadas pelo script:
-- **`title`**: título do D1 (primeiro destaque).
-- **`subtitle`**: `"{D2.title} | {D3.title}"` se couber em 80 chars; caso contrário só `D2.title`; se D2 sozinho passar de 80, truncado em 77 chars + `"..."`.
-- **`destaques`**: separados por `---` no markdown; header regex é `^DESTAQUE (1|2|3) \| (CATEGORIA)$`; corpo vai até `"Por que isso importa:"`; URL é a última linha começando com `http`.
-
-Se o script retornar exit code != 0, abortar com o erro no stderr — formato do `02-reviewed.md` precisa ser corrigido manualmente antes de re-rodar.
-
-### 4. Operar Beehiiv via Claude in Chrome
-
-Seguir `context/publishers/beehiiv.md` na ordem:
-
-1. **Navegar** para `https://app.beehiiv.com/` (`mcp__Claude_in_Chrome__navigate`).
-2. **Detectar login**: ler página (`get_page_text`). Se aparecer formulário de login ou "Sign in", abortar com:
+1. **Navegar** para `https://app.beehiiv.com/`.
+2. **Detectar login**: ler página. Se aparecer formulário de login ou "Sign in", abortar com:
    ```json
    { "error": "beehiiv_login_expired", "details": "Formulário de login detectado em app.beehiiv.com" }
    ```
 3. **Selecionar workspace Diar.ia** se houver seletor.
 4. **Criar new post**: clicar em **Posts** → **New post**.
-5. **Selecionar template**: encontrar o template com nome exato igual a `template` (ex: `"Default"`). Se não encontrar, abortar com:
-   ```json
-   { "error": "Template '{template}' não encontrado no Beehiiv. Verifique platform.config.json e a conta." }
-   ```
-6. **Preencher cabeçalho**:
-   - Title = `title` extraído
-   - Subtitle = `subtitle` (se houver campo)
-   - Cover image = upload de `{edition_dir}/05-d1-2x1.jpg` (1600×800)
-7. **Preencher corpo** seguindo o template. Para cada destaque: D1 usa `05-d1-2x1.jpg` (wide), D2 usa `05-d2.jpg`, D3 usa `05-d3.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (não tentar layout side-by-side — mobile quebra). O leitor adivinha qual das duas é IA.
-8. **Salvar como rascunho**: clicar em "Save draft" / "Save as draft". **NÃO clicar em Schedule, Publish ou Send.**
-9. **Capturar `draft_url`**: ler URL atual da aba — deve conter `/posts/{id}/edit`.
-10. **Enviar email de teste**: abrir menu de testes → enviar para `test_email` → confirmar.
-11. Capturar timestamp ISO atual:
-    ```bash
-    node -e "process.stdout.write(new Date().toISOString())"
-    ```
-    como `test_email_sent_at`.
+5. **Selecionar template**: encontrar template com nome exato `template`. Se não encontrar, abortar.
 
-### 5. Gravar `06-published.json`
+### 4. Preencher cabeçalho
+
+- **Title** = `title` (do JSON extraído no passo 1)
+- **Subtitle** = `subtitle` (se houver campo)
+- **Cover image** = upload de `{edition_dir}/05-d1-2x1.jpg` (1600×800)
+
+### 5. Preencher corpo via HTML
+
+**Esta é a otimização principal.** Em vez de preencher bloco por bloco (20+ interações), usar HTML pré-renderizado.
+
+1. **Limpar blocos do template**: selecionar todo o conteúdo do corpo do template e deletar. O template pode ter placeholder blocks — remover todos.
+2. **Adicionar bloco HTML**: usar o menu de blocos ("+") → procurar "HTML" ou "Custom HTML" → inserir bloco.
+3. **Colar HTML**: ler `{edition_dir}/06-newsletter-body.html` e colar no bloco HTML.
+
+**Fallback — se Custom HTML block não estiver disponível:**
+
+Se o editor não oferecer bloco HTML (feature pode variar por plano), usar o fluxo block-by-block descrito em `context/publishers/beehiiv.md`. Neste caso, usar o JSON do passo 1 para preencher cada bloco do template com o conteúdo exato — não ler `02-reviewed.md` de novo; usar os dados já parseados.
+
+### 5b. Upload de imagens inline (se usando HTML block)
+
+O HTML pré-renderizado tem placeholders `{{IMG:filename}}`. As imagens precisam ser upadas para o CDN do Beehiiv para aparecerem no email.
+
+**Estratégia**: após colar o HTML no bloco, as imagens aparecerão como broken (placeholders). Para cada imagem:
+
+1. **Não é possível injetar URLs diretamente no HTML block** — o Beehiiv renderiza o HTML as-is mas não hospeda as imagens.
+
+**Alternativa prática**: usar o fallback block-by-block approach com o JSON pré-extraído. As imagens são uploadadas como image blocks normais do Beehiiv, que automaticamente vão para o CDN.
+
+### 5c. Abordagem recomendada — block-by-block acelerado
+
+Usar o JSON pré-extraído (passo 1) para preencher o template. A diferença vs. o fluxo antigo:
+- **Zero parsing durante browser session** — todo conteúdo já está em variáveis
+- **Sem leitura de `02-reviewed.md`** — usar campos do JSON diretamente
+- **Sequência mecânica fixa** — não precisar "decidir" o que fazer; seguir a lista abaixo
+
+Para cada destaque (d1, d2, d3), preencher o bloco correspondente do template:
+1. **Label de categoria**: emoji + nome da categoria (ex: `🧮 REGULAÇÃO`)
+2. **Título**: título do destaque, linkado à URL
+3. **Imagem**: upload do arquivo correspondente (D1=`05-d1-2x1.jpg`, D2=`05-d2.jpg`, D3=`05-d3.jpg`)
+4. **Corpo**: parágrafos do body
+5. **Por que isso importa**: heading + texto do why
+
+Para **É AI?**:
+1. Label: `🖼️ É IA?`
+2. Imagem real: upload `04-eai-real.jpg`
+3. Imagem IA: upload `04-eai-ia.jpg`
+4. Crédito: texto do `eai.credit` (do JSON)
+
+Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
+1. Label: emoji + nome da seção
+2. Lista de itens: título linkado + descrição
+
+### 6. Salvar como rascunho
+
+- **NÃO clicar em Schedule, Publish, ou Send.**
+- Clicar em "Save draft" / "Save as draft".
+- Capturar `draft_url` da barra de endereço (deve conter `/posts/{id}/edit`).
+
+### 7. Enviar email de teste
+
+- Abrir menu de testes → enviar para `test_email` → confirmar.
+- Capturar timestamp:
+  ```bash
+  node -e "process.stdout.write(new Date().toISOString())"
+  ```
+
+### 8. Gravar `06-published.json`
 
 ```json
 {
@@ -128,13 +166,13 @@ Seguir `context/publishers/beehiiv.md` na ordem:
 ## Regras
 
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
-- **Template é obrigatório.** Se o nome não bater, abortar — não usar fallback.
-- **Login expirado = abortar.** Não tente re-logar; é responsabilidade do editor.
-- **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro indicando desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
+- **Pré-render ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
+- **Template é obrigatório.** Se o nome não bater, abortar.
+- **Login expirado = abortar.** Não tente re-logar.
+- **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
   ```json
   { "error": "chrome_disconnected", "last_step": "<nome do passo onde falhou>", "details": "<mensagem de erro bruta>" }
   ```
-  Não tente continuar nem reiniciar o fluxo — o orchestrator detecta esse código, orienta o usuário a reconectar a extensão e re-dispara o agente.
-- **Upload de imagem**: aguardar conclusão antes do próximo bloco (sob risco de perder o upload).
+- **Upload de imagem**: aguardar conclusão antes do próximo bloco.
 - **Sem JS arbitrário.** Use `form_input` e `find` semanticamente — `javascript_tool` está em `ask` por segurança.
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.

@@ -12,6 +12,20 @@ Roteiro semântico para o agente `publish-newsletter` operar o editor Beehiiv vi
 
 Criar um post na publicação Diar.ia, usando o template configurado em `platform.config.json` → `publishing.newsletter.template` (default: `"Default"`), preenchido com o conteúdo da edição, **salvo como rascunho** (sem agendar, sem publicar), e enviar um **email de teste** para `publishing.newsletter.test_email`.
 
+## Pré-render (ANTES do browser)
+
+Antes de abrir o Chrome, rodar os scripts de extração para ter todo o conteúdo pronto:
+
+```bash
+# Extrair destaques como JSON estruturado
+npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
+
+# Gerar HTML pré-renderizado (para referência / futuro HTML block)
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
+```
+
+O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `title`, `body`, `why`, `url`), `eai`, e `sections[]`. Use esses dados diretamente — **não ler `02-reviewed.md` durante a sessão do browser**.
+
 ## Fluxo
 
 ### 1. Abrir publicação
@@ -34,26 +48,30 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 - **Subtitle** (se o template tiver): subtítulo curto da edição (≤80 chars).
 - **Cover image** (Thumbnail): upload de `05-d1-2x1.jpg` (1600×800 — a imagem wide do destaque 1 é a capa).
 
-### 5. Preencher corpo
+### 5. Preencher corpo (block-by-block acelerado)
 
-**Regra fundamental: cada seção do template tem seu próprio bloco/container.** Nunca colar conteúdo de duas seções dentro do mesmo bloco — isso funde as boxes no email renderizado. Ao preencher, verificar que o cursor está dentro do bloco correto do template antes de colar.
+**Usar os dados do JSON pré-extraído** (passo "Pré-render"). Não ler `02-reviewed.md` durante o browser session — todo o conteúdo já está parseado e pronto.
 
-- **Destaques (D1, D2, D3):** cada destaque vai em seu **próprio bloco** do template (não juntar dois destaques no mesmo container):
-  - Colar o texto do destaque (extraído de `02-reviewed.md`).
-  - Inserir imagem inline correspondente: D1 usa `05-d1-2x1.jpg` (wide), D2 usa `05-d2.jpg`, D3 usa `05-d3.jpg`.
-  - **Preservar a formatação do template.** Em particular, o label de categoria (ex: `LANÇAMENTO`, `PESQUISA`) que aparece no topo de cada box deve **manter a cor original do template** (normalmente verde). Ao colar texto:
-    - Se o template tem um campo/placeholder para o label de categoria, preencher apenas o texto — não alterar estilo/cor.
-    - Se colar sobre um placeholder apaga a formatação, usar **undo** ou re-aplicar a cor manualmente (selecionar o label → trocar cor para a original do template).
-    - Na dúvida, comparar com a prévia do template original antes de preencher.
+**Regra fundamental: cada seção do template tem seu próprio bloco/container.** Nunca colar conteúdo de duas seções dentro do mesmo bloco.
 
-- **É AI?** — bloco **separado** dos destaques (deve ter seu próprio container no template):
-  - Colar texto de `04-eai.md` (só a linha de crédito — sem parágrafo editorial).
-  - Inserir `04-eai-real.jpg` e `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (real primeiro, IA depois). Sem layout side-by-side (mobile quebra).
-  - **Confirmar visualmente que o box de É AI? não está fundido com D2 ou D3** — se estiver, o conteúdo foi colado dentro do bloco errado; deletar e recolar no container correto.
+**Sequência mecânica para cada destaque (d1, d2, d3):**
+1. Encontrar o bloco correspondente no template
+2. Preencher label de categoria: `{emoji} {category}` (ex: `🧮 REGULAÇÃO`) — manter cor verde/teal do template
+3. Preencher título como texto linkado à URL do destaque
+4. Upload imagem: D1=`05-d1-2x1.jpg` (wide), D2=`05-d2.jpg`, D3=`05-d3.jpg`
+5. Colar `body` (parágrafos)
+6. Colar heading "Por que isso importa:" + `why`
 
-- **Lançamentos, Pesquisas, Outras Notícias:** cada seção vai em seu **próprio bloco** do template. Preencher com as seções correspondentes de `02-reviewed.md`.
-  - **Cada seção deve aparecer no máximo 1 vez.** Se o template tiver blocos duplicados (ex: dois containers "Outras Notícias"), usar apenas o primeiro e deletar o duplicado antes de preencher.
-  - Se `02-reviewed.md` não tiver conteúdo para uma seção (ex: nenhuma pesquisa), deletar o bloco inteiro do template (não deixar vazio).
+**É AI?** — bloco separado:
+1. Label: `🖼️ É IA?`
+2. Upload `04-eai-real.jpg` (primeiro) e `04-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
+3. Crédito: `eai.credit` do JSON
+
+**Seções (Pesquisas, Lançamentos, Outras Notícias):**
+1. Para cada seção no JSON `sections[]`, encontrar o bloco correspondente
+2. Preencher label: `{emoji} {name}`
+3. Para cada item: título linkado + descrição
+4. Se uma seção não existir no JSON (vazia), deletar o bloco do template
 
 ### 6. Salvar como rascunho
 - **NÃO clicar em Schedule, Publish, ou Send.**
