@@ -8,7 +8,8 @@
     "sync-sources": "tsx scripts/sync-sources.ts",
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
-    "verify-accessibility": "tsx scripts/verify-accessibility.ts"
+    "verify-accessibility": "tsx scripts/verify-accessibility.ts",
+    "test": "node --import tsx --test test/categorize.test.ts test/inbox-drain.test.ts"
   },
   "dependencies": {
     "papaparse": "^5.4.1",
