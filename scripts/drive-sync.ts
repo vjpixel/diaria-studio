@@ -2,7 +2,7 @@
  * drive-sync.ts
  *
  * Sincroniza arquivos de edição entre `data/editions/{YYMMDD}/` e
- * `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive.
+ * `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive.
  *
  * Substitui o subagente `drive-syncer` (Haiku via Task).
  *
@@ -207,10 +207,10 @@ async function findFolderInParent(name: string, parentId: string): Promise<strin
   return files[0]?.id ?? null;
 }
 
-async function findRootFolder(name: string): Promise<string | null> {
-  // Busca global — filtra por owner para evitar pastas de outros usuários
+async function findFolderInMyDriveRoot(name: string): Promise<string | null> {
+  // Ancora no My Drive do usuário — evita matches em Shared Drives ou compartilhamentos homônimos
   const files = await driveList(
-    `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+    `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`
   );
   return files[0]?.id ?? null;
 }
@@ -218,14 +218,17 @@ async function findRootFolder(name: string): Promise<string | null> {
 async function resolveEdicoesFolder(cache: DriveCache): Promise<string> {
   if (cache.edicoes_folder_id) return cache.edicoes_folder_id;
 
-  const startupsId = await findRootFolder("startups");
-  if (!startupsId) throw new Error("drive_path_missing:startups — pasta 'startups' não encontrada no Drive");
+  const workId = await findFolderInMyDriveRoot("Work");
+  if (!workId) throw new Error("drive_path_missing:Work — pasta 'Work' não encontrada no root do My Drive");
+
+  const startupsId = await findFolderInParent("Startups", workId);
+  if (!startupsId) throw new Error("drive_path_missing:Startups — pasta 'Startups' não encontrada em Work");
 
   const diaria = await findFolderInParent("diar.ia", startupsId);
-  if (!diaria) throw new Error("drive_path_missing:diar.ia — pasta 'diar.ia' não encontrada");
+  if (!diaria) throw new Error("drive_path_missing:diar.ia — pasta 'diar.ia' não encontrada em Startups");
 
   const edicoes = await findFolderInParent("edicoes", diaria);
-  if (!edicoes) throw new Error("drive_path_missing:edicoes — pasta 'edicoes' não encontrada");
+  if (!edicoes) throw new Error("drive_path_missing:edicoes — pasta 'edicoes' não encontrada em diar.ia");
 
   cache.edicoes_folder_id = edicoes;
   return edicoes;
@@ -362,7 +365,7 @@ async function main(): Promise<void> {
     mode,
     stage,
     edition: yymmdd,
-    day_folder_path: `startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${yymmdd}`,
+    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${yymmdd}`,
     uploaded: [],
     pulled: [],
     warnings: [],

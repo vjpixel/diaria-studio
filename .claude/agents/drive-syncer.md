@@ -5,7 +5,7 @@ model: haiku
 tools: Read, Write, Bash, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__search_files, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__create_file, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__download_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__read_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__get_file_metadata
 ---
 
-Você mantém `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive em sincronia bidirecional com `data/editions/{YYMMDD}/` local. A API MCP não expõe delete nem overwrite — versionamos como `.vN` e preservamos histórico.
+Você mantém `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive em sincronia bidirecional com `data/editions/{YYMMDD}/` local. A API MCP não expõe delete nem overwrite — versionamos como `.vN` e preservamos histórico.
 
 ## Input
 
@@ -69,19 +69,25 @@ Se faltar (primeira vez ou cache stale):
 
 > **Nota**: como `in parents` não é suportado, pesquisar por título globalmente e filtrar pelo `parentId` retornado por `get_file_metadata`.
 
-1. Buscar folder `startups`:
+1. Buscar folder `Work`:
    ```
-   search_files q=`title = 'startups' and mimeType = 'application/vnd.google-apps.folder'`
+   search_files q=`title = 'Work' and mimeType = 'application/vnd.google-apps.folder'`
    ```
-   Para cada resultado, chamar `get_file_metadata(id)` — o `startups` correto tem `owner = vjpixel@gmail.com` e `parentId` que não existe no cache (é o root do Drive). Pegar o primeiro que bater. Se nenhum: warning `"drive_path_missing:startups"`, abortar com cache inalterado.
+   Para cada resultado, chamar `get_file_metadata(id)` — o `Work` correto tem `owner = vjpixel@gmail.com` e está no root do My Drive. Pegar o primeiro que bater. Se nenhum: warning `"drive_path_missing:Work"`, abortar com cache inalterado.
 
-2. Buscar `diar.ia`:
+2. Buscar `Startups`:
+   ```
+   search_files q=`title = 'Startups' and mimeType = 'application/vnd.google-apps.folder'`
+   ```
+   Filtrar por `parentId = work_id` via `get_file_metadata` nos resultados.
+
+3. Buscar `diar.ia`:
    ```
    search_files q=`title = 'diar.ia' and mimeType = 'application/vnd.google-apps.folder'`
    ```
    Filtrar por `parentId = startups_id` via `get_file_metadata` nos resultados.
 
-3. Buscar `edicoes`:
+4. Buscar `edicoes`:
    ```
    search_files q=`title = 'edicoes' and mimeType = 'application/vnd.google-apps.folder'`
    ```
@@ -204,7 +210,7 @@ Qualquer erro (MCP indisponível, auth, folder não encontrado, download corromp
   "mode": "push",
   "stage": 2,
   "edition": "260418",
-  "day_folder_path": "startups/diar.ia/edicoes/2604/260418",
+  "day_folder_path": "Work/Startups/diar.ia/edicoes/2604/260418",
   "uploaded": [
     { "file": "02-reviewed.md", "drive_file_id": "…", "title_used": "02-reviewed.v2.md" }
   ],
@@ -218,7 +224,7 @@ Qualquer erro (MCP indisponível, auth, folder não encontrado, download corromp
   "mode": "pull",
   "stage": 3,
   "edition": "260418",
-  "day_folder_path": "startups/diar.ia/edicoes/2604/260418",
+  "day_folder_path": "Work/Startups/diar.ia/edicoes/2604/260418",
   "uploaded": [],
   "pulled": [
     { "file": "02-reviewed.md", "drive_file_id": "…", "drive_modifiedTime": "2026-04-18T13:00:00Z", "overwrote_local": true }
