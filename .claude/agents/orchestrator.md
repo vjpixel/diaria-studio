@@ -334,19 +334,20 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 6 --files 02-reviewed.md,04-eai.md,04-eai-real.jpg,04-eai-ia.jpg,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
 - Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
-- **Retry automático em desconexão do Chrome (até 5 tentativas).** Se retornar `error: "chrome_disconnected"`:
-  1. Logar warn: `"chrome_disconnected em Stage 6, tentativa {N}/5 — aguardando 30s antes de re-disparar"`.
-  2. Aguardar 30 segundos: `Bash("sleep 30")`.
-  3. Re-disparar `publish-newsletter` com os mesmos parâmetros.
-  4. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
-  5. **Após 5 falhas consecutivas**, logar erro e pausar com a mensagem:
+- **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
+  1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
+  2. Logar warn: `"chrome_disconnected em Stage 6, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+  3. Aguardar: `Bash("sleep {delay}")`.
+  4. Re-disparar `publish-newsletter` com os mesmos parâmetros.
+  5. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
+  6. **Após 10 falhas consecutivas** (~17h de espera acumulada), logar erro e pausar com a mensagem:
      ```
-     🔌 Claude in Chrome desconectou 5 vezes seguidas no Stage 6 (último passo: {last_step}).
+     🔌 Claude in Chrome desconectou 10 vezes seguidas no Stage 6 (último passo: {last_step}).
         Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
         ⚠️  Se o rascunho foi criado parcialmente no Beehiiv, delete-o manualmente antes do retry.
-        Responda "retry" para tentar mais 5 vezes, ou "skip" para pular o Stage 6.
+        Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 6.
      ```
-  - Contagem de tentativas reseta a cada resposta "retry" do usuário (nova rodada de 5).
+  - Contagem de tentativas reseta a cada resposta "retry" do usuário (nova rodada de 10).
   - **Nota:** entre tentativas, qualquer erro que **não** seja `chrome_disconnected` (ex: login expirado, erro de template) interrompe o loop e é tratado normalmente — não conta como tentativa.
 - Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
 - Ler `06-published.json` retornado.
@@ -383,16 +384,17 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar — não disparar `publish-social` incompleto.
 - Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true` (resume-aware).
 - O agente itera 6 posts (linkedin × d1/d2/d3 + facebook × d1/d2/d3), tentando rascunho primeiro e agendando como fallback. Append imediato em `07-social-published.json` após cada post — re-rodar é seguro.
-- **Retry automático em desconexão do Chrome (até 5 tentativas).** Se retornar `error: "chrome_disconnected"`:
-  1. Logar warn: `"chrome_disconnected em Stage 7, tentativa {N}/5 — aguardando 30s antes de re-disparar"`.
-  2. Aguardar 30 segundos: `Bash("sleep 30")`.
-  3. Re-disparar `publish-social` com `edition_dir` e `skip_existing = true` (resume-aware — posts já gravados são pulados).
-  4. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
-  5. **Após 5 falhas consecutivas**, logar erro e pausar com a mensagem:
+- **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
+  1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, ... 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
+  2. Logar warn: `"chrome_disconnected em Stage 7, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+  3. Aguardar: `Bash("sleep {delay}")`.
+  4. Re-disparar `publish-social` com `edition_dir` e `skip_existing = true` (resume-aware — posts já gravados são pulados).
+  5. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
+  6. **Após 10 falhas consecutivas** (~17h de espera acumulada), logar erro e pausar com a mensagem:
      ```
-     🔌 Claude in Chrome desconectou 5 vezes seguidas no Stage 7 (último post: {last_post.platform} {last_post.destaque}).
+     🔌 Claude in Chrome desconectou 10 vezes seguidas no Stage 7 (último post: {last_post.platform} {last_post.destaque}).
         Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
-        Responda "retry" para tentar mais 5 vezes, ou "skip" para pular o Stage 7.
+        Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 7.
      ```
   - Contagem de tentativas reseta a cada resposta "retry" do usuário.
   - Erros que não sejam `chrome_disconnected` interrompem o loop e são tratados normalmente.
