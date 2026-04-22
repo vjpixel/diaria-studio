@@ -169,7 +169,12 @@ Ao terminar todas as 6 iterações, retornar:
 
 - **Append imediato após cada post.** Nunca acumular 6 posts em memória; gravar a cada um.
 - **Resume-aware.** Posts já em `07-social-published.json` (com status válido) são pulados por padrão.
-- **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` no post e seguir para o próximo (a próxima plataforma pode estar logada).
+- **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` com `reason: "{platform}_login_expired"` no post e seguir para o próximo (a próxima plataforma pode estar logada).
+- **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `07-social-published.json` já está atualizado por append imediato) e retornar:
+  ```json
+  { "error": "chrome_disconnected", "last_post": { "platform": "...", "destaque": "..." }, "details": "<mensagem de erro bruta>" }
+  ```
+  O orchestrator detecta esse código, pausa, orienta o usuário a reconectar a extensão e re-dispara o agente com `skip_existing = true` — os posts já gravados são pulados automaticamente.
 - **Tentar rascunho primeiro.** Só agendar se o playbook indicar que rascunho não está disponível ou se a UI explicitamente não oferecer.
 - **Upload de imagem com retry.** Tentar 2x antes de marcar `status: "failed"`.
 - **Sem JS arbitrário.** `javascript_tool` está em `ask` por segurança — usar `form_input`/`find` semanticamente.
