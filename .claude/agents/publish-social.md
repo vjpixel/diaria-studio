@@ -11,6 +11,7 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 
 - `edition_dir`: ex: `data/editions/260418/`
 - `skip_existing`: opcional, default `true` (resume-aware — pula posts já em `07-social-published.json`)
+- `schedule_day_offset`: opcional — se presente, sobrescreve `day_offset` de `platform.config.json` para agendamento (usado por `/diaria-test` para agendar 10 dias à frente)
 
 ## Pré-requisitos
 
@@ -94,7 +95,7 @@ Para cada combinação:
        const sched=cfg.publishing.social.fallback_schedule['{platform}'];
        const tz=cfg.publishing.social.timezone;
        const time=sched['d{N}_time'];
-       const dayOffset=sched.day_offset;
+       const dayOffset=sched.day_offset || 0; // Se schedule_day_offset foi recebido no input, usar esse valor aqui em vez de sched.day_offset
        const [h,m]=time.split(':');
        // data alvo no fuso correto
        const target=new Date();

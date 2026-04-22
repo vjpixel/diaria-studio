@@ -11,6 +11,7 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 
 1. **Paralelismo agressivo.** Sempre que múltiplos subagentes podem rodar independentes (ex: 1 por fonte, 4 posts sociais), dispare todos com chamadas `Task` em paralelo — uma única mensagem com múltiplos tool uses.
 2. **Gate humano é inegociável.** Ao final de cada stage, escreva o output em `data/editions/{YYMMDD}/` e **pare**. Apresente um resumo claro ao usuário e peça aprovação antes de prosseguir.
+   - **Exceção: `test_mode = true`.** Se receber `test_mode = true` no prompt, **pular todos os gates humanos** — auto-aprovar imediatamente e prosseguir para o próximo stage sem aguardar input. Continuar logando e gravando outputs normalmente. Ao final de cada gate, emitir apenas `[TEST] Stage {N} auto-approved` no output (não apresentar o resumo completo ao usuário). Usar `01-categorized.json` diretamente como `01-approved.json` (copiar arquivo) no Stage 1 — sem edição humana.
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual. Para `past-editions.md` e `audience-profile.md`, a política é diferente — veja Stage 0.
 5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Drive em sincronia com `data/editions/{YYMMDD}/`:
@@ -27,6 +28,11 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 - Converter `YYYY-MM-DD` em diretório `data/editions/{YYMMDD}/`.
 - Criar o diretório se não existir.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator (`/diaria-edicao` ou `/diaria-1-pesquisa`) **já perguntou e confirmou** a janela de publicação aceita com o usuário antes de disparar. Você recebe `window_days` (inteiro ≥ 1) no prompt da Task. **Se não receber** (retrocompat ou invocação direta sem skill), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via `Bash("node -e \"const d=new Date('{edition_date}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))\"")`. Armazenar `window_days` como variável de sessão — usado em Stage 1 (pesquisa + dedup + research-reviewer).
+- **Receber `test_mode` (opcional, default `false`).** Se `true`:
+  - Auto-aprovar todos os gates (ver Princípio 2).
+  - **Desabilitar Drive sync** — pular todos os blocos de push/pull (não poluir Drive com dados de teste).
+  - No Stage 1, copiar `01-categorized.json` → `01-approved.json` diretamente (sem edição humana). Incluir todos os highlights do scorer.
+- **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais no Stage 7 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
 - **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. O pipeline principal é 1→2→3→5→6→7; o Stage 4 (É AI?) roda em paralelo e tem lógica de resume independente.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
@@ -395,16 +401,20 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 
 - Rodar em paralelo com 7b:
   ```bash
-  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{YYMMDD}/ --skip-existing
+  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{YYMMDD}/ --schedule --skip-existing
   ```
-- O script publica 3 posts (d1, d2, d3) via Facebook Graph API com upload de imagem. Cada post é publicado imediatamente na página (o editor revisa/despublica manualmente se necessário).
+  Se `test_mode = true` e `schedule_day_offset` está definido, adicionar `--day-offset {schedule_day_offset}`:
+  ```bash
+  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{YYMMDD}/ --schedule --skip-existing --day-offset {schedule_day_offset}
+  ```
+- O script publica 3 posts (d1, d2, d3) via Facebook Graph API com upload de imagem. Com `--schedule`, agenda no horário configurado (ou usa `--day-offset` para override).
 - Resume-aware: lê `07-social-published.json` e pula facebook posts já publicados.
 - Append imediato em `07-social-published.json` após cada post.
 - Se o script falhar (token expirado, etc.), logar o erro e continuar — não bloqueia LinkedIn.
 
 #### 7b. LinkedIn — via Claude in Chrome (browser automation)
 
-- Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true`.
+- Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
 - O agente publish-social é resume-aware e pula posts já em `07-social-published.json` (incluindo os facebook posts do 7a).
 - Na prática, se 7a completou com sucesso, publish-social só precisa postar os 3 LinkedIn posts.
 - **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:

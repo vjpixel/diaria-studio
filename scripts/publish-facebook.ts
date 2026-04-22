@@ -80,13 +80,14 @@ function extractPostText(socialMd: string, platform: string, destaque: string): 
 function computeScheduledAt(
   config: any,
   destaque: string,
-  editionDate: string
+  editionDate: string,
+  dayOffsetOverride?: number
 ): string {
   const sched = config.publishing.social.fallback_schedule.facebook;
   const tz = config.publishing.social.timezone;
   const timeKey = `${destaque}_time` as string;
   const time = sched[timeKey];
-  const dayOffset = sched.day_offset || 0;
+  const dayOffset = dayOffsetOverride ?? sched.day_offset ?? 0;
 
   // Parse edition date (YYMMDD) to a real date
   const yy = parseInt(editionDate.slice(0, 2));
@@ -166,6 +167,7 @@ async function main() {
   const editionDir = resolve(ROOT, args["edition-dir"] as string);
   const doSchedule = !!args.schedule;
   const skipExisting = args["skip-existing"] !== false;
+  const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
 
   // Load credentials
   const creds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
@@ -251,7 +253,7 @@ async function main() {
     // Determine scheduling
     let scheduledAt: string | null = null;
     if (doSchedule) {
-      scheduledAt = computeScheduledAt(config, d, editionDate);
+      scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
     }
 
     // Publish with retry
