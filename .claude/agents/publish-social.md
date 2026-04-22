@@ -15,7 +15,7 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 ## Pré-requisitos
 
 - Stage 3 completo (`03-social.md` — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`).
-- Stage 5 completo (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`).
+- Stage 5 completo (`05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`).
 - Chrome com Claude in Chrome ativo, logado em LinkedIn e Facebook (ver `docs/browser-publish-setup.md`).
 
 ## Processo
@@ -25,7 +25,7 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 Verificar existência dos seguintes arquivos. Se algum faltar, retornar erro imediatamente indicando qual arquivo está faltando e qual stage precisa ser re-rodado:
 
 - `{edition_dir}/03-social.md` (Stage 3 — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`)
-- `{edition_dir}/05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` (Stage 5)
+- `{edition_dir}/05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` (Stage 5 — D1 uses square variant for social)
 
 ### 2. Ler estado atual
 
@@ -75,7 +75,7 @@ Para cada combinação:
     process.stdout.write(body);
   "
   ```
-- Imagem: `{edition_dir}/05-d{N}.jpg`
+- Imagem: D1 usa `{edition_dir}/05-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/05-d{N}.jpg`
 
 **c. Ler playbook:** `context/publishers/{platform}.md`.
 

@@ -31,7 +31,7 @@ Se não passar data, detecta a edição mais recente em `data/editions/`.
 
 ## Output
 
-- `data/editions/{YYMMDD}/05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`
+- `data/editions/{YYMMDD}/05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`
 - `data/editions/{YYMMDD}/05-d{N}-sd-prompt.json` — prompt usado na geração
 
 ## Notas

@@ -127,10 +127,9 @@ async function getFileBytes(editionDir: string, filename: string): Promise<Buffe
   const isImage = [".jpg", ".jpeg", ".png"].includes(ext);
 
   if (isImage) {
-    // Redimensionar para preview 400×225 antes de subir ao Drive
+    // Upload full-size image, just re-encode as JPEG quality 85
     return sharp(readFileSync(localPath))
-      .resize(400, 225, { fit: "cover" })
-      .jpeg({ quality: 70 })
+      .jpeg({ quality: 85 })
       .toBuffer();
   }
   return readFileSync(localPath);
