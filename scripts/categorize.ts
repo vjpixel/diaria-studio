@@ -21,15 +21,16 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-interface Article {
+export interface Article {
   url: string;
   title?: string;
   type_hint?: string;
   [key: string]: unknown;
 }
 
-type Category = "lancamento" | "pesquisa" | "noticias";
+export type Category = "lancamento" | "pesquisa" | "noticias";
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam LANÇAMENTO (anúncio oficial)
@@ -189,7 +190,7 @@ function hostAndPath(url: string): { host: string; full: string } {
   }
 }
 
-function categorize(article: Article): Category {
+export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
@@ -249,4 +250,6 @@ function main(): void {
   }
 }
 
-main();
+if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

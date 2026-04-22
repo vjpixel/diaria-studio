@@ -21,6 +21,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -143,8 +144,8 @@ function extractTextBody(part: GmailMessagePart): string {
   return "";
 }
 
-const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
-const TRAILING_PUNCT = /[.,;:!?)]+$/;
+export const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
+export const TRAILING_PUNCT = /[.,;:!?)]+$/;
 const EMAIL_SIGNATURE_MARKERS = [
   "enviado do meu iphone",
   "enviado do meu android",
@@ -167,7 +168,7 @@ function cleanBody(body: string): string {
   return cleaned.trim();
 }
 
-function extractUrls(text: string): string[] {
+export function extractUrls(text: string): string[] {
   const raw = text.match(URL_REGEX) ?? [];
   return raw
     .map((u) => u.replace(TRAILING_PUNCT, ""))
@@ -361,7 +362,9 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
+const isMain = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isMain) main().catch((err) => {
   const result: DrainResult = {
     new_entries: 0,
     urls: [],
