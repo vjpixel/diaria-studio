@@ -57,9 +57,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 4. **Secoes nao duplicadas.** Cada secao (Lancamentos, Pesquisas, Outras Noticias) deve aparecer no maximo 1 vez. Se duplicada:
    `"section_duplicated: Secao '{nome}' aparece {X} vezes"`
 
-5. **Imagens visiveis.** Verificar se ha indicacao de imagens no email (tags img, placeholders, ou texto alternativo). Se todas faltam:
-   `"images_missing: Nenhuma imagem visivel no email"`
-   (Nota: imagens podem nao carregar na preview se sao upload manual — nesse caso nao e um bug, e esperado. So reportar se NENHUMA imagem aparece.)
+5. **Imagens — IGNORAR.** O editor sobe as imagens manualmente no Beehiiv **depois** desta revisao. E esperado que o email de teste tenha placeholders (URLs `localhost`, texto "Ver imagem:", ou imagens ausentes). **Nao registrar nenhum issue relacionado a imagens.** A verificacao de imagens acontece visualmente pelo editor apos o upload manual.
 
 6. **Estrutura geral.** O email deve ter os 3 destaques, secao E AI?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`

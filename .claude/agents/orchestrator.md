@@ -395,17 +395,18 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
          • {issue 2}
       Corrija manualmente no rascunho antes de publicar.
       ```
-  - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
+  - ⚠️ **Upload manual de imagens (gate obrigatório).** As imagens do email de teste são placeholders (localhost) — o editor DEVE subir as imagens no Beehiiv antes de aprovar este gate. Listar:
     ```
-    📎 Suba as imagens manualmente no rascunho antes de publicar:
+    📎 Suba as imagens no rascunho ANTES de aprovar:
        • Cover/Thumbnail → 04-d1-2x1.jpg (1600×800)
        • Inline D1  → 04-d1-2x1.jpg
        • Inline D2  → 04-d2.jpg
        • Inline D3  → 04-d3.jpg
        • É AI? (A)  → 01-eai-real.jpg
        • É AI? (B)  → 01-eai-ia.jpg
+       📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
     ```
-  - Instrução: "Revise o email de teste, suba as imagens e publique manualmente do dashboard Beehiiv quando aprovado."
+  - Instrução: "Suba as imagens, reenvie o email de teste do Beehiiv para conferir, e só então aprove para seguir ao Stage 6."
   - Opções: aprovar (segue para Stage 6) / regerar (re-disparar `publish-newsletter`).
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
     ```
