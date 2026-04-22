@@ -21,6 +21,9 @@
       "Bash(node - *)",
       "Bash(curl -sf *)",
       "Bash(curl -sL *)",
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "Bash(gh pr *)",
       "Bash(sleep *)",
       "Bash(date *)",
       "mcp__97acb66c-8605-4263-be7b-984868a4547a__*",
@@ -41,8 +44,7 @@
       "mcp__Claude_in_Chrome__javascript_tool"
     ],
     "deny": [
-      "Bash(rm -rf *)",
-      "Bash(git push *)"
+      "Bash(rm -rf *)"
     ]
   },
   "hooks": {
