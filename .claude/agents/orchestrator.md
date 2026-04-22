@@ -28,32 +28,38 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 - Criar o diretório se não existir.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator (`/diaria-edicao` ou `/diaria-1-pesquisa`) **já perguntou e confirmou** a janela de publicação aceita com o usuário antes de disparar. Você recebe `window_days` (inteiro ≥ 1) no prompt da Task. **Se não receber** (retrocompat ou invocação direta sem skill), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via `Bash("node -e \"const d=new Date('{edition_date}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))\"")`. Armazenar `window_days` como variável de sessão — usado em Stage 1 (pesquisa + dedup + research-reviewer).
 
-- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. Regras (verificar de baixo para cima — parar na primeira condição verdadeira):
+- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. O pipeline principal é 1→2→3→5→6→7; o Stage 4 (É AI?) roda em paralelo e tem lógica de resume independente.
+  **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
   - Se `07-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 7 completo. Pipeline finalizado.
   - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar `publish-social` (resume-aware ele mesmo).
   - Se `06-published.json` existe (mas não `07-social-published.json`) → pular para Stage 7.
   - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem (mas não `06-published.json`) → pular para Stage 6.
-  - Se `04-eai.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
-  - Se `03-social.md` existe (mas não `04-eai.md`) → pular para Stage 4. Avisar: "Retomando no Stage 4 (É AI?).".
+  - Se `03-social.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
   - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
   - Se `01-approved.json` existe (mas não `02-reviewed.md`) → pular para Stage 2.
   - Se `01-categorized.json` existe mas não `01-approved.json` → Stage 1 foi interrompido no gate humano; reapresentar o gate.
   - Caso contrário → começar do Stage 0 normalmente.
+  **É AI? (paralelo)** — verificar em qualquer ponto de resume:
+  - Se `04-eai.md` já existe → não disparar eai-composer.
+  - Se `04-eai.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eai-composer` em background (mesma lógica do Stage 1 dispatch).
+  - O gate do Stage 4 será apresentado assim que o Task completar, intercalado com o fluxo principal.
+  - **Pré-requisito do Stage 6:** `04-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando o Stage 6 for atingido, **bloquear e aguardar** o Task — publicar sem É AI? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
   - Se o usuário responder "sim, refazer do zero", renomear a pasta para `{YYMMDD}-backup-{timestamp}/` antes de começar (nunca deletar trabalho). Nunca sobrescreva arquivos de stages anteriores sem essa confirmação.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
-- **Inicializar cost.json.** Se `data/editions/{YYMMDD}/cost.json` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
-  ```json
-  {
-    "edition": "YYMMDD",
-    "orchestrator_model": "claude-opus-4-7",
-    "session_start": "<ISO>",
-    "session_end": null,
-    "total_calls": 0,
-    "stages": []
-  }
+- **Inicializar cost.md.** Se `data/editions/{YYMMDD}/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
+  ```markdown
+  # Cost — Edição {YYMMDD}
+
+  Orchestrator: claude-opus-4-7
+  Início: {ISO}
+  Fim: —
+  Total de chamadas: 0
+
+  | Stage | Início | Fim | Chamadas | Haiku | Sonnet |
+  |-------|--------|-----|----------|-------|--------|
   ```
-  Se já existe (resume), não sobrescrever — manter `session_start` e stages anteriores intactos.
+  Se já existe (resume), não sobrescrever — manter `Início` e linhas de stages anteriores intactos.
 - **Refresh automático de dedup (sempre roda).** Disparar o subagente `refresh-dedup-runner` via `Task` (sem argumentos — ele se auto-configura). O subagente:
   - Garante `publicationId` em `platform.config.json` (descobre via `list_publications` se necessário).
   - Detecta se é bootstrap (primeira vez) ou incremental (dia a dia).
@@ -71,6 +77,10 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - Extrair `inbox_urls` = lista de URLs vindas do drainer + URLs de entradas já existentes em `data/inbox.md` que ainda não foram arquivadas. Extrair `inbox_topics` idem.
 - Ler `context/sources.md` e extrair os nomes+site queries de todas as fontes ativas.
 - Ler `data/source-health.json` (se existir). Anotar fontes com 3+ `recent_outcomes` consecutivos não-ok — **ainda dispara**, mas sinaliza no relatório do Stage 1.
+- **Disparar É AI? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Task` em **background** (na mesma mensagem dos researchers abaixo) passando:
+  - `edition_date`
+  - `out_dir = data/editions/{YYMMDD}/`
+  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no cost.md do Stage 4. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Task completar — o que vier depois). Se `04-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 eai dispatched (background)'`.
 - Disparar N chamadas `Task` paralelas com subagent `source-researcher`, uma por fonte, passando:
   - nome da fonte
   - site query
@@ -185,26 +195,11 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
     ```
     Push do MD atualizado de volta para o Drive: `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`.
   - **Arquivar o inbox**: mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar um `data/inbox.md` vazio (com o cabeçalho padrão). Isso garante que submissões do dia não voltem na próxima edição.
-  - **Atualizar cost.json.** Ler `cost.json`, append entry de Stage 1, recalcular `total_calls`, gravar com `Write`:
-    ```json
-    {
-      "stage": 1,
-      "stage_start": "<ts_antes_de_disparar_inbox_drainer>",
-      "stage_end": "<now>",
-      "calls": {
-        "inbox_drainer": 1,
-        "refresh_dedup_runner": 1,
-        "source_researcher": <N>,
-        "discovery_searcher": <M>,
-        "link_verifier": <chunks>,
-        "categorizer": 1,
-        "research_reviewer": 1,
-        "scorer": 1
-      },
-      "models": { "haiku": <soma_haiku>, "sonnet": 1 }
-    }
+  - **Atualizar cost.md.** Ler `cost.md`, append linha na tabela de Stage 1, recalcular `Total de chamadas`, gravar com `Write`:
     ```
-    `total_calls` = soma de todos os `calls` values em todos os stages + 1 (orchestrator).
+    | 1 | {stage_start} | {now} | inbox_drainer:1, refresh_dedup:1, source_researcher:{N}, discovery:{M}, link_verifier:{chunks}, categorizer:1, research_reviewer:1, scorer:1 | {soma_haiku} | 1 |
+    ```
+    `Total de chamadas` = soma de todas as chamadas em todas as linhas + 1 (orchestrator).
 
 ### 2. Stage 2 — Writing
 
@@ -244,15 +239,9 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   ```
   Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
   - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
-  - **Atualizar cost.json.** Append entry de Stage 2, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 2,
-      "stage_start": "<ts_antes_de_disparar_writer>",
-      "stage_end": "<now>",
-      "calls": { "writer": 1, "drive_syncer": 1 },
-      "models": { "haiku": 1, "sonnet": 1 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
+    ```
+    | 2 | {stage_start} | {now} | writer:1, drive_syncer:1 | 1 | 1 |
     ```
 
 ### 3. Stage 3 — Social
@@ -274,34 +263,24 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
-  - **Atualizar cost.json.** Append entry de Stage 3, setar `session_end`, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 3,
-      "stage_start": "<ts_antes_de_disparar_social_agents>",
-      "stage_end": "<now>",
-      "calls": { "social_linkedin": 1, "social_facebook": 1, "drive_syncer": 1 },
-      "models": { "haiku": 2, "sonnet": 2 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    Setar `session_end = <now>` no objeto raiz. `total_calls` inclui +1 pelo orchestrator.
+    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, drive_syncer:1 | 2 | 2 |
+    ```
+    Atualizar `Fim: {now}` no cabeçalho. `Total de chamadas` inclui +1 pelo orchestrator.
 
-### 4. Stage 4 — É AI?
+### 4. Stage 4 — É AI? (gate do background dispatch)
 
-- Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 eai started'`.
-- Disparar `eai-composer` com `edition_date`, `newsletter_path = data/editions/{YYMMDD}/02-reviewed.md`, `out_dir = data/editions/{YYMMDD}/`.
-- Se falhar, logar erro e reportar ao usuário.
+O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage" apenas coleta o resultado e apresenta o gate — **não bloqueia** o pipeline principal. O gate pode ser apresentado em qualquer momento após o Task completar, intercalado com os gates de outros stages se necessário.
+
+- **Se o Task do eai-composer ainda não completou:** aguardar sem bloquear outros stages. Quando completar, apresentar o gate abaixo assim que o usuário estiver disponível (entre gates de outros stages, ou logo após o gate anterior).
+- **Se o Task já completou (ou `04-eai.md` já existe por resume):** apresentar o gate imediatamente.
+- Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 4 --files 04-eai.md,04-eai-real.jpg,04-eai-ia.jpg")`. Anotar em `sync_results[4]`; ignorar falhas.
 - **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Real: data/editions/{YYMMDD}/04-eai-real.jpg | IA: data/editions/{YYMMDD}/04-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
-  - **Atualizar cost.json.** Append entry de Stage 4, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 4,
-      "stage_start": "<ts_antes_de_disparar_eai_composer>",
-      "stage_end": "<now>",
-      "calls": { "eai_composer": 1, "drive_syncer": 1 },
-      "models": { "haiku": 2, "sonnet": 0 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 4, recalcular `Total de chamadas`, gravar:
+    ```
+    | 4 | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
     ```
 
 ### 5. Stage 5 — Imagens
@@ -319,17 +298,11 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 05-d1.jpg,05-d2.jpg,05-d3.jpg")`. Anotar em `sync_results[5]`; ignorar falhas.
 - **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
-  - **Atualizar cost.json.** Append entry de Stage 5, setar `session_end`, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 5,
-      "stage_start": "<ts_antes_de_gerar_imagens>",
-      "stage_end": "<now>",
-      "calls": { "drive_syncer": 1 },
-      "models": { "haiku": 1, "sonnet": 0 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 5, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    Setar `session_end = <now>` no objeto raiz.
+    | 5 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
+    ```
+    Atualizar `Fim: {now}` no cabeçalho.
 
 ### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
@@ -406,15 +379,9 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
     ```
   - Instrução: "Revise o email de teste, suba as imagens e publique manualmente do dashboard Beehiiv quando aprovado."
   - Opções: aprovar (segue para Stage 7) / regerar (re-disparar `publish-newsletter`).
-  - **Atualizar cost.json.** Append entry de Stage 6, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 6,
-      "stage_start": "<ts_antes_de_disparar_publish_newsletter>",
-      "stage_end": "<now>",
-      "calls": { "publish_newsletter": 1 },
-      "models": { "haiku": 0, "sonnet": 1 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 6, recalcular `Total de chamadas`, gravar:
+    ```
+    | 6 | {stage_start} | {now} | publish_newsletter:1 | 0 | 1 |
     ```
 
 ### 7. Stage 7 — Publicar social (LinkedIn + Facebook)
@@ -451,17 +418,11 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - Posts com `status: "failed"` aparecem destacados com `reason`.
   - Instrução: "Revise os rascunhos no dashboard de cada plataforma e publique manualmente quando aprovados. Posts agendados serão publicados automaticamente no horário."
   - Opções: aprovar (encerra pipeline) / re-rodar (recupera failed) / regenerar individual (TODO).
-  - **Atualizar cost.json.** Append entry de Stage 7, setar `session_end`, recalcular `total_calls`, gravar:
-    ```json
-    {
-      "stage": 7,
-      "stage_start": "<ts_antes_de_disparar_publish_social>",
-      "stage_end": "<now>",
-      "calls": { "publish_social": 1 },
-      "models": { "haiku": 0, "sonnet": 1 }
-    }
+  - **Atualizar cost.md.** Append linha na tabela de Stage 7, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    Setar `session_end = <now>` no objeto raiz.
+    | 7 | {stage_start} | {now} | publish_social:1 | 0 | 1 |
+    ```
+    Atualizar `Fim: {now}` no cabeçalho.
 
 ## Formato de relatório ao usuário
 
