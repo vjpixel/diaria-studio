@@ -25,14 +25,14 @@ Se não passar data, detecta a edição mais recente em `data/editions/`.
 
 1. Para cada destaque (ou só o indicado):
    - Lê `02-d{N}-prompt.md`.
-   - Monta prompt estilo impasto Van Gogh + grava `05-d{N}-sd-prompt.json`.
-   - Chama `scripts/image-generate.ts` → `scripts/gemini-image.js` → `05-d{N}.jpg`.
+   - Monta prompt estilo impasto Van Gogh + grava `04-d{N}-sd-prompt.json`.
+   - Chama `scripts/image-generate.ts` → `scripts/gemini-image.js` → `04-d{N}.jpg`.
 2. **Gate humano**: mostrar paths dos JPGs. Aprovar ou pedir regeneração individual.
 
 ## Output
 
-- `data/editions/{YYMMDD}/05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`
-- `data/editions/{YYMMDD}/05-d{N}-sd-prompt.json` — prompt usado na geração
+- `data/editions/{AAMMDD}/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`
+- `data/editions/{AAMMDD}/04-d{N}-sd-prompt.json` — prompt usado na geração
 
 ## Notas
 

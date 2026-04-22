@@ -1,6 +1,6 @@
 ---
 name: social-facebook
-description: Gera 3 posts de Facebook — um por destaque — a partir da newsletter revisada. Output temporário em `03-facebook.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com LinkedIn em `03-social.md`.
+description: Gera 3 posts de Facebook — um por destaque — a partir da newsletter revisada. Output temporário em `_internal/03-facebook.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com LinkedIn em `03-social.md`.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
@@ -22,7 +22,7 @@ Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — nu
    - CTA final com link para `diaria.beehiiv.com`.
    - Até 2 hashtags relevantes ao tema.
    - 800–1.200 caracteres.
-4. Gravar **um arquivo temporário** `{out_dir}/03-facebook.tmp.md` com o formato abaixo. O orchestrator fará o merge com o LinkedIn numa etapa seguinte.
+4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-facebook.tmp.md` com o formato abaixo. O orchestrator fará o merge com o LinkedIn numa etapa seguinte.
 
 ```markdown
 ## d1
@@ -48,7 +48,7 @@ Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — nu
 
 ```json
 {
-  "path": "data/editions/260418/03-facebook.tmp.md",
+  "path": "data/editions/260418/_internal/03-facebook.tmp.md",
   "posts": [
     { "destaque": "d1", "char_count": 980, "warnings": [] },
     { "destaque": "d2", "char_count": 910, "warnings": [] },

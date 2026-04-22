@@ -1,4 +1,4 @@
-# Playbook: LinkedIn (Stage 7 — social)
+# Playbook: LinkedIn (Stage 6 — social)
 
 Roteiro semântico para o agente `publish-social` operar o composer do LinkedIn via Claude in Chrome. Documento vivo — atualize quando a UI mudar.
 
@@ -77,4 +77,4 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 
 - **Login expirou** → abortar.
 - **Upload falha** → tentar 2x.
-- **Nem draft nem schedule funcionam** → abortar este post, registrar em `07-social-published.json` com `status: "failed"` e prosseguir para o próximo.
+- **Nem draft nem schedule funcionam** → abortar este post, registrar em `06-social-published.json` com `status: "failed"` e prosseguir para o próximo.

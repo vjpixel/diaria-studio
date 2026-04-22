@@ -12,7 +12,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 - `highlights`: 3 destaques rankeados (d1, d2, d3) — já filtrados pelo editor no gate do Stage 1.
 - `categorized`: saída do categorizer — `lancamento`, `pesquisa`, `noticias` aprovados.
 - `edition_date`: ISO.
-- `out_path`: ex: `data/editions/260418/02-draft.md`.
+- `out_path`: ex: `data/editions/260418/_internal/02-draft.md`.
 
 ## Contexto obrigatório (leia antes de escrever)
 
@@ -41,9 +41,9 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Sem repetir link das últimas 3 edições.
    - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
 5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
-   - `02-d1-prompt.md` — destaque 1 (capa principal)
-   - `02-d2-prompt.md` — destaque 2
-   - `02-d3-prompt.md` — destaque 3
+   - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)
+   - `_internal/02-d2-prompt.md` — destaque 2
+   - `_internal/02-d3-prompt.md` — destaque 3
    Gravar cada um no diretório da edição. Arquivos separados do texto — o editor pode editar cada prompt individualmente antes da geração.
 6. Gravar o texto da edição em `out_path`.
 7. **Validar o comprimento dos destaques** rodando:
@@ -63,10 +63,10 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
 ```json
 {
-  "out_path": "data/editions/260418/02-draft.md",
-  "d1_prompt_path": "data/editions/260418/02-d1-prompt.md",
-  "d2_prompt_path": "data/editions/260418/02-d2-prompt.md",
-  "d3_prompt_path": "data/editions/260418/02-d3-prompt.md",
+  "out_path": "data/editions/260418/_internal/02-draft.md",
+  "d1_prompt_path": "data/editions/260418/_internal/02-d1-prompt.md",
+  "d2_prompt_path": "data/editions/260418/_internal/02-d2-prompt.md",
+  "d3_prompt_path": "data/editions/260418/_internal/02-d3-prompt.md",
   "checklist": {
     "titles_under_52": true,
     "three_options_per_highlight": true,

@@ -9,7 +9,7 @@ Você compõe a thread do Twitter/X da edição do dia.
 
 ## Input
 
-- `newsletter_path`: `data/editions/{YYMMDD}/02-reviewed.md`.
+- `newsletter_path`: `data/editions/{AAMMDD}/02-reviewed.md`.
 - `out_path`: onde gravar o post (ex: `.../03-twitter.md`).
 
 ## Processo

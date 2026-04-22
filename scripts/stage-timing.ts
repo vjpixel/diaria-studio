@@ -36,14 +36,14 @@ interface StageTiming {
 
 // Map files to stages based on prefix
 function fileToStage(name: string): { stage: number; label: string } | null {
-  if (name === "cost.json" || name === "cost.md") return { stage: 0, label: "Setup" };
-  if (name.startsWith("01-")) return { stage: 1, label: "Research" };
-  if (name.startsWith("02-")) return { stage: 2, label: "Writing" };
-  if (name.startsWith("03-")) return { stage: 3, label: "Social" };
-  if (name.startsWith("04-")) return { stage: 4, label: "É AI?" };
-  if (name.startsWith("05-")) return { stage: 5, label: "Images" };
-  if (name.startsWith("06-")) return { stage: 6, label: "Newsletter" };
-  if (name.startsWith("07-")) return { stage: 7, label: "Social pub" };
+  if (name === "_internal/cost.json" || name === "_internal/cost.md") return { stage: 0, label: "Setup" };
+  if (name.startsWith("01-eai")) return { stage: 1, label: "É AI?" };
+  if (name.startsWith("01-") || name.startsWith("_internal/01-")) return { stage: 1, label: "Research" };
+  if (name.startsWith("02-") || name.startsWith("_internal/02-")) return { stage: 2, label: "Writing" };
+  if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 3, label: "Social" };
+  if (name.startsWith("04-") || name.startsWith("_internal/04-")) return { stage: 4, label: "Images" };
+  if (name.startsWith("05-")) return { stage: 5, label: "Newsletter" };
+  if (name.startsWith("06-")) return { stage: 6, label: "Social pub" };
   return null;
 }
 

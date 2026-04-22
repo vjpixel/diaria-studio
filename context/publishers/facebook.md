@@ -1,4 +1,4 @@
-# Playbook: Facebook (Stage 7 — social)
+# Playbook: Facebook (Stage 6 — social)
 
 Roteiro semântico para o agente `publish-social` operar o composer do Facebook via Claude in Chrome. Documento vivo — atualize quando a UI mudar.
 
@@ -76,4 +76,4 @@ Para cada destaque (d1/d2/d3), criar um post na página Diar.ia com texto + imag
 - **Login expirou** → abortar.
 - **Página errada selecionada** → abortar antes de salvar.
 - **Upload falha** → tentar 2x.
-- **Nem draft nem schedule funcionam** → registrar `status: "failed"` em `07-social-published.json` e prosseguir.
+- **Nem draft nem schedule funcionam** → registrar `status: "failed"` em `06-social-published.json` e prosseguir.

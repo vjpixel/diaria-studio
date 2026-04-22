@@ -1,16 +1,16 @@
 /**
  * image-generate.ts
  *
- * Converte um prompt editorial (02-d1-prompt.md) em prompt SD (positive + negative),
+ * Converte um prompt editorial (_internal/02-d1-prompt.md) em prompt SD (positive + negative),
  * grava o JSON de prompt e chama gemini-image.js para gerar a imagem.
  *
  * Uso:
  *   npx tsx scripts/image-generate.ts \
- *     --editorial data/editions/260418/02-d1-prompt.md \
+ *     --editorial data/editions/260418/_internal/02-d1-prompt.md \
  *     --out-dir data/editions/260418/ \
  *     --destaque d1
  *
- * Saída: D1 → 05-d1-2x1.jpg (1600×800) + 05-d1-1x1.jpg (800×800 center crop)
+ * Saída: D1 → 04-d1-2x1.jpg (1600×800) + 04-d1-1x1.jpg (800×800 center crop)
  *        D2/D3 → 05-d{N}.jpg (1024×1024 native Gemini)
  *        Imprime o caminho do JPG principal em stdout.
  */
@@ -112,7 +112,7 @@ function main() {
     process.exit(code);
   }
 
-  // D1: salvar 1600×800 como 05-d1-2x1.jpg, crop centro para 800×800 como 05-d1-1x1.jpg
+  // D1: salvar 1600×800 como 04-d1-2x1.jpg, crop centro para 800×800 como 04-d1-1x1.jpg
   if (isD1) {
     const wideJpgPath = `${normalizedOutDir}05-${destaque}-2x1.jpg`;
     const squareJpgPath = `${normalizedOutDir}05-${destaque}-1x1.jpg`;

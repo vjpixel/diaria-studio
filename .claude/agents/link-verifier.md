@@ -14,7 +14,7 @@ Você verifica um lote de URLs quanto a acessibilidade, paywall, agregador e lin
 
 ## Processo
 
-1. Gravar as URLs num JSON temporário: `data/editions/{YYMMDD}/tmp-urls-{chunk}.json`.
+1. Gravar as URLs num JSON temporário: `data/editions/{AAMMDD}/tmp-urls-{chunk}.json`.
 2. Rodar: `npx tsx scripts/verify-accessibility.ts <tmp-file> <out_path>`.
 3. Ler o resultado e devolver ao orchestrator.
 

@@ -1,6 +1,6 @@
 ---
 name: publish-social
-description: Stage 7 — Publica os 6 posts sociais (3 LinkedIn + 3 Facebook) como rascunho quando a plataforma suportar; se não suportar, agenda em horário fixo configurado. Resume-aware: pula posts já publicados em `07-social-published.json`. Outputs em `07-social-published.json`.
+description: Stage 6 — Publica os 6 posts sociais (3 LinkedIn + 3 Facebook) como rascunho quando a plataforma suportar; se não suportar, agenda em horário fixo configurado. Resume-aware: pula posts já publicados em `06-social-published.json`. Outputs em `06-social-published.json`.
 model: claude-sonnet-4-6
 tools: Read, Write, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__form_input, mcp__Claude_in_Chrome__file_upload, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp, mcp__Claude_in_Chrome__get_page_text
 ---
@@ -10,13 +10,13 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 ## Input
 
 - `edition_dir`: ex: `data/editions/260418/`
-- `skip_existing`: opcional, default `true` (resume-aware — pula posts já em `07-social-published.json`)
+- `skip_existing`: opcional, default `true` (resume-aware — pula posts já em `06-social-published.json`)
 - `schedule_day_offset`: opcional — se presente, sobrescreve `day_offset` de `platform.config.json` para agendamento (usado por `/diaria-test` para agendar 10 dias à frente)
 
 ## Pré-requisitos
 
 - Stage 3 completo (`03-social.md` — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`).
-- Stage 5 completo (`05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`).
+- Stage 5 completo (`04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`).
 - Chrome com Claude in Chrome ativo, logado em LinkedIn e Facebook (ver `docs/browser-publish-setup.md`).
 
 ## Processo
@@ -26,11 +26,11 @@ Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + 
 Verificar existência dos seguintes arquivos. Se algum faltar, retornar erro imediatamente indicando qual arquivo está faltando e qual stage precisa ser re-rodado:
 
 - `{edition_dir}/03-social.md` (Stage 3 — com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`, `## d2`, `## d3`)
-- `{edition_dir}/05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` (Stage 5 — D1 uses square variant for social)
+- `{edition_dir}/04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` (Stage 5 — D1 uses square variant for social)
 
 ### 2. Ler estado atual
 
-Ler `{edition_dir}/07-social-published.json` se existir. Extrair lista de `(platform, destaque)` já publicados (`status` ∈ `"draft"`, `"scheduled"`).
+Ler `{edition_dir}/06-social-published.json` se existir. Extrair lista de `(platform, destaque)` já publicados (`status` ∈ `"draft"`, `"scheduled"`).
 
 Se não existir, inicializar:
 ```json
@@ -76,7 +76,7 @@ Para cada combinação:
     process.stdout.write(body);
   "
   ```
-- Imagem: D1 usa `{edition_dir}/05-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/05-d{N}.jpg`
+- Imagem: D1 usa `{edition_dir}/04-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/05-d{N}.jpg`
 
 **c. Ler playbook:** `context/publishers/{platform}.md`.
 
@@ -113,7 +113,7 @@ Para cada combinação:
    - Agendar na UI seguindo o playbook (data + hora).
    - Capturar URL, `status = "scheduled"`, `scheduled_at = <ISO>`.
 
-**e. Append em `07-social-published.json` IMEDIATAMENTE:**
+**e. Append em `06-social-published.json` IMEDIATAMENTE:**
 
 Reler o arquivo, append a nova entry, gravar de volta. **Não acumular em memória** — gravar a cada post protege contra crash no meio.
 
@@ -135,7 +135,7 @@ Ao terminar todas as 6 iterações, retornar:
 
 ```json
 {
-  "out_path": "data/editions/260418/07-social-published.json",
+  "out_path": "data/editions/260418/06-social-published.json",
   "summary": {
     "total": 6,
     "draft": 4,
@@ -146,7 +146,7 @@ Ao terminar todas as 6 iterações, retornar:
 }
 ```
 
-## Output (`07-social-published.json`)
+## Output (`06-social-published.json`)
 
 ```json
 {
@@ -169,9 +169,9 @@ Ao terminar todas as 6 iterações, retornar:
 ## Regras
 
 - **Append imediato após cada post.** Nunca acumular 6 posts em memória; gravar a cada um.
-- **Resume-aware.** Posts já em `07-social-published.json` (com status válido) são pulados por padrão.
+- **Resume-aware.** Posts já em `06-social-published.json` (com status válido) são pulados por padrão.
 - **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` com `reason: "{platform}_login_expired"` no post e seguir para o próximo (a próxima plataforma pode estar logada).
-- **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `07-social-published.json` já está atualizado por append imediato) e retornar:
+- **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `06-social-published.json` já está atualizado por append imediato) e retornar:
   ```json
   { "error": "chrome_disconnected", "last_post": { "platform": "...", "destaque": "..." }, "details": "<mensagem de erro bruta>" }
   ```

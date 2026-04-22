@@ -1,4 +1,4 @@
-# Playbook: Beehiiv (Stage 6 — newsletter)
+# Playbook: Beehiiv (Stage 5 — newsletter)
 
 Roteiro semântico para o agente `publish-newsletter` operar o editor Beehiiv via Claude in Chrome. Este documento é vivo — atualize quando a UI mudar.
 
@@ -46,7 +46,7 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 ### 4. Preencher cabeçalho
 - **Title**: primeiro título da edição (linha de assunto da newsletter — extrair do `02-reviewed.md`).
 - **Subtitle** (se o template tiver): subtítulo curto da edição (≤80 chars).
-- **Cover image** (Thumbnail): upload de `05-d1-2x1.jpg` (1600×800 — a imagem wide do destaque 1 é a capa).
+- **Cover image** (Thumbnail): upload de `04-d1-2x1.jpg` (1600×800 — a imagem wide do destaque 1 é a capa).
 
 ### 5. Preencher corpo (block-by-block acelerado)
 
@@ -58,13 +58,13 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 1. Encontrar o bloco correspondente no template
 2. Preencher label de categoria: `{emoji} {category}` (ex: `🧮 REGULAÇÃO`) — manter cor verde/teal do template
 3. Preencher título como texto linkado à URL do destaque
-4. Upload imagem: D1=`05-d1-2x1.jpg` (wide), D2=`05-d2.jpg`, D3=`05-d3.jpg`
+4. Upload imagem: D1=`04-d1-2x1.jpg` (wide), D2=`04-d2.jpg`, D3=`04-d3.jpg`
 5. Colar `body` (parágrafos)
 6. Colar heading "Por que isso importa:" + `why`
 
 **É AI?** — bloco separado:
 1. Label: `🖼️ É IA?`
-2. Upload `04-eai-real.jpg` (primeiro) e `04-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
+2. Upload `01-eai-real.jpg` (primeiro) e `01-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
 3. Crédito: `eai.credit` do JSON
 
 **Seções (Pesquisas, Lançamentos, Outras Notícias):**
@@ -89,7 +89,7 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 ### 8. Validar sucesso
 - `draft_url` capturada.
 - Confirmação visual de envio do teste.
-- Retornar JSON conforme `06-published.json`.
+- Retornar JSON conforme `05-published.json`.
 
 ## Modo rascunho
 

@@ -100,16 +100,15 @@ function filesSince(dir: string, since: string[]): string[] {
 const args = parseArgs(process.argv.slice(2));
 const editionDate = args.date as string;
 if (!editionDate) {
-  console.error("Usage: npx tsx scripts/benchmark-e2e.ts --date YYYY-MM-DD [--window 3] [--skip-images]");
+  console.error("Usage: npx tsx scripts/benchmark-e2e.ts --date AAMMDD [--window 3] [--skip-images]");
   process.exit(1);
 }
 
 const windowDays = parseInt((args.window as string) ?? "3", 10);
 const skipImages = !!args["skip-images"];
 
-// Convert date to YYMMDD
-const [yyyy, mm, dd] = editionDate.split("-");
-const yymmdd = yyyy.slice(2) + mm + dd;
+// editionDate is already AAMMDD (e.g. 260423)
+const yymmdd = editionDate;
 
 // Create benchmark edition dir (timestamped to allow multiple runs)
 const ts = Date.now();
@@ -179,9 +178,10 @@ function runStage(
   }
 }
 
-// Compute window start
+// Compute window start (convert AAMMDD to ISO for Date math)
+const editionIso = `20${yymmdd.slice(0,2)}-${yymmdd.slice(2,4)}-${yymmdd.slice(4,6)}`;
 const windowStart = run(
-  `node -e "const d=new Date('${editionDate}');d.setUTCDate(d.getUTCDate()-${windowDays});process.stdout.write(d.toISOString().slice(0,10))"`
+  `node -e "const d=new Date('${editionIso}');d.setUTCDate(d.getUTCDate()-${windowDays});process.stdout.write(d.toISOString().slice(0,10))"`
 );
 console.log(`Research window: ${windowStart} → ${editionDate}\n`);
 
@@ -222,7 +222,7 @@ runStage(1, "Research — dedup + categorize + render", () => {
   writeFileSync(keptPath, JSON.stringify(kept));
 
   // Categorize
-  const catOut = resolve(benchDir, "01-categorized.json");
+  const catOut = resolve(benchDir, "_internal/01-categorized.json");
   run(`npx tsx scripts/categorize.ts --articles "${keptPath}" --out "${catOut}"`);
 
   // Render MD
@@ -238,21 +238,21 @@ runStage(2, "Writing — extract + clarice-diff", () => {
     .sort()
     .reverse()[0];
 
-  const draftSrc = resolve(ROOT, "data/editions", latestEdition, "02-draft.md");
+  const draftSrc = resolve(ROOT, "data/editions", latestEdition, "_internal/02-draft.md");
   const reviewedSrc = resolve(ROOT, "data/editions", latestEdition, "02-reviewed.md");
 
   if (!existsSync(draftSrc) || !existsSync(reviewedSrc)) {
-    throw new Error(`Missing 02-draft.md or 02-reviewed.md in ${latestEdition}`);
+    throw new Error(`Missing _internal/02-draft.md or 02-reviewed.md in ${latestEdition}`);
   }
 
-  writeFileSync(resolve(benchDir, "02-draft.md"), readFileSync(draftSrc));
+  writeFileSync(resolve(benchDir, "_internal/02-draft.md"), readFileSync(draftSrc));
   writeFileSync(resolve(benchDir, "02-reviewed.md"), readFileSync(reviewedSrc));
 
   // Extract destaques (deterministic parser)
   run(`npx tsx scripts/extract-destaques.ts "${resolve(benchDir, "02-reviewed.md")}"`);
 
   // Clarice diff
-  run(`npx tsx scripts/clarice-diff.ts "${resolve(benchDir, "02-draft.md")}" "${resolve(benchDir, "02-reviewed.md")}" "${resolve(benchDir, "02-clarice-diff.md")}"`);
+  run(`npx tsx scripts/clarice-diff.ts "${resolve(benchDir, "_internal/02-draft.md")}" "${resolve(benchDir, "02-reviewed.md")}" "${resolve(benchDir, "_internal/02-clarice-diff.md")}"`);
 });
 
 // ---- Stage 3: Social (needs LLM — skip in benchmark) ----

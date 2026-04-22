@@ -9,13 +9,13 @@ Inspeciona o log estruturado da pipeline. Permite ao usuário pedir "lê o log e
 
 ## Argumentos
 
-- `edition` (opcional): `YYMMDD` ou `YYYY-MM-DD`. Filtra eventos daquela edição. Se omitido, mostra os últimos 50 eventos globais.
+- `edition` (opcional): `AAMMDD`. Filtra eventos daquela edição. Se omitido, mostra os últimos 50 eventos globais.
 - `level` (opcional): `error`, `warn`, `info`, ou `all`. Default: mostra `error` + `warn` se nada for dito; `all` se o usuário pedir visão completa.
 
 ## Execução
 
 1. **Ler `data/run-log.jsonl`**. Cada linha é um JSON: `{timestamp, edition, stage, agent, level, message, details}`.
-2. **Filtrar** por `edition` (se dado; normalizar para `YYMMDD`) e `level`.
+2. **Filtrar** por `edition` (se dado; já em formato `AAMMDD`) e `level`.
 3. **Ordenar** por `timestamp` descendente. Pegar os últimos 50 (ou menos se tiver menos).
 4. **Agrupar por agente + stage** e apresentar em uma tabela/lista legível:
 

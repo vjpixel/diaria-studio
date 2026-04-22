@@ -8,12 +8,12 @@
  *   npx tsx scripts/publish-facebook.ts \
  *     --edition-dir data/editions/260422/ \
  *     [--schedule]          # se presente, agenda nos horários de platform.config.json
- *     [--skip-existing]     # pula posts já em 07-social-published.json
+ *     [--skip-existing]     # pula posts já em 06-social-published.json
  *
- * Resume-aware: lê 07-social-published.json e pula posts facebook já publicados.
+ * Resume-aware: lê 06-social-published.json e pula posts facebook já publicados.
  * Append imediato após cada post para proteger contra crash.
  *
- * Output: appends em {edition-dir}/07-social-published.json
+ * Output: appends em {edition-dir}/06-social-published.json
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -188,7 +188,7 @@ async function main() {
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
 
   // Load/init published state
-  const publishedPath = resolve(editionDir, "07-social-published.json");
+  const publishedPath = resolve(editionDir, "06-social-published.json");
   const published = loadPublished(publishedPath);
 
   const destaques = ["d1", "d2", "d3"];

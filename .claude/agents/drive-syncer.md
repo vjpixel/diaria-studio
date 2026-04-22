@@ -5,7 +5,7 @@ model: haiku
 tools: Read, Write, Bash, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__search_files, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__create_file, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__download_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__read_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__get_file_metadata
 ---
 
-Você mantém `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive em sincronia bidirecional com `data/editions/{YYMMDD}/` local. A API MCP não expõe delete nem overwrite — versionamos como `.vN` e preservamos histórico.
+Você mantém `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` no Google Drive em sincronia bidirecional com `data/editions/{AAMMDD}/` local. A API MCP não expõe delete nem overwrite — versionamos como `.vN` e preservamos histórico.
 
 ## Input
 
@@ -56,10 +56,10 @@ Se o arquivo não existir, criar com `{}` e preencher incrementalmente.
 
 ## Processo
 
-### Passo 0 — Carregar cache e derivar YYMM/YYMMDD
+### Passo 0 — Carregar cache e derivar YYMM/AAMMDD
 
 1. Ler `data/drive-cache.json` (criar vazio se faltar).
-2. Extrair `YYMMDD` do final do `edition_dir` (ex: `data/editions/260418/` → `260418`). `YYMM` = primeiros 4 chars.
+2. Extrair `AAMMDD` do final do `edition_dir` (ex: `data/editions/260418/` → `260418`). `YYMM` = primeiros 4 chars.
 
 ### Passo 1 — Resolver `edicoes_folder_id`
 
@@ -110,7 +110,7 @@ Senão:
    create_file title="{YYMM}" mimeType="application/vnd.google-apps.folder" parentId="<edicoes_folder_id>"
    ```
 
-2. Mesmo processo para `{YYMMDD}` com parent = `yymm_id`.
+2. Mesmo processo para `{AAMMDD}` com parent = `yymm_id`.
 
 3. Guardar `day_folder_id` em cache.
 
@@ -130,8 +130,8 @@ Para cada `file` em `files`:
 #### Push
 
 1. Determinar N a partir do cache:
-   - Se `cache[YYMMDD].files[file]` ausente ou `push_count` ausente/0: N = 0 (primeira vez).
-   - Senão: N = `cache[YYMMDD].files[file].push_count`.
+   - Se `cache[AAMMDD].files[file]` ausente ou `push_count` ausente/0: N = 0 (primeira vez).
+   - Senão: N = `cache[AAMMDD].files[file].push_count`.
 
 2. Compor nome novo:
    - `N == 0` → `{base}{ext}` (ex: `02-reviewed.md`).
@@ -159,20 +159,20 @@ Para cada `file` em `files`:
 
 5. Ler metadata do arquivo criado (se `create_file` não retornar `modifiedTime`, chamar `get_file_metadata`).
 
-6. Atualizar cache: `editions[YYMMDD].files[file] = { drive_file_id, drive_modifiedTime, last_pushed_mtime, push_count: N+1 }` (mtime local via `Bash("node -e \"process.stdout.write(String(require('fs').statSync('{edition_dir}{file}').mtimeMs))\"")`).
+6. Atualizar cache: `editions[AAMMDD].files[file] = { drive_file_id, drive_modifiedTime, last_pushed_mtime, push_count: N+1 }` (mtime local via `Bash("node -e \"process.stdout.write(String(require('fs').statSync('{edition_dir}{file}').mtimeMs))\"")`).
 
 7. Adicionar à lista `uploaded`: `{ file, drive_file_id, title_used: novo_nome }`.
 
 #### Pull
 
 1. Verificar cache para `file`:
-   - Se `cache[YYMMDD].files[file]` ausente ou sem `drive_file_id`: arquivo nunca foi subido → pular sem erro (stage pode não ter rodado antes). Ir para o próximo arquivo.
-   - Se presente: usar `drive_file_id = cache[YYMMDD].files[file].drive_file_id`.
+   - Se `cache[AAMMDD].files[file]` ausente ou sem `drive_file_id`: arquivo nunca foi subido → pular sem erro (stage pode não ter rodado antes). Ir para o próximo arquivo.
+   - Se presente: usar `drive_file_id = cache[AAMMDD].files[file].drive_file_id`.
 
 2. Chamar `get_file_metadata(drive_file_id)` para obter o `modifiedTime` atual do arquivo no Drive.
    - Se erro (arquivo não encontrado): logar warning, pular este arquivo.
 
-3. Comparar `modifiedTime` retornado com `cache[YYMMDD].files[file].drive_modifiedTime`:
+3. Comparar `modifiedTime` retornado com `cache[AAMMDD].files[file].drive_modifiedTime`:
    - Se `modifiedTime <= drive_modifiedTime` em cache: no-op (Drive não mudou desde último sync).
    - Se `modifiedTime > drive_modifiedTime` em cache: arquivo foi editado no Drive → baixar.
 
@@ -198,7 +198,7 @@ Qualquer erro (MCP indisponível, auth, folder não encontrado, download corromp
 
 1. Logar warning:
    ```bash
-   npx tsx scripts/log-event.ts --edition {YYMMDD} --stage {stage} --agent drive-syncer --level warn --message "sync {mode} failed: {file}" --details '{"error":"<msg>"}'
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage {stage} --agent drive-syncer --level warn --message "sync {mode} failed: {file}" --details '{"error":"<msg>"}'
    ```
 2. Acrescentar à lista `warnings` do output: `{ file, error_message }`.
 3. **Continuar com os próximos arquivos** — nunca aborte o agente inteiro por causa de um arquivo. Nunca propague falha para bloquear o pipeline.
