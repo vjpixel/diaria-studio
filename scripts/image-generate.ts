@@ -116,9 +116,9 @@ function main() {
     const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
     try {
       execFileSync(
-        process.execPath,
-        ["--import", "tsx", cropScript, outJpgPath, outJpgPath, "--width", "1000", "--height", "1000"],
-        { stdio: "inherit", cwd: ROOT }
+        "npx",
+        ["tsx", cropScript, outJpgPath, outJpgPath, "--width", "1000", "--height", "1000"],
+        { stdio: "inherit", cwd: ROOT, shell: true }
       );
       console.error(`D1 cropada para 1000×1000`);
     } catch (e: unknown) {

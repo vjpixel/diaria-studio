@@ -1,7 +1,7 @@
 ---
 name: review-test-email
 description: Abre o email de teste da newsletter no Gmail via Chrome, verifica visualmente contra uma checklist e retorna lista de problemas encontrados. Usado no loop verify→fix do Stage 6.
-model: claude-sonnet-4-6
+model: haiku
 tools: Read, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__get_page_text, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp
 ---
 
@@ -57,7 +57,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
    - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
-   - Para cada URL esperada (destaques + itens de Lancamentos/Pesquisas/Outras), verificar se aparece no email (match exato ou match apos resolver redirects do Beehiiv tracking — o Beehiiv pode encapsular links em `https://link.diaria.beehiiv.com/...`; nesse caso, verificar se o texto do link ou o texto ao redor corresponde ao item correto).
+   - **Duas camadas de redirect a resolver:** (1) Gmail proxeia todos os links via `https://www.google.com/url?q=...` — decodificar o parametro `q` para obter a URL real. (2) Beehiiv encapsula links em `https://link.diaria.beehiiv.com/...` para tracking. Apos resolver ambas as camadas, comparar a URL final com as URLs esperadas de `02-reviewed.md`. Se nao for possivel resolver (ex: URL opaca), usar o texto do link ou o texto ao redor como fallback para matching.
    - Se uma URL esperada nao aparece no email: `"link_missing: URL '{url}' esperada no destaque/secao '{contexto}' nao encontrada no email"`
    - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
    - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
