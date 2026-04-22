@@ -135,12 +135,7 @@ function main() {
       console.error(`crop-resize falhou com código ${code}`);
       process.exit(code);
     }
-  }
 
-  // Sucesso — imprimir caminhos dos JPGs em stdout (compatível com orchestrator)
-  if (isD1) {
-    const wideJpgPath = `${normalizedOutDir}05-${destaque}-2x1.jpg`;
-    const squareJpgPath = `${normalizedOutDir}05-${destaque}-1x1.jpg`;
     process.stdout.write(wideJpgPath + "\n");
     process.stdout.write(squareJpgPath + "\n");
   } else {
