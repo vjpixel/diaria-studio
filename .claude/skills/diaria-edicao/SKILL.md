@@ -64,7 +64,7 @@ Dispare o subagente `orchestrator` via `Task` passando no prompt:
 O orchestrator vai:
 - Stage 0 (refresh automático de `past-editions.md`, inbox drain) — sem gate
 - Stage 1 (research + dedup + categorize + score) → GATE humano
-- É AI? (POTD + texto, em paralelo com Stage 1) → GATE humano
+- É IA? (POTD + texto, em paralelo com Stage 1) → GATE humano
 - Stage 2 (writer + Clarice) → GATE humano
 - Stage 3 (2 social writers + Clarice) → GATE humano
 - Stage 4 (3 imagens via Gemini/ComfyUI) → GATE humano

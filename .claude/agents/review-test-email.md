@@ -51,18 +51,18 @@ Verificar cada item e registrar como `ok` ou `issue`:
 2. **Boxes de destaque separados.** D1, D2 e D3 devem estar em containers/boxes visuais separados. Se dois destaques aparecem dentro do mesmo box (sem separacao visual clara), registrar:
    `"boxes_merged: D{N} e D{M} estao no mesmo box/container"`
 
-3. **Box E AI? separado.** A secao "E AI?" deve ter seu proprio box, separado dos destaques. Se esta fundida com D2 ou D3:
-   `"eai_merged: Secao E AI? esta fundida com D{N}"`
+3. **Box E IA? separado.** A secao "E IA?" deve ter seu proprio box, separado dos destaques. Se esta fundida com D2 ou D3:
+   `"eai_merged: Secao E IA? esta fundida com D{N}"`
 
 4. **Secoes nao duplicadas.** Cada secao (Lancamentos, Pesquisas, Outras Noticias) deve aparecer no maximo 1 vez. Se duplicada:
    `"section_duplicated: Secao '{nome}' aparece {X} vezes"`
 
 5. **Imagens — IGNORAR.** O editor sobe as imagens manualmente no Beehiiv **depois** desta revisao. E esperado que o email de teste tenha placeholders (URLs `localhost`, texto "Ver imagem:", ou imagens ausentes). **Nao registrar nenhum issue relacionado a imagens.** A verificacao de imagens acontece visualmente pelo editor apos o upload manual.
 
-6. **Estrutura geral.** O email deve ter os 3 destaques, secao E AI?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
+6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
-   **E AI? e critico:** se a secao E AI? estiver ausente (nenhuma mencao a "E AI?" ou "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
-   `"section_missing_critical: Secao 'E AI?' ausente — provavel que o template Default nao foi usado na criacao do post"`
+   **E IA? e critico:** se a secao E IA? estiver ausente (nenhuma mencao a "E IA?" ou "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
+   `"section_missing_critical: Secao 'E IA?' ausente — provavel que o template Default nao foi usado na criacao do post"`
 
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
    - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
@@ -83,7 +83,7 @@ Fechar a aba do Gmail (`mcp__Claude_in_Chrome__tabs_close_mcp`).
   "attempt": 1,
   "issues": [
     "label_color_wrong: D1 label 'LANCAMENTO' aparece em cor preta, deveria ser verde do template",
-    "boxes_merged: D2 e E AI? estao no mesmo box/container"
+    "boxes_merged: D2 e E IA? estao no mesmo box/container"
   ]
 }
 ```

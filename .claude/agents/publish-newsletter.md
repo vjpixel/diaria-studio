@@ -47,7 +47,7 @@ npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 Se o script retornar exit code != 0, abortar — formato do `02-reviewed.md` precisa ser corrigido manualmente.
 
 ```bash
-# Extrair conteúdo completo como JSON (destaques + seções + É AI? + emojis + imagens)
+# Extrair conteúdo completo como JSON (destaques + seções + É IA? + emojis + imagens)
 npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
 ```
 
@@ -95,7 +95,7 @@ Para cada destaque (d1, d2, d3), preencher o bloco correspondente do template:
 4. **Corpo**: parágrafos do body
 5. **Por que isso importa**: heading + texto do why
 
-Para **É AI?**:
+Para **É IA?**:
 1. Label: `🖼️ É IA?`
 2. Imagem real: upload `01-eai-real.jpg`
 3. Imagem IA: upload `01-eai-ia.jpg`
@@ -148,7 +148,7 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
 - **Pré-extrair ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts --format json` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
-- **Template é obrigatório e verificável.** Selecionar exatamente o template configurado em `platform.config.json` → `publishing.newsletter.template` (ex: `"Default"`). Se não encontrar um template com esse nome exato, abortar com `{ "error": "template_not_found", "expected": "Default", "available": [...] }`. **Nunca usar "Blank" ou "blank" como fallback** — criar post sem template causa problemas estruturais (É AI? ausente, boxes não separados). Após criar o post, confirmar o template usado e gravar em `template_used` no output.
+- **Template é obrigatório e verificável.** Selecionar exatamente o template configurado em `platform.config.json` → `publishing.newsletter.template` (ex: `"Default"`). Se não encontrar um template com esse nome exato, abortar com `{ "error": "template_not_found", "expected": "Default", "available": [...] }`. **Nunca usar "Blank" ou "blank" como fallback** — criar post sem template causa problemas estruturais (É IA? ausente, boxes não separados). Após criar o post, confirmar o template usado e gravar em `template_used` no output.
 - **Login expirado = abortar.** Não tente re-logar.
 - **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
   ```json

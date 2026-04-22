@@ -260,8 +260,8 @@ runStage(3, "Social — LLM-dependent", () => {
   throw new Error("Requires LLM agent calls — not benchmarkable offline");
 }, true);
 
-// ---- Stage 4: É AI? (needs Gemini + Wikimedia — skip) ----
-runStage(4, "É AI? — external APIs", () => {}, true);
+// ---- Stage 4: É IA? (needs Gemini + Wikimedia — skip) ----
+runStage(4, "É IA? — external APIs", () => {}, true);
 
 // ---- Stage 5: Images ----
 runStage(5, "Images — Gemini generation + crop", () => {

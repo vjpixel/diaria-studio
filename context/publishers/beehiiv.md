@@ -20,7 +20,7 @@ Antes de abrir o Chrome, rodar os scripts de extração para ter todo o conteúd
 # Extrair destaques como JSON estruturado
 npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 
-# Extrair conteúdo completo como JSON (destaques + seções + É AI? + emojis + imagens)
+# Extrair conteúdo completo como JSON (destaques + seções + É IA? + emojis + imagens)
 npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
 ```
 
@@ -62,7 +62,7 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 5. Colar `body` (parágrafos)
 6. Colar heading "Por que isso importa:" + `why`
 
-**É AI?** — bloco separado:
+**É IA?** — bloco separado:
 1. Label: `🖼️ É IA?`
 2. Upload `01-eai-real.jpg` (primeiro) e `01-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
 3. Crédito: `eai.credit` do JSON
@@ -107,7 +107,7 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 - O nome do template é case-sensitive. Se a conta tem `"Default"` mas o config tem `"default"`, falha.
 - Beehiiv às vezes mostra modal de "Upgrade" para features pagas — fechar e prosseguir; o save de rascunho é gratuito.
 - **Cor dos labels de seção.** Ao colar texto sobre um placeholder do template, o Beehiiv pode resetar a formatação (cor, negrito, tamanho) para o padrão (preto). Verificar se labels de categoria (topo de cada box de destaque) mantêm a cor verde original do template. Se perderam, re-aplicar manualmente.
-- **Boxes fundidos.** Se dois blocos aparecem dentro do mesmo container (ex: D2 e É AI? juntos), o conteúdo foi colado no lugar errado. Desfazer e recolar no container correto — cada seção do template tem seu próprio bloco.
+- **Boxes fundidos.** Se dois blocos aparecem dentro do mesmo container (ex: D2 e É IA? juntos), o conteúdo foi colado no lugar errado. Desfazer e recolar no container correto — cada seção do template tem seu próprio bloco.
 - **Blocos duplicados.** Templates podem ter blocos extras (ex: "Outras Notícias" duplicado) se o post foi criado a partir de edição anterior ou merge. Antes de preencher, verificar se cada seção tem exatamente 1 bloco — deletar duplicatas.
 
 ## Validação de sucesso

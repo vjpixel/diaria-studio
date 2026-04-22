@@ -37,7 +37,7 @@ interface StageTiming {
 // Map files to stages based on prefix
 function fileToStage(name: string): { stage: number; label: string } | null {
   if (name === "_internal/cost.json" || name === "_internal/cost.md") return { stage: 0, label: "Setup" };
-  if (name.startsWith("01-eai")) return { stage: 1, label: "É AI?" };
+  if (name.startsWith("01-eai")) return { stage: 1, label: "É IA?" };
   if (name.startsWith("01-") || name.startsWith("_internal/01-")) return { stage: 1, label: "Research" };
   if (name.startsWith("02-") || name.startsWith("_internal/02-")) return { stage: 2, label: "Writing" };
   if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 3, label: "Social" };
@@ -220,7 +220,7 @@ function printComparisonTable(editions: { label: string; timings: StageTiming[] 
   console.log(`${"=".repeat(80)}\n`);
 
   const allStages = [0, 1, 2, 3, 4, 5, 6, 7];
-  const labels = ["Setup", "Research", "Writing", "Social", "É AI?", "Images", "Newsletter", "Social pub"];
+  const labels = ["Setup", "Research", "Writing", "Social", "É IA?", "Images", "Newsletter", "Social pub"];
 
   // Header
   const hdr = ["Stage".padEnd(15), ...editions.map((e) => e.label.padEnd(12))].join(" | ");

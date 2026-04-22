@@ -20,8 +20,9 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 - Estilo **Van Gogh impasto**, alto contraste, proporção **2:1**.
 - **NUNCA** incluir resolução em pixels (ex: "1600x900px", "1920x1080px"). Proibido.
-- **Não** mencionar "Noite Estrelada" ou obras reconhecíveis de Van Gogh.
+- **Não** mencionar "Noite Estrelada" ou obras reconhecíveis de Van Gogh. Evitar céu noturno estrelado com pinceladas giratórias — produz clone de Noite Estrelada.
 - Descrição em português, concreta, com elementos visuais claros.
+- **Composição para crop.** A imagem D1 é usada em 2:1 (wide, newsletter) e 1:1 (square, redes sociais). O prompt deve garantir que os elementos principais fiquem **centrados e distribuídos horizontalmente**, sem depender de bordas verticais. Evitar cenas verticais (foguete decolando, prédio alto) que perdem sentido no crop 2:1. Preferir composições panorâmicas onde o crop preserva a narrativa visual.
 
 ## 3. Destaques
 

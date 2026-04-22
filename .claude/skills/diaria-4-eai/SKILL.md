@@ -5,7 +5,7 @@ description: Roda apenas o Stage 4 — busca a Foto do Dia da Wikimedia (POTD), 
 
 # /diaria-4-eai
 
-Dispara o Stage 4 da edição Diar.ia: busca a Foto do Dia da Wikimedia (POTD), gera uma versão similar por IA via Gemini, e produz os dois arquivos de imagem para o bloco "É AI?" (leitor tenta adivinhar qual foi feita por IA).
+Dispara o Stage 4 da edição Diar.ia: busca a Foto do Dia da Wikimedia (POTD), gera uma versão similar por IA via Gemini, e produz os dois arquivos de imagem para o bloco "É IA?" (leitor tenta adivinhar qual foi feita por IA).
 
 ## Argumentos
 
