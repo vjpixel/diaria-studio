@@ -10,6 +10,22 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 ## Input
 
 - `edition_dir`: ex: `data/editions/260418/`
+- `mode`: `"create"` (default) ou `"fix"`
+- `draft_url`: (só no modo fix) URL do rascunho existente no Beehiiv
+- `issues`: (só no modo fix) lista de problemas a corrigir, retornados pelo `review-test-email`
+
+## Modos de operação
+
+**Modo `create`** (default): cria o rascunho do zero, preenche, salva e envia teste. É o fluxo completo descrito abaixo.
+
+**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Abre o rascunho existente, corrige cada issue, salva e reenvia o email de teste. Pular etapas 1–5 (seleção de template, criação, preenchimento inicial) e ir direto para:
+1. Navegar para `draft_url`.
+2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv (ex: re-aplicar cor verde no label, separar boxes fundidos, deletar bloco duplicado).
+3. Salvar o rascunho.
+4. Reenviar email de teste (mesmo fluxo do passo 10 no modo create).
+5. Gravar `06-published.json` atualizado (incrementar `fix_attempts`).
+
+Se alguma issue não puder ser corrigida automaticamente (ex: não encontra o elemento no editor), registrar em `unfixable_issues[]` no output — o orchestrator reporta ao editor.
 
 ## Pré-requisitos
 
@@ -85,31 +101,6 @@ Seguir `context/publishers/beehiiv.md` na ordem:
     node -e "process.stdout.write(new Date().toISOString())"
     ```
     como `test_email_sent_at`.
-
-### 4b. Verificar email de teste
-
-Após envio, abrir o email de teste no Gmail para conferir visualmente. Seguir esta sequência:
-
-1. Aguardar 15 segundos para o email chegar: `Bash("sleep 15")`.
-2. Abrir nova aba: `mcp__Claude_in_Chrome__tabs_create_mcp` → `https://mail.google.com/`.
-3. Localizar o email de teste (assunto = título da edição, remetente = Diar.ia).
-4. Abrir o email e ler o conteúdo renderizado (`mcp__Claude_in_Chrome__read_page` ou `get_page_text`).
-5. **Checklist de verificação** — registrar cada item como ok/problema:
-   - [ ] Cor dos labels de categoria/seção (deve ser verde do template, não preto)
-   - [ ] Cada destaque (D1, D2, D3) em box separado (não fundidos)
-   - [ ] Box "É AI?" separado dos destaques (não fundido com D2 ou D3)
-   - [ ] Seções "Lançamentos", "Pesquisas", "Outras Notícias" — cada uma aparece no máximo 1 vez (sem duplicatas)
-   - [ ] Imagens carregando (pelo menos thumbnail visível)
-   - [ ] Links clicáveis e apontando para URLs corretas
-6. Fechar a aba do Gmail.
-7. Incluir resultado da verificação no output:
-   ```json
-   "test_email_check": {
-     "checked": true,
-     "issues": ["descrição do problema 1", "..."] 
-   }
-   ```
-   Se `issues` estiver vazio, tudo OK. Se houver problemas, o orchestrator mostrará ao editor no gate.
 
 ### 5. Gravar `06-published.json`
 

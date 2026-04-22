@@ -353,18 +353,48 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que falhe por outro motivo depois. Também reseta a cada resposta "retry" do usuário (nova rodada de 10).
   - **Nota:** entre tentativas, qualquer erro que **não** seja `chrome_disconnected` (ex: login expirado, erro de template) interrompe o loop e é tratado normalmente — não conta como tentativa.
 - Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
-- Ler `06-published.json` retornado.
+- Ler `06-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`.
+
+- **Loop de verificação e correção (até 10 iterações):**
+
+  Para `attempt` de 1 a 10:
+
+  1. **Verificar email de teste.** Disparar `review-test-email` (Sonnet) passando:
+     - `test_email` = `test_email_sent_to`
+     - `edition_title` = `title`
+     - `edition_dir`
+     - `attempt`
+  2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (30s × 2^(N-1), até 10 tentativas de reconexão). Após reconexão, re-disparar `review-test-email` (não `publish-newsletter`).
+  3. Se retornar `status: "email_not_found"`, logar warn e **sair do loop** (email pode ter demorado; não é um problema do rascunho).
+  4. Se `issues` estiver vazio: **sair do loop** — email aprovado automaticamente.
+  5. Se `issues` não estiver vazio:
+     - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10"`.
+     - Disparar `publish-newsletter` em **modo fix** passando:
+       - `edition_dir`
+       - `mode: "fix"`
+       - `draft_url`
+       - `issues` (a lista do reviewer)
+     - Se retornar `unfixable_issues[]` não vazio, logar warn e **sair do loop** — correção manual necessária.
+     - Caso contrário, continuar para a próxima iteração (re-verificar o email reenviado).
+
+  Após 10 iterações sem sucesso, logar warn: `"Loop de verificação atingiu 10 tentativas sem resolver todos os issues"`.
+
+  Armazenar resultado final: `test_email_check = { attempts: N, final_issues: [...], auto_fixed: true/false }`.
+
+- Ler `06-published.json` (pode ter sido atualizado pelo fix mode).
 - **GATE HUMANO:** mostrar:
   - URL do rascunho Beehiiv (`draft_url`)
-  - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
+  - Confirmação de envio do email de teste para `test_email_sent_to`
   - Template usado (`template_used`)
-  - **Resultado da verificação do email de teste** (`test_email_check`): se `issues` não estiver vazio, listar cada problema com `⚠️`. Exemplo:
-    ```
-    ⚠️ Problemas detectados no email de teste:
-       • Label de categoria com cor preta (deveria ser verde do template)
-       • Box D2 e É AI? fundidos no mesmo container
-    ```
-    Se `issues` estiver vazio: `"✅ Email de teste verificado — nenhum problema detectado."`
+  - **Resultado da verificação do email de teste:**
+    - Se `final_issues` vazio: `"✅ Email de teste verificado ({attempts} tentativa(s)) — nenhum problema detectado."`
+    - Se `final_issues` não vazio:
+      ```
+      ⚠️ Problemas restantes após {attempts} tentativa(s):
+         • {issue 1}
+         • {issue 2}
+      Corrija manualmente no rascunho antes de publicar.
+      ```
   - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
     ```
     📎 Suba as imagens manualmente no rascunho antes de publicar:
