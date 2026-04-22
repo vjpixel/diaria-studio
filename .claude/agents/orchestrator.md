@@ -156,6 +156,8 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
      ✏️  O scorer indicou 6 candidatos a destaque (⭐ D1–D6).
          Edite o arquivo e mantenha exatamente 3 marcadores ⭐ (remova os demais).
+         A ORDEM FÍSICA das linhas com ⭐ define D1/D2/D3 (de cima para baixo).
+         Para reordenar, basta mover a linha — o número original D{N} é ignorado.
          Se não editar, os 3 primeiros por rank (D1, D2, D3) serão usados automaticamente.
      ```
 
@@ -167,11 +169,12 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
   Quando aprovado:
   - **Fazer pull do MD** (o editor pode ter editado no Drive): rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`. Se o pull falhar, usar a versão local.
-  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐ D{N}` (formato: `- [score] Título ⭐ D{N} — https://url`). Ordenar por N crescente (D1 < D2 < D3).
-  - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD, buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
-  - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com D{N+1} do scorer."`.
-  - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (menor N), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas D1, D2, D3."`.
-  - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]`, preservando toda a estrutura do JSON original (buckets, runners_up etc.).
+  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐` (formato: `- [score] Título ⭐ D{N} — https://url`). **A ordem de D1/D2/D3 é determinada pela posição física no arquivo (de cima para baixo), NÃO pelo número D{N} original do scorer.** A primeira linha com `⭐` = D1, a segunda = D2, a terceira = D3. Isso permite ao editor reordenar destaques simplesmente movendo linhas.
+  - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD (na ordem física extraída), buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
+  - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com candidatos do scorer."`.
+  - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (por posição no arquivo), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas os 3 primeiros por posição."`.
+  - **Renumerar highlights[]**: atribuir `rank: 1` ao primeiro, `rank: 2` ao segundo, `rank: 3` ao terceiro — independente do rank original do scorer.
+  - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]` (renumeradas), preservando toda a estrutura do JSON original (buckets, runners_up etc.).
   - **Re-renderizar o MD a partir do `01-approved.json`** para manter JSON e MD em sincronia (o editor pode ter mexido em ⭐, mas outras mudanças no JSON também precisam refletir):
     ```bash
     npx tsx scripts/render-categorized-md.ts \

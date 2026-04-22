@@ -239,6 +239,8 @@ function main() {
   const instructions =
     `\n> O scorer indicou até 6 candidatos a destaque (marcados com ⭐ D1–D6).\n` +
     `> Mantenha **exatamente 3** marcadores ⭐ (remova os demais ou mova para outros artigos).\n` +
+    `> **A ordem dos destaques segue a posição no arquivo** (de cima para baixo = D1, D2, D3).\n` +
+    `> Para reordenar, basta mover a linha — o número D{N} original é ignorado.\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
 
   const sections = [
