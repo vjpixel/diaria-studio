@@ -91,6 +91,16 @@ if (destaques.length !== 3) {
   process.exit(1);
 }
 
+// Every destaque must have a source URL — publish-newsletter depends on it for
+// the "Ler mais" link. URL is the last line starting with http inside the block;
+// an empty value means the writer forgot it or the block is malformed.
+const missingUrl = destaques.filter(d => !d.url);
+if (missingUrl.length > 0) {
+  const which = missingUrl.map(d => `D${d.n} ("${d.title}")`).join(', ');
+  console.error(`Destaque(s) sem URL de fonte: ${which}. Adicione a URL como última linha do bloco em ${path}.`);
+  process.exit(1);
+}
+
 // ------------------------------------------------------------------
 // Title/subtitle helpers for Beehiiv (publish-newsletter uses these).
 // Subtitle = D2 title + " | " + D3 title, truncated to <= 80 chars.

@@ -40,9 +40,22 @@ if (!edition || !imageDate || !title || !url) {
 }
 
 const LOG_PATH = 'data/eai-used.json';
-const log: UsedEntry[] = fs.existsSync(LOG_PATH)
-  ? JSON.parse(fs.readFileSync(LOG_PATH, 'utf8'))
-  : [];
+
+// Schema changed from { used: [...] } (legacy) to top-level array.
+// Migrate on read so a stale local file doesn't crash log.push().
+function loadLog(): UsedEntry[] {
+  if (!fs.existsSync(LOG_PATH)) return [];
+  const parsed = JSON.parse(fs.readFileSync(LOG_PATH, 'utf8'));
+  if (Array.isArray(parsed)) return parsed as UsedEntry[];
+  if (parsed && Array.isArray((parsed as { used?: unknown }).used)) {
+    return (parsed as { used: UsedEntry[] }).used;
+  }
+  throw new Error(
+    `Unexpected shape in ${LOG_PATH}: expected array or { used: [...] }. Delete or fix the file and retry.`
+  );
+}
+
+const log: UsedEntry[] = loadLog();
 
 const entry: UsedEntry = {
   edition_date: edition,
