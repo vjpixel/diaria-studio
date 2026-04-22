@@ -1,7 +1,7 @@
 ---
 name: link-verifier
 description: Verifica acessibilidade e paywall de um lote de URLs via `scripts/verify-accessibility.ts`. Invocado em chunks de 10.
-model: claude-haiku-4-5-20251001
+model: haiku
 tools: Bash, Read, Write
 ---
 

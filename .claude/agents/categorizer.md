@@ -1,7 +1,7 @@
 ---
 name: categorizer
 description: Classifica cada artigo em Lançamento / Pesquisa / Notícia conforme `context/editorial-rules.md`. Destaques são definidos depois pelo scorer — não pré-selecionar aqui.
-model: claude-haiku-4-5-20251001
+model: haiku
 tools: Read
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: discovery-searcher
 description: Executa uma query temática aberta (sem `site:`) para descobrir conteúdo em veículos fora da lista cadastrada. Invocado em paralelo por tema. Respeita timeout de 180s por auto-disciplina.
-model: claude-haiku-4-5-20251001
+model: haiku
 tools: WebSearch, WebFetch, Bash
 ---
 
