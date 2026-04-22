@@ -1,0 +1,274 @@
+{
+  "highlights": [
+    {
+      "rank": 1,
+      "score": 88,
+      "reason": "Geopolítica de IA com impacto direto para o Brasil: acordo Brasil-China para soberania digital em LLMs de português, fonte primária governamental (SERPRO).",
+      "article": {
+        "title": "Governo firma acordo com China para desenvolver capacidade nacional de IA",
+        "url": "https://www.serpro.gov.br/menu/noticias/noticias-2026/governo-firma-acordo-com-china-para-desenvolver-capacidade-nacional-de-ia-e-sustentar-a-inteligencia-do-estado",
+        "date": "2026-04-20",
+        "source": "SERPRO",
+        "summary": "Governo brasileiro formalizou acordo de cooperação com iFlytek para desenvolver capacidades nacionais de IA, focando em modelos de linguagem adaptados ao português brasileiro e sistemas de tradução soberanos.",
+        "category": "noticias",
+        "score": 88
+      },
+      "url": "https://www.serpro.gov.br/menu/noticias/noticias-2026/governo-firma-acordo-com-china-para-desenvolver-capacidade-nacional-de-ia-e-sustentar-a-inteligencia-do-estado"
+    },
+    {
+      "rank": 2,
+      "score": 85,
+      "reason": "Impacto econômico concreto e mensurado no Brasil: dados FGV/IBRE quantificam 5% menos emprego e 7% de queda de renda para jovens, escala de 30 milhões de trabalhadores.",
+      "article": {
+        "title": "IA já reduz emprego e renda de jovens brasileiros, diz estudo",
+        "url": "https://olhardigital.com.br/2026/04/19/inteligencia-artificial/ia-ja-reduz-emprego-e-renda-de-jovens-brasileiros-diz-estudo/",
+        "date": "2026-04-19",
+        "source": "Olhar Digital",
+        "summary": "Estudo do FGV Ibre mostra que jovens brasileiros de 18 a 29 anos expostos à IA têm 5% menos chance de emprego e renda 7% menor. Pesquisa quantifica impacto em aproximadamente 30 milhões de trabalhadores brasileiros.",
+        "category": "noticias",
+        "score": 85
+      },
+      "url": "https://olhardigital.com.br/2026/04/19/inteligencia-artificial/ia-ja-reduz-emprego-e-renda-de-jovens-brasileiros-diz-estudo/"
+    },
+    {
+      "rank": 3,
+      "score": 82,
+      "reason": "Novo modelo com benchmarks claros (SWE-bench Pro, Terminal-Bench 2.0, 73.4 no SWE-bench Verified) e variante aberta — alta relevância para audiência de engenharia.",
+      "article": {
+        "title": "Alibaba Drops Qwen 3.6 Max Preview—Its Most Powerful Model Yet",
+        "url": "https://decrypt.co/364948/alibaba-qwen-3-6-max-preview-most-powerful-model",
+        "date": "2026-04-20",
+        "source": "Decrypt",
+        "summary": "Alibaba lançou o Qwen3.6-Max-Preview conquistando o primeiro lugar em seis benchmarks de codificação: SWE-bench Pro, Terminal-Bench 2.0, SkillsBench, QwenClawBench, QwenWebBench e SciCode. Variante aberta Qwen3.6-35B-A3B alcança 73.4 no SWE-bench Verified.",
+        "category": "noticias",
+        "score": 82
+      },
+      "url": "https://decrypt.co/364948/alibaba-qwen-3-6-max-preview-most-powerful-model"
+    },
+    {
+      "rank": 4,
+      "score": 80,
+      "reason": "Garante bucket lancamento e é altamente prático para audiência de engenharia: Codex expandido globalmente para empresas com capacidades agentic, fonte primária OpenAI.",
+      "article": {
+        "title": "OpenAI expands Codex to enterprises worldwide",
+        "url": "https://openai.com/index/scaling-codex-to-enterprises-worldwide/",
+        "date": "2026-04-21",
+        "source": "OpenAI",
+        "summary": "OpenAI expandiu o Codex, seu assistente de programação, para empresas globalmente, com novas integrações e capacidades agentic para automação de tarefas de software em escala corporativa.",
+        "category": "lancamento",
+        "score": 80
+      },
+      "url": "https://openai.com/index/scaling-codex-to-enterprises-worldwide/"
+    },
+    {
+      "rank": 5,
+      "score": 84,
+      "reason": "Regulação de IA com impacto eleitoral direto no Brasil (TSE, eleições 2026): sete resoluções concretas com restrições a deepfakes — alta tração por combinar regulação + governo + eleições.",
+      "article": {
+        "title": "Eleições 2026: veja como o TSE limitará a Inteligência Artificial no pleito",
+        "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426",
+        "date": "2026-04-21",
+        "source": "Correio 24h",
+        "summary": "TSE estabeleceu sete resoluções para regulação de IA nas eleições 2026, com limites e mecanismos de inspeção para uso de tecnologia em campanhas eleitorais, incluindo restrições a deepfakes e manipulação de conteúdo.",
+        "category": "noticias",
+        "score": 84
+      },
+      "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426"
+    },
+    {
+      "rank": 6,
+      "score": 76,
+      "reason": "Garante bucket pesquisa com gancho prático imediato: PRISM decompõe alucinações em quatro dimensões diagnósticas com 9.448 instâncias — útil para profissionais que avaliam LLMs em produção.",
+      "article": {
+        "title": "PRISM: Probing Reasoning, Instruction, and Source Memory in LLM Hallucinations",
+        "url": "https://arxiv.org/abs/2604.16909",
+        "date": "2026-04-19",
+        "source": "arXiv",
+        "summary": "Benchmark controlado que desintegra alucinações em quatro dimensões: conhecimento ausente, erros de conhecimento, erros de raciocínio e erros de seguimento de instruções. Contém 9.448 instâncias em 65 tarefas para avaliação diagnóstica granular.",
+        "category": "pesquisa",
+        "score": 76
+      },
+      "url": "https://arxiv.org/abs/2604.16909"
+    }
+  ],
+  "runners_up": [
+    {
+      "score": 78,
+      "reason": "ChatGPT Images 2.0 é lançamento concreto com produto relevante (resolução 2K, raciocínio integrado, descontinuação DALL-E) — ficou de fora para evitar dois lançamentos OpenAI na mesma edição.",
+      "article": {
+        "title": "Introducing ChatGPT Images 2.0",
+        "url": "https://openai.com/index/introducing-chatgpt-images-2-0/",
+        "date": "2026-04-21",
+        "source": "OpenAI",
+        "summary": "OpenAI lançou ChatGPT Images 2.0 (gpt-image-2) com capacidades de raciocínio integradas, suportando resolução 2K, múltiplos aspectos e geração de até 8 imagens coerentes em um único prompt. DALL-E 2 e DALL-E 3 serão descontinuados em 12 de maio.",
+        "category": "lancamento",
+        "score": 78
+      },
+      "url": "https://openai.com/index/introducing-chatgpt-images-2-0/"
+    },
+    {
+      "score": 68,
+      "reason": "LLM Reasoning Is Latent é paper de posição original sobre como modelos raciocinam — mais teórico que PRISM, ficou como segundo candidato de pesquisa.",
+      "article": {
+        "title": "LLM Reasoning Is Latent, Not the Chain of Thought",
+        "url": "https://arxiv.org/abs/2604.15726",
+        "date": "2026-04-20",
+        "source": "arXiv",
+        "summary": "Artigo de posição argumenta que o raciocínio em LLMs deve ser estudado como formação de trajetória de estado latente em vez de como cadeia de pensamento superficial. Contribui para entender como modelos realmente raciocinam internamente.",
+        "category": "pesquisa",
+        "score": 68
+      },
+      "url": "https://arxiv.org/abs/2604.15726"
+    }
+  ],
+  "lancamento": [
+    {
+      "title": "OpenAI expands Codex to enterprises worldwide",
+      "url": "https://openai.com/index/scaling-codex-to-enterprises-worldwide/",
+      "date": "2026-04-21",
+      "source": "OpenAI",
+      "summary": "OpenAI expandiu o Codex, seu assistente de programação, para empresas globalmente, com novas integrações e capacidades agentic para automação de tarefas de software em escala corporativa.",
+      "category": "lancamento",
+      "score": 80
+    },
+    {
+      "title": "Introducing ChatGPT Images 2.0",
+      "url": "https://openai.com/index/introducing-chatgpt-images-2-0/",
+      "date": "2026-04-21",
+      "source": "OpenAI",
+      "summary": "OpenAI lançou ChatGPT Images 2.0 (gpt-image-2) com capacidades de raciocínio integradas, suportando resolução 2K, múltiplos aspectos e geração de até 8 imagens coerentes em um único prompt. DALL-E 2 e DALL-E 3 serão descontinuados em 12 de maio.",
+      "category": "lancamento",
+      "score": 78
+    }
+  ],
+  "pesquisa": [
+    {
+      "title": "PRISM: Probing Reasoning, Instruction, and Source Memory in LLM Hallucinations",
+      "url": "https://arxiv.org/abs/2604.16909",
+      "date": "2026-04-19",
+      "source": "arXiv",
+      "summary": "Benchmark controlado que desintegra alucinações em quatro dimensões: conhecimento ausente, erros de conhecimento, erros de raciocínio e erros de seguimento de instruções. Contém 9.448 instâncias em 65 tarefas para avaliação diagnóstica granular.",
+      "category": "pesquisa",
+      "score": 76
+    },
+    {
+      "title": "LLM Reasoning Is Latent, Not the Chain of Thought",
+      "url": "https://arxiv.org/abs/2604.15726",
+      "date": "2026-04-20",
+      "source": "arXiv",
+      "summary": "Artigo de posição argumenta que o raciocínio em LLMs deve ser estudado como formação de trajetória de estado latente em vez de como cadeia de pensamento superficial. Contribui para entender como modelos realmente raciocinam internamente.",
+      "category": "pesquisa",
+      "score": 68
+    }
+  ],
+  "noticias": [
+    {
+      "title": "Governo firma acordo com China para desenvolver capacidade nacional de IA",
+      "url": "https://www.serpro.gov.br/menu/noticias/noticias-2026/governo-firma-acordo-com-china-para-desenvolver-capacidade-nacional-de-ia-e-sustentar-a-inteligencia-do-estado",
+      "date": "2026-04-20",
+      "source": "SERPRO",
+      "summary": "Governo brasileiro formalizou acordo de cooperação com iFlytek para desenvolver capacidades nacionais de IA, focando em modelos de linguagem adaptados ao português brasileiro e sistemas de tradução soberanos.",
+      "category": "noticias",
+      "score": 88
+    },
+    {
+      "title": "IA já reduz emprego e renda de jovens brasileiros, diz estudo",
+      "url": "https://olhardigital.com.br/2026/04/19/inteligencia-artificial/ia-ja-reduz-emprego-e-renda-de-jovens-brasileiros-diz-estudo/",
+      "date": "2026-04-19",
+      "source": "Olhar Digital",
+      "summary": "Estudo do FGV Ibre mostra que jovens brasileiros de 18 a 29 anos expostos à IA têm 5% menos chance de emprego e renda 7% menor. Pesquisa quantifica impacto em aproximadamente 30 milhões de trabalhadores brasileiros.",
+      "category": "noticias",
+      "score": 85
+    },
+    {
+      "title": "Eleições 2026: veja como o TSE limitará a Inteligência Artificial no pleito",
+      "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426",
+      "date": "2026-04-21",
+      "source": "Correio 24h",
+      "summary": "TSE estabeleceu sete resoluções para regulação de IA nas eleições 2026, com limites e mecanismos de inspeção para uso de tecnologia em campanhas eleitorais, incluindo restrições a deepfakes e manipulação de conteúdo.",
+      "category": "noticias",
+      "score": 84
+    },
+    {
+      "title": "Alibaba Drops Qwen 3.6 Max Preview—Its Most Powerful Model Yet",
+      "url": "https://decrypt.co/364948/alibaba-qwen-3-6-max-preview-most-powerful-model",
+      "date": "2026-04-20",
+      "source": "Decrypt",
+      "summary": "Alibaba lançou o Qwen3.6-Max-Preview conquistando o primeiro lugar em seis benchmarks de codificação: SWE-bench Pro, Terminal-Bench 2.0, SkillsBench, QwenClawBench, QwenWebBench e SciCode. Variante aberta Qwen3.6-35B-A3B alcança 73.4 no SWE-bench Verified.",
+      "category": "noticias",
+      "score": 82
+    },
+    {
+      "title": "AI Research Lab NeoCognition Lands $40M Seed to Build Agents That Learn Like Humans",
+      "url": "https://techcrunch.com/2026/04/21/ai-research-lab-neocognition-lands-40m-seed-to-build-agents-that-learn-like-humans/",
+      "date": "2026-04-21",
+      "source": "TechCrunch",
+      "summary": "NeoCognition emergiu do sigilo com USD 40 milhões em seed funding para desenvolver agentes IA que aprendem como humanos. A empresa visa vender sistemas de agentes para empresas e startups SaaS que buscam criar workers automatizados.",
+      "category": "noticias",
+      "score": 65
+    },
+    {
+      "title": "NVIDIA Launches Ising, the World's First Open AI Models for Quantum Computing",
+      "url": "https://nvidianews.nvidia.com/news/nvidia-launches-ising-the-worlds-first-open-ai-models-to-accelerate-the-path-to-useful-quantum-computers",
+      "date": "2026-04-21",
+      "source": "Nvidia",
+      "summary": "NVIDIA lançou Ising, os primeiros modelos abertos de IA para acelerar o caminho para computadores quânticos úteis, combinando machine learning com simulações de física quântica.",
+      "category": "noticias",
+      "score": 62
+    },
+    {
+      "title": "NVIDIA Expands Open Model Families for Agentic, Physical and Healthcare AI",
+      "url": "https://nvidianews.nvidia.com/news/nvidia-expands-open-model-families-to-power-the-next-wave-of-agentic-physical-and-healthcare-ai",
+      "date": "2026-04-21",
+      "source": "Nvidia",
+      "summary": "NVIDIA expandiu famílias de modelos abertos para IA agêntica, física e de saúde, incluindo novos modelos para robótica e aplicações médicas.",
+      "category": "noticias",
+      "score": 60
+    },
+    {
+      "title": "Grafana Labs Targets the AI Blind Spot with New Observability Tools at GrafanaCON 2026",
+      "url": "https://grafana.com/press/2026/04/21/grafana-labs-targets-the-ai-blind-spot-with-new-observability-tools-announced-at-grafanacon-2026/",
+      "date": "2026-04-21",
+      "source": "Grafana Labs",
+      "summary": "Grafana Labs anunciou AI Observability em preview público para monitorar agentes LLM em tempo real, Grafana Assistant expandido com API para ferramentas de terceiros, e o benchmark open-source o11y-bench para avaliar agentes IA.",
+      "category": "noticias",
+      "score": 58
+    },
+    {
+      "title": "With ChatGPT Images 2.0, OpenAI now 'thinks' before it draws",
+      "url": "https://www.thenewstack.io/chatgpt-images-20-openai/",
+      "date": "2026-04-21",
+      "source": "The New Stack",
+      "summary": "Análise técnica do ChatGPT Images 2.0, explicando como a integração de capacidades de raciocínio permite ao modelo considerar múltiplas abordagens antes de gerar imagens.",
+      "category": "noticias",
+      "score": 48
+    },
+    {
+      "title": "Brasil firma parceria com China para desenvolver inteligência artificial",
+      "url": "https://www.correiobraziliense.com.br/economia/2026/04/7396702-brasil-firma-parceria-com-china-para-desenvolver-inteligencia-artificial.html",
+      "date": "2026-04-20",
+      "source": "Correio Braziliense",
+      "summary": "Governo brasileiro firmou acordo de cooperação com empresa chinesa iFlytek para desenvolver capacidades nacionais de IA focadas em modelos de linguagem adaptados ao português brasileiro, dentro de estratégia de soberania digital.",
+      "category": "noticias",
+      "score": 42
+    },
+    {
+      "title": "Alibaba releases Qwen3.6-Max-Preview with strongest agent programming capabilities",
+      "url": "https://cntechpost.com/2026/04/20/alibaba-releases-qwen3-6-max-preview-stronger-instruction-following-capabilities/",
+      "date": "2026-04-20",
+      "source": "CnTechPost",
+      "summary": "Alibaba lançou o Qwen3.6-Max-Preview que lidera seis benchmarks de programação com janela de contexto de 256K tokens e parâmetro preserve_thinking para raciocínio de cadeia de pensamento.",
+      "category": "noticias",
+      "score": 38
+    },
+    {
+      "title": "With slow market and AI shifts, college seniors rethink the job hunt",
+      "url": "https://www.mprnews.org/episode/2026/04/21/with-slow-market-and-ai-shifts-college-seniors-rethink-the-job-hunt",
+      "date": "2026-04-21",
+      "source": "MPR News",
+      "summary": "Formandos universitários americanos estão repensando a busca de emprego em um mercado afetado pela automação com IA, com geração Z enfrentando declínio de 20% em contratações de entrada desde 2024.",
+      "category": "noticias",
+      "score": 30
+    }
+  ]
+}
