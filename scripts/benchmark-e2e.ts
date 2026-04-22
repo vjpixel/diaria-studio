@@ -2,14 +2,14 @@
 /**
  * benchmark-e2e.ts
  *
- * End-to-end pipeline benchmark that runs Stages 1-5 with real API calls
- * but NO human gates and NO publishing (Stages 6-7 skipped).
+ * End-to-end pipeline benchmark that runs Stages 1-4 with real API calls
+ * but NO human gates and NO publishing (Stages 5-6 skipped).
  *
  * This measures real-world performance of research, writing, social
  * generation, and image creation — the stages we can optimize.
  *
  * Usage:
- *   npx tsx scripts/benchmark-e2e.ts --date 2026-04-23 [--window 3] [--skip-images]
+ *   npx tsx scripts/benchmark-e2e.ts --date AAMMDD [--window 3] [--skip-images]
  *
  * Creates a timestamped benchmark edition in data/editions/bench-{YYMMDD}-{timestamp}/
  * so it doesn't conflict with real editions. Outputs timing data to stdout
@@ -18,7 +18,7 @@
  * Requirements:
  *   - GEMINI_API_KEY set (for image generation, unless --skip-images)
  *   - context/sources.md, past-editions.md, editorial-rules.md exist
- *   - No browser/Chrome needed (Stages 6-7 skipped)
+ *   - No browser/Chrome needed (Stages 5-6 skipped)
  */
 
 import { execSync, execFileSync } from "node:child_process";

@@ -26,7 +26,7 @@ O fluxo editorial é modelado como 7 stages com gate humano em cada um. A execu�
 2. Alternativamente, rodar stages isolados:
    - **Fase 1** (textos): `/diaria-1-pesquisa` (também refresca dedup + drena inbox), `/diaria-2-escrever`, `/diaria-3-social`.
    - **Fase 2** (imagens): `/diaria-4-eai` (É AI?), `/diaria-5-imagens [d1|d2|d3]` (Stage 4).
-   - **Fase 3** (publicação): `/diaria-6-publicar [newsletter|social|all]` (Stages 6 + 7).
+   - **Fase 3** (publicação): `/diaria-6-publicar [newsletter|social|all]` (Stages 5 + 6).
 3. Skills auxiliares (debug, raramente usadas):
    - `/diaria-refresh-dedup` — testa conexão com Beehiiv MCP.
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.

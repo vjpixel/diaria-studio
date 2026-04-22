@@ -1,6 +1,6 @@
 # Browser Publish Setup — Diar.ia Studio
 
-Setup do MCP **Claude in Chrome** para Stages 6 e 7 (publicação automatizada da newsletter no Beehiiv e dos 6 posts sociais no LinkedIn + Facebook).
+Setup do MCP **Claude in Chrome** para Stages 5 e 6 (publicação automatizada da newsletter no Beehiiv e dos 6 posts sociais no LinkedIn + Facebook).
 
 ---
 

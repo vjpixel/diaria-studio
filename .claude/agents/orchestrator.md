@@ -27,7 +27,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 ### 0. Setup
 - `edition_date` é recebido no formato `AAMMDD` (ex: `260423`). Usar diretamente como diretório: `data/editions/{edition_date}/`.
 - Converter para ISO quando precisar de Date math: `Bash("node -e \"const s='{edition_date}';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6))\"")`. Armazenar como `edition_iso` (ex: `2026-04-23`). Usar `edition_iso` em todo `new Date()`.
-- Criar o diretório se não existir.
+- Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator (`/diaria-edicao` ou `/diaria-1-pesquisa`) **já perguntou e confirmou** a janela de publicação aceita com o usuário antes de disparar. Você recebe `window_days` (inteiro ≥ 1) no prompt da Task. **Se não receber** (retrocompat ou invocação direta sem skill), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via `Bash("node -e \"const d=new Date('{edition_iso}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))\"")`. Armazenar `window_days` como variável de sessão — usado em Stage 1 (pesquisa + dedup + research-reviewer).
 - **Receber `test_mode` (opcional, default `false`).** Se `true`:
   - Auto-aprovar todos os gates (ver Princípio 2).
@@ -304,7 +304,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - **Gerar imagens via script (sem Task).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default):
   ```bash
   npx tsx scripts/image-generate.ts \
-    --editorial data/editions/{AAMMDD}/02-d{N}-prompt.md \
+    --editorial data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md \
     --out-dir data/editions/{AAMMDD}/ \
     --destaque d{N}
   ```
@@ -313,7 +313,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - **GATE HUMANO:** mostrar os 4 paths gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 4, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 5 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
+    | 4 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
 
@@ -395,7 +395,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - Opções: aprovar (segue para Stage 6) / regerar (re-disparar `publish-newsletter`).
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
     ```
-    | 6 | {stage_start} | {now} | publish_newsletter:1 | 0 | 1 |
+    | 5 | {stage_start} | {now} | publish_newsletter:1 | 0 | 1 |
     ```
 
 ### 6. Stage 6 — Publicar social (LinkedIn + Facebook)
@@ -404,9 +404,9 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 6 --files 03-social.md,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
 - Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` (Stage 4). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
 
-#### 7a. Facebook — via Graph API (script, ~30s)
+#### 6a. Facebook — via Graph API (script, ~30s)
 
-- Rodar em paralelo com 7b:
+- Rodar em paralelo com 6b:
   ```bash
   npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing
   ```
@@ -419,11 +419,11 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - Append imediato em `06-social-published.json` após cada post.
 - Se o script falhar (token expirado, etc.), logar o erro e continuar — não bloqueia LinkedIn.
 
-#### 7b. LinkedIn — via Claude in Chrome (browser automation)
+#### 6b. LinkedIn — via Claude in Chrome (browser automation)
 
 - Disparar `publish-social` com `edition_dir = data/editions/{AAMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
-- O agente publish-social é resume-aware e pula posts já em `06-social-published.json` (incluindo os facebook posts do 7a).
-- Na prática, se 7a completou com sucesso, publish-social só precisa postar os 3 LinkedIn posts.
+- O agente publish-social é resume-aware e pula posts já em `06-social-published.json` (incluindo os facebook posts do 6a).
+- Na prática, se 6a completou com sucesso, publish-social só precisa postar os 3 LinkedIn posts.
 - **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
   1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, ... 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
   2. Logar warn: `"chrome_disconnected em Stage 6, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
@@ -440,7 +440,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - Erros que não sejam `chrome_disconnected` interrompem o loop e são tratados normalmente.
 - Se algum post retornar `status: "failed"` com `reason` de login expirado, logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
 
-#### Gate humano (após 7a + 7b)
+#### Gate humano (após 6a + 6b)
 
 - Ler `06-social-published.json` final.
 - **GATE HUMANO:** mostrar tabela com 6 linhas:
@@ -457,7 +457,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - Opções: aprovar (encerra pipeline) / re-rodar (recupera failed) / regenerar individual (TODO).
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 6, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 7 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
+    | 6 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
 

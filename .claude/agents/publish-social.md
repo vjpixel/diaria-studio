@@ -76,7 +76,7 @@ Para cada combinação:
     process.stdout.write(body);
   "
   ```
-- Imagem: D1 usa `{edition_dir}/04-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/05-d{N}.jpg`
+- Imagem: D1 usa `{edition_dir}/04-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/04-d{N}.jpg`
 
 **c. Ler playbook:** `context/publishers/{platform}.md`.
 

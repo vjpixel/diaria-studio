@@ -11,7 +11,7 @@
  *     --destaque d1
  *
  * Saída: D1 → 04-d1-2x1.jpg (1600×800) + 04-d1-1x1.jpg (800×800 center crop)
- *        D2/D3 → 05-d{N}.jpg (1024×1024 native Gemini)
+ *        D2/D3 → 04-d{N}.jpg (1024×1024 native Gemini)
  *        Imprime o caminho do JPG principal em stdout.
  */
 
@@ -85,8 +85,8 @@ function main() {
 
   // Gravar JSON de prompt
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
-  const sdPromptPath = `${normalizedOutDir}05-${destaque}-sd-prompt.json`;
-  const outJpgPath = `${normalizedOutDir}05-${destaque}.jpg`;
+  const sdPromptPath = `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
+  const outJpgPath = `${normalizedOutDir}04-${destaque}.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2), "utf8");
@@ -114,8 +114,8 @@ function main() {
 
   // D1: salvar 1600×800 como 04-d1-2x1.jpg, crop centro para 800×800 como 04-d1-1x1.jpg
   if (isD1) {
-    const wideJpgPath = `${normalizedOutDir}05-${destaque}-2x1.jpg`;
-    const squareJpgPath = `${normalizedOutDir}05-${destaque}-1x1.jpg`;
+    const wideJpgPath = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
+    const squareJpgPath = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
     const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
 
     // Renomear o output original (1600×800) para -2x1
