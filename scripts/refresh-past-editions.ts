@@ -76,7 +76,7 @@ function renderMarkdown(posts: Post[]): string {
     `**atualizado em:** ${new Date().toISOString().slice(0, 10)}`,
     `**edições carregadas:** ${posts.length}`,
     "",
-    "Usado pelo `deduplicator` para evitar repetir links ou temas das últimas edições.",
+    "Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.",
     "",
     "---",
     "",

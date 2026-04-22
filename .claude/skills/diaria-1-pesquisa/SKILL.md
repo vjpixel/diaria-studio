@@ -16,7 +16,7 @@ Executa só o Stage 1 da pipeline.
 1. Verifique pré-requisitos: `context/sources.md` e `context/audience-profile.md` (ambos não-placeholder). `past-editions.md` é regenerado automaticamente pelo orchestrator — não precisa estar atualizado.
 2. Dispare o `orchestrator` com instrução: rodar **Stage 0 (refresh dedup automático) + Stage 1** e pausar no gate ao final.
 
-O orchestrator executa o refresh de `past-editions.md`, depois o paralelismo do Stage 1 (source-researcher × N fontes + discovery-searcher × M queries + link-verifier + deduplicator + categorizer + scorer).
+O orchestrator executa o refresh de `past-editions.md`, depois o paralelismo do Stage 1 (source-researcher × N fontes + discovery-searcher × M queries + link-verifier + `scripts/dedup.ts` + categorizer + scorer).
 
 ## Output
 

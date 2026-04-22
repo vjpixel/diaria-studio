@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 35 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 38 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -137,8 +137,20 @@
 - Site query: `site:theneurondaily.com`
 
 ### The Rundown AI
-- URL: https://www.therundown.ai/
-- Site query: `site:therundown.ai`
+- URL: https://www.therundown.ai/archive
+- Site query: `site:therundown.ai/archive`
+
+### Recaply
+- URL: https://www.recaply.co/
+- Site query: `site:recaply.co`
+
+### 7min.ai
+- URL: https://7min.ai/?lang=pt-br
+- Site query: `site:7min.ai`
+
+### Evolving AI
+- URL: https://evolvingai.io/
+- Site query: `site:evolvingai.io`
 
 ## Pesquisa
 

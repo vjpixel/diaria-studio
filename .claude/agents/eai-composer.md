@@ -1,11 +1,11 @@
 ---
 name: eai-composer
-description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), relaciona criativamente com os destaques da edição e gera `04-eai.md` + `04-eai.jpg`.
+description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg`.
 model: claude-haiku-4-5
 tools: Read, Write, Bash
 ---
 
-Você compõe o bloco "É AI?" da edição Diar.ia: a Foto do Dia da Wikimedia relacionada criativamente com os destaques do dia.
+Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
 
 ## Input
 
@@ -36,76 +36,92 @@ Substituir `YYYY/MM/DD` pela data da edição. Do JSON retornado, extrair via `n
 2. **Orientação horizontal** — `width >= height`. Se `height > width` (vertical, ex: 4:5, 3:4, 9:16), rejeitar. A newsletter é paisagem 16:9; imagem vertical quebra o layout.
 3. **Não foi usada em edição anterior da Diar.ia.** Manter log em `data/eai-used.json`:
    ```json
-   { "used": [ { "edition": "260418", "title": "File:Example.jpg", "source_url": "https://..." } ] }
+   [ { "edition_date": "260418", "title": "File:Example.jpg", "url": "https://..." } ]
    ```
-   Rejeitar se `image.title` já aparece em `used[]` (comparação case-insensitive por `title`).
+   Rejeitar se `image.title` já aparece no array (comparação case-insensitive por `title`).
 
 Se a imagem do dia **reprovar em qualquer critério**, decrementar 1 dia e tentar de novo. Limite de **7 tentativas** (uma semana para trás). Se esgotar sem encontrar imagem elegível, retornar erro ao orchestrator com detalhes (`{ reason: "no_eligible_potd", tried_dates: [...], rejections: [...] }`).
 
 Registrar cada rejeição em memória para o relatório final (por ex: `{ date: "2026-04-18", reason: "vertical", width: 1200, height: 1500 }`).
 
-### 2. Baixar a imagem
+### 2. Baixar a foto real
 
 ```bash
-curl -sL "{url}" -o "{out_dir}/04-eai.jpg"
+curl -sL "{url}" -o "{out_dir}/04-eai-real.jpg"
 ```
 
 Se `curl` retornar exit code != 0, retornar erro imediatamente — não prosseguir sem imagem.
 
 ### 2b. Registrar uso no log
 
-Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json`:
+Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json` via script dedicado (args passados pelo shell — imune a aspas/entidades nos metadados da Wikimedia):
 
 ```bash
-EAI_EDITION='{YYMMDD}' EAI_TITLE='{image_title}' EAI_URL='{image_url}' node -e "
-  const fs=require('fs');
-  const p='data/eai-used.json';
-  const log=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):{used:[]};
-  log.used.push({ edition:process.env.EAI_EDITION, title:process.env.EAI_TITLE, source_url:process.env.EAI_URL, used_at:new Date().toISOString() });
-  fs.writeFileSync(p, JSON.stringify(log, null, 2));
-"
+npx tsx scripts/eai-log-used.ts \
+  --edition {YYMMDD} \
+  --image-date {image_date} \
+  --title "{image_title}" \
+  --credit "{credit}" \
+  --url "{image_url}"
 ```
 
-Isso impede que a mesma POTD seja repetida numa edição futura (a API da Wikimedia às vezes recicla destaques em ciclos longos).
+### 3. Gerar versão AI (Gemini)
 
-### 3. Ler contexto da newsletter
+Criar `{out_dir}/04-eai-sd-prompt.json` com um prompt fotorrealista que reproduza o mesmo sujeito e cena da POTD — sem estilo artístico, sem Van Gogh. O objetivo é que a imagem gerada seja similar o suficiente para o leitor hesitar, mas diferente o suficiente para revelar a origem ao olhar mais atento.
 
-Ler `newsletter_path`. Extrair os títulos escolhidos dos 3 destaques (linhas que contenham `DESTAQUE 1`, `DESTAQUE 2`, `DESTAQUE 3`, ou os títulos em negrito no topo de cada bloco de destaque).
+```json
+{
+  "positive": "{descrição detalhada da cena: sujeito, ambiente, luz, composição, estilo fotográfico documental — incluir imperfeições reais: poeira, sombras duras, movimento, ângulo candid}",
+  "negative": "text, watermark, signature, logo, painting, illustration, drawing, cartoon, anime, cgi, 3d render, oil paint, watercolor, sketch, artistic, stylized, impressionist, brushstrokes, low quality, blurry subject, deformed, warped, border, frame, oversaturated, overexposed, studio backdrop, plain background, symmetrical composition, all subjects facing camera, posed, stock photo",
+  "final_width": 800,
+  "final_height": 450
+}
+```
 
-### 4. Escrever `{out_dir}/04-eai.md`
+Chamar o gerador:
+```bash
+node scripts/gemini-image.js \
+  {out_dir}/04-eai-sd-prompt.json \
+  {out_dir}/04-eai-ia.jpg \
+  diaria_eai_
+```
+
+Se falhar com exit code != 0, retornar erro — não prosseguir sem a imagem IA.
+
+### 4. Ler contexto da newsletter
+
+Ler `newsletter_path`. Extrair os títulos escolhidos dos 3 destaques (linhas que contenham `DESTAQUE 1`, `DESTAQUE 2`, `DESTAQUE 3`).
+
+### 5. Escrever `{out_dir}/04-eai.md`
+
+O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É AI? é só as duas imagens + poll + crédito.
 
 Estrutura:
 ```
 É AI?
 
-{parágrafo de 3–5 frases relacionando a imagem com o dia}
-
-Foto: {image_title} — {credit}
+{descrição em uma frase com links} — [Fotógrafo](https://commons.wikimedia.org/wiki/User:Username) / Licença.
 ```
 
-Regras do texto:
-- Tom leve, curioso — diferente do resto da newsletter (que é analítico).
-- Não começar com "Hoje" ou "Nesta foto".
-- A relação com os destaques pode ser tangencial, por analogia ou por contraste — não precisa ser direta.
-- Máx 100 palavras no parágrafo.
-- Sem markdown (sem `**`, `#`, listas).
-- Evitar "IA" e "inteligência artificial" — usar sujeito concreto quando possível.
+Regras da linha de crédito (sem prefixo "Foto:"):
+- **Uma frase única** descrevendo a cena.
+- **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (pt ou en); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
+- Exemplo: `Pastor do [Rajastão](https://pt.wikipedia.org/wiki/Rajastão) guiando seu rebanho pelas planícies do noroeste da Índia — [Paramanu Sarkar](https://commons.wikimedia.org/wiki/User:Paramanu_Sarkar) / CC BY-SA 4.0.`
 
 ## Output
 
 ```json
 {
   "out_md": "data/editions/260418/04-eai.md",
-  "out_jpg": "data/editions/260418/04-eai.jpg",
+  "out_real": "data/editions/260418/04-eai-real.jpg",
+  "out_ia": "data/editions/260418/04-eai-ia.jpg",
   "image_title": "...",
   "image_credit": "...",
   "image_date_used": "2026-04-15",
   "rejections": [
-    { "date": "2026-04-18", "reason": "vertical", "width": 1200, "height": 1500 },
-    { "date": "2026-04-17", "reason": "already_used", "previous_edition": "260103" },
-    { "date": "2026-04-16", "reason": "vertical", "width": 900, "height": 1600 }
+    { "date": "2026-04-18", "reason": "vertical", "width": 1200, "height": 1500 }
   ]
 }
 ```
 
-`rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados) — orchestrator usa isso no relatório do gate humano para explicar por que a imagem é de N dias atrás.
+`rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados).

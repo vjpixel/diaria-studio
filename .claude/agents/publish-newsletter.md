@@ -13,7 +13,7 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 
 ## Pré-requisitos
 
-- Stage 4 completo (`04-eai.md`, `04-eai.jpg` existem).
+- Stage 4 completo (`04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg` existem).
 - Stage 5 completo (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` existem).
 - ComfyUI não é necessário neste stage (só leitura de arquivos já gerados).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
@@ -25,7 +25,7 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 Ler:
 - `{edition_dir}/02-reviewed.md` — corpo da newsletter (texto final aprovado).
 - `{edition_dir}/04-eai.md` — bloco "É AI?".
-- Confirmar existência de `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai.jpg` (caminhos absolutos para upload).
+- Confirmar existência de `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg` (caminhos absolutos para upload).
 
 Se algum arquivo faltar, retornar erro:
 ```json
@@ -40,12 +40,22 @@ Ler `platform.config.json` → bloco `publishing.newsletter`:
 
 Ler `context/publishers/beehiiv.md` (playbook semântico — você vai segui-lo passo a passo).
 
-### 3. Extrair título e subtítulo
+### 3. Extrair título, subtítulo e destaques
 
-De `02-reviewed.md`, extrair:
-- **Título** (`title`): primeira linha não-vazia do arquivo (linha de assunto da newsletter).
-- **Subtítulo** (`subtitle`): segunda linha relevante, se existir e for ≤80 chars; senão deixar vazio.
-- **Destaques**: blocos D1, D2, D3 (separados por marcadores tipo "DESTAQUE 1", "DESTAQUE 2" ou similar — verificar formato em `02-reviewed.md`).
+Rodar o script de parsing determinístico — **sem LLM**, zero ambiguidade:
+
+```bash
+npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
+```
+
+Output é JSON com `{title, subtitle, destaques: [d1, d2, d3]}` onde cada destaque tem `{n, category, title, body, why, url}`.
+
+Regras aplicadas pelo script:
+- **`title`**: título do D1 (primeiro destaque).
+- **`subtitle`**: `"{D2.title} | {D3.title}"` se couber em 80 chars; caso contrário só `D2.title`; se D2 sozinho passar de 80, truncado em 77 chars + `"..."`.
+- **`destaques`**: separados por `---` no markdown; header regex é `^DESTAQUE (1|2|3) \| (CATEGORIA)$`; corpo vai até `"Por que isso importa:"`; URL é a última linha começando com `http`.
+
+Se o script retornar exit code != 0, abortar com o erro no stderr — formato do `02-reviewed.md` precisa ser corrigido manualmente antes de re-rodar.
 
 ### 4. Operar Beehiiv via Claude in Chrome
 
@@ -66,7 +76,7 @@ Seguir `context/publishers/beehiiv.md` na ordem:
    - Title = `title` extraído
    - Subtitle = `subtitle` (se houver campo)
    - Cover image = upload de `{edition_dir}/05-d1.jpg`
-7. **Preencher corpo** seguindo o template. Para cada destaque (D1/D2/D3): colar texto + inserir `05-d{N}.jpg`. Para "É AI?": colar `04-eai.md` + inserir `04-eai.jpg`.
+7. **Preencher corpo** seguindo o template. Para cada destaque (D1/D2/D3): colar texto + inserir `05-d{N}.jpg`. Para "É AI?": colar texto de `04-eai.md` + inserir **primeiro** `04-eai-real.jpg` e **depois** `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (não tentar layout side-by-side — mobile quebra). O leitor adivinha qual das duas é IA.
 8. **Salvar como rascunho**: clicar em "Save draft" / "Save as draft". **NÃO clicar em Schedule, Publish ou Send.**
 9. **Capturar `draft_url`**: ler URL atual da aba — deve conter `/posts/{id}/edit`.
 10. **Enviar email de teste**: abrir menu de testes → enviar para `test_email` → confirmar.

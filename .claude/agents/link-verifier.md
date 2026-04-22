@@ -26,10 +26,13 @@ JSON:
 {
   "out_path": "data/editions/260418/link-verify-chunk-1.json",
   "results": [
-    { "url": "...", "verdict": "accessible | paywall | blocked | aggregator | uncertain", "finalUrl": "...", "note": "..." }
+    { "url": "...", "verdict": "accessible | paywall | blocked | aggregator | uncertain", "finalUrl": "...", "note": "...", "resolvedFrom": "https://agregador.com/..." }
   ]
 }
 ```
+
+- `resolvedFrom`: presente apenas quando o link era de um agregador e a fonte primária foi encontrada. Nesse caso, `verdict` é o da fonte primária (geralmente `accessible`), `finalUrl` é a URL da fonte primária, e `resolvedFrom` é a URL original do agregador.
+- Quando `verdict = "aggregator"` sem `resolvedFrom`: não foi possível encontrar a fonte primária; o orchestrator descarta o artigo.
 
 ## Regras
 

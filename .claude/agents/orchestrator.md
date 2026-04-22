@@ -211,7 +211,6 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
         "source_researcher": <N>,
         "discovery_searcher": <M>,
         "link_verifier": <chunks>,
-        "deduplicator": 1,
         "categorizer": 1,
         "research_reviewer": 1,
         "scorer": 1
@@ -237,8 +236,8 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para Clarice.
 - **Revisar com Clarice (inline — sem Task):**
   1. Ler conteúdo de `data/editions/{YYMMDD}/02-draft.md`.
-  2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-  3. Gravar resultado em `data/editions/{YYMMDD}/02-reviewed.md`.
+  2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
+  3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{YYMMDD}/02-reviewed.md`.
   4. Gerar diff legível:
      ```bash
      npx tsx scripts/clarice-diff.ts \
@@ -286,7 +285,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
     fs.unlinkSync(dir+'03-facebook.tmp.md');
   "
   ```
-- **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo, sobrescrever `03-social.md` com o resultado. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
+- **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
 - **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 3, files: ["03-social.md"] }`. Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
   - **Atualizar cost.json.** Append entry de Stage 3, setar `session_end`, recalcular `total_calls`, gravar:
@@ -306,8 +305,8 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 eai started'`.
 - Disparar `eai-composer` com `edition_date`, `newsletter_path = data/editions/{YYMMDD}/02-reviewed.md`, `out_dir = data/editions/{YYMMDD}/`.
 - Se falhar, logar erro e reportar ao usuário.
-- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 4, files: ["04-eai.md", "04-eai.jpg"] }`. Anotar em `sync_results[4]`; ignorar falhas.
-- **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Imagem: data/editions/{YYMMDD}/04-eai.jpg"`. Mencionar: "📁 Disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
+- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 4, files: ["04-eai.md", "04-eai-real.jpg", "04-eai-ia.jpg"] }`. Anotar em `sync_results[4]`; ignorar falhas.
+- **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Real: data/editions/{YYMMDD}/04-eai-real.jpg | IA: data/editions/{YYMMDD}/04-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
   - **Atualizar cost.json.** Append entry de Stage 4, recalcular `total_calls`, gravar:
     ```json
     {
@@ -349,8 +348,8 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 ### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish newsletter started'`.
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 6, files: ["02-reviewed.md", "04-eai.md", "04-eai.jpg", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
-- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
+- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 6, files: ["02-reviewed.md", "04-eai.md", "04-eai-real.jpg", "04-eai-ia.jpg", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
+- Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
 - Se falhar com erro de login, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
 - Ler `06-published.json` retornado.
@@ -358,7 +357,16 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
   - Template usado (`template_used`)
-  - Instrução: "Revise o email de teste e publique manualmente do dashboard Beehiiv quando aprovado."
+  - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
+    ```
+    📎 Suba as imagens manualmente no rascunho antes de publicar:
+       • Cover + D1 → 05-d1.jpg
+       • Inline D2  → 05-d2.jpg
+       • Inline D3  → 05-d3.jpg
+       • É AI? (A)  → 04-eai-real.jpg
+       • É AI? (B)  → 04-eai-ia.jpg
+    ```
+  - Instrução: "Revise o email de teste, suba as imagens e publique manualmente do dashboard Beehiiv quando aprovado."
   - Opções: aprovar (segue para Stage 7) / regerar (re-disparar `publish-newsletter`).
   - **Atualizar cost.json.** Append entry de Stage 6, recalcular `total_calls`, gravar:
     ```json

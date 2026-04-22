@@ -45,11 +45,11 @@ Outputs ficam em `data/editions/{YYMMDD}/` (formato `YYMMDD` = AAMMDD; ex: ediç
 
 | # | Stage | Subagentes | Output |
 |---|---|---|---|
-| 1 | Research | orchestrator → N× `source-researcher` + M× `discovery-searcher` (paralelo) → `link-verifier` (chunks) → `deduplicator` → `categorizer` | `01-categorized.json` → `01-approved.json` |
-| 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → `clarice-runner` | `02-reviewed.md` |
+| 1 | Research | orchestrator → N× `source-researcher` + M× `discovery-searcher` (paralelo) → `link-verifier` (chunks) → `scripts/dedup.ts` → `categorizer` | `01-categorized.json` → `01-approved.json` |
+| 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`) | `02-reviewed.md` |
 | 3 | Social | 2× social writers paralelos (LinkedIn, Facebook) + 6× Clarice | `03-social.md` + `03-{plataforma}-d{N}.md` |
 | 4 | É AI? | `eai-composer` — Wikimedia POTD + texto criativo | `04-eai.md` + `04-eai.jpg` |
-| 5 | Imagens | `image-prompter` — ComfyUI local (SD 1.5 + LoRA Van Gogh, hires.fix 2-pass) | `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` |
+| 5 | Imagens | `scripts/image-generate.ts` — Gemini API por default (fallback ComfyUI via `platform.config.json > image_generator`) | `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` |
 | 6 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) | `06-published.json` |
 | 7 | Publish social | `publish-social` — Claude in Chrome → LinkedIn × 3 + Facebook × 3 (rascunho ou agendado) | `07-social-published.json` |
 
@@ -76,7 +76,7 @@ Todo arquivo em `context/` entra no prompt cache. Mantenha esses arquivos **cura
 Model mix (definido no frontmatter de cada agente):
 - **Opus 4.7** — `orchestrator`
 - **Sonnet 4.6** — `scorer`, `writer`, `publish-newsletter`, `publish-social`
-- **Haiku 4.5** — todos os outros (`source-researcher`, `discovery-searcher`, `link-verifier`, `deduplicator`, `categorizer`, `clarice-runner`, `social-*`, `eai-composer`, `image-prompter`, `drive-syncer`)
+- **Haiku 4.5** — todos os outros (`source-researcher`, `discovery-searcher`, `link-verifier`, `categorizer`, `social-*`, `eai-composer`, `drive-syncer`). Dedup, Clarice e geração de imagem foram migrados para scripts TS — não são mais agentes LLM.
 
 ---
 

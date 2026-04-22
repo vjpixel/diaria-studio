@@ -2,7 +2,7 @@
  * image-generate.ts
  *
  * Converte um prompt editorial (02-d1-prompt.md) em prompt SD (positive + negative),
- * grava o JSON de prompt e chama comfyui-run.js para gerar a imagem.
+ * grava o JSON de prompt e chama gemini-image.js para gerar a imagem.
  *
  * Uso:
  *   npx tsx scripts/image-generate.ts \
@@ -10,7 +10,7 @@
  *     --out-dir data/editions/260418/ \
  *     --destaque d1
  *
- * Saída: data/editions/260418/05-d1.jpg (via comfyui-run.js)
+ * Saída: data/editions/260418/05-d1.jpg (via gemini-image.js)
  *        Imprime o caminho do JPG em stdout.
  */
 
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Estilo fixo Van Gogh impasto — mesma especificação do image-prompter.md
+// Estilo fixo Van Gogh impasto — ver context/editorial-rules.md para a regra editorial.
 const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast";
 
@@ -88,17 +88,22 @@ function main() {
   console.error(`Prompt gravado em ${sdPromptPath}`);
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
-  // Chamar comfyui-run.js (script JS pré-existente)
-  const comfyuiScript = resolve(ROOT, "scripts/comfyui-run.js");
+  // Escolher backend de geração com base em platform.config.json > image_generator.
+  // Suporta "gemini" (padrão) e "comfyui".
+  const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const generator = (platformCfg.image_generator ?? "gemini") as string;
+  const scriptName = generator === "comfyui" ? "comfyui-run.js" : "gemini-image.js";
+  const imageScript = resolve(ROOT, "scripts", scriptName);
+
   try {
     execFileSync(
       process.execPath, // node
-      [comfyuiScript, sdPromptPath, outJpgPath, filenamePrefix],
+      [imageScript, sdPromptPath, outJpgPath, filenamePrefix],
       { stdio: "inherit", cwd: ROOT }
     );
   } catch (e: unknown) {
     const code = (e as { status?: number }).status ?? 1;
-    console.error(`comfyui-run.js falhou com código ${code}`);
+    console.error(`${scriptName} falhou com código ${code}`);
     process.exit(code);
   }
 
