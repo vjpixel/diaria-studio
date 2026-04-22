@@ -15,7 +15,11 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { request } from "undici";
+
+// User-Agent de browser real — muitos sites (openai.com, exame.com, etc)
+// bloqueiam user-agents que identificam bots. Mantemos um header plausível.
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 interface ArticleInput {
   url: string;
@@ -43,23 +47,33 @@ function normalizeDate(raw: string): string | null {
 
 async function extractPublishedDate(
   url: string,
-  timeoutMs = 8000
+  timeoutMs = 10000
 ): Promise<{ date: string | null; note: string }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const res = await request(url, {
+    // Usamos `fetch` (undici global) em vez de `undici.request` para seguir
+    // redirects automaticamente (303/301/302 são comuns em nature.com etc).
+    const res = await fetch(url, {
       method: "GET",
       signal: ctrl.signal,
-      headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
+      redirect: "follow",
+      headers: {
+        "user-agent": BROWSER_UA,
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+      },
     });
 
-    if (res.statusCode >= 400) {
-      return { date: null, note: `HTTP ${res.statusCode}` };
+    if (res.status >= 400) {
+      return { date: null, note: `HTTP ${res.status}` };
     }
 
-    const body = await res.body.text();
+    const body = await res.text();
 
     // 1. JSON-LD datePublished (maior confiança — estruturado e intencionalmente exposto)
     for (const match of body.matchAll(
@@ -106,7 +120,21 @@ async function extractPublishedDate(
       if (d) return { date: d, note: "meta:pubdate" };
     }
 
-    // 4. <time itemprop="datePublished" datetime="...">
+    // 4. <meta name="citation_date"> (arxiv, jornais acadêmicos — formato YYYY/MM/DD)
+    const citationDate =
+      body.match(
+        /<meta[^>]+name=["']citation_date["'][^>]+content=["']([^"']+)["']/i
+      )?.[1] ??
+      body.match(
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']citation_date["']/i
+      )?.[1];
+    if (citationDate) {
+      // citation_date vem como YYYY/MM/DD — normalizeDate lida com ambos os formatos
+      const d = normalizeDate(citationDate.replace(/\//g, "-"));
+      if (d) return { date: d, note: "meta:citation_date" };
+    }
+
+    // 5. <time itemprop="datePublished" datetime="...">
     const timeDate =
       body.match(
         /<time[^>]+itemprop=["']datePublished["'][^>]+datetime=["']([^"']+)["']/i
@@ -117,6 +145,29 @@ async function extractPublishedDate(
     if (timeDate) {
       const d = normalizeDate(timeDate);
       if (d) return { date: d, note: "time[itemprop=datePublished]" };
+    }
+
+    // 6. `"published":"YYYY-MM-DD"` em JSON embutido (Apple, alguns Next.js)
+    //    Pega a PRIMEIRA ocorrência — tipicamente a do artigo principal no
+    //    topo do blob __NEXT_DATA__ / __SVELTE_DATA__ etc.
+    const jsonPublished = body.match(
+      /"(?:published|published_at|publishedAt|publish_date|first_published_at)"\s*:\s*"([^"]+)"/
+    )?.[1];
+    if (jsonPublished) {
+      const d = normalizeDate(jsonPublished);
+      if (d) return { date: d, note: "json:published" };
+    }
+
+    // 7. Primeiro `<time datetime="...">` do documento (fallback genérico —
+    //    OpenAI, por exemplo, marca a data do artigo em `<time dateTime=...>`
+    //    sem `itemprop`). Se houver múltiplos, usamos o primeiro (tipicamente
+    //    é o cabeçalho do artigo).
+    const firstTime =
+      body.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1] ??
+      body.match(/<time[^>]+dateTime=["']([^"']+)["']/)?.[1];
+    if (firstTime) {
+      const d = normalizeDate(firstTime);
+      if (d) return { date: d, note: "time:first" };
     }
 
     return { date: null, note: "no-date-found" };

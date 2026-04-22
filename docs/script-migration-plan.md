@@ -11,12 +11,12 @@ Vários subagentes na pipeline Diar.ia são invocados via `Task` (spawn de conte
 | # | Agente atual | Tipo | Esforço | Impacto/edição | Status |
 |---|---|---|---|---|---|
 | 1 | `deduplicator` | Script puro | Baixo | −1 Task, ~50 comparações URL | ✅ feito (`scripts/dedup.ts`) |
-| 2 | `link-verifier` | Script puro | Médio | −3 a 5 Tasks (chunks), ~50 URLs | ⬜ pendente |
-| 3 | `drive-syncer` | Script puro | Médio | −5 Tasks (1 por stage) | ⬜ pendente |
+| 2 | `link-verifier` | Script puro | Médio | −3 a 5 Tasks (chunks), ~50 URLs | ✅ feito (orchestrator chama `verify-accessibility.ts` direto) |
+| 3 | `drive-syncer` | Script puro | Médio | −5 Tasks (1 por stage) | ✅ feito (`scripts/drive-sync.ts` + `google-auth.ts` + `oauth-setup.ts`) |
 | 4 | `refresh-dedup-runner` | Script puro | Baixo | −1 Task por edição (já tem backing script) | ⏸ bloqueado (usa Beehiiv MCP — orchestrator não tem acesso direto) |
-| 5 | `inbox-drainer` | Script puro | Baixo | −1 Task por edição | ⬜ pendente |
+| 5 | `inbox-drainer` | Script puro | Baixo | −1 Task por edição | ✅ feito (`scripts/inbox-drain.ts`, reutiliza `google-auth.ts`) |
 | 6 | `clarice-runner` | Script puro | Baixo | −1 a 2 Tasks por edição | ✅ feito (inline no orchestrator + `scripts/clarice-diff.ts`) |
-| 7 | `categorizer` | Híbrido | Médio | LLM só para ~5% ambíguos | ⬜ pendente |
+| 7 | `categorizer` | Híbrido | Médio | LLM só para ~5% ambíguos | ✅ feito (`scripts/categorize.ts`, regras de domínio) |
 | 8 | `source-researcher` | Híbrido | Alto | LLM só para fontes sem RSS | ⬜ pendente |
 | 9 | `image-prompter` | Script puro | Médio | −1 Task (prompt já pronto) | ✅ feito (`scripts/image-generate.ts`) |
 | 10 | `eai-composer` | Híbrido | Médio | Separa POTD fetch vs texto | ⬜ pendente |

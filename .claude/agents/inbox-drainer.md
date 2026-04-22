@@ -1,7 +1,7 @@
 ---
 name: inbox-drainer
 description: Drena novos e-mails de `diariaeditor@gmail.com` (via Gmail MCP) desde o último cursor e anexa entradas estruturadas em `data/inbox.md`. Extrai URLs e temas para serem usados no Stage 1 de Research.
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 tools: Read, Write, Edit, Bash, mcp__97acb66c-8605-4263-be7b-984868a4547a__search_threads, mcp__97acb66c-8605-4263-be7b-984868a4547a__get_thread, mcp__97acb66c-8605-4263-be7b-984868a4547a__list_labels, mcp__97acb66c-8605-4263-be7b-984868a4547a__create_label
 ---
 

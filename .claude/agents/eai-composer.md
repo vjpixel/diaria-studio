@@ -1,7 +1,7 @@
 ---
 name: eai-composer
 description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg`.
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 tools: Read, Write, Bash
 ---
 

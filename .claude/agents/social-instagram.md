@@ -1,7 +1,7 @@
 ---
 name: social-instagram
 description: Gera caption de Instagram a partir da newsletter revisada, usando `context/templates/social-instagram.md`.
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 tools: Read, Write
 ---
 

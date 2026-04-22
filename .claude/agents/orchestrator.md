@@ -13,10 +13,10 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 2. **Gate humano é inegociável.** Ao final de cada stage, escreva o output em `data/editions/{YYMMDD}/` e **pare**. Apresente um resumo claro ao usuário e peça aprovação antes de prosseguir.
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual. Para `past-editions.md` e `audience-profile.md`, a política é diferente — veja Stage 0.
-5. **Sync bidirecional com Drive (agente `drive-syncer`).** Entre stages, manter `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Drive em sincronia com `data/editions/{YYMMDD}/`:
+5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Drive em sincronia com `data/editions/{YYMMDD}/`:
    - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4, 5 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
    - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 5, 6, 7 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
-   - Disparar via `Task` com subagent `drive-syncer`, passando `{ mode, edition_dir, stage, files }`. Falhas viram warnings no output do agente — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
+   - Chamar via `Bash("npx tsx scripts/drive-sync.ts --mode {push|pull} --edition-dir {edition_dir} --stage {N} --files {file1.md,file2.jpg}")`. Ler JSON de stdout; warnings no output — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
    - Lista de arquivos por stage (hardcoded abaixo em cada stage). Só outputs finais entram — prompts e raws ficam local.
 
 ## Fluxo por edição
@@ -26,6 +26,8 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 ### 0. Setup
 - Converter `YYYY-MM-DD` em diretório `data/editions/{YYMMDD}/`.
 - Criar o diretório se não existir.
+- **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator (`/diaria-edicao` ou `/diaria-1-pesquisa`) **já perguntou e confirmou** a janela de publicação aceita com o usuário antes de disparar. Você recebe `window_days` (inteiro ≥ 1) no prompt da Task. **Se não receber** (retrocompat ou invocação direta sem skill), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via `Bash("node -e \"const d=new Date('{edition_date}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))\"")`. Armazenar `window_days` como variável de sessão — usado em Stage 1 (pesquisa + dedup + research-reviewer).
+
 - **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. Regras (verificar de baixo para cima — parar na primeira condição verdadeira):
   - Se `07-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 7 completo. Pipeline finalizado.
   - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar `publish-social` (resume-aware ele mesmo).
@@ -39,7 +41,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - Caso contrário → começar do Stage 0 normalmente.
   - Se o usuário responder "sim, refazer do zero", renomear a pasta para `{YYMMDD}-backup-{timestamp}/` antes de começar (nunca deletar trabalho). Nunca sobrescreva arquivos de stages anteriores sem essa confirmação.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
-- **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de disparar o `drive-syncer` — se `false`, pular silenciosamente (não logar como erro).
+- **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
 - **Inicializar cost.json.** Se `data/editions/{YYMMDD}/cost.json` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
   ```json
   {
@@ -63,24 +65,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
 ### 1. Stage 1 — Research
 
-- **Confirmar janela de pesquisa.** Calcular o default de `window_days` com base no dia da semana da edição:
-  ```bash
-  node -e "const d=new Date('{edition_date}');const day=d.getDay();process.stdout.write(String(day===1||day===2?4:3))"
-  ```
-  - Segunda (`getDay()===1`): `window_days = 4` (quinta → segunda — captura sexta + fim de semana).
-  - Terça (`getDay()===2`): `window_days = 4` (sexta → terça — captura fim de semana + segunda).
-  - Quarta a sexta: `window_days = 3`.
-
-  Calcular `window_start = edition_date − window_days dias`. Exibir ao usuário **antes de qualquer outro passo**:
-
-  ```
-  📅 Janela de pesquisa: {window_start} → {edition_date} ({window_days} dias)
-  Pressione Enter para confirmar ou digite outro número de dias:
-  ```
-
-  Se o usuário digitar um número N válido (inteiro ≥ 1): atualizar `window_days = N` e recalcular `window_start`. Se pressionar Enter sem digitar nada: manter o default calculado. Usar `window_days` confirmado em todo o restante do Stage 1.
-
-- **Inbox drain (sempre roda, antes da pesquisa).** Disparar o subagente `inbox-drainer` via `Task` (sem argumentos). Ele lê novos e-mails de `diariaeditor@gmail.com` via Gmail MCP e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped }`.
+- **Inbox drain (sempre roda, antes da pesquisa).** Rodar `Bash("npx tsx scripts/inbox-drain.ts")`. Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped }`.
   - Se `skipped: true` com `reason: "gmail_mcp_error"`: logar `warn` e prosseguir sem inbox (não aborta a pipeline — o editor pode continuar sem submissões externas).
   - Se `skipped: true` com `reason: "inbox_disabled"`: prosseguir silenciosamente.
   - Extrair `inbox_urls` = lista de URLs vindas do drainer + URLs de entradas já existentes em `data/inbox.md` que ainda não foram arquivadas. Extrair `inbox_topics` idem.
@@ -90,7 +75,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   - nome da fonte
   - site query
   - data da edição
-  - janela: `window_days` (confirmado pelo usuário acima)
+  - janela: `window_days` (confirmado pelo usuário no Stage 0)
   - `timeout_seconds: 180` (soft budget — subagente se auto-disciplina)
 - Em paralelo, disparar M chamadas `Task` com subagent `discovery-searcher` para queries temáticas (derivadas de `audience-profile.md` — temas de alta tração). Usar ~5 queries PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais (prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180` também.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
@@ -107,8 +92,14 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   ```
   Isso atualiza `data/source-health.json` + anexa linha JSONL em `data/sources/{slug}.jsonl` (auditoria por fonte).
 - Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
-- **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. Link-verifier ainda decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
-- **Link verification (paralelo com chunking):** agrupar a lista agregada em chunks de 10 URLs; disparar 1 `Task` por chunk com subagent `link-verifier`, passando `urls[]` e `out_path`. Agregar os resultados e:
+- **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. O script de verificação decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
+- **Link verification (script direto):** gravar a lista de URLs da lista agregada em `data/editions/{YYMMDD}/tmp-urls-all.json` (array de strings) e rodar:
+  ```bash
+  npx tsx scripts/verify-accessibility.ts \
+    data/editions/{YYMMDD}/tmp-urls-all.json \
+    data/editions/{YYMMDD}/link-verify-all.json
+  ```
+  Ler `data/editions/{YYMMDD}/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom? }`). Então:
   - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
   - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente.
 - **Deduplicar** a lista filtrada rodando:
@@ -120,7 +111,13 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
     --out {tmp-dedup-output.json}
   ```
   Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
-- Disparar `categorizer` com a lista pós-dedup para classificar em `lancamento` / `pesquisa` / `noticias`.
+- **Categorizar** a lista pós-dedup: gravar `kept[]` em `data/editions/{YYMMDD}/tmp-kept.json` e rodar:
+  ```bash
+  npx tsx scripts/categorize.ts \
+    --articles data/editions/{YYMMDD}/tmp-kept.json \
+    --out data/editions/{YYMMDD}/tmp-categorized.json
+  ```
+  Ler `data/editions/{YYMMDD}/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
 - Disparar `research-reviewer` passando `{ categorized, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). Aplica dois filtros em sequência:
   1. **Datas**: verifica datas reais via fetch, corrige campos `date`, remove artigos fora da janela de `window_days` dias.
   2. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
@@ -139,39 +136,16 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   }
   ```
 - Salvar `data/editions/{YYMMDD}/01-categorized.json`.
-- **Gerar `01-categorized.md` e subir para o Drive** (antes do gate — o editor precisa ver para decidir):
-  - Gravar `data/editions/{YYMMDD}/01-categorized.md` com a lista categorizada no formato:
-    ```markdown
-    # Diar.ia — Edição {YYMMDD} — Research
-
-    ## Lançamentos
-
-    - [87] Título ⭐ D2 — https://url.com — 2026-04-20
-    - [72] Título — https://url.com — 2026-04-19
-
-    ## Pesquisas
-
-    - [65] Título ⭐ D4 — https://url.com — 2026-04-18
-    - [50] Título — https://url.com — 2026-04-17
-
-    ## Notícias
-
-    - [91] Título ⭐ D1 — https://url.com — 2026-04-20
-    - [82] Título ⭐ D3 [inbox] — https://url.com — 2026-04-20
-    - [78] Título ⭐ D5 — https://url.com — 2026-04-19
-    - [74] Título ⭐ D6 — https://url.com — 2026-04-19
-    - [60] Título — https://url.com — 2026-04-18
-    - [45] Título (descoberta) — https://url.com — 2026-04-17
-
-    ---
-
-    ## Saúde das fontes
-
-    ⚠️ Tecnoblog — fail (403 consecutive_fetch_errors)
-    Todas as demais 33 fontes responderam normalmente.
-    ```
-    Cada linha: `[score]` + título + marcadores opcionais (`⭐ D{N}` para os 6 destaques, `[inbox]` para `editor_submitted: true`, `(descoberta)` para `discovered_source: true`) + URL + data. Os 6 destaques são distribuídos pelos seus respectivos buckets — cada um marcado com `⭐ D{rank}` inline. Artigos dentro de cada seção ordenados por score desc (maior score primeiro).
-  - Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 1, files: ["01-categorized.md"] }`. Anotar em `sync_results[1]`; ignorar falhas.
+- **Renderizar `01-categorized.md` via script determinístico** (nunca gerar o MD livre-forma — o formato é responsabilidade do script, não do LLM):
+  ```bash
+  npx tsx scripts/render-categorized-md.ts \
+    --in data/editions/{YYMMDD}/01-categorized.json \
+    --out data/editions/{YYMMDD}/01-categorized.md \
+    --edition {YYMMDD} \
+    --source-health data/source-health.json
+  ```
+  O script produz o formato combinado (seções Lançamentos/Pesquisas/Notícias com `⭐ D{N}`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. **Regra absoluta: qualquer mudança no `01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
+- **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir): `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`. Anotar em `sync_results[1]`; ignorar falhas.
 
 - **GATE HUMANO:** apresentar ao usuário:
 
@@ -192,12 +166,21 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
      - Se tudo OK: "Todas as fontes responderam normalmente."
 
   Quando aprovado:
-  - **Fazer pull do MD** (o editor pode ter editado no Drive): disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 1, files: ["01-categorized.md"] }`. Se o pull falhar, usar a versão local.
+  - **Fazer pull do MD** (o editor pode ter editado no Drive): rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`. Se o pull falhar, usar a versão local.
   - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐ D{N}` (formato: `- [score] Título ⭐ D{N} — https://url`). Ordenar por N crescente (D1 < D2 < D3).
   - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD, buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
   - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com D{N+1} do scorer."`.
   - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (menor N), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas D1, D2, D3."`.
   - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]`, preservando toda a estrutura do JSON original (buckets, runners_up etc.).
+  - **Re-renderizar o MD a partir do `01-approved.json`** para manter JSON e MD em sincronia (o editor pode ter mexido em ⭐, mas outras mudanças no JSON também precisam refletir):
+    ```bash
+    npx tsx scripts/render-categorized-md.ts \
+      --in data/editions/{YYMMDD}/01-approved.json \
+      --out data/editions/{YYMMDD}/01-categorized.md \
+      --edition {YYMMDD} \
+      --source-health data/source-health.json
+    ```
+    Push do MD atualizado de volta para o Drive: `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`.
   - **Arquivar o inbox**: mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar um `data/inbox.md` vazio (com o cabeçalho padrão). Isso garante que submissões do dia não voltem na próxima edição.
   - **Atualizar cost.json.** Ler `cost.json`, append entry de Stage 1, recalcular `total_calls`, gravar com `Write`:
     ```json
@@ -246,7 +229,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
        data/editions/{YYMMDD}/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
-- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 2, files: ["02-reviewed.md", "02-clarice-diff.md"] }`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 2 --files 02-reviewed.md,02-clarice-diff.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
 - **GATE HUMANO:** mostrar `02-clarice-diff.md` e instruir:
   ```
   ✏️  Edite data/editions/{YYMMDD}/02-reviewed.md antes de aprovar:
@@ -271,7 +254,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 
 ### 3. Stage 3 — Social
 
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 3, files: ["02-reviewed.md"] }`. Se o editor editou `02-reviewed.md` direto no Drive, o pull sobrescreve o local antes do stage consumir.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 3 --files 02-reviewed.md")`. Se o editor editou `02-reviewed.md` direto no Drive, o pull sobrescreve o local antes do stage consumir.
 - Disparar em paralelo (2 `Task` calls em uma única mensagem) os subagentes `social-linkedin` e `social-facebook`. Cada um recebe `newsletter_path = 02-reviewed.md` e `out_dir = data/editions/{YYMMDD}/`. Cada agente grava um arquivo temporário com seções `## d1`, `## d2`, `## d3`: `03-linkedin.tmp.md` e `03-facebook.tmp.md`.
 - Após os 2 retornarem, fazer merge em `03-social.md` via Bash:
   ```bash
@@ -286,7 +269,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   "
   ```
 - **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
-- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 3, files: ["03-social.md"] }`. Anotar em `sync_results[3]`; ignorar falhas.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
   - **Atualizar cost.json.** Append entry de Stage 3, setar `session_end`, recalcular `total_calls`, gravar:
     ```json
@@ -305,7 +288,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 eai started'`.
 - Disparar `eai-composer` com `edition_date`, `newsletter_path = data/editions/{YYMMDD}/02-reviewed.md`, `out_dir = data/editions/{YYMMDD}/`.
 - Se falhar, logar erro e reportar ao usuário.
-- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 4, files: ["04-eai.md", "04-eai-real.jpg", "04-eai-ia.jpg"] }`. Anotar em `sync_results[4]`; ignorar falhas.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 4 --files 04-eai.md,04-eai-real.jpg,04-eai-ia.jpg")`. Anotar em `sync_results[4]`; ignorar falhas.
 - **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Real: data/editions/{YYMMDD}/04-eai-real.jpg | IA: data/editions/{YYMMDD}/04-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
   - **Atualizar cost.json.** Append entry de Stage 4, recalcular `total_calls`, gravar:
     ```json
@@ -321,7 +304,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 ### 5. Stage 5 — Imagens
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 images started'`.
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 5, files: ["02-reviewed.md"] }` — prompts de imagem derivam dos destaques, então edições do editor em `02-reviewed.md` precisam chegar aqui.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 02-reviewed.md")` — prompts de imagem derivam dos destaques, então edições do editor em `02-reviewed.md` precisam chegar aqui.
 - Verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI (ver `docs/comfyui-setup.md`).
 - **Gerar imagens via script (sem Task).** Para cada destaque d1, d2, d3 sequencialmente (ComfyUI processa uma por vez):
   ```bash
@@ -331,7 +314,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
     --destaque d{N}
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-- **Sync push antes do gate.** Disparar `drive-syncer` com `{ mode: "push", edition_dir: "data/editions/{YYMMDD}/", stage: 5, files: ["05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }`. Anotar em `sync_results[5]`; ignorar falhas.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 05-d1.jpg,05-d2.jpg,05-d3.jpg")`. Anotar em `sync_results[5]`; ignorar falhas.
 - **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar cost.json.** Append entry de Stage 5, setar `session_end`, recalcular `total_calls`, gravar:
     ```json
@@ -348,7 +331,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 ### 6. Stage 6 — Publicar newsletter (Beehiiv)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish newsletter started'`.
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 6, files: ["02-reviewed.md", "04-eai.md", "04-eai-real.jpg", "04-eai-ia.jpg", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 6 --files 02-reviewed.md,04-eai.md,04-eai-real.jpg,04-eai-ia.jpg,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
 - Verificar pré-requisitos: `02-reviewed.md`, `04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg`, `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`. Se algum faltar, pausar e instruir.
 - Disparar `publish-newsletter` com `edition_dir = data/editions/{YYMMDD}/`.
 - Se falhar com erro de login, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
@@ -382,7 +365,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
 ### 7. Stage 7 — Publicar social (LinkedIn + Facebook)
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 7 --agent orchestrator --level info --message 'stage 7 publish social started'`.
-- **Sync pull antes de começar.** Disparar `drive-syncer` com `{ mode: "pull", edition_dir: "data/editions/{YYMMDD}/", stage: 7, files: ["03-social.md", "05-d1.jpg", "05-d2.jpg", "05-d3.jpg"] }` — editor pode ter ajustado posts no Drive antes de publicar.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 7 --files 03-social.md,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
 - Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar — não disparar `publish-social` incompleto.
 - Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true` (resume-aware).
 - O agente itera 6 posts (linkedin × d1/d2/d3 + facebook × d1/d2/d3), tentando rascunho primeiro e agendando como fallback. Append imediato em `07-social-published.json` após cada post — re-rodar é seguro.
