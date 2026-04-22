@@ -20,7 +20,7 @@ Antes de abrir o Chrome, rodar os scripts de extração para ter todo o conteúd
 # Extrair destaques como JSON estruturado
 npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 
-# Gerar HTML pré-renderizado (para referência / futuro HTML block)
+# Extrair conteúdo completo como JSON (destaques + seções + É AI? + emojis + imagens)
 npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
 ```
 

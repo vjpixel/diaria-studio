@@ -47,11 +47,11 @@ npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 Se o script retornar exit code != 0, abortar — formato do `02-reviewed.md` precisa ser corrigido manualmente.
 
 ```bash
-# Gerar HTML pré-renderizado do corpo da newsletter
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out {edition_dir}/06-newsletter-body.html
+# Extrair conteúdo completo como JSON (destaques + seções + É AI? + emojis + imagens)
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
 ```
 
-Gravar o JSON extraído em variável para uso nos passos seguintes (`title`, `subtitle`).
+Gravar ambos os JSONs para uso nos passos seguintes (`title`, `subtitle`, conteúdo de cada seção).
 
 Confirmar existência de todas as imagens: `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg`.
 
@@ -80,34 +80,13 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 - **Subtitle** = `subtitle` (se houver campo)
 - **Cover image** = upload de `{edition_dir}/05-d1-2x1.jpg` (1600×800)
 
-### 5. Preencher corpo via HTML
+### 5. Preencher corpo (block-by-block acelerado)
 
-**Esta é a otimização principal.** Em vez de preencher bloco por bloco (20+ interações), usar HTML pré-renderizado.
+Usar o JSON pré-extraído (passo 1) para preencher cada bloco do template. **Não ler `02-reviewed.md` durante o browser session** — todo conteúdo já está no JSON.
 
-1. **Limpar blocos do template**: selecionar todo o conteúdo do corpo do template e deletar. O template pode ter placeholder blocks — remover todos.
-2. **Adicionar bloco HTML**: usar o menu de blocos ("+") → procurar "HTML" ou "Custom HTML" → inserir bloco.
-3. **Colar HTML**: ler `{edition_dir}/06-newsletter-body.html` e colar no bloco HTML.
-
-**Fallback — se Custom HTML block não estiver disponível:**
-
-Se o editor não oferecer bloco HTML (feature pode variar por plano), usar o fluxo block-by-block descrito em `context/publishers/beehiiv.md`. Neste caso, usar o JSON do passo 1 para preencher cada bloco do template com o conteúdo exato — não ler `02-reviewed.md` de novo; usar os dados já parseados.
-
-### 5b. Upload de imagens inline (se usando HTML block)
-
-O HTML pré-renderizado tem placeholders `{{IMG:filename}}`. As imagens precisam ser upadas para o CDN do Beehiiv para aparecerem no email.
-
-**Estratégia**: após colar o HTML no bloco, as imagens aparecerão como broken (placeholders). Para cada imagem:
-
-1. **Não é possível injetar URLs diretamente no HTML block** — o Beehiiv renderiza o HTML as-is mas não hospeda as imagens.
-
-**Alternativa prática**: usar o fallback block-by-block approach com o JSON pré-extraído. As imagens são uploadadas como image blocks normais do Beehiiv, que automaticamente vão para o CDN.
-
-### 5c. Abordagem recomendada — block-by-block acelerado
-
-Usar o JSON pré-extraído (passo 1) para preencher o template. A diferença vs. o fluxo antigo:
+A diferença vs. o fluxo antigo:
 - **Zero parsing durante browser session** — todo conteúdo já está em variáveis
-- **Sem leitura de `02-reviewed.md`** — usar campos do JSON diretamente
-- **Sequência mecânica fixa** — não precisar "decidir" o que fazer; seguir a lista abaixo
+- **Sequência mecânica fixa** — seguir a lista abaixo sem "decidir" o que fazer
 
 Para cada destaque (d1, d2, d3), preencher o bloco correspondente do template:
 1. **Label de categoria**: emoji + nome da categoria (ex: `🧮 REGULAÇÃO`)
@@ -125,6 +104,8 @@ Para **É AI?**:
 Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 1. Label: emoji + nome da seção
 2. Lista de itens: título linkado + descrição
+
+> **Futuro**: quando Beehiiv Custom HTML block estiver disponível no plano atual, o script também gera HTML pré-renderizado (`--format html`) que pode ser colado em um único bloco, eliminando ~15 interações adicionais. Imagens precisariam de CDN URLs externas.
 
 ### 6. Salvar como rascunho
 
@@ -166,7 +147,7 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 ## Regras
 
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
-- **Pré-render ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
+- **Pré-extrair ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts --format json` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
 - **Template é obrigatório.** Se o nome não bater, abortar.
 - **Login expirado = abortar.** Não tente re-logar.
 - **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:

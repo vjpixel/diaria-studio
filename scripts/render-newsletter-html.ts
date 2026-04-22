@@ -20,6 +20,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -41,15 +42,15 @@ const CATEGORY_EMOJI: Record<string, string> = {
   NOTÍCIA: "📰",
 };
 
+const SECTION_EMOJI: Record<string, string> = {
+  PESQUISAS: "🧪",
+  LANÇAMENTOS: "🚀",
+  "OUTRAS NOTÍCIAS": "📰",
+};
+
 // ── Interfaces ────────────────────────────────────────────────────────
-interface Destaque {
-  n: number;
-  category: string;
+interface RenderDestaque extends BaseDestaque {
   emoji: string;
-  title: string;
-  body: string;
-  why: string;
-  url: string;
   imageFile: string;
 }
 
@@ -75,125 +76,112 @@ interface NewsletterContent {
   title: string;
   subtitle: string;
   coverImage: string;
-  destaques: Destaque[];
+  destaques: RenderDestaque[];
   eai: EAI;
   sections: Section[];
 }
 
-// ── Parsing ───────────────────────────────────────────────────────────
+// ── Section parsing (destaques come from extract-destaques.ts) ────────
 
-function parseReviewedMd(text: string): { destaques: Destaque[]; sections: Section[] } {
+/**
+ * Parse non-destaque sections from the reviewed newsletter.
+ * Uses URL-anchored parsing: each item ends at a URL line.
+ * Lines between URL boundaries are grouped as title + description.
+ */
+function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
-  const destaques: Destaque[] = [];
   const sections: Section[] = [];
 
   for (const block of blocks) {
-    // Try destaque
-    const headerMatch = block.match(/^DESTAQUE\s+([123])\s*\|\s*(.+)$/m);
-    if (headerMatch) {
-      const n = parseInt(headerMatch[1], 10);
-      const category = headerMatch[2].trim();
-      const emoji = CATEGORY_EMOJI[category] || "📌";
-
-      const afterHeader = block.replace(/^DESTAQUE.*$/m, "").trim();
-      const lines = afterHeader.split(/\r?\n/);
-
-      const titleIdx = lines.findIndex((l) => l.trim().length > 0);
-      if (titleIdx === -1) continue;
-      const title = lines[titleIdx].trim();
-
-      const whyIdx = lines.findIndex((l) => /^Por que isso importa:/i.test(l.trim()));
-      const urlIdx = lines
-        .map((l, i) => (/^https?:\/\//.test(l.trim()) ? i : -1))
-        .filter((i) => i !== -1)
-        .pop() ?? -1;
-
-      const body =
-        whyIdx !== -1
-          ? lines.slice(titleIdx + 1, whyIdx).join("\n").trim()
-          : lines.slice(titleIdx + 1, urlIdx !== -1 ? urlIdx : undefined).join("\n").trim();
-
-      const why =
-        whyIdx !== -1
-          ? lines.slice(whyIdx + 1, urlIdx !== -1 ? urlIdx : undefined).join("\n").trim()
-          : "";
-
-      const url = urlIdx !== -1 ? lines[urlIdx].trim() : "";
-
-      // D1 uses wide variant; D2/D3 use standard
-      const imageFile = n === 1 ? "05-d1-2x1.jpg" : `05-d${n}.jpg`;
-
-      destaques.push({ n, category, emoji, title, body, why, url, imageFile });
-      continue;
-    }
-
-    // Try named section (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS)
     const sectionMatch = block.match(/^(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)$/m);
-    if (sectionMatch) {
-      const name = sectionMatch[1];
-      let emoji: string;
-      if (name === "PESQUISAS") emoji = "🧪";
-      else if (name === "LANÇAMENTOS") emoji = "🚀";
-      else emoji = "📰";
+    if (!sectionMatch) continue;
 
-      const afterHeader = block.replace(/^(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)$/m, "").trim();
-      const items = parseListItems(afterHeader);
-      if (items.length > 0) {
-        sections.push({ name, emoji, items });
-      }
+    const name = sectionMatch[1];
+    const emoji = SECTION_EMOJI[name] || "📰";
+    const afterHeader = block.replace(/^(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)$/m, "").trim();
+    const items = parseListItems(afterHeader);
+    if (items.length > 0) {
+      sections.push({ name, emoji, items });
     }
   }
 
-  destaques.sort((a, b) => a.n - b.n);
-  return { destaques, sections };
+  return sections;
 }
 
+/**
+ * Parse list items from a section body.
+ *
+ * Format per item (enforced by writer):
+ *   Title line
+ *   Description line (1 sentence)
+ *   https://url
+ *
+ * Strategy: scan for URL lines (^https?://) and work backwards to
+ * group title + description. This is more robust than forward-scanning
+ * because URLs are unambiguous anchors — description text can't be
+ * confused with a URL.
+ */
 function parseListItems(text: string): SectionItem[] {
-  const items: SectionItem[] = [];
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const items: SectionItem[] = [];
 
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    // URL line = end of current item
-    if (/^https?:\/\//.test(line)) {
-      // This URL belongs to the previous item
-      if (items.length > 0 && !items[items.length - 1].url) {
-        items[items.length - 1].url = line;
+  // Find all URL line indices
+  const urlIndices: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^https?:\/\//.test(lines[i].trim())) {
+      urlIndices.push(i);
+    }
+  }
+
+  // Each URL terminates an item. Walk backwards from each URL to find
+  // its title (and optional description).
+  let prevEnd = -1; // index after the previous item's URL
+  for (const urlIdx of urlIndices) {
+    const url = lines[urlIdx].trim();
+    // Non-URL lines between prevEnd+1 and urlIdx-1 are title + description
+    const contentLines: string[] = [];
+    for (let j = prevEnd + 1; j < urlIdx; j++) {
+      const trimmed = lines[j].trim();
+      if (trimmed && !/^https?:\/\//.test(trimmed)) {
+        contentLines.push(trimmed);
       }
-      i++;
-      continue;
     }
 
-    // Check if next line is a description (not a URL, not a title of next item)
-    if (i + 1 < lines.length) {
-      const nextLine = lines[i + 1].trim();
-      if (/^https?:\/\//.test(nextLine)) {
-        // title + URL (no description)
-        items.push({ title: line, description: "", url: nextLine });
-        i += 2;
-        continue;
-      }
-      // title + description, URL follows later
-      const urlLine = i + 2 < lines.length && /^https?:\/\//.test(lines[i + 2].trim()) ? lines[i + 2].trim() : "";
-      items.push({ title: line, description: nextLine, url: urlLine });
-      i += urlLine ? 3 : 2;
-      continue;
+    if (contentLines.length >= 2) {
+      // First line = title, rest = description (join multi-line descriptions)
+      items.push({
+        title: contentLines[0],
+        description: contentLines.slice(1).join(" "),
+        url,
+      });
+    } else if (contentLines.length === 1) {
+      items.push({ title: contentLines[0], description: "", url });
     }
+    // else: URL with no preceding title — skip
 
-    // Last line, standalone title
-    items.push({ title: line, description: "", url: "" });
-    i++;
+    prevEnd = urlIdx;
+  }
+
+  // Handle any trailing content after the last URL (items without URL)
+  const trailingLines: string[] = [];
+  for (let j = (urlIndices.length > 0 ? urlIndices[urlIndices.length - 1] + 1 : 0); j < lines.length; j++) {
+    const trimmed = lines[j].trim();
+    if (trimmed && !/^https?:\/\//.test(trimmed)) {
+      trailingLines.push(trimmed);
+    }
+  }
+  if (trailingLines.length > 0) {
+    items.push({
+      title: trailingLines[0],
+      description: trailingLines.slice(1).join(" "),
+      url: "",
+    });
   }
 
   return items;
 }
 
 function parseEAI(text: string): EAI {
-  // 04-eai.md format:
-  // É AI?
-  //
-  // [Credit text with markdown links] — Author / License.
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   const credit = lines.filter((l) => !l.startsWith("É AI?")).join("\n").trim();
 
@@ -202,13 +190,6 @@ function parseEAI(text: string): EAI {
     realImage: "04-eai-real.jpg",
     iaImage: "04-eai-ia.jpg",
   };
-}
-
-function buildSubtitle(d2title: string, d3title: string): string {
-  const combined = `${d2title} | ${d3title}`;
-  if (combined.length <= 80) return combined;
-  if (d2title.length <= 80) return d2title;
-  return d2title.slice(0, 77) + "...";
 }
 
 function extractContent(editionDir: string): NewsletterContent {
@@ -220,13 +201,27 @@ function extractContent(editionDir: string): NewsletterContent {
   }
 
   const reviewedText = readFileSync(reviewedPath, "utf8");
-  const { destaques, sections } = parseReviewedMd(reviewedText);
 
-  if (destaques.length !== 3) {
-    throw new Error(`Expected 3 destaques, got ${destaques.length}`);
+  // Destaques: use shared parser from extract-destaques.ts (single source of truth)
+  const baseDestaques = parseDestaques(reviewedText);
+  if (baseDestaques.length !== 3) {
+    throw new Error(`Expected 3 destaques, got ${baseDestaques.length}`);
   }
 
-  const eai = existsSync(eaiPath) ? parseEAI(readFileSync(eaiPath, "utf8")) : { credit: "", realImage: "04-eai-real.jpg", iaImage: "04-eai-ia.jpg" };
+  // Enrich with emoji + image file mapping
+  const destaques: RenderDestaque[] = baseDestaques.map((d) => ({
+    ...d,
+    emoji: CATEGORY_EMOJI[d.category] || "📌",
+    imageFile: d.n === 1 ? "05-d1-2x1.jpg" : `05-d${d.n}.jpg`,
+  }));
+
+  // Sections: parsed here (extract-destaques doesn't handle these)
+  const sections = parseSections(reviewedText);
+
+  // É AI?
+  const eai = existsSync(eaiPath)
+    ? parseEAI(readFileSync(eaiPath, "utf8"))
+    : { credit: "", realImage: "04-eai-real.jpg", iaImage: "04-eai-ia.jpg" };
 
   return {
     title: destaques[0].title,
@@ -332,7 +327,7 @@ function renderWhyHeading(): string {
 </td></tr>`;
 }
 
-function renderDestaque(d: Destaque): string {
+function renderDestaque(d: RenderDestaque): string {
   return `<!-- Destaque ${d.n} -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
@@ -353,7 +348,6 @@ function renderDestaque(d: Destaque): string {
 }
 
 function renderEAI(eai: EAI): string {
-  // Process credit line — may contain markdown links
   const creditHtml = processInlineLinks(eai.credit);
 
   return `<!-- É AI? -->
@@ -375,22 +369,27 @@ function renderEAI(eai: EAI): string {
 </td></tr>`;
 }
 
-function renderSection(section: Section): string {
-  const itemsHtml = section.items
-    .map((item) => {
-      const titleHtml = item.url
-        ? `<a href="${esc(item.url)}" style="color:${TEXT_COLOR} !important;text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow"><b>${esc(item.title)}</b></a>`
-        : `<b>${esc(item.title)}</b>`;
+/** Render a single section item as its own table row(s) */
+function renderSectionItem(item: SectionItem): string {
+  const titleHtml = item.url
+    ? `<a href="${esc(item.url)}" style="color:${TEXT_COLOR} !important;text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow"><b>${esc(item.title)}</b></a>`
+    : `<b>${esc(item.title)}</b>`;
 
-      const descHtml = item.description
-        ? `</p>\n</td></tr>\n<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">\n  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:4px 0 12px;margin:0;">${esc(item.description)}`
-        : "";
-
-      return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:12px 0 4px;margin:0;">${titleHtml}${descHtml}</p>
+  const titleRow = `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:12px 0 ${item.description ? "4px" : "12px"};margin:0;">${titleHtml}</p>
 </td></tr>`;
-    })
-    .join("\n");
+
+  if (!item.description) return titleRow;
+
+  const descRow = `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:4px 0 12px;margin:0;">${esc(item.description)}</p>
+</td></tr>`;
+
+  return titleRow + "\n" + descRow;
+}
+
+function renderSection(section: Section): string {
+  const itemsHtml = section.items.map(renderSectionItem).join("\n");
 
   return `<!-- ${section.name} -->
 <tr><td>
@@ -410,17 +409,14 @@ function renderSection(section: Section): string {
 function renderHTML(content: NewsletterContent): string {
   const parts: string[] = [];
 
-  // Destaques
   for (const d of content.destaques) {
     parts.push(renderDestaque(d));
   }
 
-  // É AI?
   if (content.eai.credit) {
     parts.push(renderEAI(content.eai));
   }
 
-  // Sections (Pesquisas, Lançamentos, Outras Notícias)
   for (const section of content.sections) {
     parts.push(renderSection(section));
   }
