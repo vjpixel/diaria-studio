@@ -148,7 +148,7 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
 - **Pré-extrair ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts --format json` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
-- **Template é obrigatório.** Se o nome não bater, abortar.
+- **Template é obrigatório e verificável.** Selecionar exatamente o template configurado em `platform.config.json` → `publishing.newsletter.template` (ex: `"Default"`). Se não encontrar um template com esse nome exato, abortar com `{ "error": "template_not_found", "expected": "Default", "available": [...] }`. **Nunca usar "Blank" ou "blank" como fallback** — criar post sem template causa problemas estruturais (É AI? ausente, boxes não separados). Após criar o post, confirmar o template usado e gravar em `template_used` no output.
 - **Login expirado = abortar.** Não tente re-logar.
 - **Chrome desconectado:** se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
   ```json

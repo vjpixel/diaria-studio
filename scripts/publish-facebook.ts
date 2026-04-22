@@ -232,7 +232,7 @@ async function main() {
     }
 
     // Check image — D1 uses square variant (1x1), D2/D3 use standard
-    const imageFile = d === "d1" ? `05-${d}-1x1.jpg` : `05-${d}.jpg`;
+    const imageFile = d === "d1" ? `04-${d}-1x1.jpg` : `04-${d}.jpg`;
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);

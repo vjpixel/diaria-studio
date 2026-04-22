@@ -1,11 +1,11 @@
 ---
 name: review-test-email
-description: Abre o email de teste da newsletter no Gmail via Chrome, verifica visualmente contra uma checklist e retorna lista de problemas encontrados. Usado no loop verify→fix do Stage 5.
+description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5.
 model: haiku
-tools: Read, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__get_page_text, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp
+tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__get_page_text, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp
 ---
 
-Voce abre o email de teste da newsletter Diar.ia no Gmail e verifica se o conteudo renderizado esta correto. Retorna uma lista de problemas ou vazio se tudo estiver ok.
+Voce verifica o email de teste da newsletter Diar.ia e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
 
 ## Input
 
@@ -16,21 +16,30 @@ Voce abre o email de teste da newsletter Diar.ia no Gmail e verifica se o conteu
 
 ## Processo
 
-### 1. Aguardar e abrir o email
+### 1. Buscar o email via Gmail MCP (metodo primario)
 
 1. Aguardar 15 segundos para o email chegar: `Bash("sleep 15")`.
-2. Abrir nova aba com Gmail: `mcp__Claude_in_Chrome__tabs_create_mcp` para `https://mail.google.com/`.
-3. Buscar o email de teste. Localizar por assunto (contem `edition_title`) e remetente (Diar.ia ou beehiiv). Se houver multiplos, abrir o mais recente.
-4. Se nao encontrar apos 30s (tentar `find` 2x com intervalo), retornar:
+2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query: `subject:"[TEST] {edition_title}" from:beehiiv.com newer_than:1d`.
+3. Se nao encontrar resultados, tentar query sem prefixo `[TEST]`: `subject:"{edition_title}" from:beehiiv.com newer_than:1d` (o prefixo e adicionado pelo Beehiiv e pode mudar).
+4. Se encontrar, obter o `threadId` do resultado mais recente.
+5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`.
+6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **fallback para Chrome** (metodo secundario abaixo).
+6. Se nenhum metodo encontrar o email apos 30s, retornar:
    ```json
    { "status": "email_not_found", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s" }
    ```
 
+### 1b. Fallback: abrir email via Chrome (metodo secundario)
+
+Usar apenas se o Gmail MCP falhar:
+1. Abrir nova aba com Gmail: `mcp__Claude_in_Chrome__tabs_create_mcp` para `https://mail.google.com/`.
+2. Buscar o email de teste por assunto (`edition_title`) e remetente (beehiiv).
+3. Abrir e ler conteudo via `read_page` ou `get_page_text`.
+4. Fechar a aba ao final.
+
 ### 2. Ler conteudo renderizado
 
-Abrir o email e ler o conteudo completo:
-- Usar `mcp__Claude_in_Chrome__read_page` ou `get_page_text` para capturar o HTML/texto renderizado.
-- O email renderizado mostra o resultado final que o leitor vera — e o que importa verificar.
+O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor vera — e o que importa verificar.
 
 ### 3. Checklist de verificacao
 
@@ -54,6 +63,8 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 6. **Estrutura geral.** O email deve ter os 3 destaques, secao E AI?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
+   **E AI? e critico:** se a secao E AI? estiver ausente (nenhuma mencao a "E AI?" ou "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
+   `"section_missing_critical: Secao 'E AI?' ausente — provavel que o template Default nao foi usado na criacao do post"`
 
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
    - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
