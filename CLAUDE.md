@@ -51,7 +51,7 @@ Outputs ficam em `data/editions/{YYMMDD}/` (formato `YYMMDD` = AAMMDD; ex: ediç
 | 4 | É AI? (gate) | Coleta resultado do `eai-composer` disparado no Stage 1 — Wikimedia POTD + Gemini | `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg` |
 | 5 | Imagens | `scripts/image-generate.ts` — Gemini API por default (fallback ComfyUI via `platform.config.json > image_generator`) | `05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg` |
 | 6 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) + `review-test-email` (loop até 10×) | `06-published.json` |
-| 7 | Publish social | `publish-social` — Claude in Chrome → LinkedIn × 3 + Facebook × 3 (rascunho ou agendado) | `07-social-published.json` |
+| 7 | Publish social | `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Claude in Chrome → LinkedIn × 3) em paralelo | `07-social-published.json` |
 
 **Sync com Google Drive (entre stages):** **antes de cada gate** (stages 1–5), `scripts/drive-sync.ts` sobe os outputs do stage para `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada stage** que consome inputs que podem ter sido editados no Drive (3, 5, 6, 7), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 

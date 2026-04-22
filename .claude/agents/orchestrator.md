@@ -31,7 +31,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 - **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{YYMMDD}/`. O pipeline principal é 1→2→3→5→6→7; o Stage 4 (É AI?) roda em paralelo e tem lógica de resume independente.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
   - Se `07-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 7 completo. Pipeline finalizado.
-  - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar `publish-social` (resume-aware ele mesmo).
+  - Se `07-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 7 parcial; re-disparar 7a (script Facebook) e 7b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados.
   - Se `06-published.json` existe (mas não `07-social-published.json`) → pular para Stage 7.
   - Se `05-d1.jpg` + `05-d2.jpg` + `05-d3.jpg` existem (mas não `06-published.json`) → pular para Stage 6.
   - Se `03-social.md` existe (mas não `05-d1.jpg`) → pular para Stage 5.
@@ -388,9 +388,24 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {YYMMDD} --stage 7 --agent orchestrator --level info --message 'stage 7 publish social started'`.
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 7 --files 03-social.md,05-d1.jpg,05-d2.jpg,05-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
-- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar — não disparar `publish-social` incompleto.
-- Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true` (resume-aware).
-- O agente itera 6 posts (linkedin × d1/d2/d3 + facebook × d1/d2/d3), tentando rascunho primeiro e agendando como fallback. Append imediato em `07-social-published.json` após cada post — re-rodar é seguro.
+- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `05-d{1,2,3}.jpg` (Stage 5). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
+
+#### 7a. Facebook — via Graph API (script, ~30s)
+
+- Rodar em paralelo com 7b:
+  ```bash
+  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{YYMMDD}/ --skip-existing
+  ```
+- O script publica 3 posts (d1, d2, d3) via Facebook Graph API com upload de imagem. Cada post é publicado imediatamente na página (o editor revisa/despublica manualmente se necessário).
+- Resume-aware: lê `07-social-published.json` e pula facebook posts já publicados.
+- Append imediato em `07-social-published.json` após cada post.
+- Se o script falhar (token expirado, etc.), logar o erro e continuar — não bloqueia LinkedIn.
+
+#### 7b. LinkedIn — via Claude in Chrome (browser automation)
+
+- Disparar `publish-social` com `edition_dir = data/editions/{YYMMDD}/` e `skip_existing = true`.
+- O agente publish-social é resume-aware e pula posts já em `07-social-published.json` (incluindo os facebook posts do 7a).
+- Na prática, se 7a completou com sucesso, publish-social só precisa postar os 3 LinkedIn posts.
 - **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
   1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, ... 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
   2. Logar warn: `"chrome_disconnected em Stage 7, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
@@ -399,28 +414,32 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   5. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
   6. **Após 10 falhas consecutivas** (~17h de espera acumulada), logar erro e pausar com a mensagem:
      ```
-     🔌 Claude in Chrome desconectou 10 vezes seguidas no Stage 7 (último post: {last_post.platform} {last_post.destaque}).
+     Claude in Chrome desconectou 10 vezes seguidas no Stage 7 (ultimo post: {last_post.platform} {last_post.destaque}).
         Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
         Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 7.
      ```
   - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que o post falhe por outro motivo. Também reseta a cada resposta "retry" do usuário.
   - Erros que não sejam `chrome_disconnected` interrompem o loop e são tratados normalmente.
 - Se algum post retornar `status: "failed"` com `reason` de login expirado, logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
+
+#### Gate humano (após 7a + 7b)
+
 - Ler `07-social-published.json` final.
 - **GATE HUMANO:** mostrar tabela com 6 linhas:
   ```
-  LinkedIn  D1  draft      https://www.linkedin.com/...
-  LinkedIn  D2  draft      https://www.linkedin.com/...
-  LinkedIn  D3  scheduled  2026-04-19 16:00 BRT
-  Facebook  D1  draft      https://business.facebook.com/...
-  ...
+  Facebook  D1  draft      https://www.facebook.com/...  (API)
+  Facebook  D2  draft      https://www.facebook.com/...  (API)
+  Facebook  D3  draft      https://www.facebook.com/...  (API)
+  LinkedIn  D1  draft      https://www.linkedin.com/...  (browser)
+  LinkedIn  D2  draft      https://www.linkedin.com/...  (browser)
+  LinkedIn  D3  scheduled  2026-04-19 16:00 BRT          (browser)
   ```
   - Posts com `status: "failed"` aparecem destacados com `reason`.
   - Instrução: "Revise os rascunhos no dashboard de cada plataforma e publique manualmente quando aprovados. Posts agendados serão publicados automaticamente no horário."
   - Opções: aprovar (encerra pipeline) / re-rodar (recupera failed) / regenerar individual (TODO).
   - **Atualizar cost.md.** Append linha na tabela de Stage 7, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 7 | {stage_start} | {now} | publish_social:1 | 0 | 1 |
+    | 7 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
 

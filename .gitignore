@@ -11,6 +11,7 @@ data/editions/**
 data/*-raw.json
 data/drive-cache.json
 data/.credentials.json
+data/.fb-credentials.json
 data/run-log.jsonl
 data/inbox-drainer-result.json
 data/push-*-plan.json
