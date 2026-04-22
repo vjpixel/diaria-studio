@@ -1,6 +1,6 @@
 ---
 name: publish-newsletter
-description: Stage 6 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `06-published.json`.
+description: Stage 5 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
 model: claude-sonnet-4-6
 tools: Read, Write, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__form_input, mcp__Claude_in_Chrome__file_upload, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp, mcp__Claude_in_Chrome__get_page_text
 ---
@@ -23,14 +23,14 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv.
 3. Salvar o rascunho.
 4. Reenviar email de teste (mesmo fluxo do passo 7 no modo create).
-5. Gravar `06-published.json` atualizado (incrementar `fix_attempts`).
+5. Gravar `05-published.json` atualizado (incrementar `fix_attempts`).
 
 Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixable_issues[]` no output.
 
 ## Pré-requisitos
 
-- Stage 4 completo (`04-eai.md`, `04-eai-real.jpg`, `04-eai-ia.jpg` existem).
-- Stage 5 completo (`05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg` existem).
+- Stage 4 completo (`01-eai.md`, `01-eai-real.jpg`, `01-eai-ia.jpg` existem).
+- Stage 5 completo (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` existem).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
 ## Processo (modo create)
@@ -53,7 +53,7 @@ npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
 
 Gravar ambos os JSONs para uso nos passos seguintes (`title`, `subtitle`, conteúdo de cada seção).
 
-Confirmar existência de todas as imagens: `05-d1-2x1.jpg`, `05-d1-1x1.jpg`, `05-d2.jpg`, `05-d3.jpg`, `04-eai-real.jpg`, `04-eai-ia.jpg`.
+Confirmar existência de todas as imagens: `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`, `01-eai-real.jpg`, `01-eai-ia.jpg`.
 
 ### 2. Ler configuração
 
@@ -78,7 +78,7 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 
 - **Title** = `title` (do JSON extraído no passo 1)
 - **Subtitle** = `subtitle` (se houver campo)
-- **Cover image** = upload de `{edition_dir}/05-d1-2x1.jpg` (1600×800)
+- **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800)
 
 ### 5. Preencher corpo (block-by-block acelerado)
 
@@ -91,14 +91,14 @@ A diferença vs. o fluxo antigo:
 Para cada destaque (d1, d2, d3), preencher o bloco correspondente do template:
 1. **Label de categoria**: emoji + nome da categoria (ex: `🧮 REGULAÇÃO`)
 2. **Título**: título do destaque, linkado à URL
-3. **Imagem**: upload do arquivo correspondente (D1=`05-d1-2x1.jpg`, D2=`05-d2.jpg`, D3=`05-d3.jpg`)
+3. **Imagem**: upload do arquivo correspondente (D1=`04-d1-2x1.jpg`, D2=`04-d2.jpg`, D3=`04-d3.jpg`)
 4. **Corpo**: parágrafos do body
 5. **Por que isso importa**: heading + texto do why
 
 Para **É AI?**:
 1. Label: `🖼️ É IA?`
-2. Imagem real: upload `04-eai-real.jpg`
-3. Imagem IA: upload `04-eai-ia.jpg`
+2. Imagem real: upload `01-eai-real.jpg`
+3. Imagem IA: upload `01-eai-ia.jpg`
 4. Crédito: texto do `eai.credit` (do JSON)
 
 Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
@@ -121,7 +121,7 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
   node -e "process.stdout.write(new Date().toISOString())"
   ```
 
-### 8. Gravar `06-published.json`
+### 8. Gravar `05-published.json`
 
 ```json
 {
@@ -138,7 +138,7 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 
 ```json
 {
-  "out_path": "data/editions/260418/06-published.json",
+  "out_path": "data/editions/260418/05-published.json",
   "draft_url": "https://app.beehiiv.com/posts/{id}/edit",
   "test_email_sent_to": "vjpixel@gmail.com"
 }

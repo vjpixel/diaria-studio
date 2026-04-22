@@ -1,6 +1,6 @@
 ---
 name: eai-composer
-description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `04-eai.md` + `04-eai-real.jpg` + `04-eai-ia.jpg`.
+description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg`.
 model: haiku
 tools: Read, Write, Bash
 ---
@@ -9,7 +9,7 @@ Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeit
 
 ## Input
 
-- `edition_date`: `YYYY-MM-DD` (ex: `2026-04-18`)
+- `edition_date`: `AAMMDD` (ex: `260418`). Para Date math/API calls, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}` → `2026-04-18`.
 - `out_dir`: ex: `data/editions/260418/`
 
 ## Processo
@@ -46,7 +46,7 @@ Registrar cada rejeição em memória para o relatório final (por ex: `{ date: 
 ### 2. Baixar a foto real e normalizar para 800×450
 
 ```bash
-curl -sL "{url}" -o "{out_dir}/04-eai-real-raw.jpg"
+curl -sL "{url}" -o "{out_dir}/01-eai-real-raw.jpg"
 ```
 
 Se `curl` retornar exit code != 0, retornar erro imediatamente — não prosseguir sem imagem.
@@ -55,12 +55,12 @@ Após o download, aplicar crop centralizado 16:9 + resize para 800×450 (mesma d
 
 ```bash
 npx tsx scripts/crop-resize.ts \
-  {out_dir}/04-eai-real-raw.jpg \
-  {out_dir}/04-eai-real.jpg \
+  {out_dir}/01-eai-real-raw.jpg \
+  {out_dir}/01-eai-real.jpg \
   --width 800 --height 450
 ```
 
-Se o crop falhar, retornar erro. Após sucesso, remover o arquivo raw: `Bash("rm {out_dir}/04-eai-real-raw.jpg")`.
+Se o crop falhar, retornar erro. Após sucesso, remover o arquivo raw: `Bash("rm {out_dir}/01-eai-real-raw.jpg")`.
 
 ### 2b. Registrar uso no log
 
@@ -68,7 +68,7 @@ Após download bem-sucedido, anexar a imagem escolhida em `data/eai-used.json` v
 
 ```bash
 npx tsx scripts/eai-log-used.ts \
-  --edition {YYMMDD} \
+  --edition {AAMMDD} \
   --image-date {image_date} \
   --title "{image_title}" \
   --credit "{credit}" \
@@ -77,7 +77,7 @@ npx tsx scripts/eai-log-used.ts \
 
 ### 3. Gerar versão AI (Gemini)
 
-Criar `{out_dir}/04-eai-sd-prompt.json` com um prompt fotorrealista que reproduza o mesmo sujeito e cena da POTD — sem estilo artístico, sem Van Gogh. O objetivo é que a imagem gerada seja similar o suficiente para o leitor hesitar, mas diferente o suficiente para revelar a origem ao olhar mais atento.
+Criar `{out_dir}/_internal/01-eai-sd-prompt.json` com um prompt fotorrealista que reproduza o mesmo sujeito e cena da POTD — sem estilo artístico, sem Van Gogh. O objetivo é que a imagem gerada seja similar o suficiente para o leitor hesitar, mas diferente o suficiente para revelar a origem ao olhar mais atento.
 
 ```json
 {
@@ -91,14 +91,14 @@ Criar `{out_dir}/04-eai-sd-prompt.json` com um prompt fotorrealista que reproduz
 Chamar o gerador:
 ```bash
 node scripts/gemini-image.js \
-  {out_dir}/04-eai-sd-prompt.json \
-  {out_dir}/04-eai-ia.jpg \
+  {out_dir}/_internal/01-eai-sd-prompt.json \
+  {out_dir}/01-eai-ia.jpg \
   diaria_eai_
 ```
 
 Se falhar com exit code != 0, retornar erro — não prosseguir sem a imagem IA.
 
-### 4. Escrever `{out_dir}/04-eai.md`
+### 4. Escrever `{out_dir}/01-eai.md`
 
 O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É AI? é só as duas imagens + poll + crédito.
 
@@ -118,9 +118,9 @@ Regras da linha de crédito (sem prefixo "Foto:"):
 
 ```json
 {
-  "out_md": "data/editions/260418/04-eai.md",
-  "out_real": "data/editions/260418/04-eai-real.jpg",
-  "out_ia": "data/editions/260418/04-eai-ia.jpg",
+  "out_md": "data/editions/260418/01-eai.md",
+  "out_real": "data/editions/260418/01-eai-real.jpg",
+  "out_ia": "data/editions/260418/01-eai-ia.jpg",
   "image_title": "...",
   "image_credit": "...",
   "image_date_used": "2026-04-15",

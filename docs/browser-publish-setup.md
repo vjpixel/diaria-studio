@@ -1,6 +1,6 @@
 # Browser Publish Setup — Diar.ia Studio
 
-Setup do MCP **Claude in Chrome** para Stages 6 e 7 (publicação automatizada da newsletter no Beehiiv e dos 6 posts sociais no LinkedIn + Facebook).
+Setup do MCP **Claude in Chrome** para Stages 5 e 6 (publicação automatizada da newsletter no Beehiiv e dos 6 posts sociais no LinkedIn + Facebook).
 
 ---
 
@@ -99,5 +99,5 @@ Bloco `publishing`:
 | "Login expirado" | Sessão de uma das plataformas caducou | Re-logar no Chrome, re-rodar o stage |
 | "Template 'Default' não encontrado" | Nome do template em `platform.config.json` não bate com o Beehiiv | Verificar nome exato no dashboard Beehiiv → Templates |
 | Test email não chega | Filtros do Gmail / endereço errado | Verificar `test_email` em `platform.config.json` |
-| Composer LinkedIn não abre rascunho | UI mudou ou conta sem feature | Fallback automático para agendamento — checar `07-social-published.json` para confirmar |
-| Imagem não sobe | Arquivo > 10MB ou formato errado | Imagens do Stage 5 são .jpg ~1–2MB; verificar se `05-d{N}.jpg` existe e é válido |
+| Composer LinkedIn não abre rascunho | UI mudou ou conta sem feature | Fallback automático para agendamento — checar `06-social-published.json` para confirmar |
+| Imagem não sobe | Arquivo > 10MB ou formato errado | Imagens do Stage 4 são .jpg ~1–2MB; verificar se `04-d{N}.jpg` existe e é válido |

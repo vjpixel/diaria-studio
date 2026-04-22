@@ -10,7 +10,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 ## Input
 
 - `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias` — saída do categorizer.
-- `edition_date`: data da edição no formato `YYYY-MM-DD`.
+- `edition_date`: data da edição no formato `AAMMDD` (ex: `260423`). Para Date math, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}`.
 - `edition_dir`: diretório da edição (ex: `data/editions/260421/`).
 - `window_days`: janela de publicação em dias (default: `3`).
 

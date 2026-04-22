@@ -5,7 +5,7 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 
 ## Argumentos
 
-- `<date>` (opcional) = data da edição no formato `YYYY-MM-DD`. Default: hoje.
+- `<date>` (opcional) = data da edição no formato `AAMMDD` (ex: `260423`). Default: hoje.
 
 ## O que muda em relação a `/diaria-edicao`
 
@@ -22,13 +22,13 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 
 ### 1. Setup
 
-1. Se `<date>` não foi passado, usar hoje:
+1. Se `<date>` não foi passado, usar hoje (como AAMMDD):
    ```bash
-   node -e "process.stdout.write(new Date().toISOString().slice(0,10))"
+   node -e "process.stdout.write(new Date().toISOString().slice(2,10).replace(/-/g,''))"
    ```
-2. Calcular `window_days` default (sem perguntar ao usuário):
+2. Converter `<date>` (AAMMDD) para ISO e calcular `window_days` default (sem perguntar ao usuário):
    ```bash
-   node -e "const d=new Date('<date>');const day=d.getUTCDay();process.stdout.write(String(day===1||day===2?4:3))"
+   node -e "const s='<date>';const d=new Date('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6));const day=d.getUTCDay();process.stdout.write(String(day===1||day===2?4:3))"
    ```
 3. Verificar pré-requisitos silenciosamente:
    - `context/sources.md` existe e >200 bytes
@@ -38,7 +38,7 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 ### 2. Disparar orchestrator
 
 Disparar o subagente `orchestrator` via `Task` passando no prompt:
-- `edition_date = <date>`
+- `edition_date = <date>` (AAMMDD)
 - `window_days = {valor calculado}`
 - `test_mode = true`
 - `schedule_day_offset = 10`
@@ -49,14 +49,14 @@ Disparar o subagente `orchestrator` via `Task` passando no prompt:
 
 1. Rodar `stage-timing.ts` no diretório da edição:
    ```bash
-   npx tsx scripts/stage-timing.ts --edition {YYMMDD}
+   npx tsx scripts/stage-timing.ts --edition {AAMMDD}
    ```
 2. Mostrar ao usuário:
    - Tabela de timing por stage
    - Total wall clock
    - Lembrete: "Social posts agendados para {date+10}. Delete do Facebook/LinkedIn antes dessa data."
-   - Link para o rascunho no Beehiiv (de `06-published.json`)
+   - Link para o rascunho no Beehiiv (de `05-published.json`)
 
 ## Output
 
-Mesmo de `/diaria-edicao`: todos os arquivos em `data/editions/{YYMMDD}/`.
+Mesmo de `/diaria-edicao`: todos os arquivos em `data/editions/{AAMMDD}/`.

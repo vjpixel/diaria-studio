@@ -1,6 +1,6 @@
 ---
 name: review-test-email
-description: Abre o email de teste da newsletter no Gmail via Chrome, verifica visualmente contra uma checklist e retorna lista de problemas encontrados. Usado no loop verify→fix do Stage 6.
+description: Abre o email de teste da newsletter no Gmail via Chrome, verifica visualmente contra uma checklist e retorna lista de problemas encontrados. Usado no loop verify→fix do Stage 5.
 model: haiku
 tools: Read, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__get_page_text, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp
 ---

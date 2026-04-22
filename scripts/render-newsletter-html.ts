@@ -187,14 +187,14 @@ function parseEAI(text: string): EAI {
 
   return {
     credit,
-    realImage: "04-eai-real.jpg",
-    iaImage: "04-eai-ia.jpg",
+    realImage: "01-eai-real.jpg",
+    iaImage: "01-eai-ia.jpg",
   };
 }
 
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
-  const eaiPath = resolve(editionDir, "04-eai.md");
+  const eaiPath = resolve(editionDir, "01-eai.md");
 
   if (!existsSync(reviewedPath)) {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
@@ -212,7 +212,7 @@ function extractContent(editionDir: string): NewsletterContent {
   const destaques: RenderDestaque[] = baseDestaques.map((d) => ({
     ...d,
     emoji: CATEGORY_EMOJI[d.category] || "📌",
-    imageFile: d.n === 1 ? "05-d1-2x1.jpg" : `05-d${d.n}.jpg`,
+    imageFile: d.n === 1 ? "04-d1-2x1.jpg" : `04-d${d.n}.jpg`,
   }));
 
   // Sections: parsed here (extract-destaques doesn't handle these)
@@ -221,12 +221,12 @@ function extractContent(editionDir: string): NewsletterContent {
   // É AI?
   const eai = existsSync(eaiPath)
     ? parseEAI(readFileSync(eaiPath, "utf8"))
-    : { credit: "", realImage: "04-eai-real.jpg", iaImage: "04-eai-ia.jpg" };
+    : { credit: "", realImage: "01-eai-real.jpg", iaImage: "01-eai-ia.jpg" };
 
   return {
     title: destaques[0].title,
     subtitle: buildSubtitle(destaques[1].title, destaques[2].title),
-    coverImage: "05-d1-2x1.jpg",
+    coverImage: "04-d1-2x1.jpg",
     destaques,
     eai,
     sections,

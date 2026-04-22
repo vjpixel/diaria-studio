@@ -157,11 +157,11 @@ const benchmarks: BenchDef[] = [
   },
   {
     name: "crop-resize.ts (800x800)",
-    check: () => existsSync(resolve(tmpDir, "05-d1.jpg")),
+    check: () => existsSync(resolve(tmpDir, "04-d1.jpg")),
     run: () =>
       timeExec("npx", [
         "tsx", resolve(ROOT, "scripts/crop-resize.ts"),
-        resolve(tmpDir, "05-d1.jpg"),
+        resolve(tmpDir, "04-d1.jpg"),
         resolve(tmpDir, "bench-crop.jpg"),
         "--width", "800",
         "--height", "800",

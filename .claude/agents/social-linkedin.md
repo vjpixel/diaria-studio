@@ -1,6 +1,6 @@
 ---
 name: social-linkedin
-description: Gera 3 posts de LinkedIn — um por destaque — a partir da newsletter revisada. Output temporário em `03-linkedin.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com Facebook em `03-social.md`.
+description: Gera 3 posts de LinkedIn — um por destaque — a partir da newsletter revisada. Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com Facebook em `03-social.md`.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
@@ -23,7 +23,7 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — nu
    - CTA final com link para `diaria.beehiiv.com`.
    - 3 hashtags relevantes ao tema do destaque.
    - 1.200–1.500 caracteres.
-4. Gravar **um arquivo temporário** `{out_dir}/03-linkedin.tmp.md` com o formato abaixo. O orchestrator fará o merge com o Facebook numa etapa seguinte. As seções são delimitadas por `## d1`, `## d2`, `## d3`. Antes de cada post, um comentário HTML com `char_count` facilita debug.
+4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. O orchestrator fará o merge com o Facebook numa etapa seguinte. As seções são delimitadas por `## d1`, `## d2`, `## d3`. Antes de cada post, um comentário HTML com `char_count` facilita debug.
 
 ```markdown
 ## d1
@@ -49,7 +49,7 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — nu
 
 ```json
 {
-  "path": "data/editions/260418/03-linkedin.tmp.md",
+  "path": "data/editions/260418/_internal/03-linkedin.tmp.md",
   "posts": [
     { "destaque": "d1", "char_count": 1340, "warnings": [] },
     { "destaque": "d2", "char_count": 1280, "warnings": [] },
