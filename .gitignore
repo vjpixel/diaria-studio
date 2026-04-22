@@ -16,4 +16,5 @@ data/run-log.jsonl
 data/inbox-drainer-result.json
 data/push-*-plan.json
 data/inbox-archive/
+data/beehiiv-cache/
 .DS_Store

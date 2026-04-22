@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Pipeline Claude Code para produção da newsletter Diar.ia",
   "scripts": {
+    "link-ctr": "tsx scripts/build-link-ctr.ts",
+    "beehiiv-sync": "tsx scripts/beehiiv-sync.ts",
+    "beehiiv-sync-full": "tsx scripts/beehiiv-sync.ts --full",
     "sync-sources": "tsx scripts/sync-sources.ts",
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
