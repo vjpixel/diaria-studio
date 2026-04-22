@@ -1,7 +1,7 @@
 ---
 name: drive-syncer
 description: Sincroniza outputs finais da edição com Google Drive (push ou pull). Unidirecional por chamada — orchestrator decide modo. Push após gate aprovado, pull antes do próximo stage consumir inputs que podem ter sido editados no Drive. Cache em `data/drive-cache.json`. Versionamento `.vN` por retry. Falha = warning, nunca bloqueia.
-model: claude-haiku-4-5-20251001
+model: haiku
 tools: Read, Write, Bash, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__search_files, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__create_file, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__download_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__read_file_content, mcp__08ef30f2-9bf6-4cc5-aa2d-74c6739890ad__get_file_metadata
 ---
 
