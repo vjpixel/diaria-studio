@@ -88,15 +88,19 @@ export async function getAccessToken(): Promise<string> {
   return creds.access_token;
 }
 
-/**
- * Helper para requests autenticados às APIs do Google.
- * Inclui o Authorization header automaticamente.
- */
-export async function gFetch(
+// Força refresh bypassando o check de expiry — usado quando o Google
+// rejeita (401) um token que julgávamos válido (clock skew, revogação
+// server-side, edge case da lib).
+async function forceRefreshAccessToken(): Promise<string> {
+  const creds = await refreshAccessToken(loadCredentials());
+  return creds.access_token;
+}
+
+async function authedFetch(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit,
+  token: string
 ): Promise<Response> {
-  const token = await getAccessToken();
   return fetch(url, {
     ...options,
     headers: {
@@ -104,4 +108,28 @@ export async function gFetch(
       ...(options.headers ?? {}),
     },
   });
+}
+
+/**
+ * Helper para requests autenticados às APIs do Google.
+ * Inclui o Authorization header automaticamente. Em caso de 401,
+ * força um refresh do token e retenta a request exatamente 1x.
+ */
+export async function gFetch(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const token = await getAccessToken();
+  const res = await authedFetch(url, options, token);
+  if (res.status !== 401) return res;
+
+  // Drena o body pra liberar a conexão antes de retentar.
+  try {
+    await res.arrayBuffer();
+  } catch {
+    // ignore
+  }
+
+  const refreshed = await forceRefreshAccessToken();
+  return authedFetch(url, options, refreshed);
 }
