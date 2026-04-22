@@ -358,6 +358,13 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
   - Template usado (`template_used`)
+  - **Resultado da verificação do email de teste** (`test_email_check`): se `issues` não estiver vazio, listar cada problema com `⚠️`. Exemplo:
+    ```
+    ⚠️ Problemas detectados no email de teste:
+       • Label de categoria com cor preta (deveria ser verde do template)
+       • Box D2 e É AI? fundidos no mesmo container
+    ```
+    Se `issues` estiver vazio: `"✅ Email de teste verificado — nenhum problema detectado."`
   - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
     ```
     📎 Suba as imagens manualmente no rascunho antes de publicar:

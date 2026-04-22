@@ -86,6 +86,31 @@ Seguir `context/publishers/beehiiv.md` na ordem:
     ```
     como `test_email_sent_at`.
 
+### 4b. Verificar email de teste
+
+Após envio, abrir o email de teste no Gmail para conferir visualmente. Seguir esta sequência:
+
+1. Aguardar 15 segundos para o email chegar: `Bash("sleep 15")`.
+2. Abrir nova aba: `mcp__Claude_in_Chrome__tabs_create_mcp` → `https://mail.google.com/`.
+3. Localizar o email de teste (assunto = título da edição, remetente = Diar.ia).
+4. Abrir o email e ler o conteúdo renderizado (`mcp__Claude_in_Chrome__read_page` ou `get_page_text`).
+5. **Checklist de verificação** — registrar cada item como ok/problema:
+   - [ ] Cor dos labels de categoria/seção (deve ser verde do template, não preto)
+   - [ ] Cada destaque (D1, D2, D3) em box separado (não fundidos)
+   - [ ] Box "É AI?" separado dos destaques (não fundido com D2 ou D3)
+   - [ ] Seções "Lançamentos", "Pesquisas", "Outras Notícias" — cada uma aparece no máximo 1 vez (sem duplicatas)
+   - [ ] Imagens carregando (pelo menos thumbnail visível)
+   - [ ] Links clicáveis e apontando para URLs corretas
+6. Fechar a aba do Gmail.
+7. Incluir resultado da verificação no output:
+   ```json
+   "test_email_check": {
+     "checked": true,
+     "issues": ["descrição do problema 1", "..."] 
+   }
+   ```
+   Se `issues` estiver vazio, tudo OK. Se houver problemas, o orchestrator mostrará ao editor no gate.
+
 ### 5. Gravar `06-published.json`
 
 ```json
