@@ -156,6 +156,8 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
      ✏️  O scorer indicou 6 candidatos a destaque (⭐ D1–D6).
          Edite o arquivo e mantenha exatamente 3 marcadores ⭐ (remova os demais).
+         A ORDEM FÍSICA das linhas com ⭐ define D1/D2/D3 (de cima para baixo).
+         Para reordenar, basta mover a linha — o número original D{N} é ignorado.
          Se não editar, os 3 primeiros por rank (D1, D2, D3) serão usados automaticamente.
      ```
 
@@ -167,11 +169,12 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
 
   Quando aprovado:
   - **Fazer pull do MD** (o editor pode ter editado no Drive): rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{YYMMDD}/ --stage 1 --files 01-categorized.md")`. Se o pull falhar, usar a versão local.
-  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐ D{N}` (formato: `- [score] Título ⭐ D{N} — https://url`). Ordenar por N crescente (D1 < D2 < D3).
-  - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD, buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
-  - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com D{N+1} do scorer."`.
-  - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (menor N), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas D1, D2, D3."`.
-  - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]`, preservando toda a estrutura do JSON original (buckets, runners_up etc.).
+  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas com marcador `⭐` (formato: `- [score] Título ⭐ D{N} — https://url`). **A ordem de D1/D2/D3 é determinada pela posição física no arquivo (de cima para baixo), NÃO pelo número D{N} original do scorer.** A primeira linha com `⭐` = D1, a segunda = D2, a terceira = D3. Isso permite ao editor reordenar destaques simplesmente movendo linhas.
+  - **Cruzar com `01-categorized.json`**: para cada URL destacada no MD (na ordem física extraída), buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
+  - **Se menos de 3 ⭐ no MD**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) no MD — completando com candidatos do scorer."`.
+  - **Se mais de 3 ⭐ no MD**: usar os 3 primeiros (por posição no arquivo), avisar: `"ℹ️ {N} destaques no MD — mantidos apenas os 3 primeiros por posição."`.
+  - **Renumerar highlights[]**: atribuir `rank: 1` ao primeiro, `rank: 2` ao segundo, `rank: 3` ao terceiro — independente do rank original do scorer.
+  - Salvar `01-approved.json` com exatamente 3 entradas em `highlights[]` (renumeradas), preservando toda a estrutura do JSON original (buckets, runners_up etc.).
   - **Re-renderizar o MD a partir do `01-approved.json`** para manter JSON e MD em sincronia (o editor pode ter mexido em ⭐, mas outras mudanças no JSON também precisam refletir):
     ```bash
     npx tsx scripts/render-categorized-md.ts \
@@ -350,11 +353,48 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que falhe por outro motivo depois. Também reseta a cada resposta "retry" do usuário (nova rodada de 10).
   - **Nota:** entre tentativas, qualquer erro que **não** seja `chrome_disconnected` (ex: login expirado, erro de template) interrompe o loop e é tratado normalmente — não conta como tentativa.
 - Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
-- Ler `06-published.json` retornado.
+- Ler `06-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`.
+
+- **Loop de verificação e correção (até 10 iterações):**
+
+  Para `attempt` de 1 a 10:
+
+  1. **Verificar email de teste.** Disparar `review-test-email` (Sonnet) passando:
+     - `test_email` = `test_email_sent_to`
+     - `edition_title` = `title`
+     - `edition_dir`
+     - `attempt`
+  2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (30s × 2^(N-1), até 10 tentativas de reconexão). Após reconexão, re-disparar `review-test-email` (não `publish-newsletter`).
+  3. Se retornar `status: "email_not_found"`, logar warn e **sair do loop** (email pode ter demorado; não é um problema do rascunho).
+  4. Se `issues` estiver vazio: **sair do loop** — email aprovado automaticamente.
+  5. Se `issues` não estiver vazio:
+     - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10"`.
+     - Disparar `publish-newsletter` em **modo fix** passando:
+       - `edition_dir`
+       - `mode: "fix"`
+       - `draft_url`
+       - `issues` (a lista do reviewer)
+     - Se retornar `unfixable_issues[]` não vazio, logar warn e **sair do loop** — correção manual necessária.
+     - Caso contrário, continuar para a próxima iteração (re-verificar o email reenviado).
+
+  Após 10 iterações sem sucesso, logar warn: `"Loop de verificação atingiu 10 tentativas sem resolver todos os issues"`.
+
+  Armazenar resultado final: `test_email_check = { attempts: N, final_issues: [...], auto_fixed: true/false }`.
+
+- Ler `06-published.json` (pode ter sido atualizado pelo fix mode).
 - **GATE HUMANO:** mostrar:
   - URL do rascunho Beehiiv (`draft_url`)
-  - Confirmação de envio do email de teste para `test_email_sent_to` em `test_email_sent_at`
+  - Confirmação de envio do email de teste para `test_email_sent_to`
   - Template usado (`template_used`)
+  - **Resultado da verificação do email de teste:**
+    - Se `final_issues` vazio: `"✅ Email de teste verificado ({attempts} tentativa(s)) — nenhum problema detectado."`
+    - Se `final_issues` não vazio:
+      ```
+      ⚠️ Problemas restantes após {attempts} tentativa(s):
+         • {issue 1}
+         • {issue 2}
+      Corrija manualmente no rascunho antes de publicar.
+      ```
   - ⚠️ **Lembrete de upload manual de imagens** (inputs de arquivo do Beehiiv bloqueiam automação):
     ```
     📎 Suba as imagens manualmente no rascunho antes de publicar:

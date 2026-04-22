@@ -72,10 +72,14 @@ function main() {
   const editorialText = readFileSync(editorialPath, "utf8");
   const positivePrompt = buildPositivePrompt(editorialText);
 
-  // Montar SD prompt JSON
-  const sdPrompt = {
+  // Montar SD prompt JSON.
+  // D1 é gerada em 2000×1000 (2:1) e depois cropada para 1000×1000 (cover da newsletter).
+  // D2/D3 são geradas sem dimensões forçadas (Gemini escolhe).
+  const isD1 = destaque === "d1";
+  const sdPrompt: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
+    ...(isD1 ? { final_width: 2000, final_height: 1000 } : {}),
   };
 
   // Gravar JSON de prompt
@@ -105,6 +109,23 @@ function main() {
     const code = (e as { status?: number }).status ?? 1;
     console.error(`${scriptName} falhou com código ${code}`);
     process.exit(code);
+  }
+
+  // D1: crop centro de 2000×1000 → 1000×1000 (cover da newsletter)
+  if (isD1) {
+    const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
+    try {
+      execFileSync(
+        "npx",
+        ["tsx", cropScript, outJpgPath, outJpgPath, "--width", "1000", "--height", "1000"],
+        { stdio: "inherit", cwd: ROOT, shell: true }
+      );
+      console.error(`D1 cropada para 1000×1000`);
+    } catch (e: unknown) {
+      const code = (e as { status?: number }).status ?? 1;
+      console.error(`crop-resize falhou com código ${code}`);
+      process.exit(code);
+    }
   }
 
   // Sucesso — imprimir caminho do JPG em stdout (compatível com orchestrator)

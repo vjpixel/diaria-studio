@@ -44,13 +44,24 @@ Se a imagem do dia **reprovar em qualquer critério**, decrementar 1 dia e tenta
 
 Registrar cada rejeição em memória para o relatório final (por ex: `{ date: "2026-04-18", reason: "vertical", width: 1200, height: 1500 }`).
 
-### 2. Baixar a foto real
+### 2. Baixar a foto real e normalizar para 800×450
 
 ```bash
-curl -sL "{url}" -o "{out_dir}/04-eai-real.jpg"
+curl -sL "{url}" -o "{out_dir}/04-eai-real-raw.jpg"
 ```
 
 Se `curl` retornar exit code != 0, retornar erro imediatamente — não prosseguir sem imagem.
+
+Após o download, aplicar crop centralizado 16:9 + resize para 800×450 (mesma dimensão da imagem IA):
+
+```bash
+npx tsx scripts/crop-resize.ts \
+  {out_dir}/04-eai-real-raw.jpg \
+  {out_dir}/04-eai-real.jpg \
+  --width 800 --height 450
+```
+
+Se o crop falhar, retornar erro. Após sucesso, remover o arquivo raw: `Bash("rm {out_dir}/04-eai-real-raw.jpg")`.
 
 ### 2b. Registrar uso no log
 

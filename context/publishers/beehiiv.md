@@ -35,13 +35,25 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 - **Cover image** (Thumbnail): upload de `05-d1.jpg` (a imagem do destaque 1 é a capa).
 
 ### 5. Preencher corpo
-- O editor do Beehiiv tem áreas/blocos pré-definidos pelo template. Para cada destaque (D1, D2, D3):
+
+**Regra fundamental: cada seção do template tem seu próprio bloco/container.** Nunca colar conteúdo de duas seções dentro do mesmo bloco — isso funde as boxes no email renderizado. Ao preencher, verificar que o cursor está dentro do bloco correto do template antes de colar.
+
+- **Destaques (D1, D2, D3):** cada destaque vai em seu **próprio bloco** do template (não juntar dois destaques no mesmo container):
   - Colar o texto do destaque (extraído de `02-reviewed.md`).
   - Inserir imagem inline correspondente (`05-d{N}.jpg`).
-- Bloco **É AI?** (duas imagens — o leitor adivinha qual é IA):
+  - **Preservar a formatação do template.** Em particular, o label de categoria (ex: `LANÇAMENTO`, `PESQUISA`) que aparece no topo de cada box deve **manter a cor original do template** (normalmente verde). Ao colar texto:
+    - Se o template tem um campo/placeholder para o label de categoria, preencher apenas o texto — não alterar estilo/cor.
+    - Se colar sobre um placeholder apaga a formatação, usar **undo** ou re-aplicar a cor manualmente (selecionar o label → trocar cor para a original do template).
+    - Na dúvida, comparar com a prévia do template original antes de preencher.
+
+- **É AI?** — bloco **separado** dos destaques (deve ter seu próprio container no template):
   - Colar texto de `04-eai.md` (só a linha de crédito — sem parágrafo editorial).
-  - Inserir `04-eai-real.jpg` (foto real da Wikimedia POTD) e, logo em seguida, `04-eai-ia.jpg` (versão gerada por IA). **Ordem fixa: real primeiro, IA depois — empilhadas verticalmente como dois blocos de imagem separados**, sem tentar layout side-by-side (nem todo template suporta grid inline, e empilhar garante que ambas rendam em mobile). Rótulos A/B nas imagens são opcionais e ficam a cargo do poll, não do upload.
-- Outros blocos do template (Lançamentos, Pesquisa, Outras): preencher com seções correspondentes de `02-reviewed.md`.
+  - Inserir `04-eai-real.jpg` e `04-eai-ia.jpg` como **dois blocos de imagem separados empilhados verticalmente** (real primeiro, IA depois). Sem layout side-by-side (mobile quebra).
+  - **Confirmar visualmente que o box de É AI? não está fundido com D2 ou D3** — se estiver, o conteúdo foi colado dentro do bloco errado; deletar e recolar no container correto.
+
+- **Lançamentos, Pesquisas, Outras Notícias:** cada seção vai em seu **próprio bloco** do template. Preencher com as seções correspondentes de `02-reviewed.md`.
+  - **Cada seção deve aparecer no máximo 1 vez.** Se o template tiver blocos duplicados (ex: dois containers "Outras Notícias"), usar apenas o primeiro e deletar o duplicado antes de preencher.
+  - Se `02-reviewed.md` não tiver conteúdo para uma seção (ex: nenhuma pesquisa), deletar o bloco inteiro do template (não deixar vazio).
 
 ### 6. Salvar como rascunho
 - **NÃO clicar em Schedule, Publish, ou Send.**
@@ -76,6 +88,9 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 - Upload de imagem: aguardar barra de progresso terminar antes de prosseguir para o próximo bloco (sob risco de o upload ser cancelado).
 - O nome do template é case-sensitive. Se a conta tem `"Default"` mas o config tem `"default"`, falha.
 - Beehiiv às vezes mostra modal de "Upgrade" para features pagas — fechar e prosseguir; o save de rascunho é gratuito.
+- **Cor dos labels de seção.** Ao colar texto sobre um placeholder do template, o Beehiiv pode resetar a formatação (cor, negrito, tamanho) para o padrão (preto). Verificar se labels de categoria (topo de cada box de destaque) mantêm a cor verde original do template. Se perderam, re-aplicar manualmente.
+- **Boxes fundidos.** Se dois blocos aparecem dentro do mesmo container (ex: D2 e É AI? juntos), o conteúdo foi colado no lugar errado. Desfazer e recolar no container correto — cada seção do template tem seu próprio bloco.
+- **Blocos duplicados.** Templates podem ter blocos extras (ex: "Outras Notícias" duplicado) se o post foi criado a partir de edição anterior ou merge. Antes de preencher, verificar se cada seção tem exatamente 1 bloco — deletar duplicatas.
 
 ## Validação de sucesso
 

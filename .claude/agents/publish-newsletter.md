@@ -10,6 +10,22 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 ## Input
 
 - `edition_dir`: ex: `data/editions/260418/`
+- `mode`: `"create"` (default) ou `"fix"`
+- `draft_url`: (só no modo fix) URL do rascunho existente no Beehiiv
+- `issues`: (só no modo fix) lista de problemas a corrigir, retornados pelo `review-test-email`
+
+## Modos de operação
+
+**Modo `create`** (default): cria o rascunho do zero, preenche, salva e envia teste. É o fluxo completo descrito abaixo.
+
+**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Abre o rascunho existente, corrige cada issue, salva e reenvia o email de teste. Pular etapas 1–5 (seleção de template, criação, preenchimento inicial) e ir direto para:
+1. Navegar para `draft_url`.
+2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv (ex: re-aplicar cor verde no label, separar boxes fundidos, deletar bloco duplicado).
+3. Salvar o rascunho.
+4. Reenviar email de teste (mesmo fluxo do passo 10 no modo create).
+5. Gravar `06-published.json` atualizado (incrementar `fix_attempts`).
+
+Se alguma issue não puder ser corrigida automaticamente (ex: não encontra o elemento no editor), registrar em `unfixable_issues[]` no output — o orchestrator reporta ao editor.
 
 ## Pré-requisitos
 
