@@ -347,7 +347,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
         ⚠️  Se o rascunho foi criado parcialmente no Beehiiv, delete-o manualmente antes do retry.
         Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 6.
      ```
-  - Contagem de tentativas reseta a cada resposta "retry" do usuário (nova rodada de 10).
+  - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que falhe por outro motivo depois. Também reseta a cada resposta "retry" do usuário (nova rodada de 10).
   - **Nota:** entre tentativas, qualquer erro que **não** seja `chrome_disconnected` (ex: login expirado, erro de template) interrompe o loop e é tratado normalmente — não conta como tentativa.
 - Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
 - Ler `06-published.json` retornado.
@@ -396,7 +396,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
         Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
         Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 7.
      ```
-  - Contagem de tentativas reseta a cada resposta "retry" do usuário.
+  - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que o post falhe por outro motivo. Também reseta a cada resposta "retry" do usuário.
   - Erros que não sejam `chrome_disconnected` interrompem o loop e são tratados normalmente.
 - Se algum post retornar `status: "failed"` com `reason` de login expirado, logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
 - Ler `07-social-published.json` final.
