@@ -13,7 +13,7 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 2. **Gate humano é inegociável.** Ao final de cada stage, escreva o output em `data/editions/{YYMMDD}/` e **pare**. Apresente um resumo claro ao usuário e peça aprovação antes de prosseguir.
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual. Para `past-editions.md` e `audience-profile.md`, a política é diferente — veja Stage 0.
-5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Drive em sincronia com `data/editions/{YYMMDD}/`:
+5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Drive em sincronia com `data/editions/{YYMMDD}/`:
    - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4, 5 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
    - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 5, 6, 7 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
    - Chamar via `Bash("npx tsx scripts/drive-sync.ts --mode {push|pull} --edition-dir {edition_dir} --stage {N} --files {file1.md,file2.jpg}")`. Ler JSON de stdout; warnings no output — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
@@ -162,7 +162,7 @@ O usuário invoca `/diaria-edicao YYYY-MM-DD`. Você deve:
   1. **Instrução de revisão** — não renderizar a lista no terminal. Apenas informar:
      ```
      📄 Abra data/editions/{YYMMDD}/01-categorized.md para revisar.
-     📁 Drive: startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/01-categorized.md
+     📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/01-categorized.md
 
      ✏️  O scorer indicou 6 candidatos a destaque (⭐ D1–D6).
          Edite o arquivo e mantenha exatamente 3 marcadores ⭐ (remova os demais).
@@ -234,7 +234,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
       — Mantenha exatamente 1 título por destaque (delete os outros 2).
       — Ajuste qualquer texto que queira alterar.
 
-  📁 Drive: startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/02-reviewed.md
+  📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/02-reviewed.md
       (pode editar direto no Drive — o Stage 3 faz pull antes de começar)
   ```
   Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
@@ -262,7 +262,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   ```
 - **Revisar com Clarice (inline — sem Task):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
-- **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
+- **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/03-social.md`." Aprovar.
   - **Atualizar cost.md.** Append linha na tabela de Stage 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
     | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, drive_syncer:1 | 2 | 2 |
@@ -277,7 +277,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - **Se o Task já completou (ou `04-eai.md` já existe por resume):** apresentar o gate imediatamente.
 - Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 4 --files 04-eai.md,04-eai-real.jpg,04-eai-ia.jpg")`. Anotar em `sync_results[4]`; ignorar falhas.
-- **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Real: data/editions/{YYMMDD}/04-eai-real.jpg | IA: data/editions/{YYMMDD}/04-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
+- **GATE HUMANO:** mostrar o texto de `04-eai.md` + `"Real: data/editions/{YYMMDD}/04-eai-real.jpg | IA: data/editions/{YYMMDD}/04-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
   - **Atualizar cost.md.** Append linha na tabela de Stage 4, recalcular `Total de chamadas`, gravar:
     ```
     | 4 | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
@@ -297,7 +297,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{YYMMDD}/ --stage 5 --files 05-d1.jpg,05-d2.jpg,05-d3.jpg")`. Anotar em `sync_results[5]`; ignorar falhas.
-- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **GATE HUMANO:** mostrar os 3 paths gerados (`05-d1.jpg`, `05-d2.jpg`, `05-d3.jpg`). Mencionar: "📁 Previews (400×225) disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar cost.md.** Append linha na tabela de Stage 5, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
     | 5 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
