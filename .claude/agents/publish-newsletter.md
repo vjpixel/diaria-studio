@@ -64,7 +64,7 @@ Seguir `context/publishers/beehiiv.md` na ordem:
 1. **Navegar** para `https://app.beehiiv.com/` (`mcp__Claude_in_Chrome__navigate`).
 2. **Detectar login**: ler página (`get_page_text`). Se aparecer formulário de login ou "Sign in", abortar com:
    ```json
-   { "error": "Beehiiv login expirado. Re-loga no Chrome (https://app.beehiiv.com/) e re-roda /diaria-publicar newsletter." }
+   { "error": "beehiiv_login_expired", "details": "Formulário de login detectado em app.beehiiv.com" }
    ```
 3. **Selecionar workspace Diar.ia** se houver seletor.
 4. **Criar new post**: clicar em **Posts** → **New post**.
