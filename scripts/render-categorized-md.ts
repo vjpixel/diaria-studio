@@ -44,12 +44,8 @@ interface Article {
 }
 
 interface Highlight {
-  rank?: number; // 1..6
-  order?: number; // alias de rank (usado pelo scorer)
   url: string;
-  score?: number;
-  article?: Article;
-  reason?: string;
+  [key: string]: unknown;
 }
 
 interface CategorizedJson {
@@ -137,31 +133,26 @@ function renderLine(article: Article, isHighlight?: boolean): string {
 }
 
 /**
- * Indexa highlights por URL → rank. Suporta dois formatos:
+ * Coleta URLs dos candidatos a destaque. Suporta dois formatos:
  *   1. `data.highlights[]` top-level (formato novo).
- *   2. Artigos nos buckets com `highlight: true` + `rank` inline (formato legado).
+ *   2. Artigos nos buckets com `highlight: true` inline (formato legado).
  */
-function buildHighlightMap(data: CategorizedJson): Map<string, number> {
-  const map = new Map<string, number>();
+function buildHighlightUrls(data: CategorizedJson): Set<string> {
+  const urls = new Set<string>();
 
   // Formato novo: top-level highlights[]
   for (const h of data.highlights ?? []) {
-    const r = h.rank ?? h.order;
-    if (h.url && typeof r === "number") {
-      map.set(h.url, r);
-    }
+    if (h.url) urls.add(h.url);
   }
 
   // Formato legado: inline em cada artigo
   for (const bucket of [data.lancamento, data.pesquisa, data.noticias]) {
     for (const a of bucket ?? []) {
-      if (a.highlight && typeof a.rank === "number" && !map.has(a.url)) {
-        map.set(a.url, a.rank);
-      }
+      if (a.highlight) urls.add(a.url);
     }
   }
 
-  return map;
+  return urls;
 }
 
 function renderSection(
@@ -237,8 +228,7 @@ function main() {
     process.exit(1);
   }
 
-  const highlightMap = buildHighlightMap(data);
-  const highlightUrls = new Set(highlightMap.keys());
+  const highlightUrls = buildHighlightUrls(data);
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
@@ -260,7 +250,7 @@ function main() {
 
   const total =
     data.lancamento.length + data.pesquisa.length + data.noticias.length;
-  const highlighted = highlightMap.size;
+  const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
     ...data.pesquisa,

@@ -171,7 +171,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
     --edition {AAMMDD} \
     --source-health data/source-health.json
   ```
-  O script produz o formato combinado (seção Destaques no topo + seções Lançamentos/Pesquisas/Notícias com `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Artigos nos Destaques não aparecem duplicados nas seções de bucket. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
+  O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 - **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir): `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md")`. Anotar em `sync_results[1]`; ignorar falhas.
 
 - **GATE HUMANO:** apresentar ao usuário:
@@ -184,8 +184,8 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
      ✏️  Candidatos recomendados pelo scorer estão marcados com ⭐.
          Mova exatamente 3 linhas para a seção "Destaques" no topo do arquivo.
          A ORDEM FÍSICA das linhas em "Destaques" define D1/D2/D3 (de cima para baixo).
-         Para reordenar, basta mover a linha — o número original D{N} é ignorado.
-         Se não editar, os 3 primeiros por rank (D1, D2, D3) serão usados automaticamente.
+         Para reordenar, basta mover a linha dentro da seção Destaques.
+         Se não mover nenhum artigo, os 3 primeiros candidatos do scorer serão usados.
      ```
 
   2. **Relatório de saúde das fontes:**
