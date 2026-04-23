@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { request } from "undici";
+import puppeteer, { type Browser } from "puppeteer";
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -211,6 +212,40 @@ export async function verify(url: string, timeoutMs = 8000, isRetry = false): Pr
   }
 }
 
+/**
+ * Fallback via Puppeteer para sites JS-heavy que retornam body < 500 chars
+ * com fetch HTTP puro. Renderiza a página com um browser real e re-avalia.
+ */
+async function verifyWithBrowser(
+  url: string,
+  browser: Browser,
+  timeoutMs = 20000
+): Promise<VerifyResult> {
+  const finalUrl = canonicalize(url);
+  let page;
+  try {
+    page = await browser.newPage();
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.goto(finalUrl, { waitUntil: "networkidle2", timeout: timeoutMs });
+
+    const bodyText = await page.evaluate(() => document.body?.innerText ?? "");
+    for (const marker of PAYWALL_MARKERS) {
+      if (bodyText.toLowerCase().includes(marker)) {
+        return { verdict: "paywall", finalUrl, note: `browser marker: ${marker}` };
+      }
+    }
+    if (bodyText.replace(/\s+/g, " ").trim().length < 500) {
+      return { verdict: "uncertain", finalUrl, note: "browser body < 500 chars" };
+    }
+    return { verdict: "accessible", finalUrl, note: "browser fallback" };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { verdict: "uncertain", finalUrl, note: `browser error: ${msg}` };
+  } finally {
+    await page?.close().catch(() => {});
+  }
+}
+
 async function main() {
   const input = process.argv[2];
   if (!input) {
@@ -227,6 +262,30 @@ async function main() {
   }
 
   const results = await Promise.all(urls.map(async (url) => ({ url, ...(await verify(url)) })));
+
+  // Fallback: re-verify uncertain results with Puppeteer (JS rendering)
+  const uncertainIdxs = results
+    .map((r, i) => (r.verdict === "uncertain" && r.note === "body < 500 chars" ? i : -1))
+    .filter((i) => i >= 0);
+
+  if (uncertainIdxs.length > 0) {
+    console.error(`[verify] ${uncertainIdxs.length} uncertain — retrying with browser fallback...`);
+    let browser: Browser | null = null;
+    try {
+      browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+      for (const idx of uncertainIdxs) {
+        const r = results[idx];
+        const browserResult = await verifyWithBrowser(r.url, browser);
+        if (browserResult.verdict !== "uncertain") {
+          results[idx] = { url: r.url, ...browserResult };
+        }
+      }
+    } catch (e) {
+      console.error(`[verify] browser fallback failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      await browser?.close().catch(() => {});
+    }
+  }
 
   const out = process.argv[3];
   if (out) {

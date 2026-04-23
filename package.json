@@ -14,8 +14,9 @@
   },
   "dependencies": {
     "papaparse": "^5.4.1",
-    "undici": "^7.0.0",
-    "sharp": "^0.34.0"
+    "puppeteer": "^24.42.0",
+    "sharp": "^0.34.0",
+    "undici": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
