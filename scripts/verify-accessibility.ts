@@ -156,7 +156,7 @@ async function resolveAggregator(url: string, aggregatorHost: string, timeoutMs:
   }
 }
 
-export async function verify(url: string, timeoutMs = 8000, isRetry = false): Promise<VerifyResult> {
+export async function verify(url: string, timeoutMs = 8000, isRetry = false, browser?: Browser | null): Promise<VerifyResult> {
   const finalUrl = canonicalize(url);
   const host = domain(finalUrl);
 
@@ -201,6 +201,7 @@ export async function verify(url: string, timeoutMs = 8000, isRetry = false): Pr
       if (body.includes(marker)) return { verdict: "paywall", finalUrl, note: `marker: ${marker}` };
     }
     if (body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").length < 500) {
+      if (browser) return verifyWithBrowser(url, browser);
       return { verdict: "uncertain", finalUrl, note: "body < 500 chars" };
     }
     return { verdict: "accessible", finalUrl };
@@ -261,9 +262,10 @@ async function main() {
     urls = input.split(",").map((s) => s.trim()).filter(Boolean);
   }
 
+  // First pass: verify all URLs with undici (fast, no JS)
   const results = await Promise.all(urls.map(async (url) => ({ url, ...(await verify(url)) })));
 
-  // Fallback: re-verify uncertain results with Puppeteer (JS rendering)
+  // Second pass: retry uncertain results with Puppeteer (JS rendering)
   const uncertainIdxs = results
     .map((r, i) => (r.verdict === "uncertain" && r.note === "body < 500 chars" ? i : -1))
     .filter((i) => i >= 0);
@@ -276,9 +278,7 @@ async function main() {
       for (const idx of uncertainIdxs) {
         const r = results[idx];
         const browserResult = await verifyWithBrowser(r.url, browser);
-        if (browserResult.verdict !== "uncertain") {
-          results[idx] = { url: r.url, ...browserResult };
-        }
+        results[idx] = { url: r.url, ...browserResult };
       }
     } catch (e) {
       console.error(`[verify] browser fallback failed: ${e instanceof Error ? e.message : String(e)}`);
