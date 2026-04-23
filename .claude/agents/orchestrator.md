@@ -196,13 +196,18 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 
   Quando aprovado:
   - **Fazer pull do MD** (o editor pode ter editado no Drive): rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md")`. Se o pull falhar, usar a versão local.
-  - **Parsear `01-categorized.md`** para determinar os destaques escolhidos pelo editor: extrair todas as linhas da seção `## Destaques` (formato: `- [score] Título — https://url — YYYY-MM-DD`). **A ordem de D1/D2/D3 é determinada pela posição física na seção** (de cima para baixo). A primeira linha = D1, a segunda = D2, a terceira = D3. O editor escolhe destaques movendo linhas para dentro/fora dessa seção.
-  - **Cruzar com `_internal/01-categorized.json`**: para cada URL na seção Destaques (na ordem física extraída), buscar o artigo completo no JSON (com todos os campos originais + score + rank do scorer). Se a URL não for encontrada no JSON, logar warn e ignorar.
-  - **Se menos de 3 linhas em Destaques**: usar os candidatos originais do scorer para completar até 3 (por rank), avisar: `"ℹ️ Apenas {N} destaque(s) na seção Destaques — completando com candidatos do scorer."`.
-  - **Se mais de 3 linhas em Destaques**: usar as 3 primeiras (por posição na seção), avisar: `"ℹ️ {N} destaques na seção — mantidos apenas os 3 primeiros por posição."`.
-  - **Renumerar highlights[]**: atribuir `rank: 1` ao primeiro, `rank: 2` ao segundo, `rank: 3` ao terceiro — independente do rank original do scorer.
-  - Salvar `_internal/01-approved.json` com exatamente 3 entradas em `highlights[]` (renumeradas), preservando toda a estrutura do JSON original (buckets, runners_up etc.).
-  - **Re-renderizar o MD a partir do `_internal/01-approved.json`** para manter JSON e MD em sincronia (o editor pode ter movido linhas entre seções, mas outras mudanças no JSON também precisam refletir):
+  - **Aplicar as edições do gate** via `scripts/apply-gate-edits.ts`. O script parseia **todas as 4 seções** do MD (`## Destaques`, `## Lançamentos`, `## Pesquisas`, `## Notícias`), honra a curadoria do editor em cada bucket, e produz o `_internal/01-approved.json` final:
+    ```bash
+    npx tsx scripts/apply-gate-edits.ts \
+      --md data/editions/{AAMMDD}/01-categorized.md \
+      --json data/editions/{AAMMDD}/_internal/01-categorized.json \
+      --out data/editions/{AAMMDD}/_internal/01-approved.json
+    ```
+    Comportamento:
+    - `## Destaques`: primeiras 3 linhas na ordem física viram D1/D2/D3 (rank 1/2/3, renumeradas). Se < 3, completa com candidatos do scorer por rank. Se > 3, mantém as 3 primeiras.
+    - `## Lançamentos` / `## Pesquisas` / `## Notícias`: honra EXATAMENTE as URLs que o editor deixou em cada seção, na ordem física. Artigos removidos do MD são dropados. Artigos movidos entre buckets respeitam o bucket do MD final.
+    - URLs no MD que não existem no `_internal/01-categorized.json` original são logadas como warn e ignoradas.
+  - **Re-renderizar o MD** a partir do `_internal/01-approved.json` para manter JSON e MD em sincronia:
     ```bash
     npx tsx scripts/render-categorized-md.ts \
       --in data/editions/{AAMMDD}/_internal/01-approved.json \
