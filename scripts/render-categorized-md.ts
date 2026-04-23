@@ -4,12 +4,14 @@
  * Renderiza `01-categorized.md` de forma determinística a partir do
  * `01-categorized.json` produzido pelo scorer + research-reviewer.
  *
- * Substitui a geração livre-forma do MD pelo orchestrator LLM, garantindo
- * que:
- *   - O formato é sempre o combinado (3 seções com marcadores inline `⭐ D{N}`).
- *   - Edits no JSON sempre se propagam ao MD (basta rodar o script de novo).
- *   - Artigos com `date_unverified: true` ganham marcador `⚠️` inline, para
- *     que o editor saiba que a data é a original (não pôde ser confirmada).
+ * Layout:
+ *   ## Destaques          — candidatos do scorer (editor mantém 3, remove o resto)
+ *   ## Lançamentos        — bucket lancamento
+ *   ## Pesquisas          — bucket pesquisa
+ *   ## Notícias           — bucket noticias
+ *
+ * O editor escolhe destaques movendo linhas para/de a seção Destaques.
+ * A ordem física dentro de Destaques define D1/D2/D3 (de cima para baixo).
  *
  * Uso:
  *   npx tsx scripts/render-categorized-md.ts \
@@ -42,12 +44,8 @@ interface Article {
 }
 
 interface Highlight {
-  rank?: number; // 1..6
-  order?: number; // alias de rank (usado pelo scorer)
   url: string;
-  score?: number;
-  article?: Article;
-  reason?: string;
+  [key: string]: unknown;
 }
 
 interface CategorizedJson {
@@ -116,8 +114,8 @@ function getDate(a: Article): string {
   return raw.slice(0, 10);
 }
 
-/** Monta linha: `- [score] Título ⭐ D{N} [inbox] [⚠️ data não verificada] — https://url — YYYY-MM-DD` */
-function renderLine(article: Article, highlightRank?: number): string {
+/** Monta linha: `- [score] Título ⭐ [inbox] [⚠️] — https://url — YYYY-MM-DD` */
+function renderLine(article: Article, isHighlight?: boolean): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
   const title = article.title?.trim() || "(sem título)";
@@ -125,7 +123,7 @@ function renderLine(article: Article, highlightRank?: number): string {
   const date = getDate(article);
 
   const markers: string[] = [];
-  if (highlightRank != null) markers.push(`⭐ D${highlightRank}`);
+  if (isHighlight) markers.push("⭐");
   if (article.editor_submitted) markers.push("[inbox]");
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
@@ -135,37 +133,32 @@ function renderLine(article: Article, highlightRank?: number): string {
 }
 
 /**
- * Indexa highlights por URL → rank. Suporta dois formatos:
+ * Coleta URLs dos candidatos a destaque. Suporta dois formatos:
  *   1. `data.highlights[]` top-level (formato novo).
- *   2. Artigos nos buckets com `highlight: true` + `rank` inline (formato legado).
+ *   2. Artigos nos buckets com `highlight: true` inline (formato legado).
  */
-function buildHighlightMap(data: CategorizedJson): Map<string, number> {
-  const map = new Map<string, number>();
+function buildHighlightUrls(data: CategorizedJson): Set<string> {
+  const urls = new Set<string>();
 
   // Formato novo: top-level highlights[]
   for (const h of data.highlights ?? []) {
-    const r = h.rank ?? h.order;
-    if (h.url && typeof r === "number") {
-      map.set(h.url, r);
-    }
+    if (h.url) urls.add(h.url);
   }
 
   // Formato legado: inline em cada artigo
   for (const bucket of [data.lancamento, data.pesquisa, data.noticias]) {
     for (const a of bucket ?? []) {
-      if (a.highlight && typeof a.rank === "number" && !map.has(a.url)) {
-        map.set(a.url, a.rank);
-      }
+      if (a.highlight) urls.add(a.url);
     }
   }
 
-  return map;
+  return urls;
 }
 
 function renderSection(
   title: string,
   articles: Article[],
-  highlightMap: Map<string, number>
+  highlightUrls: Set<string>
 ): string {
   if (articles.length === 0) {
     return `## ${title}\n\n_(vazio)_\n`;
@@ -177,7 +170,7 @@ function renderSection(
     return sb - sa;
   });
   const lines = sorted.map((a) =>
-    renderLine(a, highlightMap.get(a.url))
+    renderLine(a, highlightUrls.has(a.url))
   );
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }
@@ -235,20 +228,19 @@ function main() {
     process.exit(1);
   }
 
-  const highlightMap = buildHighlightMap(data);
+  const highlightUrls = buildHighlightUrls(data);
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
-    `\n> O scorer indicou até 6 candidatos a destaque (marcados com ⭐ D1–D6).\n` +
-    `> Mantenha **exatamente 3** marcadores ⭐ (remova os demais ou mova para outros artigos).\n` +
-    `> **A ordem dos destaques segue a posição no arquivo** (de cima para baixo = D1, D2, D3).\n` +
-    `> Para reordenar, basta mover a linha — o número D{N} original é ignorado.\n` +
+    `\n> Candidatos recomendados pelo scorer estão marcados com ⭐ nas seções abaixo.\n` +
+    `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
 
   const sections = [
-    renderSection("Lançamentos", data.lancamento, highlightMap),
-    renderSection("Pesquisas", data.pesquisa, highlightMap),
-    renderSection("Notícias", data.noticias, highlightMap),
+    `## Destaques\n\n_(mova 3 artigos para cá)_\n`,
+    renderSection("Lançamentos", data.lancamento, highlightUrls),
+    renderSection("Pesquisas", data.pesquisa, highlightUrls),
+    renderSection("Notícias", data.noticias, highlightUrls),
   ].join("\n");
 
   const footer = renderSourceHealth(cli.sourceHealth);
@@ -258,7 +250,7 @@ function main() {
 
   const total =
     data.lancamento.length + data.pesquisa.length + data.noticias.length;
-  const highlighted = highlightMap.size;
+  const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
     ...data.pesquisa,
