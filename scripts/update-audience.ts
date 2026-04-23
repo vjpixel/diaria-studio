@@ -153,12 +153,12 @@ function main() {
   }
 
   const lines: string[] = [
-    "# Perfil de Audiencia — Diar.ia",
+    "# Perfil de Audiência — Diar.ia",
     "",
     `**updated_at:** ${today}`,
     ...(subscribers > 0 ? [`**subscribers ativos:** ${subscribers}`] : []),
     ...(surveyResponses.length > 0 ? [`**respondentes survey:** ${surveyResponses.length}`] : []),
-    ...(ctr ? [`**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edicoes, 7+ dias de idade)`] : []),
+    ...(ctr ? [`**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edições, 7+ dias de idade)`] : []),
   ];
 
   // ─── Section 1: CTR (primary) ─────────────────────────────────────────────
@@ -173,8 +173,8 @@ function main() {
       "",
       "## 1. Engajamento real (CTR por categoria)",
       "",
-      `Fonte primaria: comportamento de ${subscribers || "N"} subscribers em ${ctr.totalEditions} edicoes.`,
-      `CTR medio geral: ${avgCtr.toFixed(2)}%`,
+      `Fonte primária: comportamento de ${subscribers || "N"} subscribers em ${ctr.totalEditions} edições.`,
+      `CTR médio geral: ${avgCtr.toFixed(2)}%`,
       "",
     );
 
@@ -188,7 +188,7 @@ function main() {
     for (const [cat, agg] of catEntries) {
       const pct = ctrPct(agg);
       const vs = +pct - avgCtr;
-      const tag = vs > 0.15 ? " (acima da media)" : vs < -0.15 ? " (abaixo da media)" : "";
+      const tag = vs > 0.15 ? " (acima da média)" : vs < -0.15 ? " (abaixo da média)" : "";
       lines.push(`- **${cat}** — CTR ${pct}% | ${agg.count} links${tag}`);
     }
 
@@ -197,7 +197,7 @@ function main() {
       "",
       "### Destaques por categoria + origem",
       "",
-      "Top 10 combinacoes com maior CTR (minimo 5 links):",
+      "Top 10 combinações com maior CTR (mínimo 5 links):",
       "",
     );
 
@@ -229,8 +229,8 @@ function main() {
 
     lines.push(
       "",
-      "> **Como usar:** categorias com CTR acima da media devem receber bonus de score.",
-      "> Conteudo BR tem engajamento significativamente maior — priorizar quando disponivel em qualidade equivalente.",
+      "> **Como usar:** categorias com CTR acima da média devem receber bônus de score.",
+      "> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.",
     );
   }
 
@@ -244,27 +244,27 @@ function main() {
 
     lines.push(
       "",
-      "## 2. Preferencias declaradas (survey)",
+      "## 2. Preferências declaradas (survey)",
       "",
-      `Fonte secundaria: ${surveyResponses.length} respondentes. Usar para calibrar tom e vocabulario, nao para priorizar temas.`,
+      `Fonte secundária: ${surveyResponses.length} respondentes. Usar para calibrar tom e vocabulário, não para priorizar temas.`,
       "",
-      "### Conteudo preferido",
+      "### Conteúdo preferido",
       "",
       ...contentTypes.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
-      "### Nivel de conhecimento em IA",
+      "### Nível de conhecimento em IA",
       "",
       ...aiLevel.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
-      "> **Como usar:** maioria e uso casual/consciente. Evitar jargao tecnico sem explicacao.",
+      "> **Como usar:** maioria é uso casual/consciente. Evitar jargão técnico sem explicação.",
       "",
-      "## 3. Quem sao (demographics)",
+      "## 3. Quem são (demographics)",
       "",
       "### Setores",
       "",
       ...sectors.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
       "",
-      "### Areas de atuacao",
+      "### Áreas de atuação",
       "",
       ...areas.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
     );

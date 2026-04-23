@@ -1,34 +1,34 @@
-# Perfil de Audiencia — Diar.ia
+# Perfil de Audiência — Diar.ia
 
 **updated_at:** 2026-04-23
 **subscribers ativos:** 485
 **respondentes survey:** 166
-**links analisados:** 1428 (136 edicoes, 7+ dias de idade)
+**links analisados:** 1428 (136 edições, 7+ dias de idade)
 
 ## 1. Engajamento real (CTR por categoria)
 
-Fonte primaria: comportamento de 485 subscribers em 136 edicoes.
-CTR medio geral: 0.65%
+Fonte primária: comportamento de 485 subscribers em 136 edições.
+CTR médio geral: 0.65%
 
-- **Treinamento** — CTR 3.37% | 21 links (acima da media)
-- **Tendência** — CTR 0.91% | 48 links (acima da media)
-- **Estratégia** — CTR 0.86% | 23 links (acima da media)
-- **Impacto** — CTR 0.85% | 45 links (acima da media)
+- **Treinamento** — CTR 3.37% | 21 links (acima da média)
+- **Tendência** — CTR 0.91% | 48 links (acima da média)
+- **Estratégia** — CTR 0.86% | 23 links (acima da média)
+- **Impacto** — CTR 0.85% | 45 links (acima da média)
 - **Lançamento** — CTR 0.76% | 451 links
 - **Ferramenta** — CTR 0.65% | 51 links
 - **Bastidores** — CTR 0.64% | 96 links
 - **Pesquisa** — CTR 0.60% | 135 links
 - **Mercado** — CTR 0.54% | 99 links
 - **Regulação** — CTR 0.52% | 116 links
-- **Aplicação** — CTR 0.47% | 39 links (abaixo da media)
-- **Geopolítica** — CTR 0.45% | 50 links (abaixo da media)
-- **Segurança** — CTR 0.41% | 37 links (abaixo da media)
-- **Curiosidade** — CTR 0.38% | 109 links (abaixo da media)
-- **Infraestrutura** — CTR 0.35% | 108 links (abaixo da media)
+- **Aplicação** — CTR 0.47% | 39 links (abaixo da média)
+- **Geopolítica** — CTR 0.45% | 50 links (abaixo da média)
+- **Segurança** — CTR 0.41% | 37 links (abaixo da média)
+- **Curiosidade** — CTR 0.38% | 109 links (abaixo da média)
+- **Infraestrutura** — CTR 0.35% | 108 links (abaixo da média)
 
 ### Destaques por categoria + origem
 
-Top 10 combinacoes com maior CTR (minimo 5 links):
+Top 10 combinações com maior CTR (mínimo 5 links):
 
 - **Treinamento BR** — CTR 4.76% | 6 links
 - **Treinamento INT** — CTR 2.95% | 15 links
@@ -46,14 +46,14 @@ Top 10 combinacoes com maior CTR (minimo 5 links):
 - **BR** — CTR 0.78% | 242 links (16.9% do total)
 - **INT** — CTR 0.62% | 1186 links (83.1% do total)
 
-> **Como usar:** categorias com CTR acima da media devem receber bonus de score.
-> Conteudo BR tem engajamento significativamente maior — priorizar quando disponivel em qualidade equivalente.
+> **Como usar:** categorias com CTR acima da média devem receber bônus de score.
+> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.
 
-## 2. Preferencias declaradas (survey)
+## 2. Preferências declaradas (survey)
 
-Fonte secundaria: 166 respondentes. Usar para calibrar tom e vocabulario, nao para priorizar temas.
+Fonte secundária: 166 respondentes. Usar para calibrar tom e vocabulário, não para priorizar temas.
 
-### Conteudo preferido
+### Conteúdo preferido
 
 - **Tutoriais práticos** — weight 0.176 (106 respostas)
 - **Curadoria de novas ferramentas** — weight 0.168 (101 respostas)
@@ -64,7 +64,7 @@ Fonte secundaria: 166 respondentes. Usar para calibrar tom e vocabulario, nao pa
 - **Artigos de opinião e editoriais** — weight 0.09 (54 respostas)
 - **Outra** — weight 0.01 (6 respostas)
 
-### Nivel de conhecimento em IA
+### Nível de conhecimento em IA
 
 - **Uso casual (uso ferramentas eventualmente)** — weight 0.295 (49 respostas)
 - **Uso consciente (uso GenAI para tarefas simples diariamente)** — weight 0.295 (49 respostas)
@@ -72,9 +72,9 @@ Fonte secundaria: 166 respondentes. Usar para calibrar tom e vocabulario, nao pa
 - **Especialista (sei otimizar modelos e/ou traduzir um problema de negócio em uma estratégia que use IA eficientemente)** — weight 0.09 (15 respostas)
 - **Praticante (consigo usar um modelo via API e/ou limpar e coletar dados)** — weight 0.072 (12 respostas)
 
-> **Como usar:** maioria e uso casual/consciente. Evitar jargao tecnico sem explicacao.
+> **Como usar:** maioria é uso casual/consciente. Evitar jargão técnico sem explicação.
 
-## 3. Quem sao (demographics)
+## 3. Quem são (demographics)
 
 ### Setores
 
@@ -100,7 +100,7 @@ Fonte secundaria: 166 respondentes. Usar para calibrar tom e vocabulario, nao pa
 - **Construção Civil** — weight 0.02 (8 respostas)
 - **Imobiliário** — weight 0.017 (7 respostas)
 
-### Areas de atuacao
+### Áreas de atuação
 
 - **Engenharia/Software/Dados/TI** — weight 0.236 (38 respostas)
 - **Pesquisa/Academia/Educação** — weight 0.093 (15 respostas)
