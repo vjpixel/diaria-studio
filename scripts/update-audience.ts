@@ -71,6 +71,7 @@ function parseCtr(): {
   byCategory: Map<string, CtrAgg>;
   byCatOrigin: Map<string, CtrAgg>;
   byOrigin: Map<string, CtrAgg>;
+  byDomain: Map<string, CtrAgg>;
   totalLinks: number;
   totalEditions: number;
 } | null {
@@ -82,6 +83,7 @@ function parseCtr(): {
   const byCategory = new Map<string, CtrAgg>();
   const byCatOrigin = new Map<string, CtrAgg>();
   const byOrigin = new Map<string, CtrAgg>();
+  const byDomain = new Map<string, CtrAgg>();
   const dates = new Set<string>();
 
   for (const line of lines) {
@@ -94,6 +96,7 @@ function parseCtr(): {
     const category = parts[parts.length - 2];
     const uniqueOpens = +parts[parts.length - 6];
     const uniqueVerifiedClicks = +parts[parts.length - 4];
+    const domain = parts[parts.length - 7];
     const date = parts[0];
 
     dates.add(date);
@@ -109,9 +112,10 @@ function parseCtr(): {
     add(byCategory, category);
     add(byCatOrigin, `${category}|${origin}`);
     add(byOrigin, origin);
+    if (domain && domain.includes(".")) add(byDomain, domain);
   }
 
-  return { byCategory, byCatOrigin, byOrigin, totalLinks: lines.length, totalEditions: dates.size };
+  return { byCategory, byCatOrigin, byOrigin, byDomain, totalLinks: lines.length, totalEditions: dates.size };
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -232,6 +236,45 @@ function main() {
       "> **Como usar:** categorias com CTR acima da média devem receber bônus de score.",
       "> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.",
     );
+
+    // By domain (source quality)
+    const MIN_LINKS_DOMAIN = 3;
+    const domainEntries = [...ctr.byDomain.entries()]
+      .filter(([, a]) => a.count >= MIN_LINKS_DOMAIN)
+      .map(([dom, a]) => ({ dom, ...a, ctr: a.opens > 0 ? (a.clicks / a.opens) * 100 : 0 }))
+      .sort((a, b) => b.ctr - a.ctr);
+
+    if (domainEntries.length > 0) {
+      lines.push(
+        "",
+        "### CTR por fonte (mínimo 3 links)",
+        "",
+        "Top 15 fontes com maior engajamento:",
+        "",
+      );
+
+      for (const e of domainEntries.slice(0, 15)) {
+        lines.push(`- **${e.dom}** — CTR ${e.ctr.toFixed(2)}% | ${e.count} links`);
+      }
+
+      const bottom = domainEntries.filter(e => e.ctr === 0 && e.count >= MIN_LINKS_DOMAIN);
+      if (bottom.length > 0) {
+        lines.push(
+          "",
+          `Fontes com CTR 0.00% (${bottom.length} fontes, ${MIN_LINKS_DOMAIN}+ links):`,
+          "",
+        );
+        for (const e of bottom) {
+          lines.push(`- ${e.dom} (${e.count} links)`);
+        }
+      }
+
+      lines.push(
+        "",
+        "> **Como usar:** fontes com CTR alto indicam conteúdo que a audiência valoriza.",
+        "> Fontes com CTR 0.00% podem ter paywall ou conteúdo genérico — considerar na curadoria.",
+      );
+    }
   }
 
   // ─── Section 2: Survey (secondary) ────────────────────────────────────────

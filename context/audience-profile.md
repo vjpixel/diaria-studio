@@ -49,6 +49,54 @@ Top 10 combinações com maior CTR (mínimo 5 links):
 > **Como usar:** categorias com CTR acima da média devem receber bônus de score.
 > Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.
 
+### CTR por fonte (mínimo 3 links)
+
+Top 15 fontes com maior engajamento:
+
+- **g1.globo.com** — CTR 2.59% | 4 links
+- **huggingface.co** — CTR 1.96% | 3 links
+- **deepmind.google** — CTR 1.57% | 3 links
+- **microsoft.com** — CTR 1.52% | 9 links
+- **elevenlabs.io** — CTR 1.50% | 4 links
+- **techradar.com** — CTR 1.47% | 5 links
+- **x.ai** — CTR 1.42% | 5 links
+- **futurism.com** — CTR 1.42% | 4 links
+- **wired.com** — CTR 1.21% | 6 links
+- **the-decoder.com** — CTR 1.20% | 4 links
+- **developers.googleblog.com** — CTR 1.09% | 4 links
+- **github.com** — CTR 1.08% | 6 links
+- **slack.com** — CTR 1.07% | 3 links
+- **bbc.com** — CTR 1.01% | 9 links
+- **cloud.google.com** — CTR 1.01% | 6 links
+
+Fontes com CTR 0.00% (22 fontes, 3+ links):
+
+- usnews.com (4 links)
+- registro.br (3 links)
+- wsj.com (6 links)
+- nytimes.com (3 links)
+- aljazeera.com (3 links)
+- fortune.com (5 links)
+- morningstar.com (3 links)
+- abcnews.go.com (3 links)
+- uol.com.br (3 links)
+- markets.financialcontent.com (3 links)
+- bloomberg.com (5 links)
+- tomshardware.com (3 links)
+- timesofindia.indiatimes.com (3 links)
+- engadget.com (6 links)
+- claude.ai (4 links)
+- nvidianews.nvidia.com (3 links)
+- marktechpost.com (3 links)
+- 9to5mac.com (3 links)
+- timesbrasil.com.br (4 links)
+- wikidata.org (4 links)
+- bnnbloomberg.ca (3 links)
+- en.wikipedia.org (6 links)
+
+> **Como usar:** fontes com CTR alto indicam conteúdo que a audiência valoriza.
+> Fontes com CTR 0.00% podem ter paywall ou conteúdo genérico — considerar na curadoria.
+
 ## 2. Preferências declaradas (survey)
 
 Fonte secundária: 166 respondentes. Usar para calibrar tom e vocabulário, não para priorizar temas.
