@@ -125,7 +125,7 @@ function getDate(a: Article): string {
  * tag — o critério é editorial (o artigo é sobre o Brasil), não o domínio.
  */
 const BR_KEYWORD_RE =
-  /\b(bras(il|ileir[ao]s?|iliense)|braz(il|ilian)s?|fgv(\s+ibre)?|anpd|cvm|petrobras|ita[úu]|bradesco|santander brasil|bndes|anatel|banco central do brasil|bcb|usp|unicamp|fiesp|ibge|ipea|mec brasil|s[ãa]o paulo|rio de janeiro|bras[íi]lia|latam\s+brasil|inovabra|tribunal (superior|de justi[çc]a)|stf|congresso nacional)\b/i;
+  /\b(bras(il|ileir[ao]s?|ilienses?)|braz(il|ilians?)|fgv(\s+ibre)?|anpd|cvm|petrobras|ita[úu]|bradesco|santander brasil|bndes|anatel|banco central do brasil|bcb|usp|unicamp|fiesp|ibge|ipea|mec brasil|s[ãa]o paulo|rio de janeiro|bras[íi]lia|latam\s+brasil|inovabra|tribunal (superior|de justi[çc]a)|stf|congresso nacional)\b/i;
 
 function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
