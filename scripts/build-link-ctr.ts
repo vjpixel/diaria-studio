@@ -1121,7 +1121,6 @@ interface Row {
   post_title: string;
   section_title: string;
   anchor: string;
-  url: string;
   base_url: string;
   domain: string;
   unique_opens: number;
@@ -1139,7 +1138,7 @@ function main() {
   }
 
   const header = [
-    'date', 'post_title', 'section_title', 'anchor', 'url', 'base_url', 'domain',
+    'date', 'post_title', 'section_title', 'anchor', 'base_url', 'domain',
     'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category', 'origin'
   ];
 
@@ -1150,11 +1149,17 @@ function main() {
 
   if (!isBootstrap) {
     const existing = fs.readFileSync(OUT_CSV, 'utf8').split('\n');
-    existingLines = existing.slice(1).filter(Boolean); // skip header
-    // Find most recent date in existing data (first column)
-    for (const line of existingLines) {
-      const date = line.split(',')[0];
-      if (date > lastDate) lastDate = date;
+    const oldHeader = existing[0] ?? '';
+    // If column schema changed (e.g. removed 'url' column), re-bootstrap
+    if (oldHeader !== header.join(',')) {
+      console.log('CSV schema changed — re-bootstrapping.');
+    } else {
+      existingLines = existing.slice(1).filter(Boolean); // skip header
+      // Find most recent date in existing data (first column)
+      for (const line of existingLines) {
+        const date = line.split(',')[0];
+        if (date > lastDate) lastDate = date;
+      }
     }
   }
 
@@ -1218,7 +1223,6 @@ function main() {
         post_title: title,
         section_title: link.sectionTitle,
         anchor: link.anchor,
-        url: link.baseUrl,
         base_url: link.baseUrl,
         domain,
         unique_opens: uniqueOpens,
@@ -1235,7 +1239,7 @@ function main() {
 
   // Write CSV: existing rows + new rows
   const newCsvLines = newRows.map(r => [
-    r.date, r.post_title, r.section_title, r.anchor, r.url, r.base_url, r.domain,
+    r.date, r.post_title, r.section_title, r.anchor, r.base_url, r.domain,
     r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category, r.origin
   ].map(csvEscape).join(','));
 
@@ -1274,4 +1278,4 @@ function main() {
   }
 }
 
-main().catch(console.error);
+main();
