@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 interface Article {
   url: string;
@@ -215,11 +216,44 @@ function renderSourceHealth(path?: string): string {
   }
 }
 
+/**
+ * Auto-discovers `01-verified.json` in the same _internal/ directory as the
+ * input JSON and marks articles with `verdict: "uncertain"` as
+ * `date_unverified: true`. This is a hardening measure — the research-reviewer
+ * normally sets this flag, but if the pipeline is re-run partially the flag
+ * can be lost. The render script is the final consumer, so it cross-references
+ * the verification source of truth directly.
+ */
+function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
+  const dir = dirname(inputPath);
+  const verifiedPath = join(dir, "01-verified.json");
+  if (!existsSync(verifiedPath)) return;
+
+  try {
+    const verified: Array<{ url?: string; verdict?: string }> = JSON.parse(
+      readFileSync(verifiedPath, "utf8")
+    );
+    const uncertainUrls = new Set(
+      verified.filter((v) => v.verdict === "uncertain").map((v) => v.url)
+    );
+    if (uncertainUrls.size === 0) return;
+
+    for (const bucket of [data.lancamento, data.pesquisa, data.noticias]) {
+      for (const a of bucket ?? []) {
+        if (uncertainUrls.has(a.url)) a.date_unverified = true;
+      }
+    }
+  } catch {
+    // Non-fatal — verified.json may be malformed or unreadable
+  }
+}
+
 // ---------- Main ---------------------------------------------------------
 
 function main() {
   const cli = parseArgs();
   const data: CategorizedJson = JSON.parse(readFileSync(cli.in, "utf8"));
+  mergeVerifiedFlags(cli.in, data);
 
   if (!data.lancamento || !data.pesquisa || !data.noticias) {
     console.error(
