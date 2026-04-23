@@ -33,5 +33,5 @@ Cada stage da pipeline pausa num gate humano. Siga as instruções no chat.
 ## Status
 
 - [x] Fase 1 — stages textuais (Research → Writing → Social)
-- [ ] Fase 2 — imagens via Stable Diffusion local + É AI? via Wikimedia POTD
+- [ ] Fase 2 — imagens via Stable Diffusion local + É IA? via Wikimedia POTD
 - [ ] Fase 3 — publicação automatizada via Playwright

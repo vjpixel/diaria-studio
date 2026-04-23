@@ -183,7 +183,7 @@ function parseListItems(text: string): SectionItem[] {
 
 function parseEAI(text: string): EAI {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const credit = lines.filter((l) => !l.startsWith("É AI?")).join("\n").trim();
+  const credit = lines.filter((l) => !l.startsWith("É IA?")).join("\n").trim();
 
   return {
     credit,
@@ -218,7 +218,7 @@ function extractContent(editionDir: string): NewsletterContent {
   // Sections: parsed here (extract-destaques doesn't handle these)
   const sections = parseSections(reviewedText);
 
-  // É AI?
+  // É IA?
   const eai = existsSync(eaiPath)
     ? parseEAI(readFileSync(eaiPath, "utf8"))
     : { credit: "", realImage: "01-eai-real.jpg", iaImage: "01-eai-ia.jpg" };
@@ -350,7 +350,7 @@ function renderDestaque(d: RenderDestaque): string {
 function renderEAI(eai: EAI): string {
   const creditHtml = processInlineLinks(eai.credit);
 
-  return `<!-- É AI? -->
+  return `<!-- É IA? -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
   ${renderSpacer()}

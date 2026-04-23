@@ -41,7 +41,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
 - **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais no Stage 6 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
-- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5→6; o É AI? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
+- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5→6; o É IA? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
   - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 6 completo. Pipeline finalizado.
   - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 6 parcial; re-disparar 6a (script Facebook) e 6b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados.
@@ -54,11 +54,11 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `_internal/01-approved.json` existe (mas não `02-reviewed.md`) → pular para Stage 2.
   - Se `_internal/01-categorized.json` existe mas não `_internal/01-approved.json` → Stage 1 foi interrompido no gate humano; reapresentar o gate.
   - Caso contrário → começar do Stage 0 normalmente.
-  **É AI? (paralelo)** — verificar em qualquer ponto de resume:
+  **É IA? (paralelo)** — verificar em qualquer ponto de resume:
   - Se `01-eai.md` já existe → não disparar eai-composer.
   - Se `01-eai.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eai-composer` em background (mesma lógica do Stage 1 dispatch).
-  - O gate do É AI? será apresentado assim que o Task completar, intercalado com o fluxo principal.
-  - **Pré-requisito do Stage 5:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando o Stage 5 for atingido, **bloquear e aguardar** o Task — publicar sem É AI? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
+  - O gate do É IA? será apresentado assim que o Task completar, intercalado com o fluxo principal.
+  - **Pré-requisito do Stage 5:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando o Stage 5 for atingido, **bloquear e aguardar** o Task — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
   - Se o usuário responder "sim, refazer do zero", renomear a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar (nunca deletar trabalho). Nunca sobrescreva arquivos de stages anteriores sem essa confirmação.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
@@ -92,10 +92,10 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Extrair `inbox_urls` = lista de URLs vindas do drainer + URLs de entradas já existentes em `data/inbox.md` que ainda não foram arquivadas. Extrair `inbox_topics` idem.
 - Ler `context/sources.md` e extrair os nomes+site queries de todas as fontes ativas.
 - Ler `data/source-health.json` (se existir). Anotar fontes com 3+ `recent_outcomes` consecutivos não-ok — **ainda dispara**, mas sinaliza no relatório do Stage 1.
-- **Disparar É AI? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Task` em **background** (na mesma mensagem dos researchers abaixo) passando:
+- **Disparar É IA? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Task` em **background** (na mesma mensagem dos researchers abaixo) passando:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`
-  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É AI?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Task completar — o que vier depois). Se `01-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
+  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Task completar — o que vier depois). Se `01-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
 - Disparar N chamadas `Task` paralelas com subagent `source-researcher`, uma por fonte, passando:
   - nome da fonte
   - site query
@@ -284,7 +284,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
     ```
     Atualizar `Fim: {now}` no cabeçalho. `Total de chamadas` inclui +1 pelo orchestrator.
 
-### 1b. É AI? (gate do background dispatch)
+### 1b. É IA? (gate do background dispatch)
 
 O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage" apenas coleta o resultado e apresenta o gate — **não bloqueia** o pipeline principal. O gate pode ser apresentado em qualquer momento após o Task completar, intercalado com os gates de outros stages se necessário.
 
@@ -293,7 +293,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-eai.md,01-eai-real.jpg,01-eai-ia.jpg")`. Anotar em `sync_results[1]` (eai); ignorar falhas.
 - **GATE HUMANO:** mostrar o texto de `01-eai.md` + `"Real: data/editions/{AAMMDD}/01-eai-real.jpg | IA: data/editions/{AAMMDD}/01-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
-  - **Atualizar _internal/cost.md.** Append linha na tabela de É AI?, recalcular `Total de chamadas`, gravar:
+  - **Atualizar _internal/cost.md.** Append linha na tabela de É IA?, recalcular `Total de chamadas`, gravar:
     ```
     | 1b | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
     ```
@@ -347,7 +347,7 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   2. Instruir o usuário a **deletar o rascunho incorreto** no Beehiiv antes do retry (rascunhos órfãos poluem a lista de posts): `"⚠️ Delete o rascunho '{title}' em {draft_url} antes do retry."`.
   3. Re-disparar `publish-newsletter` com os mesmos parâmetros (até 3 tentativas).
   4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
-  5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É AI? ausente, boxes não separados, etc.).
+  5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É IA? ausente, boxes não separados, etc.).
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral do Stage 5. O Stage 5 só está completo quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
@@ -402,8 +402,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
        • Inline D1  → 04-d1-2x1.jpg
        • Inline D2  → 04-d2.jpg
        • Inline D3  → 04-d3.jpg
-       • É AI? (A)  → 01-eai-real.jpg
-       • É AI? (B)  → 01-eai-ia.jpg
+       • É IA? (A)  → 01-eai-real.jpg
+       • É IA? (B)  → 01-eai-ia.jpg
        📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
     ```
   - Instrução: "Suba as imagens, reenvie o email de teste do Beehiiv para conferir, e só então aprove para seguir ao Stage 6."

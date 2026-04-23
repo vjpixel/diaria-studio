@@ -5,7 +5,7 @@ model: haiku
 tools: Read, Write, Bash
 ---
 
-Você compõe o bloco "É AI?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
+Você compõe o bloco "É IA?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
 
 ## Input
 
@@ -100,11 +100,11 @@ Se falhar com exit code != 0, retornar erro — não prosseguir sem a imagem IA.
 
 ### 4. Escrever `{out_dir}/01-eai.md`
 
-O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É AI? é só as duas imagens + poll + crédito.
+O arquivo contém **apenas a linha de crédito** — sem parágrafos editoriais. O texto de contextualização não aparece na newsletter; a seção É IA? é só as duas imagens + poll + crédito.
 
 Estrutura:
 ```
-É AI?
+É IA?
 
 {descrição em uma frase com links} — [Fotógrafo](https://commons.wikimedia.org/wiki/User:Username) / Licença.
 ```

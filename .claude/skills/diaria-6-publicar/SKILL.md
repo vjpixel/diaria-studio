@@ -27,7 +27,7 @@ Se não passar data, usa a data de hoje.
 ### Stage 5 — `publish-newsletter`
 
 1. Abre Beehiiv no Chrome, cria novo post com template configurado.
-2. Preenche título, subtítulo, corpo (imagens dos destaques + bloco "É AI?"), cover.
+2. Preenche título, subtítulo, corpo (imagens dos destaques + bloco "É IA?"), cover.
 3. **Salva como rascunho** + envia **email de teste** para `publishing.newsletter.test_email`.
 4. Grava `05-published.json` com `draft_url` e `test_email_sent_at`.
 5. **Gate humano**: URL do rascunho + confirmação do teste. Editor publica manualmente do Beehiiv.
