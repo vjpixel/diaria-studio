@@ -110,7 +110,7 @@ Estrutura:
 ```
 
 Regras da linha de crédito (sem prefixo "Foto:"):
-- **Uma frase única** descrevendo a cena.
+- **Uma frase curta e única** descrevendo a cena — nunca duas frases, nunca explicações enciclopédicas. Apenas identificar o sujeito e o local.
 - **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (pt ou en); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
 - Exemplo: `Pastor do [Rajastão](https://pt.wikipedia.org/wiki/Rajastão) guiando seu rebanho pelas planícies do noroeste da Índia — [Paramanu Sarkar](https://commons.wikimedia.org/wiki/User:Paramanu_Sarkar) / CC BY-SA 4.0.`
 

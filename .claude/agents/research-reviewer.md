@@ -28,10 +28,19 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    - Se `changed: true` e `fetch_failed: false`: substituir o campo `date` pelo `verified_date`. Marcar `date_unverified: false` no artigo.
    - Se `changed: false` e `fetch_failed: false`: manter data original (confirmada). Marcar `date_unverified: false`.
    - Se `fetch_failed: true`: usar a data original para o cálculo da janela (benefício da dúvida). **Marcar `date_unverified: true` no artigo** — o renderizador de MD usa essa flag para exibir `⚠️` ao lado da data, avisando o editor que é a data declarada pela fonte de pesquisa (não confirmada via fetch da página).
-5. Calcular `cutoff = edition_date - window_days`. **Remover** artigos cuja data (verificada ou original) seja anterior ao cutoff.
-6. Limpar temporários:
+5. Gravar o `categorized` atualizado (com datas corrigidas) em `{edition_dir}tmp-categorized-dated.json`.
+6. **Filtrar por janela de publicação via script** (NÃO calcular no agente — usar o script determinístico):
    ```bash
-   node -e "['tmp-dates-input.json','tmp-dates-output.json'].forEach(f=>{try{require('fs').unlinkSync('{edition_dir}'+f)}catch{}})"
+   npx tsx scripts/filter-date-window.ts \
+     --articles {edition_dir}tmp-categorized-dated.json \
+     --edition-date {edition_iso} \
+     --window-days {window_days} \
+     --out {edition_dir}tmp-window-output.json
+   ```
+   Ler `tmp-window-output.json`. Usar `kept` como o novo `categorized` daqui em diante. Logar `removed[]` para rastreabilidade.
+7. Limpar temporários:
+   ```bash
+   node -e "['tmp-dates-input.json','tmp-dates-output.json','tmp-categorized-dated.json','tmp-window-output.json'].forEach(f=>{try{require('fs').unlinkSync('{edition_dir}'+f)}catch{}})"
    ```
 
 ### Filtro 2 — Cobertura recente de temas
