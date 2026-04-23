@@ -1218,7 +1218,7 @@ function main() {
         post_title: title,
         section_title: link.sectionTitle,
         anchor: link.anchor,
-        url: link.url,
+        url: link.baseUrl,
         base_url: link.baseUrl,
         domain,
         unique_opens: uniqueOpens,
