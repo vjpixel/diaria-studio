@@ -235,7 +235,7 @@ function negociosSubcategory(signal: string): string {
   ];
 
   // Tendência — pesquisas, relatórios, estatísticas de adoção
-  const dadosKw = [
+  const tendenciaKw = [
     '% d', '% das', '% dos', 'pesquisa ', 'estudo ', 'survey',
     'relatório', 'revela que', 'aponta que', 'segundo estudo',
     'índice', 'benchmark', 'ranking', 'reporta crescimento',
@@ -286,7 +286,7 @@ function negociosSubcategory(signal: string): string {
   if (hardwareKw.some(k => s.includes(k))) return 'Infraestrutura';
   if (bastidoresKw.some(k => s.includes(k))) return 'Bastidores';
   if (geopoliticaKw.some(k => s.includes(k))) return 'Geopolítica';
-  if (dadosKw.some(k => s.includes(k))) return 'Tendência';
+  if (tendenciaKw.some(k => s.includes(k))) return 'Tendência';
   if (aplicacaoKw.some(k => s.includes(k))) return 'Aplicação';
   if (mercadoKw.some(k => s.includes(k))) return 'Mercado';
   if (estrategiaKw.some(k => s.includes(k))) return 'Estratégia';
@@ -1132,7 +1132,7 @@ interface Row {
   origin: 'BR' | 'INT';
 }
 
-async function main() {
+function main() {
   if (!fs.existsSync(POSTS_DIR)) {
     console.error(`Error: ${POSTS_DIR} not found. Run the Beehiiv cache sync first.`);
     process.exit(1);
