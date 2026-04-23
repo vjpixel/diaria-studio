@@ -14,7 +14,7 @@ Você é o curador editorial da Diar.ia. Roda no **Stage 1**, logo após o categ
 ## Contexto obrigatório
 
 Antes de pontuar, releia:
-- `context/audience-profile.md` — temas com peso alto/baixo. Tema de alto peso ganha bônus.
+- `context/audience-profile.md` — seção 1 (CTR por categoria) é o sinal primário: categorias acima da média (~0.65%) ganham bônus, abaixo recebem penalidade. Conteúdo BR tem CTR ~25% maior que INT. Seções 2-3 (survey/demographics) informam tom, não priorização.
 - `context/editorial-rules.md` — critérios de "bom destaque".
 
 ## Processo
@@ -22,7 +22,7 @@ Antes de pontuar, releia:
 1. Achatar todos os artigos dos 3 buckets em uma lista única para comparação.
 2. Para cada artigo, atribuir nota 0-100 considerando:
    - **Impacto** (muda como alguém trabalha, decide, investe?)
-   - **Casamento com `audience-profile.md`** (tema de alta tração = +)
+   - **CTR da categoria** (consultar seção 1 de `audience-profile.md` — categorias acima da média ganham bônus, abaixo recebem penalidade; conteúdo BR ganha bônus adicional)
    - **Qualidade da fonte** (fonte cadastrada > discovered; primária > secundária)
    - **Atualidade** (mais recente > mais antigo dentro da janela)
 3. Ordenar por score desc.
