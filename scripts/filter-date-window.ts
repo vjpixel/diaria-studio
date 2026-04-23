@@ -42,7 +42,7 @@ interface RemovedEntry {
   title?: string;
   date: string | null;
   bucket: string;
-  reason: "date_window";
+  reason: "date_window" | "future_date";
   detail: string;
 }
 
@@ -114,6 +114,15 @@ function main() {
           reason: "date_window",
           detail: `date ${normDate} < cutoff ${cutoff} (edition ${editionDate} - ${windowDays}d)`,
         });
+      } else if (normDate > editionDate) {
+        removed.push({
+          url: article.url,
+          title: article.title,
+          date: article.date,
+          bucket,
+          reason: "future_date",
+          detail: `date ${normDate} > edition ${editionDate}`,
+        });
       } else {
         kept[bucket].push(article);
       }
@@ -137,6 +146,11 @@ function main() {
     for (const r of removed) {
       console.error(`  [${r.bucket}] ${r.title || r.url} — ${r.detail}`);
     }
+  }
+
+  if (totalKept === 0) {
+    console.error("WARNING: all articles filtered out — edition will have no content");
+    process.exit(2);
   }
 
   const result = { kept, removed };
