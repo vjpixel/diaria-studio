@@ -124,8 +124,7 @@ const LANCAMENTO_PATTERNS: RegExp[] = [
   /^microsoft\.com\/(en-[a-z]+\/)?(research|blog)\//,
   // NVIDIA
   /^developer\.nvidia\.com\/(blog|technical-blog)\//,
-  // Perplexity — apenas hub e subdomínio research
-  /^research\.perplexity\.ai\//,
+  // Perplexity — apenas hub (anúncios de produto)
   /^perplexity\.ai\/hub\//,
   // Google Cloud blog
   /^cloud\.google\.com\/blog\//,
@@ -170,6 +169,8 @@ const PESQUISA_PATTERNS: RegExp[] = [
   /^ai\.meta\.com\/research\//,
   // Google Research
   /^research\.google\//,
+  // Perplexity Research (papers e estudos técnicos)
+  /^research\.perplexity\.ai\//,
   // Anthropic research (papers, não news/blog)
   /^anthropic\.com\/research\//,
   // OpenAI research (não blog)
