@@ -111,11 +111,19 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     }
     if (!currentBucket) continue;
 
-    // Extrai URL da linha (formato: `- [score] Título ... — URL — YYYY-MM-DD`)
-    const urlMatch = line.match(/—\s+(https?:\/\/\S+?)\s+—/);
+    // Extrai URL de linha-bullet (formato: `- [score] Título ... — URL [— YYYY-MM-DD]`)
+    // Exige prefixo `- ` no início e aceita trailing " — date" opcional (defensivo
+    // contra entradas com data ausente ou unknown).
+    const urlMatch = line.match(/^-\s.*?—\s+(https?:\/\/\S+?)(?:\s+—|\s*$)/);
     if (urlMatch) {
       result[currentBucket].push(urlMatch[1]);
     }
+  }
+
+  // Dedup dentro de cada bucket preservando ordem (protege contra paste duplicado
+  // acidental do editor).
+  for (const key of Object.keys(result) as BucketName[]) {
+    result[key] = [...new Set(result[key])];
   }
 
   return result;
