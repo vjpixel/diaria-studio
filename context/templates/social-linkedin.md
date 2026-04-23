@@ -5,8 +5,7 @@
 - Abrir com **hook forte**: pergunta provocativa ou dado impactante.
 - 2–3 parágrafos curtos.
 - Tom profissional, mas não corporativo engessado.
-- Mencionar Diar.ia como fonte.
-- **Call-to-action final**: "Assine gratuitamente em diar.ia.br" ou variações.
+- **Call-to-action final em 1 frase, estilo convite**: `"Quer notícias como esta todos os dias? Assine gratuitamente em diar.ia.br."` — não mencionar o nome "Diar.ia" no corpo (a URL carrega a identidade).
 - Incluir as **3 hashtags mais relevantes** ao tema (ex: `#IA #Tecnologia #Mercado`).
 - 1200–1500 caracteres é o sweet spot.
 
@@ -21,7 +20,7 @@
 
 [Parágrafo 3 — opcional, detalhe adicional ou comparação]
 
-A Diar.ia é uma newsletter diária brasileira sobre IA. Assine gratuitamente em diar.ia.br.
+Quer notícias como esta todos os dias? Assine gratuitamente em diar.ia.br.
 
 #Hashtag1 #Hashtag2 #Hashtag3
 ```
