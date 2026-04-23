@@ -115,7 +115,24 @@ function getDate(a: Article): string {
   return raw.slice(0, 10);
 }
 
-/** Monta linha: `- [score] Título ⭐ [inbox] [⚠️] — https://url — YYYY-MM-DD` */
+/**
+ * Detecta se o TEMA do artigo é sobre o Brasil (não apenas a fonte).
+ * Heurística: título ou resumo menciona Brasil/brasileiro(a), entidades
+ * brasileiras conhecidas (FGV, ANPD, CVM, Petrobras, Itaú, Anatel, BNDES,
+ * USP, Unicamp, Fiesp, etc.), ou cidades/estados brasileiros de destaque.
+ *
+ * Conteúdo publicado em `.com.br` traduzindo notícia global NÃO recebe a
+ * tag — o critério é editorial (o artigo é sobre o Brasil), não o domínio.
+ */
+const BR_KEYWORD_RE =
+  /\b(bras(il|ile[iñ]r[ao]s?|ileira|iliense)|fgv(\s+ibre)?|anpd|cvm|petrobras|ita[úu]|bradesco|santander brasil|bndes|anatel|banco central do brasil|bcb|usp|unicamp|fiesp|ibge|ipea|mec brasil|s[ãa]o paulo|rio de janeiro|bras[íi]lia|latam\s+brasil|inovabra|tribunal (superior|de justiça)|stf|congresso nacional)\b/i;
+
+function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return BR_KEYWORD_RE.test(hay);
+}
+
+/** Monta linha: `- [score] Título ⭐ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
 function renderLine(article: Article, isHighlight?: boolean): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
@@ -125,6 +142,13 @@ function renderLine(article: Article, isHighlight?: boolean): string {
 
   const markers: string[] = [];
   if (isHighlight) markers.push("⭐");
+  if (
+    isBrazilianTheme({
+      title: article.title,
+      summary: typeof article.summary === "string" ? article.summary : undefined,
+    })
+  )
+    markers.push("🇧🇷");
   if (article.editor_submitted) markers.push("[inbox]");
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");

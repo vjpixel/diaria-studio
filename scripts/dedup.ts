@@ -16,6 +16,53 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
+// Aggregator blocklist — defense-in-depth against roundup newsletters
+// leaking into the final candidates list. The source/discovery researchers
+// have instructions to resolve canonical URLs for these domains, but this
+// rejection pass is a safety net when they fail.
+// ---------------------------------------------------------------------------
+
+const AGGREGATOR_HOSTS = new Set([
+  // Classic aggregators
+  "crescendo.ai",
+  "flipboard.com",
+  "techstartups.com",
+  // AI roundup newsletters (curadoria/resumo de notícias alheias)
+  "therundown.ai",
+  "bensbites.co",
+  "theneurondaily.com",
+  "superhuman.ai",
+  "theaipulse.beehiiv.com",
+  "agentpulse.beehiiv.com",
+  "aibreakfast.beehiiv.com",
+  "alphasignal.ai",
+  "archive.thedeepview.com",
+  "recaply.co",
+  "7min.ai",
+  "evolvingai.io",
+  "datamachina.com",
+  "cyberman.ai",
+  // tldr.tech/ai handled by path check below
+]);
+
+// Path-based aggregator detection (hostname alone is too broad)
+const AGGREGATOR_PATTERNS: RegExp[] = [
+  /^tldr\.tech\/ai(\/|$)/i,
+];
+
+function isAggregator(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    if (AGGREGATOR_HOSTS.has(host)) return true;
+    const full = host + u.pathname;
+    return AGGREGATOR_PATTERNS.some((p) => p.test(full));
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
 // ---------------------------------------------------------------------------
 
@@ -124,9 +171,19 @@ function dedup(
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
 
+  // ---- Pass 0: reject aggregator URLs (safety net) -----------------------
+  const afterPass0: Article[] = [];
+  for (const art of articles) {
+    if (isAggregator(art.url)) {
+      removed.push({ url: art.url, title: art.title, dedup_note: "agregador/roundup bloqueado (use fonte primária)" });
+    } else {
+      afterPass0.push(art);
+    }
+  }
+
   // ---- Pass 1: dedup against past editions (URL only) --------------------
   const afterPass1: Article[] = [];
-  for (const art of articles) {
+  for (const art of afterPass0) {
     const canon = canonicalize(art.url);
     if (pastUrlsSet.has(canon)) {
       removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });

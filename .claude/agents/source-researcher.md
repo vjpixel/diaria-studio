@@ -38,7 +38,14 @@ O campo `timeout_seconds` do input é mantido por compatibilidade mas **não é 
 3. **Pré-filtrar por data ANTES de qualquer `WebFetch`**: para cada resultado do WebSearch, examinar o snippet, título e data exibidos. Se a data visível no snippet indica que o artigo é **claramente anterior** ao cutoff (`edition_date - window_days`), **descartar sem fazer fetch**. Isso evita gastar fetches (e arriscar travamento em WebFetch sem timeout) em artigos que serão descartados de qualquer forma. Na dúvida sobre a data, faça o fetch.
 4. Para cada resultado que sobreviveu ao pré-filtro e parecer relevante a IA, `WebFetch` para extrair título, data real de publicação, e autor. **Hard limit: máximo 5 `WebFetch` no total** — quando `fetch_count` atingir 5, pare mesmo que haja mais resultados na lista.
 5. Para cada resultado:
-   - **Se a URL for de um agregador** (site que redistribui conteúdo de terceiros sem produção própria — ex: crescendo.ai, flipboard.com, techstartups.com, newsletters de pura curadoria, posts do LinkedIn/Twitter que resumem artigo alheio; `perplexity.ai/*` exceto `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity): fazer `WebFetch` na página e tentar extrair a URL da fonte primária (procurar `<link rel="canonical">`, link principal do artigo original, ou menção explícita da fonte). Se encontrar → usar a URL primária em vez da do agregador. Se não encontrar → descartar.
+   - **Se a URL for de um agregador** (site que redistribui conteúdo de terceiros sem produção própria): fazer `WebFetch` na página e tentar extrair a URL da fonte primária (procurar `<link rel="canonical">`, link principal do artigo original, ou menção explícita da fonte). Se encontrar → usar a URL primária em vez da do agregador. Se não encontrar → descartar.
+     Domínios tratados como agregadores/roundups (lista explícita — NÃO retornar URL destes domínios, só fontes primárias extraídas):
+     - Agregadores clássicos: `crescendo.ai`, `flipboard.com`, `techstartups.com`
+     - Newsletters de roundup AI (curadoria/resumo de notícias alheias): `therundown.ai`, `tldr.tech/ai`, `bensbites.co`, `theneurondaily.com`, `superhuman.ai`, `theaipulse.beehiiv.com`, `agentpulse.beehiiv.com`, `aibreakfast.beehiiv.com`, `alphasignal.ai`, `archive.thedeepview.com`, `recaply.co`, `7min.ai`, `evolvingai.io`, `datamachina.com`, `cyberman.ai`
+     - Posts de LinkedIn/Twitter que resumem artigo alheio
+     - `perplexity.ai/*` **exceto** `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity
+     - `importai.substack.com` tem análise original de Jack Clark misturada com roundup — aceitar somente se o artigo for claramente análise própria (não só lista de links)
+     - `news.google.com` **não** é agregador — aponta direto para o original.
    - Descartar se publicado fora da janela `[edition_date - window_days, edition_date]`.
    - Descartar se sem relação com IA/AI.
    - Descartar se URL não seja do domínio da fonte e não for um artigo original identificável.
