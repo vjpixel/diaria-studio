@@ -61,7 +61,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
-   **E IA? e critico:** se a secao E IA? estiver ausente (nenhuma mencao a "E IA?" ou "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
+   **E IA? e critico:** se a secao E IA? estiver ausente (nenhuma mencao a "E IA?" no corpo), isso indica que o template Default nao foi usado. Registrar:
    `"section_missing_critical: Secao 'E IA?' ausente — provavel que o template Default nao foi usado na criacao do post"`
 
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
