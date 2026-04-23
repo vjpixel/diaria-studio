@@ -178,6 +178,17 @@ async function driveDownloadFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+async function driveRenameFile(fileId: string, newName: string): Promise<void> {
+  const res = await gFetch(`${DRIVE_API}/files/${fileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!res.ok) {
+    throw new Error(`Drive rename error (${res.status}): ${await res.text()}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cache helpers
 // ---------------------------------------------------------------------------
@@ -272,12 +283,29 @@ async function pushFile(
 
   const ext = extname(filename);
   const base = filename.slice(0, filename.length - ext.length);
-  const titleUsed = pushCount === 0 ? filename : `${base}.v${pushCount + 1}${ext}`;
   const mimeType = mimeTypeFor(filename);
+
+  // Estratégia: o nome canônico (sem sufixo) sempre aponta para a versão
+  // mais recente. Versões anteriores ficam arquivadas como `.vN`. Assim o
+  // editor sabe sem ambiguidade qual arquivo abrir pra revisar no Drive.
+  if (pushCount > 0 && fileCache?.drive_file_id) {
+    // Arquiva a versão anterior: renomeia o arquivo atual de `filename` para
+    // `filename.vN.ext` (N = push_count — a geração que está sendo arquivada).
+    const archivedName = `${base}.v${pushCount}${ext}`;
+    try {
+      await driveRenameFile(fileCache.drive_file_id, archivedName);
+    } catch (err) {
+      // Se o rename falhar (arquivo deletado manualmente, permissão, etc.),
+      // registramos warning mas não bloqueamos o push — o novo upload ainda
+      // vale, só perde-se uma versão de histórico.
+      const msg = err instanceof Error ? err.message : String(err);
+      result.warnings.push(`rename_archive_failed: ${filename} → ${archivedName} (${msg})`);
+    }
+  }
 
   const bytes = await getFileBytes(editionDir, filename);
   const { id: driveFileId, modifiedTime } = await driveUploadFile(
-    titleUsed,
+    filename,
     bytes,
     mimeType,
     dayFolderId
@@ -293,7 +321,7 @@ async function pushFile(
     push_count: pushCount + 1,
   };
 
-  result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: titleUsed });
+  result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: filename });
 }
 
 // ---------------------------------------------------------------------------
