@@ -42,7 +42,8 @@ interface Article {
 }
 
 interface Highlight {
-  rank: number; // 1..6
+  rank?: number; // 1..6
+  order?: number; // alias de rank (usado pelo scorer)
   url: string;
   score?: number;
   article?: Article;
@@ -143,8 +144,9 @@ function buildHighlightMap(data: CategorizedJson): Map<string, number> {
 
   // Formato novo: top-level highlights[]
   for (const h of data.highlights ?? []) {
-    if (h.url && typeof h.rank === "number") {
-      map.set(h.url, h.rank);
+    const r = h.rank ?? h.order;
+    if (h.url && typeof r === "number") {
+      map.set(h.url, r);
     }
   }
 
