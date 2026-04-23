@@ -20,7 +20,7 @@
 
 [Parágrafo 3 — chamada pra leitura completa]
 
-Leia a edição completa no link da bio → diaria.beehiiv.com
+Leia a edição completa no link da bio → diar.ia.br
 
 .
 .

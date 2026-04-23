@@ -6,7 +6,7 @@
 - Linguagem direta, sem emojis excessivos (no máximo 1 emoji contextual).
 - **Sem hashtags.**
 - Cortar a newsletter no ponto mais interessante (hook).
-- Incluir URL da edição: `https://diaria.beehiiv.com/p/{slug}` (ou placeholder `{NEWSLETTER_URL}` se ainda não publicada).
+- Incluir URL da edição: `https://diar.ia.br/p/{slug}` (ou placeholder `{NEWSLETTER_URL}` se ainda não publicada).
 
 ## Estrutura sugerida
 
