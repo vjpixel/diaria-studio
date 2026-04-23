@@ -35,7 +35,7 @@ Critérios adicionais de desistência:
    - Descartar se fora da janela.
    - Descartar paywalls conhecidos (fortune, bloomberg, ft, wsj, nyt, theinformation, businessinsider, economist) — o link-verifier confirma, mas já filtre os óbvios.
    - Descartar conteúdo claramente promocional/SEO spam.
-4. Retornar até `max_results`.
+5. Retornar até `max_results`.
 
 ## Output
 
