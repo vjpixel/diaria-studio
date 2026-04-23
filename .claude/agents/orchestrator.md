@@ -126,7 +126,8 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
     data/editions/{AAMMDD}/link-verify-all.json
   ```
   Ler `data/editions/{AAMMDD}/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom? }`). Então:
-  - **Remover** artigos com verdict `paywall`, `blocked`, `aggregator` ou `uncertain` (sem `resolvedFrom`). `uncertain` indica que o conteúdo não pôde ser verificado (ex: body < 500 chars, JS-rendered) — sem verificação, não incluir.
+  - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
+  - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no `01-categorized.md` para revisão manual no gate.
   - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente.
 - **Deduplicar** a lista filtrada rodando:
   ```bash
