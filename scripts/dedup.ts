@@ -14,53 +14,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-
-// ---------------------------------------------------------------------------
-// Aggregator blocklist — defense-in-depth against roundup newsletters
-// leaking into the final candidates list. The source/discovery researchers
-// have instructions to resolve canonical URLs for these domains, but this
-// rejection pass is a safety net when they fail.
-// ---------------------------------------------------------------------------
-
-const AGGREGATOR_HOSTS = new Set([
-  // Classic aggregators
-  "crescendo.ai",
-  "flipboard.com",
-  "techstartups.com",
-  // AI roundup newsletters (curadoria/resumo de notícias alheias)
-  "therundown.ai",
-  "bensbites.co",
-  "theneurondaily.com",
-  "superhuman.ai",
-  "theaipulse.beehiiv.com",
-  "agentpulse.beehiiv.com",
-  "aibreakfast.beehiiv.com",
-  "alphasignal.ai",
-  "archive.thedeepview.com",
-  "recaply.co",
-  "7min.ai",
-  "evolvingai.io",
-  "datamachina.com",
-  "cyberman.ai",
-  // tldr.tech/ai handled by path check below
-]);
-
-// Path-based aggregator detection (hostname alone is too broad)
-const AGGREGATOR_PATTERNS: RegExp[] = [
-  /^tldr\.tech\/ai(\/|$)/i,
-];
-
-function isAggregator(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "").toLowerCase();
-    if (AGGREGATOR_HOSTS.has(host)) return true;
-    const full = host + u.pathname;
-    return AGGREGATOR_PATTERNS.some((p) => p.test(full));
-  } catch {
-    return false;
-  }
-}
+import { isAggregator } from "./lib/aggregators";
 
 // ---------------------------------------------------------------------------
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
@@ -173,12 +127,17 @@ function dedup(
 
   // ---- Pass 0: reject aggregator URLs (safety net) -----------------------
   const afterPass0: Article[] = [];
+  let pass0Rejected = 0;
   for (const art of articles) {
     if (isAggregator(art.url)) {
       removed.push({ url: art.url, title: art.title, dedup_note: "agregador/roundup bloqueado (use fonte primária)" });
+      pass0Rejected++;
     } else {
       afterPass0.push(art);
     }
+  }
+  if (pass0Rejected > 0) {
+    console.error(`dedup Pass-0: ${pass0Rejected} URL(s) de agregador/roundup rejeitadas`);
   }
 
   // ---- Pass 1: dedup against past editions (URL only) --------------------
