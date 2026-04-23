@@ -9,6 +9,7 @@
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
     "verify-accessibility": "tsx scripts/verify-accessibility.ts",
+    "build-link-ctr": "tsx scripts/build-link-ctr.ts",
     "test": "node --import tsx --test test/categorize.test.ts test/inbox-drain.test.ts"
   },
   "dependencies": {
