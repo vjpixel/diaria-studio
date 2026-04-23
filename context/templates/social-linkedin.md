@@ -6,7 +6,7 @@
 - 2–3 parágrafos curtos.
 - Tom profissional, mas não corporativo engessado.
 - Mencionar Diar.ia como fonte.
-- **Call-to-action final**: "Assine gratuitamente em diaria.beehiiv.com" ou variações.
+- **Call-to-action final**: "Assine gratuitamente em diar.ia.br" ou variações.
 - Incluir as **3 hashtags mais relevantes** ao tema (ex: `#IA #Tecnologia #Mercado`).
 - 1200–1500 caracteres é o sweet spot.
 
@@ -21,7 +21,7 @@
 
 [Parágrafo 3 — opcional, detalhe adicional ou comparação]
 
-A Diar.ia é uma newsletter diária brasileira sobre IA. Assine gratuitamente em diaria.beehiiv.com.
+A Diar.ia é uma newsletter diária brasileira sobre IA. Assine gratuitamente em diar.ia.br.
 
 #Hashtag1 #Hashtag2 #Hashtag3
 ```

@@ -6,7 +6,7 @@
 - Tom mais acessível que o LinkedIn: menos jargão técnico, mais ancoragem no cotidiano.
 - 2–3 parágrafos curtos.
 - Mencionar Diar.ia como fonte.
-- **Call-to-action final**: "Assine gratuitamente em diaria.beehiiv.com" ou variações.
+- **Call-to-action final**: "Assine gratuitamente em diar.ia.br" ou variações.
 - Até 3 hashtags (menos é mais no Facebook).
 - 800–1.200 caracteres (Facebook recompensa posts mais curtos).
 
@@ -19,7 +19,7 @@
 
 [Parágrafo 2 — "por que isso muda alguma coisa" para o leitor comum]
 
-A Diar.ia cobre isso todos os dias. Assine gratuitamente em diaria.beehiiv.com.
+A Diar.ia cobre isso todos os dias. Assine gratuitamente em diar.ia.br.
 
 #Hashtag1 #Hashtag2
 ```
