@@ -13,16 +13,6 @@ const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
 
 // ─── Noise filters ────────────────────────────────────────────────────────────
 
-function stripUtm(raw: string): string {
-  try {
-    const u = new URL(raw);
-    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'].forEach(p => u.searchParams.delete(p));
-    return u.toString();
-  } catch {
-    return raw;
-  }
-}
-
 function baseUrl(raw: string): string {
   try {
     const u = new URL(raw);
@@ -109,12 +99,12 @@ function classifyOrigin(signal: string): 'BR' | 'INT' {
     'curitiba', 'porto alegre', 'recife', 'salvador', 'fortaleza',
     'minas gerais', 'paraná', 'bahia', 'pernambuco',
     'lula', 'governo federal', 'governo brasileiro', 'planalto',
-    'anvisa', 'bndes', 'senado', 'stf', 'anatel', 'cade',
+    'anvisa', 'bndes', 'senado', ' stf ', 'anatel', 'cade',
     'câmara dos deputados', 'congresso nacional', 'pgr',
     'fapesp', 'cnpq', 'capes', 'embrapa', 'serpro',
     'no país', 'no brasil', 'ao brasil', 'do brasil', 'pelo brasil',
-    'mercado nacional', ' r$ ', 'r$',
-    'usp', 'unicamp', 'ufrj', 'ufrn', 'ufmg',
+    'mercado nacional', ' r$ ', ' r$',
+    ' usp', 'unicamp', 'ufrj', 'ufrn', 'ufmg',
   ];
   return brKw.some(k => s.includes(k)) ? 'BR' : 'INT';
 }
@@ -126,7 +116,7 @@ function classifyOrigin(signal: string): 'BR' | 'INT' {
 function negociosSubcategory(signal: string): string {
   const s = signal.normalize('NFC').toLowerCase();
 
-  // Infraestruturaestrutura — chips, data centers, compute, energia
+  // Infraestrutura — chips, data centers, compute, energia
   const hardwareKw = [
     'chip', 'chips', ' gpu', ' tpu', ' cpu', 'supercluster', 'data center',
     'datacenter', 'servidor', 'servidores', 'compute', 'infraestrutura de ia',
@@ -233,7 +223,7 @@ function negociosSubcategory(signal: string): string {
   const bastidoresKw = [
     'ceo ', 'executiv', 'líder ', 'chefe ', 'diretor', 'cofundador',
     'contrata ', 'deixa ', 'saída', 'renuncia', 'assume cargo',
-    'recruta', 'perde.*executiv', 'altman', 'musk', 'hassabis',
+    'recruta', 'perde executiv', 'perde o executiv', 'altman', 'musk', 'hassabis',
     'bezos', 'jensen', 'jony ive', 'mira murati', 'robby walker',
     'ex-líder', 'ex-secretário', 'retornam à',
     'joins openai', 'joins anthropic', 'joins google',
@@ -1143,26 +1133,48 @@ interface Row {
 }
 
 async function main() {
-  const files = fs.readdirSync(POSTS_DIR)
-    .filter(f => f !== 'index.json')
-    .map(f => ({ f, mtime: fs.statSync(path.join(POSTS_DIR, f)).mtime }))
-    .sort((a, b) => 0); // will sort by publish_date below
+  if (!fs.existsSync(POSTS_DIR)) {
+    console.error(`Error: ${POSTS_DIR} not found. Run the Beehiiv cache sync first.`);
+    process.exit(1);
+  }
 
-  const rows: Row[] = [];
+  const header = [
+    'date', 'post_title', 'section_title', 'anchor', 'url', 'base_url', 'domain',
+    'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category', 'origin'
+  ];
 
-  const posts: any[] = files.map(({ f }) =>
+  // Incremental: read existing CSV to find the most recent date already processed
+  let existingLines: string[] = [];
+  let lastDate = '';
+  const isBootstrap = !fs.existsSync(OUT_CSV);
+
+  if (!isBootstrap) {
+    const existing = fs.readFileSync(OUT_CSV, 'utf8').split('\n');
+    existingLines = existing.slice(1).filter(Boolean); // skip header
+    // Find most recent date in existing data (first column)
+    for (const line of existingLines) {
+      const date = line.split(',')[0];
+      if (date > lastDate) lastDate = date;
+    }
+  }
+
+  const files = fs.readdirSync(POSTS_DIR).filter(f => f !== 'index.json');
+
+  const posts: any[] = files.map(f =>
     JSON.parse(fs.readFileSync(path.join(POSTS_DIR, f), 'utf8'))
   );
 
   // Sort by publish_date ascending
   posts.sort((a, b) => (a.publish_date ?? 0) - (b.publish_date ?? 0));
 
+  const newRows: Row[] = [];
   let processed = 0;
   let skipped = 0;
 
   const MIN_AGE_DAYS = 7;
   const cutoff = Date.now() - MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
   let tooRecent = 0;
+  let alreadyProcessed = 0;
 
   for (const post of posts) {
     if (post.status !== 'confirmed') { skipped++; continue; }
@@ -1176,6 +1188,13 @@ async function main() {
     const date = post.publish_date
       ? new Date(post.publish_date * 1000).toISOString().slice(0, 10)
       : '';
+
+    // Incremental: skip posts already in the CSV
+    if (!isBootstrap && date <= lastDate) {
+      alreadyProcessed++;
+      continue;
+    }
+
     const title = post.title ?? '';
     const uniqueOpens = post.stats?.email?.unique_opens ?? 0;
     const clicks = post.stats?.clicks ?? [];
@@ -1194,7 +1213,7 @@ async function main() {
       let domain = '';
       try { domain = new URL(link.baseUrl).hostname.replace(/^www\./, ''); } catch {}
 
-      rows.push({
+      newRows.push({
         date,
         post_title: title,
         section_title: link.sectionTitle,
@@ -1214,62 +1233,44 @@ async function main() {
     processed++;
   }
 
-  // Write CSV
-  const header = [
-    'date', 'post_title', 'section_title', 'anchor', 'url', 'base_url', 'domain',
-    'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category', 'origin'
-  ];
+  // Write CSV: existing rows + new rows
+  const newCsvLines = newRows.map(r => [
+    r.date, r.post_title, r.section_title, r.anchor, r.url, r.base_url, r.domain,
+    r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category, r.origin
+  ].map(csvEscape).join(','));
 
-  const csvLines = [
-    header.join(','),
-    ...rows.map(r => [
-      r.date, r.post_title, r.section_title, r.anchor, r.url, r.base_url, r.domain,
-      r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category, r.origin
-    ].map(csvEscape).join(','))
-  ];
+  const allLines = [header.join(','), ...existingLines, ...newCsvLines];
+  fs.writeFileSync(OUT_CSV, allLines.join('\n'), 'utf8');
 
-  fs.writeFileSync(OUT_CSV, csvLines.join('\n'), 'utf8');
+  const totalRows = existingLines.length + newRows.length;
+  const mode = isBootstrap ? 'bootstrap' : 'incremental';
 
-  console.log(`\nDone.`);
-  console.log(`  Posts processed: ${processed}`);
+  console.log(`\nDone (${mode}).`);
+  console.log(`  New posts processed: ${processed}`);
+  if (!isBootstrap) console.log(`  Posts already in CSV: ${alreadyProcessed}`);
   console.log(`  Posts skipped (draft/no HTML): ${skipped}`);
   console.log(`  Posts skipped (< ${MIN_AGE_DAYS} days old): ${tooRecent}`);
-  console.log(`  Total link rows: ${rows.length}`);
+  console.log(`  New links added: ${newRows.length}`);
+  console.log(`  Total link rows: ${totalRows}`);
   console.log(`  Output: ${OUT_CSV}`);
 
-  // Quick summary stats
-  const byCategory: Record<string, { count: number; clicks: number; opens: number }> = {};
-  for (const r of rows) {
-    if (!byCategory[r.category]) byCategory[r.category] = { count: 0, clicks: 0, opens: 0 };
-    byCategory[r.category].count++;
-    byCategory[r.category].clicks += r.unique_verified_clicks;
-    byCategory[r.category].opens += r.unique_opens;
-  }
-
-  console.log('\nLinks por categoria:');
-  for (const [cat, stat] of Object.entries(byCategory).sort((a, b) => b[1].count - a[1].count)) {
-    const avgCtr = stat.opens > 0 ? ((stat.clicks / stat.opens) * 100).toFixed(2) : '0.00';
-    console.log(`  ${cat.padEnd(12)}: ${String(stat.count).padStart(4)} links | CTR médio ${avgCtr}%`);
-  }
-
-  // Top 10 links by CTR (min 10 opens to filter noise)
-  const top10 = rows
-    .filter(r => r.unique_opens >= 10 && r.unique_verified_clicks > 0)
-    .sort((a, b) => parseFloat(b.ctr_pct) - parseFloat(a.ctr_pct))
-    .slice(0, 10);
-
-  console.log('\nTop 10 links por CTR (mínimo 10 opens):');
-  for (const r of top10) {
-    console.log(`  ${r.ctr_pct.padStart(6)}% | ${r.unique_verified_clicks} cliques | ${r.category.padEnd(12)} | ${r.anchor.substring(0,30).padEnd(30)} | ${r.domain}`);
-  }
-
-  // "Outro" sample — links we couldn't categorize
-  const outro = rows.filter(r => r.category === 'Outro').slice(0, 20);
-  if (outro.length > 0) {
-    console.log('\nLinks "Outro" (primeiros 20 — verificar se falta categoria):');
-    for (const r of outro) {
-      console.log(`  ${r.domain.padEnd(35)} | ${r.anchor.substring(0,30)}`);
+  // Summary stats for new rows only
+  if (newRows.length > 0) {
+    const byCategory: Record<string, { count: number; clicks: number; opens: number }> = {};
+    for (const r of newRows) {
+      if (!byCategory[r.category]) byCategory[r.category] = { count: 0, clicks: 0, opens: 0 };
+      byCategory[r.category].count++;
+      byCategory[r.category].clicks += r.unique_verified_clicks;
+      byCategory[r.category].opens += r.unique_opens;
     }
+
+    console.log('\nNovas links por categoria:');
+    for (const [cat, stat] of Object.entries(byCategory).sort((a, b) => b[1].count - a[1].count)) {
+      const avgCtr = stat.opens > 0 ? ((stat.clicks / stat.opens) * 100).toFixed(2) : '0.00';
+      console.log(`  ${cat.padEnd(16)}: ${String(stat.count).padStart(4)} links | CTR médio ${avgCtr}%`);
+    }
+  } else if (!isBootstrap) {
+    console.log('\nNenhuma edição nova para processar.');
   }
 }
 
