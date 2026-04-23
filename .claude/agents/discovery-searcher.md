@@ -35,6 +35,7 @@ Critérios adicionais de desistência:
      Domínios tratados como agregadores/roundups (lista explícita — NÃO retornar URL destes domínios, só fontes primárias extraídas):
      - Agregadores clássicos: `crescendo.ai`, `flipboard.com`, `techstartups.com`
      - Newsletters de roundup AI (curadoria/resumo de notícias alheias): `therundown.ai`, `tldr.tech/ai`, `bensbites.co`, `theneurondaily.com`, `superhuman.ai`, `theaipulse.beehiiv.com`, `agentpulse.beehiiv.com`, `aibreakfast.beehiiv.com`, `alphasignal.ai`, `archive.thedeepview.com`, `recaply.co`, `7min.ai`, `evolvingai.io`, `datamachina.com`, `cyberman.ai`
+     - Republishers BR (reescrevem press releases sem análise própria): `docmanagement.com.br`
      - Posts de LinkedIn/Twitter que resumem artigo alheio
      - `perplexity.ai/*` **exceto** `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity
      - `importai.substack.com` tem análise original de Jack Clark misturada com roundup — aceitar somente se o artigo for claramente análise própria (não só lista de links)
