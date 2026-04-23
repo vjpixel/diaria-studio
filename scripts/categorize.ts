@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 export interface Article {
   url: string;
   title?: string;
+  summary?: string;
   type_hint?: string;
   [key: string]: unknown;
 }
@@ -178,6 +179,47 @@ const PESQUISA_PATTERNS: RegExp[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Business-deal override — artigos cujo domínio é oficial (ex: anthropic.com/news)
+// mas cujo TÍTULO claramente descreve um acordo comercial / parceria /
+// investimento devem ir para `noticias`, não `lancamento`. "Lançamento" é
+// reservado a anúncio de produto/feature/versão nova.
+// ---------------------------------------------------------------------------
+
+const DEAL_PATTERNS: RegExp[] = [
+  // Parceria/colaboração expandida
+  /\b(expand(s|ed)?|expande[mr]?)\s+(the\s+)?(collaboration|partnership|deal|agreement|parceria|acordo|colabora[çc][ãa]o)/i,
+  // Aquisições e fusões
+  /\b(acquir(es|ed|ing)?|acquisition of|adquir[ei]|aquisi[çc][ãa]o|merger|fus[ãa]o)\b/i,
+  // Investimento explícito com número
+  /\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b[^.]{0,40}\b(deal|invest(ment)?|commit(ment|s)?|compromet|funding|rodada)/i,
+  /\b(deal|invest(ment|s)?|commit(ment|s)?|rodada|funding)\b[^.]{0,40}\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b/i,
+  // Contratos de compute/infra (ex: "5 gigawatts of new compute")
+  /\b\d+\s*(gigawatt|megawatt|GW|MW)s?\b.*\bcompute\b/i,
+  // Acordos genéricos gigantes
+  /\b(strategic agreement|multi[- ]year (deal|agreement|contract)|acordo estrat[ée]gico)\b/i,
+];
+
+/**
+ * Anúncios de programa / bolsa / iniciativa não-produto. Cobrem blogs
+ * oficiais que falam de scholarships, fellowships, grants, etc.
+ */
+const NON_PRODUCT_ANNOUNCEMENT_PATTERNS: RegExp[] = [
+  /\b(announc(ing|es|ed)|launches?)\s+.{0,40}\b(scholar(s|ship)?|fellowship|grant(s)?|bolsa(s)?|program(a)?|residenc(y|ia)|competi[çc][ãa]o)\b/i,
+  /\b(apple|google|meta|microsoft|openai|anthropic)\s+scholars?\b/i,
+  /\b(research|compute)\s+grants?\b/i,
+];
+
+function isNonProductAnnouncement(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return NON_PRODUCT_ANNOUNCEMENT_PATTERNS.some((p) => p.test(hay));
+}
+
+function isBusinessDeal(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return DEAL_PATTERNS.some((p) => p.test(hay));
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -198,9 +240,18 @@ export function categorize(article: Article): Category {
   if (PESQUISA_DOMAINS.has(host)) return "pesquisa";
   if (PESQUISA_PATTERNS.some((p) => p.test(full))) return "pesquisa";
 
-  // 2. Lançamento (domínio oficial)
-  if (LANCAMENTO_DOMAINS.has(host)) return "lancamento";
-  if (LANCAMENTO_PATTERNS.some((p) => p.test(full))) return "lancamento";
+  // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
+  //    anúncio de produto/feature. Desclassificar:
+  //    - Business deals (parceria, aquisição, contrato de infra, investimento)
+  //      → noticias.
+  //    - Anúncios de programa/bolsa/grant/fellowship → noticias.
+  //    - URLs em `/research/` de blogs de ML → pesquisa (papers, não produto).
+  if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
+    if (/\/research\//.test(full)) return "pesquisa";
+    if (isBusinessDeal(article)) return "noticias";
+    if (isNonProductAnnouncement(article)) return "noticias";
+    return "lancamento";
+  }
 
   // 3. type_hint "pesquisa" como sinal secundário (quando domínio não é reconhecido)
   if (article.type_hint === "pesquisa") return "pesquisa";

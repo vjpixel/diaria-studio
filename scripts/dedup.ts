@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { isAggregator } from "./lib/aggregators";
 
 // ---------------------------------------------------------------------------
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
@@ -124,9 +125,24 @@ function dedup(
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
 
+  // ---- Pass 0: reject aggregator URLs (safety net) -----------------------
+  const afterPass0: Article[] = [];
+  let pass0Rejected = 0;
+  for (const art of articles) {
+    if (isAggregator(art.url)) {
+      removed.push({ url: art.url, title: art.title, dedup_note: "agregador/roundup bloqueado (use fonte primária)" });
+      pass0Rejected++;
+    } else {
+      afterPass0.push(art);
+    }
+  }
+  if (pass0Rejected > 0) {
+    console.error(`dedup Pass-0: ${pass0Rejected} URL(s) de agregador/roundup rejeitadas`);
+  }
+
   // ---- Pass 1: dedup against past editions (URL only) --------------------
   const afterPass1: Article[] = [];
-  for (const art of articles) {
+  for (const art of afterPass0) {
     const canon = canonicalize(art.url);
     if (pastUrlsSet.has(canon)) {
       removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });
