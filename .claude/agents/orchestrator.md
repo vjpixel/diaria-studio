@@ -82,8 +82,8 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Regenera `context/past-editions.md` via `scripts/refresh-past-editions.ts`, respeitando `dedupEditionCount` do config.
   - Retorna JSON com `{ mode, new_posts, total_in_base, most_recent_date, skipped }`.
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
-- **Audience profile** é responsabilidade do usuário manter atualizado via `/diaria-atualiza-audiencia` (muda lentamente, rodar semanalmente/mensalmente). Se `context/audience-profile.md` for placeholder, avise o usuário para rodá-lo antes de continuar, mas não tente rodar automaticamente — exige escolha humana da survey correta.
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
+- **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
 
 ### 1. Stage 1 — Research
 
