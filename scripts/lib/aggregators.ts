@@ -38,6 +38,8 @@ export const AGGREGATOR_HOSTS = new Set<string>([
   "evolvingai.io",
   "datamachina.com",
   "cyberman.ai",
+  // Republishers BR de baixa qualidade editorial (reescrevem press releases sem análise própria)
+  "docmanagement.com.br",
   // tldr.tech/ai tratado via AGGREGATOR_PATTERNS (o domínio raiz tem conteúdo primário)
 ]);
 
