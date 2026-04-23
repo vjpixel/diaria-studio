@@ -226,8 +226,16 @@ async function verifyWithBrowser(
   let page;
   try {
     page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-    await page.goto(finalUrl, { waitUntil: "networkidle2", timeout: timeoutMs });
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    // Stealth evasions: hide WebDriver flag and mock chrome runtime
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      // @ts-ignore — mock window.chrome for anti-bot checks
+      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+    });
+    await page.goto(finalUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    // Extra wait for JS-heavy sites to hydrate
+    await new Promise((r) => setTimeout(r, 5000));
 
     const bodyText = await page.evaluate(() => document.body?.innerText ?? "");
     for (const marker of PAYWALL_MARKERS) {
