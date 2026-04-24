@@ -75,14 +75,32 @@ const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/
 console.error(`Cloudflare Workers AI: ${model}`);
 console.error(`Prompt: ${prompt.slice(0, 120)}...`);
 
-const res = await fetch(endpoint, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${apiToken}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify(body),
-});
+// Timeout de 90s — evita pipeline travar se CF hangar.
+const TIMEOUT_MS = 90_000;
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+let res;
+try {
+  res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  });
+} catch (e) {
+  clearTimeout(timer);
+  if (e.name === "AbortError") {
+    console.error(`Cloudflare API timeout após ${TIMEOUT_MS / 1000}s.`);
+    process.exit(1);
+  }
+  console.error(`Cloudflare fetch error: ${e.message ?? e}`);
+  process.exit(1);
+}
+clearTimeout(timer);
 
 if (!res.ok) {
   const errText = await res.text();

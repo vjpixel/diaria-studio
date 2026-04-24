@@ -139,6 +139,13 @@ function main(): void {
   } else {
     process.stdout.write(result.html);
   }
+
+  // Exit 2 se placeholders não resolvidas — sinaliza erro pro caller (orchestrator)
+  // sem precisar parsear stdout JSON. Output ainda é escrito (HTML com placeholders
+  // intactas) pra editor recuperar o que deu certo.
+  if (result.unresolved.length > 0) {
+    process.exit(2);
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
