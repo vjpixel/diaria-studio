@@ -81,8 +81,14 @@ Mais robusto mas exige mais setup: app password + script `node-imap` próprio, s
 
 ## Troubleshooting
 
-- **`/diaria-inbox` retorna `label_created_empty`** → o label `Diaria` não existia; o drainer criou agora vazio. Configure o filtro (Opção A passo 2) e teste de novo.
+- **`/diaria-inbox` retorna `reason: "label_missing: ..."`** → o label não existe na conta autenticada (validação proativa do drain). O drainer já tentou criar — vá pro Gmail e configure o filtro (Opção A passo 2) que aplica o label.
+- **`/diaria-inbox` retorna `reason: "inbox vazio em N drains consecutivos ..."`** → o label existe, mas nenhum e-mail foi marcado nele há ≥3 drains. Isso costuma indicar **filtro automático quebrado** (foi removido ou a regra está com `From:`/`To:` errado). Vá em Gmail → Filters → confira se a regra com `Apply label: Diaria` ainda existe e está ativa. Mande um e-mail de teste e re-rode `/diaria-inbox`.
 - **`skipped: true, reason: "gmail_mcp_error"`** → Gmail MCP desconectado. `/mcp` no Claude Code pra reautenticar.
 - **E-mails não chegam no label** → checar se o filtro está com `To: diariaeditor@gmail.com` exato; pode ser necessário usar `Delivered-To: diariaeditor@gmail.com` dependendo de como o Gmail reescreve headers em forwards. Ambos costumam funcionar — se não, abrir um e-mail encaminhado, ver original ("Show original") e confirmar qual header carrega o endereço do editor.
 - **Editor não quer forwarding ligado o tempo todo** → Opção B é o caminho.
 - **Quer revogar forwarding** → na conta `diariaeditor`, mesma tela de Forwarding, "Disable forwarding".
+
+## Privacidade
+
+- `data/inbox.md` e `data/inbox-cursor.json` ficam **gitignored** — eles podem conter PII (remetentes, trechos de e-mail) e nunca devem ir pro repositório. O drainer recria `inbox.md` a partir do template se o arquivo não existir.
+- Se você ampliou a query manualmente (ex: removeu `label:Diaria` pra recuperar histórico), garanta que limpou `data/inbox.md` antes de rodar `git status` — entradas com PII podem ter caído ali.
