@@ -72,6 +72,65 @@ describe("isBrazilianTheme", () => {
   it("detecta Braz/Brazilian em EN", () => {
     assert.ok(isBrazilianTheme({ title: "Brazilian AI startup raises $10M" }));
   });
+
+  describe("tier 1 vs tier 2 logic (#43)", () => {
+    it("tier 1 sozinho dispara (Brasil)", () => {
+      assert.ok(isBrazilianTheme({ title: "Brasil debate regulação" }));
+    });
+
+    it("1 tier 2 sozinho NÃO dispara (evita falso positivo)", () => {
+      // Artigo internacional mencionando Nubank de passagem não é "tema BR"
+      assert.equal(
+        isBrazilianTheme({
+          title: "LATAM fintech landscape",
+          summary: "Nubank is one of several players in the region.",
+        }),
+        false,
+      );
+    });
+
+    it("2+ tier 2 distintos dispara (clarifica tema BR)", () => {
+      assert.ok(
+        isBrazilianTheme({
+          title: "Nubank e iFood discutem integração de pagamentos",
+          summary: "O iFood... a Nubank...",
+        }),
+      );
+    });
+
+    it("tier 2 + tier 1 dispara (tier 1 sozinho já basta)", () => {
+      assert.ok(
+        isBrazilianTheme({
+          title: "Nubank no Brasil",
+          summary: "",
+        }),
+      );
+    });
+
+    it("empresas BR privadas expandidas (Embraer, Gerdau, Ambev, etc.)", () => {
+      assert.ok(
+        isBrazilianTheme({
+          title: "Embraer e Gerdau investem em IA industrial",
+          summary: "",
+        }),
+      );
+      assert.ok(
+        isBrazilianTheme({
+          title: "Ambev implanta modelos preditivos",
+          summary: "Parceria com a VTEX para e-commerce.",
+        }),
+      );
+    });
+
+    it("fintechs BR: xp inc + btg pactual", () => {
+      assert.ok(
+        isBrazilianTheme({
+          title: "XP Inc e BTG Pactual divulgam roadmap",
+          summary: "",
+        }),
+      );
+    });
+  });
 });
 
 describe("renderLine", () => {

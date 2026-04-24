@@ -124,12 +124,33 @@ export function getDate(a: Article): string {
  * Conteúdo publicado em `.com.br` traduzindo notícia global NÃO recebe a
  * tag — o critério é editorial (o artigo é sobre o Brasil), não o domínio.
  */
-const BR_KEYWORD_RE =
-  /\b(bras(il|ileir[ao]s?|ilienses?)|braz(il|ilians?)|fgv(\s+ibre)?|anpd|cvm|petrobras|ita[úu]|bradesco|santander brasil|bndes|anatel|banco central do brasil|bcb|usp|unicamp|fiesp|ibge|ipea|mec brasil|s[ãa]o paulo|rio de janeiro|bras[íi]lia|latam\s+brasil|inovabra|tribunal (superior|de justi[çc]a)|stf|congresso nacional)\b/i;
+/**
+ * Tier 1: sinais de alta confiança — 1 match já dispara.
+ * Inclui a palavra "Brasil" em si, governo/reguladores, estatais, cidades,
+ * universidades públicas, indicadores, e entidades que contêm "brasil" no nome.
+ */
+export const BR_TIER1_RE =
+  /\b(bras(il|ileir[ao]s?|ilienses?)|braz(il|ilians?)|fgv(\s+ibre)?|anpd|cvm|petrobras|bndes|anatel|banco central do brasil|bcb|santander brasil|latam\s+brasil|mec brasil|usp|unicamp|fiesp|ibge|ipea|s[ãa]o paulo|rio de janeiro|bras[íi]lia|inovabra|tribunal (superior|de justi[çc]a)|stf|congresso nacional)\b/i;
+
+/**
+ * Tier 2: empresas BR privadas — risco de falso positivo em cobertura
+ * internacional. Só dispara com 2+ matches no mesmo artigo, OU com 1 match
+ * combinado com algum sinal tier 1.
+ *
+ * Evitamos nomes curtos/ambíguos (Vale, Stone, WEG, JBS) por risco de
+ * falso positivo com palavras comuns ou siglas não-BR.
+ */
+export const BR_TIER2_RE =
+  /\b(ita[úu]|bradesco|nubank|ifood|mercado\s+livre|magalu|magazine\s+luiza|pagseguro|picpay|xp\s+inc|btg\s+pactual|banco\s+inter|c6\s+bank|embraer|gerdau|ambev|braskem|suzano|natura\s*&\s*co|localiza|vtex|totvs|movile|creditas|hotmart)\b/gi;
 
 export function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return BR_KEYWORD_RE.test(hay);
+  if (BR_TIER1_RE.test(hay)) return true;
+  // Tier 2: exige 2+ matches distintos pra reduzir falso positivo.
+  // Reset lastIndex porque regex global mantém estado entre chamadas.
+  BR_TIER2_RE.lastIndex = 0;
+  const matches = hay.match(BR_TIER2_RE);
+  return matches !== null && matches.length >= 2;
 }
 
 /** Monta linha: `- [score] Título ⭐ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
