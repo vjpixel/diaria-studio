@@ -109,7 +109,22 @@ Tudo certo.
       lancamento: [],
       pesquisa: [],
       noticias: [],
+      tutorial: [],
     });
+  });
+
+  it("parseia seção 'Aprenda hoje' (#59 tutorial)", () => {
+    const md = `## Aprenda hoje
+
+- [70] Tutorial de RAG — https://simonwillison.net/rag — 2026-04-24
+
+## Notícias
+
+- [60] Notícia — https://a.com/x — 2026-04-24
+`;
+    const result = parseSections(md);
+    assert.deepEqual(result.tutorial, ["https://simonwillison.net/rag"]);
+    assert.deepEqual(result.noticias, ["https://a.com/x"]);
   });
 
   it("ignora linhas que não começam com - (não são bullets)", () => {

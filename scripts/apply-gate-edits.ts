@@ -50,6 +50,7 @@ interface CategorizedJson {
   lancamento: Article[];
   pesquisa: Article[];
   noticias: Article[];
+  tutorial?: Article[];
 }
 
 interface ApprovedJson {
@@ -58,9 +59,10 @@ interface ApprovedJson {
   lancamento: Article[];
   pesquisa: Article[];
   noticias: Article[];
+  tutorial?: Article[];
 }
 
-type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias";
+type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial";
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -84,6 +86,7 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     lancamento: [],
     pesquisa: [],
     noticias: [],
+    tutorial: [],
   };
 
   const headingToBucket: Record<string, BucketName> = {
@@ -91,6 +94,7 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     "Lançamentos": "lancamento",
     "Pesquisas": "pesquisa",
     "Notícias": "noticias",
+    "Aprenda hoje": "tutorial",
   };
 
   // Split por ## headings
@@ -180,8 +184,9 @@ function main() {
     lancamento: data.lancamento,
     pesquisa: data.pesquisa,
     noticias: data.noticias,
+    tutorial: data.tutorial ?? [],
   };
-  const allPools = [data.lancamento, data.pesquisa, data.noticias];
+  const allPools = [data.lancamento, data.pesquisa, data.noticias, data.tutorial ?? []];
 
   // ---- Destaques ---------------------------------------------------------
   let destaquesUrls = [...sections.destaques];
@@ -233,18 +238,22 @@ function main() {
     return out;
   }
 
+  const tutorialResolved = resolveBucket(sections.tutorial);
   const approved: ApprovedJson = {
     highlights,
     runners_up: data.runners_up ?? [],
     lancamento: resolveBucket(sections.lancamento),
     pesquisa: resolveBucket(sections.pesquisa),
     noticias: resolveBucket(sections.noticias),
+    ...(tutorialResolved.length > 0 || (data.tutorial && data.tutorial.length > 0)
+      ? { tutorial: tutorialResolved }
+      : {}),
   };
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
-  const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length}`;
-  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length}`;
+  const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length}`;
+  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial?.length ?? 0}`;
   console.error(
     `[apply-gate-edits] original ${origTotals} → approved ${approvedTotals} — destaques: ${approved.highlights.length}`,
   );
@@ -255,6 +264,7 @@ function main() {
       lancamento: approved.lancamento.length,
       pesquisa: approved.pesquisa.length,
       noticias: approved.noticias.length,
+      tutorial: approved.tutorial?.length ?? 0,
     }) + "\n",
   );
 }

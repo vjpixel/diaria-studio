@@ -9,6 +9,7 @@
  *   ## Lançamentos        — bucket lancamento
  *   ## Pesquisas          — bucket pesquisa
  *   ## Notícias           — bucket noticias
+ *   ## Aprenda hoje       — bucket tutorial (#59)
  *
  * O editor escolhe destaques movendo linhas para/de a seção Destaques.
  * A ordem física dentro de Destaques define D1/D2/D3 (de cima para baixo).
@@ -55,6 +56,7 @@ interface CategorizedJson {
   lancamento: Article[];
   pesquisa: Article[];
   noticias: Article[];
+  tutorial?: Article[];
 }
 
 interface SourceHealth {
@@ -192,7 +194,7 @@ export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   }
 
   // Formato legado: inline em cada artigo
-  for (const bucket of [data.lancamento, data.pesquisa, data.noticias]) {
+  for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial]) {
     for (const a of bucket ?? []) {
       if (a.highlight) urls.add(a.url);
     }
@@ -283,7 +285,7 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
     );
     if (uncertainUrls.size === 0) return;
 
-    for (const bucket of [data.lancamento, data.pesquisa, data.noticias]) {
+    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial]) {
       for (const a of bucket ?? []) {
         if (uncertainUrls.has(a.url)) a.date_unverified = true;
       }
@@ -320,6 +322,9 @@ function main() {
     renderSection("Lançamentos", data.lancamento, highlightUrls),
     renderSection("Pesquisas", data.pesquisa, highlightUrls),
     renderSection("Notícias", data.noticias, highlightUrls),
+    ...(data.tutorial && data.tutorial.length > 0
+      ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls)]
+      : []),
   ].join("\n");
 
   const footer = renderSourceHealth(cli.sourceHealth);
@@ -328,12 +333,13 @@ function main() {
   writeFileSync(cli.out, md, "utf8");
 
   const total =
-    data.lancamento.length + data.pesquisa.length + data.noticias.length;
+    data.lancamento.length + data.pesquisa.length + data.noticias.length + (data.tutorial?.length ?? 0);
   const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
     ...data.pesquisa,
     ...data.noticias,
+    ...(data.tutorial ?? []),
   ].filter((a) => a.date_unverified).length;
 
   process.stdout.write(

@@ -35,6 +35,7 @@ interface CategorizedInput {
   lancamento: Article[];
   pesquisa: Article[];
   noticias: Article[];
+  tutorial?: Article[];
 }
 
 interface RemovedEntry {
@@ -50,15 +51,20 @@ export function filterDateWindow(
   input: CategorizedInput,
   editionDate: string,
   windowDays: number,
-): { kept: CategorizedInput; removed: RemovedEntry[]; cutoff: string } {
+): { kept: Required<CategorizedInput>; removed: RemovedEntry[]; cutoff: string } {
   const edDate = new Date(editionDate + "T00:00:00Z");
   edDate.setUTCDate(edDate.getUTCDate() - windowDays);
   const cutoff = edDate.toISOString().split("T")[0];
 
   const removed: RemovedEntry[] = [];
-  const kept: CategorizedInput = { lancamento: [], pesquisa: [], noticias: [] };
+  const kept: Required<CategorizedInput> = {
+    lancamento: [],
+    pesquisa: [],
+    noticias: [],
+    tutorial: [],
+  };
 
-  for (const bucket of ["lancamento", "pesquisa", "noticias"] as const) {
+  for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial"] as const) {
     for (const article of input[bucket] || []) {
       if (article.date == null) {
         kept[bucket].push({ ...article, date_unverified: true });
@@ -128,10 +134,11 @@ function main() {
   const totalInput =
     (input.lancamento?.length || 0) +
     (input.pesquisa?.length || 0) +
-    (input.noticias?.length || 0);
+    (input.noticias?.length || 0) +
+    (input.tutorial?.length || 0);
 
   const totalKept =
-    kept.lancamento.length + kept.pesquisa.length + kept.noticias.length;
+    kept.lancamento.length + kept.pesquisa.length + kept.noticias.length + kept.tutorial.length;
 
   console.error(
     `filter-date-window: ${totalInput} input → ${totalKept} kept, ${removed.length} removed`
