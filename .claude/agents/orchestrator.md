@@ -84,6 +84,28 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
 - **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
+- **Verify FB posts da edição anterior (sempre roda, silencioso #78).** Descobrir última edição antes da atual com `06-social-published.json` e chamar `verify-facebook-posts.ts` sobre ela pra reconciliar status `scheduled` → `published`/`failed` via Graph API. Isso fecha o gap de posts agendados que nunca tiveram status atualizado. Bash:
+  ```bash
+  PREV=$(node -e "
+    const fs=require('node:fs');
+    const path=require('node:path');
+    const current='{AAMMDD}';
+    try {
+      const dirs=fs.readdirSync('data/editions')
+        .filter(d=>/^\d{6}\$/.test(d)&&d<current)
+        .sort().reverse();
+      for(const d of dirs){
+        if(fs.existsSync(path.resolve('data/editions',d,'06-social-published.json'))){
+          process.stdout.write(d);return;
+        }
+      }
+    }catch(e){}
+  ")
+  if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
+    npx tsx scripts/verify-facebook-posts.ts --edition-dir "data/editions/$PREV/" || echo "verify-fb failed (non-fatal)"
+  fi
+  ```
+  **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem 06-social-published.json, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
 
 ### 1. Stage 1 — Research
 
