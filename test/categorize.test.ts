@@ -69,3 +69,261 @@ describe("categorize() — regras de domínio", () => {
     assert.equal(categorize(art), "noticias");
   });
 });
+
+describe("categorize() — business deal override (#77)", () => {
+  it("expands partnership em domínio lancamento vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/amazon-deal",
+        title: "Anthropic expands partnership with Amazon in $4 billion deal",
+      }),
+      "noticias",
+    );
+  });
+
+  it("acquires/acquisition em domínio lancamento vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/global-illumination",
+        title: "OpenAI acquires Global Illumination team",
+      }),
+      "noticias",
+    );
+  });
+
+  it("PT-BR: aquisição / parceria expandida", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/news/adquire-x",
+        title: "Google adquire startup brasileira por 100 milhões",
+      }),
+      "noticias",
+    );
+  });
+
+  it("investimento bilionário com numeral + keyword", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/deal",
+        title: "Microsoft announces $10 billion investment in AI infrastructure",
+      }),
+      "noticias",
+    );
+  });
+
+  it("gigawatts de compute (contrato de infra) vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/chile-deal",
+        title: "OpenAI signs deal for 5 gigawatts of new compute capacity",
+      }),
+      "noticias",
+    );
+  });
+
+  it("multi-year agreement vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/multi-year",
+        title: "Multi-year agreement with enterprise customer announced",
+      }),
+      "noticias",
+    );
+  });
+
+  it("strategic agreement vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/strategic",
+        title: "Strategic agreement for cloud partnership",
+      }),
+      "noticias",
+    );
+  });
+
+  it("lancamento normal (sem deal pattern) continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-7",
+        title: "Anthropic announces Claude 4.7 with improved reasoning",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("deal em domínio não-lancamento continua noticias (default)", () => {
+    assert.equal(
+      categorize({
+        url: "https://techcrunch.com/openai-microsoft-deal",
+        title: "OpenAI Microsoft $10 billion investment",
+      }),
+      "noticias",
+    );
+  });
+});
+
+describe("categorize() — non-product announcement override (#77)", () => {
+  it("scholars program vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/anthropic-scholars-2026",
+        title: "Announcing Anthropic Scholars program 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("research grants vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/research-grants",
+        title: "Launching $1M in research grants for academic researchers",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Apple scholars vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://machinelearning.apple.com/apple-scholars",
+        title: "Apple Scholars in AI/ML 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("fellowship announcement vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/fellowships",
+        title: "Announcing Google PhD fellowship program for 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("PT-BR: programa de bolsas vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/bolsas-br",
+        title: "Anthropic announces bolsas para pesquisadores brasileiros",
+      }),
+      "noticias",
+    );
+  });
+
+  it("compute grants vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/compute",
+        title: "Launching compute grants for researchers",
+      }),
+      "noticias",
+    );
+  });
+});
+
+describe("categorize() — patterns específicos (#77)", () => {
+  it("aws.amazon.com/blogs/ → lancamento via pattern", () => {
+    assert.equal(
+      categorize({
+        url: "https://aws.amazon.com/blogs/machine-learning/post-x",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("perplexity.ai/hub/ → lancamento", () => {
+    assert.equal(
+      categorize({ url: "https://perplexity.ai/hub/new-feature" }),
+      "lancamento",
+    );
+  });
+
+  it("research.perplexity.ai/ → pesquisa", () => {
+    assert.equal(
+      categorize({ url: "https://research.perplexity.ai/paper-x" }),
+      "pesquisa",
+    );
+  });
+
+  it("developer.nvidia.com/blog/ → lancamento", () => {
+    assert.equal(
+      categorize({ url: "https://developer.nvidia.com/blog/tensorrt-update" }),
+      "lancamento",
+    );
+  });
+
+  it("ai.meta.com/blog/ → lancamento", () => {
+    assert.equal(
+      categorize({ url: "https://ai.meta.com/blog/llama-update" }),
+      "lancamento",
+    );
+  });
+
+  it("ai.meta.com/research/ → pesquisa (path específico)", () => {
+    assert.equal(
+      categorize({ url: "https://ai.meta.com/research/publications/paper" }),
+      "pesquisa",
+    );
+  });
+
+  it("cloud.google.com/blog/ → lancamento", () => {
+    assert.equal(
+      categorize({ url: "https://cloud.google.com/blog/products/ai-ml/gemini-update" }),
+      "lancamento",
+    );
+  });
+
+  it("nature.com → pesquisa via domain", () => {
+    assert.equal(
+      categorize({ url: "https://nature.com/articles/s41586-x" }),
+      "pesquisa",
+    );
+  });
+
+  it("openreview.net → pesquisa", () => {
+    assert.equal(
+      categorize({ url: "https://openreview.net/forum?id=xyz" }),
+      "pesquisa",
+    );
+  });
+
+  it("arxiv.org/pdf/ → pesquisa via pattern", () => {
+    assert.equal(
+      categorize({ url: "https://arxiv.org/pdf/2501.12345.pdf" }),
+      "pesquisa",
+    );
+  });
+});
+
+describe("categorize() — ordem de precedência (#77)", () => {
+  it("pesquisa tem precedência sobre lancamento (mesmo domínio)", () => {
+    // anthropic.com é LANCAMENTO_PATTERN mas /research/ é PESQUISA_PATTERN
+    assert.equal(
+      categorize({ url: "https://anthropic.com/research/paper" }),
+      "pesquisa",
+    );
+  });
+
+  it("research path override vence deal keyword em research paper", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/research/deal-analysis",
+        title: "Research on strategic agreement safety",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("deal pattern sem domínio oficial não override (já é noticias)", () => {
+    assert.equal(
+      categorize({
+        url: "https://theverge.com/microsoft-deal",
+        title: "Microsoft announces $10 billion acquisition",
+      }),
+      "noticias",
+    );
+  });
+});
