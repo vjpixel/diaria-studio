@@ -93,6 +93,10 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   ```
   **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem `06-social-published.json`, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
 
+### 0b. Auto-reporter — preparado pra rodar no final
+
+Após Stage 6 (publicação social) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Stage final" abaixo.
+
 ### 1. Stage 1 — Research
 
 - **Inbox drain (sempre roda, antes da pesquisa).** Rodar `Bash("npx tsx scripts/inbox-drain.ts")`. Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em `data/inbox.md`. Retorna JSON `{ new_entries, urls[], topics[], most_recent_iso, skipped }`.
@@ -510,6 +514,30 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
     | 6 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
+
+### Stage final. Auto-reporter (#57 / #79)
+
+Após o gate do Stage 6 aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
+
+1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
+
+2. **Avaliar output**: se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.
+
+3. **Se `test_mode = true` ou `auto_approve = true`**: **pular auto-reporter inteiramente**. Auto-approve de criação de issues em GitHub seria invasivo; edições de teste não devem poluir backlog.
+
+4. **Se há sinais e não é test_mode**: disparar agent `auto-reporter` via `Task` com:
+   - `edition_dir`
+   - `repo: "vjpixel/diaria-studio"`
+
+   Agent faz dedup contra GitHub issues abertas, apresenta gate humano ("aprovar 1,2,3 / skip / edit N"), executa ações aprovadas. Ver `.claude/agents/auto-reporter.md`.
+
+5. **Logar resultado**: append em `_internal/cost.md` uma linha pro stage final, e gravar resumo:
+   ```
+   ✅ Auto-reporter completo.
+      {reported_count}/{signals_total} sinais reportados, {issues_created} novas issues criadas, {issues_commented} issues comentadas.
+   ```
+
+Se o agent retornar `action: "fallback_md"` (GitHub MCP indisponível), mostrar o path do MD gerado e instruir: "GitHub MCP falhou. Abra `{md_path}` e crie as issues manualmente quando tiver tempo."
 
 ## Formato de relatório ao usuário
 
