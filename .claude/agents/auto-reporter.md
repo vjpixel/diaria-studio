@@ -9,24 +9,30 @@ Você é o auto-reporter da Diar.ia. Sua responsabilidade: transformar **sinais 
 
 ## Input
 
-- `edition_dir`: ex: `data/editions/260424/`
-- `repo`: GitHub repo (ex: `vjpixel/diaria-studio`)
+- `edition_dir`: ex: `data/editions/260424/` — **modo single-edition** (Stage final).
+- `edition_dirs`: array de paths — **modo multi-edition** (#90, Stage 0 processando drafts órfãos). Se ambos passados, `edition_dirs` tem precedência.
+- `multi_edition`: boolean — flag explícita (default inferida pela presença de `edition_dirs`).
+- `repo`: GitHub repo (ex: `vjpixel/diaria-studio`).
 
 ## Pré-requisitos
 
-- `{edition_dir}/_internal/issues-draft.json` gerado por `collect-edition-signals.ts` (Stage final do orchestrator).
+- Cada `{edition_dir}/_internal/issues-draft.json` gerado por `collect-edition-signals.ts` (Stage final do orchestrator).
 - GitHub MCP disponível na sessão.
 - `mcp__github__search_issues`, `mcp__github__add_issue_comment`, `mcp__github__issue_write` permitidos em `.claude/settings.json`.
 
 ## Processo
 
-### 1. Carregar draft de sinais
+### 1. Carregar draft(s) de sinais
 
+**Modo single-edition** (`edition_dir` passado):
 ```bash
 cat {edition_dir}/_internal/issues-draft.json
 ```
 
-Shape (gerado por `collect-edition-signals.ts`, ver #57 / PR #76):
+**Modo multi-edition** (`edition_dirs` array passado, #90):
+Pra cada path em `edition_dirs`, ler `{path}/_internal/issues-draft.json`. Consolidar todos os signals em um único array, **tagueando cada com sua edição de origem** (campo `_edition`) pra rastreabilidade.
+
+Shape do draft (gerado por `collect-edition-signals.ts`, ver #57 / PR #76):
 
 ```json
 {
@@ -44,6 +50,15 @@ Shape (gerado por `collect-edition-signals.ts`, ver #57 / PR #76):
   ]
 }
 ```
+
+#### 1b. Dedup cross-edition (só modo multi)
+
+Se mesmo `kind + reason/source` aparece em 2+ edições seguidas, consolidar num **único comment ou issue** em vez de 1 por edição. Critério exato:
+- `source_streak`: mesmo `details.source` → consolidar.
+- `unfixed_issue`: mesmo `details.reason + details.section` → consolidar.
+- `chrome_disconnects`: sempre consolidar (counts somados).
+
+Signal consolidado ganha campo `_editions: ["260422", "260423"]` com lista das edições afetadas. Title e evidence ajustam pra refletir a sequência (ex: "Source X com falhas em 3 edições seguidas").
 
 ### 2. Se `signals.length === 0`, retornar cedo
 
@@ -150,7 +165,11 @@ Mapping severity → priority label:
 
 ### 7. Gravar resultado
 
-`{edition_dir}/_internal/issues-reported.json`:
+**Modo single-edition**: gravar em `{edition_dir}/_internal/issues-reported.json`.
+
+**Modo multi-edition**: gravar em **cada** `{edition_dir}/_internal/issues-reported.json` das edições processadas, com o subset de `reported[]` / `skipped[]` relativo aos signals daquela edição especificamente. Signals consolidados aparecem em todas as edições do `_editions` array (cada uma marca como "reported: consolidated" apontando pro mesmo issue/comment URL).
+
+Shape do `issues-reported.json`:
 
 ```json
 {
