@@ -20,6 +20,11 @@
   "gemini": {
     "model": "gemini-3.1-flash-image-preview"
   },
+  "cloudflare": {
+    "model": "@cf/black-forest-labs/flux-1-schnell",
+    "steps": 4,
+    "guidance": 7.5
+  },
   "comfyui": {
     "host": "http://127.0.0.1:8188",
     "checkpoint": "sd_xl_base_1.0.safetensors",
