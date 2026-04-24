@@ -127,18 +127,25 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - `timeout_seconds: 180` (soft budget — subagente se auto-disciplina)
 - Em paralelo, disparar M chamadas `Task` com subagent `discovery-searcher` para queries temáticas (derivadas de `audience-profile.md` — temas de alta tração). Usar ~5 queries PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais (prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180` também.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
-- **Registrar saúde + log por fonte.** Para **cada** researcher/discovery retornado, rodar:
-  ```
-  npx tsx scripts/record-source-run.ts \
-    --source "{nome}" \
-    --edition {AAMMDD} \
-    --outcome {status} \
-    --duration-ms {duration_ms} \
-    --query-used "{query montada}" \
-    --articles-json '{JSON dos articles}' \
-    --reason "{reason se houver}"
-  ```
-  Isso atualiza `data/source-health.json` + anexa linha JSONL em `data/sources/{slug}.jsonl` (auditoria por fonte).
+- **Registrar saúde + log (batch, #40).** Em vez de N chamadas individuais, agregar todos os resultados (researchers + discovery) num único array e rodar uma vez:
+  1. Construir array de runs:
+     ```json
+     [
+       { "source": "MIT Tech Review", "outcome": "ok", "duration_ms": 4500, "query_used": "...", "articles": [...] },
+       { "source": "Tecnoblog", "outcome": "fail", "duration_ms": 2000, "query_used": "...", "reason": "fetch_error" },
+       ...
+     ]
+     ```
+  2. Gravar em `data/editions/{AAMMDD}/_internal/researcher-results.json` (rastreabilidade).
+  3. Rodar **uma vez** o script batch:
+     ```bash
+     npx tsx scripts/record-source-runs.ts \
+       --runs data/editions/{AAMMDD}/_internal/researcher-results.json \
+       --edition {AAMMDD}
+     ```
+  Isso atualiza `data/source-health.json` + anexa linhas JSONL em `data/sources/{slug}.jsonl` para cada fonte. Batch é mais rápido (uma invocação de Node) e previne o gap anterior onde a chamada singular era frequentemente esquecida (issue #40).
+
+  O script retorna JSON com `summary.sources_with_consecutive_failures_ge3` — use isso no relatório do gate do Stage 1 pra sinalizar fontes que mereceriam desativação temporária.
 - Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 - **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. O script de verificação decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
 - **Link verification (script direto):** gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/tmp-urls-all.json` (array de strings) e rodar:
