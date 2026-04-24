@@ -7,7 +7,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCES_CSV = resolve(ROOT, "seed/sources.csv");
 const OUT = resolve(ROOT, "context/sources.md");
 
-type Source = { Nome: string; Tipo: string; URL: string };
+type Source = { Nome: string; Tipo: string; URL: string; RSS?: string };
 
 const csv = readFileSync(SOURCES_CSV, "utf8");
 const { data, errors } = Papa.parse<Source>(csv, { header: true, skipEmptyLines: true });
@@ -51,7 +51,7 @@ for (const t of order) {
   seenTypes.add(t);
   lines.push(`## ${t}`, "");
   for (const s of byType.get(t)!) {
-    lines.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL)}\``, "");
+    renderSource(s, lines);
   }
 }
 
@@ -59,8 +59,15 @@ for (const [t, rows] of byType) {
   if (seenTypes.has(t)) continue;
   lines.push(`## ${t}`, "");
   for (const s of rows) {
-    lines.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL)}\``, "");
+    renderSource(s, lines);
   }
+}
+
+function renderSource(s: Source, out: string[]): void {
+  out.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL)}\``);
+  const rss = s.RSS?.trim();
+  if (rss) out.push(`- RSS: ${rss}`);
+  out.push("");
 }
 
 writeFileSync(OUT, lines.join("\n"), "utf8");

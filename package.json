@@ -6,6 +6,7 @@
   "description": "Pipeline Claude Code para produção da newsletter Diar.ia",
   "scripts": {
     "sync-sources": "tsx scripts/sync-sources.ts",
+    "validate-feeds": "tsx scripts/validate-feeds.ts",
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
     "verify-accessibility": "tsx scripts/verify-accessibility.ts",
@@ -14,6 +15,7 @@
     "test": "node --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "fast-xml-parser": "^5.7.1",
     "papaparse": "^5.4.1",
     "puppeteer": "^24.42.0",
     "sharp": "^0.34.0",
