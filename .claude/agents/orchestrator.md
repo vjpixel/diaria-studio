@@ -105,7 +105,15 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`
   Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Task completar — o que vier depois). Se `01-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
-- Disparar N chamadas `Task` paralelas com subagent `source-researcher`, uma por fonte, passando:
+- **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
+  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
+  2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
+  3. **Se RSS falha ou retorna 0 artigos**: fallback automático — dispara `source-researcher` (WebSearch) pra mesma fonte. Marca `method: "websearch_fallback"`. Critério: 1 falha já dispara fallback (não retry dentro do RSS — se feed está down, parte pra WebSearch).
+  4. **Se fonte NÃO tem RSS**: disparar `source-researcher` diretamente (fluxo atual, via WebSearch com `site:` query). Marca `method: "websearch"`.
+
+  Preserva saúde da fonte em todos os casos: propagar `method` como campo extra no `RunRecord` pro `record-source-runs.ts`.
+
+- Disparar N chamadas `Task` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, uma por fonte, passando:
   - nome da fonte
   - site query
   - data da edição
