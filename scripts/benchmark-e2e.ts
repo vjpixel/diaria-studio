@@ -57,7 +57,6 @@ function run(cmd: string, opts?: { timeout?: number }): string {
     cwd: ROOT,
     encoding: "utf8",
     timeout: opts?.timeout ?? 300_000,
-    shell: true,
     stdio: ["pipe", "pipe", "pipe"],
   }).trim();
 }
@@ -68,7 +67,6 @@ function tryRun(cmd: string, opts?: { timeout?: number }): { ok: boolean; stdout
       cwd: ROOT,
       encoding: "utf8",
       timeout: opts?.timeout ?? 300_000,
-      shell: true,
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
     return { ok: true, stdout, stderr: "" };
