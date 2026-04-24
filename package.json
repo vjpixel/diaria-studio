@@ -10,6 +10,7 @@
     "smoke": "tsx scripts/smoke-test.ts",
     "verify-facebook-posts": "tsx scripts/verify-facebook-posts.ts",
     "collect-edition-signals": "tsx scripts/collect-edition-signals.ts",
+    "upload-images-public": "tsx scripts/upload-images-public.ts",
     "topic-cluster": "tsx scripts/topic-cluster.ts",
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
