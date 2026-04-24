@@ -27,11 +27,27 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 - Colar conteúdo da seção `## d{N}` dentro de `# LinkedIn` em `03-social.md` (já com hashtags e quebras de linha; o `publish-social` extrai a seção e remove o heading/comentários HTML antes de colar).
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
-### 4. Anexar imagem
-- Clicar no ícone de **Photo** (📷) na barra inferior do composer.
-- Upload `05-d{N}.jpg`.
-- Aguardar preview carregar (até 30s).
-- Clicar **Done** / **Next** após preview.
+### 4. Imagem via URL pública (Drive) — #48
+
+**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__Claude_in_Chrome__file_upload`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
+
+- No campo do composer, **appendar em linha separada no fim do texto** (depois de hashtags):
+  ```
+  (texto do post)
+
+  (hashtags)
+
+  https://drive.google.com/uc?id={file_id}&export=view
+  ```
+- LinkedIn detecta a URL em 1-2s e renderiza card de preview com a imagem inline.
+- Se o preview não renderizar (rare — Drive a vezes demora), aguardar 5s e re-verificar.
+- Se não renderizar mesmo assim, tentar URL alternativa: `https://drive.google.com/file/d/{file_id}/view` (HTML wrapper com og:image).
+- **Não** clicar em ícone de Photo (📷) — upload local não funciona no Claude in Chrome.
+
+**Trade-off vs upload nativo**:
+- Preview do LinkedIn mostra card de link em vez de imagem fullscreen.
+- Engagement típico é ~30% menor com link preview vs native image.
+- Mas é o único approach 100% automatizado sem custo recorrente (ver #48 pra análise completa).
 
 ### 5. Tentar salvar como rascunho
 - LinkedIn salva drafts automaticamente quando você fecha o composer com conteúdo. Procurar o **X** (fechar) → modal pergunta "Save as draft?" → confirmar.

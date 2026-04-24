@@ -45,6 +45,32 @@ Ler `platform.config.json` → bloco `publishing.social`:
 - `fallback_schedule.facebook.{d1_time, d2_time, d3_time, day_offset}`
 - `timezone` (ex: `"America/Sao_Paulo"`)
 
+### 3b. Pre-flight: upload imagens como Drive shareable (#48)
+
+`mcp__Claude_in_Chrome__file_upload` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
+
+Rodar uma vez (não por post — o resultado é reutilizado):
+
+```bash
+npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir}
+```
+
+Output (stdout JSON, também gravado em `{edition_dir}/06-public-images.json`):
+
+```json
+{
+  "images": {
+    "d1": { "file_id": "...", "url": "https://drive.google.com/uc?id=...&export=view", ... },
+    "d2": { ... },
+    "d3": { ... }
+  }
+}
+```
+
+Guardar o mapping pra usar na etapa 4d do LinkedIn. Script é resume-aware — re-execução reusa uploads anteriores.
+
+Se upload falhar (credenciais Drive inválidas, etc.), registrar warning e prosseguir sem imagem — posts LinkedIn vão sem preview visual, editor adiciona manualmente antes de publicar (comportamento degradado, não fatal).
+
 ### 4. Iterar plataformas × destaques
 
 Ordem fixa:
@@ -76,7 +102,9 @@ Para cada combinação:
     process.stdout.write(body);
   "
   ```
-- Imagem: D1 usa `{edition_dir}/04-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/04-d{N}.jpg`
+- Imagem:
+  - **LinkedIn**: usar URL do Drive retornada pelo pre-flight (passo 3b) — `images[destaque].url`. **Não** tentar upload local.
+  - **Facebook**: D1 usa `{edition_dir}/04-d1-1x1.jpg` (square), D2/D3 usam `{edition_dir}/04-d{N}.jpg`. Facebook via Graph API suporta upload local (script `publish-facebook.ts` — se o fluxo for via agente aqui, registrar limitação).
 
 **c. Ler playbook:** `context/publishers/{platform}.md`.
 
@@ -84,7 +112,9 @@ Para cada combinação:
 
 1. Abrir composer (URL inicial do playbook).
 2. Detectar login: se aparecer formulário de login, registrar `status: "failed"` com `reason: "{platform}_login_expired"` e prosseguir para o próximo (não abortar a iteração inteira).
-3. Colar texto + anexar imagem.
+3. Colar texto.
+   - **LinkedIn**: appendar a URL da imagem (do passo 3b) **no final do texto**, em linha própria (após hashtags). LinkedIn auto-detecta e renderiza preview visual. Se pre-flight falhou, post vai sem imagem.
+   - **Facebook**: anexar imagem via botão de upload (path local funciona na UI web do Facebook Business Suite).
 4. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
 5. **Fallback agendar** (se rascunho não disponível):
