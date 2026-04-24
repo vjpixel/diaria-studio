@@ -184,6 +184,29 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = opts.now ?? new Date();
 
+  // Security: validar scheme da URL pra evitar SSRF (file://, data://, etc.).
+  // Editor controla seed/sources.csv, mas defense-in-depth.
+  try {
+    const parsed = new URL(opts.url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return {
+        source: opts.sourceName,
+        method: "rss",
+        feed_url: opts.url,
+        articles: [],
+        error: `Unsupported URL scheme: ${parsed.protocol} (só http/https aceitos)`,
+      };
+    }
+  } catch {
+    return {
+      source: opts.sourceName,
+      method: "rss",
+      feed_url: opts.url,
+      articles: [],
+      error: `Invalid URL: ${opts.url}`,
+    };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
