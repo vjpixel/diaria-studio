@@ -108,7 +108,7 @@ function parseArgs(): {
 // ---------- Rendering helpers -------------------------------------------
 
 /** Normaliza para YYYY-MM-DD aceitando `date` ou `published_at`. */
-function getDate(a: Article): string {
+export function getDate(a: Article): string {
   const raw = a.date || a.published_at;
   if (!raw) return "????-??-??";
   // Se já vier ISO completo, cortar no T. Senão retornar como está.
@@ -127,13 +127,13 @@ function getDate(a: Article): string {
 const BR_KEYWORD_RE =
   /\b(bras(il|ileir[ao]s?|ilienses?)|braz(il|ilians?)|fgv(\s+ibre)?|anpd|cvm|petrobras|ita[úu]|bradesco|santander brasil|bndes|anatel|banco central do brasil|bcb|usp|unicamp|fiesp|ibge|ipea|mec brasil|s[ãa]o paulo|rio de janeiro|bras[íi]lia|latam\s+brasil|inovabra|tribunal (superior|de justi[çc]a)|stf|congresso nacional)\b/i;
 
-function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
+export function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
   return BR_KEYWORD_RE.test(hay);
 }
 
 /** Monta linha: `- [score] Título ⭐ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
-function renderLine(article: Article, isHighlight?: boolean): string {
+export function renderLine(article: Article, isHighlight?: boolean): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
   const title = article.title?.trim() || "(sem título)";
@@ -162,7 +162,7 @@ function renderLine(article: Article, isHighlight?: boolean): string {
  *   1. `data.highlights[]` top-level (formato novo).
  *   2. Artigos nos buckets com `highlight: true` inline (formato legado).
  */
-function buildHighlightUrls(data: CategorizedJson): Set<string> {
+export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   const urls = new Set<string>();
 
   // Formato novo: top-level highlights[]

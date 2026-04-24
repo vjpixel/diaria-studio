@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
-function splitParagraphs(text: string): string[] {
+export function splitParagraphs(text: string): string[] {
   return text.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
 }
 
@@ -40,7 +40,7 @@ function levenshtein(a: string, b: string): number {
   return prev[n];
 }
 
-function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string): number {
   const maxLen = Math.max(a.length, b.length);
   if (maxLen === 0) return 1;
   // For long paragraphs, use a char-sample heuristic to avoid O(n²) on huge texts
@@ -53,13 +53,13 @@ function similarity(a: string, b: string): number {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
-interface DiffEntry {
+export interface DiffEntry {
   before: string;
   after: string;
   index: number;
 }
 
-function alignParagraphs(origParas: string[], revParas: string[]): DiffEntry[] {
+export function alignParagraphs(origParas: string[], revParas: string[]): DiffEntry[] {
   const changes: DiffEntry[] = [];
   const maxLen = Math.max(origParas.length, revParas.length);
 
