@@ -77,6 +77,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Autonomia de priorização e ordem.** Quando o agente tem uma recomendação de prioridade ou ordem de ataque (ex: "fazer #X antes de #Y", "agrupar issues A/B/C", "labels P0/P1/P2"), pode seguir sem perguntar. Decisões de escopo (criar nova feature, mudar arquitetura, gastar dinheiro) ainda exigem confirmação.
 
+- **CI polling enquanto aguarda PR.** Sempre que houver PR aberto com CI em andamento, conferir status a cada 60 segundos via `mcp__github__pull_request_read get_check_runs` até concluir. Não esperar passivamente — webhook + polling ativo combinados garantem detecção rápida de falha.
+
 ---
 
 ## Otimização de tokens
