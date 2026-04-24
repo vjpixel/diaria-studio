@@ -43,7 +43,7 @@ const lines: string[] = [
   "",
 ];
 
-const order = ["Brasil", "Primária", "Secundária", "Pesquisa"];
+const order = ["Brasil", "Primária", "Secundária", "Pesquisa", "Tutoriais"];
 const seenTypes = new Set<string>();
 
 for (const t of order) {

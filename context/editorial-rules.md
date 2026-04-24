@@ -92,3 +92,43 @@ Antes de aprovar o texto final da edição, validar:
 - [ ] URLs de LANÇAMENTOS/PESQUISAS/OUTRAS: apenas URL, sem texto adicional.
 - [ ] Texto sem markdown (sem bold, bullets, headers).
 - [ ] Máximo 3 destaques, distribuídos pelas categorias válidas.
+
+## Seção "Aprenda hoje" (#59 — em scoping)
+
+Seção editorial opcional pra conteúdo acionável (tutoriais, walkthroughs, cookbooks). Toda edição pode (mas não precisa) incluir 1 tutorial curado.
+
+### Critérios de seleção
+
+- **Acionável**: leitor termina o tutorial (leitura + execução) em **≤ 30 min**.
+- **Prático**: ensina a fazer algo concreto, não apenas teoria.
+- **Atual**: referencia ferramentas/APIs/modelos vigentes (≤ 12 meses de shelf life).
+- **Independente de plano pago**: se requer subscription paga, alertar no blurb.
+- **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior.
+
+### Fontes primárias
+
+Veja `context/sources.md` → seção "Tutoriais":
+
+- Simon Willison's Weblog — tutoriais LLM na prática
+- Anthropic Cookbook — exemplos oficiais Claude
+- HuggingFace Learn — cursos + cookbook
+- DeepLearning.ai The Batch — resumos + tutoriais
+- Latent Space — tutorial episodes + blog
+- Every Inc (Chain of Thought) — análise prática de AI tools
+- Google AI for Developers — guides oficiais
+- AWS Machine Learning Blog — guides com código
+
+### Formato
+
+Link + blurb curto (3-5 linhas) + tempo estimado:
+
+```
+🧰 APRENDA HOJE · Prompt chaining com Claude (Simon Willison, 15 min)
+Técnica de encadear chamadas de LLM pra tarefas complexas, com exemplo
+em Python. Útil pra quem está começando a construir agents.
+https://simonwillison.net/2024/prompt-chaining/
+```
+
+### Integração no pipeline
+
+Status: **em scoping** (#59). Pipeline atual (categorize → scorer → writer) ainda não bucketiza tutoriais separadamente — artigos de fontes "Tutoriais" caem em `lancamento`/`pesquisa`/`noticias` via rules atuais. Implementação completa é follow-up (novo bucket `tutorial` em `Category`, render dedicado, scorer rules, template).
