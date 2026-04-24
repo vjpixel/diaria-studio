@@ -1,0 +1,57 @@
+{
+  "dedup": {
+    "input_count": 10,
+    "kept_count": 7,
+    "removed_count": 3,
+    "kept_urls": [
+      "https://anthropic.com/news/claude-4-7-launch/",
+      "https://arxiv.org/abs/2404.01234",
+      "https://blog.google/technology/ai/gemini-pro-update/",
+      "https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html",
+      "https://openai.com/news/gpt-5-launch/",
+      "https://techcrunch.com/2026/04/23/anthropic-b-funding/",
+      "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
+    ],
+    "removed_notes": [
+      "https://openai.com/news/gpt-5-launch/?utm_source=twitter → url-duplicado na lista (mantido: https://openai.com/news/gpt-5-launch/)",
+      "https://therundown.ai/p/weekly-roundup-ai → agregador/roundup bloqueado (use fonte primária)",
+      "https://theverge.com/2026/04/22/old-news → url-match com edição anterior"
+    ]
+  },
+  "categorize": {
+    "lancamento": [
+      "https://anthropic.com/news/claude-4-7-launch/",
+      "https://blog.google/technology/ai/gemini-pro-update/",
+      "https://openai.com/news/gpt-5-launch/"
+    ],
+    "pesquisa": [
+      "https://arxiv.org/abs/2404.01234"
+    ],
+    "noticias": [
+      "https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html",
+      "https://techcrunch.com/2026/04/23/anthropic-b-funding/",
+      "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
+    ]
+  },
+  "brazilian_themes": [
+    "https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html",
+    "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
+  ],
+  "sample_rendered_lines": [
+    "- [--] Anthropic announces Claude 4.7 — https://anthropic.com/news/claude-4-7-launch/ — 2026-04-22",
+    "- [--] Anthropic announces expanded partnership and billion dollar deal — https://techcrunch.com/2026/04/23/anthropic-b-funding/ — 2026-04-23",
+    "- [--] Attention Routing in Large Language Models — https://arxiv.org/abs/2404.01234 — 2026-04-22",
+    "- [--] Google atualiza Gemini Pro com novos recursos — https://blog.google/technology/ai/gemini-pro-update/ — 2026-04-22",
+    "- [--] Governo do Brasil sanciona lei de regulação de IA 🇧🇷 — https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html — 2026-04-23",
+    "- [--] Nubank e iFood anunciam parceria de pagamentos 🇧🇷 — https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html — 2026-04-23",
+    "- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23"
+  ],
+  "roundtrip": {
+    "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Google atualiza Gemini Pro com novos recursos — https://blog.google/technology/ai/g",
+    "parsed_back": {
+      "lancamento": 3,
+      "pesquisa": 1,
+      "noticias": 3
+    }
+  }
+}
