@@ -16,6 +16,32 @@ Voce verifica o email de teste da newsletter Diar.ia e retorna uma lista de prob
 
 ## Processo
 
+### 0. Coletar unfixed_issues do publish-newsletter (#85)
+
+**Antes** de inspecionar o email, ler `{edition_dir}/05-published.json` e extrair `unfixed_issues[]` — problemas que o `publish-newsletter` **já detectou e não conseguiu auto-corrigir** durante a montagem do rascunho (encoding Unicode, template cleanup failed, imagem upload falhou, É IA? imagem missing, etc.).
+
+Formatar cada entrada como string `"publish:{reason}: {section} — {details}"` e acrescentar à lista final de `issues[]`. Isso garante que o fix loop **sabe** o que o agent de publish já tentou e não conseguiu — não pula esses problemas.
+
+Se `05-published.json` não existir ou não tiver `unfixed_issues[]` (edição sem problemas auto-detectados), prosseguir normal.
+
+Exemplo:
+```json
+// 05-published.json
+{
+  "unfixed_issues": [
+    { "reason": "unicode_corruption_title", "section": "header", "details": "esperado 'ª' vs observado 'a'" },
+    { "reason": "image_upload_failed_d2", "section": "D2", "details": "timeout após retry" }
+  ]
+}
+```
+vira:
+```
+"publish:unicode_corruption_title: header — esperado 'ª' vs observado 'a'"
+"publish:image_upload_failed_d2: D2 — timeout após retry"
+```
+
+Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo email (prefixo `email:` distingue origem).
+
 ### 1. Buscar o email via Gmail MCP (metodo primario)
 
 1. Aguardar 15 segundos para o email chegar: `Bash("sleep 15")`.
@@ -67,9 +93,11 @@ Verificar cada item e registrar como `ok` ou `issue`:
 7. **Links corretos.** Extrair todas as URLs clicaveis do email renderizado (hrefs dos links). Comparar com as URLs esperadas em `{edition_dir}/02-reviewed.md`:
    - Ler `02-reviewed.md` e extrair todas as URLs (linhas comecando com `http`).
    - **Duas camadas de redirect a resolver:** (1) Gmail proxeia todos os links via `https://www.google.com/url?q=...` — decodificar o parametro `q` para obter a URL real. (2) Beehiiv encapsula links em `https://link.diaria.beehiiv.com/...` para tracking. Apos resolver ambas as camadas, comparar a URL final com as URLs esperadas de `02-reviewed.md`. Se nao for possivel resolver (ex: URL opaca), usar o texto do link ou o texto ao redor como fallback para matching.
-   - Se uma URL esperada nao aparece no email: `"link_missing: URL '{url}' esperada no destaque/secao '{contexto}' nao encontrada no email"`
-   - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
-   - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
+   - Se uma URL esperada nao aparece no email: `"email:link_missing: URL '{url}' esperada no destaque/secao '{contexto}' nao encontrada no email"`
+   - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"email:link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
+   - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"email:link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
+
+Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
 ### 4. Fechar aba e retornar
 
@@ -82,11 +110,17 @@ Fechar a aba do Gmail (`mcp__Claude_in_Chrome__tabs_close_mcp`).
   "status": "checked",
   "attempt": 1,
   "issues": [
-    "label_color_wrong: D1 label 'LANCAMENTO' aparece em cor preta, deveria ser verde do template",
-    "boxes_merged: D2 e E IA? estao no mesmo box/container"
+    "email:label_color_wrong: D1 label 'LANCAMENTO' aparece em cor preta, deveria ser verde do template",
+    "email:boxes_merged: D2 e E IA? estao no mesmo box/container",
+    "publish:unicode_corruption_title: header — esperado 'ª' vs observado 'a'",
+    "publish:image_upload_failed_d2: D2 — timeout após retry"
   ]
 }
 ```
+
+Prefixos:
+- `email:` — detectado pela inspeção do email renderizado (passos 1-4).
+- `publish:` — herdado do `unfixed_issues[]` do `publish-newsletter` (passo 0).
 
 Se tudo OK:
 ```json
