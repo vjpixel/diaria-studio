@@ -9,6 +9,7 @@
     "validate-feeds": "tsx scripts/validate-feeds.ts",
     "smoke": "tsx scripts/smoke-test.ts",
     "verify-facebook-posts": "tsx scripts/verify-facebook-posts.ts",
+    "topic-cluster": "tsx scripts/topic-cluster.ts",
     "update-audience": "tsx scripts/update-audience.ts",
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
     "verify-accessibility": "tsx scripts/verify-accessibility.ts",
