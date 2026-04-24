@@ -1,0 +1,234 @@
+{
+  "highlights": [
+    {
+      "rank": 1,
+      "score": 93,
+      "bucket": "lancamento",
+      "reason": "Lançamento de modelo frontier (GPT-5.5) — impacto direto para toda a audiência. Categoria Lançamento tem CTR 0.76% (acima da média 0.65%). Fonte primária openai.com. Publicado 2026-04-23, recência máxima.",
+      "article": {
+        "title": "Introducing GPT-5.5",
+        "url": "https://openai.com/index/introducing-gpt-5-5/",
+        "published_at": "2026-04-23",
+        "author": "OpenAI",
+        "summary": "OpenAI lança GPT-5.5, modelo mais inteligente e intuitivo, com foco em tarefas agênticas, código e análise. Disponível para usuários Plus, Pro, Business e Enterprise.",
+        "type_hint": "ferramenta",
+        "category": "lancamento"
+      }
+    },
+    {
+      "rank": 2,
+      "score": 90,
+      "bucket": "noticias",
+      "reason": "DeepSeek V4 open-source (Apache 2.0, 1.6T params MoE, 1M contexto) — fonte oficial. Publicado hoje, recência máxima. Modelo frontier open-weights é evento raro e de alto impacto para desenvolvedores e estrategistas.",
+      "article": {
+        "title": "DeepSeek V4 Preview Release",
+        "url": "https://api-docs.deepseek.com/news/news260424",
+        "published_at": "2026-04-24",
+        "summary": "DeepSeek lança e open-source o V4 Preview com contexto de 1M tokens, MoE 1.6T parâmetros. Disponível via API e Hugging Face sob Apache 2.0.",
+        "type_hint": "ferramenta",
+        "category": "noticias"
+      }
+    },
+    {
+      "rank": 3,
+      "score": 82,
+      "bucket": "noticias",
+      "reason": "Breach do Claude Mythos — modelo classificado como 'perigoso demais para publicar' acessado via fornecedor terceirizado. Alta surpresa editorial e impacto prático em segurança corporativa. Diversifica tema vs. os dois lançamentos de modelos.",
+      "article": {
+        "title": "Hackers breach Anthropic's 'too dangerous to release' Mythos AI model",
+        "url": "https://www.euronews.com/next/2026/04/22/hackers-breach-anthropics-too-dangerous-to-release-mythos-ai-model-report",
+        "published_at": "2026-04-22",
+        "summary": "Grupo acessou o Claude Mythos Preview da Anthropic — modelo de cibersegurança classificado como perigoso — via fornecedor terceirizado.",
+        "type_hint": "noticia",
+        "category": "noticias"
+      }
+    }
+  ],
+  "runners_up": [
+    {
+      "rank": 4,
+      "score": 78,
+      "bucket": "noticias",
+      "reason": "Complementa o destaque #3 com ângulo de capacidades: Mythos encontrou zero-days em todos os principais SOs e navegadores. Forte candidato a fallback se #3 for removido no gate.",
+      "article": {
+        "title": "Anthropic's Claude Mythos Finds Thousands of Zero-Day Flaws Across Major Systems",
+        "url": "https://thehackernews.com/2026/04/anthropics-claude-mythos-finds.html",
+        "published_at": "2026-04-23",
+        "summary": "Claude Mythos encontrou zero-days em todos os principais SOs e navegadores; mais de 99% sem patch.",
+        "type_hint": "noticia",
+        "category": "noticias"
+      }
+    },
+    {
+      "rank": 5,
+      "score": 52,
+      "bucket": "pesquisa",
+      "reason": "Único artigo do bucket pesquisa — incluído para garantir diversidade de bucket nos runners_up. Tema de viés em reconhecimento de fala tem relevância para audiência de produto e ética.",
+      "article": {
+        "title": "Do LLM Decoders Listen Fairly? Benchmarking How Language Model Priors Shape Bias in Speech Recognition",
+        "url": "https://arxiv.org/abs/2604.21276",
+        "published_at": "2026-04-23",
+        "author": null,
+        "summary": "Pesquisa examina como priores de modelos de linguagem moldam viés no reconhecimento de fala, com impacto desigual em grupos demográficos.",
+        "type_hint": "pesquisa",
+        "category": "pesquisa"
+      }
+    }
+  ],
+  "lancamento": [
+    {
+      "title": "Introducing GPT-5.5",
+      "url": "https://openai.com/index/introducing-gpt-5-5/",
+      "published_at": "2026-04-23",
+      "author": "OpenAI",
+      "summary": "OpenAI lança GPT-5.5, modelo mais inteligente e intuitivo, com foco em tarefas agênticas, código e análise. Disponível para usuários Plus, Pro, Business e Enterprise.",
+      "type_hint": "ferramenta",
+      "category": "lancamento",
+      "score": 93
+    }
+  ],
+  "pesquisa": [
+    {
+      "title": "Do LLM Decoders Listen Fairly? Benchmarking How Language Model Priors Shape Bias in Speech Recognition",
+      "url": "https://arxiv.org/abs/2604.21276",
+      "published_at": "2026-04-23",
+      "author": null,
+      "summary": "Pesquisa examina como priores de modelos de linguagem moldam viés no reconhecimento de fala, com impacto desigual em grupos demográficos.",
+      "type_hint": "pesquisa",
+      "category": "pesquisa",
+      "score": 52
+    }
+  ],
+  "noticias": [
+    {
+      "title": "DeepSeek V4 Preview Release",
+      "url": "https://api-docs.deepseek.com/news/news260424",
+      "published_at": "2026-04-24",
+      "summary": "DeepSeek lança e open-source o V4 Preview com contexto de 1M tokens, MoE 1.6T parâmetros. Disponível via API e Hugging Face sob Apache 2.0.",
+      "type_hint": "ferramenta",
+      "category": "noticias",
+      "score": 90
+    },
+    {
+      "title": "Hackers breach Anthropic's 'too dangerous to release' Mythos AI model",
+      "url": "https://www.euronews.com/next/2026/04/22/hackers-breach-anthropics-too-dangerous-to-release-mythos-ai-model-report",
+      "published_at": "2026-04-22",
+      "summary": "Grupo acessou o Claude Mythos Preview da Anthropic — modelo de cibersegurança classificado como perigoso — via fornecedor terceirizado.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 82
+    },
+    {
+      "title": "Anthropic's Claude Mythos Finds Thousands of Zero-Day Flaws Across Major Systems",
+      "url": "https://thehackernews.com/2026/04/anthropics-claude-mythos-finds.html",
+      "published_at": "2026-04-23",
+      "summary": "Claude Mythos encontrou zero-days em todos os principais SOs e navegadores; mais de 99% sem patch.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 78
+    },
+    {
+      "title": "DeepSeek V4 — almost on the frontier, a fraction of the price",
+      "url": "https://simonwillison.net/2026/Apr/24/deepseek-v4/",
+      "published_at": "2026-04-24",
+      "author": "Simon Willison",
+      "summary": "Análise detalhada do DeepSeek V4: performance quase na fronteira dos melhores modelos com custo de inferência muito menor.",
+      "type_hint": "pesquisa",
+      "category": "noticias",
+      "score": 72
+    },
+    {
+      "title": "Alerta no Brasil: IA já reduz emprego entre jovens e acende sinal vermelho",
+      "url": "https://fdr.com.br/2026/04/23/alerta-no-brasil-ia-ja-reduz-emprego-entre-jovens-e-acende-sinal-vermelho/",
+      "published_at": "2026-04-23",
+      "summary": "Análise sobre o impacto da IA na redução de empregos entre jovens no Brasil.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 70
+    },
+    {
+      "title": "Agents CLI: Deploy AI Agents at Scale on Google Cloud",
+      "url": "https://developers.googleblog.com/en/agents-cli-deploy-ai-agents-at-scale-on-google-cloud/",
+      "published_at": "2026-04-22",
+      "author": "Google Cloud",
+      "summary": "Google lança Agents CLI para desenvolvimento e deploy de agentes de IA em escala na Google Cloud, com integração a assistentes de código.",
+      "type_hint": "ferramenta",
+      "category": "noticias",
+      "score": 68
+    },
+    {
+      "title": "Google launches AI research agents powered by Gemini 3.1 Pro",
+      "url": "https://siliconangle.com/2026/04/22/google-launches-ai-research-agents-powered-gemini-3-1-pro/",
+      "published_at": "2026-04-22",
+      "summary": "Google lança Deep Research e Deep Research Max, agentes autônomos de pesquisa no Gemini 3.1 Pro.",
+      "type_hint": "ferramenta",
+      "category": "noticias",
+      "score": 66
+    },
+    {
+      "title": "AWS and NVIDIA deepen strategic collaboration to accelerate AI from pilot to production",
+      "url": "https://aws.amazon.com/blogs/machine-learning/aws-and-nvidia-deepen-strategic-collaboration-to-accelerate-ai-from-pilot-to-production/",
+      "published_at": "2026-04-23",
+      "author": "AWS",
+      "summary": "AWS e NVIDIA expandem parceria com mais de 1 milhão de GPUs Blackwell e Rubin em regiões cloud globais a partir de 2026.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 65
+    },
+    {
+      "title": "Google delivers connective tissue for autonomous AI agents",
+      "url": "https://siliconangle.com/2026/04/22/google-delivers-connective-tissue-autonomous-ai-agents-access-data-without-restrictions/",
+      "published_at": "2026-04-22",
+      "summary": "Google anuncia Agentic Data Cloud com motor de contexto universal para agentes de IA corporativos.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 60
+    },
+    {
+      "title": "OpenAI se aproxima do lançamento de novo modelo de imagem para substituir DALL-E",
+      "url": "https://pt.dataconomy.com/2026/04/21/openai-se-aproxima-do-lancamento-de-novo-modelo-de-imagem-para-substituir-dall-e/",
+      "published_at": "2026-04-21",
+      "summary": "OpenAI aproxima-se do lançamento do GPT Image 2, novo modelo de geração de imagens.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 55
+    },
+    {
+      "title": "The New Open-Weights Leader, Big AI's Political Influence, Predicting Illness",
+      "url": "https://www.deeplearning.ai/the-batch/issue-341/",
+      "published_at": "2026-04-24",
+      "author": "DeepLearning.AI",
+      "summary": "Edição #341 analisa o novo líder em modelos open-weights (DeepSeek V4), influência política dos grandes players de IA e aplicações em diagnóstico médico.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 48
+    },
+    {
+      "title": "Novo modelo de IA V4 da DeepSeek: o que precisa de saber",
+      "url": "https://www.euronews.com/next/2026/04/24/chinas-deepseek-releases-new-ai-model-v4-heres-everything-to-know-as-the-ai-race-speeds-up",
+      "published_at": "2026-04-24",
+      "summary": "DeepSeek lança série V4 com contexto de 1 milhão de tokens e liderança em benchmarks.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 45
+    },
+    {
+      "title": "DeepSeek desafia concorrentes norte-americanos com novo modelo de IA",
+      "url": "https://dinheirovivo.dn.pt/empresas/deepseek-desafia-concorrentes-norteamericanos-com-novo-modelo-de-ia",
+      "published_at": "2026-04-24",
+      "summary": "DeepSeek V4 marca competição acirrada entre empresas chinesas e norte-americanas.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 42
+    },
+    {
+      "title": "China's DeepSeek unveils latest model a year after upending global tech",
+      "url": "https://www.aljazeera.com/economy/2026/4/24/chinas-deepseek-unveils-latest-model-a-year-after-upending-global-tech",
+      "published_at": "2026-04-24",
+      "summary": "DeepSeek V4 marca um ano desde que a startup chinesa abalou o mercado global de IA.",
+      "type_hint": "noticia",
+      "category": "noticias",
+      "score": 35
+    }
+  ]
+}
