@@ -75,6 +75,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Pipeline reproducible**: mudanças em agent prompts, config ou scripts devem ser committed + testadas; nunca rodadas direto de stash ou memória.
 
+- **Autonomia de priorização e ordem.** Quando o agente tem uma recomendação de prioridade ou ordem de ataque (ex: "fazer #X antes de #Y", "agrupar issues A/B/C", "labels P0/P1/P2"), pode seguir sem perguntar. Decisões de escopo (criar nova feature, mudar arquitetura, gastar dinheiro) ainda exigem confirmação.
+
 ---
 
 ## Otimização de tokens
