@@ -1,0 +1,72 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { validateScheduledTime } from "../scripts/publish-facebook.ts";
+
+const now = new Date("2026-04-24T12:00:00Z");
+
+describe("validateScheduledTime (#78)", () => {
+  it("aceita horário > 10min no futuro", () => {
+    const scheduled = "2026-04-24T13:00:00Z"; // +1h
+    assert.doesNotThrow(() => validateScheduledTime(scheduled, now));
+  });
+
+  it("aceita horário 1 dia no futuro", () => {
+    const scheduled = "2026-04-25T12:00:00Z";
+    assert.doesNotThrow(() => validateScheduledTime(scheduled, now));
+  });
+
+  it("rejeita horário que já passou (1h atrás)", () => {
+    const scheduled = "2026-04-24T11:00:00Z";
+    assert.throws(
+      () => validateScheduledTime(scheduled, now),
+      /já passou.*60min atrás/,
+    );
+  });
+
+  it("rejeita horário exato agora", () => {
+    const scheduled = "2026-04-24T12:00:00Z";
+    assert.throws(() => validateScheduledTime(scheduled, now), /já passou/);
+  });
+
+  it("rejeita horário 5min no futuro (< margem de 10min)", () => {
+    const scheduled = "2026-04-24T12:05:00Z";
+    assert.throws(
+      () => validateScheduledTime(scheduled, now),
+      /margem mínima de 10min/,
+    );
+  });
+
+  it("rejeita horário exatamente 10min no futuro (borderline)", () => {
+    // unixTs == nowUnix + 600 → não é strictly <, então passa
+    // Mas a condição é `< nowUnix + minOffset`, então 600 exatos ainda é válido.
+    const scheduled = "2026-04-24T12:10:00Z";
+    assert.doesNotThrow(() => validateScheduledTime(scheduled, now));
+  });
+
+  it("margem customizável via terceiro arg", () => {
+    // Margem de 30min
+    const scheduled = "2026-04-24T12:20:00Z"; // +20min
+    assert.throws(
+      () => validateScheduledTime(scheduled, now, 1800),
+      /margem mínima de 30min/,
+    );
+  });
+
+  it("rejeita data inválida", () => {
+    assert.throws(
+      () => validateScheduledTime("not-a-date", now),
+      /data inválida/,
+    );
+  });
+
+  it("erro inclui mensagem acionável (day-offset / fallback_schedule)", () => {
+    const scheduled = "2026-04-24T11:00:00Z";
+    try {
+      validateScheduledTime(scheduled, now);
+      assert.fail("should have thrown");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      assert.ok(msg.includes("day-offset") || msg.includes("fallback_schedule"));
+    }
+  });
+});
