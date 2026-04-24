@@ -1,0 +1,73 @@
+[
+  {
+    "url": "https://openai.com/news/gpt-5-launch/",
+    "title": "OpenAI lança GPT-5",
+    "summary": "OpenAI anuncia o GPT-5 com benchmarks superiores.",
+    "date": "2026-04-23",
+    "source": "OpenAI"
+  },
+  {
+    "url": "https://openai.com/news/gpt-5-launch/?utm_source=twitter",
+    "title": "OpenAI lança GPT-5",
+    "summary": "OpenAI anuncia o GPT-5 com benchmarks superiores.",
+    "date": "2026-04-23",
+    "source": "OpenAI",
+    "discovered_source": true
+  },
+  {
+    "url": "https://arxiv.org/abs/2404.01234",
+    "title": "Attention Routing in Large Language Models",
+    "summary": "Novo paper sobre roteamento em transformers.",
+    "date": "2026-04-22",
+    "source": "arXiv"
+  },
+  {
+    "url": "https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html",
+    "title": "Governo do Brasil sanciona lei de regulação de IA",
+    "summary": "Nova lei sobre IA aprovada pelo Congresso Nacional.",
+    "date": "2026-04-23",
+    "source": "Canaltech (IA)"
+  },
+  {
+    "url": "https://blog.google/technology/ai/gemini-pro-update/",
+    "title": "Google atualiza Gemini Pro com novos recursos",
+    "summary": "Atualização do modelo com suporte a multi-modal.",
+    "date": "2026-04-22",
+    "source": "Google"
+  },
+  {
+    "url": "https://therundown.ai/p/weekly-roundup-ai",
+    "title": "The Rundown: Weekly AI Roundup",
+    "summary": "Resumo das notícias de IA da semana.",
+    "date": "2026-04-23",
+    "source": "The Rundown AI"
+  },
+  {
+    "url": "https://techcrunch.com/2026/04/23/anthropic-b-funding/",
+    "title": "Anthropic announces expanded partnership and billion dollar deal",
+    "summary": "Strategic agreement with cloud provider.",
+    "date": "2026-04-23",
+    "source": "TechCrunch"
+  },
+  {
+    "url": "https://anthropic.com/news/claude-4-7-launch/",
+    "title": "Anthropic announces Claude 4.7",
+    "summary": "Novo modelo da família Claude com capacidades avançadas.",
+    "date": "2026-04-22",
+    "source": "Anthropic"
+  },
+  {
+    "url": "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html",
+    "title": "Nubank e iFood anunciam parceria de pagamentos",
+    "summary": "Nubank e iFood discutem integração de pagamentos no Brasil.",
+    "date": "2026-04-23",
+    "source": "Valor Econômico"
+  },
+  {
+    "url": "https://theverge.com/2026/04/22/old-news",
+    "title": "Old news já coberto",
+    "summary": "Este URL já foi usado em edição anterior.",
+    "date": "2026-04-22",
+    "source": "The Verge"
+  }
+]
