@@ -1,0 +1,207 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  getDate,
+  isBrazilianTheme,
+  renderLine,
+  buildHighlightUrls,
+} from "../scripts/render-categorized-md.ts";
+
+describe("getDate", () => {
+  it("prioriza date sobre published_at", () => {
+    assert.equal(
+      getDate({ url: "x", date: "2026-04-24", published_at: "2026-04-20" }),
+      "2026-04-24",
+    );
+  });
+
+  it("usa published_at como fallback", () => {
+    assert.equal(
+      getDate({ url: "x", published_at: "2026-04-24T10:00:00Z" }),
+      "2026-04-24",
+    );
+  });
+
+  it("corta ISO string no T", () => {
+    assert.equal(
+      getDate({ url: "x", date: "2026-04-24T12:00:00Z" }),
+      "2026-04-24",
+    );
+  });
+
+  it("retorna placeholder quando não há data", () => {
+    assert.equal(getDate({ url: "x" }), "????-??-??");
+  });
+});
+
+describe("isBrazilianTheme", () => {
+  it("detecta palavra Brasil", () => {
+    assert.ok(isBrazilianTheme({ title: "Brasil lidera em IA na América Latina" }));
+  });
+
+  it("detecta brasileiro/brasileira", () => {
+    assert.ok(isBrazilianTheme({ title: "Startup brasileira levanta rodada" }));
+  });
+
+  it("detecta entidades governamentais (ANPD, CVM, Petrobras)", () => {
+    assert.ok(isBrazilianTheme({ title: "ANPD multa plataforma de IA" }));
+    assert.ok(isBrazilianTheme({ title: "CVM divulga regras sobre trading algorítmico" }));
+    assert.ok(isBrazilianTheme({ title: "Petrobras investe em modelos preditivos" }));
+  });
+
+  it("detecta cidades BR (São Paulo, Rio, Brasília)", () => {
+    assert.ok(isBrazilianTheme({ title: "Evento de IA em São Paulo" }));
+    assert.ok(isBrazilianTheme({ title: "Rio de Janeiro sedia conferência" }));
+    assert.ok(isBrazilianTheme({ title: "Brasília debate regulação" }));
+  });
+
+  it("case-insensitive", () => {
+    assert.ok(isBrazilianTheme({ title: "BRASIL em foco" }));
+    assert.ok(isBrazilianTheme({ title: "brasil em foco" }));
+  });
+
+  it("matcha também em summary", () => {
+    assert.ok(isBrazilianTheme({ title: "AI news", summary: "Empresa brasileira vence" }));
+  });
+
+  it("não matcha notícias sem tema BR", () => {
+    assert.equal(isBrazilianTheme({ title: "OpenAI launches GPT-5" }), false);
+    assert.equal(isBrazilianTheme({ title: "Google Cloud announces TPU v7" }), false);
+  });
+
+  it("detecta Braz/Brazilian em EN", () => {
+    assert.ok(isBrazilianTheme({ title: "Brazilian AI startup raises $10M" }));
+  });
+});
+
+describe("renderLine", () => {
+  it("formato básico: score + título + url + data", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "Hello",
+      score: 87,
+      date: "2026-04-24",
+    });
+    assert.equal(line, "- [87] Hello — https://a.com/x — 2026-04-24");
+  });
+
+  it("score ausente mostra [--]", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "T",
+      date: "2026-04-24",
+    });
+    assert.ok(line.startsWith("- [--] T"));
+  });
+
+  it("marcador ⭐ quando highlight", () => {
+    const line = renderLine({ url: "https://a.com/x", title: "T", score: 80 }, true);
+    assert.ok(line.includes("⭐"));
+  });
+
+  it("marcador 🇧🇷 em tema brasileiro", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "ANPD publica regra",
+      score: 75,
+    });
+    assert.ok(line.includes("🇧🇷"));
+  });
+
+  it("marcador [inbox] para editor_submitted", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "T",
+      score: 80,
+      editor_submitted: true,
+    });
+    assert.ok(line.includes("[inbox]"));
+  });
+
+  it("marcador (descoberta) para discovered_source", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "T",
+      score: 80,
+      discovered_source: true,
+    });
+    assert.ok(line.includes("(descoberta)"));
+  });
+
+  it("marcador ⚠️ quando data não verificada", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "T",
+      score: 80,
+      date_unverified: true,
+    });
+    assert.ok(line.includes("⚠️"));
+  });
+
+  it("múltiplos marcadores aparecem juntos na ordem correta", () => {
+    const line = renderLine({
+      url: "https://a.com/x",
+      title: "Brasil e ANPD",
+      score: 90,
+      editor_submitted: true,
+      date: "2026-04-24",
+    }, true);
+    // Ordem: ⭐ (highlight), 🇧🇷 (BR), [inbox]
+    const idxStar = line.indexOf("⭐");
+    const idxBr = line.indexOf("🇧🇷");
+    const idxInbox = line.indexOf("[inbox]");
+    assert.ok(idxStar < idxBr && idxBr < idxInbox);
+  });
+
+  it("título ausente usa placeholder", () => {
+    const line = renderLine({ url: "https://a.com/x" });
+    assert.ok(line.includes("(sem título)"));
+  });
+});
+
+describe("buildHighlightUrls", () => {
+  it("extrai do formato top-level highlights[]", () => {
+    const urls = buildHighlightUrls({
+      highlights: [{ url: "https://a.com/1" }, { url: "https://b.com/2" }],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://a.com/1"));
+  });
+
+  it("extrai do formato legado (inline highlight: true)", () => {
+    const urls = buildHighlightUrls({
+      lancamento: [
+        { url: "https://a.com/1", highlight: true },
+        { url: "https://a.com/normal" },
+      ],
+      pesquisa: [{ url: "https://b.com/2", highlight: true }],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://a.com/1"));
+    assert.ok(urls.has("https://b.com/2"));
+    assert.ok(!urls.has("https://a.com/normal"));
+  });
+
+  it("combina ambos os formatos sem duplicar", () => {
+    const urls = buildHighlightUrls({
+      highlights: [{ url: "https://a.com/1" }],
+      lancamento: [{ url: "https://a.com/1", highlight: true }],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 1);
+  });
+
+  it("retorna Set vazio quando não há highlights", () => {
+    const urls = buildHighlightUrls({
+      lancamento: [{ url: "https://a.com/1" }],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 0);
+  });
+});

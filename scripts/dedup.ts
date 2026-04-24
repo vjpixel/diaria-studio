@@ -20,7 +20,7 @@ import { isAggregator } from "./lib/aggregators";
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
 // ---------------------------------------------------------------------------
 
-function canonicalize(url: string): string {
+export function canonicalize(url: string): string {
   try {
     const u = new URL(url);
     for (const key of [...u.searchParams.keys()]) {
@@ -59,7 +59,7 @@ function levenshtein(a: string, b: string): number {
   return prev[n];
 }
 
-function normalizeTitle(s: string): string {
+export function normalizeTitle(s: string): string {
   return s
     .toLowerCase()
     .normalize("NFD")
@@ -70,7 +70,7 @@ function normalizeTitle(s: string): string {
     .trim();
 }
 
-function titleSimilarity(a: string, b: string): number {
+export function titleSimilarity(a: string, b: string): number {
   const na = normalizeTitle(a), nb = normalizeTitle(b);
   const maxLen = Math.max(na.length, nb.length);
   if (maxLen === 0) return 1;
@@ -82,7 +82,7 @@ function titleSimilarity(a: string, b: string): number {
 // Format: seções ## YYYY-MM-DD — "..." com "Links usados:\n- url" dentro
 // ---------------------------------------------------------------------------
 
-function extractPastUrls(md: string, window: number): Set<string> {
+export function extractPastUrls(md: string, window: number): Set<string> {
   const urls = new Set<string>();
 
   // Split into edition sections by ## YYYY-MM-DD header
@@ -117,7 +117,7 @@ interface RemovedEntry {
   dedup_note: string;
 }
 
-function dedup(
+export function dedup(
   articles: Article[],
   pastUrlsSet: Set<string>,
   titleThreshold: number

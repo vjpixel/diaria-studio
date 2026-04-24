@@ -1,0 +1,205 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  canonicalize,
+  normalizeTitle,
+  titleSimilarity,
+  extractPastUrls,
+  dedup,
+} from "../scripts/dedup.ts";
+
+describe("canonicalize", () => {
+  it("remove tracking params utm_*, ref, ref_src", () => {
+    assert.equal(
+      canonicalize("https://a.com/x?utm_source=twitter&ref=foo&id=1"),
+      "https://a.com/x?id=1",
+    );
+  });
+
+  it("preserva outros query params", () => {
+    assert.equal(
+      canonicalize("https://a.com/x?id=1&tag=ai"),
+      "https://a.com/x?id=1&tag=ai",
+    );
+  });
+
+  it("remove hash fragment", () => {
+    assert.equal(canonicalize("https://a.com/x#section"), "https://a.com/x");
+  });
+
+  it("remove trailing slash exceto em root", () => {
+    assert.equal(canonicalize("https://a.com/x/"), "https://a.com/x");
+    assert.equal(canonicalize("https://a.com/"), "https://a.com/");
+  });
+
+  it("converte arxiv /pdf/ pra /abs/", () => {
+    assert.equal(
+      canonicalize("https://arxiv.org/pdf/2401.12345.pdf"),
+      "https://arxiv.org/abs/2401.12345",
+    );
+  });
+
+  it("retorna URL original se inválida", () => {
+    assert.equal(canonicalize("not a url"), "not a url");
+  });
+});
+
+describe("normalizeTitle", () => {
+  it("remove acentos e lowercase", () => {
+    assert.equal(normalizeTitle("Ação de Avaliação"), "acao avaliacao");
+  });
+
+  it("remove stopwords PT", () => {
+    assert.equal(
+      normalizeTitle("a casa do futuro em são paulo"),
+      "casa futuro sao paulo",
+    );
+  });
+
+  it("remove stopwords EN", () => {
+    assert.equal(normalizeTitle("The future of AI is here"), "future ai here");
+  });
+
+  it("colapsa whitespace", () => {
+    assert.equal(normalizeTitle("  a   b\n\nc  "), "b c");
+  });
+});
+
+describe("titleSimilarity", () => {
+  it("idênticos retornam 1", () => {
+    assert.equal(titleSimilarity("foo bar", "foo bar"), 1);
+  });
+
+  it("completamente diferentes retornam baixo", () => {
+    const sim = titleSimilarity("OpenAI lança GPT-5", "Brasil vence Copa 2026");
+    assert.ok(sim < 0.3, `esperado < 0.3, got ${sim}`);
+  });
+
+  it("ignora diferença de acentos", () => {
+    const sim = titleSimilarity("ação avaliação", "acao avaliacao");
+    assert.equal(sim, 1);
+  });
+
+  it("ignora stopwords", () => {
+    // Ambos normalizam pra "casa futuro" (a, do são stopwords)
+    const sim = titleSimilarity("A casa do futuro", "casa futuro");
+    assert.equal(sim, 1);
+  });
+
+  it("traduções parciais têm similaridade média", () => {
+    const sim = titleSimilarity(
+      "Google lança Gemini 3",
+      "Google launches Gemini 3",
+    );
+    assert.ok(sim > 0.4 && sim < 0.95, `esperado entre 0.4 e 0.95, got ${sim}`);
+  });
+});
+
+describe("extractPastUrls", () => {
+  const md = `# Passadas
+
+## 2026-04-23 — "Edição de ontem"
+
+Links usados:
+- https://a.com/x
+- https://b.com/y
+
+## 2026-04-22 — "Anteontem"
+
+Links usados:
+- https://c.com/z
+- https://a.com/x?utm_source=twitter
+
+## 2026-04-21 — "Três dias atrás"
+
+Links usados:
+- https://d.com/old
+`;
+
+  it("extrai URLs das primeiras N edições e canonicaliza", () => {
+    const urls = extractPastUrls(md, 2);
+    assert.ok(urls.has("https://a.com/x"));
+    assert.ok(urls.has("https://b.com/y"));
+    assert.ok(urls.has("https://c.com/z"));
+    assert.ok(!urls.has("https://d.com/old")); // fora da janela
+  });
+
+  it("window=1 pega só a última edição", () => {
+    const urls = extractPastUrls(md, 1);
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://a.com/x"));
+  });
+
+  it("remove pontuação trailing de URLs", () => {
+    const m = `## 2026-04-23 — "x"
+
+- https://a.com/x.
+- https://b.com/y,
+`;
+    const urls = extractPastUrls(m, 1);
+    assert.ok(urls.has("https://a.com/x"));
+    assert.ok(urls.has("https://b.com/y"));
+  });
+});
+
+describe("dedup", () => {
+  it("pass 0: rejeita agregadores", () => {
+    const articles = [
+      { url: "https://techcrunch.com/x/ai", title: "ok" },
+      { url: "https://therundown.ai/p/something", title: "roundup" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].url, "https://techcrunch.com/x/ai");
+    assert.ok(result.removed[0].dedup_note.includes("agregador"));
+  });
+
+  it("pass 1: remove artigos já em edições passadas", () => {
+    const articles = [
+      { url: "https://a.com/x", title: "já usado" },
+      { url: "https://b.com/new", title: "novo" },
+    ];
+    const past = new Set(["https://a.com/x"]);
+    const result = dedup(articles, past, 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].url, "https://b.com/new");
+  });
+
+  it("pass 2a: URLs duplicadas mantêm fonte cadastrada sobre discovered", () => {
+    const articles = [
+      { url: "https://a.com/x", title: "A", discovered_source: true },
+      { url: "https://a.com/x", title: "A longer title", discovered_source: false },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].discovered_source, false);
+  });
+
+  it("pass 2b: títulos similares colapsam, preferindo fonte cadastrada", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "OpenAI lança GPT-5", discovered_source: true },
+      { url: "https://b.com/2", title: "OpenAI lança GPT-5", discovered_source: false },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].url, "https://b.com/2");
+  });
+
+  it("artigos sem título passam direto pela pass 2b", () => {
+    const articles = [
+      { url: "https://a.com/1" },
+      { url: "https://b.com/2" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 2);
+  });
+
+  it("threshold alto não agrupa títulos levemente similares", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "OpenAI anuncia novidade A" },
+      { url: "https://b.com/2", title: "Google anuncia novidade B" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 2);
+  });
+});

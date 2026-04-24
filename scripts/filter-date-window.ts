@@ -46,6 +46,43 @@ interface RemovedEntry {
   detail: string;
 }
 
+export function filterDateWindow(
+  input: CategorizedInput,
+  editionDate: string,
+  windowDays: number,
+): { kept: CategorizedInput; removed: RemovedEntry[]; cutoff: string } {
+  const edDate = new Date(editionDate + "T00:00:00Z");
+  edDate.setUTCDate(edDate.getUTCDate() - windowDays);
+  const cutoff = edDate.toISOString().split("T")[0];
+
+  const removed: RemovedEntry[] = [];
+  const kept: CategorizedInput = { lancamento: [], pesquisa: [], noticias: [] };
+
+  for (const bucket of ["lancamento", "pesquisa", "noticias"] as const) {
+    for (const article of input[bucket] || []) {
+      if (article.date == null) {
+        kept[bucket].push({ ...article, date_unverified: true });
+        continue;
+      }
+      const normDate = article.date.slice(0, 10);
+      if (normDate < cutoff) {
+        removed.push({
+          url: article.url,
+          title: article.title,
+          date: article.date,
+          bucket,
+          reason: "date_window",
+          detail: `date ${normDate} < cutoff ${cutoff} (edition ${editionDate} - ${windowDays}d)`,
+        });
+      } else {
+        kept[bucket].push(article);
+      }
+    }
+  }
+
+  return { kept, removed, cutoff };
+}
+
 function parseArgs(argv: string[]) {
   let articles = "";
   let editionDate = "";
@@ -84,41 +121,9 @@ function main() {
 
   const input: CategorizedInput = JSON.parse(readFileSync(articlesPath, "utf8"));
 
-  // Calculate cutoff: edition_date - window_days
-  const edDate = new Date(editionDate + "T00:00:00Z");
-  edDate.setUTCDate(edDate.getUTCDate() - windowDays);
-  const cutoff = edDate.toISOString().split("T")[0]; // YYYY-MM-DD
+  const { kept, removed, cutoff } = filterDateWindow(input, editionDate, windowDays);
 
   console.error(`filter-date-window: edition=${editionDate}, window=${windowDays}d, cutoff=${cutoff}`);
-
-  const removed: RemovedEntry[] = [];
-  const kept: CategorizedInput = { lancamento: [], pesquisa: [], noticias: [] };
-
-  for (const bucket of ["lancamento", "pesquisa", "noticias"] as const) {
-    for (const article of input[bucket] || []) {
-      if (article.date == null) {
-        // No date — keep with warning
-        kept[bucket].push({ ...article, date_unverified: true });
-        continue;
-      }
-
-      // Normalize date to YYYY-MM-DD for comparison
-      const normDate = article.date.slice(0, 10); // handles ISO strings
-
-      if (normDate < cutoff) {
-        removed.push({
-          url: article.url,
-          title: article.title,
-          date: article.date,
-          bucket,
-          reason: "date_window",
-          detail: `date ${normDate} < cutoff ${cutoff} (edition ${editionDate} - ${windowDays}d)`,
-        });
-      } else {
-        kept[bucket].push(article);
-      }
-    }
-  }
 
   const totalInput =
     (input.lancamento?.length || 0) +
@@ -149,4 +154,10 @@ function main() {
   }
 }
 
-main();
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}
