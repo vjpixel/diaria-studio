@@ -33,27 +33,54 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 - Stage 5 completo (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` existem).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
-## Processo (modo create)
+## Processo (modo create) — fluxo Custom HTML (#74)
+
+O fluxo foi migrado pra **Custom HTML block único**. Elimina block-by-block filling no editor (causa dos 5 bugs do #39: encoding, template items não removidos, truncamento, imagens inline faltando, É IA? não verificado).
 
 ### 1. Pré-render — rodar ANTES de abrir o browser
 
-**Este passo é crítico para performance.** Extrair todo o conteúdo e gerar HTML ANTES de iniciar qualquer interação com o browser.
+**Este passo é crítico.** Gera HTML completo + sobe imagens pro Drive como shareable ANTES de qualquer interação com o browser.
+
+#### 1.1 Extrair metadata
 
 ```bash
-# Extrair título, subtítulo, destaques (JSON)
+# Título, subtítulo, destaques (JSON — ainda usado pro header do post)
 npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 ```
 
-Se o script retornar exit code != 0, abortar — formato do `02-reviewed.md` precisa ser corrigido manualmente.
+Gravar output: `title`, `subtitle` (precisam ser preenchidos no form do Beehiiv separadamente do corpo).
+
+#### 1.2 Upload imagens pro Drive (mode newsletter)
 
 ```bash
-# Extrair conteúdo completo como JSON (destaques + seções + É IA? + emojis + imagens)
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
+npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsletter
 ```
 
-Gravar ambos os JSONs para uso nos passos seguintes (`title`, `subtitle`, conteúdo de cada seção).
+Faz upload de 5 imagens pro Drive como shareable:
+- `04-d1-2x1.jpg` (cover, também usada inline no D1)
+- `04-d2.jpg`, `04-d3.jpg` (inline D2/D3)
+- `01-eai-real.jpg`, `01-eai-ia.jpg` (É IA?)
 
-Confirmar existência de todas as imagens: `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`, `01-eai-real.jpg`, `01-eai-ia.jpg`.
+Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eai_real, eai_ia: { url, file_id, filename } }`.
+
+Resume-aware: re-execução pula imagens já no cache.
+
+#### 1.3 Render HTML + substituir URLs
+
+```bash
+# Gera HTML com placeholders {{IMG:filename}}
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
+
+# Substitui placeholders pelas URLs do Drive
+npx tsx scripts/substitute-image-urls.ts \
+  --html /tmp/newsletter.html \
+  --images {edition_dir}/06-public-images.json \
+  --out {edition_dir}/_internal/newsletter-final.html
+```
+
+Se substituição reportar `unresolved: []` não vazio, abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
+
+HTML final (`newsletter-final.html`) está pronto pra colar no Beehiiv.
 
 ### 2. Ler configuração
 
@@ -80,7 +107,36 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 - **Subtitle** = `subtitle` (se houver campo)
 - **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800)
 
-### 5. Preencher corpo (block-by-block acelerado)
+### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
+
+**Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.
+
+#### 5.1 Localizar bloco Custom HTML no template
+
+- O template configurado (`publishing.newsletter.template`) precisa **ter exatamente 1 bloco Custom HTML** pré-configurado — é aí que o conteúdo vai.
+- Se o template tiver outros blocos (ex: "Subscribe CTA" no final), manter.
+- Se não tiver Custom HTML block, abortar com `{ "error": "template_missing_custom_html" }` — editor precisa criar template adequado.
+
+#### 5.2 Colar HTML
+
+- Abrir o bloco Custom HTML (clicar → modo edição).
+- Colar todo o conteúdo de `{edition_dir}/_internal/newsletter-final.html` no campo HTML.
+- Salvar o bloco.
+
+#### 5.3 Verificação pós-paste
+
+- Beehiiv renderiza preview do HTML em ~2-3s. Aguardar.
+- **Re-ler DOM** via `read_page` e confirmar:
+  - 5 imagens com preview visível (não placeholders quebrados): 1 cover + 3 inline D1/D2/D3 + 2 É IA?.
+  - Se alguma imagem aparecer como quebrada (ícone de broken image), registrar em `unfixed_issues[]` com `reason: "image_url_broken_{key}"`. Possível causa: URL Drive demora a propagar CDN; re-upload via `upload-images-public.ts --no-cache` pode resolver.
+- **Bugs do #39 tratados estruturalmente**:
+  - ✅ Encoding Unicode: HTML gerado em build-time, caracteres preservados no arquivo.
+  - ✅ Template items default: sem template slots = nada pra remover.
+  - ✅ OUTRAS NOTÍCIAS truncada: HTML é all-or-nothing, atômico.
+  - ✅ Imagens D2/D3: embeded via URL pública, sem upload via Chrome.
+  - ✅ É IA? imagens: idem.
+
+#### Legacy: fluxo block-by-block (arquivado, NÃO usar)
 
 Usar o JSON pré-extraído (passo 1) para preencher cada bloco do template. **Não ler `02-reviewed.md` durante o browser session** — todo conteúdo já está no JSON.
 
