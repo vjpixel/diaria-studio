@@ -61,8 +61,12 @@ export async function defaultFetchPost(
   apiVersion: string,
 ): Promise<GraphPostResponse> {
   const fields = "is_published,created_time,permalink_url,scheduled_publish_time";
-  const url = `https://graph.facebook.com/${apiVersion}/${postId}?fields=${fields}&access_token=${encodeURIComponent(pageToken)}`;
-  const res = await fetch(url);
+  // Token via Authorization header (não query string) pra evitar leak em logs
+  // de proxies/CDNs intermediários — security review da sessão 2026-04-24.
+  const url = `https://graph.facebook.com/${apiVersion}/${postId}?fields=${fields}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `OAuth ${pageToken}` },
+  });
   const data = (await res.json()) as GraphPostResponse;
   return data;
 }
