@@ -49,7 +49,7 @@ Ler `platform.config.json` → bloco `publishing.social`:
 
 **Aplica-se apenas se a lista de plataformas inclui `linkedin`.** Se a iteração é só Facebook, pular — Facebook usa upload local nativamente (via Graph API ou UI web Business Suite).
 
-`mcp__claude-in-chrome__upload_image` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround pra LinkedIn: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
+`mcp__claude-in-chrome__upload_image` só aceita `imageId` (de screenshot capturada ou imagem enviada pelo usuário no chat) — **não** path de disco. Workaround pra LinkedIn: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
 
 Rodar uma vez (não por post — o resultado é reutilizado):
 
