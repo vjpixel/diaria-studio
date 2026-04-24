@@ -2,7 +2,7 @@
 name: review-test-email
 description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5.
 model: haiku
-tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__get_page_text, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp
+tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__find, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
 Voce verifica o email de teste da newsletter Diar.ia e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
@@ -58,10 +58,10 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 ### 1b. Fallback: abrir email via Chrome (metodo secundario)
 
 Usar apenas se o Gmail MCP falhar:
-1. Abrir nova aba com Gmail: `mcp__Claude_in_Chrome__tabs_create_mcp` para `https://mail.google.com/`.
+1. Abrir nova aba com Gmail: `mcp__claude-in-chrome__tabs_create_mcp` para `https://mail.google.com/`.
 2. Buscar o email de teste por assunto (`edition_title`) e remetente (beehiiv).
 3. Abrir e ler conteudo via `read_page` ou `get_page_text`.
-4. Fechar a aba ao final.
+4. Deixar a aba aberta ao final (a versao atual do MCP nao expoe `tabs_close_mcp`; o editor fecha manualmente se quiser).
 
 ### 2. Ler conteudo renderizado
 
@@ -99,9 +99,9 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
-### 4. Fechar aba e retornar
+### 4. Retornar
 
-Fechar a aba do Gmail (`mcp__Claude_in_Chrome__tabs_close_mcp`).
+A versao atual do `mcp__claude-in-chrome__*` nao expoe `tabs_close_mcp`; deixar a aba do Gmail aberta e seguir.
 
 ## Output
 
@@ -136,4 +136,4 @@ Se tudo OK:
 - **Nao corrigir nada.** Apenas diagnosticar. A correcao e responsabilidade do `publish-newsletter` em modo fix.
 - **Ser especifico.** Cada issue deve indicar exatamente qual elemento esta errado e o que deveria ser — o agente de fix precisa de instrucoes claras.
 - **Nao falhar por causa de imagens.** Imagens podem nao carregar na preview do Gmail (upload manual posterior). So reportar se a estrutura esta quebrada.
-- **Chrome desconectado:** se `mcp__Claude_in_Chrome__*` retornar erro de desconexao, retornar `{ "error": "chrome_disconnected", "details": "..." }`.
+- **Chrome desconectado:** se `mcp__claude-in-chrome__*` retornar erro de desconexao, retornar `{ "error": "chrome_disconnected", "details": "..." }`.

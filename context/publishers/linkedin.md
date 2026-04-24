@@ -29,7 +29,7 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 
 ### 4. Imagem via URL pública (Drive) — #48
 
-**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__Claude_in_Chrome__file_upload`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
+**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
 
 - No campo do composer, **appendar em linha separada no fim do texto** (depois de hashtags):
   ```

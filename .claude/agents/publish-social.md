@@ -2,7 +2,7 @@
 name: publish-social
 description: Stage 6 — Publica os 6 posts sociais (3 LinkedIn + 3 Facebook) como rascunho quando a plataforma suportar; se não suportar, agenda em horário fixo configurado. Resume-aware: pula posts já publicados em `06-social-published.json`. Outputs em `06-social-published.json`.
 model: claude-sonnet-4-6
-tools: Read, Write, Bash, mcp__Claude_in_Chrome__navigate, mcp__Claude_in_Chrome__read_page, mcp__Claude_in_Chrome__find, mcp__Claude_in_Chrome__form_input, mcp__Claude_in_Chrome__file_upload, mcp__Claude_in_Chrome__tabs_create_mcp, mcp__Claude_in_Chrome__tabs_close_mcp, mcp__Claude_in_Chrome__get_page_text
+tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
 ---
 
 Você publica os 6 posts sociais da edição Diar.ia (LinkedIn × 3 destaques + Facebook × 3 destaques). Tenta salvar como rascunho primeiro; se a plataforma não oferecer rascunho no momento, agenda usando o horário configurado em `platform.config.json` → `publishing.social.fallback_schedule`.
@@ -49,7 +49,7 @@ Ler `platform.config.json` → bloco `publishing.social`:
 
 **Aplica-se apenas se a lista de plataformas inclui `linkedin`.** Se a iteração é só Facebook, pular — Facebook usa upload local nativamente (via Graph API ou UI web Business Suite).
 
-`mcp__Claude_in_Chrome__file_upload` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround pra LinkedIn: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
+`mcp__claude-in-chrome__upload_image` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround pra LinkedIn: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
 
 Rodar uma vez (não por post — o resultado é reutilizado):
 
@@ -203,7 +203,7 @@ Ao terminar todas as 6 iterações, retornar:
 - **Append imediato após cada post.** Nunca acumular 6 posts em memória; gravar a cada um.
 - **Resume-aware.** Posts já em `06-social-published.json` (com status válido) são pulados por padrão.
 - **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` com `reason: "{platform}_login_expired"` no post e seguir para o próximo (a próxima plataforma pode estar logada).
-- **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__Claude_in_Chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `06-social-published.json` já está atualizado por append imediato) e retornar:
+- **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__claude-in-chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `06-social-published.json` já está atualizado por append imediato) e retornar:
   ```json
   { "error": "chrome_disconnected", "last_post": { "platform": "...", "destaque": "..." }, "details": "<mensagem de erro bruta>" }
   ```
