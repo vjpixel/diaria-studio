@@ -84,28 +84,14 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
 - **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
-- **Verify FB posts da edição anterior (sempre roda, silencioso #78).** Descobrir última edição antes da atual com `06-social-published.json` e chamar `verify-facebook-posts.ts` sobre ela pra reconciliar status `scheduled` → `published`/`failed` via Graph API. Isso fecha o gap de posts agendados que nunca tiveram status atualizado. Bash:
+- **Verify FB posts da edição anterior (sempre roda, silencioso #78).** Reconcilia posts Facebook agendados da edição anterior (status `scheduled` → `published`/`failed` via Graph API). Fecha o gap de posts agendados que nunca tiveram status atualizado.
   ```bash
-  PREV=$(node -e "
-    const fs=require('node:fs');
-    const path=require('node:path');
-    const current='{AAMMDD}';
-    try {
-      const dirs=fs.readdirSync('data/editions')
-        .filter(d=>/^\d{6}\$/.test(d)&&d<current)
-        .sort().reverse();
-      for(const d of dirs){
-        if(fs.existsSync(path.resolve('data/editions',d,'06-social-published.json'))){
-          process.stdout.write(d);return;
-        }
-      }
-    }catch(e){}
-  ")
+  PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
   if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
-    npx tsx scripts/verify-facebook-posts.ts --edition-dir "data/editions/$PREV/" || echo "verify-fb failed (non-fatal)"
+    npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"
   fi
   ```
-  **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem 06-social-published.json, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
+  **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem `06-social-published.json`, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
 
 ### 1. Stage 1 — Research
 
@@ -128,11 +114,16 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 - Em paralelo, disparar M chamadas `Task` com subagent `discovery-searcher` para queries temáticas (derivadas de `audience-profile.md` — temas de alta tração). Usar ~5 queries PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais (prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180` também.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
 - **Registrar saúde + log (batch, #40).** Em vez de N chamadas individuais, agregar todos os resultados (researchers + discovery) num único array e rodar uma vez:
-  1. Construir array de runs:
+  1. Construir array de runs. Convenção de `source`:
+     - **Researchers cadastrados**: nome exato da fonte em `context/sources.md` (ex: `"MIT Technology Review"`, `"Tecnoblog (IA)"`).
+     - **Discovery searchers**: formato `discovery:{topic_slug}` (ex: `"discovery:ai-regulation-brazil"`, `"discovery:llm-benchmarks"`). Isso permite rastrear saúde por tema de discovery sem poluir com nomes de fontes cadastradas.
+     - **Inbox URLs**: não passam por este batch — são injetadas diretamente na lista agregada sem virar "runs".
+
      ```json
      [
-       { "source": "MIT Tech Review", "outcome": "ok", "duration_ms": 4500, "query_used": "...", "articles": [...] },
-       { "source": "Tecnoblog", "outcome": "fail", "duration_ms": 2000, "query_used": "...", "reason": "fetch_error" },
+       { "source": "MIT Technology Review", "outcome": "ok", "duration_ms": 4500, "query_used": "site:...", "articles": [...] },
+       { "source": "Tecnoblog (IA)", "outcome": "fail", "duration_ms": 2000, "query_used": "site:...", "reason": "fetch_error" },
+       { "source": "discovery:ai-regulation-brazil", "outcome": "ok", "duration_ms": 8000, "query_used": "regulação IA Brasil", "articles": [...] },
        ...
      ]
      ```

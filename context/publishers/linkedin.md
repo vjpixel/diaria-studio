@@ -46,7 +46,7 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 
 **Trade-off vs upload nativo**:
 - Preview do LinkedIn mostra card de link em vez de imagem fullscreen.
-- Engagement típico é ~30% menor com link preview vs native image.
+- Engagement **tipicamente menor** que native image (diferença concreta não medida — vale A/B se virar preocupação editorial).
 - Mas é o único approach 100% automatizado sem custo recorrente (ver #48 pra análise completa).
 
 ### 5. Tentar salvar como rascunho

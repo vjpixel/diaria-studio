@@ -47,7 +47,9 @@ Ler `platform.config.json` → bloco `publishing.social`:
 
 ### 3b. Pre-flight: upload imagens como Drive shareable (#48)
 
-`mcp__Claude_in_Chrome__file_upload` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
+**Aplica-se apenas se a lista de plataformas inclui `linkedin`.** Se a iteração é só Facebook, pular — Facebook usa upload local nativamente (via Graph API ou UI web Business Suite).
+
+`mcp__Claude_in_Chrome__file_upload` **não aceita path local** pra arquivos em disco (bug conhecido do tool). Workaround pra LinkedIn: subir imagens pro Drive como public-shareable e colar a URL no post — LinkedIn auto-detecta e renderiza preview.
 
 Rodar uma vez (não por post — o resultado é reutilizado):
 
