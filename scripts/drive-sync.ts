@@ -39,7 +39,26 @@ interface FileEntry {
   drive_modifiedTime: string;
   last_pushed_mtime: number;
   push_count: number;
+  /** mimeType do arquivo no Drive (#89). Se 'application/vnd.google-apps.document',
+   * o arquivo foi convertido pra Doc nativo no push — pull precisa usar /export
+   * com mimeType 'text/markdown' pra recuperar. */
+  drive_mimeType?: string;
 }
+
+/**
+ * Whitelist de arquivos MD que viram Google Docs nativos no push (#89).
+ * Editor edita no Docs (UI rica, colaborativa), pull converte de volta pra MD.
+ *
+ * Demais arquivos MD continuam como texto plano no Drive (MD download = MD).
+ */
+const CONVERT_TO_DOC = new Set<string>([
+  "01-categorized.md",
+  "02-reviewed.md",
+  "03-social.md",
+  "01-eai.md",
+]);
+
+const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
 interface EditionCache {
   day_folder_id: string;
@@ -139,18 +158,30 @@ async function driveUploadFile(
   name: string,
   content: Buffer,
   mimeType: string,
-  parentId: string
-): Promise<{ id: string; modifiedTime: string }> {
+  parentId: string,
+  convertToDoc = false
+): Promise<{ id: string; modifiedTime: string; mimeType: string }> {
   // Multipart upload
+  //
+  // Se convertToDoc=true (#89), setamos o target mimeType no metadata como
+  // application/vnd.google-apps.document — Drive trata o upload como markdown
+  // (Content-Type do body) e converte pra Doc nativo automaticamente.
+  // O mimeType final do arquivo vira Doc, não markdown.
+  const targetMimeType = convertToDoc ? GOOGLE_DOC_MIME : mimeType;
+  const bodyMimeType = mimeType; // sempre o original (text/markdown) no body
+  const metadata: Record<string, unknown> = { name, parents: [parentId] };
+  if (convertToDoc) {
+    metadata.mimeType = GOOGLE_DOC_MIME;
+  }
   const boundary = "diaria_boundary_" + Date.now();
   const metadataPart =
     `--${boundary}\r\n` +
     `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify({ name, parents: [parentId] }) +
+    JSON.stringify(metadata) +
     `\r\n`;
   const contentPart =
     `--${boundary}\r\n` +
-    `Content-Type: ${mimeType}\r\n\r\n`;
+    `Content-Type: ${bodyMimeType}\r\n\r\n`;
   const closingBoundary = `\r\n--${boundary}--`;
 
   const body = Buffer.concat([
@@ -161,7 +192,7 @@ async function driveUploadFile(
   ]);
 
   const res = await gFetch(
-    `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime`,
+    `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime,mimeType`,
     {
       method: "POST",
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
@@ -169,12 +200,24 @@ async function driveUploadFile(
     }
   );
   if (!res.ok) throw new Error(`Drive upload error (${res.status}): ${await res.text()}`);
-  return res.json() as Promise<{ id: string; modifiedTime: string }>;
+  const json = (await res.json()) as { id: string; modifiedTime: string; mimeType?: string };
+  return { ...json, mimeType: json.mimeType ?? targetMimeType };
 }
 
 async function driveDownloadFile(fileId: string): Promise<Buffer> {
   const res = await gFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
   if (!res.ok) throw new Error(`Drive download error (${res.status}): ${await res.text()}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/**
+ * Exporta um Google Doc nativo como arquivo em outro mimeType (#89).
+ * Docs não suportam `?alt=media` — precisam de /export com mimeType target.
+ */
+async function driveExportFile(fileId: string, exportMimeType: string): Promise<Buffer> {
+  const url = `${DRIVE_API}/files/${fileId}/export?mimeType=${encodeURIComponent(exportMimeType)}`;
+  const res = await gFetch(url);
+  if (!res.ok) throw new Error(`Drive export error (${res.status}): ${await res.text()}`);
   return Buffer.from(await res.arrayBuffer());
 }
 
@@ -272,15 +315,22 @@ async function pushFile(
 
   const ext = extname(filename);
   const base = filename.slice(0, filename.length - ext.length);
-  const titleUsed = pushCount === 0 ? filename : `${base}.v${pushCount + 1}${ext}`;
+  const convertToDoc = CONVERT_TO_DOC.has(filename);
+  // Docs nativos não precisam de extensão — Drive trata extension como cosmético.
+  // Pra arquivos convertidos, tiramos `.md` do título pra ficar consistente com
+  // o modelo "arquivo sem extensão = Doc".
+  const titleUsed = convertToDoc
+    ? (pushCount === 0 ? base : `${base}.v${pushCount + 1}`)
+    : (pushCount === 0 ? filename : `${base}.v${pushCount + 1}${ext}`);
   const mimeType = mimeTypeFor(filename);
 
   const bytes = await getFileBytes(editionDir, filename);
-  const { id: driveFileId, modifiedTime } = await driveUploadFile(
+  const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUploadFile(
     titleUsed,
     bytes,
     mimeType,
-    dayFolderId
+    dayFolderId,
+    convertToDoc
   );
 
   const localPath = resolve(ROOT, editionDir, filename);
@@ -291,6 +341,7 @@ async function pushFile(
     drive_modifiedTime: modifiedTime,
     last_pushed_mtime: localMtime,
     push_count: pushCount + 1,
+    drive_mimeType: driveMimeType,
   };
 
   result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: titleUsed });
@@ -316,7 +367,13 @@ async function pullFile(
   // No-op se não mudou no Drive
   if (driveModified <= fileCache.drive_modifiedTime) return;
 
-  const bytes = await driveDownloadFile(fileCache.drive_file_id);
+  // #89: se arquivo foi convertido pra Doc nativo no push, pull faz export
+  // pra text/markdown em vez de download binário (alt=media retorna 403 pra Docs).
+  const isGoogleDoc = fileCache.drive_mimeType === GOOGLE_DOC_MIME;
+  const bytes = isGoogleDoc
+    ? await driveExportFile(fileCache.drive_file_id, "text/markdown")
+    : await driveDownloadFile(fileCache.drive_file_id);
+
   const localPath = resolve(ROOT, editionDir, filename);
   const dir = resolve(ROOT, editionDir);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
