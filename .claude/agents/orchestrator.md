@@ -84,6 +84,18 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
 - **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
+- **Verify FB posts da edição anterior (sempre roda, silencioso #78).** Reconcilia posts Facebook agendados da edição anterior (status `scheduled` → `published`/`failed` via Graph API). Fecha o gap de posts agendados que nunca tiveram status atualizado.
+  ```bash
+  PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
+  if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
+    npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"
+  fi
+  ```
+  **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem `06-social-published.json`, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
+
+### 0b. Auto-reporter — preparado pra rodar no final
+
+Após Stage 6 (publicação social) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Stage final" abaixo.
 
 ### 1. Stage 1 — Research
 
@@ -97,7 +109,15 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`
   Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Task completar — o que vier depois). Se `01-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
-- Disparar N chamadas `Task` paralelas com subagent `source-researcher`, uma por fonte, passando:
+- **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
+  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
+  2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
+  3. **Se RSS falha ou retorna 0 artigos**: fallback automático — dispara `source-researcher` (WebSearch) pra mesma fonte. Marca `method: "websearch_fallback"`. Critério: 1 falha já dispara fallback (não retry dentro do RSS — se feed está down, parte pra WebSearch).
+  4. **Se fonte NÃO tem RSS**: disparar `source-researcher` diretamente (fluxo atual, via WebSearch com `site:` query). Marca `method: "websearch"`.
+
+  Preserva saúde da fonte em todos os casos: propagar `method` como campo extra no `RunRecord` pro `record-source-runs.ts`.
+
+- Disparar N chamadas `Task` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, uma por fonte, passando:
   - nome da fonte
   - site query
   - data da edição
@@ -105,18 +125,30 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - `timeout_seconds: 180` (soft budget — subagente se auto-disciplina)
 - Em paralelo, disparar M chamadas `Task` com subagent `discovery-searcher` para queries temáticas (derivadas de `audience-profile.md` — temas de alta tração). Usar ~5 queries PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais (prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180` também.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
-- **Registrar saúde + log por fonte.** Para **cada** researcher/discovery retornado, rodar:
-  ```
-  npx tsx scripts/record-source-run.ts \
-    --source "{nome}" \
-    --edition {AAMMDD} \
-    --outcome {status} \
-    --duration-ms {duration_ms} \
-    --query-used "{query montada}" \
-    --articles-json '{JSON dos articles}' \
-    --reason "{reason se houver}"
-  ```
-  Isso atualiza `data/source-health.json` + anexa linha JSONL em `data/sources/{slug}.jsonl` (auditoria por fonte).
+- **Registrar saúde + log (batch, #40).** Em vez de N chamadas individuais, agregar todos os resultados (researchers + discovery) num único array e rodar uma vez:
+  1. Construir array de runs. Convenção de `source`:
+     - **Researchers cadastrados**: nome exato da fonte em `context/sources.md` (ex: `"MIT Technology Review"`, `"Tecnoblog (IA)"`).
+     - **Discovery searchers**: formato `discovery:{topic_slug}` (ex: `"discovery:ai-regulation-brazil"`, `"discovery:llm-benchmarks"`). Isso permite rastrear saúde por tema de discovery sem poluir com nomes de fontes cadastradas.
+     - **Inbox URLs**: não passam por este batch — são injetadas diretamente na lista agregada sem virar "runs".
+
+     ```json
+     [
+       { "source": "MIT Technology Review", "outcome": "ok", "duration_ms": 4500, "query_used": "site:...", "articles": [...] },
+       { "source": "Tecnoblog (IA)", "outcome": "fail", "duration_ms": 2000, "query_used": "site:...", "reason": "fetch_error" },
+       { "source": "discovery:ai-regulation-brazil", "outcome": "ok", "duration_ms": 8000, "query_used": "regulação IA Brasil", "articles": [...] },
+       ...
+     ]
+     ```
+  2. Gravar em `data/editions/{AAMMDD}/_internal/researcher-results.json` (rastreabilidade).
+  3. Rodar **uma vez** o script batch:
+     ```bash
+     npx tsx scripts/record-source-runs.ts \
+       --runs data/editions/{AAMMDD}/_internal/researcher-results.json \
+       --edition {AAMMDD}
+     ```
+  Isso atualiza `data/source-health.json` + anexa linhas JSONL em `data/sources/{slug}.jsonl` para cada fonte. Batch é mais rápido (uma invocação de Node) e previne o gap anterior onde a chamada singular era frequentemente esquecida (issue #40).
+
+  O script retorna JSON com `summary.sources_with_consecutive_failures_ge3` — use isso no relatório do gate do Stage 1 pra sinalizar fontes que mereceriam desativação temporária.
 - Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 - **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. O script de verificação decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
 - **Link verification (script direto):** gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/tmp-urls-all.json` (array de strings) e rodar:
@@ -482,6 +514,30 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
     | 6 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
+
+### Stage final. Auto-reporter (#57 / #79)
+
+Após o gate do Stage 6 aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
+
+1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
+
+2. **Avaliar output**: se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.
+
+3. **Se `test_mode = true` ou `auto_approve = true`**: **pular auto-reporter inteiramente**. Auto-approve de criação de issues em GitHub seria invasivo; edições de teste não devem poluir backlog.
+
+4. **Se há sinais e não é test_mode**: disparar agent `auto-reporter` via `Task` com:
+   - `edition_dir`
+   - `repo: "vjpixel/diaria-studio"`
+
+   Agent faz dedup contra GitHub issues abertas, apresenta gate humano ("aprovar 1,2,3 / skip / edit N"), executa ações aprovadas. Ver `.claude/agents/auto-reporter.md`.
+
+5. **Logar resultado**: append em `_internal/cost.md` uma linha pro stage final, e gravar resumo:
+   ```
+   ✅ Auto-reporter completo.
+      {reported_count}/{signals_total} sinais reportados, {issues_created} novas issues criadas, {issues_commented} issues comentadas.
+   ```
+
+Se o agent retornar `action: "fallback_md"` (GitHub MCP indisponível), mostrar o path do MD gerado e instruir: "GitHub MCP falhou. Abra `{md_path}` e crie as issues manualmente quando tiver tempo."
 
 ## Formato de relatório ao usuário
 

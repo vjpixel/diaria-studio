@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 38 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 46 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -161,3 +161,40 @@
 ### Perplexity
 - URL: https://research.perplexity.ai/
 - Site query: `site:research.perplexity.ai`
+
+## Tutoriais
+
+### Simon Willison's Weblog
+- URL: https://simonwillison.net/
+- Site query: `site:simonwillison.net`
+- RSS: https://simonwillison.net/atom/everything/
+
+### Anthropic Cookbook
+- URL: https://github.com/anthropics/anthropic-cookbook
+- Site query: `site:github.com/anthropics/anthropic-cookbook`
+
+### HuggingFace Learn
+- URL: https://huggingface.co/learn
+- Site query: `site:huggingface.co/learn`
+
+### DeepLearning.ai The Batch
+- URL: https://www.deeplearning.ai/the-batch/
+- Site query: `site:deeplearning.ai/the-batch`
+
+### Latent Space
+- URL: https://www.latent.space/
+- Site query: `site:latent.space`
+- RSS: https://www.latent.space/feed
+
+### Every Inc (Chain of Thought)
+- URL: https://every.to/chain-of-thought
+- Site query: `site:every.to/chain-of-thought`
+
+### Google AI for Developers Blog
+- URL: https://developers.googleblog.com/en/ai/
+- Site query: `site:developers.googleblog.com/en/ai`
+
+### AWS Machine Learning Blog
+- URL: https://aws.amazon.com/blogs/machine-learning/
+- Site query: `site:aws.amazon.com/blogs/machine-learning`
+- RSS: https://aws.amazon.com/blogs/machine-learning/feed/
