@@ -124,6 +124,44 @@ function isoToUnix(iso: string): number {
   return Math.floor(new Date(iso).getTime() / 1000);
 }
 
+/**
+ * Valida que `scheduledAt` está no futuro com margem mínima exigida pela
+ * Graph API (10 min default). Throws com mensagem acionável se inválido.
+ *
+ * Introduzido em #78 — bug anterior: se scheduled_publish_time estivesse
+ * no passado ou < 10min, publishPhoto silenciosamente publicava imediato
+ * em vez de agendar. Validação prévia faz fail-fast.
+ */
+export function validateScheduledTime(
+  scheduledAt: string,
+  now: Date = new Date(),
+  minOffsetSeconds = 600,
+): void {
+  const unixTs = Math.floor(new Date(scheduledAt).getTime() / 1000);
+  if (isNaN(unixTs)) {
+    throw new Error(
+      `scheduled_publish_time "${scheduledAt}" é uma data inválida.`,
+    );
+  }
+  const nowUnix = Math.floor(now.getTime() / 1000);
+  if (unixTs <= nowUnix) {
+    const minsAgo = Math.round((nowUnix - unixTs) / 60);
+    throw new Error(
+      `scheduled_publish_time ${scheduledAt} já passou (${minsAgo}min atrás). ` +
+        `Ajuste publishing.social.fallback_schedule em platform.config.json ou use --day-offset 1.`,
+    );
+  }
+  if (unixTs < nowUnix + minOffsetSeconds) {
+    const minsAhead = Math.round((unixTs - nowUnix) / 60);
+    const minMins = Math.round(minOffsetSeconds / 60);
+    throw new Error(
+      `scheduled_publish_time ${scheduledAt} está a ${minsAhead}min de now — ` +
+        `Graph API exige margem mínima de ${minMins}min. ` +
+        `Aumente --day-offset ou ajuste fallback_schedule.`,
+    );
+  }
+}
+
 async function publishPhoto(
   pageId: string,
   pageToken: string,
@@ -254,6 +292,26 @@ async function main() {
     let scheduledAt: string | null = null;
     if (doSchedule) {
       scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
+      // #78: pre-schedule validation — fail fast com erro claro em vez de
+      // silenciosamente publicar imediato (bug anterior).
+      try {
+        validateScheduledTime(scheduledAt);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`SKIP facebook/${d}: scheduled_time_invalid: ${msg}`);
+        const entry: PostEntry = {
+          platform: "facebook",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: scheduledAt,
+          reason: `scheduled_time_invalid: ${msg}`,
+        };
+        published.posts.push(entry);
+        savePublished(publishedPath, published);
+        results.push(entry);
+        continue;
+      }
     }
 
     // Publish with retry
@@ -323,7 +381,13 @@ async function main() {
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
 }
 
-main().catch((e) => {
-  console.error("Fatal error:", e);
-  process.exit(1);
-});
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((e) => {
+    console.error("Fatal error:", e);
+    process.exit(1);
+  });
+}
