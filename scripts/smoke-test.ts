@@ -71,8 +71,8 @@ function runPipeline(): PipelineSnapshot {
   const dedupResult = dedup(articles, pastUrls, 0.85);
 
   // 2. Categorize
-  const buckets = { lancamento: [] as string[], pesquisa: [] as string[], noticias: [] as string[] };
-  const articlesByBucket = { lancamento: [], pesquisa: [], noticias: [] } as Record<string, unknown[]>;
+  const buckets = { lancamento: [] as string[], pesquisa: [] as string[], noticias: [] as string[], tutorial: [] as string[] };
+  const articlesByBucket = { lancamento: [], pesquisa: [], noticias: [], tutorial: [] } as Record<string, unknown[]>;
   for (const art of dedupResult.kept) {
     const cat = categorize(art);
     buckets[cat].push(art.url);
@@ -87,7 +87,7 @@ function runPipeline(): PipelineSnapshot {
   });
   const brazilianThemes: string[] = [];
   const sampleLines: string[] = [];
-  for (const bucket of ["lancamento", "pesquisa", "noticias"] as const) {
+  for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial"] as const) {
     for (const art of articlesByBucket[bucket] as Array<{ url: string; title?: string; summary?: string }>) {
       if (isBrazilianTheme({ title: art.title, summary: art.summary })) {
         brazilianThemes.push(art.url);

@@ -31,7 +31,7 @@ export interface Article {
   [key: string]: unknown;
 }
 
-export type Category = "lancamento" | "pesquisa" | "noticias";
+export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial";
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam LANÇAMENTO (anúncio oficial)
@@ -233,8 +233,54 @@ function hostAndPath(url: string): { host: string; full: string } {
   }
 }
 
+/**
+ * Domínios e padrões que indicam TUTORIAL (conteúdo acionável — cookbooks,
+ * walkthroughs, how-tos). Seção "Aprenda hoje" em #59.
+ */
+const TUTORIAL_DOMAINS = new Set([
+  "simonwillison.net",
+]);
+
+const TUTORIAL_PATTERNS: RegExp[] = [
+  // Anthropic cookbook no GitHub
+  /^github\.com\/anthropics\/anthropic-cookbook/,
+  // HuggingFace learn section
+  /^huggingface\.co\/learn\//,
+  // DeepLearning.ai The Batch
+  /^deeplearning\.ai\/the-batch\//,
+  /^www\.deeplearning\.ai\/the-batch\//,
+  // Latent Space
+  /^latent\.space\//,
+  /^www\.latent\.space\//,
+  // Every Inc Chain of Thought
+  /^every\.to\/chain-of-thought/,
+  // Google AI for Developers blog
+  /^developers\.googleblog\.com\/.*\/ai/,
+  /^developers\.googleblog\.com\/en\/ai/,
+];
+
+/**
+ * Keywords em título/summary que reforçam classificação como tutorial
+ * quando o domínio não é dedicado (ex: artigo de tutorial publicado no
+ * Medium ou blog pessoal).
+ */
+const TUTORIAL_KEYWORDS_RE =
+  /\b(tutorial|how[- ]to|guia (passo a passo|pr[aá]tico)|passo a passo|walkthrough|hands[- ]on|cookbook|crash course|getting started|build (your )?(first|own)|let'?s build)\b/i;
+
+function isTutorialByKeyword(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return TUTORIAL_KEYWORDS_RE.test(hay);
+}
+
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
+
+  // 0. Tutorial — domínio/pattern dedicado OU keyword explícita.
+  //    Prioridade alta (sobre lancamento/pesquisa/noticias) porque
+  //    "tutorial" é uma intenção editorial específica.
+  if (TUTORIAL_DOMAINS.has(host)) return "tutorial";
+  if (TUTORIAL_PATTERNS.some((p) => p.test(full))) return "tutorial";
+  if (isTutorialByKeyword(article)) return "tutorial";
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) return "pesquisa";
@@ -283,6 +329,7 @@ function main(): void {
     lancamento: [],
     pesquisa: [],
     noticias: [],
+    tutorial: [],
   };
 
   for (const article of articles) {
@@ -290,7 +337,7 @@ function main(): void {
     result[cat].push({ ...article, category: cat });
   }
 
-  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length}`;
+  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length}`;
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {
