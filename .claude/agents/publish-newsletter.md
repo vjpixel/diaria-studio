@@ -88,24 +88,69 @@ A diferença vs. o fluxo antigo:
 - **Zero parsing durante browser session** — todo conteúdo já está em variáveis
 - **Sequência mecânica fixa** — seguir a lista abaixo sem "decidir" o que fazer
 
+#### 5.0. Limpeza obrigatória do template (antes de preencher) — #39 fix
+
+O template `"Default"` do Beehiiv vem com **slots pré-preenchidos** em cada seção de lista (LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS). **Esses items default DEVEM ser removidos ANTES de criar os novos** — caso contrário o rascunho sai com conteúdo misturado (template + edição atual). Bug observado na 260423.
+
+Para cada uma das 3 seções de lista:
+1. **Conte os items default** presentes no template (tipicamente 3 por seção).
+2. **Delete um por um**. Tentativas na ordem:
+   - Botão de lixeira / "Remove" / "×" no item (visível no hover).
+   - Se não aparecer: menu de 3 pontos (`⋮` ou `...`) no item → opção "Delete" / "Remove".
+   - Se ainda não aparecer: right-click no item → menu contextual → "Delete".
+   - Se nenhuma funcionar, **não force** — pule pro passo 3.
+3. **Confirme que a seção está vazia** (zero items) antes de avançar para o preenchimento.
+
+Se não conseguir deletar após as 3 tentativas acima (UI mudou, item não é removível), registrar em `unfixed_issues[]` com `reason: "template_cleanup_failed"` + `section: "<nome>"` + `details: "<mecanismo que não funcionou>"` mas **não prosseguir** com o preenchimento dessa seção — melhor seção vazia do que misturada com conteúdo antigo.
+
+#### 5.1. Preenchimento dos destaques
+
 Para cada destaque (d1, d2, d3), preencher o bloco correspondente do template:
 1. **Label de categoria**: emoji + nome da categoria (ex: `🧮 REGULAÇÃO`)
 2. **Título**: título do destaque, linkado à URL
 3. **Imagem**: upload do arquivo correspondente (D1=`04-d1-2x1.jpg`, D2=`04-d2.jpg`, D3=`04-d3.jpg`)
+   - **Após cada upload**, aguardar preview aparecer antes de prosseguir. #39 fix: imagens D2/D3 não subiam na 260423.
+   - Sinais de preview pronto (qualquer um basta):
+     - Thumbnail da imagem visível no bloco (elemento `<img>` com `src` apontando para CDN Beehiiv, tipicamente `beehiiv-uploads` ou `/uploads/`).
+     - Spinner de loading / ícone de progresso **desapareceu** do bloco.
+   - **Timeout: 20s.** Se não sinalizar pronto, retry 1x (total 2 uploads). Se falhar de novo, registrar em `unfixed_issues[]` com `reason: "image_upload_failed_d{N}"` + `details: "<timeout ou sinal ausente>"` e prosseguir.
 4. **Corpo**: parágrafos do body
 5. **Por que isso importa**: heading + texto do why
 
-Para **É IA?**:
+#### 5.2. É IA?
+
 1. Label: `🖼️ É IA?`
-2. Imagem real: upload `01-eai-real.jpg`
-3. Imagem IA: upload `01-eai-ia.jpg`
+2. Imagem real: upload `01-eai-real.jpg` — **aguardar preview**.
+3. Imagem IA: upload `01-eai-ia.jpg` — **aguardar preview**.
 4. Crédito: texto do `eai.credit` (do JSON)
+5. **Verificação pós-preenchimento** (#39 fix): ler o bloco É IA? via `read_page` e confirmar que **ambas as imagens têm thumbnail** (não placeholders / ícones de erro). Se alguma faltar, registrar em `unfixed_issues[]` com `reason: "eai_image_missing_{real|ia}"`.
 
-Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
+#### 5.3. Seções de lista (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS)
+
+Para cada seção:
 1. Label: emoji + nome da seção
-2. Lista de itens: título linkado + descrição
+2. **Conte N = `seções[bucket].items.length`** do JSON extraído no passo 1.
+3. Iterar **TODOS os N items** (não parar no meio). Cada item: título linkado + descrição.
+4. **Verificação de contagem** (#39 fix): após terminar a seção, re-ler o DOM e **confirmar que a seção tem exatamente N items**. Se menos (ex: 2 de 4), adicionar os faltantes. Se impossível (limite de UI), registrar em `unfixed_issues[]` com `reason: "section_{name}_truncated_{got}/{N}"`.
 
-> **Futuro**: quando Beehiiv Custom HTML block estiver disponível no plano atual, o script também gera HTML pré-renderizado (`--format html`) que pode ser colado em um único bloco, eliminando ~15 interações adicionais. Imagens precisariam de CDN URLs externas.
+#### 5.4. Sanidade Unicode (#39 fix)
+
+Após preencher **título e subtítulo**, confirmar que caracteres especiais foram preservados. **Não confie no campo em foco — leia o valor real**:
+
+- **Método correto**: usar `read_page` / `get_page_text` com foco no elemento do campo, extrair o **`value` do input** ou **`textContent` do nó de texto renderizado**.
+- **Evitar**: confiar em placeholder, aria-label, ou atributos de validation — não refletem o valor real digitado.
+
+Caracteres a verificar:
+- Ordinais (`ª`, `º`)
+- Acentos (`ã`, `õ`, `á`, `é`, `í`, `ó`, `ú`, `â`, `ê`, `ô`)
+- Cedilha (`ç`)
+
+Se qualquer caractere aparecer corrompido (ex: `8a` em vez de `8ª`, `nao` em vez de `não`):
+1. **Re-escrever o campo** (pode ser problema de `form_input` com copy/paste Unicode).
+2. Se ainda falhar, tentar **alternativa**: limpar campo e digitar com composição explícita (ex: `Compose → ordfeminine` pra `ª`) — se o tool oferecer.
+3. Se persistir após 2 tentativas, registrar em `unfixed_issues[]` com `reason: "unicode_corruption_{field}"` + `details: "<char esperado vs char observado>"`.
+
+> **Futuro**: quando Beehiiv Custom HTML block estiver disponível no plano atual, o script também gera HTML pré-renderizado (`--format html`) que pode ser colado em um único bloco, eliminando ~15 interações adicionais e os bugs acima (ver issue #74). Imagens precisariam de CDN URLs externas.
 
 ### 6. Salvar como rascunho
 
@@ -130,9 +175,12 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
   "template_used": "Default",
   "test_email_sent_to": "vjpixel@gmail.com",
   "test_email_sent_at": "2026-04-18T12:34:56.789Z",
-  "status": "draft"
+  "status": "draft",
+  "unfixed_issues": []
 }
 ```
+
+`unfixed_issues[]` agrega todos os problemas detectados nos passos 5.0–5.4 que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
 ## Output
 
@@ -140,7 +188,8 @@ Para cada seção (PESQUISAS, LANÇAMENTOS, OUTRAS NOTÍCIAS):
 {
   "out_path": "data/editions/260418/05-published.json",
   "draft_url": "https://app.beehiiv.com/posts/{id}/edit",
-  "test_email_sent_to": "vjpixel@gmail.com"
+  "test_email_sent_to": "vjpixel@gmail.com",
+  "unfixed_issues": []
 }
 ```
 
