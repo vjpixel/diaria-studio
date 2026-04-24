@@ -123,6 +123,58 @@ describe("parseFeed — erros", () => {
   });
 });
 
+describe("fetchRss — URL scheme validation (security)", () => {
+  it("rejeita file:// scheme", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const result = await fetchRss({
+      url: "file:///etc/passwd",
+      sourceName: "attacker",
+    });
+    assert.equal(result.articles.length, 0);
+    assert.ok(result.error?.includes("Unsupported URL scheme"));
+  });
+
+  it("rejeita data:// scheme", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const result = await fetchRss({
+      url: "data:text/plain,rss-poison",
+      sourceName: "attacker",
+    });
+    assert.equal(result.articles.length, 0);
+    assert.ok(result.error?.includes("Unsupported URL scheme"));
+  });
+
+  it("rejeita URL malformada", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const result = await fetchRss({
+      url: "not-a-url",
+      sourceName: "attacker",
+    });
+    assert.equal(result.articles.length, 0);
+    assert.ok(result.error?.includes("Invalid URL"));
+  });
+
+  it("aceita http:// e https://", async () => {
+    // Essas URLs não resolvem (sandbox sem internet externa), mas o scheme
+    // check deve passar — validação acontece ANTES do fetch.
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const httpResult = await fetchRss({
+      url: "http://example.invalid/feed",
+      sourceName: "test",
+      timeoutMs: 500,
+    });
+    // Scheme válido — fetch vai falhar com network error, mas não com "Unsupported scheme"
+    assert.ok(!httpResult.error?.includes("Unsupported URL scheme"));
+
+    const httpsResult = await fetchRss({
+      url: "https://example.invalid/feed",
+      sourceName: "test",
+      timeoutMs: 500,
+    });
+    assert.ok(!httpsResult.error?.includes("Unsupported URL scheme"));
+  });
+});
+
 describe("filterByWindow", () => {
   const now = new Date("2026-04-24T12:00:00Z");
 
