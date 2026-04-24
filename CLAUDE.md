@@ -67,6 +67,14 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 - Prompt de imagem: Van Gogh impasto, 2:1, SEM resolução em pixels, SEM Noite Estrelada.
 - Output final sem markdown (nada de `**`, `#`, `- `).
 
+## Princípios operacionais invariáveis
+
+- **Nunca correr risco de ToS.** Qualquer automação de sites de terceiros (ChatGPT, Bing, Leonardo.ai, LinkedIn via puppeteer, etc.) via browser automation, scraping ou reverse-engineering de endpoints não-oficiais está **descartada por padrão**. Prefira: (a) API oficial com key, (b) free tier de plataforma que permita uso automatizado, (c) modelo local. Claude in Chrome **é aceitável** em sites onde o usuário está logado pessoalmente e o uso reflete interação humana natural (Beehiiv/LinkedIn post scheduling — volume baixo, ações editoriais, ToS aceitam uso de ferramentas de terceiro). **Nunca** em scale ou pra scraping.
+
+- **Zero custo recorrente** como princípio editorial. Preferir: free tier oficial > API pay-per-call baixo custo > assinatura fixa. Escolhas acima de ~$50/ano precisam justificativa concreta.
+
+- **Pipeline reproducible**: mudanças em agent prompts, config ou scripts devem ser committed + testadas; nunca rodadas direto de stash ou memória.
+
 ---
 
 ## Otimização de tokens

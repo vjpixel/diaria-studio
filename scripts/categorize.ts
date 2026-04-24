@@ -31,7 +31,7 @@ export interface Article {
   [key: string]: unknown;
 }
 
-export type Category = "lancamento" | "pesquisa" | "noticias";
+export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial";
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam LANÇAMENTO (anúncio oficial)
@@ -233,12 +233,62 @@ function hostAndPath(url: string): { host: string; full: string } {
   }
 }
 
+/**
+ * Domínios e padrões que indicam TUTORIAL (conteúdo acionável — cookbooks,
+ * walkthroughs, how-tos). Seção "Aprenda hoje" em #59.
+ */
+const TUTORIAL_DOMAINS = new Set([
+  "simonwillison.net",
+]);
+
+const TUTORIAL_PATTERNS: RegExp[] = [
+  // Anthropic cookbook no GitHub
+  /^github\.com\/anthropics\/anthropic-cookbook/,
+  // HuggingFace learn section
+  /^huggingface\.co\/learn\//,
+  // DeepLearning.ai The Batch (domínio dedicado a tutoriais)
+  /^deeplearning\.ai\/the-batch\//,
+  // Latent Space (newsletter com tutoriais práticos)
+  /^latent\.space\//,
+  // Every Inc Chain of Thought (coluna tech com walkthroughs)
+  /^every\.to\/chain-of-thought/,
+];
+
+/**
+ * Keywords em título/summary que reforçam classificação como tutorial
+ * quando o domínio não é dedicado (ex: artigo de tutorial publicado no
+ * Medium ou blog pessoal).
+ *
+ * Regex conservador — evita falso positivo em:
+ * - Papers acadêmicos com "A Tutorial on X" (precedência PESQUISA vem antes)
+ * - "how to" genérico em press releases (exige contexto forte)
+ */
+const TUTORIAL_KEYWORDS_RE =
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s/i;
+
+function isTutorialByKeyword(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return TUTORIAL_KEYWORDS_RE.test(hay);
+}
+
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
+
+  // 0. Tutorial — domínio/pattern DEDICADO (alta confiança).
+  //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
+  //    Keyword tutorial vem DEPOIS de pesquisa pra evitar falso positivo
+  //    em papers acadêmicos ("A Tutorial on Diffusion Models" em arxiv).
+  if (TUTORIAL_DOMAINS.has(host)) return "tutorial";
+  if (TUTORIAL_PATTERNS.some((p) => p.test(full))) return "tutorial";
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) return "pesquisa";
   if (PESQUISA_PATTERNS.some((p) => p.test(full))) return "pesquisa";
+
+  // 1b. Tutorial por keyword — só depois da checagem de pesquisa.
+  //    Papers acadêmicos com "tutorial" no título já foram classificados
+  //    como pesquisa acima.
+  if (isTutorialByKeyword(article)) return "tutorial";
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
@@ -283,6 +333,7 @@ function main(): void {
     lancamento: [],
     pesquisa: [],
     noticias: [],
+    tutorial: [],
   };
 
   for (const article of articles) {
@@ -290,7 +341,7 @@ function main(): void {
     result[cat].push({ ...article, category: cat });
   }
 
-  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length}`;
+  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length}`;
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {

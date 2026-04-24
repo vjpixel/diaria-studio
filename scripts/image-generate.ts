@@ -94,10 +94,13 @@ function main() {
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
   // Escolher backend de geração com base em platform.config.json > image_generator.
-  // Suporta "gemini" (padrão) e "comfyui".
+  // Suporta "gemini" (padrão), "cloudflare" (Workers AI free tier) e "comfyui".
   const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const generator = (platformCfg.image_generator ?? "gemini") as string;
-  const scriptName = generator === "comfyui" ? "comfyui-run.js" : "gemini-image.js";
+  const scriptName =
+    generator === "comfyui" ? "comfyui-run.js" :
+    generator === "cloudflare" ? "cloudflare-image.js" :
+    "gemini-image.js";
   const imageScript = resolve(ROOT, "scripts", scriptName);
 
   try {

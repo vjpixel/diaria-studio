@@ -84,6 +84,29 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
 - **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
+- **Pending issue drafts (sempre roda, gate opcional #90).** Check drafts do `auto-reporter` órfãos de edições anteriores (editor pulou o gate no Stage final, ou crash).
+  ```bash
+  PENDING=$(npx tsx scripts/find-pending-issue-drafts.ts --current {AAMMDD} --window 3)
+  ```
+  Output é JSON array. Se vazio (`[]`), skip silent. Se tiver entries:
+  1. Apresentar ao editor:
+     ```
+     ⚠️ N edições anteriores têm issues-draft não-processados:
+       - 260423: 3 signals (1 source_streak, 2 chrome_disconnects)
+       - 260422: 1 signal (1 unfixed_issue)
+
+     Processar agora? [s/n/d]
+       s = disparar auto-reporter com as edições acima (multi-edition mode)
+       n = pular, manter drafts pra próxima sessão
+       d = dismiss (marcar como processados sem criar issues)
+     ```
+  2. Se editor responder `s`, invocar subagent `auto-reporter` via Task com input:
+     - `edition_dirs`: array dos `data/editions/{N}/` de cada draft pendente
+     - `multi_edition: true`
+     - `repo: vjpixel/diaria-studio`
+  3. Se `n`: logar `info "deferred {count} pending drafts"`, seguir.
+  4. Se `d`: pra cada edição pendente, gravar `_internal/issues-reported.json` com `dismissed: true` + array vazio de reported/skipped cobrindo todos signals (impede re-apresentação).
+
 - **Verify FB posts da edição anterior (sempre roda, silencioso #78).** Reconcilia posts Facebook agendados da edição anterior (status `scheduled` → `published`/`failed` via Graph API). Fecha o gap de posts agendados que nunca tiveram status atualizado.
   ```bash
   PREV=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
