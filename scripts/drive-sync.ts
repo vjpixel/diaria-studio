@@ -20,8 +20,8 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, appendFileSync } from "node:fs";
+import { resolve, extname, dirname } from "node:path";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
 
@@ -96,25 +96,68 @@ interface SyncResult {
 }
 
 // ---------------------------------------------------------------------------
+// Retry com backoff exponencial — Drive API sob carga rejeita com 429/5xx
+// silenciosamente. gFetch base já trata 401 (refresh token). Aqui adicionamos
+// retry pra erros transientes que de outra forma bagunçam o sync (#121).
+// ---------------------------------------------------------------------------
+
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+const MAX_RETRIES = 3;
+
+/** Pure: decide se um status code merece retry. Exportado pra tests. */
+export function isRetryableStatus(status: number): boolean {
+  return RETRYABLE_STATUS.has(status);
+}
+
+/** Pure: backoff em ms baseado na tentativa (0-indexed). 1s, 2s, 4s + jitter. */
+export function backoffMs(attempt: number, randomSource: () => number = Math.random): number {
+  const base = 1000 * Math.pow(2, attempt);
+  const jitter = randomSource() * 250;
+  return base + jitter;
+}
+
+async function gFetchRetry(
+  url: string,
+  options: RequestInit = {},
+  attempts = MAX_RETRIES,
+): Promise<Response> {
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await gFetch(url, options);
+      if (!isRetryableStatus(res.status)) return res;
+      lastError = new Error(`Drive transient ${res.status}: ${await res.text().catch(() => "(body unread)")}`);
+    } catch (err) {
+      // Network failures: ECONNRESET, ETIMEDOUT, etc.
+      lastError = err;
+    }
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, backoffMs(i)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+// ---------------------------------------------------------------------------
 // Drive API helpers
 // ---------------------------------------------------------------------------
 
 async function driveList(q: string, fields = "files(id,name,mimeType,modifiedTime,parents)"): Promise<Array<{ id: string; name: string; mimeType: string; modifiedTime: string; parents?: string[] }>> {
   const params = new URLSearchParams({ q, fields, pageSize: "20" });
-  const res = await gFetch(`${DRIVE_API}/files?${params}`);
+  const res = await gFetchRetry(`${DRIVE_API}/files?${params}`);
   if (!res.ok) throw new Error(`Drive list error (${res.status}): ${await res.text()}`);
   const data = (await res.json()) as { files: Array<{ id: string; name: string; mimeType: string; modifiedTime: string; parents?: string[] }> };
   return data.files ?? [];
 }
 
 async function driveGetMetadata(fileId: string): Promise<{ id: string; name: string; modifiedTime: string; parents?: string[] }> {
-  const res = await gFetch(`${DRIVE_API}/files/${fileId}?fields=id,name,modifiedTime,parents`);
+  const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}?fields=id,name,modifiedTime,parents`);
   if (!res.ok) throw new Error(`Drive metadata error (${res.status}): ${await res.text()}`);
   return res.json() as Promise<{ id: string; name: string; modifiedTime: string; parents?: string[] }>;
 }
 
 async function driveCreateFolder(name: string, parentId: string): Promise<string> {
-  const res = await gFetch(`${DRIVE_API}/files`, {
+  const res = await gFetchRetry(`${DRIVE_API}/files`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -191,7 +234,7 @@ async function driveUploadFile(
     Buffer.from(closingBoundary, "utf8"),
   ]);
 
-  const res = await gFetch(
+  const res = await gFetchRetry(
     `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime,mimeType`,
     {
       method: "POST",
@@ -205,7 +248,7 @@ async function driveUploadFile(
 }
 
 async function driveDownloadFile(fileId: string): Promise<Buffer> {
-  const res = await gFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
+  const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}?alt=media`);
   if (!res.ok) throw new Error(`Drive download error (${res.status}): ${await res.text()}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -215,7 +258,7 @@ async function driveDownloadFile(fileId: string): Promise<Buffer> {
  * versão anterior antes de subir nova como nome canônico (#37).
  */
 async function driveRenameFile(fileId: string, newName: string): Promise<void> {
-  const res = await gFetch(`${DRIVE_API}/files/${fileId}`, {
+  const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: newName }),
@@ -231,7 +274,7 @@ async function driveRenameFile(fileId: string, newName: string): Promise<void> {
  */
 async function driveExportFile(fileId: string, exportMimeType: string): Promise<Buffer> {
   const url = `${DRIVE_API}/files/${fileId}/export?mimeType=${encodeURIComponent(exportMimeType)}`;
-  const res = await gFetch(url);
+  const res = await gFetchRetry(url);
   if (!res.ok) throw new Error(`Drive export error (${res.status}): ${await res.text()}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -501,10 +544,58 @@ async function main(): Promise<void> {
     saveCache(cache);
   }
 
+  // Observabilidade: quando há warnings, gravar evento estruturado em
+  // run-log.jsonl. O orchestrator não trava o pipeline (warnings nunca
+  // bloqueiam — princípio existente), mas /diaria-log mostra a falha
+  // pro editor reagir. Endereça #121: silent push failures viravam
+  // invisíveis sem essa trilha.
+  if (result.warnings.length > 0) {
+    logSyncWarnings(result);
+  }
+
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
-  console.error("drive-sync fatal:", err.message);
-  process.exit(1);
-});
+function logSyncWarnings(result: SyncResult): void {
+  try {
+    const cfgPath = resolve(ROOT, "platform.config.json");
+    let logPath = resolve(ROOT, "data/run-log.jsonl");
+    if (existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { logging?: { path?: string } };
+        if (cfg?.logging?.path) logPath = resolve(ROOT, cfg.logging.path);
+      } catch {
+        // ignore — fallback ao default
+      }
+    }
+    mkdirSync(dirname(logPath), { recursive: true });
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: result.edition,
+      stage: result.stage,
+      agent: "drive-sync",
+      level: "warn",
+      message: `${result.warnings.length} sync warning(s) em ${result.mode} (Stage ${result.stage})`,
+      details: {
+        mode: result.mode,
+        warnings: result.warnings,
+        uploaded_count: result.uploaded.length,
+        pulled_count: result.pulled.length,
+      },
+    };
+    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // logging nunca pode mascarar o erro original
+  }
+}
+
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((err) => {
+    console.error("drive-sync fatal:", err.message);
+    process.exit(1);
+  });
+}
