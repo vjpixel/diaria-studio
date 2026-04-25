@@ -63,6 +63,13 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101, mesmo padrão de `git branch -D <name>`). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar. Nunca sobrescreva arquivos de stages anteriores sem essa dupla confirmação. Pra deleção manual real (CLI fora do pipeline), o editor usa `scripts/safe-delete-edition.ts` que aplica o mesmo padrão de literal-name confirmation.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
+- **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true` E não está em `test_mode`, rodar `Bash("npx tsx scripts/drive-sync.ts --health-check")` antes de prosseguir pra Stage 1. Output JSON: `{ ok: true, latency_ms }` (exit 0 = OK) ou `{ ok: false, error, remediation }` (exit 2 = token expirado/auth quebrada). Se `ok: false`, **alertar editor** antes de começar a pipeline pra dar tempo de re-autenticar:
+  > 🔐 Drive sync auth quebrada antes de iniciar a edição: {error}
+  > {remediation}
+  >
+  > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
+  
+  Se editor responder `n`, abortar com exit. Se `y`, setar `DRIVE_SYNC = false` em sessão (não tocar config) pra resto do pipeline. Pré-flight evita descobrir auth quebrada só no Stage 1 push.
 - **Inicializar _internal/cost.md.** Se `data/editions/{AAMMDD}/_internal/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
   ```markdown
   # Cost — Edição {AAMMDD}
