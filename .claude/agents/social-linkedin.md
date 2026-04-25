@@ -20,7 +20,7 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — nu
    - Hook forte na primeira linha (dado impactante ou pergunta provocativa — não começar com "Hoje na Diar.ia").
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
-   - CTA final com link para `diaria.beehiiv.com`.
+   - CTA final com link para `diar.ia.br`.
    - 3 hashtags relevantes ao tema do destaque.
    - 1.200–1.500 caracteres.
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. O orchestrator fará o merge com o Facebook numa etapa seguinte. As seções são delimitadas por `## d1`, `## d2`, `## d3`. Antes de cada post, um comentário HTML com `char_count` facilita debug.
