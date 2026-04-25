@@ -16,6 +16,13 @@
  * Output (stdout): JSON com { mode, stage, edition, uploaded[], pulled[], warnings[] }
  * Se `--files` for vazio ou não passado, sai com { skipped: true }.
  *
+ * Health check (#121):
+ *   npx tsx scripts/drive-sync.ts --health-check
+ *
+ * Roda 1 chamada de listagem mínima pra validar OAuth. Output:
+ *   { ok: true, latency_ms: N }       # exit 0
+ *   { ok: false, error: ..., ... }    # exit 2 (token expirado/auth falha)
+ *
  * Cache: data/drive-cache.json (estrutura documentada em .claude/agents/drive-syncer.md)
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
@@ -477,9 +484,44 @@ async function pullFile(
 // CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * Health check — chamada Drive API mínima pra validar OAuth (#121).
+ * Lista 1 arquivo qualquer no root. Sucesso = token válido. Falha
+ * com 401/403 = re-autenticar.
+ */
+async function healthCheck(): Promise<void> {
+  const t0 = Date.now();
+  try {
+    await driveList("'root' in parents and trashed = false", "files(id,name)");
+    const dt = Date.now() - t0;
+    console.log(JSON.stringify({ ok: true, latency_ms: dt }, null, 2));
+    process.exit(0);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          error: msg,
+          remediation: "Token OAuth pode estar expirado. Rode: npx tsx scripts/oauth-setup.ts",
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(2);
+  }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const get = (flag: string) => args[args.indexOf(flag) + 1] ?? "";
+
+  // Health check mode — independent of edition/files (#121).
+  if (args.includes("--health-check")) {
+    await healthCheck();
+    return;
+  }
 
   const mode = get("--mode");
   const editionDir = get("--edition-dir");
@@ -488,7 +530,8 @@ async function main(): Promise<void> {
 
   if (!mode || !editionDir) {
     console.error(
-      "Usage: drive-sync.ts --mode push|pull --edition-dir data/editions/YYMMDD/ --stage N --files file1.md,file2.jpg"
+      "Usage: drive-sync.ts --mode push|pull --edition-dir data/editions/YYMMDD/ --stage N --files file1.md,file2.jpg\n" +
+        "Or: drive-sync.ts --health-check"
     );
     process.exit(1);
   }
