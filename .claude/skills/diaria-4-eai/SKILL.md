@@ -9,7 +9,8 @@ Dispara o Stage 4 da edição Diar.ia: busca a Foto do Dia da Wikimedia (POTD), 
 
 ## Argumentos
 
-- `$1` = data da edição (`AAMMDD`, ex: `260423`). Se não passar, usa a data de hoje.
+- `$1` = data da edição (`AAMMDD`, ex: `260423`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação:
+  > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 
 ## Pré-requisitos
 

@@ -9,12 +9,12 @@ Dispara o Stage 5 da edição Diar.ia: gera as 3 imagens de destaque em estilo i
 
 ## Argumentos
 
-- `/diaria-5-imagens` — gera as 3 imagens (d1, d2, d3)
-- `/diaria-5-imagens d1` — regenera só a imagem do destaque 1
-- `/diaria-5-imagens d2` — regenera só a imagem do destaque 2
-- `/diaria-5-imagens d3` — regenera só a imagem do destaque 3
+- `/diaria-5-imagens AAMMDD` — gera as 3 imagens (d1, d2, d3) da edição
+- `/diaria-5-imagens AAMMDD d1` — regenera só a imagem do destaque 1
+- `/diaria-5-imagens AAMMDD d2` — regenera só a imagem do destaque 2
+- `/diaria-5-imagens AAMMDD d3` — regenera só a imagem do destaque 3
 
-Se não passar data, detecta a edição mais recente em `data/editions/`.
+**Se não passar data, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()` ou da edição mais recente em `data/editions/`. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 
 ## Pré-requisitos
 

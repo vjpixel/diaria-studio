@@ -9,7 +9,7 @@ Executa só o Stage 2.
 
 ## Argumentos
 
-- `$1` = data da edição. Pergunte se faltar.
+- `$1` = data da edição (`AAMMDD`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 
 ## Pré-requisitos
 

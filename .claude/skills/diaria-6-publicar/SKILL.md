@@ -13,7 +13,7 @@ Dispara os Stages 5 e 6 da edição Diar.ia: cria a newsletter no Beehiiv como r
 - `/diaria-6-publicar newsletter AAMMDD` — só Stage 5 (Beehiiv)
 - `/diaria-6-publicar social AAMMDD` — só Stage 6 (LinkedIn + Facebook)
 
-Se não passar data, usa a data de hoje.
+**Se não passar data, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Crítico aqui: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar na edição errada causa publicação real de conteúdo desatualizado. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 
 ## Pré-requisitos
 
