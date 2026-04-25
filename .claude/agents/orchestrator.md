@@ -18,6 +18,7 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
    - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4, 5 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
    - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 5, 6, 7 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
    - Chamar via `Bash("npx tsx scripts/drive-sync.ts --mode {push|pull} --edition-dir {edition_dir} --stage {N} --files {file1.md,file2.jpg}")`. Ler JSON de stdout; warnings no output — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
+   - **Surface no gate (#121).** Se `JSON.warnings.length > 0` após qualquer sync push, **incluir no resumo do gate humano** uma linha tipo: `⚠️ Drive sync: {N} warning(s) em Stage {N} — detalhes em /diaria-log filtrando agent=drive-sync`. Tracking acumulado: contar stages com sync degradado em `sync_results`; se ≥3 stages consecutivos retornam warnings, escalar mensagem pra `🔴 Drive sync degradado em N stages consecutivos — verificar credenciais (data/.credentials.json) ou rodar npx tsx scripts/oauth-setup.ts pra re-autenticar`. Não bloqueia, mas torna o estado visível pro editor reagir.
    - Lista de arquivos por stage (hardcoded abaixo em cada stage). Só outputs finais entram — prompts e raws ficam local.
 
 ## Fluxo por edição
