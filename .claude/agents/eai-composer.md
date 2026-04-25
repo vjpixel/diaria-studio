@@ -138,6 +138,20 @@ Pra desbloquear o auto-fill do "Resultado da última edição" (#107), gravar ar
 
 `ai_side` fica `null` aqui — é preenchido depois pelo `publish-newsletter` quando inserir o Poll/imagens no Beehiiv (sabe se "imagem A é IA" ou "imagem B é IA"). #107 depende desse campo pra calcular % de acerto contra as respostas do Poll.
 
+### 6. (Opcional, #107) Calcular `04-eai-poll-stats.json`
+
+Se o orchestrator já fez fetch das respostas do poll da edição anterior via Beehiiv MCP e gravou em `{out_dir}/_internal/poll-responses.json`, rodar:
+
+```bash
+npx tsx scripts/compute-eai-poll-stats.ts --edition {AAMMDD} --responses {out_dir}/_internal/poll-responses.json
+```
+
+Output: `{out_dir}/_internal/04-eai-poll-stats.json` com `pct_correct` (ou `null` se `total < threshold`, default 5). O writer do Stage 2 pode ler esse arquivo pra preencher a linha "Resultado da última edição: X% das pessoas acertaram" automaticamente.
+
+Se `poll-responses.json` não existir, o script ainda gera o stats file com `total_responses: 0` e `skipped` apropriado — o writer trata como "Aguardando respostas".
+
+**Quem dispara o fetch das respostas**: orchestrator (tem acesso ao Beehiiv MCP). O eai-composer não chama o MCP — só consome o arquivo se ele existir.
+
 `composed_at` em ISO UTC. `edition` é o `AAMMDD`. Os outros campos vêm direto da Wikimedia API response do passo 1.
 
 ## Output
