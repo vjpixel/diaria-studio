@@ -1,6 +1,6 @@
 # Diar.ia Studio
 
-Projeto Claude Code fim-a-fim para produção da newsletter **Diar.ia** (diaria.beehiiv.com).
+Projeto Claude Code fim-a-fim para produção da newsletter **Diar.ia** (diar.ia.br).
 
 O fluxo editorial é modelado como 7 stages com gate humano em cada um. A execução acontece via skills (`/diaria-edicao`, `/diaria-1-pesquisa`, etc.) que disparam um orquestrador; o orquestrador distribui trabalho para subagentes especializados em paralelo quando possível.
 
