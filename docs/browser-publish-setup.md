@@ -27,7 +27,7 @@ No diretório `diaria-studio`, rodar:
 /mcp
 ```
 
-Deve listar `Claude_in_Chrome` (conector nativo). As ferramentas `mcp__Claude_in_Chrome__*` ficam disponíveis automaticamente.
+Deve listar `claude-in-chrome` (conector nativo). As ferramentas `mcp__claude-in-chrome__*` ficam disponíveis automaticamente.
 
 ## 3. Logar nas 3 plataformas no Chrome
 
@@ -46,16 +46,16 @@ Marcar "lembrar login" / "manter conectado" em cada plataforma para que a sessã
 O arquivo `.claude/settings.json` já libera as ferramentas de leitura/escrita do Claude in Chrome em modo `allow`:
 
 ```
-mcp__Claude_in_Chrome__navigate
-mcp__Claude_in_Chrome__read_page
-mcp__Claude_in_Chrome__form_input
-mcp__Claude_in_Chrome__find
-mcp__Claude_in_Chrome__file_upload
-mcp__Claude_in_Chrome__tabs_create_mcp
-mcp__Claude_in_Chrome__tabs_close_mcp
+mcp__claude-in-chrome__navigate
+mcp__claude-in-chrome__read_page
+mcp__claude-in-chrome__form_input
+mcp__claude-in-chrome__find
+mcp__claude-in-chrome__upload_image
+mcp__claude-in-chrome__tabs_create_mcp
+mcp__claude-in-chrome__tabs_context_mcp
 ```
 
-`mcp__Claude_in_Chrome__javascript_tool` fica em `ask` (executar JS arbitrário pede confirmação).
+`mcp__claude-in-chrome__javascript_tool` fica em `ask` (executar JS arbitrário pede confirmação).
 
 ## 5. Configuração em `platform.config.json`
 
@@ -88,7 +88,7 @@ Bloco `publishing`:
 ## 6. Verificar setup
 
 1. Abrir Chrome — extensão Claude in Chrome ativa, logado nas 3 plataformas.
-2. No Claude Code: `/mcp` → confirmar `Claude_in_Chrome` listado.
+2. No Claude Code: `/mcp` → confirmar `claude-in-chrome` listado.
 3. Rodar `/diaria-publicar newsletter YYYY-MM-DD` numa edição com Stage 5 completo.
 4. O agente deve abrir o Beehiiv no Chrome, criar o rascunho, e enviar o teste.
 
