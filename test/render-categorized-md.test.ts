@@ -5,6 +5,7 @@ import {
   isBrazilianTheme,
   renderLine,
   buildHighlightUrls,
+  buildRunnerUpUrls,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -158,6 +159,26 @@ describe("renderLine", () => {
     assert.ok(line.includes("⭐"));
   });
 
+  it("marcador ✨ quando runner-up (#104)", () => {
+    const line = renderLine(
+      { url: "https://a.com/x", title: "T", score: 80 },
+      false,
+      true,
+    );
+    assert.ok(line.includes("✨"));
+    assert.ok(!line.includes("⭐"));
+  });
+
+  it("⭐ wins quando flags conflitam (defensivo)", () => {
+    const line = renderLine(
+      { url: "https://a.com/x", title: "T", score: 80 },
+      true,
+      true,
+    );
+    assert.ok(line.includes("⭐"));
+    assert.ok(!line.includes("✨"));
+  });
+
   it("marcador 🇧🇷 em tema brasileiro", () => {
     const line = renderLine({
       url: "https://a.com/x",
@@ -262,5 +283,59 @@ describe("buildHighlightUrls", () => {
       noticias: [],
     });
     assert.equal(urls.size, 0);
+  });
+});
+
+describe("buildRunnerUpUrls (#104)", () => {
+  it("extrai URLs do top-level runners_up[]", () => {
+    const urls = buildRunnerUpUrls({
+      runners_up: [{ url: "https://r.com/1" }, { url: "https://r.com/2" }],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://r.com/1"));
+    assert.ok(urls.has("https://r.com/2"));
+  });
+
+  it("retorna Set vazio quando runners_up ausente", () => {
+    const urls = buildRunnerUpUrls({
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 0);
+  });
+
+  it("ignora entradas sem url ou com url não-string", () => {
+    const urls = buildRunnerUpUrls({
+      runners_up: [
+        { url: "https://r.com/1" },
+        { score: 50 } as unknown,
+        { url: 123 } as unknown,
+      ],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 1);
+    assert.ok(urls.has("https://r.com/1"));
+  });
+
+  it("highlights e runners_up são sets disjuntos por construção", () => {
+    const data = {
+      highlights: [{ url: "https://a.com/1" }, { url: "https://a.com/2" }],
+      runners_up: [{ url: "https://b.com/3" }, { url: "https://b.com/4" }],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    };
+    const h = buildHighlightUrls(data);
+    const r = buildRunnerUpUrls(data);
+    assert.equal(h.size, 2);
+    assert.equal(r.size, 2);
+    // Sem overlap
+    for (const url of r) assert.ok(!h.has(url));
   });
 });

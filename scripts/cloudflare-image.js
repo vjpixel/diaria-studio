@@ -56,19 +56,38 @@ const prompt = isFlux && sd.negative
   ? `${sd.positive} (avoid: ${sd.negative})`
   : sd.positive;
 
-const body = isSdxl
-  ? {
-      prompt: sd.positive,
-      negative_prompt: sd.negative || undefined,
-      width: resizeW ?? 1024,
-      height: resizeH ?? 1024,
-      num_steps: steps,
-      guidance,
-    }
-  : {
-      prompt,
-      num_steps: Math.min(steps, 8), // schnell: 1-8 max
-    };
+// SDXL exige width/height múltiplos de 8 — a API rejeita com erro genérico
+// "Invalid input" quando recebe valores fora dessa grade. Fazer snap automático
+// + warning audível pra editor não perder tempo debugando (#92).
+function snapTo8(n) {
+  return Math.round(n / 8) * 8;
+}
+
+let body;
+if (isSdxl) {
+  const w = resizeW ?? 1024;
+  const h = resizeH ?? 1024;
+  const wSnap = snapTo8(w);
+  const hSnap = snapTo8(h);
+  if (wSnap !== w || hSnap !== h) {
+    console.error(
+      `⚠️ SDXL exige dimensões múltiplas de 8. Ajustando ${w}x${h} → ${wSnap}x${hSnap}.`,
+    );
+  }
+  body = {
+    prompt: sd.positive,
+    negative_prompt: sd.negative || undefined,
+    width: wSnap,
+    height: hSnap,
+    num_steps: steps,
+    guidance,
+  };
+} else {
+  body = {
+    prompt,
+    num_steps: Math.min(steps, 8), // schnell: 1-8 max
+  };
+}
 
 const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
 
