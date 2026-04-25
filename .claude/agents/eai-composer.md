@@ -114,6 +114,32 @@ Regras da linha de crédito (sem prefixo "Foto:"):
 - **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (pt ou en); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
 - Exemplo: `Pastor do [Rajastão](https://pt.wikipedia.org/wiki/Rajastão) guiando seu rebanho pelas planícies do noroeste da Índia — [Paramanu Sarkar](https://commons.wikimedia.org/wiki/User:Paramanu_Sarkar) / CC BY-SA 4.0.`
 
+### 5. Escrever `{out_dir}/_internal/01-eai-meta.json` (#107 dep)
+
+Pra desbloquear o auto-fill do "Resultado da última edição" (#107), gravar arquivo de metadata com a provenance + identificação das imagens. Schema:
+
+```json
+{
+  "edition": "260424",
+  "composed_at": "2026-04-24T19:33:00Z",
+  "ai_image_file": "01-eai-ia.jpg",
+  "real_image_file": "01-eai-real.jpg",
+  "ai_side": null,
+  "wikimedia": {
+    "title": "File:Example.jpg",
+    "image_url": "https://upload.wikimedia.org/...",
+    "credit": "Photographer Name / CC BY-SA 4.0",
+    "artist_url": "https://commons.wikimedia.org/wiki/User:Username",
+    "subject_wikipedia_url": "https://pt.wikipedia.org/wiki/Rajastão",
+    "image_date_used": "2026-04-15"
+  }
+}
+```
+
+`ai_side` fica `null` aqui — é preenchido depois pelo `publish-newsletter` quando inserir o Poll/imagens no Beehiiv (sabe se "imagem A é IA" ou "imagem B é IA"). #107 depende desse campo pra calcular % de acerto contra as respostas do Poll.
+
+`composed_at` em ISO UTC. `edition` é o `AAMMDD`. Os outros campos vêm direto da Wikimedia API response do passo 1.
+
 ## Output
 
 ```json
@@ -121,6 +147,7 @@ Regras da linha de crédito (sem prefixo "Foto:"):
   "out_md": "data/editions/260418/01-eai.md",
   "out_real": "data/editions/260418/01-eai-real.jpg",
   "out_ia": "data/editions/260418/01-eai-ia.jpg",
+  "out_meta": "data/editions/260418/_internal/01-eai-meta.json",
   "image_title": "...",
   "image_credit": "...",
   "image_date_used": "2026-04-15",
@@ -130,4 +157,4 @@ Regras da linha de crédito (sem prefixo "Foto:"):
 }
 ```
 
-`rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados).
+`rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados). `out_meta` aponta pro `_internal/01-eai-meta.json` (passo 5) — orchestrator preserva no resume e `publish-newsletter` lê pra preencher `ai_side` ao inserir as imagens.
