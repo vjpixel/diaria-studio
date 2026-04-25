@@ -211,6 +211,21 @@ async function driveDownloadFile(fileId: string): Promise<Buffer> {
 }
 
 /**
+ * Renomeia um arquivo no Drive via PATCH. Usado pelo push pra arquivar a
+ * versão anterior antes de subir nova como nome canônico (#37).
+ */
+async function driveRenameFile(fileId: string, newName: string): Promise<void> {
+  const res = await gFetch(`${DRIVE_API}/files/${fileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!res.ok) {
+    throw new Error(`Drive rename error (${res.status}): ${await res.text()}`);
+  }
+}
+
+/**
  * Exporta um Google Doc nativo como arquivo em outro mimeType (#89).
  * Docs não suportam `?alt=media` — precisam de /export com mimeType target.
  */
@@ -319,14 +334,35 @@ async function pushFile(
   // Docs nativos não precisam de extensão — Drive trata extension como cosmético.
   // Pra arquivos convertidos, tiramos `.md` do título pra ficar consistente com
   // o modelo "arquivo sem extensão = Doc".
-  const titleUsed = convertToDoc
-    ? (pushCount === 0 ? base : `${base}.v${pushCount + 1}`)
-    : (pushCount === 0 ? filename : `${base}.v${pushCount + 1}${ext}`);
+  //
+  // Estratégia (#37): o nome canônico (sem `.vN`) sempre aponta para a versão
+  // mais recente. Versões anteriores ficam arquivadas como `.vN`. Editor abre o
+  // arquivo canônico no Drive sem ter que procurar o maior N.
+  const canonicalTitle = convertToDoc ? base : filename;
+  const archiveTitle = convertToDoc
+    ? `${base}.v${pushCount}`
+    : `${base}.v${pushCount}${ext}`;
   const mimeType = mimeTypeFor(filename);
+
+  // Primeiro arquiva a versão atual no Drive (se houver). Se a renomeação
+  // falhar (arquivo deletado manualmente, permissão, etc.) registramos warning
+  // e seguimos — o novo upload ainda é válido, só perde-se 1 versão de
+  // histórico.
+  if (pushCount > 0 && fileCache?.drive_file_id) {
+    try {
+      await driveRenameFile(fileCache.drive_file_id, archiveTitle);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.warnings.push({
+        file: filename,
+        error_message: `rename_archive_failed: ${canonicalTitle} → ${archiveTitle} (${msg})`,
+      });
+    }
+  }
 
   const bytes = await getFileBytes(editionDir, filename);
   const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUploadFile(
-    titleUsed,
+    canonicalTitle,
     bytes,
     mimeType,
     dayFolderId,
@@ -344,7 +380,7 @@ async function pushFile(
     drive_mimeType: driveMimeType,
   };
 
-  result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: titleUsed });
+  result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle });
 }
 
 // ---------------------------------------------------------------------------
