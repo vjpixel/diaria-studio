@@ -322,12 +322,18 @@ function renderParagraphs(text: string): string {
 }
 
 function renderWhyHeading(): string {
+  // #113: "Por que isso importa:" precisa destaque visual — é o gancho
+  // editorial. Aumentei pra h3 com 20px bold (era h5 16px).
   return `<tr><td align="left" style="padding:0px 2px;text-align:left;">
-  <h5 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:500;font-size:16px;line-height:1;padding-top:16px;padding-bottom:0;margin:0;">Por que isso importa:</h5>
+  <h3 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:700;font-size:20px;line-height:1.3;padding-top:20px;padding-bottom:4px;margin:0;">Por que isso importa:</h3>
 </td></tr>`;
 }
 
 function renderDestaque(d: RenderDestaque): string {
+  // #113: d1 image NÃO aparece inline pra evitar duplicar com a cover do post
+  // (Beehiiv usa 04-d1-2x1.jpg como thumbnail/cover). d2 e d3 mantêm imagem
+  // inline porque não têm slot de cover.
+  const showInlineImage = d.n !== 1;
   return `<!-- Destaque ${d.n} -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
@@ -336,7 +342,7 @@ function renderDestaque(d: RenderDestaque): string {
     <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
       ${renderCategoryLabel(d.emoji, d.category)}
       ${renderTitle(d.title, d.url)}
-      ${renderImage(d.imageFile)}
+      ${showInlineImage ? renderImage(d.imageFile) : ""}
       ${renderParagraphs(d.body)}
       ${renderWhyHeading()}
       ${renderParagraphs(d.why)}
