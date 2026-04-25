@@ -155,8 +155,12 @@ export function isBrazilianTheme(article: { title?: string; summary?: string }):
   return matches !== null && matches.length >= 2;
 }
 
-/** Monta linha: `- [score] Título ⭐ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
-export function renderLine(article: Article, isHighlight?: boolean): string {
+/** Monta linha: `- [score] Título ⭐|✨ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
+export function renderLine(
+  article: Article,
+  isHighlight?: boolean,
+  isRunnerUp?: boolean,
+): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
   const title = article.title?.trim() || "(sem título)";
@@ -165,6 +169,7 @@ export function renderLine(article: Article, isHighlight?: boolean): string {
 
   const markers: string[] = [];
   if (isHighlight) markers.push("⭐");
+  else if (isRunnerUp) markers.push("✨");
   if (
     isBrazilianTheme({
       title: article.title,
@@ -203,10 +208,27 @@ export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   return urls;
 }
 
+/**
+ * Coleta URLs dos runners_up — candidatos com score alto que não entraram
+ * no top do scorer. Renderizados com ✨ pra o editor ver o universo completo
+ * de recomendações, não só o slice principal (ver #104).
+ */
+export function buildRunnerUpUrls(data: CategorizedJson): Set<string> {
+  const urls = new Set<string>();
+  for (const r of data.runners_up ?? []) {
+    if (r && typeof r === "object" && "url" in r) {
+      const url = (r as { url?: unknown }).url;
+      if (typeof url === "string") urls.add(url);
+    }
+  }
+  return urls;
+}
+
 function renderSection(
   title: string,
   articles: Article[],
-  highlightUrls: Set<string>
+  highlightUrls: Set<string>,
+  runnerUpUrls: Set<string>,
 ): string {
   if (articles.length === 0) {
     return `## ${title}\n\n_(vazio)_\n`;
@@ -218,7 +240,7 @@ function renderSection(
     return sb - sa;
   });
   const lines = sorted.map((a) =>
-    renderLine(a, highlightUrls.has(a.url))
+    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url)),
   );
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }
@@ -310,20 +332,23 @@ function main() {
   }
 
   const highlightUrls = buildHighlightUrls(data);
+  const runnerUpUrls = buildRunnerUpUrls(data);
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
-    `\n> Candidatos recomendados pelo scorer estão marcados com ⭐ nas seções abaixo.\n` +
+    `\n> Candidatos recomendados pelo scorer:\n` +
+    `>   - ⭐ — top do scorer (highlights[]).\n` +
+    `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
     `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
 
   const sections = [
     `## Destaques\n\n_(mova 3 artigos para cá)_\n`,
-    renderSection("Lançamentos", data.lancamento, highlightUrls),
-    renderSection("Pesquisas", data.pesquisa, highlightUrls),
-    renderSection("Notícias", data.noticias, highlightUrls),
+    renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls),
+    renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls),
+    renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls),
     ...(data.tutorial && data.tutorial.length > 0
-      ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls)]
+      ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls)]
       : []),
   ].join("\n");
 
@@ -347,6 +372,7 @@ function main() {
       out: cli.out,
       total_articles: total,
       highlights_rendered: highlighted,
+      runners_up_rendered: runnerUpUrls.size,
       date_unverified: unverified,
     }) + "\n"
   );
