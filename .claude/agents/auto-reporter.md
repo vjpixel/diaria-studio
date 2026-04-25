@@ -53,12 +53,22 @@ Shape do draft (gerado por `collect-edition-signals.ts`, ver #57 / PR #76):
 
 #### 1b. Dedup cross-edition (só modo multi)
 
-Se mesmo `kind + reason/source` aparece em 2+ edições seguidas, consolidar num **único comment ou issue** em vez de 1 por edição. Critério exato:
+**Implementação canônica:** `scripts/lib/auto-reporter-dedup.ts` (testado em `test/auto-reporter-dedup.test.ts`). Não duplique a lógica em prompt — chame o módulo via shell:
+
+```bash
+npx tsx scripts/consolidate-signals.ts \
+  --drafts {edition_dirs[0]}/_internal/issues-draft.json,\
+{edition_dirs[1]}/_internal/issues-draft.json,\
+{edition_dirs[2]}/_internal/issues-draft.json
+```
+
+Retorna `{ signals, drafts_consumed, signals_in, signals_out }` em stdout. Use `signals[]` daqui em diante.
+
+**Critério de dedup (referência — fonte de verdade é o módulo):**
 - `source_streak`: mesmo `details.source` → consolidar.
 - `unfixed_issue`: mesmo `details.reason + details.section` → consolidar.
 - `chrome_disconnects`: sempre consolidar (counts somados).
-
-Signal consolidado ganha campo `_editions: ["260422", "260423"]` com lista das edições afetadas. Title e evidence ajustam pra refletir a sequência (ex: "Source X com falhas em 3 edições seguidas").
+- Signal consolidado ganha `_editions: ["260422", "260423"]` (sorted, deduped). Severity escala pra worst observed. Title/suggested_action do primeiro signal são preservados — ajustar texto manualmente se quiser refletir a sequência (ex: "Source X com falhas em 3 edições seguidas").
 
 ### 2. Se `signals.length === 0`, retornar cedo
 

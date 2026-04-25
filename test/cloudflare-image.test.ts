@@ -10,6 +10,10 @@ import assert from "node:assert/strict";
 
 // Helper inline pra testar lógica de body shape — espelha a lógica do
 // cloudflare-image.js. Se o script mudar, atualizar aqui também.
+function snapTo8(n: number): number {
+  return Math.round(n / 8) * 8;
+}
+
 function buildRequestBody(model: string, sd: {
   positive: string;
   negative?: string;
@@ -30,11 +34,13 @@ function buildRequestBody(model: string, sd: {
     : sd.positive;
 
   if (isSdxl) {
+    const w = resizeW ?? 1024;
+    const h = resizeH ?? 1024;
     return {
       prompt: sd.positive,
       negative_prompt: sd.negative || undefined,
-      width: resizeW ?? 1024,
-      height: resizeH ?? 1024,
+      width: snapTo8(w),
+      height: snapTo8(h),
       num_steps: steps,
       guidance,
     };
@@ -138,5 +144,51 @@ describe("cloudflare-image — SDXL body shape", () => {
       defaults,
     );
     assert.equal(body.num_steps, 30);
+  });
+});
+
+describe("cloudflare-image — SDXL dimensions snap to multiple of 8 (#92)", () => {
+  const defaults = { steps: 4, guidance: 7.5 };
+  const SDXL = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
+
+  it("snapTo8: dimensões já múltiplas de 8 não mudam", () => {
+    assert.equal(snapTo8(1024), 1024);
+    assert.equal(snapTo8(1600), 1600);
+    assert.equal(snapTo8(800), 800);
+    assert.equal(snapTo8(8), 8);
+  });
+
+  it("snapTo8: arredonda pro múltiplo mais próximo", () => {
+    // 799 → 800 (round up), 577 → 576 (round down — 577/8=72.125)
+    assert.equal(snapTo8(799), 800);
+    assert.equal(snapTo8(577), 576);
+    assert.equal(snapTo8(1500), 1504); // 1500/8 = 187.5 → round up to 188
+    assert.equal(snapTo8(750), 752); // 750/8 = 93.75 → round up to 94
+  });
+
+  it("SDXL com dimensões inválidas snap pra grid de 8", () => {
+    const body = buildRequestBody(
+      SDXL,
+      { positive: "x", final_width: 799, final_height: 577 },
+      defaults,
+    );
+    assert.equal(body.width, 800);
+    assert.equal(body.height, 576);
+  });
+
+  it("SDXL com dimensões válidas (1600x800) passa intactas", () => {
+    const body = buildRequestBody(
+      SDXL,
+      { positive: "x", final_width: 1600, final_height: 800 },
+      defaults,
+    );
+    assert.equal(body.width, 1600);
+    assert.equal(body.height, 800);
+  });
+
+  it("SDXL default 1024x1024 (sempre múltiplo de 8)", () => {
+    const body = buildRequestBody(SDXL, { positive: "x" }, defaults);
+    assert.equal(body.width, 1024);
+    assert.equal(body.height, 1024);
   });
 });

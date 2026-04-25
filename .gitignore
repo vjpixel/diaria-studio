@@ -16,4 +16,7 @@ data/run-log.jsonl
 data/inbox-drainer-result.json
 data/push-*-plan.json
 data/inbox-archive/
+data/inbox.md
+data/inbox-cursor.json
+data/archive/
 .DS_Store

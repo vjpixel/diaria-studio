@@ -41,6 +41,7 @@ interface PlatformConfig {
 
 interface InboxCursor {
   last_drain_iso: string | null;
+  consecutive_empty_drains?: number;
 }
 
 interface DrainResult {
@@ -193,9 +194,49 @@ function loadCursor(): InboxCursor {
   }
 }
 
-function saveCursor(iso: string): void {
+function saveCursor(cursor: InboxCursor): void {
   const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
-  writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: iso }, null, 2), "utf8");
+  mkdirSync(dirname(cursorPath), { recursive: true });
+  writeFileSync(cursorPath, JSON.stringify(cursor, null, 2), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers — extraídos para testar isoladamente
+// ---------------------------------------------------------------------------
+
+export const EMPTY_DRAIN_WARN_THRESHOLD = 3;
+
+export function isLabelQuery(query: string): boolean {
+  return /^\s*label:/i.test(query);
+}
+
+export function extractLabelName(query: string): string {
+  const m = query.match(/label:([^\s]+)/i);
+  return m ? m[1] : "";
+}
+
+export function labelExistsInList(
+  labels: Array<{ name: string }>,
+  target: string,
+): boolean {
+  if (!target) return true; // sem label name → não validar
+  const norm = target.toLowerCase();
+  return labels.some((l) => l.name.toLowerCase() === norm);
+}
+
+export function incrementEmptyDrain(cursor: InboxCursor): InboxCursor {
+  return {
+    ...cursor,
+    consecutive_empty_drains: (cursor.consecutive_empty_drains ?? 0) + 1,
+  };
+}
+
+export function resetEmptyDrain(cursor: InboxCursor): InboxCursor {
+  return { ...cursor, consecutive_empty_drains: 0 };
+}
+
+export function shouldWarnEmptyDrains(cursor: InboxCursor): boolean {
+  return (cursor.consecutive_empty_drains ?? 0) >= EMPTY_DRAIN_WARN_THRESHOLD;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +270,25 @@ function logDrainError(err: Error): void {
     appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
   } catch {
     // swallow — logging must never mask the original error
+  }
+}
+
+function logDrainWarn(message: string, details?: Record<string, unknown>): void {
+  try {
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: 1,
+      agent: "inbox-drainer",
+      level: "warn",
+      message,
+      details: details ?? null,
+    };
+    const logPath = getRunLogPath();
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // swallow
   }
 }
 
@@ -297,39 +357,40 @@ async function main(): Promise<void> {
 
   const query = `${gmailQuery} after:${afterDate}`;
 
-  // Verificar se label existe
-  let threads: GmailThread[] = [];
-  try {
-    threads = await searchThreads(query);
-  } catch (err) {
-    const msg = String(err);
-    if (msg.toLowerCase().includes("label") && msg.toLowerCase().includes("not found")) {
-      // Tentar criar label
-      try {
-        const labels = await listLabels();
-        const labelName = gmailQuery.replace("label:", "");
-        const exists = labels.some((l) => l.name.toLowerCase() === labelName.toLowerCase());
-        if (!exists) {
+  // Validação proativa: se a query usa label:, confirmar que o label existe
+  // antes de buscar. Gmail's q=label:X não erra se o label não existe — só
+  // retorna vazio. Sem essa checagem, drain falha silenciosamente para sempre.
+  if (isLabelQuery(gmailQuery)) {
+    const labelName = extractLabelName(gmailQuery);
+    try {
+      const labels = await listLabels();
+      if (!labelExistsInList(labels, labelName)) {
+        try {
           await createLabel(labelName);
-          const result: DrainResult = {
-            new_entries: 0,
-            urls: [],
-            topics: [],
-            most_recent_iso: null,
-            skipped: true,
-            reason: "label_created_empty",
-          };
-          console.log(JSON.stringify(result, null, 2));
-          return;
+        } catch {
+          // best-effort — se não conseguir criar, segue com warning
         }
-      } catch {
-        // ignore label creation errors
+        const reason = `label_missing: '${labelName}' não existe na conta. Crie o filtro automático em ${config.inbox?.address ?? "Gmail"} (ver docs/gmail-inbox-setup.md).`;
+        console.error(`⚠️  ${reason}`);
+        logDrainWarn(reason, { label: labelName });
+        const result: DrainResult = {
+          new_entries: 0,
+          urls: [],
+          topics: [],
+          most_recent_iso: null,
+          skipped: true,
+          reason,
+        };
+        console.log(JSON.stringify(result, null, 2));
+        return;
       }
-      threads = [];
-    } else {
-      throw err;
+    } catch (err) {
+      // listLabels falhou — não bloquear, mas registrar pra audit
+      logDrainWarn(`label validation skipped (listLabels failed): ${String(err)}`);
     }
   }
+
+  const threads: GmailThread[] = await searchThreads(query);
 
   const lastDrain = cursor.last_drain_iso;
   const inboxEntries: string[] = [];
@@ -381,10 +442,25 @@ async function main(): Promise<void> {
     }
   }
 
+  let updatedCursor: InboxCursor;
+  let warnReason: string | undefined;
   if (inboxEntries.length > 0) {
     appendToInbox(inboxEntries);
-    if (mostRecentIso) saveCursor(mostRecentIso);
+    updatedCursor = resetEmptyDrain({
+      ...cursor,
+      last_drain_iso: mostRecentIso ?? cursor.last_drain_iso,
+    });
+  } else {
+    updatedCursor = incrementEmptyDrain(cursor);
+    if (shouldWarnEmptyDrains(updatedCursor)) {
+      warnReason = `inbox vazio em ${updatedCursor.consecutive_empty_drains} drains consecutivos — verificar se filtro Gmail (label '${extractLabelName(gmailQuery) || gmailQuery}') está aplicando aos novos e-mails.`;
+      console.error(`⚠️  ${warnReason}`);
+      logDrainWarn(warnReason, {
+        consecutive_empty_drains: updatedCursor.consecutive_empty_drains,
+      });
+    }
   }
+  saveCursor(updatedCursor);
 
   const result: DrainResult = {
     new_entries: inboxEntries.length,
@@ -392,6 +468,7 @@ async function main(): Promise<void> {
     topics: resultTopics,
     most_recent_iso: mostRecentIso,
     skipped: false,
+    ...(warnReason ? { reason: warnReason } : {}),
   };
   console.log(JSON.stringify(result, null, 2));
 }
