@@ -1,6 +1,6 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da Diar.ia (stages 1–7). Uso: `/diaria-edicao AAMMDD [--no-gates]`.
+description: Roda a pipeline completa da Diar.ia (stages 1–7). Uso — `/diaria-edicao AAMMDD [--no-gates]`.
 ---
 
 # /diaria-edicao

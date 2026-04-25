@@ -1,6 +1,6 @@
 ---
 name: diaria-3-social
-description: Roda apenas o Stage 3 (social writers paralelos + clarice). Requer `02-reviewed.md`. Uso: `/diaria-3-social AAMMDD`.
+description: Roda apenas o Stage 3 (social writers paralelos + clarice). Requer `02-reviewed.md`. Uso — `/diaria-3-social AAMMDD`.
 ---
 
 # /diaria-3-social

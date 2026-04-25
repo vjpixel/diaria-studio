@@ -1,6 +1,6 @@
 ---
 name: publish-social
-description: Stage 6 — Publica os 6 posts sociais (3 LinkedIn + 3 Facebook) como rascunho quando a plataforma suportar; se não suportar, agenda em horário fixo configurado. Resume-aware: pula posts já publicados em `06-social-published.json`. Outputs em `06-social-published.json`.
+description: Stage 6 — Publica os 6 posts sociais (3 LinkedIn + 3 Facebook) como rascunho quando a plataforma suportar. Se não suportar, agenda em horário fixo configurado. Resume-aware (pula posts já publicados em `06-social-published.json`). Outputs em `06-social-published.json`.
 model: claude-sonnet-4-6
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
 ---

@@ -1,6 +1,6 @@
 ---
 name: research-reviewer
-description: Roda no Stage 1 após o categorizer e antes do scorer. Duas responsabilidades: (1) verificar e corrigir datas de publicação via `scripts/verify-dates.ts`, removendo artigos fora da janela de publicação; (2) detectar artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, evitando repetição de temas que a newsletter já noticiou.
+description: Roda no Stage 1 após o categorizer e antes do scorer. Duas responsabilidades — (1) verificar e corrigir datas de publicação via `scripts/verify-dates.ts`, removendo artigos fora da janela de publicação; (2) detectar artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, evitando repetição de temas que a newsletter já noticiou.
 model: claude-haiku-4-5-20251001
 tools: Bash, Read, Write
 ---

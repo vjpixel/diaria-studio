@@ -1,6 +1,6 @@
 ---
 name: diaria-4-eai
-description: Roda apenas o Stage 4 — busca a Foto do Dia da Wikimedia (POTD), gera versão IA via Gemini e escreve `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg`. Uso: `/diaria-4-eai AAMMDD`.
+description: Roda apenas o Stage 4 — busca a Foto do Dia da Wikimedia (POTD), gera versão IA via Gemini e escreve `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg`. Uso — `/diaria-4-eai AAMMDD`.
 ---
 
 # /diaria-4-eai

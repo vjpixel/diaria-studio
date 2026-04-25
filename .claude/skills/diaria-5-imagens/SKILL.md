@@ -1,6 +1,6 @@
 ---
 name: diaria-5-imagens
-description: Roda apenas o Stage 5 — gera as 3 imagens de destaque via Gemini API (Van Gogh impasto, 800×450px). Uso: `/diaria-5-imagens [d1|d2|d3]`.
+description: Roda apenas o Stage 5 — gera as 3 imagens de destaque via Gemini API (Van Gogh impasto, 800×450px). Uso — `/diaria-5-imagens [d1|d2|d3]`.
 ---
 
 # /diaria-5-imagens

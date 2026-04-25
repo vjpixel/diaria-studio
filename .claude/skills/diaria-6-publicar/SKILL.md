@@ -1,6 +1,6 @@
 ---
 name: diaria-6-publicar
-description: Roda os Stages 5 e 6 — cria rascunho no Beehiiv + email de teste (S5) e publica 6 posts sociais como rascunho/agendado (S6). Uso: `/diaria-6-publicar [all|newsletter|social] AAMMDD`.
+description: Roda os Stages 5 e 6 — cria rascunho no Beehiiv + email de teste (S5) e publica 6 posts sociais como rascunho/agendado (S6). Uso — `/diaria-6-publicar [all|newsletter|social] AAMMDD`.
 ---
 
 # /diaria-6-publicar
