@@ -479,6 +479,21 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish social started'`.
 - **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 6 --files 03-social.md,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
+- **Staleness check (#120) — APÓS o pull.** Rodar:
+  ```bash
+  npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
+  ```
+  Exit code 0 = ok, prosseguir. Exit code 1 = um ou mais downstreams (`03-social.md`, `04-d{1,2,3}*.jpg`) estão mais antigos que `02-reviewed.md` — sinal de que o editor mexeu na newsletter depois do Stage 3/4 já ter rodado, então os posts/imagens estão derivados de versão obsoleta. Pausar com:
+  > ⚠️ Outputs do Stage 6 derivam de uma versão antiga de `02-reviewed.md`:
+  > - {downstream} ({downstream_mtime}) ← {upstream} ({upstream_mtime}, {lag_minutes}min mais novo)
+  > - ...
+  >
+  > Re-rodar Stage 3 (social) e/ou Stage 4 (imagens) antes de publicar?
+  >   [s] sim, re-rodar (orchestrator volta ao stage indicado)
+  >   [n] não, publicar com versão atual (assumir que diff é cosmético)
+  >   [a] abortar
+  
+  Se `s`, voltar ao Stage 3 (re-disparar `social-linkedin` + `social-facebook` + Clarice) e/ou Stage 4 conforme o downstream que estava stale. Se `n`, prosseguir mas logar warn no run-log. Se `a`, parar.
 - Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` (Stage 4). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
 
 #### 6a. Facebook — via Graph API (script, ~30s)
