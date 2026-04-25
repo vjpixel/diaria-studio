@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateScheduledTime } from "../scripts/publish-facebook.ts";
+import { validateScheduledTime, needsReschedule } from "../scripts/publish-facebook.ts";
 
 const now = new Date("2026-04-24T12:00:00Z");
 
@@ -68,5 +68,72 @@ describe("validateScheduledTime (#78)", () => {
       const msg = e instanceof Error ? e.message : String(e);
       assert.ok(msg.includes("day-offset") || msg.includes("fallback_schedule"));
     }
+  });
+});
+
+describe("needsReschedule (#123)", () => {
+  it("true quando actual é null (post sem scheduled_at registrado)", () => {
+    assert.equal(needsReschedule(null, "2026-04-25T09:00:00-03:00"), true);
+  });
+
+  it("false quando actual === expected (mesmo timestamp ISO)", () => {
+    const t = "2026-04-25T09:00:00-03:00";
+    assert.equal(needsReschedule(t, t), false);
+  });
+
+  it("false quando actual e expected representam o mesmo instante em offsets diferentes", () => {
+    // 09:00 BRT = 12:00 UTC
+    assert.equal(
+      needsReschedule("2026-04-25T09:00:00-03:00", "2026-04-25T12:00:00Z"),
+      false,
+    );
+  });
+
+  it("true quando difere por mais de 60s (default tolerance)", () => {
+    assert.equal(
+      needsReschedule("2026-04-25T09:00:00-03:00", "2026-04-25T09:30:00-03:00"),
+      true,
+    );
+  });
+
+  it("false quando diferença ≤ tolerance (60s default — clock skew)", () => {
+    assert.equal(
+      needsReschedule("2026-04-25T09:00:00-03:00", "2026-04-25T09:00:30-03:00"),
+      false,
+    );
+  });
+
+  it("tolerância customizável via 3o arg", () => {
+    // Margem 5min
+    assert.equal(
+      needsReschedule(
+        "2026-04-25T09:00:00-03:00",
+        "2026-04-25T09:04:00-03:00",
+        300,
+      ),
+      false,
+    );
+    assert.equal(
+      needsReschedule(
+        "2026-04-25T09:00:00-03:00",
+        "2026-04-25T09:06:00-03:00",
+        300,
+      ),
+      true,
+    );
+  });
+
+  it("true quando actual é data inválida (defensive — força reschedule)", () => {
+    assert.equal(
+      needsReschedule("not-a-date", "2026-04-25T09:00:00-03:00"),
+      true,
+    );
+  });
+
+  it("caso real do #123: 10:00 BRT vs 09:00 BRT — precisa reschedule", () => {
+    assert.equal(
+      needsReschedule("2026-04-25T10:00:00-03:00", "2026-04-25T09:00:00-03:00"),
+      true,
+    );
   });
 });
