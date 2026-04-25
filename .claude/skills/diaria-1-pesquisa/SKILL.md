@@ -9,7 +9,7 @@ Executa só o Stage 1 da pipeline.
 
 ## Argumentos
 
-- `$1` = data da edição (`AAMMDD`, ex: `260423`). Pergunte se faltar.
+- `$1` = data da edição (`AAMMDD`, ex: `260423`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 
 ## Passo 1 — Confirmar janela de publicação aceita (sempre, antes do orchestrator)
 

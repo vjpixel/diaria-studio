@@ -75,6 +75,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Pipeline reproducible**: mudanças em agent prompts, config ou scripts devem ser committed + testadas; nunca rodadas direto de stash ou memória.
 
+- **Data da edição é sempre explícita.** Skills `/diaria-*` que aceitam `AAMMDD` **nunca** inferem a partir de `today()` ou da edição mais recente em `data/editions/`. Se o usuário não passar a data, perguntar com sugestão de hoje/ontem como atalho mas exigir confirmação. Risco de rodar stage destrutivo/publicador (3, 5, 6) na edição errada é alto demais pra default silencioso.
+
 ---
 
 ## Otimização de tokens

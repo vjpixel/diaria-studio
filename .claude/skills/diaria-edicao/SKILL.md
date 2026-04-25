@@ -9,10 +9,9 @@ Invoca o orchestrator para produzir uma nova edição da Diar.ia.
 
 ## Argumentos
 
-- `$1` = data da edição no formato `AAMMDD` (ex: `260418`).
+- `$1` = data da edição no formato `AAMMDD` (ex: `260418`). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação:
+  > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `--no-gates` (opcional) = pular todos os gates humanos, auto-aprovando cada stage. Drive sync, social scheduling e demais comportamentos permanecem normais (diferente de `/diaria-test` que também desabilita Drive e agenda social 10 dias à frente).
-
-Se `$1` não for passado, peça ao usuário.
 
 ## Pré-requisitos
 
