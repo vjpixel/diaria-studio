@@ -68,6 +68,14 @@ describe("applySubstitutions", () => {
     assert.equal(r.count, 1);
   });
 
+  it("'no entanto, é' → 'mas é' — lookahead permite match com char acentuado final", () => {
+    // Caso problemático: \b após `é` (non-word) não fecha em JS regex —
+    // o pattern usa (?=\s|[,.!?]|$) em vez de \b final pra confirmar boundary.
+    const r = applySubstitutions("Promete entrega rápida. No entanto, é caro.");
+    assert.equal(r.text, "Promete entrega rápida. mas é caro.");
+    assert.equal(r.count, 1);
+  });
+
   it("texto sem padrões passa intacto", () => {
     const r = applySubstitutions("O modelo é bom.");
     assert.equal(r.count, 0);

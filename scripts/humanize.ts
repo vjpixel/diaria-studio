@@ -66,8 +66,10 @@ interface SubstitutionRule {
 }
 
 const SUBSTITUTIONS: SubstitutionRule[] = [
-  // Conectivos pomposos → versão direta
-  { pattern: /\bno entanto, é\b/gi, replacement: "mas é", description: "no-entanto-é" },
+  // Conectivos pomposos → versão direta. Padrões que terminam em char
+  // acentuado (`é`) usam lookahead em vez de `\b` final — JS regex não
+  // detecta word boundary entre non-word chars (`é` + espaço).
+  { pattern: /\bno entanto, é(?=\s|[,.!?]|$)/gi, replacement: "mas é", description: "no-entanto-é" },
   { pattern: /\bdesta forma,\s+/gi, replacement: "Assim, ", description: "desta-forma" },
   { pattern: /\bdessa forma,\s+/gi, replacement: "Assim, ", description: "dessa-forma" },
   // Phrasings corporativas frequentes em LLM output
