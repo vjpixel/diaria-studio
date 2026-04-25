@@ -37,7 +37,7 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 
 ### 2. Disparar orchestrator
 
-Disparar o subagente `orchestrator` via `Task` passando no prompt:
+Disparar o subagente `orchestrator` via `Agent` passando no prompt:
 - `edition_date = <date>` (AAMMDD)
 - `window_days = {valor calculado}`
 - `test_mode = true`

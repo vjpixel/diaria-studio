@@ -42,7 +42,7 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 ## Passo 2 — Pré-requisitos e disparo
 
 1. Verificar pré-requisitos: `context/sources.md` e `context/audience-profile.md` (ambos não-placeholder). `past-editions.md` é regenerado automaticamente pelo orchestrator — não precisa estar atualizado.
-2. Disparar `orchestrator` via `Task` com instrução: rodar **Stage 0 (refresh dedup + inbox drain) + Stage 1** e pausar no gate ao final. Passar no prompt:
+2. Disparar `orchestrator` via `Agent` com instrução: rodar **Stage 0 (refresh dedup + inbox drain) + Stage 1** e pausar no gate ao final. Passar no prompt:
    - `edition_date = $1` (AAMMDD)
    - `window_days = {valor confirmado no Passo 1}`
    - `stop_after_stage = 1`

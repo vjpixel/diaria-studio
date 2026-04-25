@@ -56,7 +56,7 @@ Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` e
 
 ## Passo 2 — Disparar o orchestrator com `window_days` confirmado
 
-Dispare o subagente `orchestrator` via `Task` passando no prompt:
+Dispare o subagente `orchestrator` via `Agent` passando no prompt:
 - `edition_date = $1` (AAMMDD)
 - `window_days = {valor confirmado no Passo 1}`
 - `auto_approve = true` (se `--no-gates` foi passado)

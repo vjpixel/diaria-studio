@@ -15,7 +15,7 @@ Puxa novos e-mails enviados para `diariaeditor@gmail.com` desde o último drain 
 
 ## Execução
 
-Dispare o subagente `inbox-drainer` via `Task` (sem argumentos).
+Dispare o subagente `inbox-drainer` via `Agent` (sem argumentos).
 
 Ao final, mostre ao usuário:
 1. O JSON de resultado do drainer (`new_entries`, `urls`, `topics`, `most_recent_iso`, `skipped`).
