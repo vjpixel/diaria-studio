@@ -225,24 +225,22 @@ export function checkRequiredSections(html: string): LintIssue[] {
 }
 
 /**
- * Verifica que <img src> não contém file://, localhost, ou paths relativos (#93).
- * Catches casos onde a substituição de URL de imagem (placeholders → CDN) falhou
- * silenciosamente — o HTML colado no Beehiiv ficaria com imagens quebradas.
+ * Verifica que <img src> só usa schemes seguros pra Beehiiv (#93).
+ * Whitelist: https://, data:, e {{IMG:...}} (placeholders capturados pelo
+ * `checkUnresolvedPlaceholders`). Qualquer outra coisa (file://, localhost,
+ * http://, paths relativos como ./ ../ ou /abs) sinaliza substituição de URL
+ * falhada — mais simples manter um whitelist único do que enumerar deny patterns.
  */
 export function checkInsecureImageSrc(html: string): LintIssue[] {
   const imgMatches = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)];
   const insecure: string[] = [];
   for (const m of imgMatches) {
     const src = m[1];
-    if (
-      src.startsWith("file://") ||
-      src.startsWith("localhost") ||
-      src.startsWith("http://localhost") ||
-      src.startsWith("/") ||
-      src.startsWith("./") ||
-      src.startsWith("../") ||
-      (!src.startsWith("https://") && !src.startsWith("data:") && !src.startsWith("{{IMG:"))
-    ) {
+    const allowed =
+      src.startsWith("https://") ||
+      src.startsWith("data:") ||
+      src.startsWith("{{IMG:");
+    if (!allowed) {
       insecure.push(src.slice(0, 60));
     }
   }
@@ -266,6 +264,8 @@ export function checkHtmlSize(html: string): LintIssue[] {
   const bytes = Buffer.byteLength(html, "utf8");
   const KB = bytes / 1024;
   if (bytes < 60 * 1024) return [];
+  // `count` representa contagem de itens nas outras checks — pra size,
+  // a métrica vai em `samples` ("size_kb: X.Y") e `count` fica omitido.
   const samples = [`size_kb: ${KB.toFixed(1)}`];
   if (bytes >= 102 * 1024) {
     return [
@@ -273,7 +273,6 @@ export function checkHtmlSize(html: string): LintIssue[] {
         rule: "html_too_large",
         severity: "error",
         message: `HTML tem ${KB.toFixed(1)} KB — Gmail corta em 102 KB (mensagem aparece truncada com link "view entire message")`,
-        count: bytes,
         samples,
       },
     ];
@@ -283,7 +282,6 @@ export function checkHtmlSize(html: string): LintIssue[] {
       rule: "html_size_warning",
       severity: "warning",
       message: `HTML tem ${KB.toFixed(1)} KB — perto do limite de Gmail (102 KB). Considerar simplificar tabelas ou hospedar imagens externas.`,
-      count: bytes,
       samples,
     },
   ];
