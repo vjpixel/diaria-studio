@@ -24,7 +24,7 @@ Antes de pontuar, releia:
    - **Relevância para a audiência** — julgamento editorial informado por `context/audience-profile.md`: perfil do público (profissionais de tecnologia, produto, startups e IA no Brasil), CTR por categoria (acima da média ~0.65% = bônus, abaixo = penalidade; conteúdo BR tem CTR ~25% maior que INT) e CTR por domínio (fontes com CTR histórico alto indicam confiança da audiência). O artigo muda como nosso público trabalha, decide ou investe?
    - **Atualidade** (mais recente > mais antigo dentro da janela)
 3. Ordenar por score desc.
-4. Selecionar **top 6** destaques por score. Em caso de empate, desempatar favorecendo **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa) e **diversidade de bucket** (evitar 6 do mesmo bucket, mas sem cota mínima).
+4. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6) — mesmo se o pool tiver scores baixos ou concentração temática alta, complete até 6 com os melhores disponíveis. Em caso de empate, desempatar favorecendo **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa) e **diversidade de bucket** (evitar 6 do mesmo bucket, mas sem cota mínima). **Exceção única:** se o pool total tiver `< 6` artigos, output = `pool.length` e adicionar `warning_pool_too_small: true` no JSON. **❌ Não produza menos de 6 quando há pool suficiente jogando os candidatos 4–6 em `runners_up`** — a divisão é por mérito relativo (top 6 vs próximos), não por threshold absoluto de score (#104).
 5. Definir **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket.
 
 ## Output

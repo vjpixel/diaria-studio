@@ -59,7 +59,12 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `01-eai.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eai-composer` em background (mesma lógica do Stage 1 dispatch).
   - O gate do É IA? será apresentado assim que o Task completar, intercalado com o fluxo principal.
   - **Pré-requisito do Stage 5:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando o Stage 5 for atingido, **bloquear e aguardar** o Task — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
-  - Se o usuário responder "sim, refazer do zero", renomear a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar (nunca deletar trabalho). Nunca sobrescreva arquivos de stages anteriores sem essa confirmação.
+  - Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional** antes de mover a pasta (#101). Apresentar:
+    > "Pra confirmar, digite o número da edição (ex: `260424`):"
+    
+    Só prosseguir se a resposta literal do usuário for **exatamente** `{AAMMDD}` (após `.trim()`). Respostas como `sim`, `yes`, `confirmar` **não** valem — só o literal da edição (mesmo padrão de `git branch -D <name>`). Isso impede o agent de auto-completar a partir de uma resposta genérica.
+    
+    Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar. Nunca sobrescreva arquivos de stages anteriores sem essa dupla confirmação. Pra deleção manual real (CLI fora do pipeline), o editor usa `scripts/safe-delete-edition.ts` que aplica o mesmo padrão de literal-name confirmation.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
 - **Inicializar _internal/cost.md.** Se `data/editions/{AAMMDD}/_internal/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
@@ -184,6 +189,14 @@ Após Stage 6 (publicação social) completar, orchestrator deve disparar `colle
   - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
   - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no `01-categorized.md` para revisão manual no gate.
   - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente.
+- **Enriquecer artigos do inbox (#109).** URLs do editor entram com `title: "(inbox)"` e `summary: null`; o writer do Stage 2 pula esses itens silenciosamente porque não há conteúdo verificável. Após a substituição de URLs (passo anterior), rodar:
+  ```bash
+  # Gravar lista atual de artigos em arquivo temporário
+  # (escrever lista em data/editions/{AAMMDD}/tmp-articles-enrich.json)
+  npx tsx scripts/enrich-inbox-articles.ts \
+    --in data/editions/{AAMMDD}/tmp-articles-enrich.json
+  ```
+  O script só toca artigos com `flag: "editor_submitted"` ou `source: "inbox"` cujo título seja placeholder (`(inbox)`, `[INBOX] ...`) ou cujo `summary` esteja vazio. Para cada um, fetch da URL final + extração de `og:title` / `og:description` (com fallback pra `<title>` e `meta name=description`). Títulos curados pelo editor são preservados; só placeholders são substituídos. Falhas de fetch viram outcome `fetch_failed` no stdout — não bloqueiam pipeline. Ler o JSON de volta após o script (mutated in place).
 - **Deduplicar** a lista filtrada rodando:
   ```bash
   npx tsx scripts/dedup.ts \
@@ -205,6 +218,7 @@ Após Stage 6 (publicação social) completar, orchestrator deve disparar `colle
   2. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
   Retorna `categorized` limpo + `stats` com contagens de removidos/corrigidos. Usar esse `categorized` daqui em diante. Logar `stats.removals[]` em caso de remoções para rastreabilidade.
 - Disparar `scorer` (Sonnet) passando `categorized` (saída do research-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+- **Validação pós-scorer (#104).** Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks: posição original → 1, primeiro promovido → próximo rank disponível, etc. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo. Razão: o spec do scorer é "sempre 6"; quando o LLM diverge, o orchestrator corrige automaticamente em vez de deixar o editor decidir entre menos candidatos.
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
 - **Strip do campo `verifier`**: antes de salvar, remover o campo `verifier` de cada artigo (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON).
 - Estrutura final de `_internal/01-categorized.json`:
