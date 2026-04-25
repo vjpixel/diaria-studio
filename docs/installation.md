@@ -268,8 +268,13 @@ Acompanhar cada gate e validar que funciona. Se falhar em algum stage, ver `/dia
 - Ler [`context/editorial-rules.md`](../context/editorial-rules.md) — regras editoriais invariantes.
 - Acompanhar issues com labels `P0`–`P3` em https://github.com/vjpixel/diaria-studio/issues.
 
+## Manutenção pós-setup
+
+Credenciais expiram, são revogadas, ou precisam rotação proativa. O guia completo (com cadência sugerida + playbook emergencial pra quando algo falha em produção) está em [`secret-rotation.md`](./secret-rotation.md). Recomendado revisitar a cada 30 dias.
+
 ## Referências dos guias detalhados
 
 - [`browser-publish-setup.md`](./browser-publish-setup.md) — Claude in Chrome (seção 8 resumida aqui).
 - [`gmail-inbox-setup.md`](./gmail-inbox-setup.md) — inbox editorial (seção 4.3 resumida aqui).
 - [`comfyui-setup.md`](./comfyui-setup.md) — Stable Diffusion local (alternativa ao Gemini; raro usar hoje).
+- [`secret-rotation.md`](./secret-rotation.md) — rotação de credenciais + playbook emergencial.
