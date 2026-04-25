@@ -15,7 +15,7 @@ Atualiza o cache de edições passadas usado pelo `scripts/dedup.ts`.
 
 ## Execução
 
-Dispare o subagente `refresh-dedup-runner` via `Task` (sem argumentos).
+Dispare o subagente `refresh-dedup-runner` via `Agent` (sem argumentos).
 
 O subagente detecta sozinho:
 - **Bootstrap** (primeira vez): busca as `dedupEditionCount` edições mais recentes e popula `data/past-editions-raw.json` + `context/past-editions.md` do zero.

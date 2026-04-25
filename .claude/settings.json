@@ -8,7 +8,7 @@
       "Grep",
       "WebFetch",
       "WebSearch",
-      "Task",
+      "Agent",
       "Bash(node scripts/*.ts)",
       "Bash(node scripts/*.js)",
       "Bash(node scripts/*.js *)",
