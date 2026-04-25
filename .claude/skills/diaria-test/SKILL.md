@@ -1,3 +1,8 @@
+---
+name: diaria-test
+description: Roda a pipeline completa da Diar.ia sem gates humanos para benchmark de performance — auto-aprova tudo, agenda social 10 dias à frente, pula Drive sync. Uso — `/diaria-test [AAMMDD]`.
+---
+
 # /diaria-test
 
 Roda a pipeline completa da Diar.ia **sem gates humanos** para benchmark de performance.

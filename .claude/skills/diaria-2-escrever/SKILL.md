@@ -1,6 +1,6 @@
 ---
 name: diaria-2-escrever
-description: Roda apenas o Stage 2 (writer + clarice). Requer `_internal/01-approved.json` já existente. Uso: `/diaria-2-escrever AAMMDD`.
+description: Roda apenas o Stage 2 (writer + clarice). Requer `_internal/01-approved.json` já existente. Uso — `/diaria-2-escrever AAMMDD`.
 ---
 
 # /diaria-2-escrever
