@@ -66,6 +66,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 - "Por que isso importa:" em linha separada.
 - Prompt de imagem: Van Gogh impasto, 2:1, SEM resolução em pixels, SEM Noite Estrelada.
 - Output final sem markdown (nada de `**`, `#`, `- `).
+- **LANÇAMENTOS só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → NOTÍCIAS. Validar com `scripts/validate-lancamentos.ts`.
 
 ## Princípios operacionais invariáveis
 

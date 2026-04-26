@@ -364,6 +364,11 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+- **Validar LANÇAMENTOS oficiais (#160).** Rodar:
+  ```bash
+  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json,_internal/02-llm-polished.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. (`02-llm-polished.md` só existe se LLM polish rodou — sync ignora arquivos ausentes.)
 - **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` + resumo do humanize report (`{ removals_count, substitutions_count, flags[].length }`) e instruir:
   ```
