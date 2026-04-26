@@ -318,13 +318,14 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   ```
   O script é conservador: só remove/substitui padrões com tradução clara; padrões ambíguos (sentenças > 30 palavras, "não apenas X mas também Y", conectivos repetidos) viram flags no report — não alteram texto. Falha do humanizer (exit code != 0) **não bloqueia** — fallback usa o draft original como input pra Clarice. Logar warn em caso de falha: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanize falhou — usando draft original'`.
 - **Revisar com Clarice (inline — sem Agent):**
-  1. Ler conteúdo de `data/editions/{AAMMDD}/_internal/02-humanized.md` (ou `02-draft.md` se humanize falhou).
+  Definir `CLARICE_INPUT` baseado no resultado do humanize: se `02-humanized.md` existe (humanize sucedeu), `CLARICE_INPUT = _internal/02-humanized.md`; senão (humanize falhou), `CLARICE_INPUT = _internal/02-draft.md`. **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
-  4. Gerar diff legível:
+  4. Gerar diff legível usando o mesmo `CLARICE_INPUT` definido acima:
      ```bash
      npx tsx scripts/clarice-diff.ts \
-       data/editions/{AAMMDD}/_internal/02-humanized.md \
+       data/editions/{AAMMDD}/{CLARICE_INPUT} \
        data/editions/{AAMMDD}/02-reviewed.md \
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
