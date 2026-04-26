@@ -328,6 +328,13 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
 - Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --md data/editions/{AAMMDD}/_internal/02-draft.md \
+    --approved data/editions/{AAMMDD}/_internal/01-approved.json
+  ```
+  Exit 1 = URL na seção errada (ex: `bucket: "noticias"` em LANÇAMENTOS) ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt (ex: "mover X de LANÇAMENTOS pra OUTRAS NOTÍCIAS"). Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum coberto: ferramenta nova com `bucket: "noticias"` (porque é cobertura, não anúncio oficial) que o writer põe em LANÇAMENTOS por associação temática (ex: ComfyUI).
 - **Normalizar layout (inline — sem Agent, #157):** o writer LLM ocasionalmente concatena elementos numa linha única (3 títulos do destaque colados no header, ou título+descrição+URL colados num item de seção). Rodar pós-processador defensivo que detecta e quebra:
   ```bash
   npx tsx scripts/normalize-newsletter.ts \
