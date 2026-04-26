@@ -89,10 +89,15 @@ const REPETITIVE_CONNECTIVES = [
 /**
  * Recapitaliza primeira letra de sentenças após pontuação forte / início de
  * linha. Mantém o resto do texto.
+ *
+ * Lookahead negativo `(?!https?:\/\/)` evita capitalizar URLs que seguem
+ * fim de sentença em linha própria (#163). Sem o guard, padrão como
+ * "texto.\nhttps://..." virava "texto.\nHttps://..." — quebra parsers
+ * de URL e fica visualmente errado.
  */
-function recapitalizeSentenceStarts(text: string): string {
+export function recapitalizeSentenceStarts(text: string): string {
   return text.replace(
-    /(^|[\n.!?]\s+)([a-zà-ÿ])/g,
+    /(^|[\n.!?]\s+)(?!https?:\/\/)([a-zà-ÿ])/g,
     (_, prefix: string, ch: string) => prefix + ch.toUpperCase(),
   );
 }
