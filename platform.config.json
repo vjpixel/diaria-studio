@@ -13,6 +13,10 @@
     "enabled": true
   },
   "drive_sync": true,
+  "humanize": {
+    "llm_polish": false,
+    "llm_polish_threshold_flags": 3
+  },
   "logging": {
     "path": "data/run-log.jsonl"
   },

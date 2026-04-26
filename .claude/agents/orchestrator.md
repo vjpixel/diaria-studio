@@ -324,8 +324,14 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
     2> data/editions/{AAMMDD}/_internal/02-humanize-report.json
   ```
   O script é conservador: só remove/substitui padrões com tradução clara; padrões ambíguos (sentenças > 30 palavras, "não apenas X mas também Y", conectivos repetidos) viram flags no report — não alteram texto. Falha do humanizer (exit code != 0) **não bloqueia** — fallback usa o draft original como input pra Clarice. Logar warn em caso de falha: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanize falhou — usando draft original'`.
+- **LLM polish opcional (#45 Opção 3):** ler `platform.config.json > humanize`. Se `llm_polish: true` OU se `02-humanize-report.json > flags.length >= llm_polish_threshold_flags` (default 3), disparar `humanizer-llm` (Sonnet, Agent) passando:
+  - `in_path = data/editions/{AAMMDD}/_internal/02-humanized.md`
+  - `out_path = data/editions/{AAMMDD}/_internal/02-llm-polished.md`
+  - `report_path = data/editions/{AAMMDD}/_internal/02-humanize-report.json`
+
+  O agent é conservador (preserva fatos, formatação e voz). Retorna `{ out_path, changes_applied, flags_addressed[], flags_skipped[] }`. Se o agent falhar ou retornar `changes_applied: 0`, prosseguir sem o LLM polish — o `02-humanized.md` continua sendo o input do Clarice. Se sucedeu com mudanças, `02-llm-polished.md` vira o input do Clarice. Se `humanize` falhou e LLM polish foi acionado por config, pular o LLM (não tem input válido).
 - **Revisar com Clarice (inline — sem Agent):**
-  Definir `CLARICE_INPUT` baseado no resultado do humanize: se `02-humanized.md` existe (humanize sucedeu), `CLARICE_INPUT = _internal/02-humanized.md`; senão (humanize falhou), `CLARICE_INPUT = _internal/02-draft.md`. **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-llm-polished.md` se existe (LLM polish foi aplicado); (2) `_internal/02-humanized.md` se existe (humanize sucedeu); (3) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
   1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
@@ -337,7 +343,7 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json")`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json,_internal/02-llm-polished.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. (`02-llm-polished.md` só existe se LLM polish rodou — sync ignora arquivos ausentes.)
 - **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` + resumo do humanize report (`{ removals_count, substitutions_count, flags[].length }`) e instruir:
   ```
   ✏️  Edite data/editions/{AAMMDD}/02-reviewed.md antes de aprovar:
