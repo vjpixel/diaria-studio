@@ -1,73 +1,92 @@
-# Beehiiv vs Kit (ConvertKit) — Comparativo Fase 0
+# Beehiiv vs Kit vs Substack — Comparativo Fase 0
 
 Pesquisa pública pra acelerar a Fase 0 da issue #84 (decisão de migração da Diar.ia). **Não substitui** validação prática (free trial Kit + envio experimental). Números coletados em abril/2026; reverificar antes de qualquer decisão de compra.
 
 ## Tabela resumo
 
-| Critério | Beehiiv | Kit (ConvertKit) |
-|---|---|---|
-| **Plano free** | Launch — até 2.500 subs, sends ilimitados, core completo | Newsletter — até 10.000 subs, broadcasts ilimitados, formulários ilimitados |
-| **Próximo tier** | Scale — $49/mês ($43 anual) | Creator — $39/mês ($33 anual) pra 1.000 subs |
-| **Tier top** | Max — $109/mês ($96 anual) | Pro — $79/mês ($66 anual) pra 1.000 subs |
-| **Preço escala** | Beehiiv preço varia por subs (3 tiers) | Creator $39-$199/mês conforme subs (1k-25k); Pro $79-$279/mês |
-| **Custom HTML block** | ✅ Em todos os planos (incluindo free) — HTML Snippet inline. Limites: sem `<script>`, sem `<style>`, sem iframes em email. | ✅ Em todos os planos — "HTML Block" como content block. Permite CSS inline. |
-| **Templates customizáveis** | Visual editor + custom HTML em posts | Dois modos: Visual Template Editor (sem código) **OU** HTML Template Editor (full HTML/CSS code). Mutuamente exclusivos por template. |
-| **API** | API REST completa em todos os planos. Endpoints públicos: posts, subscriptions, publications, aggregate stats. **Não expõe poll responses individuais.** | API completa em **todos** os planos (free incluso). Documentação aberta. |
-| **MCP connector (claude.ai)** | ✅ Disponível (`mcp__..._Beehiiv__*`) | ❌ Não confirmei MCP oficial. Precisaria HTTP direto via API key. |
-| **Test email** | ✅ Nativo via dashboard + API | ✅ Nativo via dashboard |
-| **Deliverability** | "Optimized Deliverability" core feature, em todos os planos | Reputação histórica forte (10+ anos no mercado), Pro tem deliverability reporting |
-| **Surveys/forms** | Polls inline, surveys, formulários nativos | Forms ilimitados em todos os planos, sequencias automáticas |
-| **Analytics** | Aggregate stats em todos os planos; advanced analytics no Scale | Padrão em todos; advanced reporting + insight dashboard no Pro |
-| **Branding remove** | Apenas Max ($109/mês) | Apenas Pro ($79/mês) |
+| Critério | Beehiiv | Kit (ConvertKit) | Substack |
+|---|---|---|---|
+| **Plano free** | Launch — até 2.500 subs, sends ilimitados, core completo | Newsletter — até 10.000 subs, broadcasts ilimitados, formulários ilimitados | Free indefinido se publicação for grátis (sem fee) |
+| **Próximo tier** | Scale — $49/mês ($43 anual) | Creator — $39/mês ($33 anual) pra 1.000 subs | Sem tier mensal — modelo é % revenue |
+| **Tier top** | Max — $109/mês ($96 anual) | Pro — $79/mês ($66 anual) pra 1.000 subs | Mesmo modelo (sem tier) |
+| **Modelo de receita** | Subscription mensal por subs | Subscription mensal por subs | **10% cut em paid subs** + Stripe (~13-16% efetivo) |
+| **Preço escala** | Beehiiv preço varia por subs (3 tiers) | Creator $39-$199/mês conforme subs (1k-25k); Pro $79-$279/mês | Zero fixo, mas % corta receita conforme cresce |
+| **Custom HTML block** | ✅ Em todos os planos (incluindo free) — HTML Snippet inline. Limites: sem `<script>`, sem `<style>`, sem iframes em email. | ✅ Em todos os planos — "HTML Block" como content block. Permite CSS inline. | ❌ **Não tem** — editor é blocks-only, sem HTML raw em emails |
+| **Templates customizáveis** | Visual editor + custom HTML em posts | Visual + HTML Template Editor (mutuamente exclusivos por template) | Editor block-based fixo. Customização via configuração de marca, sem custom layouts. |
+| **API** | API REST completa em todos os planos. **Não expõe poll responses individuais.** | API completa em **todos** os planos (free incluso). Documentação aberta. | ❌ **Sem API pública oficial.** Existe API privada que dá pra usar via reverse-engineering com cookie auth — frágil, sem suporte. |
+| **MCP connector (claude.ai)** | ✅ Disponível (`mcp__..._Beehiiv__*`) e em uso na pipeline | ❌ Não confirmado MCP oficial | ❌ Não tem; libs não-oficiais Python/TS via reverse-engineering |
+| **Test email** | ✅ Nativo via dashboard + API | ✅ Nativo via dashboard | ✅ Nativo no editor |
+| **Deliverability** | "Optimized Deliverability" core feature | Reputação histórica forte (10+ anos), Pro tem deliverability reporting | Generally bom, mas alguns relatos de spam folder em domínios específicos |
+| **Polls/surveys** | Polls inline (Voting + Trivia), surveys, formulários nativos | Forms ilimitados em todos os planos, sequencias automáticas | Polls inline nativos, com dashboard. Sem export estruturado pelo API. |
+| **Analytics** | Aggregate stats em todos os planos; advanced analytics no Scale | Padrão em todos; advanced reporting + insight dashboard no Pro | Open rate, CTR, growth básicos no dashboard; sem export robusto |
+| **Segmentation/automations** | Segmentos por tag, automações | Segmentação avançada, sequências, A/B testing (Creator+) | ❌ Sem segmentação avançada, sem A/B, sem automations |
+| **Branding remove** | Apenas Max ($109/mês) | Apenas Pro ($79/mês) | Sempre tem branding "powered by Substack" + recommendation widget |
+| **Custom domain** | Incluso | Incluso | $50 one-time fee |
+| **Discovery/network** | Limitado | Limitado | **Forte** — Substack Notes + recommendations cross-publication são canal de growth real |
 
 ## Implicações pro pipeline Diar.ia
 
-### 1. Custom HTML (#74) — paridade
+### 1. Custom HTML (#74) — paridade Beehiiv/Kit, gap em Substack
 
-Ambas plataformas têm custom HTML block em todos os planos. Não é mais um diferencial de pricing; nem precisa upgrade pra usar. **Resolve o trigger original da issue #84** (não há "upgrade caro pro custom HTML").
+Beehiiv e Kit têm Custom HTML em todos os planos. **Substack não tem** — editor é block-only. **Resolve o trigger original da issue #84** pra Beehiiv/Kit (não há "upgrade caro pro custom HTML"); Substack ficaria fora dessa equação.
 
 ### 2. API + MCP
 
-- **Beehiiv**: MCP integrado claude.ai já em uso (`refresh-dedup-runner` agent). Mudança de plataforma quebraria essa integração — substituir MCP calls por HTTP direto.
-- **Kit**: API completa em todos os planos, mas sem MCP oficial confirmado. Pipeline atual usa Beehiiv MCP em pelo menos 2 lugares (refresh past-editions, audience update). Migrar pra Kit = ~50-100 linhas de código novo (HTTP + auth + retry).
+- **Beehiiv**: MCP em uso (`refresh-dedup-runner`, audience update). Pipeline integrada.
+- **Kit**: API completa, sem MCP oficial. Migrar = ~50-100 linhas de HTTP/auth.
+- **Substack**: API não-oficial. Pipeline atual não funcionaria sem reverse-engineer + cookie auth — frágil, pode quebrar a qualquer release. **Risco alto pra automação editorial**.
 
-### 3. Polls / surveys
+### 3. Modelo de receita
 
-Pipeline depende de Beehiiv polls pro É IA? (#107). **Achado relevante**: API Beehiiv não expõe poll responses individuais — só CSV export manual do dashboard. Se Kit tiver endpoint API pra poll responses, é vantagem real (#107 destrava). Não confirmei na pesquisa pública — Kit foca mais em forms/sequences que em polls inline tipo Beehiiv. **Ação sugerida na Fase 1**: testar criação de poll em Kit free trial e ver se respostas aparecem na API.
+- **Beehiiv/Kit**: subscription mensal. Diar.ia paga zero hoje (Beehiiv Launch free).
+- **Substack**: zero mensal, mas se Diar.ia algum dia virar paid, 10% revenue cut + Stripe fees corta ~16% da receita. Vs Beehiiv Max ($109/mês) que mantém 100% da receita: ponto de virada é em ~$680/mês de receita paid (acima disso, Beehiiv fica mais barato).
+- **Pra newsletter free** (caso atual da Diar.ia): Beehiiv e Substack são equivalentes em custo zero; Kit precisaria Creator se passar de 10k subs.
 
-### 4. Preço comparado pra escala atual da Diar.ia
+### 4. Polls / surveys (relevante pra #107)
 
-Sem o número exato de subs da Diar.ia hoje, range estimado:
+- **Beehiiv**: tem polls inline (incluindo Trivia que estamos testando). API expõe aggregate stats — possivelmente Trivia stats também.
+- **Kit**: focado em forms/sequences, não polls inline. Menos natural pro caso de uso É IA?.
+- **Substack**: tem polls inline com dashboard, sem export API estruturado.
 
-- **< 1.000 subs**: Beehiiv free OU Kit free → ambos zero custo. Sem decisão.
-- **1.000-2.500 subs**: Beehiiv free ainda OK. Kit precisa Creator ($39/mês). **Beehiiv ganha.**
-- **2.500-5.000 subs**: Beehiiv Scale $49/mês. Kit Creator ~$50-79/mês. **Beehiiv levemente mais barato.**
-- **5.000-10.000 subs**: Beehiiv Scale ~$79-99/mês. Kit Creator $79-119/mês. **Praticamente empate.**
-- **> 10.000 subs**: Kit Creator $119+/mês. Beehiiv Max se quiser branding remove (~$109+/mês). **Beehiiv mais barato + Max já tem branding remove.**
+### 5. Discovery network
 
-### 5. Migração de dados
+Substack tem vantagem real aqui — recommendation engine cross-publication impulsiona growth orgânico. Beehiiv e Kit têm "recommendations" como feature paga (SparkLoop integration etc.), menos integradas.
 
-Ambos suportam CSV import/export de subscribers. Edições passadas (Beehiiv → Kit) seria perda de histórico web — Kit não importa posts de outras plataformas. Estratégia: manter Beehiiv como arquivo histórico read-only.
+Pra Diar.ia atual (foco editorial brasileiro), o network do Substack é fortemente US-centric — utilidade incerta.
+
+### 6. Migração de dados
+
+- **Beehiiv → Kit/Substack**: subscribers via CSV. Edições passadas perdidas (ou exportadas como standalone).
+- **Beehiiv → Substack**: import nativo de subscribers. Mas Custom HTML existente não migra (Substack não tem).
 
 ## Trade-offs principais
 
-| Argumentos pra migrar pra Kit | Argumentos pra ficar no Beehiiv |
-|---|---|
-| Free tier 4× maior (10k vs 2.5k subs) | Custom HTML já em todos os planos — trigger original da #84 não existe mais |
-| Brand "Kit" mais alinhado a creator economy | MCP connector já integrado e em uso na pipeline |
-| Possível API pra poll responses (a confirmar) | Pipeline existente roda; migração é ~2-3 PRs grandes (#74, #84 da migration phase) |
-| Pricing previsível (sem subscriber tier breakpoints surpresa) | Polls inline + surveys nativos; UX do É IA? está construída em cima |
-| | Beehiiv preço estável e competitivo até ~5k subs |
+| Argumentos pra migrar pra **Kit** | Argumentos pra migrar pra **Substack** | Argumentos pra **ficar no Beehiiv** |
+|---|---|---|
+| Free tier 4× maior (10k vs 2.5k subs) | Modelo "free pra sempre" se publicação não é paid | Custom HTML grátis em todos os planos — trigger original da #84 não existe mais |
+| API completa, possível MCP no futuro | Discovery network forte (US-centric) | MCP integrado e em uso |
+| Pricing previsível por subs | Zero overhead de billing mensal | Pipeline existente roda; migração = 2-3 PRs grandes |
+| Possível API pra poll responses (a confirmar) | Brand "Substack" tem reconhecimento creator-economy | Polls inline + Trivia (relevante pra #107) |
+| | | Pricing previsível, competitivo até ~5k subs |
+
+| Argumentos contra **Kit** | Argumentos contra **Substack** | Argumentos contra **ficar no Beehiiv** |
+|---|---|---|
+| Custo de migração + perda de MCP | **Sem API pública oficial** — pipeline atual quebraria | Custo se ultrapassar 10k subs |
+| Pricing por subs encarece | Custom HTML inexistente — perda de feature | API não expõe poll responses individuais |
+| Sem MCP oficial confirmado | 10% revenue cut se virar paid | |
+| | Limites em segmentation/automation | |
 
 ## Recomendação resumida
 
-**Não migre agora.** O trigger original da #84 (custom HTML como upgrade caro) **não existe mais** — Beehiiv tem custom HTML grátis em todos os planos. Os ganhos de migrar (free tier maior, possível API de polls) são incrementais; o custo (refactor de 50-100 linhas + perda de MCP + risco de regressão) é alto.
+**Não migre agora.** O trigger original da #84 (custom HTML como upgrade caro) **não existe mais** — Beehiiv tem custom HTML grátis em todos os planos. Os ganhos de migrar (free tier maior do Kit, network do Substack) são incrementais; o custo (refactor de 50-100 linhas + perda de MCP + risco de regressão) é alto.
+
+**Substack particularmente não recomendado** pra Diar.ia: a falta de API oficial mata a automação editorial existente. Faz sentido pra creator solo que escreve manual; não pra pipeline de orchestration como a nossa.
 
 **Quando reconsiderar:**
 - Se Diar.ia ultrapassar 10k subs com Beehiiv ficando caro vs alternativas.
 - Se Beehiiv API quebrar / mudar contrato significativamente.
-- Se feature crítica nova só aparecer no Kit (poll API, segmentation avançada, etc).
-- Se a Diar.ia decidir spin-off (#60) e precisar de plataforma adicional — aí Kit free poderia hospedar o experimento sem custo.
+- Se feature crítica nova só aparecer em outra plataforma (ex: poll API, segmentation avançada).
+- Se a Diar.ia decidir spin-off (#60) e precisar de plataforma adicional — aí Kit free poderia hospedar o experimento sem custo (ou Substack se foco for discovery US).
 
 ## Fontes
 
@@ -75,4 +94,6 @@ Ambos suportam CSV import/export de subscribers. Edições passadas (Beehiiv →
 - [Beehiiv custom HTML feature](https://product.beehiiv.com/p/introducing-custom-html-blocks-richtext-welcome-emails-additional-headers-support-center)
 - [Kit Pricing 2026](https://kit.com/pricing)
 - [Kit custom HTML template](https://help.kit.com/en/articles/2810363-creating-a-custom-html-email-template)
+- [Substack pricing official](https://support.substack.com/hc/en-us/articles/360037607131-How-much-does-Substack-cost)
+- [Substack Developer API (LinkedIn-only)](https://support.substack.com/hc/en-us/articles/45099095296916-Substack-Developer-API)
 - [Beehiiv polls CSV export](https://www.beehiiv.com/support/article/13063381953303-How-to-export-poll-data) (relevante pra #107)
