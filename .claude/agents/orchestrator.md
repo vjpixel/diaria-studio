@@ -304,7 +304,7 @@ Após Stage 6 (publicação social) completar, orchestrator deve disparar `colle
 
 ### 2. Stage 2 — Writing
 
-Este stage é **sequencial** (writer → clarice) porque cada etapa depende do output da anterior. Não tente paralelizar.
+Este stage é **sequencial** (writer → humanizer → clarice) porque cada etapa depende do output da anterior. Não tente paralelizar.
 
 - Ler `data/editions/{AAMMDD}/_internal/01-approved.json`. Extrair `highlights[]` (já rankeados pelo scorer no Stage 1) e o objeto `categorized` (buckets `lancamento`, `pesquisa`, `noticias` com scores).
 - Disparar `writer` (Sonnet) passando:
@@ -315,25 +315,37 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
-- Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para Clarice.
+- Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para humanizer.
+- **Humanizar (inline — sem Agent, #45):** rodar pass determinístico que remove tics LLM antes da Clarice (a Clarice cobre ortografia/concordância; o humanizer pega muletas tipo "É importante notar que", "Vale destacar", etc).
+  ```bash
+  npx tsx scripts/humanize.ts \
+    --in data/editions/{AAMMDD}/_internal/02-draft.md \
+    --out data/editions/{AAMMDD}/_internal/02-humanized.md \
+    2> data/editions/{AAMMDD}/_internal/02-humanize-report.json
+  ```
+  O script é conservador: só remove/substitui padrões com tradução clara; padrões ambíguos (sentenças > 30 palavras, "não apenas X mas também Y", conectivos repetidos) viram flags no report — não alteram texto. Falha do humanizer (exit code != 0) **não bloqueia** — fallback usa o draft original como input pra Clarice. Logar warn em caso de falha: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanize falhou — usando draft original'`.
 - **Revisar com Clarice (inline — sem Agent):**
-  1. Ler conteúdo de `data/editions/{AAMMDD}/_internal/02-draft.md`.
+  Definir `CLARICE_INPUT` baseado no resultado do humanize: se `02-humanized.md` existe (humanize sucedeu), `CLARICE_INPUT = _internal/02-humanized.md`; senão (humanize falhou), `CLARICE_INPUT = _internal/02-draft.md`. **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
-  4. Gerar diff legível:
+  4. Gerar diff legível usando o mesmo `CLARICE_INPUT` definido acima:
      ```bash
      npx tsx scripts/clarice-diff.ts \
-       data/editions/{AAMMDD}/_internal/02-draft.md \
+       data/editions/{AAMMDD}/{CLARICE_INPUT} \
        data/editions/{AAMMDD}/02-reviewed.md \
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
-- **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` e instruir:
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json")`. Anotar resultado em `sync_results[2]`; ignorar falhas. Isso permite o editor ler o rascunho no celular antes de aprovar.
+- **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` + resumo do humanize report (`{ removals_count, substitutions_count, flags[].length }`) e instruir:
   ```
   ✏️  Edite data/editions/{AAMMDD}/02-reviewed.md antes de aprovar:
       — Mantenha exatamente 1 título por destaque (delete os outros 2).
       — Ajuste qualquer texto que queira alterar.
+
+  🤖 Humanizer aplicou: {removals_count} removals, {substitutions_count} subs.
+      {flags.length} padrão(ões) flagged em _internal/02-humanize-report.json.
 
   📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/02-reviewed.md
       (pode editar direto no Drive — o Stage 3 faz pull antes de começar)
@@ -342,7 +354,7 @@ Este stage é **sequencial** (writer → clarice) porque cada etapa depende do o
   - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
     ```
-    | 2 | {stage_start} | {now} | writer:1, drive_syncer:1 | 1 | 1 |
+    | 2 | {stage_start} | {now} | writer:1, humanize:1, drive_syncer:1 | 1 | 1 |
     ```
 
 ### 3. Stage 3 — Social
