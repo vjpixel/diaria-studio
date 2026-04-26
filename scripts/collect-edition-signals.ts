@@ -5,10 +5,11 @@
  * `{edition_dir}/_internal/issues-draft.json`. Usado pelo `auto-reporter`
  * (issue #57) no final do pipeline para propor issues ao editor.
  *
- * Top 3 sinais capturados (ordem de prioridade editorial):
+ * Top 4 sinais capturados (ordem de prioridade editorial):
  *   1. Source com streak ≥ 3 falhas consecutivas (da `data/source-health.json`).
  *   2. Unfixed issues no publish-newsletter (do `{edition_dir}/05-published.json`).
  *   3. Chrome disconnections no log da edição (do `data/run-log.jsonl`).
+ *   4. Claude in Chrome MCP indisponível desde o início (do `data/run-log.jsonl`).
  *
  * Uso:
  *   npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/260424/
@@ -29,7 +30,7 @@ import { fileURLToPath } from "node:url";
 export type Severity = "low" | "medium" | "high";
 
 export interface Signal {
-  kind: "source_streak" | "unfixed_issue" | "chrome_disconnects";
+  kind: "source_streak" | "unfixed_issue" | "chrome_disconnects" | "mcp_unavailable";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -192,6 +193,64 @@ export function signalsFromRunLog(
 }
 
 // ===========================================================================
+// Signal 4: Claude in Chrome MCP unavailable (never connected this session)
+// ===========================================================================
+
+export function signalsFromMcpUnavailable(
+  lines: string[],
+  edition: string | null,
+): Signal[] {
+  let count = 0;
+  const firstAt: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+    if (parsed.level !== "error" && parsed.level !== "warn") continue;
+    const msg = (parsed.message ?? "").toLowerCase();
+    if (
+      msg.includes("claude-in-chrome mcp unavailable") ||
+      msg.includes("claude_in_chrome_mcp_unavailable") ||
+      // Catch-all genérico, restrito a contexto claude/chrome pra evitar
+      // false-positive em outros MCPs (Beehiiv, Clarice, etc) que possam
+      // logar a mesma string sem o prefixo específico.
+      (msg.includes("mcp unavailable") &&
+        (msg.includes("claude") || msg.includes("chrome")))
+    ) {
+      count++;
+      if (
+        typeof parsed.timestamp === "string" &&
+        firstAt.length < 5
+      ) {
+        firstAt.push(parsed.timestamp);
+      }
+    }
+  }
+
+  if (count === 0) return [];
+
+  return [
+    {
+      kind: "mcp_unavailable",
+      severity: "medium",
+      title: `Claude in Chrome MCP indisponível na edição (${count} ocorrência${count > 1 ? "s" : ""})`,
+      details: {
+        count,
+        first_occurrences: firstAt,
+      },
+      suggested_action:
+        "Verificar se a extensão Claude in Chrome está instalada, ativa e logada antes da próxima edição. Stage 5 (Beehiiv) e LinkedIn do Stage 6 dependem desse MCP — pré-flight automático sendo discutido em #143.",
+      related_issue: "#143",
+    },
+  ];
+}
+
+// ===========================================================================
 // Main
 // ===========================================================================
 
@@ -237,7 +296,7 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
     }
   }
 
-  // Signal 3: run-log chrome_disconnects
+  // Signal 3 + 4: run-log chrome_disconnects + mcp_unavailable
   const runLogPath = resolve(rootDir, "data/run-log.jsonl");
   if (existsSync(runLogPath)) {
     try {
@@ -245,6 +304,7 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       signals.push(
         ...signalsFromRunLog(lines, edition, opts.chromeThreshold ?? 3),
       );
+      signals.push(...signalsFromMcpUnavailable(lines, edition));
     } catch {
       // ignore
     }
@@ -302,6 +362,7 @@ function main(): void {
           source_streak: draft.signals.filter((s) => s.kind === "source_streak").length,
           unfixed_issue: draft.signals.filter((s) => s.kind === "unfixed_issue").length,
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
+          mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
         },
       },
       null,
