@@ -141,6 +141,47 @@ describe("categorize() — business deal override (#77)", () => {
     );
   });
 
+  // #164 — rodadas em milhões e valuations
+  it("rodada em $30M (Series B) em domínio lancamento vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://comfyui.org/blog/series-b",
+        title: "ComfyUI raises $30M Series B as creators seek control",
+      }),
+      "noticias",
+    );
+  });
+
+  it("captação em PT (50 milhões) vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://startup.com.br/blog/seed",
+        title: "Startup brasileira captou R$ 50 milhões em rodada seed",
+      }),
+      "noticias",
+    );
+  });
+
+  it("valuation $500M (hits ... valuation) vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://comfyui.org/news/valuation",
+        title: "ComfyUI hits $500M valuation as creators seek more control",
+      }),
+      "noticias",
+    );
+  });
+
+  it("IPO vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/ipo",
+        title: "OpenAI files to go public in record IPO",
+      }),
+      "noticias",
+    );
+  });
+
   it("lancamento normal (sem deal pattern) continua lancamento", () => {
     assert.equal(
       categorize({
