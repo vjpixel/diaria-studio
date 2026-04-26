@@ -70,6 +70,23 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
   
   Se editor responder `n`, abortar com exit. Se `y`, setar `DRIVE_SYNC = false` em sessão (não tocar config) pra resto do pipeline. Pré-flight evita descobrir auth quebrada só no Stage 1 push.
+- **Pre-flight Claude in Chrome MCP (#143).** Stages 5 (Beehiiv newsletter) e LinkedIn do Stage 5 dependem do MCP `claude-in-chrome`. Sem ele, esses stages são pulados — mas isso só era detectado no minuto ~30+ da pipeline (depois de research/writing/imagens já gastos). Pra falhar cedo:
+
+  Tentar uma tool call leve e silenciosa do MCP no início da sessão. Como o orchestrator não chama MCP tools direto (só via Agent dispatch), o teste é **dispatch de uma chamada trivial**: tentar dispatch de `claude-in-chrome` MCP via `mcp__claude-in-chrome__tabs_context_mcp` (se disponível como tool). Se a tool **não estiver disponível** na sessão (não listada nas tools do orchestrator), assumir MCP indisponível.
+
+  - **Se MCP disponível**: prosseguir normalmente. Logar `info`: `"chrome_mcp_preflight ok"`.
+  - **Se MCP indisponível em modo interativo**: pausar e mostrar:
+    > ⚠️ MCP `claude-in-chrome` não disponível nesta sessão. Stages 5 (newsletter Beehiiv) e LinkedIn do Stage 5 vão ser pulados — Facebook (Graph API) e o restante rodam normais. Você pode rodar `/diaria-6-publicar newsletter {AAMMDD}` e `/diaria-6-publicar social {AAMMDD}` depois quando o MCP estiver ativo.
+    >
+    > Continuar mesmo assim [y] ou abortar [n]?
+
+    Se `n`, abortar com exit. Se `y`, setar `CHROME_MCP = false` em sessão e prosseguir.
+  - **Se MCP indisponível em `--no-gates` / `auto_approve`**: prosseguir automaticamente, mas:
+    1. Setar `CHROME_MCP = false` em sessão.
+    2. Logar `warn`: `"chrome_mcp_preflight failed — claude-in-chrome MCP unavailable; stages 5/linkedin will be skipped"`.
+    3. **Garantir que o resumo final destaca isso**: o relatório de fim da pipeline deve listar explicitamente "Newsletter Beehiiv: pulada (MCP indisponível). Rode `/diaria-6-publicar newsletter {AAMMDD}` quando o Chrome estiver pronto." e idem pro LinkedIn — em vez de ficar enterrado em meio aos outputs.
+
+  Se `CHROME_MCP = false` ao chegar no Stage 5, pular `publish-newsletter` e `publish-social` (LinkedIn) gracefully — seus outputs são marcados `status: "skipped"` com `reason: "claude_in_chrome_mcp_unavailable"`. Facebook (Graph API) ainda roda. Não tentar disparar os agents que dependem do MCP — eles falhariam de qualquer jeito.
 - **Inicializar _internal/cost.md.** Se `data/editions/{AAMMDD}/_internal/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
   ```markdown
   # Cost — Edição {AAMMDD}
@@ -608,6 +625,23 @@ Resumo:
 
 Aprovar e seguir para Stage {N+1}? (sim / editar / retry)
 ```
+
+### Resumo final da edição (#143)
+
+Ao final do pipeline (depois do Stage 6 / auto-reporter), gerar relatório consolidado destacando **explicitamente** o que precisa de ação manual. Em particular:
+
+- **Se `CHROME_MCP = false`** (pré-flight detectou MCP indisponível): bloco no topo do relatório:
+  ```
+  ⚠️ AÇÃO MANUAL NECESSÁRIA — Stages que dependem do Claude in Chrome MCP foram pulados:
+     • Newsletter (Beehiiv) — rascunho NÃO criado. Rode `/diaria-6-publicar newsletter {AAMMDD}` quando o Chrome estiver ativo.
+     • LinkedIn (3 posts) — rascunhos NÃO criados. Rode `/diaria-6-publicar social {AAMMDD}` quando o Chrome estiver ativo.
+
+  ✓ Facebook (3 posts) foi via Graph API — agendado normalmente. Detalhes em `06-social-published.json`.
+  ```
+- **Se houve outputs com `status: "skipped"` ou `"failed"`** em `05-published.json` ou `06-social-published.json`: listar cada um com o `reason` e o comando exato pra retry.
+- **Se tudo OK**: resumo padrão com URLs dos rascunhos + horários agendados.
+
+Garantia: o relatório final é a **fonte canônica** de "o que falta fazer" — editor não precisa caçar entre arquivos JSON pra descobrir.
 
 ## Erros
 
