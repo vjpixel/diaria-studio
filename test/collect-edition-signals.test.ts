@@ -7,6 +7,7 @@ import {
   signalsFromSourceHealth,
   signalsFromPublished,
   signalsFromRunLog,
+  signalsFromMcpUnavailable,
   collectSignals,
   writeDraft,
 } from "../scripts/collect-edition-signals.ts";
@@ -199,6 +200,68 @@ describe("signalsFromRunLog", () => {
     const lines = ["{garbage", "", "{\"edition\":\"260424\",\"level\":\"error\",\"message\":\"chrome_disconnected\"}"];
     const signals = signalsFromRunLog(lines, "260424", 1);
     assert.equal(signals[0].details.count, 1);
+  });
+});
+
+describe("signalsFromMcpUnavailable", () => {
+  const mkLine = (obj: Record<string, unknown>) => JSON.stringify(obj);
+
+  it("captura warning 'claude-in-chrome MCP unavailable'", () => {
+    const lines = [
+      mkLine({
+        timestamp: "2026-04-26T04:03:55Z",
+        edition: "260426",
+        level: "warn",
+        message: "stage 5 skipped — claude-in-chrome MCP unavailable in this session",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "mcp_unavailable");
+    assert.equal(signals[0].severity, "medium");
+    assert.equal(signals[0].details.count, 1);
+    assert.equal(signals[0].related_issue, "#143");
+  });
+
+  it("conta múltiplas ocorrências na mesma edição", () => {
+    const lines = [
+      mkLine({ edition: "260426", level: "warn", message: "claude-in-chrome MCP unavailable" }),
+      mkLine({ edition: "260426", level: "warn", message: "linkedin pending — claude_in_chrome_mcp_unavailable" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals[0].details.count, 2);
+    assert.match(signals[0].title, /2 ocorr/);
+  });
+
+  it("aceita variante genérica 'MCP unavailable'", () => {
+    const lines = [
+      mkLine({ edition: "260426", level: "warn", message: "Stage X failed: MCP unavailable" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals.length, 1);
+  });
+
+  it("filtra edições diferentes", () => {
+    const lines = [
+      mkLine({ edition: "260424", level: "warn", message: "claude-in-chrome MCP unavailable" }),
+      mkLine({ edition: "260426", level: "warn", message: "claude-in-chrome MCP unavailable" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals[0].details.count, 1);
+  });
+
+  it("ignora info-level e mensagens não relacionadas", () => {
+    const lines = [
+      mkLine({ edition: "260426", level: "info", message: "claude-in-chrome MCP unavailable" }),
+      mkLine({ edition: "260426", level: "warn", message: "tudo certo" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals.length, 0);
+  });
+
+  it("zero ocorrências não gera sinal", () => {
+    const signals = signalsFromMcpUnavailable([], "260426");
+    assert.equal(signals.length, 0);
   });
 });
 
