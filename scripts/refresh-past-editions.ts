@@ -8,10 +8,14 @@
  *   - modo `merge`: lê o raw JSON existente, une com o input (dedup por `id`),
  *     ordena por `published_at` desc, trunca ao `dedupEditionCount` de
  *     `platform.config.json`. (Usado nos refreshes incrementais do dia a dia.)
+ *   - modo `regen-md-only` (#162): regenera apenas o MD a partir do raw
+ *     existente, sem precisar de input. Usado quando o raw está atualizado
+ *     mas o MD ficou stale (ex: `git pull` resetou o tracked file).
  *
  * Uso:
  *   npx tsx scripts/refresh-past-editions.ts <input.json>              # modo full
  *   npx tsx scripts/refresh-past-editions.ts <input.json> --merge      # modo incremental
+ *   npx tsx scripts/refresh-past-editions.ts --regen-md-only           # só regen MD do raw
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -69,7 +73,7 @@ function mergeById(existing: Post[], incoming: Post[]): Post[] {
   return [...byId.values()];
 }
 
-function renderMarkdown(posts: Post[]): string {
+export function renderMarkdown(posts: Post[]): string {
   const lines: string[] = [
     "# Últimas edições publicadas — para dedup",
     "",
@@ -105,9 +109,29 @@ function renderMarkdown(posts: Post[]): string {
 }
 
 function main() {
+  // Modo regen-md-only (#162): regenera o MD a partir do raw existente.
+  // Sem input file. Útil quando git resetou o tracked MD mas o raw
+  // (gitignored) está atualizado.
+  if (process.argv.includes("--regen-md-only")) {
+    if (!existsSync(RAW_PATH)) {
+      console.error(
+        "past-editions-raw.json não existe — rode bootstrap (refresh-dedup-runner em modo full) antes",
+      );
+      process.exit(1);
+    }
+    const posts = readJson<Post[]>(RAW_PATH);
+    writeFileSync(MD_PATH, renderMarkdown(posts), "utf8");
+    console.log(
+      `Regen MD-only: regenerated past-editions.md from raw (${posts.length} posts)`,
+    );
+    return;
+  }
+
   const inputPath = process.argv[2];
   if (!inputPath) {
-    console.error("Usage: refresh-past-editions.ts <input.json> [--merge]");
+    console.error(
+      "Usage: refresh-past-editions.ts <input.json> [--merge] | --regen-md-only",
+    );
     process.exit(1);
   }
 
@@ -144,4 +168,11 @@ function main() {
   );
 }
 
-main();
+// Guard contra import em tests — só rodar main() quando invocado como CLI.
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}

@@ -50,7 +50,11 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
 
 1. Chamar `mcp__ed929847-...__list_posts` com `per_page = max(dedupEditionCount, 10)`, `status = "published"`, `order_by = "newest_first"`. Pegar a **primeira página**.
 2. Filtrar **client-side** só os posts cujo `published_at > maxKnownDate`.
-3. **Se vazio** (nenhuma edição nova desde o último refresh): não chamar `get_post_content`, não rodar o script. Reporte `{"mode": "incremental", "new_posts": 0, "skipped": true}` e termine.
+3. **Se vazio** (nenhuma edição nova desde o último refresh): não chamar `get_post_content`, mas **ainda assim regenerar o MD** a partir do raw existente — o `context/past-editions.md` é tracked pelo git e pode ter ficado stale (#161, #162) após `git pull` / checkout que reverteu. Rodar:
+   ```bash
+   Bash("npx tsx scripts/refresh-past-editions.ts --regen-md-only")
+   ```
+   Reporte `{"mode": "incremental", "new_posts": 0, "skipped": false, "md_regenerated": true}` e termine. **Não use `skipped: true`** — o markdown foi tocado mesmo sem posts novos.
 4. Se houver um ou mais posts novos:
    a. Para cada um, chamar `get_post_content` e compor o objeto completo.
    b. Gravar array em `data/past-editions-raw-incoming.json`.
