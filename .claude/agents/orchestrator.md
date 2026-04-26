@@ -2,7 +2,7 @@
 name: orchestrator
 description: Coordena os 7 stages da pipeline Diar.ia. Dispara subagentes em paralelo, aguarda gates humanos, persiste outputs em data/editions/{AAMMDD}/.
 model: claude-opus-4-7
-tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text
+tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
@@ -44,9 +44,10 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 
 - **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5 (newsletter+social paralelos)→6 (auto-reporter); o É IA? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
-  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` **e** `05-published.json` tem `review_completed === true` → Stage 5 completo. Pular para Stage 6 (auto-reporter) ou finalizar pipeline se já rodou.
-  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 5 parcial: re-disparar `publish-facebook` + `publish-social` (com `--skip-existing` / `skip_existing = true`, resume-aware) sem retocar publish-newsletter. Re-apresentar gate único.
-  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` (mas `06-social-published.json` ausente) → Stage 5 parcial (newsletter ok, social ainda não): re-disparar só `publish-facebook` + `publish-social`.
+  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` → Stage 6 completo. Pipeline finalizado. (Entries `pending_manual` são LinkedIn posts aguardando retomada com Chrome MCP — tratados como "já tratados" para fins de resume.)
+  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 6 parcial; re-disparar 6a (script Facebook) e 6b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados ou `pending_manual`.
+  - Se `05-published.json` existe **e** `status === "skipped"` (Chrome MCP estava indisponível na sessão anterior) → **re-probar Chrome MCP** (`mcp__claude-in-chrome__tabs_context_mcp`). Se probe suceder (`CHROME_MCP = true`): deletar o arquivo marcador e tratar como se Stage 5 não tivesse rodado — prosseguir para Stage 5 normalmente. Se probe falhar (`CHROME_MCP = false`): Stage 5 ainda impossível; pular diretamente para Stage 6 (com `CHROME_MCP = false` ativo para o Stage 6 também).
+  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para Stage 6.
   - Se `05-published.json` existe mas `template_used` !== template esperado → Stage 5 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Stage 5 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
   - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Stage 5 incompleto (newsletter parcial): pular publish-newsletter (rascunho já existe), rodar só o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-social`. Re-apresentar gate único.
   - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Stage 5.
@@ -70,23 +71,17 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
   
   Se editor responder `n`, abortar com exit. Se `y`, setar `DRIVE_SYNC = false` em sessão (não tocar config) pra resto do pipeline. Pré-flight evita descobrir auth quebrada só no Stage 1 push.
-- **Pre-flight Claude in Chrome MCP (#143).** Stages 5 (Beehiiv newsletter) e LinkedIn do Stage 5 dependem do MCP `claude-in-chrome`. Sem ele, esses stages são pulados — mas isso só era detectado no minuto ~30+ da pipeline (depois de research/writing/imagens já gastos). Pra falhar cedo:
-
-  Tentar uma tool call leve e silenciosa do MCP no início da sessão. Como o orchestrator não chama MCP tools direto (só via Agent dispatch), o teste é **dispatch de uma chamada trivial**: tentar dispatch de `claude-in-chrome` MCP via `mcp__claude-in-chrome__tabs_context_mcp` (se disponível como tool). Se a tool **não estiver disponível** na sessão (não listada nas tools do orchestrator), assumir MCP indisponível.
-
-  - **Se MCP disponível**: prosseguir normalmente. Logar `info`: `"chrome_mcp_preflight ok"`.
-  - **Se MCP indisponível em modo interativo**: pausar e mostrar:
-    > ⚠️ MCP `claude-in-chrome` não disponível nesta sessão. Stages 5 (newsletter Beehiiv) e LinkedIn do Stage 5 vão ser pulados — Facebook (Graph API) e o restante rodam normais. Você pode rodar `/diaria-6-publicar newsletter {AAMMDD}` e `/diaria-6-publicar social {AAMMDD}` depois quando o MCP estiver ativo.
+- **Pre-flight Claude in Chrome MCP (#143).** Se `test_mode = true`, setar `CHROME_MCP = false` diretamente (sem probe — stages 5 e LinkedIn do Stage 6 serão pulados; edições de teste não precisam do Chrome MCP). Caso contrário, tentar uma chamada leve `mcp__claude-in-chrome__tabs_context_mcp` (apenas lista tabs, não abre nada). Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro. Stage 5 (Beehiiv) e parte LinkedIn do Stage 6 dependem desse MCP — sem ele, são pulados (Facebook do Stage 6 segue normal via Graph API).
+  - Se `CHROME_MCP = false`, logar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message 'claude-in-chrome MCP unavailable in this session — Stage 5 e LinkedIn do Stage 6 serão pulados'")`. Esse warn é detectado por `collect-edition-signals.ts` (Signal 4, #144) e gera issue automaticamente no auto-reporter.
+  - **Em modo interativo** (não `auto_approve` e não `test_mode`): alertar editor antes de prosseguir:
+    > 🔌 Claude in Chrome MCP indisponível nesta sessão.
+    > Consequência: Stage 5 (newsletter no Beehiiv) e LinkedIn × 3 do Stage 6 serão **pulados**. Facebook × 3 segue normal (Graph API). Os artefatos preparados (HTML, imagens, copy) ficam prontos pra retomada manual depois com `/diaria-6-publicar` quando o MCP estiver ativo.
     >
-    > Continuar mesmo assim [y] ou abortar [n]?
+    > Continuar mesmo assim [y] ou abortar pra ativar a extensão [n]?
 
-    Se `n`, abortar com exit. Se `y`, setar `CHROME_MCP = false` em sessão e prosseguir.
-  - **Se MCP indisponível em `--no-gates` / `auto_approve`**: prosseguir automaticamente, mas:
-    1. Setar `CHROME_MCP = false` em sessão.
-    2. Logar `warn`: `"chrome_mcp_preflight failed — claude-in-chrome MCP unavailable; stages 5/linkedin will be skipped"`.
-    3. **Garantir que o resumo final destaca isso**: o relatório de fim da pipeline deve listar explicitamente "Newsletter Beehiiv: pulada (MCP indisponível). Rode `/diaria-6-publicar newsletter {AAMMDD}` quando o Chrome estiver pronto." e idem pro LinkedIn — em vez de ficar enterrado em meio aos outputs.
-
-  Se `CHROME_MCP = false` ao chegar no Stage 5, pular `publish-newsletter` e `publish-social` (LinkedIn) gracefully — seus outputs são marcados `status: "skipped"` com `reason: "claude_in_chrome_mcp_unavailable"`. Facebook (Graph API) ainda roda. Não tentar disparar os agents que dependem do MCP — eles falhariam de qualquer jeito.
+    Se `n`, abortar com exit. Se `y`, prosseguir com `CHROME_MCP = false`.
+  - **Em modo `auto_approve` ou `test_mode`**: prosseguir silenciosamente com `CHROME_MCP = false`. O resumo final do pipeline já cita os stages pulados e o comando de retomada.
+  - **No Stage 5 e LinkedIn do Stage 6**: antes de invocar `publish-newsletter` / `publish-social`, checar `CHROME_MCP`. Se `false`, gravar output marcador (`05-published.json` com `status: "skipped"`, `review_completed: false`, `reason: "claude_in_chrome_mcp_unavailable"`, `prerequisites` apontando pros artefatos prontos; `06-social-published.json` LinkedIn entries com `status: "pending_manual"`) e pular a invocação do agent. **Não falhar** — o resumo final orienta a retomada.
 - **Inicializar _internal/cost.md.** Se `data/editions/{AAMMDD}/_internal/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
   ```markdown
   # Cost — Edição {AAMMDD}
@@ -632,22 +627,30 @@ Resumo:
 Aprovar e seguir para Stage {N+1}? (sim / editar / retry)
 ```
 
-### Resumo final da edição (#143)
+### Resumo final (após Stage final)
 
-Ao final do pipeline (depois do Stage 6 / auto-reporter), gerar relatório consolidado destacando **explicitamente** o que precisa de ação manual. Em particular:
+Após Stage 6 + auto-reporter, apresentar resumo consolidado da edição. Se algum stage foi pulado (ex: `CHROME_MCP = false` levou Stage 5 e LinkedIn do Stage 6 a serem pulados), incluir bloco de retomada explícito:
 
-- **Se `CHROME_MCP = false`** (pré-flight detectou MCP indisponível): bloco no topo do relatório:
-  ```
-  ⚠️ AÇÃO MANUAL NECESSÁRIA — Stages que dependem do Claude in Chrome MCP foram pulados:
-     • Newsletter (Beehiiv) — rascunho NÃO criado. Rode `/diaria-6-publicar newsletter {AAMMDD}` quando o Chrome estiver ativo.
-     • LinkedIn (3 posts) — rascunhos NÃO criados. Rode `/diaria-6-publicar social {AAMMDD}` quando o Chrome estiver ativo.
+```
+🔁 Retomada manual pendente
 
-  ✓ Facebook (3 posts) foi via Graph API — agendado normalmente. Detalhes em `06-social-published.json`.
-  ```
-- **Se houve outputs com `status: "skipped"` ou `"failed"`** em `05-published.json` ou `06-social-published.json`: listar cada um com o `reason` e o comando exato pra retry.
-- **Se tudo OK**: resumo padrão com URLs dos rascunhos + horários agendados.
+Stage 5 (newsletter no Beehiiv): pulado (claude-in-chrome MCP indisponível)
+Stage 6 (LinkedIn × 3): pulado (claude-in-chrome MCP indisponível)
+Facebook × 3: agendado normal via Graph API ✓
 
-Garantia: o relatório final é a **fonte canônica** de "o que falta fazer" — editor não precisa caçar entre arquivos JSON pra descobrir.
+Quando o MCP estiver ativo, rodar:
+  /diaria-6-publicar newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
+  /diaria-6-publicar social {AAMMDD}       # cria 3 posts LinkedIn (Facebook já agendado)
+
+Artefatos prontos:
+  - data/editions/{AAMMDD}/_internal/05-newsletter-body.html  (HTML pré-renderizado)
+  - data/editions/{AAMMDD}/02-reviewed.md                      (newsletter)
+  - data/editions/{AAMMDD}/03-social.md                        (copy LinkedIn + Facebook)
+  - data/editions/{AAMMDD}/04-d{1,2,3}*.jpg                    (imagens)
+  - data/editions/{AAMMDD}/01-eai*                             (É IA?)
+```
+
+Se nenhum stage foi pulado, omitir esse bloco — só listar outputs e métricas finais.
 
 ## Erros
 
