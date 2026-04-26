@@ -1,0 +1,398 @@
+{
+  "highlights": [
+    {
+      "rank": 1,
+      "score": 90,
+      "bucket": "noticias",
+      "reason": "DeepSeek V4 ao custo de 1/6 dos líderes ocidentais — impacto econômico direto e novos modelos, dois sinais de alta tração. Ancora o tema central da semana com o ângulo custo/acessibilidade mais relevante para audiência BR.",
+      "article": {
+        "title": "DeepSeek-V4 arrives with near state-of-the-art intelligence at 1/6th the cost of Opus 4.7, GPT-5.5",
+        "url": "https://venturebeat.com/technology/deepseek-v4-arrives-with-near-state-of-the-art-intelligence-at-1-6th-the-cost-of-opus-4-7-gpt-5-5",
+        "published_at": "2026-04-24",
+        "author": null,
+        "summary": "Análise comparativa do DeepSeek V4 com inteligência competitiva com modelos de ponta a custos 6 vezes menores. O modelo oferece 1 milhão de tokens de contexto e suporta workflows agênticos complexos.",
+        "type_hint": "noticia",
+        "source": "discovery:ai-model-release-april-2026",
+        "category": "noticias"
+      }
+    },
+    {
+      "rank": 2,
+      "score": 86,
+      "bucket": "noticias",
+      "reason": "Regulação de IA nas eleições brasileiras (TSE 2026): tema BR com CTR 25% maior, publicado hoje (máxima recência), multas concretas ancoram impacto prático para profissionais de tecnologia, marketing e jurídico.",
+      "article": {
+        "title": "Eleicoes 2026: veja como o TSE limitara a Inteligencia Artificial no pleito",
+        "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426",
+        "published_at": "2026-04-26",
+        "author": null,
+        "summary": "O TSE estabeleceu limites rigorosos ao uso de inteligência artificial nas eleições de 2026, com proibições de conteúdo sintético em períodos críticos e multas de R$ 5 mil a R$ 30 mil para infrações.",
+        "type_hint": "noticia",
+        "source": "discovery:regulacao-ia-governo-brasil",
+        "category": "noticias"
+      }
+    },
+    {
+      "rank": 3,
+      "score": 84,
+      "bucket": "pesquisa",
+      "reason": "Análise técnica LMSYS do DeepSeek V4 dia zero — complementa destaque 1 com profundidade arquitetural (49B ativados, 1M contexto). Fonte LMSYS é referência em avaliação de modelos.",
+      "article": {
+        "title": "DeepSeek-V4 on Day 0: From Fast Inference to Verified RL with SGLang and Miles",
+        "url": "https://www.lmsys.org/blog/2026-04-25-deepseek-v4/",
+        "published_at": "2026-04-25",
+        "author": "LMSYS Org",
+        "summary": "Análise técnica do DeepSeek V4 lançado em 24 de abril 2026, modelo com 49B parâmetros ativados (Pro) e 13B (Flash), suportando contexto de 1M tokens com arquitetura híbrida de atenção.",
+        "type_hint": "pesquisa",
+        "source": "discovery:treinamento-modelos-ia-brasil",
+        "category": "pesquisa"
+      }
+    }
+  ],
+  "runners_up": [
+    {
+      "rank": 7,
+      "score": 76,
+      "bucket": "tutorial",
+      "reason": "Simon Willison sobre DeepSeek V4: análise de fonte respeitada com ângulo chips Huawei/geopolítica. Perdeu vaga por concentração temática.",
+      "article": {
+        "title": "DeepSeek V4 — almost on the frontier, a fraction of the price",
+        "url": "https://simonwillison.net/2026/Apr/24/deepseek-v4/",
+        "published_at": "2026-04-24",
+        "author": "Simon Willison",
+        "summary": "Avaliação do DeepSeek V4, modelo open-source com performance próxima a Claude Opus 4.6 e GPT-5.4 a uma fração do custo, rodando em chips Huawei Ascend domesticamente na China.",
+        "type_hint": "opiniao",
+        "source": "discovery:treinamento-modelos-ia-brasil",
+        "category": "tutorial"
+      }
+    },
+    {
+      "rank": 8,
+      "score": 75,
+      "bucket": "pesquisa",
+      "reason": "GLM-5.1 da Zhipu AI vs todos os líderes: publicado hoje, traz novo player chinês. Ficou de fora por saturação de comparativos de modelos.",
+      "article": {
+        "title": "GLM-5.1 vs Claude, GPT, Gemini, DeepSeek: How Zhipu AIs Latest Model Stacks Up",
+        "url": "https://wavespeed.ai/blog/posts/glm-5-1-vs-claude-gpt-gemini-deepseek-llm-comparison/",
+        "published_at": "2026-04-26",
+        "author": null,
+        "summary": "Comparação do GLM-5.1 da Zhipu AI com Claude, GPT-5.5, Gemini 3.1 Pro e DeepSeek V4, analisando trade-offs de performance, latência e custo em benchmarks de abril 2026.",
+        "type_hint": "pesquisa",
+        "source": "discovery:novo-modelo-linguagem-benchmark",
+        "category": "pesquisa"
+      }
+    }
+  ],
+  "all_scored": [
+    {
+      "url": "https://venturebeat.com/technology/deepseek-v4-arrives-with-near-state-of-the-art-intelligence-at-1-6th-the-cost-of-opus-4-7-gpt-5-5",
+      "score": 90
+    },
+    {
+      "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426",
+      "score": 86
+    },
+    {
+      "url": "https://www.lmsys.org/blog/2026-04-25-deepseek-v4/",
+      "score": 84
+    },
+    {
+      "url": "https://www.cnbc.com/2026/04/23/openai-announces-latest-artificial-intelligence-model.html",
+      "score": 82
+    },
+    {
+      "url": "https://ianlpaterson.com/blog/llm-benchmark-2026-38-actual-tasks-15-models-for-2-29/",
+      "score": 79
+    },
+    {
+      "url": "https://nvidianews.nvidia.com/news/siemens-and-nvidia-expand-partnership-industrial-ai-operating-system",
+      "score": 77
+    },
+    {
+      "url": "https://simonwillison.net/2026/Apr/24/deepseek-v4/",
+      "score": 76
+    },
+    {
+      "url": "https://wavespeed.ai/blog/posts/glm-5-1-vs-claude-gpt-gemini-deepseek-llm-comparison/",
+      "score": 75
+    },
+    {
+      "url": "https://www.cnn.com/2026/04/24/tech/chinas-ai-deepseek-v4-intl-hnk",
+      "score": 72
+    },
+    {
+      "url": "https://www.cnnbrasil.com.br/tecnologia/conheca-o-novo-modelo-de-ia-mais-barato-e-potente-da-deepseek/",
+      "score": 71
+    },
+    {
+      "url": "https://www.buildfastwithai.com/blogs/gpt-5-5-review-2026",
+      "score": 70
+    },
+    {
+      "url": "https://www.nbcnews.com/politics/politics-news/2026-new-laws-states-elections-midterms-ai-obamacare-aca-paid-leave-rcna247602",
+      "score": 68
+    },
+    {
+      "url": "https://www.geeky-gadgets.com/open-source-deepseek-v4-limitations/",
+      "score": 67
+    },
+    {
+      "url": "https://akitaonrails.com/en/2026/04/24/llm-benchmarks-parte-3-deepseek-kimi-mimo/",
+      "score": 66
+    },
+    {
+      "url": "https://felloai.com/deepseek-v4/",
+      "score": 65
+    },
+    {
+      "url": "https://huggingface.co/blog/huggingface/state-of-os-hf-spring-2026",
+      "score": 63
+    },
+    {
+      "url": "https://fazm.ai/blog/latest-llm-releases-april-2026",
+      "score": 60
+    },
+    {
+      "url": "https://www.cooley.com/news/insight/2026/2026-04-24-state-ai-laws-where-are-they-now",
+      "score": 58
+    },
+    {
+      "url": "https://www.aljazeera.com/economy/2026/4/24/chinas-deepseek-unveils-latest-model-a-year-after-upending-global-tech",
+      "score": 55
+    },
+    {
+      "url": "https://nvidianews.nvidia.com/news/humain-and-nvidia-announce-strategic-partnership-to-build-ai-factories-of-the-future-in-saudi-arabia",
+      "score": 48
+    },
+    {
+      "url": "https://nvidianews.nvidia.com/news/computer-industry-ai-factories-data-centers",
+      "score": 45
+    }
+  ],
+  "lancamento": [
+    {
+      "title": "State of Open Source on Hugging Face: Spring 2026",
+      "url": "https://huggingface.co/blog/huggingface/state-of-os-hf-spring-2026",
+      "published_at": "2026-04-24",
+      "author": "Hugging Face",
+      "summary": "Relatório sobre contribuições da comunidade em datasets abertos em primavera 2026, incluindo aprendizado de direção (L2D) e LeRobot para robótica de código aberto.",
+      "type_hint": "pesquisa",
+      "source": "Hugging Face Blog",
+      "category": "lancamento",
+      "score": 63
+    }
+  ],
+  "pesquisa": [
+    {
+      "title": "DeepSeek-V4 on Day 0: From Fast Inference to Verified RL with SGLang and Miles",
+      "url": "https://www.lmsys.org/blog/2026-04-25-deepseek-v4/",
+      "published_at": "2026-04-25",
+      "author": "LMSYS Org",
+      "summary": "Análise técnica do DeepSeek V4 lançado em 24 de abril 2026, modelo com 49B parâmetros ativados (Pro) e 13B (Flash), suportando contexto de 1M tokens com arquitetura híbrida de atenção.",
+      "type_hint": "pesquisa",
+      "source": "discovery:treinamento-modelos-ia-brasil",
+      "category": "pesquisa",
+      "score": 84
+    },
+    {
+      "title": "I Tested 15 LLMs on 38 Real Coding Tasks. Here Is My Routing Table.",
+      "url": "https://ianlpaterson.com/blog/llm-benchmark-2026-38-actual-tasks-15-models-for-2-29/",
+      "published_at": "2026-04-23",
+      "author": "Ian L. Paterson",
+      "summary": "Estudo experimental com 15 LLMs testados em 38 tarefas reais de programação, fornecendo matriz de roteamento baseada em performance prática para seleção de modelo por tarefa.",
+      "type_hint": "pesquisa",
+      "source": "discovery:llm-benchmark-leaderboard",
+      "category": "pesquisa",
+      "score": 79
+    },
+    {
+      "title": "GLM-5.1 vs Claude, GPT, Gemini, DeepSeek: How Zhipu AIs Latest Model Stacks Up",
+      "url": "https://wavespeed.ai/blog/posts/glm-5-1-vs-claude-gpt-gemini-deepseek-llm-comparison/",
+      "published_at": "2026-04-26",
+      "author": null,
+      "summary": "Comparação do GLM-5.1 da Zhipu AI com Claude, GPT-5.5, Gemini 3.1 Pro e DeepSeek V4, analisando trade-offs de performance, latência e custo em benchmarks de abril 2026.",
+      "type_hint": "pesquisa",
+      "source": "discovery:novo-modelo-linguagem-benchmark",
+      "category": "pesquisa",
+      "score": 75
+    },
+    {
+      "title": "Deepseek v4 Performance Analysis: Does It Beat Kimi K2.6 and Qwen 3.6 Plus?",
+      "url": "https://www.geeky-gadgets.com/open-source-deepseek-v4-limitations/",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Análise comparativa de performance: DeepSeek V4 vs Kimi K2.6 vs Qwen 3.6 Plus, examinando limitações, vantagens e posicionamento relativo em benchmarks-chave de abril 2026.",
+      "type_hint": "pesquisa",
+      "source": "discovery:novo-modelo-linguagem-benchmark",
+      "category": "pesquisa",
+      "score": 67
+    },
+    {
+      "title": "LLM Coding Benchmark (April 2026): GPT 5.5, DeepSeek v4, Kimi v2.6, MiMo",
+      "url": "https://akitaonrails.com/en/2026/04/24/llm-benchmarks-parte-3-deepseek-kimi-mimo/",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Benchmarking de coding com GPT 5.5, DeepSeek v4, Kimi v2.6 e MiMo, analisando performance em tarefas reais de programação entre os LLMs mais recentes de abril 2026.",
+      "type_hint": "pesquisa",
+      "source": "discovery:llm-benchmark-leaderboard",
+      "category": "pesquisa",
+      "score": 66
+    }
+  ],
+  "noticias": [
+    {
+      "title": "DeepSeek-V4 arrives with near state-of-the-art intelligence at 1/6th the cost of Opus 4.7, GPT-5.5",
+      "url": "https://venturebeat.com/technology/deepseek-v4-arrives-with-near-state-of-the-art-intelligence-at-1-6th-the-cost-of-opus-4-7-gpt-5-5",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Análise comparativa do DeepSeek V4 com inteligência competitiva com modelos de ponta a custos 6 vezes menores. O modelo oferece 1 milhão de tokens de contexto e suporta workflows agênticos complexos.",
+      "type_hint": "noticia",
+      "source": "discovery:ai-model-release-april-2026",
+      "category": "noticias",
+      "score": 90
+    },
+    {
+      "title": "Eleicoes 2026: veja como o TSE limitara a Inteligencia Artificial no pleito",
+      "url": "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426",
+      "published_at": "2026-04-26",
+      "author": null,
+      "summary": "O TSE estabeleceu limites rigorosos ao uso de inteligência artificial nas eleições de 2026, com proibições de conteúdo sintético em períodos críticos e multas de R$ 5 mil a R$ 30 mil para infrações.",
+      "type_hint": "noticia",
+      "source": "discovery:regulacao-ia-governo-brasil",
+      "category": "noticias",
+      "score": 86
+    },
+    {
+      "title": "OpenAI announces GPT-5.5, its latest artificial intelligence model",
+      "url": "https://www.cnbc.com/2026/04/23/openai-announces-latest-artificial-intelligence-model.html",
+      "published_at": "2026-04-23",
+      "author": null,
+      "summary": "OpenAI lançou GPT-5.5 em 23 de abril, seu modelo mais avançado com melhorias significativas em codificação, pesquisa e reasoning. Disponível para assinantes Plus, Pro, Business e Enterprise, com suporte a tarefas agênticas.",
+      "type_hint": "noticia",
+      "source": "discovery:ai-model-release-april-2026",
+      "category": "noticias",
+      "score": 82
+    },
+    {
+      "title": "Siemens and NVIDIA Expand Partnership to Build the Industrial AI Operating System",
+      "url": "https://nvidianews.nvidia.com/news/siemens-and-nvidia-expand-partnership-industrial-ai-operating-system",
+      "published_at": "2026-04-25",
+      "author": null,
+      "summary": "Siemens e NVIDIA expandem parceria para desenvolver um sistema operacional de IA industrial que integra IA em fluxos de trabalho industriais, transformando gêmeos digitais em inteligência ativa para o mundo físico.",
+      "type_hint": "noticia",
+      "source": "Nvidia",
+      "category": "noticias",
+      "score": 77
+    },
+    {
+      "title": "China's AI upstart DeepSeek drops new model. Will it make waves like last year?",
+      "url": "https://www.cnn.com/2026/04/24/tech/chinas-ai-deepseek-v4-intl-hnk",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "DeepSeek lançou a versão prévia do V4, sua mais poderosa série de modelos com contexto de 1 milhão de tokens. O V4 Pro e V4 Flash mostram desempenho de ponta em benchmarks de codificação com preço drasticamente menor.",
+      "type_hint": "noticia",
+      "source": "discovery:ai-model-release-april-2026",
+      "category": "noticias",
+      "score": 72
+    },
+    {
+      "title": "Conheça o novo modelo de IA mais barato e potente da DeepSeek",
+      "url": "https://www.cnnbrasil.com.br/tecnologia/conheca-o-novo-modelo-de-ia-mais-barato-e-potente-da-deepseek/",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Cobertura brasileira do lançamento do DeepSeek V4 em abril de 2026, destacando o novo modelo como mais barato e potente, com inovações em contexto de longa duração e eficiência de inferência.",
+      "type_hint": "noticia",
+      "source": "discovery:treinamento-modelos-ia-brasil",
+      "category": "noticias",
+      "score": 71
+    },
+    {
+      "title": "GPT-5.5 Review: Benchmarks, Pricing and Vs Claude (2026)",
+      "url": "https://www.buildfastwithai.com/blogs/gpt-5-5-review-2026",
+      "published_at": "2026-04-23",
+      "author": null,
+      "summary": "Review detalhado de GPT-5.5 (lançado 23 abr 2026) com benchmarks (Terminal-Bench 2.0: 82.7%, MRCR v2: 74%), preço e comparação head-to-head com Claude Opus 4.7.",
+      "type_hint": "opiniao",
+      "source": "discovery:novo-modelo-linguagem-benchmark",
+      "category": "noticias",
+      "score": 70
+    },
+    {
+      "title": "New laws in 2026 target AI and deepfakes",
+      "url": "https://www.nbcnews.com/politics/politics-news/2026-new-laws-states-elections-midterms-ai-obamacare-aca-paid-leave-rcna247602",
+      "published_at": "2026-04-26",
+      "author": null,
+      "summary": "Trinta e oito estados americanos aprovaram legislação em 2026 sobre IA, incluindo regulação de deepfakes em eleições e o DEFIANCE Act que estabelece direito de ação federal para vítimas de deepfakes íntimos com indenizações até 250 mil dólares.",
+      "type_hint": "noticia",
+      "source": "discovery:ai-regulation-policy",
+      "category": "noticias",
+      "score": 68
+    },
+    {
+      "title": "DeepSeek V4: Everything You Need to Know (April 2026)",
+      "url": "https://felloai.com/deepseek-v4/",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Análise completa do DeepSeek V4: arquitetura open-source, 1M tokens de contexto, modelos Pro (1.6T parâmetros totais) e Flash (284B). Benchmarks: Putnam-200 Pass@8 = 81.0, iguala GPT-5 em MMLU-Pro.",
+      "type_hint": "noticia",
+      "source": "discovery:novo-modelo-linguagem-benchmark",
+      "category": "noticias",
+      "score": 65
+    },
+    {
+      "title": "Latest LLM Releases in April 2026: Every Major Model Launch",
+      "url": "https://fazm.ai/blog/latest-llm-releases-april-2026",
+      "published_at": "2026-04-26",
+      "author": null,
+      "summary": "Compilação abrangente de todos os grandes lançamentos de modelos de linguagem em abril 2026, com benchmarks e análise comparativa de performance.",
+      "type_hint": "noticia",
+      "source": "discovery:novo-modelo-linguagem-benchmark",
+      "category": "noticias",
+      "score": 60
+    },
+    {
+      "title": "State AI Laws — Where Are They Now?",
+      "url": "https://www.cooley.com/news/insight/2026/2026-04-24-state-ai-laws-where-are-they-now",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "Revisão da situação das leis de IA estaduais nos EUA em abril 2026: Colorado adiou implementação, Utah assinou 9 projetos de lei de IA, e California emitiu ordem executiva sobre requisitos de segurança.",
+      "type_hint": "noticia",
+      "source": "discovery:ai-regulation-policy",
+      "category": "noticias",
+      "score": 58
+    },
+    {
+      "title": "China's DeepSeek unveils latest models a year after upending global tech",
+      "url": "https://www.aljazeera.com/economy/2026/4/24/chinas-deepseek-unveils-latest-model-a-year-after-upending-global-tech",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "A DeepSeek revelou o V4 um ano após revolucionar o setor global de IA, novamente com um modelo open-source de alto desempenho com arquitetura de contexto longo e integração com chips Huawei.",
+      "type_hint": "noticia",
+      "source": "discovery:llm-benchmark-leaderboard",
+      "category": "noticias",
+      "score": 55
+    },
+    {
+      "title": "HUMAIN and NVIDIA Announce Strategic Partnership to Build AI Factories of the Future in Saudi Arabia",
+      "url": "https://nvidianews.nvidia.com/news/humain-and-nvidia-announce-strategic-partnership-to-build-ai-factories-of-the-future-in-saudi-arabia",
+      "published_at": "2026-04-24",
+      "author": null,
+      "summary": "HUMAIN e NVIDIA anunciam parceria estratégica para construir AI Factories na Arábia Saudita, impulsionando a próxima geração de desenvolvimento de IA com infraestrutura avançada em escala regional.",
+      "type_hint": "noticia",
+      "source": "Nvidia",
+      "category": "noticias",
+      "score": 48
+    },
+    {
+      "title": "Computer Industry Joins NVIDIA to Build AI Factories and Data Centers for the Next Industrial Revolution",
+      "url": "https://nvidianews.nvidia.com/news/computer-industry-ai-factories-data-centers",
+      "published_at": "2026-04-23",
+      "author": null,
+      "summary": "Líderes da indústria de computação se unem à NVIDIA para construir AI Factories e data centers que suportarão a próxima revolução industrial centrada em IA.",
+      "type_hint": "noticia",
+      "source": "Nvidia",
+      "category": "noticias",
+      "score": 45
+    }
+  ]
+}
