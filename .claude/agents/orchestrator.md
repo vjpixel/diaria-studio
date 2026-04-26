@@ -327,21 +327,30 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
-- Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir para humanizer.
-- **Lint seções vs buckets (#165).** Após writer escrever `02-draft.md` e antes de prosseguir, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
+- Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --md data/editions/{AAMMDD}/_internal/02-draft.md \
     --approved data/editions/{AAMMDD}/_internal/01-approved.json
   ```
   Exit 1 = URL na seção errada (ex: `bucket: "noticias"` em LANÇAMENTOS) ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt (ex: "mover X de LANÇAMENTOS pra OUTRAS NOTÍCIAS"). Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum coberto: ferramenta nova com `bucket: "noticias"` (porque é cobertura, não anúncio oficial) que o writer põe em LANÇAMENTOS por associação temática (ex: ComfyUI).
+- **Normalizar layout (inline — sem Agent, #157):** o writer LLM ocasionalmente concatena elementos numa linha única (3 títulos do destaque colados no header, ou título+descrição+URL colados num item de seção). Rodar pós-processador defensivo que detecta e quebra:
+  ```bash
+  npx tsx scripts/normalize-newsletter.ts \
+    --in data/editions/{AAMMDD}/_internal/02-draft.md \
+    --out data/editions/{AAMMDD}/_internal/02-normalized.md \
+    2> data/editions/{AAMMDD}/_internal/02-normalize-report.json
+  ```
+  Heurístico conservador — só quebra quando o pattern é inequívoco. Se nenhum bug for detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script não bloqueia (log warn + fallback usa `02-draft.md`).
 - **Humanizar (inline — sem Agent, #45):** rodar pass determinístico que remove tics LLM antes da Clarice (a Clarice cobre ortografia/concordância; o humanizer pega muletas tipo "É importante notar que", "Vale destacar", etc).
   ```bash
   npx tsx scripts/humanize.ts \
-    --in data/editions/{AAMMDD}/_internal/02-draft.md \
+    --in data/editions/{AAMMDD}/_internal/02-normalized.md \
     --out data/editions/{AAMMDD}/_internal/02-humanized.md \
     2> data/editions/{AAMMDD}/_internal/02-humanize-report.json
   ```
+  (Input agora é `02-normalized.md` em vez de `02-draft.md` — reflete novo passo acima.)
   O script é conservador: só remove/substitui padrões com tradução clara; padrões ambíguos (sentenças > 30 palavras, "não apenas X mas também Y", conectivos repetidos) viram flags no report — não alteram texto. Falha do humanizer (exit code != 0) **não bloqueia** — fallback usa o draft original como input pra Clarice. Logar warn em caso de falha: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanize falhou — usando draft original'`.
 - **LLM polish opcional (#45 Opção 3):** ler `platform.config.json > humanize`. Se `llm_polish: true` OU se `02-humanize-report.json > flags.length >= llm_polish_threshold_flags` (default 3), disparar `humanizer-llm` (Sonnet, Agent) passando:
   - `in_path = data/editions/{AAMMDD}/_internal/02-humanized.md`
@@ -350,7 +359,7 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
 
   O agent é conservador (preserva fatos, formatação e voz). Retorna `{ out_path, changes_applied, flags_addressed[], flags_skipped[] }`. Se o agent falhar ou retornar `changes_applied: 0`, prosseguir sem o LLM polish — o `02-humanized.md` continua sendo o input do Clarice. Se sucedeu com mudanças, `02-llm-polished.md` vira o input do Clarice. Se `humanize` falhou e LLM polish foi acionado por config, pular o LLM (não tem input válido).
 - **Revisar com Clarice (inline — sem Agent):**
-  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-llm-polished.md` se existe (LLM polish foi aplicado); (2) `_internal/02-humanized.md` se existe (humanize sucedeu); (3) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-llm-polished.md` se existe (LLM polish foi aplicado); (2) `_internal/02-humanized.md` se existe (humanize sucedeu); (3) `_internal/02-normalized.md` se existe (normalize sucedeu); (4) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
   1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
@@ -362,6 +371,11 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+- **Validar LANÇAMENTOS oficiais (#160).** Rodar:
+  ```bash
+  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
 - **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json,_internal/02-llm-polished.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. (`02-llm-polished.md` só existe se LLM polish rodou — sync ignora arquivos ausentes.)
 - **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` + resumo do humanize report (`{ removals_count, substitutions_count, flags[].length }`) e instruir:
   ```
