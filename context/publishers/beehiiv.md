@@ -66,6 +66,11 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 1. Label: `🖼️ É IA?`
 2. Upload `01-eai-real.jpg` (primeiro) e `01-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
 3. Crédito: `eai.credit` do JSON
+4. **Poll Trivia** (#107 test): inserir bloco Poll do Beehiiv. **Tipo = Trivia** (não Voting). Pergunta: `Qual delas é IA?`. Opções: `A` e `B`. **Marcar como correta** a letra correspondente à imagem IA — `B` se `01-eai-real.jpg` foi inserida primeiro (=A) e `01-eai-ia.jpg` depois (=B); `A` em caso contrário. **Após salvar o poll**, registrar `ai_side` (A ou B) em `_internal/01-eai-meta.json`:
+   ```bash
+   npx tsx -e "const fs=require('fs');const p='data/editions/{AAMMDD}/_internal/01-eai-meta.json';const m=JSON.parse(fs.readFileSync(p));m.ai_side='B';fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n');"
+   ```
+   Trocar `'B'` por `'A'` se a IA estiver na posição A. Esse campo é o que #107 usa pra calcular % de acerto.
 
 **Seções (Pesquisas, Lançamentos, Outras Notícias):**
 1. Para cada seção no JSON `sections[]`, encontrar o bloco correspondente
