@@ -36,7 +36,6 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 interface BeehiivPollResult {
   // Tentativa 1 (provável): shape com correct/total na raiz do poll
