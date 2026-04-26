@@ -271,6 +271,24 @@ function isTutorialByKeyword(article: Article): boolean {
   return TUTORIAL_KEYWORDS_RE.test(hay);
 }
 
+/**
+ * Check se uma URL bateria com a whitelist oficial de LANÇAMENTOS
+ * (sem considerar título). Usado por `scripts/validate-lancamentos.ts`
+ * (#160) pra garantir que a seção LANÇAMENTOS do MD final só tem
+ * links de domínio oficial.
+ *
+ * Não reaplica overrides (deal/scholarship/research) — só valida o
+ * gate inicial de domínio. Dúvida = noticias.
+ */
+export function isOfficialLancamentoUrl(url: string): boolean {
+  const { host, full } = hostAndPath(url);
+  if (!host) return false;
+  return (
+    LANCAMENTO_DOMAINS.has(host) ||
+    LANCAMENTO_PATTERNS.some((p) => p.test(full))
+  );
+}
+
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
 
