@@ -216,10 +216,19 @@ export function signalsFromMcpUnavailable(
     if (
       msg.includes("claude-in-chrome mcp unavailable") ||
       msg.includes("claude_in_chrome_mcp_unavailable") ||
-      msg.includes("mcp unavailable")
+      // Catch-all genérico, restrito a contexto claude/chrome pra evitar
+      // false-positive em outros MCPs (Beehiiv, Clarice, etc) que possam
+      // logar a mesma string sem o prefixo específico.
+      (msg.includes("mcp unavailable") &&
+        (msg.includes("claude") || msg.includes("chrome")))
     ) {
       count++;
-      if (parsed.timestamp && firstAt.length < 5) firstAt.push(parsed.timestamp);
+      if (
+        typeof parsed.timestamp === "string" &&
+        firstAt.length < 5
+      ) {
+        firstAt.push(parsed.timestamp);
+      }
     }
   }
 

@@ -233,12 +233,23 @@ describe("signalsFromMcpUnavailable", () => {
     assert.match(signals[0].title, /2 ocorr/);
   });
 
-  it("aceita variante genérica 'MCP unavailable'", () => {
+  it("variante genérica 'MCP unavailable' SÓ matcha em contexto claude/chrome", () => {
     const lines = [
-      mkLine({ edition: "260426", level: "warn", message: "Stage X failed: MCP unavailable" }),
+      mkLine({ edition: "260426", level: "warn", message: "claude-in-chrome MCP unavailable mid-flight" }),
+      mkLine({ edition: "260426", level: "warn", message: "Stage 5 chrome session: MCP unavailable" }),
     ];
     const signals = signalsFromMcpUnavailable(lines, "260426");
     assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.count, 2);
+  });
+
+  it("não matcha 'MCP unavailable' fora de contexto claude/chrome", () => {
+    const lines = [
+      mkLine({ edition: "260426", level: "warn", message: "Beehiiv MCP unavailable, retrying" }),
+      mkLine({ edition: "260426", level: "warn", message: "Clarice MCP unavailable" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals.length, 0);
   });
 
   it("filtra edições diferentes", () => {
