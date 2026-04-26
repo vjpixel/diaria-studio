@@ -8,8 +8,14 @@ import {
   checkWideTables,
   checkImgsWithoutAlt,
   checkUnsafeTargetBlank,
+  checkRequiredSections,
+  checkInsecureImageSrc,
+  checkHtmlSize,
   lintHtml,
 } from "../scripts/lint-newsletter-html.ts";
+
+const REQUIRED_MARKERS =
+  "<!-- Destaque 1 --><!-- Destaque 2 --><!-- Destaque 3 -->";
 
 describe("checkUnresolvedPlaceholders", () => {
   it("detecta placeholders {{IMG:...}} remanescentes", () => {
@@ -141,17 +147,101 @@ describe("checkUnsafeTargetBlank", () => {
   });
 });
 
+describe("checkRequiredSections", () => {
+  it("detecta destaque ausente", () => {
+    const html = `<!-- Destaque 1 --><!-- Destaque 2 -->`;
+    const issues = checkRequiredSections(html);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].count, 1);
+    assert.equal(issues[0].severity, "error");
+    assert.deepEqual(issues[0].samples, ["destaque 3"]);
+  });
+
+  it("detecta múltiplos destaques ausentes", () => {
+    const html = `<p>sem nenhum marcador</p>`;
+    const issues = checkRequiredSections(html);
+    assert.equal(issues[0].count, 3);
+  });
+
+  it("HTML com todos os 3 destaques passa", () => {
+    assert.deepEqual(checkRequiredSections(REQUIRED_MARKERS), []);
+  });
+});
+
+describe("checkInsecureImageSrc", () => {
+  it("detecta file://", () => {
+    const html = `<img src="file:///tmp/x.jpg"/>`;
+    const issues = checkInsecureImageSrc(html);
+    assert.equal(issues[0].count, 1);
+    assert.equal(issues[0].severity, "error");
+  });
+
+  it("detecta paths relativos", () => {
+    const html = `<img src="./img.jpg"/><img src="../img.jpg"/><img src="/abs.jpg"/>`;
+    const issues = checkInsecureImageSrc(html);
+    assert.equal(issues[0].count, 3);
+  });
+
+  it("detecta localhost", () => {
+    const html = `<img src="http://localhost:3000/x.jpg"/>`;
+    const issues = checkInsecureImageSrc(html);
+    assert.equal(issues[0].count, 1);
+  });
+
+  it("https:// passa", () => {
+    assert.deepEqual(
+      checkInsecureImageSrc(`<img src="https://cdn.com/x.jpg"/>`),
+      [],
+    );
+  });
+
+  it("data: URIs passam", () => {
+    assert.deepEqual(
+      checkInsecureImageSrc(`<img src="data:image/png;base64,iVBOR"/>`),
+      [],
+    );
+  });
+
+  it("placeholders {{IMG:...}} passam (capturados pelo outro check)", () => {
+    assert.deepEqual(
+      checkInsecureImageSrc(`<img src="{{IMG:04-d1.jpg}}"/>`),
+      [],
+    );
+  });
+});
+
+describe("checkHtmlSize", () => {
+  it("HTML pequeno passa", () => {
+    assert.deepEqual(checkHtmlSize("x".repeat(1000)), []);
+  });
+
+  it("HTML entre 60KB e 102KB gera warning", () => {
+    const issues = checkHtmlSize("x".repeat(80 * 1024));
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].severity, "warning");
+    assert.equal(issues[0].rule, "html_size_warning");
+  });
+
+  it("HTML acima de 102KB gera error", () => {
+    const issues = checkHtmlSize("x".repeat(110 * 1024));
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].severity, "error");
+    assert.equal(issues[0].rule, "html_too_large");
+  });
+});
+
 describe("lintHtml — integração", () => {
   it("HTML perfeito: 0 erros, 0 warnings", () => {
-    const html = `<h2>Título único</h2><p><a href="https://ok.com" target="_blank" rel="noopener noreferrer">Link</a></p><img src="https://img.com/x" alt="descrição"/>`;
+    const html = `${REQUIRED_MARKERS}<h2>Título único</h2><p><a href="https://ok.com" target="_blank" rel="noopener noreferrer">Link</a></p><img src="https://img.com/x" alt="descrição"/>`;
     const result = lintHtml(html);
     assert.equal(result.errors.length, 0);
     assert.equal(result.warnings.length, 0);
-    assert.equal(result.checked_rules.length, 7);
+    assert.equal(result.checked_rules.length, 10);
   });
 
   it("HTML ruim: múltiplos erros e warnings", () => {
     const html = `
+      ${REQUIRED_MARKERS}
       <h2>Duplicado</h2>
       <h2>Duplicado</h2>
       <img src="{{IMG:bad.jpg}}"/>
@@ -161,14 +251,15 @@ describe("lintHtml — integração", () => {
       GeraÃ§Ã£o
     `;
     const result = lintHtml(html);
-    // Erros: unresolved, broken_links, duplicate_headings, mojibake = 4
-    assert.equal(result.errors.length, 4);
+    // Erros: unresolved, broken_links, duplicate_headings, mojibake,
+    // insecure_image_src (x.jpg é path relativo) = 5
+    assert.equal(result.errors.length, 5);
     // Warnings: img_no_alt, unsafe_target_blank = 2
     assert.equal(result.warnings.length, 2);
   });
 
   it("conta cada rule só 1x nos errors/warnings (agregação)", () => {
-    const html = `<a href="">x</a><a href="#">y</a>`;
+    const html = `${REQUIRED_MARKERS}<a href="">x</a><a href="#">y</a>`;
     const result = lintHtml(html);
     // Apesar de 2 broken links, só 1 entry no errors[] (count: 2)
     const brokenIssue = result.errors.find((e) => e.rule === "broken_links");

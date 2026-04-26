@@ -200,14 +200,104 @@ export function checkUnsafeTargetBlank(html: string): LintIssue[] {
   ];
 }
 
+/**
+ * Verifica que as 3 marcas de destaque + crédito É IA? estão presentes (#93).
+ * Catches the failure mode where render-newsletter-html.ts produced HTML
+ * missing seções esperadas (parse error em extract-destaques.ts, etc).
+ */
+export function checkRequiredSections(html: string): LintIssue[] {
+  const required = [
+    { marker: "<!-- Destaque 1 -->", label: "destaque 1" },
+    { marker: "<!-- Destaque 2 -->", label: "destaque 2" },
+    { marker: "<!-- Destaque 3 -->", label: "destaque 3" },
+  ];
+  const missing = required.filter((r) => !html.includes(r.marker)).map((r) => r.label);
+  if (missing.length === 0) return [];
+  return [
+    {
+      rule: "missing_required_sections",
+      severity: "error",
+      message: `${missing.length} seção(ões) obrigatória(s) ausente(s): ${missing.join(", ")}`,
+      count: missing.length,
+      samples: missing,
+    },
+  ];
+}
+
+/**
+ * Verifica que <img src> só usa schemes seguros pra Beehiiv (#93).
+ * Whitelist: https://, data:, e {{IMG:...}} (placeholders capturados pelo
+ * `checkUnresolvedPlaceholders`). Qualquer outra coisa (file://, localhost,
+ * http://, paths relativos como ./ ../ ou /abs) sinaliza substituição de URL
+ * falhada — mais simples manter um whitelist único do que enumerar deny patterns.
+ */
+export function checkInsecureImageSrc(html: string): LintIssue[] {
+  const imgMatches = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)];
+  const insecure: string[] = [];
+  for (const m of imgMatches) {
+    const src = m[1];
+    const allowed =
+      src.startsWith("https://") ||
+      src.startsWith("data:") ||
+      src.startsWith("{{IMG:");
+    if (!allowed) {
+      insecure.push(src.slice(0, 60));
+    }
+  }
+  if (insecure.length === 0) return [];
+  return [
+    {
+      rule: "insecure_image_src",
+      severity: "error",
+      message: `${insecure.length} <img src> com path local ou não-HTTPS (Beehiiv não consegue renderizar)`,
+      count: insecure.length,
+      samples: [...new Set(insecure)].slice(0, 5),
+    },
+  ];
+}
+
+/**
+ * Avisa se HTML está perto do clipping threshold do Gmail (102KB) ou
+ * suficientemente grande pra causar problemas no editor TipTap do Beehiiv (#93).
+ */
+export function checkHtmlSize(html: string): LintIssue[] {
+  const bytes = Buffer.byteLength(html, "utf8");
+  const KB = bytes / 1024;
+  if (bytes < 60 * 1024) return [];
+  // `count` representa contagem de itens nas outras checks — pra size,
+  // a métrica vai em `samples` ("size_kb: X.Y") e `count` fica omitido.
+  const samples = [`size_kb: ${KB.toFixed(1)}`];
+  if (bytes >= 102 * 1024) {
+    return [
+      {
+        rule: "html_too_large",
+        severity: "error",
+        message: `HTML tem ${KB.toFixed(1)} KB — Gmail corta em 102 KB (mensagem aparece truncada com link "view entire message")`,
+        samples,
+      },
+    ];
+  }
+  return [
+    {
+      rule: "html_size_warning",
+      severity: "warning",
+      message: `HTML tem ${KB.toFixed(1)} KB — perto do limite de Gmail (102 KB). Considerar simplificar tabelas ou hospedar imagens externas.`,
+      samples,
+    },
+  ];
+}
+
 const ALL_CHECKS = [
   { fn: checkUnresolvedPlaceholders, rule: "unresolved_placeholders" },
   { fn: checkBrokenLinks, rule: "broken_links" },
   { fn: checkDuplicateHeadings, rule: "duplicate_headings" },
   { fn: checkMojibake, rule: "mojibake" },
+  { fn: checkRequiredSections, rule: "missing_required_sections" },
+  { fn: checkInsecureImageSrc, rule: "insecure_image_src" },
   { fn: checkWideTables, rule: "wide_tables" },
   { fn: checkImgsWithoutAlt, rule: "img_without_alt" },
   { fn: checkUnsafeTargetBlank, rule: "unsafe_target_blank" },
+  { fn: checkHtmlSize, rule: "html_size" },
 ];
 
 export function lintHtml(html: string): LintResult {
