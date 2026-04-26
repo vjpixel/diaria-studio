@@ -223,18 +223,26 @@ function buildSdPrompt(image: WikimediaImage): {
   };
 }
 
+// Silenciar stdout dos scripts filhos pra não poluir o JSON final que o
+// orchestrator parseia. Stderr passa pra debug real continuar visível.
+const CHILD_STDIO: ["inherit", "ignore", "inherit"] = [
+  "inherit",
+  "ignore",
+  "inherit",
+];
+
 function runScript(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync("npx", ["tsx", cmd, ...args], { cwd: ROOT, stdio: "inherit" });
+  execFileSync("npx", ["tsx", cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
 }
 
 function runNode(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync("node", [cmd, ...args], { cwd: ROOT, stdio: "inherit" });
+  execFileSync("node", [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
 }
 
 function curlDownload(url: string, outPath: string): void {
-  execFileSync("curl", ["-sL", url, "-o", outPath], { stdio: "inherit" });
+  execFileSync("curl", ["-sL", url, "-o", outPath], { stdio: CHILD_STDIO });
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
