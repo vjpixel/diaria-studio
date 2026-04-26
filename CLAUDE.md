@@ -77,6 +77,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Data da edição é sempre explícita.** Skills `/diaria-*` que aceitam `AAMMDD` **nunca** inferem a partir de `today()` ou da edição mais recente em `data/editions/`. Se o usuário não passar a data, perguntar com sugestão de hoje/ontem como atalho mas exigir confirmação. Risco de rodar stage destrutivo/publicador (3, 5, 6) na edição errada é alto demais pra default silencioso.
 
+- **Edição é sempre D+1.** A pesquisa (Stage 1) é rodada no dia *anterior* à publicação — a data da edição é sempre **amanhã** (`today + 1 dia`), não hoje. Exemplo: se a rotina roda em 2026-04-26, a edição é `260427`. Isso vale para chamadas automáticas (CI, automação) e para chamadas manuais sem data explícita. Quando o usuário passar a data explicitamente, usar a data informada sem ajuste.
+
 - **Atacar todas as issues que dá pra atacar autonomamente.** A mandato anterior de "autonomia ampla" se aplica a issues também: revisar a fila aberta, identificar quais não têm bloqueio externo (allowlist, conta de terceiro, decisão editorial específica), e atacar até o fim — Tier A + Tier B quando a direção da issue é clara. Issues com trade-off real (escolha entre opções genuinamente equivalentes que afetam usuários finais) ainda merecem consulta. Bloqueio externo verdadeiro (precisa do editor abrir conta, mexer em allowlist GitHub, dar input de produto que não foi documentado) → comentar na issue com o que falta e pular. Tudo mais: avançar.
 
 ---
