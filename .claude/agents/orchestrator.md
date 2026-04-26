@@ -139,7 +139,14 @@ Após Stage 6 (publicação social) completar, orchestrator deve disparar `colle
 - **Disparar É IA? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Agent` em **background** (na mesma mensagem dos researchers abaixo) passando:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`
-  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Agent completar — o que vier depois). Se `01-eai.md` já existir (resume), **pular** o dispatch. Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
+  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Agent completar — o que vier depois).
+
+  **Logging por caminho** (#110 fix 4 — qualquer skip path deve gerar log explícito; antes era silêncio total e a falha só aparecia no Stage 5):
+  - **Dispatch normal**: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
+  - **Skip por resume** (`01-eai.md` já existir): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatch skipped: already_exists (resume)'`.
+  - **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'eai dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com Stage 1 — o gate 1b e a validação do gate de Stage 1 (abaixo) vão sinalizar a ausência e oferecer retry manual.
+
+  **Validação no gate de Stage 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eai.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-4-eai {AAMMDD} antes do gate de Stage 5.` Isso fail-loud na primeira oportunidade em vez de só descobrir no Stage 5.
 - **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
   1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
   2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
