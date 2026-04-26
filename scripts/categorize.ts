@@ -190,9 +190,17 @@ const DEAL_PATTERNS: RegExp[] = [
   /\b(expand(s|ed)?|expande[mr]?)\s+(the\s+)?(collaboration|partnership|deal|agreement|parceria|acordo|colabora[çc][ãa]o)/i,
   // Aquisições e fusões
   /\b(acquir(es|ed|ing)?|acquisition of|adquir[ei]|aquisi[çc][ãa]o|merger|fus[ãa]o)\b/i,
-  // Investimento explícito com número
+  // Investimento explícito com número (bilhões)
   /\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b[^.]{0,40}\b(deal|invest(ment)?|commit(ment|s)?|compromet|funding|rodada)/i,
   /\b(deal|invest(ment|s)?|commit(ment|s)?|rodada|funding)\b[^.]{0,40}\b(\$|US\$|USD\s?)?\d+(\.\d+)?\s*(bilh[ãõ]es|billion|bn)\b/i,
+  // Rodadas em milhões — seed/série A/B/C/D, etc. (#164)
+  /\b(raise[sd]?|raises|raised|levantou?|levanta[mr]?|capt(a|ou|am)?)\b[^.]{0,30}\b(\$|US\$|USD\s?|€|R\$\s?)?\d+(\.\d+)?\s*(M\b|million|millions?|milh[ãõ]es)\b/i,
+  /\b(\$|US\$|USD\s?|€|R\$\s?)?\d+(\.\d+)?\s*(M\b|million|millions?|milh[ãõ]es)\b[^.]{0,30}\b(round|rodada|series\s+[A-Z]|s[ée]rie\s+[A-Z]|seed|funding)/i,
+  // Valuation explícito (M ou B)
+  /\b(valuation|val(uation)?\s+(of|de|atingiu)|hits?\s+\$?\d)\b[^.]{0,30}\b(\$|US\$)?\d+(\.\d+)?\s*(M\b|B\b|million|billion)\b/i,
+  /\b(\$|US\$)?\d+(\.\d+)?\s*(M\b|B\b|million|billion)\s+valuation\b/i,
+  // IPO e listagem
+  /\b(IPO|oferta p[úu]blica|listagem na bolsa|goes? public|files? to go public)\b/i,
   // Contratos de compute/infra (ex: "5 gigawatts of new compute")
   /\b\d+\s*(gigawatt|megawatt|GW|MW)s?\b.*\bcompute\b/i,
   // Acordos genéricos gigantes
