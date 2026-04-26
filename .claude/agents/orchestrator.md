@@ -40,15 +40,15 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Manter social scheduling normal** (diferente de `test_mode` que usa `schedule_day_offset`).
   - No Stage 1, copiar `_internal/01-categorized.json` → `_internal/01-approved.json` diretamente (sem edição humana).
   - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
-- **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais no Stage 6 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
+- **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais no Stage 5 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
-- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5→6; o É IA? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
+- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5 (newsletter+social paralelos)→6 (auto-reporter); o É IA? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
-  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` → Stage 6 completo. Pipeline finalizado.
-  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 6 parcial; re-disparar 6a (script Facebook) e 6b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados.
-  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para Stage 6.
+  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"` **e** `05-published.json` tem `review_completed === true` → Stage 5 completo. Pular para Stage 6 (auto-reporter) ou finalizar pipeline se já rodou.
+  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 5 parcial: re-disparar `publish-facebook` + `publish-social` (com `--skip-existing` / `skip_existing = true`, resume-aware) sem retocar publish-newsletter. Re-apresentar gate único.
+  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` (mas `06-social-published.json` ausente) → Stage 5 parcial (newsletter ok, social ainda não): re-disparar só `publish-facebook` + `publish-social`.
   - Se `05-published.json` existe mas `template_used` !== template esperado → Stage 5 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Stage 5 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
-  - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Stage 5 incompleto: pular publish-newsletter (rascunho já existe), rodar apenas o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true` e prosseguir.
+  - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Stage 5 incompleto (newsletter parcial): pular publish-newsletter (rascunho já existe), rodar só o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-social`. Re-apresentar gate único.
   - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Stage 5.
   - Se `03-social.md` existe (mas não `04-d1-2x1.jpg`) → pular para Stage 4.
   - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
@@ -126,7 +126,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 
 ### 0b. Auto-reporter — preparado pra rodar no final
 
-Após Stage 6 (publicação social) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Stage final" abaixo.
+Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Stage 6" abaixo.
 
 ### 1. Stage 1 — Research
 
@@ -398,28 +398,56 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
     ```
     Atualizar `Fim: {now}` no cabeçalho.
 
-### 5. Stage 5 — Publicar newsletter (Beehiiv)
+### 5. Stage 5 — Publicar (paralelo: newsletter + social) — #38
 
-- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 publish newsletter started'`.
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eai.md,01-eai-real.jpg,01-eai-ia.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — o editor pode ter refinado texto ou substituído imagens diretamente no Drive.
-- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-real.jpg`, `01-eai-ia.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir.
-- Disparar `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
-- **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
-  1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
-  2. Logar warn: `"chrome_disconnected em Stage 5, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
-  3. Aguardar: `Bash("sleep {delay}")`.
-  4. Re-disparar `publish-newsletter` com os mesmos parâmetros.
-  5. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
-  6. **Após 10 falhas consecutivas** (~17h de espera acumulada), logar erro e pausar com a mensagem:
-     ```
-     🔌 Claude in Chrome desconectou 10 vezes seguidas no Stage 5 (último passo: {last_step}).
-        Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
-        ⚠️  Se o rascunho foi criado parcialmente no Beehiiv, delete-o manualmente antes do retry.
-        Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 5.
-     ```
-  - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que falhe por outro motivo depois. Também reseta a cada resposta "retry" do usuário (nova rodada de 10).
-  - **Nota:** entre tentativas, qualquer erro que **não** seja `chrome_disconnected` (ex: login expirado, erro de template) interrompe o loop e é tratado normalmente — não conta como tentativa.
-- Se retornar `error: "beehiiv_login_expired"` ou similar, logar erro e pausar — instruir o usuário a re-logar no Chrome (ver `docs/browser-publish-setup.md`) e re-disparar.
+**Stages 5 e 6 antigos foram fundidos.** `publish-newsletter` (Beehiiv), `publish-facebook.ts` (Graph API) e `publish-social` (LinkedIn via Chrome) agora rodam **em paralelo na mesma mensagem**, com **gate único** depois. O auto-reporter (era "Stage final") passa a ser Stage 6.
+
+Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincronizado fica pra PR 2 (#38).
+
+#### 5a. Pré-requisitos + sync
+
+- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 publish parallel started'`.
+- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eai.md,01-eai-real.jpg,01-eai-ia.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive.
+- **Staleness check (#120) — APÓS o pull.** Rodar:
+  ```bash
+  npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
+  ```
+  (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
+- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-real.jpg`, `01-eai-ia.jpg`, `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
+
+#### 5b. Dispatch paralelo (UMA mensagem, 3 chamadas)
+
+**Em uma única mensagem**, disparar simultaneamente:
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
+2. `Agent` → `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
+3. `Agent` → `publish-social` com `edition_dir = data/editions/{AAMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
+
+**Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
+
+**Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (5c).
+#### 5c. Retry chrome_disconnected (independente por agent)
+
+Tanto `publish-newsletter` quanto `publish-social` usam o mesmo padrão de retry exponencial — cada um conta sozinho (falha de um não afeta o contador do outro).
+
+Se qualquer agent retornar `error: "chrome_disconnected"`:
+1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
+2. Logar warn: `"chrome_disconnected em Stage 5 ({agent}), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+3. Aguardar: `Bash("sleep {delay}")`.
+4. Re-disparar **só** o agent que falhou (com mesmos parâmetros; publish-social com `skip_existing = true`).
+5. Se repetir, repetir do passo 1 incrementando N.
+6. **Após 10 falhas consecutivas** (~17h acumuladas), logar erro e pausar:
+   ```
+   🔌 Claude in Chrome desconectou 10 vezes seguidas em {agent} (Stage 5).
+      Verifique Chrome aberto + extensão Claude in Chrome ativa.
+      ⚠️ Se publish-newsletter: rascunho parcial no Beehiiv pode existir — delete antes do retry.
+      Responda "retry" pra mais 10 tentativas, ou "skip" pra pular este agent.
+   ```
+- **Reset do contador**: re-dispatch que sucede (mesmo se falhar por outro motivo depois) reseta N=1.
+- Erros que **não** sejam `chrome_disconnected` (ex: login expirado, template errado) interrompem o loop e são tratados normalmente.
+- Se `publish-newsletter` retornar `error: "beehiiv_login_expired"` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
+- Se `publish-social` retornar `status: "failed"` em algum post por login expirado, logar warn e prosseguir — editor re-roda `/diaria-publicar social` após re-logar.
+
+#### 5d. Validar template (publish-newsletter)
 - Ler `05-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`, `template_used`.
 - **Validar template (obrigatório).** Ler `publishing.newsletter.template` de `platform.config.json` (ex: `"Default"`). Se `template_used` !== template esperado:
   1. Logar erro: `"Template incorreto: esperado '{expected}', usado '{template_used}'. Re-disparando publish-newsletter."`.
@@ -427,6 +455,10 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   3. Re-disparar `publish-newsletter` com os mesmos parâmetros (até 3 tentativas).
   4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
   5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É IA? ausente, boxes não separados, etc.).
+
+#### 5e. Loop de review do email de teste (após newsletter retornar)
+
+> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 5b. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 5b.
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral do Stage 5. O Stage 5 só está completo quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
@@ -461,7 +493,13 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   - `review_final_issues: [...]` (vazio se tudo OK)
   Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** para garantir que o Stage 5 não é considerado completo sem a revisão do email de teste. **Se este campo estiver ausente ou `false`, o resume re-executa o loop de review.**
 - Ler `05-published.json` (pode ter sido atualizado pelo fix mode).
-- **GATE HUMANO:** mostrar:
+
+#### 5f. Gate único (substitui os dois gates antigos de Stage 5 + Stage 6)
+
+- Ler `06-social-published.json` (já gerado por 5b).
+- **GATE HUMANO:** mostrar **uma só vez**:
+
+  **Newsletter (Beehiiv)**
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to`
   - Template usado (`template_used`)
@@ -474,85 +512,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
          • {issue 2}
       Corrija manualmente no rascunho antes de publicar.
       ```
-  - ⚠️ **Upload manual de imagens (gate obrigatório).** As imagens do email de teste são placeholders (localhost) — o editor DEVE subir as imagens no Beehiiv antes de aprovar este gate. Listar:
-    ```
-    📎 Suba as imagens no rascunho ANTES de aprovar:
-       • Cover/Thumbnail → 04-d1-2x1.jpg (1600×800)
-       • Inline D1  → 04-d1-2x1.jpg
-       • Inline D2  → 04-d2.jpg
-       • Inline D3  → 04-d3.jpg
-       • É IA? (A)  → 01-eai-real.jpg
-       • É IA? (B)  → 01-eai-ia.jpg
-       📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
-    ```
-  - Instrução: "Suba as imagens, reenvie o email de teste do Beehiiv para conferir, e só então aprove para seguir ao Stage 6."
-  - Opções: aprovar (segue para Stage 6) / regerar (re-disparar `publish-newsletter`).
-  - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
-    ```
-    | 5 | {stage_start} | {now} | publish_newsletter:1, review_test_email:{review_attempts} | 0 | {1 + review_attempts} |
-    ```
 
-### 6. Stage 6 — Publicar social (LinkedIn + Facebook)
-
-- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'stage 6 publish social started'`.
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 6 --files 03-social.md,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter ajustado posts no Drive antes de publicar.
-- **Staleness check (#120) — APÓS o pull.** Rodar:
-  ```bash
-  npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
-  ```
-  Exit code 0 = ok, prosseguir. Exit code 1 = um ou mais downstreams (`03-social.md`, `04-d{1,2,3}*.jpg`) estão mais antigos que `02-reviewed.md` — sinal de que o editor mexeu na newsletter depois do Stage 3/4 já ter rodado, então os posts/imagens estão derivados de versão obsoleta. Pausar com:
-  > ⚠️ Outputs do Stage 6 derivam de uma versão antiga de `02-reviewed.md`:
-  > - {downstream} ({downstream_mtime}) ← {upstream} ({upstream_mtime}, {lag_minutes}min mais novo)
-  > - ...
-  >
-  > Re-rodar Stage 3 (social) e/ou Stage 4 (imagens) antes de publicar?
-  >   [s] sim, re-rodar (orchestrator volta ao stage indicado)
-  >   [n] não, publicar com versão atual (assumir que diff é cosmético)
-  >   [a] abortar
-  
-  Se `s`, voltar ao Stage 3 (re-disparar `social-linkedin` + `social-facebook` + Clarice) e/ou Stage 4 conforme o downstream que estava stale. Se `n`, prosseguir mas logar warn no run-log. Se `a`, parar.
-- Verificar pré-requisitos: `02-reviewed.md` (Stage 2), `03-social.md` (Stage 3 — consolidado com seções `# LinkedIn`/`# Facebook` e `## d1/d2/d3`), `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg` (Stage 4). Se algum arquivo faltar, pausar e instruir qual stage re-rodar.
-
-#### 6a. Facebook — via Graph API (script, ~30s)
-
-- Rodar em paralelo com 6b:
-  ```bash
-  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing
-  ```
-  Se `test_mode = true` e `schedule_day_offset` está definido, adicionar `--day-offset {schedule_day_offset}`:
-  ```bash
-  npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing --day-offset {schedule_day_offset}
-  ```
-- O script publica 3 posts (d1, d2, d3) via Facebook Graph API com upload de imagem. Com `--schedule`, agenda no horário configurado (ou usa `--day-offset` para override).
-- Resume-aware: lê `06-social-published.json` e pula facebook posts já publicados.
-- Append imediato em `06-social-published.json` após cada post.
-- Se o script falhar (token expirado, etc.), logar o erro e continuar — não bloqueia LinkedIn.
-
-#### 6b. LinkedIn — via Claude in Chrome (browser automation)
-
-- Disparar `publish-social` com `edition_dir = data/editions/{AAMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
-- O agente publish-social é resume-aware e pula posts já em `06-social-published.json` (incluindo os facebook posts do 6a).
-- Na prática, se 6a completou com sucesso, publish-social só precisa postar os 3 LinkedIn posts.
-- **Retry automático em desconexão do Chrome (até 10 tentativas, backoff exponencial).** Se retornar `error: "chrome_disconnected"`:
-  1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, ... 10 = 15360s). Calcular via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
-  2. Logar warn: `"chrome_disconnected em Stage 6, tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
-  3. Aguardar: `Bash("sleep {delay}")`.
-  4. Re-disparar `publish-social` com `edition_dir` e `skip_existing = true` (resume-aware — posts já gravados são pulados).
-  5. Se a nova tentativa também falhar com `chrome_disconnected`, repetir do passo 1 incrementando N.
-  6. **Após 10 falhas consecutivas** (~17h de espera acumulada), logar erro e pausar com a mensagem:
-     ```
-     Claude in Chrome desconectou 10 vezes seguidas no Stage 6 (ultimo post: {last_post.platform} {last_post.destaque}).
-        Verifique se o Chrome está aberto e a extensão Claude in Chrome está ativa.
-        Responda "retry" para tentar mais 10 vezes, ou "skip" para pular o Stage 6.
-     ```
-  - **Reset do contador:** a contagem de tentativas (N) reseta para 1 sempre que um re-dispatch **suceder** (retornar sem `chrome_disconnected`), mesmo que o post falhe por outro motivo. Também reseta a cada resposta "retry" do usuário.
-  - Erros que não sejam `chrome_disconnected` interrompem o loop e são tratados normalmente.
-- Se algum post retornar `status: "failed"` com `reason` de login expirado, logar warn e prosseguir — o editor pode re-rodar `/diaria-publicar social` após re-logar.
-
-#### Gate humano (após 6a + 6b)
-
-- Ler `06-social-published.json` final.
-- **GATE HUMANO:** mostrar tabela com 6 linhas:
+  **Social (6 posts)** — tabela:
   ```
   Facebook  D1  draft      https://www.facebook.com/...  (API)
   Facebook  D2  draft      https://www.facebook.com/...  (API)
@@ -561,18 +522,38 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
   LinkedIn  D2  draft      https://www.linkedin.com/...  (browser)
   LinkedIn  D3  scheduled  2026-04-19 16:00 BRT          (browser)
   ```
-  - Posts com `status: "failed"` aparecem destacados com `reason`.
-  - Instrução: "Revise os rascunhos no dashboard de cada plataforma e publique manualmente quando aprovados. Posts agendados serão publicados automaticamente no horário."
-  - Opções: aprovar (encerra pipeline) / re-rodar (recupera failed) / regenerar individual (TODO).
-  - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 6, atualizar `Fim` e `Total de chamadas`, gravar:
-    ```
-    | 6 | {stage_start} | {now} | publish_facebook_script:1, publish_social:1 | 0 | 1 |
-    ```
-    Atualizar `Fim: {now}` no cabeçalho.
+  Posts com `status: "failed"` aparecem destacados com `reason`.
 
-### Stage final. Auto-reporter (#57 / #79)
+  **Upload manual de imagens (gate obrigatório, só para newsletter)** — as imagens do email de teste do Beehiiv são placeholders (localhost). Editor DEVE subir as imagens no Beehiiv antes de aprovar:
+    ```
+    📎 Suba as imagens no rascunho do Beehiiv ANTES de aprovar:
+       • Cover/Thumbnail → 04-d1-2x1.jpg (1600×800)
+       • Inline D1  → 04-d1-2x1.jpg
+       • Inline D2  → 04-d2.jpg
+       • Inline D3  → 04-d3.jpg
+       • É IA? (A)  → 01-eai-real.jpg
+       • É IA? (B)  → 01-eai-ia.jpg
+       📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
+    ```
+  Social posts não exigem upload manual — Facebook foi via Graph API com upload já feito; LinkedIn drafts têm imagens já anexadas pelo agent.
 
-Após o gate do Stage 6 aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
+  **Instrução**: "Suba as imagens no Beehiiv, reenvie o email de teste pra conferir, revise os 6 social drafts no dashboard de cada plataforma, e só então aprove pra seguir ao Stage 6 (auto-reporter). Posts agendados serão publicados automaticamente no horário."
+
+  **Opções**:
+  - aprovar (segue pra Stage 6 auto-reporter)
+  - regenerar newsletter (re-dispatch `publish-newsletter`)
+  - regenerar social (re-dispatch `publish-facebook` + `publish-social`, com `--skip-existing` / `skip_existing = true` pra resume-aware)
+  - regenerar tudo (volta a 5b)
+  - abortar
+
+- **Atualizar _internal/cost.md.** Append linha unificada na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
+  ```
+  | 5 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
+  ```
+
+### 6. Stage 6 — Auto-reporter (#57 / #79)
+
+Após o gate do Stage 5 (publish paralelo) aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
 
 1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
 

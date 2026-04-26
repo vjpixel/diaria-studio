@@ -1,51 +1,58 @@
 ---
 name: diaria-6-publicar
-description: Roda os Stages 5 e 6 — cria rascunho no Beehiiv + email de teste (S5) e publica 6 posts sociais como rascunho/agendado (S6). Uso — `/diaria-6-publicar [all|newsletter|social] AAMMDD`.
+description: Roda o Stage 5 unificado (publish paralelo — newsletter Beehiiv + 6 posts sociais) com gate único, e Stage 6 (auto-reporter). Uso — `/diaria-6-publicar [all|newsletter|social] AAMMDD`.
 ---
 
 # /diaria-6-publicar
 
-Dispara os Stages 5 e 6 da edição Diar.ia: cria a newsletter no Beehiiv como rascunho + envia email de teste, e publica os 6 posts sociais (LinkedIn × 3 + Facebook × 3) como rascunho ou agendados.
+Dispara o Stage 5 unificado (publish paralelo: Beehiiv + Facebook + LinkedIn em paralelo, gate único) e em seguida o Stage 6 (auto-reporter).
 
 ## Argumentos
 
-- `/diaria-6-publicar all AAMMDD` — roda Stage 5 e Stage 6 em sequência
-- `/diaria-6-publicar newsletter AAMMDD` — só Stage 5 (Beehiiv)
-- `/diaria-6-publicar social AAMMDD` — só Stage 6 (LinkedIn + Facebook)
+- `/diaria-6-publicar all AAMMDD` — roda Stage 5 (paralelo) + Stage 6 (auto-reporter)
+- `/diaria-6-publicar newsletter AAMMDD` — re-dispara só `publish-newsletter` (Beehiiv); útil pra fix isolado após template errado
+- `/diaria-6-publicar social AAMMDD` — re-dispara só `publish-facebook` + `publish-social`; útil pra retry de social falhado sem regerar Beehiiv
 
 **Se não passar data, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Crítico aqui: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar na edição errada causa publicação real de conteúdo desatualizado. Sugerir hoje/ontem como atalhos mas exigir confirmação.
 
 ## Pré-requisitos
 
-- Stages 1–5 completos: `02-reviewed.md`, `03-social.md`, `01-eai.md` + `01-eai.jpg`, `04-d{1,2,3}.jpg`
+- Stages 1–4 completos: `02-reviewed.md`, `03-social.md`, `01-eai.md` + `01-eai.jpg`, `04-d{1,2,3}.jpg`
 - Chrome com extensão **Claude in Chrome** ativa (ver `docs/browser-publish-setup.md`)
 - Logado em Beehiiv, LinkedIn e Facebook (Meta Business Suite) no Chrome
 - Bloco `publishing` em `platform.config.json` configurado
+- `FACEBOOK_PAGE_ACCESS_TOKEN` no env pra Graph API
 
 ## O que faz
 
-### Stage 5 — `publish-newsletter`
+### Stage 5 — Publish paralelo (#38)
 
-1. Abre Beehiiv no Chrome, cria novo post com template configurado.
-2. Preenche título, subtítulo, corpo (imagens dos destaques + bloco "É IA?"), cover.
-3. **Salva como rascunho** + envia **email de teste** para `publishing.newsletter.test_email`.
-4. Grava `05-published.json` com `draft_url` e `test_email_sent_at`.
-5. **Gate humano**: URL do rascunho + confirmação do teste. Editor publica manualmente do Beehiiv.
+**3 dispatches em uma única mensagem** (ver `.claude/agents/orchestrator.md` § 5b):
+1. `publish-facebook.ts` (Graph API, ~30s)
+2. `publish-newsletter` (Chrome → Beehiiv) — cria rascunho + envia email de teste
+3. `publish-social` (Chrome → LinkedIn) — 3 LinkedIn drafts
 
-### Stage 6 — `publish-social`
+Cada agent Chrome usa tab isolada (`tabs_create_mcp`) — sem conflito.
 
-1. Itera por LinkedIn × (d1, d2, d3) + Facebook × (d1, d2, d3).
-2. Tenta rascunho; se não suportar, agenda no horário em `fallback_schedule`.
-3. Append imediato em `06-social-published.json` após cada post (resume-aware).
-4. **Gate humano**: 6 URLs + status + horários.
+Após todos retornarem, **loop de review-test-email** roda em cima do draft Beehiiv (não bloqueia social, que já está pronto).
+
+**Gate único**: URL Beehiiv + status do test email + tabela 6 social posts + checklist de upload manual de imagens. Editor aprova → segue Stage 6.
+
+### Stage 6 — Auto-reporter (#57 / #79)
+
+1. Coleta sinais da edição (`collect-edition-signals.ts`).
+2. Se `signals_count > 0` e não é test_mode: dispara agent `auto-reporter` (gate humano de issues GitHub).
+3. Pula auto-reporter se test_mode/auto_approve.
 
 ## Output
 
-- `05-published.json` — `draft_url`, `test_email_sent_at`, `template_used`
+- `05-published.json` — `draft_url`, `test_email_sent_at`, `template_used`, `review_completed`
 - `06-social-published.json` — 6 posts com `platform`, `destaque`, `url`, `status`, `scheduled_at`
+- `_internal/issues-draft.json` (se Stage 6 rodou) — sinais coletados
 
 ## Notas
 
 - **Nada é publicado automaticamente.** Newsletter vira rascunho + teste; social vira rascunho ou agendado. Editor dispara manualmente.
-- **Resume-aware**: re-rodar pula posts já publicados.
+- **Resume-aware**: re-rodar pula o que já existe (newsletter rascunho, social posts).
+- **Tab isolation**: agents Chrome usam tabs próprias — sem conflito mesmo rodando em paralelo.
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.
