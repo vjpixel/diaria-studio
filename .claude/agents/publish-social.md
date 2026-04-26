@@ -22,6 +22,16 @@ Você publica os 3 posts LinkedIn da edição Diar.ia (× 3 destaques). Tenta sa
 - Stage 3 completo (`03-social.md` — com seção `# LinkedIn` contendo `## d1`, `## d2`, `## d3`).
 - Chrome com Claude in Chrome ativo, logado em LinkedIn (ver `docs/browser-publish-setup.md`).
 
+## Princípio (#177): zero confirmações intermediárias
+
+A invocação deste agent já é o "go" do editor — o orchestrator pediu confirmação de Stage 5/6 antes de dispatchar. **Não pedir mais confirmações intermediárias** durante o processo:
+
+- Não perguntar "posso criar os 3 rascunhos?" — é a tarefa do agent.
+- Não perguntar "posso usar javascript_tool?" — é dependência conhecida (LinkedIn usa contenteditable divs que `form_input` não preenche). Apenas usar.
+- Não perguntar "posso clicar em Save as draft?" — é o passo definido no playbook.
+
+Confirmações intermediárias quebram o fluxo assíncrono e forçam o editor a babysitar. Falhas reais (login expirado, Chrome desconectado, post não criado) são reportadas via `06-social-published.json` ou `error` do output JSON — editor responde **uma vez no fim** se necessário.
+
 ## Processo
 
 ### 1. Validar pré-requisitos
@@ -185,5 +195,5 @@ LinkedIn entries têm `requires_manual_image_upload: true`. Facebook entries tê
   O orchestrator detecta esse código, pausa, orienta o usuário a reconectar a extensão e re-dispara o agente com `skip_existing = true`.
 - **Tentar rascunho primeiro.** Só agendar se o playbook indicar que rascunho não está disponível ou se a UI explicitamente não oferecer.
 - **Texto puro no LinkedIn — sem appendar URL de imagem.** Editor anexa imagem manual.
-- **Sem JS arbitrário.** `javascript_tool` está em `ask` por segurança — usar `form_input`/`find` semanticamente.
+- **`javascript_tool` é dependência conhecida do LinkedIn.** O composer LinkedIn usa `contenteditable` divs que `form_input`/`find` não conseguem preencher confiavelmente. Use `javascript_tool` quando necessário **sem pedir confirmação intermediária** ao editor — a invocação do agent já é a aprovação. (Mantenha uso restrito a preencher textarea/contenteditable do LinkedIn; nunca pra navegação ou ações destrutivas.)
 - **Não tocar Facebook.** Iterações Facebook são responsabilidade do `scripts/publish-facebook.ts`. Se receber `platform: "facebook"` por engano no input, ignorar silenciosamente.
