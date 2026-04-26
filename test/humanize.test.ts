@@ -7,6 +7,7 @@ import {
   flagLongSentences,
   flagMechanicalParallelism,
   flagRepetitiveConnectives,
+  recapitalizeSentenceStarts,
 } from "../scripts/humanize.ts";
 
 describe("applyRemovals", () => {
@@ -167,5 +168,56 @@ describe("humanize — integração", () => {
     assert.equal(r.report.removals_count, 0);
     assert.equal(r.report.substitutions_count, 0);
     assert.equal(r.report.flags.length, 0);
+  });
+});
+
+describe("recapitalizeSentenceStarts — URL guard (#163)", () => {
+  // Nota: a função SEMPRE capitaliza a primeira letra do texto (start-of-string).
+  // Estes tests focam só em garantir que URLs após pontuação NÃO são tocadas.
+
+  it("URL após período em linha própria NÃO é capitalizada", () => {
+    const r = recapitalizeSentenceStarts("texto. Outra frase.\nhttps://example.com");
+    assert.ok(r.includes("\nhttps://example.com"), `URL preservada: ${r}`);
+    assert.ok(!r.includes("Https://"), `não há Https: ${r}`);
+  });
+
+  it("URL após exclamação NÃO é capitalizada", () => {
+    const r = recapitalizeSentenceStarts("Acabou! Que ótimo!\nhttps://example.com/path");
+    assert.ok(r.includes("\nhttps://example.com/path"), `URL preservada: ${r}`);
+  });
+
+  it("URL após interrogação NÃO é capitalizada", () => {
+    const r = recapitalizeSentenceStarts("Funciona? Saberemos em breve?\nhttps://example.com");
+    assert.ok(r.includes("\nhttps://example.com"), `URL preservada: ${r}`);
+  });
+
+  it("http:// (sem s) também é preservada", () => {
+    const r = recapitalizeSentenceStarts("Lá vai. Frase.\nhttp://example.com");
+    assert.ok(r.includes("\nhttp://example.com"), `URL preservada: ${r}`);
+  });
+
+  it("recapitalização normal (não-URL) continua funcionando", () => {
+    const text = "primeira frase. segunda frase.";
+    assert.equal(
+      recapitalizeSentenceStarts(text),
+      "Primeira frase. Segunda frase.",
+    );
+  });
+
+  it("mistura URL + frase normal — só recapitaliza a frase, não a URL", () => {
+    const text = "intro paragrafo.\nhttps://example.com\nOutro paragrafo.";
+    const r = recapitalizeSentenceStarts(text);
+    // Goal: URL fica intacta (não vira Https); resto fica como começou
+    assert.ok(r.includes("https://"), `URL preservada: ${r}`);
+    assert.ok(!r.includes("Https://"), `não há Https: ${r}`);
+    // Recapitalização do início do texto
+    assert.ok(r.startsWith("Intro paragrafo"), `Início recapitalizado: ${r}`);
+  });
+
+  it("regression — repro exato do issue body", () => {
+    const text = "texto.\nhttps://example.com";
+    const r = recapitalizeSentenceStarts(text);
+    // Antes do fix, "https" virava "Https". Agora só o "t" inicial fica em maiúscula.
+    assert.equal(r, "Texto.\nhttps://example.com");
   });
 });
