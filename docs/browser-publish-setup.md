@@ -53,9 +53,10 @@ mcp__claude-in-chrome__find
 mcp__claude-in-chrome__upload_image
 mcp__claude-in-chrome__tabs_create_mcp
 mcp__claude-in-chrome__tabs_context_mcp
+mcp__claude-in-chrome__javascript_tool
 ```
 
-`mcp__claude-in-chrome__javascript_tool` fica em `ask` (executar JS arbitrário pede confirmação).
+`mcp__claude-in-chrome__javascript_tool` está em `allow` mas com escopo restrito: usado **apenas** pelo agent `publish-social` para preencher o composer contenteditable do LinkedIn (#177, ProseMirror não aceita `form_input`). Outros agents (`publish-newsletter`, etc.) não devem usar.
 
 ## 5. Configuração em `platform.config.json`
 
