@@ -23,8 +23,14 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 ### 2. Escolher autor (uma vez por sessão)
 - Se o composer mostrar dropdown de autor, escolher página **Diar.ia** se existir; senão, perfil pessoal.
 
-### 3. Colar texto
-- Colar conteúdo da seção `## d{N}` dentro de `# LinkedIn` em `03-social.md` (já com hashtags e quebras de linha; o `publish-social` extrai a seção e remove o heading/comentários HTML antes de colar).
+### 3. Inserir texto
+- O composer usa `<div contenteditable>` (ProseMirror) — `form_input` não funciona aqui. Usar `javascript_tool` para injetar o texto:
+  ```javascript
+  const el = document.querySelector('.ql-editor') || document.querySelector('[contenteditable="true"]');
+  el.focus();
+  document.execCommand('insertText', false, "<texto do post>");
+  ```
+- Conteúdo: seção `## d{N}` dentro de `# LinkedIn` em `03-social.md`, com heading e comentários HTML removidos.
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
 ### 4. Imagem via URL pública (Drive) — #48

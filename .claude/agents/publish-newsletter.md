@@ -260,5 +260,5 @@ Se qualquer caractere aparecer corrompido (ex: `8a` em vez de `8ª`, `nao` em ve
   { "error": "chrome_disconnected", "last_step": "<nome do passo onde falhou>", "details": "<mensagem de erro bruta>" }
   ```
 - **Upload de imagem**: aguardar conclusão antes do próximo bloco.
-- **Sem JS arbitrário.** Use `form_input` e `find` semanticamente — `javascript_tool` está em `ask` por segurança.
+- **Sem JS arbitrário neste agent.** Use `form_input` e `find` semanticamente. `javascript_tool` não está nos `tools` deste agent — é restrito ao `publish-social` (LinkedIn contenteditable, #177).
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.
