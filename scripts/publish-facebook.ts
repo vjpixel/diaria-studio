@@ -25,7 +25,7 @@
  * Output: appends em {edition-dir}/06-social-published.json
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -416,8 +416,22 @@ async function main() {
   // Extract edition date from dir name (last 6 chars)
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
 
-  // Load/init published state
-  const publishedPath = resolve(editionDir, "06-social-published.json");
+  // Load/init published state.
+  // #158: prefer _internal/ (new convention) but fallback to root for backward
+  // compat with editions já-rodadas. Writes always go to _internal/.
+  const internalPath = resolve(editionDir, "_internal", "06-social-published.json");
+  const rootPath = resolve(editionDir, "06-social-published.json");
+  let publishedPath: string;
+  if (existsSync(internalPath)) {
+    publishedPath = internalPath;
+  } else if (existsSync(rootPath)) {
+    // Edição antiga: lê da raiz mas grava no _internal/ daqui pra frente
+    publishedPath = rootPath;
+  } else {
+    // Edição nova: cria em _internal/
+    mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+    publishedPath = internalPath;
+  }
   const published = loadPublished(publishedPath);
 
   // Reschedule mode (#123): align existing scheduled posts to canonical time.

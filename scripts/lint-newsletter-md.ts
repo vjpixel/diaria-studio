@@ -227,12 +227,135 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
+/**
+ * Conta linhas de título por bloco DESTAQUE (#178).
+ *
+ * Espera que cada bloco DESTAQUE tenha exatamente 1 título por destaque
+ * antes do gate de Stage 2 ser aprovado. Writer produz 3 opções; editor
+ * deve podar pra 1 antes de prosseguir pro Stage 3.
+ *
+ * Estrutura esperada após poda:
+ *   DESTAQUE N | CATEGORIA
+ *   <título único>
+ *
+ *   <parágrafos do corpo>
+ *   ...
+ *
+ * Estrutura inicial (writer output):
+ *   DESTAQUE N | CATEGORIA
+ *   <opção 1>
+ *   <opção 2>
+ *   <opção 3>
+ *
+ *   <parágrafos do corpo>
+ *
+ * Heurística: dentro de cada bloco DESTAQUE (entre header e primeira
+ * linha em branco), contar linhas não-vazias. >1 = editor não podou.
+ */
+
+const HIGHLIGHT_HEADER_RE = /^DESTAQUE\s+(\d+)\s*\|\s*(.+)$/;
+
+export interface TitleCheckResult {
+  destaque: number;
+  category: string;
+  title_count: number;
+  titles: string[];
+  status: "ok" | "needs_pruning";
+}
+
+export interface TitleCheckReport {
+  ok: boolean;
+  destaques: TitleCheckResult[];
+  errors: string[];
+}
+
+export function countTitlesPerHighlight(md: string): TitleCheckReport {
+  const lines = md.split("\n");
+  const destaques: TitleCheckResult[] = [];
+  const errors: string[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = line.match(HIGHLIGHT_HEADER_RE);
+    if (!m) {
+      i++;
+      continue;
+    }
+    const destaqueNum = parseInt(m[1], 10);
+    const category = m[2].trim();
+    // Próximas linhas até primeira linha em branco = títulos
+    const titles: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim() !== "") {
+      const t = lines[j].trim();
+      // Ignore linhas que parecem URL (header concatenado com URL é outro bug, #157)
+      if (!/^https?:\/\//.test(t)) {
+        titles.push(t);
+      }
+      j++;
+    }
+    destaques.push({
+      destaque: destaqueNum,
+      category,
+      title_count: titles.length,
+      titles,
+      status: titles.length === 1 ? "ok" : "needs_pruning",
+    });
+    if (titles.length !== 1) {
+      errors.push(
+        `DESTAQUE ${destaqueNum} (${category}): ${titles.length} título(s) — esperado 1. ${
+          titles.length > 1
+            ? "Delete os excedentes antes de prosseguir."
+            : "Adicione 1 título."
+        }`,
+      );
+    }
+    i = j;
+  }
+
+  // Garantir que houve 3 destaques
+  if (destaques.length !== 3) {
+    errors.push(
+      `Esperado 3 destaques (DESTAQUE 1/2/3); encontrei ${destaques.length}.`,
+    );
+  }
+
+  return { ok: errors.length === 0, destaques, errors };
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
+
+  // Modo --check titles-per-highlight (#178)
+  if (args.check === "titles-per-highlight") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = countTitlesPerHighlight(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.errors.length} erro(s):`);
+      for (const e of result.errors) console.error(`  ${e}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
-      "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>",
+      "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
+        "  ou: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>",
     );
     process.exit(2);
   }
