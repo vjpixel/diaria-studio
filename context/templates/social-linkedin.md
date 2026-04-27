@@ -5,7 +5,7 @@
 - Abrir com **hook forte**: pergunta provocativa ou dado impactante.
 - 2–3 parágrafos curtos.
 - Tom profissional, mas não corporativo engessado.
-- **Call-to-action final em 1 frase**: `"Receba notícias de IA todo dia por e-mail, assine grátis em diar.ia.br."` — não mencionar o nome "Diar.ia" no corpo (a URL carrega a identidade).
+- **Call-to-action final em 1 frase**: `"Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br."` — não mencionar o nome "Diar.ia" no corpo (a URL carrega a identidade).
 - Incluir as **3 hashtags mais relevantes** ao tema (ex: `#IA #Tecnologia #Mercado`).
 - 1200–1500 caracteres é o sweet spot.
 
@@ -20,7 +20,7 @@
 
 [Parágrafo 3 — opcional, detalhe adicional ou comparação]
 
-Receba notícias de IA todo dia por e-mail, assine grátis em diar.ia.br.
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
 
 #Hashtag1 #Hashtag2 #Hashtag3
 ```
