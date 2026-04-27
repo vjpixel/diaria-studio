@@ -14,17 +14,26 @@ Criar um post na publicação Diar.ia, usando o template configurado em `platfor
 
 ## Pré-render (ANTES do browser)
 
-Antes de abrir o Chrome, rodar os scripts de extração para ter todo o conteúdo pronto:
+Antes de abrir o Chrome, rodar os scripts pra gerar HTML pronto + URLs públicas das imagens (fluxo Custom HTML, #74):
 
 ```bash
-# Extrair destaques como JSON estruturado
+# 1. Extrair título/subtítulo do header (cabeçalho do Beehiiv)
 npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 
-# Extrair conteúdo completo como JSON (destaques + seções + É IA? + emojis + imagens)
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format json
+# 2. Upload das 5 imagens (cover, D2, D3, eai_a, eai_b) pro Drive como shareable
+npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsletter
+
+# 3. Renderizar HTML do corpo com placeholders {{IMG:filename}}
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
+
+# 4. Substituir placeholders pelas URLs do Drive
+npx tsx scripts/substitute-image-urls.ts \
+  --html /tmp/newsletter.html \
+  --images {edition_dir}/06-public-images.json \
+  --out {edition_dir}/_internal/newsletter-final.html
 ```
 
-O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `title`, `body`, `why`, `url`), `eai`, e `sections[]`. Use esses dados diretamente — **não ler `02-reviewed.md` durante a sessão do browser**.
+Output final: `{edition_dir}/_internal/newsletter-final.html` — HTML completo com todas as imagens via CDN URLs, pronto pra colar num único bloco Custom HTML do Beehiiv. **Não ler `02-reviewed.md` durante a sessão do browser** — todo o conteúdo já está renderizado.
 
 ## Fluxo
 
@@ -48,35 +57,26 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 - **Subtitle** (se o template tiver): subtítulo curto da edição (≤80 chars).
 - **Cover image** (Thumbnail): upload de `04-d1-2x1.jpg` (1600×800 — a imagem wide do destaque 1 é a capa).
 
-### 5. Preencher corpo (block-by-block acelerado)
+### 5. Colar corpo no bloco Custom HTML (#74)
 
-**Usar os dados do JSON pré-extraído** (passo "Pré-render"). Não ler `02-reviewed.md` durante o browser session — todo o conteúdo já está parseado e pronto.
+O fluxo é **all-or-nothing**: 1 paste de HTML completo num único bloco Custom HTML pré-existente no template. Sem encher bloco-a-bloco; sem upload manual de imagens (todas as 5 imagens da newsletter — cover + D2 + D3 + duas É IA? — estão embedadas via Drive CDN URLs no HTML pré-renderizado).
 
-**Regra fundamental: cada seção do template tem seu próprio bloco/container.** Nunca colar conteúdo de duas seções dentro do mesmo bloco.
+**5.1. Localizar o bloco Custom HTML.** O template (`Default`) precisa ter exatamente 1 bloco Custom HTML pré-configurado — é onde o conteúdo vai. Se o template tiver outros blocos (ex: Subscribe CTA no final, Poll Trivia), manter intactos. Se NÃO houver bloco Custom HTML, abortar com `template_missing_custom_html` — editor cria template adequado antes de retentar.
 
-**Sequência mecânica para cada destaque (d1, d2, d3):**
-1. Encontrar o bloco correspondente no template
-2. Preencher label de categoria: `{emoji} {category}` (ex: `🧮 REGULAÇÃO`) — manter cor verde/teal do template
-3. Preencher título como texto linkado à URL do destaque
-4. Upload imagem: D1=`04-d1-2x1.jpg` (wide), D2=`04-d2.jpg`, D3=`04-d3.jpg`
-5. Colar `body` (parágrafos)
-6. Colar heading "Por que isso importa:" + `why`
+**5.2. Colar HTML.** Abrir o bloco Custom HTML em modo edição. Colar o conteúdo de `{edition_dir}/_internal/newsletter-final.html`. Salvar o bloco.
 
-**É IA?** — bloco separado:
-1. Label: `🖼️ É IA?`
-2. Upload `01-eai-A.jpg` (primeiro = slot A) e `01-eai-B.jpg` (depois = slot B), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side). Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.
-3. Crédito: `eai.credit` do JSON
-4. **Poll Trivia** (#107): inserir bloco Poll do Beehiiv. **Tipo = Trivia** (não Voting). Pergunta: `Qual delas é IA?`. Opções: `A` e `B`. **Marcar como correta** a letra do `ai_side` em `_internal/01-eai-meta.json` (já preenchido upstream pelo `eai-compose.ts` no sorteio A/B do #192):
-   ```bash
-   node -e "console.log(JSON.parse(require('fs').readFileSync('data/editions/{AAMMDD}/_internal/01-eai-meta.json','utf8')).ai_side)"
-   ```
-   Edições antigas pré-#192 podem ter `ai_side: null` no meta — nesse caso, o publish-newsletter deduz pela ordem de upload (real=A, ia=B) e atualiza o meta como antes.
+**5.3. Verificação pós-paste.** Beehiiv renderiza preview em ~2-3s. Re-ler o DOM via `read_page` e confirmar 5 imagens carregadas com preview (não placeholders/broken icons). Se alguma falhar, registrar em `unfixed_issues[]` com `reason: "image_url_broken_{key}"` (causa típica: URL Drive demora a propagar CDN; re-rodar `upload-images-public.ts --no-cache` resolve).
 
-**Seções (Pesquisas, Lançamentos, Outras Notícias):**
-1. Para cada seção no JSON `sections[]`, encontrar o bloco correspondente
-2. Preencher label: `{emoji} {name}`
-3. Para cada item: título linkado + descrição
-4. Se uma seção não existir no JSON (vazia), deletar o bloco do template
+**Poll Trivia (#107) — passo manual do editor pós-paste.** O Custom HTML não inclui o Poll do Beehiiv (é tipo de bloco nativo, não HTML). Após colar o HTML do corpo, o editor adiciona um bloco **Poll Trivia** logo abaixo do É IA?:
+
+- **Tipo:** Trivia (não Voting).
+- **Pergunta:** `Qual delas é IA?`
+- **Opções:** `A` e `B`.
+- **Marcar como correta** a letra do `ai_side` em `_internal/01-eai-meta.json` (preenchido upstream pelo `eai-compose.ts` no sorteio A/B do #192):
+  ```bash
+  node -e "console.log(JSON.parse(require('fs').readFileSync('data/editions/{AAMMDD}/_internal/01-eai-meta.json','utf8')).ai_side)"
+  ```
+  Edições antigas pré-#192 podem ter `ai_side: null` no meta — nesse caso o editor deduz pela ordem do crédito/imagem.
 
 ### 6. Salvar como rascunho
 - **NÃO clicar em Schedule, Publish, ou Send.**
@@ -108,12 +108,10 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 
 - O botão **New post** pode estar atrás de um menu "+" em telas menores. Procurar texto "New post" semanticamente.
 - Selecionar o template pode exigir scroll na lista — usar `find` com o nome do template.
-- Upload de imagem: aguardar barra de progresso terminar antes de prosseguir para o próximo bloco (sob risco de o upload ser cancelado).
 - O nome do template é case-sensitive. Se a conta tem `"Default"` mas o config tem `"default"`, falha.
 - Beehiiv às vezes mostra modal de "Upgrade" para features pagas — fechar e prosseguir; o save de rascunho é gratuito.
-- **Cor dos labels de seção.** Ao colar texto sobre um placeholder do template, o Beehiiv pode resetar a formatação (cor, negrito, tamanho) para o padrão (preto). Verificar se labels de categoria (topo de cada box de destaque) mantêm a cor verde original do template. Se perderam, re-aplicar manualmente.
-- **Boxes fundidos.** Se dois blocos aparecem dentro do mesmo container (ex: D2 e É IA? juntos), o conteúdo foi colado no lugar errado. Desfazer e recolar no container correto — cada seção do template tem seu próprio bloco.
-- **Blocos duplicados.** Templates podem ter blocos extras (ex: "Outras Notícias" duplicado) se o post foi criado a partir de edição anterior ou merge. Antes de preencher, verificar se cada seção tem exatamente 1 bloco — deletar duplicatas.
+- **Imagem broken no preview.** Se uma das 5 imagens aparecer como ícone de imagem quebrada após o paste, geralmente é URL Drive ainda propagando no CDN. Solução: re-rodar `upload-images-public.ts --no-cache` (gera URLs novas) e re-colar o HTML. Registrar em `unfixed_issues[]` se persistir.
+- **Custom HTML block ausente no template.** Se a UI não mostrar bloco Custom HTML pré-configurado, abortar — editor precisa criar template adequado antes (Beehiiv cobra Custom HTML em planos pagos: Scale ou superior).
 
 ## Validação de sucesso
 
