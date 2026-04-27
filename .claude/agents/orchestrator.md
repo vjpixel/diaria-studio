@@ -391,10 +391,21 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   ```
   Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
   - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
+  - **Auto-pick de título via Opus (#159).** Após aprovação, dispatch `title-picker` (Opus, Agent) passando:
+    - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
+    - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
+    - `audience_path = context/audience-profile.md`
+    - `editorial_rules_path = context/editorial-rules.md`
+    - `picks_log_path = data/editions/{AAMMDD}/_internal/02-title-picks.json`
+
+    Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
+
+    Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Stage 3 — não há fallback automático pra título inexistente.
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
     ```
-    | 2 | {stage_start} | {now} | writer:1, humanize:1, drive_syncer:1 | 1 | 1 |
+    | 2 | {stage_start} | {now} | writer:1, humanize:1, title_picker:?1, drive_syncer:1 | 1 | 1 |
     ```
+    `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
 
 ### 3. Stage 3 — Social
 
