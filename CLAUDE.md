@@ -50,8 +50,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 | 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`) | `02-reviewed.md` |
 | 3 | Social | 2× social writers paralelos (LinkedIn, Facebook) + 6× Clarice | `03-social.md` |
 | 4 | Imagens | `scripts/image-generate.ts` — Gemini API por default (fallback ComfyUI via `platform.config.json > image_generator`) | `04-d1-2x1.jpg`, `04-d2.jpg`, `04-d3.jpg` |
-| 5 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) + `review-test-email` (loop até 10×) | `05-published.json` |
-| 6 | Publish social | `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Claude in Chrome → LinkedIn × 3) em paralelo | `06-social-published.json` |
+| 5 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) + `review-test-email` (loop até 10×) | `_internal/05-published.json` |
+| 6 | Publish social | `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Claude in Chrome → LinkedIn × 3) em paralelo | `_internal/06-social-published.json` |
 
 **Sync com Google Drive (entre stages):** **antes de cada gate** (stages 1–4), `scripts/drive-sync.ts` sobe os outputs do stage para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada stage** que consome inputs que podem ter sido editados no Drive (3, 4, 5, 6), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 

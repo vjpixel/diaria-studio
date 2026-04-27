@@ -87,7 +87,10 @@ export function summarizeEdition(
   }
 
   let status = "unknown";
-  const publishedPath = `${editionPath}/05-published.json`;
+  // #158: prefer _internal/ over root (writes-side moved; reads still tolerate both)
+  const publishedPath = fs.exists(`${editionPath}/_internal/05-published.json`)
+    ? `${editionPath}/_internal/05-published.json`
+    : `${editionPath}/05-published.json`;
   if (fs.exists(publishedPath)) {
     try {
       const data = fs.readJson(publishedPath) as { status?: string };
