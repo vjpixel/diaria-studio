@@ -1,4 +1,4 @@
-# Diar.ia — Edição 260426 — Research
+# Diar.ia — Edição 260427 — Research
 
 > Candidatos recomendados pelo scorer:
 >   - ⭐ — top do scorer (highlights[]).
