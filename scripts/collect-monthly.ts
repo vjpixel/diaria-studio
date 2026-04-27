@@ -7,8 +7,8 @@
  *
  * Limitação Phase 1: depende de a edição ter sido processada nesta máquina.
  * Edições publicadas de outra máquina (sem `02-reviewed.md` local) não entram.
- * O #188 spec original prevê Beehiiv MCP como source-of-truth — fica para
- * follow-up dedicado (ver issue de migração Beehiiv MCP).
+ * O #188 spec original prevê Beehiiv MCP como source-of-truth — migração
+ * fica como follow-up dedicado em #196.
  *
  * Output: `data/monthly/{YYMM}/raw-destaques.json` com todos os destaques do mês +
  * metadata estruturada pro `analyst-monthly` agrupar por tema.

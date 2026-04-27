@@ -26,7 +26,7 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 ### Stage 1 — Coleta
 
-Lê edições diárias **localmente** em `data/editions/{AAMMDD}/` (parse de `02-reviewed.md` + enrichment via `_internal/01-approved.json`). A spec original do #188 prevê Beehiiv MCP como source-of-truth do publicado; por ora ficou como follow-up (nova issue) — Phase 1 assume que o editor está rodando o digest na mesma máquina onde as edições foram processadas.
+Lê edições diárias **localmente** em `data/editions/{AAMMDD}/` (parse de `02-reviewed.md` + enrichment via `_internal/01-approved.json`). A spec original do #188 prevê Beehiiv MCP como source-of-truth do publicado; migração fica como follow-up em #196 — Phase 1 assume que o editor está rodando o digest na mesma máquina onde as edições foram processadas.
 
 Disparar `Bash`:
 
