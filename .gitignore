@@ -8,6 +8,11 @@ data/editions/**
 !data/editions/*/01-categorized.md
 !data/editions/*/01-categorized.json
 !data/editions/*/01-approved.json
+data/monthly/**
+!data/monthly/
+!data/monthly/*/
+!data/monthly/*/prioritized.md
+!data/monthly/*/raw-destaques.json
 data/*-raw.json
 data/drive-cache.json
 data/.credentials.json
