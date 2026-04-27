@@ -1,9 +1,14 @@
 /**
  * Coleta os ~90 destaques de todas as edições publicadas em um mês.
  *
- * Fonte: arquivos locais em `data/editions/{AAMMDD}/`. Para cada edição válida:
- *   - Parse `02-reviewed.md` (texto publicado) via `parseDestaques` (extract-destaques.ts).
+ * Phase 1 — fonte: arquivos locais em `data/editions/{AAMMDD}/`. Para cada edição válida:
+ *   - Parse `02-reviewed.md` (texto revisado) via `parseDestaques` (extract-destaques.ts).
  *   - Cruza com `_internal/01-approved.json` para metadata enriquecida (score, source, BR flag).
+ *
+ * Limitação Phase 1: depende de a edição ter sido processada nesta máquina.
+ * Edições publicadas de outra máquina (sem `02-reviewed.md` local) não entram.
+ * O #188 spec original prevê Beehiiv MCP como source-of-truth — fica para
+ * follow-up dedicado (ver issue de migração Beehiiv MCP).
  *
  * Output: `data/monthly/{YYMM}/raw-destaques.json` com todos os destaques do mês +
  * metadata estruturada pro `analyst-monthly` agrupar por tema.
@@ -138,9 +143,12 @@ function detectBrazil(args: {
     // ignore malformed URL
   }
 
-  // Reason field from approved.json typically starts with "Score N: BR ..."
-  if (args.reason && /\bBR\b/.test(args.reason)) {
-    signals.push("reason:BR-prefix");
+  // Reason field from approved.json: heurística — captura tokens "BR"
+  // (ex: "BR coverage", "Score N: BR ...") OU palavra "Brasil" no reason.
+  // Não há contrato formal com o scorer diário; se a redação mudar, o sinal
+  // some silenciosamente. Mitigado pelos outros sinais (host, keywords).
+  if (args.reason && (/\bBR\b/.test(args.reason) || /\bBrasil\b/i.test(args.reason))) {
+    signals.push("reason:BR-mention");
   }
 
   // Keyword check on title + summary

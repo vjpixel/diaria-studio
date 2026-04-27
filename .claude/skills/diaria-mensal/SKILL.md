@@ -22,7 +22,11 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 ## Fluxo
 
+## Phase 1 (este PR — implementada)
+
 ### Stage 1 — Coleta
+
+Lê edições diárias **localmente** em `data/editions/{AAMMDD}/` (parse de `02-reviewed.md` + enrichment via `_internal/01-approved.json`). A spec original do #188 prevê Beehiiv MCP como source-of-truth do publicado; por ora ficou como follow-up (nova issue) — Phase 1 assume que o editor está rodando o digest na mesma máquina onde as edições foram processadas.
 
 Disparar `Bash`:
 
@@ -108,7 +112,9 @@ Mesmo procedimento do Stage 3, agora com `draft.md`.
 
 **Caso contrário:** apresentar `draft.md` ao usuário pra revisão final. Aprovar / editar / retry.
 
-### Stage 8 — Imagem D1 (Phase 2 — não implementado)
+## Phase 2 (follow-up — issue #188, ainda não implementada)
+
+### Stage 8 — Imagem D1
 
 Quando implementado, gerará a imagem do D1 (Van Gogh impasto, mesmo prompt do diário) via `scripts/image-generate.ts` adaptado.
 
@@ -119,7 +125,7 @@ Por ora, emitir aviso:
 Gere manualmente, ou aguarde implementação.
 ```
 
-### Stage 9 — Publish Beehiiv (Phase 2 — não implementado)
+### Stage 9 — Publish Beehiiv
 
 Quando implementado, adaptará `publish-newsletter` para `mode=monthly`:
 - `render-newsletter-html.ts` com template mensal.

@@ -65,17 +65,12 @@ revisar manualmente no gate ou substituir o tema.
 - **Título narrativo**: 1 frase de até 60 chars descrevendo o arco do tema. Ex: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes". Não copie título de artigo individual.
 - **Artigos de suporte**: lista de destaques pertencentes ao tema, ordenados **cronologicamente** (do mais antigo pro mais recente — facilita narrativa do `writer-monthly`). Inclua todos os destaques do grupo, não só os top.
 
-### 5. Lançamentos / Pesquisas / Outras Notícias
+### 5. Outras Notícias — top 10 standalones
 
-Os destaques que **não foram agrupados em nenhum dos 3 temas** (standalones) são bucketizados em 3 seções, espelhando o formato do `01-categorized.md` do fluxo diário:
+Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), selecionar os **10 com maior `score`** para a seção Outras Notícias do digest. Lista única, sem separação por categoria — decisão do template `newsletter-monthly.md`.
 
-- **Lançamentos**: destaques cuja `category` é `LANÇAMENTO` / `LANÇAMENTOS` / `PRODUTO` / `FERRAMENTA`. Ferramentas, produtos, features novas.
-- **Pesquisas**: destaques cuja `category` é `PESQUISA` / `PESQUISAS` / `BREAKTHROUGH` / `DADOS`. Papers, estudos, benchmarks.
-- **Outras Notícias**: tudo o que não cabe acima — categorias diversas (MERCADO, ESTRATÉGIA, GEOPOLÍTICA, ÉTICA, AGENTES, ROBÓTICA, etc).
-
-Listar **todos os standalones** em suas seções respectivas (não cap em 10). Dentro de cada seção, ordenar por relevância editorial (score se disponível, senão julgamento editorial — categorias com maior CTR histórico primeiro).
-
-Se uma das seções ficar vazia, omitir o cabeçalho da seção (ex: mês sem destaques de pesquisa não tem seção `## Pesquisas`).
+- Ordenar por `score` desc; se `score` ausente, usar julgamento editorial (categorias com maior CTR histórico em `audience-profile.md` primeiro).
+- Se o mês tiver < 10 standalones no total, listar os que tiver e registrar warning (`destaques_unused < 10`).
 
 ### 6. Gerar `prioritized.md`
 
@@ -116,21 +111,13 @@ Tema: {tema}
 Artigos de suporte ({N}):
 - ...
 
-## Lançamentos
-
-- [score] {AAMMDD} — {título do destaque} — {url}
-- [score] {AAMMDD} — {título do destaque} — {url}
-... (todos os standalones com category = LANÇAMENTO/PRODUTO/FERRAMENTA)
-
-## Pesquisas
-
-- [score] {AAMMDD} — {título do destaque} — {url}
-... (todos os standalones com category = PESQUISA/BREAKTHROUGH/DADOS)
-
 ## Outras Notícias
 
+Top 10 destaques standalone do mês (não cobertos pelos 3 temas), ordenados por score desc:
+
 - [score] {AAMMDD} — {título do destaque} — {url}
-... (todos os standalones que não couberam acima)
+- [score] {AAMMDD} — {título do destaque} — {url}
+... (10 itens, ou menos com warning se o mês tiver poucos standalones)
 
 ## Warnings
 
@@ -159,9 +146,7 @@ Artigos de suporte ({N}):
   "themes_count": 7,
   "destaques_proposed": 3,
   "destaques_in_temas": 12,
-  "destaques_lancamentos": 3,
-  "destaques_pesquisas": 4,
-  "destaques_outras": 5,
+  "outras_count": 10,
   "destaques_unused": 5,
   "brazil_destaques_count": 4,
   "warnings": []
