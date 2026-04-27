@@ -91,6 +91,25 @@ describe("splitConcatenatedSectionItem", () => {
     const r = splitConcatenatedSectionItem(line);
     assert.equal(r.split, false);
   });
+
+  it("M2: 2 URLs distintas na mesma linha → recusa split + warning", () => {
+    const line =
+      "Título com https://first.com/a no meio. Descrição https://second.com/b com 2nd URL.";
+    const r = splitConcatenatedSectionItem(line);
+    assert.equal(r.split, false);
+    assert.ok(r.warning);
+    assert.match(r.warning ?? "", /URLs distintas/);
+    // Linha intocada
+    assert.deepEqual(r.lines, [line]);
+  });
+
+  it("M2: markdown link [url](url) NÃO conta como 2 URLs (mesma URL)", () => {
+    const line =
+      "Título da matéria. Descrição em 1 frase. [https://x.com/a](https://x.com/a)";
+    const r = splitConcatenatedSectionItem(line);
+    assert.equal(r.split, true);
+    assert.ok(!r.warning || !/URLs distintas/.test(r.warning));
+  });
 });
 
 describe("normalizeNewsletter — integração", () => {

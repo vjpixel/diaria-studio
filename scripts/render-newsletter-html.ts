@@ -149,10 +149,13 @@ export function parseListItems(text: string): SectionItem[] {
   for (const block of blocks) {
     if (block.length === 0) continue;
 
-    // Encontra URL no bloco
-    const urlIdx = block.findIndex((l) => /^https?:\/\//.test(l));
+    // Indices de http-lines no bloco
+    const urlIndices: number[] = [];
+    for (let k = 0; k < block.length; k++) {
+      if (/^https?:\/\//.test(block[k])) urlIndices.push(k);
+    }
 
-    if (urlIdx === -1) {
+    if (urlIndices.length === 0) {
       // Bloco sem URL — emite item incompleto preservando título + descrição.
       items.push({
         title: block[0],
@@ -162,26 +165,83 @@ export function parseListItems(text: string): SectionItem[] {
       continue;
     }
 
-    if (urlIdx === 0) {
-      // URL na primeira linha — sem título acima. Skip (ou poderia ser um
-      // item órfão que o editor removeu o título; melhor não inventar).
+    // M1: bloco com >1 URL = vários items colapsados (LLM esqueceu blank).
+    // Detectar formato pela posição da primeira URL:
+    //   - Novo (#172): primeira URL no índice 1 → ordem [Título, URL, Desc, Título, URL, Desc, ...]
+    //   - Legacy: primeira URL no índice ≥2 → ordem [Título, Desc, URL, Título, Desc, URL, ...]
+    // Quebrar em sub-items honrando a ordem detectada.
+    if (urlIndices.length > 1) {
+      const isNewFormat = urlIndices[0] === 1;
+      if (isNewFormat) {
+        for (let k = 0; k < urlIndices.length; k++) {
+          const urlAt = urlIndices[k];
+          const titleIdx = urlAt - 1;
+          if (titleIdx < 0) continue;
+          const nextItemStart = k + 1 < urlIndices.length ? urlIndices[k + 1] - 1 : block.length;
+          const descLines = block.slice(urlAt + 1, nextItemStart);
+          items.push({
+            title: block[titleIdx],
+            url: block[urlAt],
+            description: descLines.join(" "),
+          });
+        }
+      } else {
+        // Legacy: cada item é [Título, ...Desc..., URL]
+        let prevEnd = -1;
+        for (const u of urlIndices) {
+          const sub = block.slice(prevEnd + 1, u + 1);
+          if (sub.length === 0) continue;
+          const url = sub[sub.length - 1];
+          const title = sub[0];
+          const description = sub.slice(1, sub.length - 1).join(" ");
+          items.push({ title, url, description });
+          prevEnd = u;
+        }
+      }
       continue;
     }
 
-    const title = block[0];
-    const url = block[urlIdx];
-    // Descrição = todas as outras linhas (entre título e URL + depois da URL).
-    // Em formato novo: urlIdx == 1, descrição vem depois (block[2..]).
-    // Em formato legacy: urlIdx == block.length-1, descrição vem antes (block[1..urlIdx-1]).
-    const before = block.slice(1, urlIdx);
-    const after = block.slice(urlIdx + 1);
-    const descriptionParts = after.length > 0 ? [...after, ...before] : [...before];
-    const description = descriptionParts.join(" ");
+    // 1 URL única no bloco — caminho comum.
+    const urlIdx = urlIndices[0];
 
-    items.push({ title, description, url });
+    if (urlIdx === 0) {
+      // URL na primeira linha — sem título acima. Pula com warning visível.
+      console.error(
+        `[parseListItems] item órfão (URL sem título): ${block[0]}`,
+      );
+      continue;
+    }
+
+    const item = subBlockToItem(block);
+    if (item) items.push(item);
   }
 
   return items;
+}
+
+/**
+ * Converte um sub-bloco {títuloN linhas, URL, descriçãoN linhas} em item.
+ * Aceita ambos os layouts (URL após título OU URL no fim).
+ */
+function subBlockToItem(block: string[]): SectionItem | null {
+  if (block.length === 0) return null;
+
+  const urlIdx = block.findIndex((l) => /^https?:\/\//.test(l));
+  if (urlIdx === -1) {
+    return {
+      title: block[0],
+      description: block.slice(1).join(" "),
+      url: "",
+    };
+  }
+  if (urlIdx === 0) return null;
+
+  const title = block[0];
+  const url = block[urlIdx];
+  const before = block.slice(1, urlIdx);
+  const after = block.slice(urlIdx + 1);
+  const descriptionParts = after.length > 0 ? [...after, ...before] : [...before];
+  return { title, description: descriptionParts.join(" "), url };
 }
 
 function parseEAI(text: string): EAI {

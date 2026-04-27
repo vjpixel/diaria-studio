@@ -64,16 +64,52 @@ export function parseDestaques(raw: string): Destaque[] {
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
 
-    // URL = first non-empty line that starts with http (new format #172:
-    // URL imediatamente abaixo do título). Aceita também o legacy onde
-    // URL é a última http-line do bloco — `find` pega a primeira, que é
-    // a única em ambos os casos válidos (URL não aparece duas vezes).
-    const urlIdx = lines.findIndex(l => /^https?:\/\//.test(l.trim()));
+    // Coletar todas as http-lines (linhas iniciando com http://) com seus índices.
+    // A URL canônica é uma das duas posições válidas:
+    //   - novo formato (#172): URL imediatamente após o bloco de títulos,
+    //     antes de qualquer linha em branco ou parágrafo do body.
+    //   - legacy: última http-line do bloco, depois de "Por que isso importa:"
+    //     (ou simplesmente a última se whyIdx não existe).
+    // URLs bare em parágrafos do body NÃO são canônicas — escolhemos a posição
+    // estrutural correta pra evitar B1 (URL inline ganhando da canônica).
+    const httpLines = lines
+      .map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
+      .filter(i => i !== -1);
 
-    // Body começa após a URL (se URL aparece logo depois do título — novo
-    // formato) OU após o título (se URL está no fim — legacy). Em ambos
-    // os casos, queremos pular linhas que não são parágrafo do corpo.
-    const isNewFormat = urlIdx !== -1 && urlIdx > titleIdx && urlIdx < (whyIdx === -1 ? lines.length : whyIdx);
+    // Novo formato: URL imediatamente após linhas de título (consecutivas,
+    // não-vazias, não-URL). Avança de titleIdx enquanto for título; primeira
+    // URL nessa janela é a canônica do formato novo.
+    let newFormatUrlIdx: number | undefined;
+    {
+      let k = titleIdx;
+      while (k < lines.length && lines[k].trim() !== '' && !/^https?:\/\//.test(lines[k].trim())) {
+        k++;
+      }
+      // Após avançar pelos títulos, se a próxima linha é URL → formato novo.
+      if (k < lines.length && /^https?:\/\//.test(lines[k].trim())) {
+        newFormatUrlIdx = k;
+      }
+    }
+
+    // Legacy: última URL do bloco (se houver), prioritariamente após whyIdx.
+    const legacyUrlIdx = whyIdx !== -1
+      ? httpLines.filter(i => i > whyIdx).pop()
+      : httpLines[httpLines.length - 1];
+
+    let urlIdx: number;
+    let isNewFormat: boolean;
+    if (newFormatUrlIdx !== undefined) {
+      urlIdx = newFormatUrlIdx;
+      isNewFormat = true;
+    } else if (legacyUrlIdx !== undefined) {
+      urlIdx = legacyUrlIdx;
+      isNewFormat = false;
+    } else {
+      urlIdx = -1;
+      isNewFormat = false;
+    }
+
+    // Body começa após a URL (novo formato) OU após o título (legacy).
     const bodyStart = isNewFormat ? urlIdx + 1 : titleIdx + 1;
 
     // Body end: até "Por que isso importa:" (se existe) OU até a URL legacy
@@ -132,12 +168,13 @@ function main() {
   }
 
   // Every destaque must have a source URL — publish-newsletter depends on it for
-  // the "Ler mais" link. URL is the last line starting with http inside the block;
-  // an empty value means the writer forgot it or the block is malformed.
+  // the "Ler mais" link. URL fica imediatamente abaixo do título (formato novo,
+  // #172) ou na última linha do bloco (legacy). Empty = writer esqueceu ou
+  // bloco malformado.
   const missingUrl = destaques.filter(d => !d.url);
   if (missingUrl.length > 0) {
     const which = missingUrl.map(d => `D${d.n} ("${d.title}")`).join(', ');
-    console.error(`Destaque(s) sem URL de fonte: ${which}. Adicione a URL como última linha do bloco em ${path}.`);
+    console.error(`Destaque(s) sem URL de fonte: ${which}. Adicione a URL na linha imediatamente abaixo do título em ${path}.`);
     process.exit(1);
   }
 

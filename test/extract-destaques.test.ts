@@ -122,6 +122,47 @@ describe("parseDestaques (#172)", () => {
     assert.equal(destaques[0].body, "Parágrafo 1.\n\nParágrafo 2.");
     assert.equal(destaques[0].why, "Impacto.");
   });
+
+  it("B1: legacy com URL bare inline no body — URL canônica do fim ganha", () => {
+    // Edge case: layout legacy (URL no fim) onde o LLM/editor deixou uma
+    // URL bare em uma linha do body. O parser deve escolher a URL
+    // canônica (última depois de "Por que isso importa:"), não a inline.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título legacy",
+      "",
+      "Parágrafo do corpo.",
+      "",
+      "https://midbody.example.com",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+      "",
+      "https://canonical.example.com/source",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 1);
+    assert.equal(destaques[0].url, "https://canonical.example.com/source");
+    // URL inline fica no body (mas NÃO substitui a canônica).
+    assert.ok(destaques[0].body.includes("Parágrafo do corpo."));
+    assert.equal(destaques[0].why, "Impacto.");
+  });
+
+  it("B1: novo formato — URL inline no body NÃO ganha da canônica do topo", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título novo",
+      "https://canonical.example.com/source",
+      "",
+      "Corpo com URL inline https://midbody.example.com no meio.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].url, "https://canonical.example.com/source");
+    assert.ok(destaques[0].body.includes("URL inline"));
+  });
 });
 
 describe("buildSubtitle", () => {

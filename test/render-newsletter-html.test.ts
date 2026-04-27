@@ -81,6 +81,38 @@ describe("parseListItems (#172)", () => {
       "Linha 1 da descrição. Linha 2 da descrição.",
     );
   });
+
+  it("M1: 2 items colapsados num único bloco (sem blank) viram 2 items", () => {
+    const text = [
+      "Item Um",
+      "https://example.com/1",
+      "Descrição do item um.",
+      "Item Dois",
+      "https://example.com/2",
+      "Descrição do item dois.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].title, "Item Um");
+    assert.equal(items[0].url, "https://example.com/1");
+    assert.equal(items[1].title, "Item Dois");
+    assert.equal(items[1].url, "https://example.com/2");
+  });
+
+  it("M1: 3 items legacy colapsados (Título/Desc/URL × 3 sem blanks)", () => {
+    const text = [
+      "Item Um",
+      "Descrição um.",
+      "https://example.com/1",
+      "Item Dois",
+      "Descrição dois.",
+      "https://example.com/2",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].url, "https://example.com/1");
+    assert.equal(items[1].url, "https://example.com/2");
+  });
 });
 
 describe("parseSections (#172)", () => {

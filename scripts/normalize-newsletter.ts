@@ -112,6 +112,30 @@ export function splitConcatenatedHighlightHeader(
 export function splitConcatenatedSectionItem(
   line: string,
 ): { lines: string[]; split: boolean; warning?: string } {
+  // M2: detecta múltiplas URLs na linha. Caso ambíguo — recusa split
+  // pra não chutar a fronteira errada e silenciosamente corromper o
+  // conteúdo. Conta tanto bare URLs quanto markdown links.
+  const bareUrlGlobalRe = /https?:\/\/[^\s\)\]]+/g;
+  const bareUrlMatches = [...line.matchAll(bareUrlGlobalRe)];
+  const mdLinkGlobalRe = /\[([^\]]+)\]\(\1\)/g;
+  const mdLinkMatches = [...line.matchAll(mdLinkGlobalRe)];
+  // Conta URLs distintas (2 matches dentro de 1 markdown link representam
+  // uma URL canônica só — bare match casa a parte do `[url]` E `(url)`).
+  const distinctUrls = new Set<string>();
+  for (const m of bareUrlMatches) {
+    distinctUrls.add(m[0].replace(/[).,;]+$/, ""));
+  }
+  for (const m of mdLinkMatches) {
+    distinctUrls.add(m[1].trim());
+  }
+  if (distinctUrls.size >= 2) {
+    return {
+      lines: [line],
+      split: false,
+      warning: `linha tem ${distinctUrls.size} URLs distintas — split ambíguo, não toquei: "${line.slice(0, 80)}..."`,
+    };
+  }
+
   // Caso A: markdown link [url](url) em qualquer posição
   const mdLinkRe = /\[([^\]]+)\]\(\1\)/;
   const mdLinkMatch = line.match(mdLinkRe);
