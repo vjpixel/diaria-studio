@@ -1,6 +1,6 @@
 ---
 name: diaria-4-eai
-description: Roda apenas o Stage 4 — busca a Foto do Dia da Wikimedia (POTD), gera versão IA via Gemini e escreve `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg`. Uso — `/diaria-4-eai AAMMDD`.
+description: Roda apenas o Stage 4 — busca a Foto do Dia da Wikimedia (POTD), gera versão IA via Gemini, sorteia A/B (#192) e escreve `01-eai.md` (com frontmatter `eai_answer`) + `01-eai-A.jpg` + `01-eai-B.jpg`. Uso — `/diaria-4-eai AAMMDD`.
 ---
 
 # /diaria-4-eai
@@ -21,23 +21,27 @@ Dispara o Stage 4 da edição Diar.ia: busca a Foto do Dia da Wikimedia (POTD), 
 
 1. Detecta a edição em `data/editions/{AAMMDD}/`.
 2. Dispara o subagente `eai-composer` com `edition_date`, `newsletter_path`, `out_dir`.
-3. O composer:
+3. O composer (script `scripts/eai-compose.ts`):
    - Busca a POTD da Wikimedia (com fallback de até 7 dias por elegibilidade: horizontal, não repetida)
-   - Baixa a foto real → `01-eai-real.jpg`
+   - **Sorteio A/B (#192)**: coin flip decide qual slot recebe a foto real e qual recebe a IA — exercício fica cego (nem o nome do arquivo revela a resposta).
+   - Baixa a foto real → `01-eai-{A|B}.jpg`
    - Registra uso em `data/eai-used.json`
-   - Gera versão IA fotorrealista via `scripts/gemini-image.js` → `01-eai-ia.jpg`
-   - Escreve `01-eai.md` com linha de crédito (links Wikipedia + Wikimedia Commons)
-4. **Gate humano**: mostrar texto de `01-eai.md` + paths das duas imagens. Aprovar ou pedir para tentar o dia anterior.
+   - Gera versão IA fotorrealista via `scripts/gemini-image.js` → `01-eai-{B|A}.jpg` (slot oposto)
+   - Escreve `01-eai.md` com frontmatter YAML `eai_answer` (mapping A/B → real/ia, leitura humana no gate) + linha de crédito
+   - Escreve `_internal/01-eai-meta.json` com `ai_side: "A" | "B"` (slot da imagem IA = resposta correta no poll)
+4. **Gate humano**: mostrar texto de `01-eai.md` (frontmatter revela o mapping pro editor) + paths das duas imagens. Aprovar ou pedir para tentar o dia anterior.
 
 ## Output
 
-- `data/editions/{AAMMDD}/01-eai.md` — linha de crédito com links
-- `data/editions/{AAMMDD}/01-eai-real.jpg` — foto real da Wikimedia (imagem A)
-- `data/editions/{AAMMDD}/01-eai-ia.jpg` — versão gerada por Gemini (imagem B)
-- `data/editions/{AAMMDD}/01-eai-sd-prompt.json` — prompt usado na geração
+- `data/editions/{AAMMDD}/01-eai.md` — frontmatter `eai_answer` + linha de crédito com links
+- `data/editions/{AAMMDD}/01-eai-A.jpg` — slot A (real ou IA, depende do sorteio)
+- `data/editions/{AAMMDD}/01-eai-B.jpg` — slot B (oposto de A)
+- `data/editions/{AAMMDD}/_internal/01-eai-meta.json` — metadata estruturada com `ai_side`
+- `data/editions/{AAMMDD}/_internal/01-eai-sd-prompt.json` — prompt usado na geração
 
 ## Notas
 
 - Requer conexão com internet (Wikimedia API pública, sem auth).
-- Se `01-eai-real.jpg` já existir, perguntar se quer regenerar antes de prosseguir.
+- Se `01-eai-A.jpg`/`01-eai-B.jpg` já existirem, perguntar se quer regenerar antes de prosseguir.
+- Edições antigas (pré-#192) têm `01-eai-real.jpg`/`01-eai-ia.jpg` no lugar — readers (`render-newsletter-html.ts`, `upload-images-public.ts`) detectam automaticamente.
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.

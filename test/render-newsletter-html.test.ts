@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseListItems, parseSections } from "../scripts/render-newsletter-html.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  parseListItems,
+  parseSections,
+  parseEAI,
+  fallbackEAI,
+} from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
   it("formato novo: Título / URL / Descrição", () => {
@@ -155,5 +163,117 @@ describe("parseSections (#172)", () => {
     assert.equal(sections[0].items[0].description, "Descrição do lançamento.");
     assert.equal(sections[1].name, "PESQUISAS");
     assert.equal(sections[2].name, "OUTRAS NOTÍCIAS");
+  });
+});
+
+describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), "diaria-eai-parse-"));
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("parseia frontmatter YAML e detecta A/B em disco", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      const md = [
+        "---",
+        "eai_answer:",
+        "  A: real",
+        "  B: ia",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Credit line com [link](https://x.com).",
+        "",
+      ].join("\n");
+      const eai = parseEAI(md, dir);
+      assert.equal(eai.imageA, "01-eai-A.jpg");
+      assert.equal(eai.imageB, "01-eai-B.jpg");
+      assert.match(eai.credit, /Credit line/);
+      // Frontmatter NÃO entra no credit (escondido do leitor)
+      assert.ok(!eai.credit.includes("eai_answer"));
+      assert.ok(!eai.credit.includes("real"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback para legacy real/ia quando A/B não existem em disco", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      const md = "É IA?\n\nLegacy credit.\n";
+      const eai = parseEAI(md, dir);
+      assert.equal(eai.imageA, "01-eai-real.jpg");
+      assert.equal(eai.imageB, "01-eai-ia.jpg");
+      assert.match(eai.credit, /Legacy credit/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("md sem frontmatter funciona (edições antigas)", () => {
+    const dir = makeDir();
+    try {
+      const md = "É IA?\n\nNo frontmatter here.\n";
+      const eai = parseEAI(md, dir);
+      assert.match(eai.credit, /No frontmatter/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filtra linha 'É IA?' do credit", () => {
+    const dir = makeDir();
+    try {
+      const md = "É IA?\n\nApenas o crédito.\n";
+      const eai = parseEAI(md, dir);
+      assert.equal(eai.credit, "Apenas o crédito.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("fallbackEAI (#192)", () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), "diaria-eai-fallback-"));
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("retorna A/B quando ambos existem", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      const eai = fallbackEAI(dir);
+      assert.equal(eai.imageA, "01-eai-A.jpg");
+      assert.equal(eai.imageB, "01-eai-B.jpg");
+      assert.equal(eai.credit, "");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna legacy real/ia como fallback default", () => {
+    const dir = makeDir();
+    try {
+      // dir vazio
+      const eai = fallbackEAI(dir);
+      assert.equal(eai.imageA, "01-eai-real.jpg");
+      assert.equal(eai.imageB, "01-eai-ia.jpg");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

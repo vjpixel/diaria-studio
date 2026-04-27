@@ -101,18 +101,50 @@ export interface ImageSpec {
   filename: string;
 }
 
-export function imageSpecsFor(mode: UploadMode): ImageSpec[] {
+/**
+ * Especifica quais imagens fazer upload por modo. Quando `editionDir` é
+ * passado e o modo inclui newsletter, detecta o naming É IA? em disco:
+ * novas edições usam `01-eai-A.jpg`/`01-eai-B.jpg` (#192, random); edições
+ * antigas usam `01-eai-real.jpg`/`01-eai-ia.jpg`. Sem `editionDir`, default
+ * pra naming novo (A/B).
+ */
+export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
   const social: ImageSpec[] = [
     { key: "d1", filename: "04-d1-1x1.jpg" },
     { key: "d2", filename: "04-d2.jpg" },
     { key: "d3", filename: "04-d3.jpg" },
   ];
+
+  const eaiSpecs = (() => {
+    const newA = editionDir ? resolve(editionDir, "01-eai-A.jpg") : null;
+    const newB = editionDir ? resolve(editionDir, "01-eai-B.jpg") : null;
+    if (newA && newB && existsSync(newA) && existsSync(newB)) {
+      return [
+        { key: "eai_a", filename: "01-eai-A.jpg" },
+        { key: "eai_b", filename: "01-eai-B.jpg" },
+      ];
+    }
+    if (editionDir) {
+      const oldReal = resolve(editionDir, "01-eai-real.jpg");
+      if (existsSync(oldReal)) {
+        return [
+          { key: "eai_real", filename: "01-eai-real.jpg" },
+          { key: "eai_ia", filename: "01-eai-ia.jpg" },
+        ];
+      }
+    }
+    // Default sem disco: assume novo naming (caso de teste / dry-run).
+    return [
+      { key: "eai_a", filename: "01-eai-A.jpg" },
+      { key: "eai_b", filename: "01-eai-B.jpg" },
+    ];
+  })();
+
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d2", filename: "04-d2.jpg" },
     { key: "d3", filename: "04-d3.jpg" },
-    { key: "eai_real", filename: "01-eai-real.jpg" },
-    { key: "eai_ia", filename: "01-eai-ia.jpg" },
+    ...eaiSpecs,
   ];
   if (mode === "social") return social;
   if (mode === "newsletter") return newsletter;
@@ -206,7 +238,7 @@ export async function uploadPublicImages(
     // Retrocompat: destaques explícitos
     specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
   } else {
-    specs = imageSpecsFor(opts.mode ?? "social");
+    specs = imageSpecsFor(opts.mode ?? "social", editionDir);
   }
 
   const cachePath = resolve(editionDir, "06-public-images.json");

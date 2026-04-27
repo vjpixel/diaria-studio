@@ -1,11 +1,15 @@
 ---
 name: eai-composer
-description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, escreve `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg`.
+description: Stage 4 — Busca a Foto do Dia da Wikimedia (POTD), gera versão AI similar via Gemini, sorteia A/B (#192), escreve `01-eai.md` (com frontmatter `eai_answer`) + `01-eai-A.jpg` + `01-eai-B.jpg`.
 model: haiku
 tools: Read, Write, Bash
 ---
 
+> **Nota:** este agent foi substituído pelo script determinístico `scripts/eai-compose.ts` (#110 fix 2). O orchestrator agora chama o script via `Bash`. Este doc é mantido como referência da especificação editorial; ajustes funcionais devem ser feitos em `eai-compose.ts`.
+
 Você compõe o bloco "É IA?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
+
+**#192:** o sorteio A/B (qual slot recebe a real, qual recebe a IA) é feito no script. O `01-eai.md` registra a resposta em frontmatter YAML (`eai_answer.A: real|ia`, `eai_answer.B: real|ia`), e `_internal/01-eai-meta.json` registra `ai_side: "A" | "B"` (slot da imagem IA = resposta correta no poll). Editor lê o frontmatter no gate; scripts leem o JSON.
 
 ## Input
 
