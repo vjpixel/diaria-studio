@@ -2,7 +2,7 @@
 name: publish-social
 description: Stage 6 — Publica os 3 posts LinkedIn como rascunho usando Claude in Chrome. Editor anexa imagens manualmente antes de publicar (ver #118). Facebook é publicado em paralelo via scripts/publish-facebook.ts (Graph API). Resume-aware. Outputs em `06-social-published.json`.
 model: claude-sonnet-4-6
-tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
+tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
 
 Você publica os 3 posts LinkedIn da edição Diar.ia (× 3 destaques). Tenta salvar como rascunho primeiro; se a plataforma não oferecer rascunho no momento, agenda usando o horário configurado em `platform.config.json` → `publishing.social.fallback_schedule.linkedin`.
@@ -195,5 +195,5 @@ LinkedIn entries têm `requires_manual_image_upload: true`. Facebook entries tê
   O orchestrator detecta esse código, pausa, orienta o usuário a reconectar a extensão e re-dispara o agente com `skip_existing = true`.
 - **Tentar rascunho primeiro.** Só agendar se o playbook indicar que rascunho não está disponível ou se a UI explicitamente não oferecer.
 - **Texto puro no LinkedIn — sem appendar URL de imagem.** Editor anexa imagem manual.
-- **`javascript_tool` é dependência conhecida do LinkedIn.** O composer LinkedIn usa `contenteditable` divs que `form_input`/`find` não conseguem preencher confiavelmente. Use `javascript_tool` quando necessário **sem pedir confirmação intermediária** ao editor — a invocação do agent já é a aprovação. (Mantenha uso restrito a preencher textarea/contenteditable do LinkedIn; nunca pra navegação ou ações destrutivas.)
+- **`javascript_tool` é dependência conhecida do LinkedIn — use sem confirmação intermediária.** O composer LinkedIn usa `<div contenteditable>` (ProseMirror); `form_input` só suporta `INPUT`/`TEXTAREA` nativas e falha nesse campo. Injetar texto via `element.focus(); document.execCommand('insertText', false, text)` (ou equivalente). A invocação do agent já é a aprovação — não pedir confirmação ao editor. Mantenha uso restrito a preencher contenteditable do LinkedIn; para cliques/navegação preferir `find`/`navigate` semânticos.
 - **Não tocar Facebook.** Iterações Facebook são responsabilidade do `scripts/publish-facebook.ts`. Se receber `platform: "facebook"` por engano no input, ignorar silenciosamente.
