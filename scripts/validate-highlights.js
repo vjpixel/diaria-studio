@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: node scripts/validate-highlights.js <path-to-edition-md>
 // Valida o comprimento dos 3 destaques. Conta: parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto.
-// Ignora: cabeçalho DESTAQUE, 3 opções de título, URL final.
+// Ignora: cabeçalho DESTAQUE, 1 ou 3 linhas de título, e a URL (em qualquer posição — #172).
 // Limites: d1 ≤ 1200, d2/d3 ≤ 1000. Tolerância de 5% vira warning; acima disso, erro.
 // Exit code: 0 se ok/warning apenas, 1 se erro.
 
@@ -24,6 +24,8 @@ const result = {
   errors: []
 };
 
+const URL_RE = /^\s*https?:\/\//;
+
 for (const block of blocks) {
   const headerMatch = block.match(/^\s*DESTAQUE\s+(\d)\s*\|/m);
   if (!headerMatch) continue;
@@ -33,18 +35,23 @@ for (const block of blocks) {
   const lines = block.split('\n');
   const headerIdx = lines.findIndex(l => /^\s*DESTAQUE\s+\d+\s*\|/.test(l));
 
-  // Pular as 3 linhas de opção de título (primeiras 3 não-vazias após o header).
+  // Pular linhas de título consecutivas após o header (1 a 3 linhas
+  // não-vazias até bater a primeira linha em branco). Após a poda do
+  // editor o destaque tem 1 título; antes da poda tem 3.
   let i = headerIdx + 1;
-  let titlesSeen = 0;
-  while (i < lines.length && titlesSeen < 3) {
-    if (lines[i].trim() !== '') titlesSeen++;
+  while (i < lines.length && lines[i].trim() !== '') {
+    // Se a linha logo após o header for URL (#172, formato novo),
+    // ainda é considerada metadata do título — sai do loop e a URL
+    // é pulada abaixo.
+    if (URL_RE.test(lines[i])) break;
     i++;
   }
 
-  // Coletar o corpo (incluindo "Por que isso importa:" + parágrafo) até bater uma linha URL.
+  // Coletar o corpo, ignorando linhas URL em qualquer posição (a URL
+  // pode estar logo após o título no formato novo, ou no fim no legacy).
   const bodyLines = [];
   for (; i < lines.length; i++) {
-    if (/^\s*https?:\/\//.test(lines[i])) break;
+    if (URL_RE.test(lines[i])) continue;
     bodyLines.push(lines[i]);
   }
   const body = bodyLines.join('\n').trim();

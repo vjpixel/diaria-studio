@@ -9,17 +9,20 @@
 //
 //   DESTAQUE 1 | CATEGORIA
 //   Título escolhido
+//   https://url-da-fonte    ← #172: URL imediatamente abaixo do título
 //
 //   Corpo (1–N parágrafos)...
 //
 //   Por que isso importa:
 //   Explicação (1–N parágrafos)...
 //
-//   https://url-da-fonte
-//
 //   ---
 //   DESTAQUE 2 | CATEGORIA
 //   ...
+//
+// Backward compat: layout legacy (pré-#172) tinha URL como última linha do
+// bloco. O parser aceita ambos: URL é o primeiro `^https?://` dentro do
+// bloco, em qualquer posição (linha 2 ou final).
 
 import fs from 'fs';
 
@@ -61,19 +64,34 @@ export function parseDestaques(raw: string): Destaque[] {
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
 
-    // URL = last non-empty line that starts with http.
-    const urlIdx = lines.map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
-                         .filter(i => i !== -1)
-                         .pop() ?? -1;
+    // URL = first non-empty line that starts with http (new format #172:
+    // URL imediatamente abaixo do título). Aceita também o legacy onde
+    // URL é a última http-line do bloco — `find` pega a primeira, que é
+    // a única em ambos os casos válidos (URL não aparece duas vezes).
+    const urlIdx = lines.findIndex(l => /^https?:\/\//.test(l.trim()));
 
-    const body = whyIdx !== -1
-      ? lines.slice(titleIdx + 1, whyIdx).join('\n').trim()
-      : lines.slice(titleIdx + 1, urlIdx !== -1 ? urlIdx : undefined).join('\n').trim();
+    // Body começa após a URL (se URL aparece logo depois do título — novo
+    // formato) OU após o título (se URL está no fim — legacy). Em ambos
+    // os casos, queremos pular linhas que não são parágrafo do corpo.
+    const isNewFormat = urlIdx !== -1 && urlIdx > titleIdx && urlIdx < (whyIdx === -1 ? lines.length : whyIdx);
+    const bodyStart = isNewFormat ? urlIdx + 1 : titleIdx + 1;
 
-    const why = whyIdx !== -1
-      ? lines.slice(whyIdx + 1, urlIdx !== -1 ? urlIdx : undefined)
-             .join('\n').trim()
-      : '';
+    // Body end: até "Por que isso importa:" (se existe) OU até a URL legacy
+    // no fim (se URL está depois do whyIdx) OU fim do bloco.
+    let bodyEnd: number;
+    if (whyIdx !== -1) {
+      bodyEnd = whyIdx;
+    } else if (urlIdx !== -1 && !isNewFormat) {
+      bodyEnd = urlIdx;
+    } else {
+      bodyEnd = lines.length;
+    }
+
+    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
+
+    // Why end: até URL legacy (se existe e está depois do whyIdx) OU fim.
+    const whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
+    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
 
     const url = urlIdx !== -1 ? lines[urlIdx].trim() : '';
 
@@ -133,8 +151,11 @@ function main() {
   console.log(JSON.stringify(output, null, 2));
 }
 
-// Only run CLI when executed directly (not when imported)
-const isDirectRun = process.argv[1]?.replace(/\\/g, '/').includes('extract-destaques');
+// Only run CLI when executed directly (not when imported, e.g. from tests
+// or render-newsletter-html.ts). Match the script file name precisely
+// instead of substring — `extract-destaques.test.ts` was triggering CLI mode.
+const _argv1 = process.argv[1]?.replace(/\\/g, '/') ?? '';
+const isDirectRun = /\/scripts\/extract-destaques\.ts$/.test(_argv1);
 if (isDirectRun) {
   main();
 }

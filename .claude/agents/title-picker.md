@@ -38,7 +38,7 @@ Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, m
 
 1. Ler `md_path`, `audience_path`, `editorial_rules_path`.
 
-2. Parsear cada bloco DESTAQUE — header + título(s) + corpo até `---` ou próximo header. Identificar quais destaques têm >1 título (entre header e primeira linha em branco).
+2. Parsear cada bloco DESTAQUE — header + título(s) + URL + corpo até `---` ou próximo header. Identificar quais destaques têm >1 título (linhas não-vazias, não-URL, entre header e primeira linha em branco). A linha de URL (#172, layout pós-pruning: imediatamente abaixo do título escolhido) NÃO conta como título.
 
 3. Para cada destaque com >1 título:
    - Avaliar cada opção pelos 3 critérios.
