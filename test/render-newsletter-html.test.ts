@@ -277,3 +277,106 @@ describe("fallbackEAI (#192)", () => {
     }
   });
 });
+
+describe("parseEAI prevResultLine (#107)", () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), "diaria-eai-prev-"));
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("separa a linha 'Resultado da última edição:' do crédito", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      const md = [
+        "---",
+        "eai_answer:",
+        "  A: real",
+        "  B: ia",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Foto da paisagem — [Author](https://x.com/u) / CC BY-SA 4.0.",
+        "",
+        "Resultado da última edição: 85% das pessoas acertaram.",
+        "",
+      ].join("\n");
+      const eai = parseEAI(md, dir);
+      assert.match(eai.credit, /Foto da paisagem/);
+      assert.ok(
+        !eai.credit.includes("Resultado da última edição"),
+        "credit não pode conter a linha de resultado",
+      );
+      assert.equal(
+        eai.prevResultLine,
+        "Resultado da última edição: 85% das pessoas acertaram.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prevResultLine fica undefined quando o md não tem a linha", () => {
+    const dir = makeDir();
+    try {
+      const md = "É IA?\n\nFoto sem result line.\n";
+      const eai = parseEAI(md, dir);
+      assert.equal(eai.prevResultLine, undefined);
+      assert.match(eai.credit, /Foto sem result line/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("regex case-insensitive (tolera variação 'Resultado' vs 'resultado')", () => {
+    const dir = makeDir();
+    try {
+      const md = [
+        "É IA?",
+        "",
+        "Foto.",
+        "",
+        "resultado da última edição: 0% das pessoas acertaram.",
+        "",
+      ].join("\n");
+      const eai = parseEAI(md, dir);
+      assert.match(
+        eai.prevResultLine ?? "",
+        /resultado da última edição: 0%/i,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("E2E: md gerado por buildEaiMd com prevResultLine roundtrip via parseEAI", async () => {
+    // Simula o fluxo completo: eai-compose escreve, render-newsletter-html lê.
+    // Garante que o contrato writer↔reader não quebra silenciosamente.
+    const { buildEaiMd } = await import("../scripts/eai-compose.ts");
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      const md = buildEaiMd(
+        { realSide: "A", aiSide: "B" },
+        "Crédito da foto.",
+        "Resultado da última edição: 42% das pessoas acertaram.",
+      );
+      const eai = parseEAI(md, dir);
+      assert.equal(
+        eai.prevResultLine,
+        "Resultado da última edição: 42% das pessoas acertaram.",
+      );
+      assert.equal(eai.credit, "Crédito da foto.");
+      assert.equal(eai.imageA, "01-eai-A.jpg");
+      assert.equal(eai.imageB, "01-eai-B.jpg");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

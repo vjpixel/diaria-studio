@@ -101,14 +101,62 @@ export function chooseSides(rand: number): EaiSides {
 }
 
 /**
+ * Stats do poll da edição anterior — formato emitido por
+ * `scripts/compute-eai-poll-stats.ts`. Subset usado aqui pra construir
+ * a linha "Resultado da última edição" (#107).
+ */
+export interface PrevPollStats {
+  total_responses?: number;
+  pct_correct?: number | null;
+  below_threshold?: boolean;
+  skipped?: string;
+}
+
+/**
+ * Constrói a linha "Resultado da última edição" (#107) a partir das stats
+ * do poll. Retorna `null` quando não há nada útil pra reportar (skipped,
+ * 0 respostas, ou abaixo do threshold de confiabilidade).
+ */
+export function buildPrevResultLine(stats: PrevPollStats | null): string | null {
+  if (!stats) return null;
+  if (stats.skipped) return null;
+  if (!stats.total_responses || stats.total_responses === 0) return null;
+  if (stats.below_threshold) return null;
+  if (stats.pct_correct === null || stats.pct_correct === undefined) return null;
+  return `Resultado da última edição: ${stats.pct_correct}% das pessoas acertaram.`;
+}
+
+/**
+ * Lê stats da edição anterior do canonical path
+ * (`{outDir}/_internal/04-eai-poll-stats.json`). Retorna null quando o
+ * arquivo não existe ou não parseia — caller lida com ausência.
+ */
+export function readPrevPollStats(outDir: string): PrevPollStats | null {
+  const path = resolve(outDir, "_internal/04-eai-poll-stats.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as PrevPollStats;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Monta o conteúdo do 01-eai.md com frontmatter YAML revelando A/B → real/ia.
  * O frontmatter é pra leitura humana (editor no gate); scripts leem
  * `_internal/01-eai-meta.json` para dados estruturados.
+ *
+ * Quando `prevResultLine` é fornecido (#107), inclui após o crédito:
+ * "Resultado da última edição: X% das pessoas acertaram."
  */
-export function buildEaiMd(sides: EaiSides, creditLine: string): string {
+export function buildEaiMd(
+  sides: EaiSides,
+  creditLine: string,
+  prevResultLine: string | null = null,
+): string {
   const aMapping = sides.realSide === "A" ? "real" : "ia";
   const bMapping = sides.realSide === "B" ? "real" : "ia";
-  return [
+  const lines = [
     "---",
     "eai_answer:",
     `  A: ${aMapping}`,
@@ -118,8 +166,12 @@ export function buildEaiMd(sides: EaiSides, creditLine: string): string {
     "É IA?",
     "",
     creditLine,
-    "",
-  ].join("\n");
+  ];
+  if (prevResultLine) {
+    lines.push("", prevResultLine);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 /**
@@ -405,10 +457,12 @@ async function main(): Promise<void> {
   const iaPath = resolve(outDir, iaFilename);
   runNode("scripts/gemini-image.js", [sdPromptPath, iaPath, "diaria_eai_"]);
 
-  // 7. Write 01-eai.md (frontmatter + corpo)
+  // 7. Write 01-eai.md (frontmatter + corpo + opcional resultado da edição anterior #107)
   const creditLine = buildCreditLine(image);
+  const prevStats = readPrevPollStats(outDir);
+  const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eai.md");
-  writeFileSync(mdPath, buildEaiMd(sides, creditLine));
+  writeFileSync(mdPath, buildEaiMd(sides, creditLine, prevResultLine));
 
   // 8. Write meta JSON
   const meta: EaiMeta = {

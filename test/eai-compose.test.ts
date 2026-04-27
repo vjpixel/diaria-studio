@@ -8,6 +8,8 @@ import {
   chooseSides,
   buildEaiMd,
   isStage4Complete,
+  buildPrevResultLine,
+  readPrevPollStats,
 } from "../scripts/eai-compose.ts";
 
 interface MockImage {
@@ -207,5 +209,154 @@ describe("isStage4Complete (#192 resume-aware)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("buildPrevResultLine (#107)", () => {
+  it("retorna linha formatada com pct válido", () => {
+    const line = buildPrevResultLine({
+      total_responses: 30,
+      pct_correct: 85,
+      below_threshold: false,
+    });
+    assert.equal(line, "Resultado da última edição: 85% das pessoas acertaram.");
+  });
+
+  it("retorna null quando stats é null (sem arquivo)", () => {
+    assert.equal(buildPrevResultLine(null), null);
+  });
+
+  it("retorna null quando skipped (ai_side ausente, no previous edition, etc)", () => {
+    assert.equal(
+      buildPrevResultLine({ skipped: "no_previous_edition" }),
+      null,
+    );
+    assert.equal(buildPrevResultLine({ skipped: "ai_side_null" }), null);
+  });
+
+  it("retorna null quando 0 respostas", () => {
+    assert.equal(
+      buildPrevResultLine({ total_responses: 0, pct_correct: null }),
+      null,
+    );
+  });
+
+  it("retorna null quando below_threshold (poucos votos)", () => {
+    assert.equal(
+      buildPrevResultLine({
+        total_responses: 3,
+        pct_correct: null,
+        below_threshold: true,
+      }),
+      null,
+    );
+  });
+
+  it("retorna null quando pct_correct é null mesmo com respostas", () => {
+    // Cenário: ai_side não foi setado então não dá pra calcular correctChoice
+    assert.equal(
+      buildPrevResultLine({
+        total_responses: 10,
+        pct_correct: null,
+        below_threshold: false,
+      }),
+      null,
+    );
+  });
+
+  it("aceita 0% (todos erraram) como resultado válido", () => {
+    const line = buildPrevResultLine({
+      total_responses: 30,
+      pct_correct: 0,
+      below_threshold: false,
+    });
+    assert.equal(line, "Resultado da última edição: 0% das pessoas acertaram.");
+  });
+
+  it("aceita 100% (todos acertaram) como resultado válido", () => {
+    const line = buildPrevResultLine({
+      total_responses: 30,
+      pct_correct: 100,
+      below_threshold: false,
+    });
+    assert.equal(
+      line,
+      "Resultado da última edição: 100% das pessoas acertaram.",
+    );
+  });
+});
+
+describe("readPrevPollStats (#107)", () => {
+  function makeDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-prev-stats-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("retorna null quando o arquivo não existe", () => {
+    const dir = makeDir();
+    try {
+      assert.equal(readPrevPollStats(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando JSON inválido", () => {
+    const dir = makeDir();
+    try {
+      writeFileSync(join(dir, "_internal/04-eai-poll-stats.json"), "{ not json");
+      assert.equal(readPrevPollStats(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parseia stats válidos", () => {
+    const dir = makeDir();
+    try {
+      const stats = {
+        total_responses: 42,
+        pct_correct: 76,
+        below_threshold: false,
+      };
+      writeFileSync(
+        join(dir, "_internal/04-eai-poll-stats.json"),
+        JSON.stringify(stats),
+      );
+      const parsed = readPrevPollStats(dir);
+      assert.equal(parsed?.total_responses, 42);
+      assert.equal(parsed?.pct_correct, 76);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildEaiMd com prevResultLine (#107)", () => {
+  it("inclui linha de resultado após o crédito quando passada", () => {
+    const md = buildEaiMd(
+      { realSide: "A", aiSide: "B" },
+      "Credit line.",
+      "Resultado da última edição: 85% das pessoas acertaram.",
+    );
+    assert.match(md, /Credit line\.\n\nResultado da última edição: 85%/);
+  });
+
+  it("omite linha de resultado quando null (default)", () => {
+    const md = buildEaiMd(
+      { realSide: "A", aiSide: "B" },
+      "Credit line.",
+    );
+    assert.ok(!md.includes("Resultado da última edição"));
+  });
+
+  it("omite linha de resultado quando explicitamente null", () => {
+    const md = buildEaiMd(
+      { realSide: "A", aiSide: "B" },
+      "Credit line.",
+      null,
+    );
+    assert.ok(!md.includes("Resultado"));
   });
 });
