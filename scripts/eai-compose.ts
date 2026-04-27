@@ -18,10 +18,16 @@
  *   6. Escrever 01-eai.md (template) + _internal/01-eai-meta.json
  *
  * Uso:
- *   npx tsx scripts/eai-compose.ts --edition AAMMDD [--out-dir <path>]
+ *   npx tsx scripts/eai-compose.ts --edition AAMMDD [--out-dir <path>] [--force]
  *
  * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[] }
  * Exit code != 0 em qualquer falha bloqueante (Wikimedia API down, sem POTD elegível, Gemini down).
+ *
+ * Resume-aware (#192): se Stage 4 já completo (md + meta + par de imagens
+ * A/B ou legacy real/ia), aborta cedo com `{ skipped: true, ... }` e exit 0.
+ * Use `--force` pra forçar regeneração. Importante porque re-run faz novo
+ * coin flip — sem skip, o mapping A↔B pode trocar entre runs e divergir do
+ * que foi aprovado no gate.
  */
 
 import {
@@ -114,6 +120,26 @@ export function buildEaiMd(sides: EaiSides, creditLine: string): string {
     creditLine,
     "",
   ].join("\n");
+}
+
+/**
+ * Detecta se o Stage 4 está completo num outDir (resume-aware): os 4 outputs
+ * precisam existir em conjunto — `01-eai.md`, `_internal/01-eai-meta.json`, e
+ * o par de imagens (A/B novo padrão #192 OU legacy real/ia).
+ *
+ * Usado pra evitar re-run não-determinístico: re-rodar `eai-compose` faz novo
+ * coin flip e troca o mapping A↔B vs o que já foi aprovado no gate / publicado.
+ */
+export function isStage4Complete(outDir: string): boolean {
+  const md = existsSync(resolve(outDir, "01-eai.md"));
+  const meta = existsSync(resolve(outDir, "_internal/01-eai-meta.json"));
+  const newAB =
+    existsSync(resolve(outDir, "01-eai-A.jpg")) &&
+    existsSync(resolve(outDir, "01-eai-B.jpg"));
+  const legacyAB =
+    existsSync(resolve(outDir, "01-eai-real.jpg")) &&
+    existsSync(resolve(outDir, "01-eai-ia.jpg"));
+  return md && meta && (newAB || legacyAB);
 }
 
 const NEGATIVE_PROMPT =
@@ -299,13 +325,31 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("Uso: eai-compose.ts --edition AAMMDD [--out-dir <path>]");
+    console.error("Uso: eai-compose.ts --edition AAMMDD [--out-dir <path>] [--force]");
     process.exit(1);
   }
+  const force = process.argv.includes("--force");
   const outDir =
     args["out-dir"] ?? resolve(ROOT, `data/editions/${edition}`);
   const internalDir = resolve(outDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
+
+  // Resume-aware (#192): skip se Stage 4 já completo. Re-run faria novo
+  // coin flip e quebraria consistência com o que foi aprovado no gate.
+  if (!force && isStage4Complete(outDir)) {
+    console.error(
+      `[eai-compose] Stage 4 já completo em ${outDir}. ` +
+        `Re-rodar mudaria o sorteio A/B (#192). Use --force pra regenerar.`,
+    );
+    console.log(
+      JSON.stringify({
+        skipped: true,
+        reason: "stage4_already_complete",
+        out_dir: outDir,
+      }),
+    );
+    process.exit(0);
+  }
 
   // 1. Fetch POTD com eligibility
   const usedTitles = readUsedTitles();

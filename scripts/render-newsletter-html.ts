@@ -66,7 +66,7 @@ interface Section {
   items: SectionItem[];
 }
 
-interface EAI {
+export interface EAI {
   credit: string;
   imageA: string;
   imageB: string;
@@ -244,7 +244,7 @@ function subBlockToItem(block: string[]): SectionItem | null {
   return { title, description: descriptionParts.join(" "), url };
 }
 
-function fallbackEAI(editionDir: string): EAI {
+export function fallbackEAI(editionDir: string): EAI {
   const newA = resolve(editionDir, "01-eai-A.jpg");
   const newB = resolve(editionDir, "01-eai-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
@@ -253,7 +253,7 @@ function fallbackEAI(editionDir: string): EAI {
   return { credit: "", imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
 }
 
-function parseEAI(text: string, editionDir: string): EAI {
+export function parseEAI(text: string, editionDir: string): EAI {
   // Pula frontmatter YAML se presente (#192 — eai_answer mapping é só pra editor).
   let body = text;
   const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);

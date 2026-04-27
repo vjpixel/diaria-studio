@@ -1,9 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   findEligiblePotd,
   chooseSides,
   buildEaiMd,
+  isStage4Complete,
 } from "../scripts/eai-compose.ts";
 
 interface MockImage {
@@ -131,5 +135,77 @@ describe("buildEaiMd (#192)", () => {
     assert.ok(fmMatch, "frontmatter encontrado");
     assert.match(fmMatch![1], /A: real/);
     assert.match(fmMatch![2], /Credit line\./);
+  });
+});
+
+describe("isStage4Complete (#192 resume-aware)", () => {
+  function makeDir(): string {
+    const root = mkdtempSync(join(tmpdir(), "diaria-eai-stage4-"));
+    mkdirSync(join(root, "_internal"), { recursive: true });
+    return root;
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("false quando nada existe", () => {
+    const dir = makeDir();
+    try {
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true quando todos os 4 outputs (md + meta + A/B) existem", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true para edições legacy com real/ia (backward compat)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando md existe mas par de imagens incompleto", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      touch(join(dir, "01-eai-A.jpg")); // só A, falta B
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando imagens existem mas meta JSON falta", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "01-eai-A.jpg"));
+      touch(join(dir, "01-eai-B.jpg"));
+      // sem _internal/01-eai-meta.json
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
