@@ -72,6 +72,8 @@ const BR_HOSTS = [
   "akitaonrails.com",
 ];
 
+// Keywords em ASCII — `stripAccents` no haystack normaliza `Itaú`/`Brasília`/etc.
+// pra `Itau`/`Brasilia`, evitando precisar duplicar entradas com/sem acento.
 const BR_KEYWORDS = [
   "brasil",
   "brasileiro",
@@ -84,7 +86,6 @@ const BR_KEYWORDS = [
   "tse",
   "stf",
   "cade",
-  "itaú",
   "itau",
   "bradesco",
   "petrobras",
@@ -92,11 +93,21 @@ const BR_KEYWORDS = [
   "nubank",
   "stone",
   "magazine luiza",
-  "brasília",
   "brasilia",
 ];
 
-function detectBrazil(args: {
+// Combining marks regex (U+0300..U+036F) construído via codePoint pra evitar
+// que chars não-imprimíveis sumam em copy/paste, encoding switch, etc.
+const COMBINING_MARKS_RE = new RegExp(
+  `[${String.fromCodePoint(0x0300)}-${String.fromCodePoint(0x036f)}]`,
+  "gu",
+);
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(COMBINING_MARKS_RE, "");
+}
+
+export function detectBrazil(args: {
   category: string;
   url: string;
   title: string;
@@ -105,7 +116,7 @@ function detectBrazil(args: {
   const signals: string[] = [];
 
   // Sinal forte: categoria BRASIL é decisão editorial do scorer diário.
-  if (args.category.trim().toUpperCase() === "BRASIL") {
+  if (stripAccents(args.category).trim().toUpperCase() === "BRASIL") {
     signals.push("category:BRASIL");
   }
 
@@ -118,8 +129,9 @@ function detectBrazil(args: {
     // ignore malformed URL
   }
 
-  // Keywords com word boundary (evita "lulav", "cadeira", "stfu" casando)
-  const haystack = `${args.title} ${args.body}`.toLowerCase();
+  // Keywords com word boundary + accent-strip (evita "lulav", "cadeira", "stfu"
+  // casando, e cobre `Itaú`/`Brasília` via NFD-strip sem duplicar entradas).
+  const haystack = stripAccents(`${args.title} ${args.body}`).toLowerCase();
   for (const kw of BR_KEYWORDS) {
     const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "u");
     if (re.test(haystack)) {
@@ -161,17 +173,17 @@ function listRawPosts(yymm: string): RawPostFile[] {
 
 // ── Parser ─────────────────────────────────────────────────────────
 
-function splitSections(raw: string): string[] {
+export function splitSections(raw: string): string[] {
   // Separadores são linhas com 10+ traços (cobrem `----------` e `--------------------`).
   return raw.split(/\r?\n-{10,}\r?\n/);
 }
 
-function parsePost(file: RawPostFile, raw: string, warnings: string[]): MonthlyDestaque[] {
+export function parsePost(file: RawPostFile, raw: string, warnings: string[]): MonthlyDestaque[] {
   const sections = splitSections(raw);
   const destaques: MonthlyDestaque[] = [];
+  let totalMatched = 0;
 
   for (const section of sections) {
-    if (destaques.length >= 3) break;
     const trimmed = section.trim();
     if (!trimmed) continue;
 
@@ -185,6 +197,11 @@ function parsePost(file: RawPostFile, raw: string, warnings: string[]): MonthlyD
     const h1Match = trimmed.match(/^# \[(.+?)\]\((https?:\/\/[^\s)]+)\)\s*$/m);
     if (!h1Match) continue;
     const [h1Line, title, url] = h1Match;
+
+    totalMatched++;
+
+    // Capamos em 3, mas continuamos contando pra warning de "edição com 4+".
+    if (destaques.length >= 3) continue;
 
     // Body = depois do h1, antes de "Por que isso importa:" (variantes h0/h3 + bold).
     const afterH1 = trimmed.substring(trimmed.indexOf(h1Line) + h1Line.length);
@@ -227,6 +244,10 @@ function parsePost(file: RawPostFile, raw: string, warnings: string[]): MonthlyD
 
   if (destaques.length === 0) {
     warnings.push(`${file.edition}: nenhum destaque parseado — verificar formato do post`);
+  } else if (totalMatched > 3) {
+    warnings.push(
+      `${file.edition}: ${totalMatched} sections matched destaque pattern (esperado 3) — usando os 3 primeiros`,
+    );
   } else if (destaques.length < 3) {
     warnings.push(`${file.edition}: parseou ${destaques.length} destaques (esperado 3)`);
   }
@@ -290,4 +311,10 @@ function main() {
   }
 }
 
-main();
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}

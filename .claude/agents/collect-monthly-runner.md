@@ -52,12 +52,15 @@ Reportar warnings se a janela ficar incompleta (rate limit, paginação truncada
 Para cada post coletado:
 
 1. Derivar `AAMMDD` do `published_at` (ex: `2026-04-15T...` → `260415`).
-2. Derivar `id_prefix` = primeiros 8 chars do `post.id` (matching prefix do existente, ex: `d8d75586` de `d8d75586-...`).
+2. Derivar `id_prefix` (8 chars hex):
+   - O `post.id` da Beehiiv pode vir como `d8d75586-...` (uuid puro) **ou** `post_d8d75586-...` (com prefixo `post_`). Verificar e strippar o prefixo `post_` se presente antes de truncar.
+   - Pattern: `post.id.replace(/^post_/, "").slice(0, 8)` → ex: `d8d75586`.
+   - O filename final deve **sempre** começar com `post_` literal seguido do hex truncado, nunca `post_post_` duplicado.
 3. Path destino: `data/monthly/{yymm}/raw-posts/post_{id_prefix}_{AAMMDD}.txt`.
 4. **Resume-aware**: se o arquivo já existe, pular `get_post_content` (já baixado).
 5. Caso contrário: chamar `mcp__ed929847-...__get_post_content(post_id)`.
    - O retorno tem `markdown` (preferido) e `html`.
-   - Gravar o `markdown` no path com `Write`. Se `markdown` ausente, gravar o `html` e adicionar warning.
+   - Gravar o `markdown` no path com `Write`. Se `markdown` ausente, gravar o `html`, incrementar `posts_with_html_fallback` e adicionar warning. O parser `collect-monthly.ts` espera markdown — HTML pode não parsear corretamente.
 6. Criar diretório `data/monthly/{yymm}/raw-posts/` antes de escrever (se não existir).
 
 ## Passo 5 — Saída (JSON ao orchestrator)
@@ -65,14 +68,20 @@ Para cada post coletado:
 ```json
 {
   "yymm": "2604",
-  "posts_count": 28,
-  "posts_in_window": 28,
-  "skipped_existing": 5,
+  "posts_found": 28,
   "downloaded": 23,
+  "skipped_existing": 5,
+  "posts_with_html_fallback": 0,
   "out_dir": "data/monthly/2604/raw-posts/",
   "warnings": []
 }
 ```
+
+Campos:
+- `posts_found`: total de posts publicados no Beehiiv dentro da janela do mês.
+- `downloaded`: quantos `get_post_content` foram chamados nesta execução.
+- `skipped_existing`: arquivos já em disco (resume).
+- `posts_with_html_fallback`: posts cujo `markdown` veio vazio e foi gravado HTML (parser pode falhar nesses).
 
 ## Regras
 
