@@ -17,28 +17,40 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 ## Pré-requisitos
 
-- Edições diárias do mês já processadas em `data/editions/{AAMMDD}/` com `02-reviewed.md` e `_internal/01-approved.json`.
+- Beehiiv MCP funcional (conector nativo do Claude Code, mesmo usado por `refresh-dedup-runner` e `diaria-atualiza-audiencia`).
+- `platform.config.json → beehiiv.publicationId` populado (caso contrário, o agent `collect-monthly-runner` resolve via `list_publications` no primeiro passo).
 - `context/audience-profile.md`, `context/editorial-rules.md`, `context/templates/newsletter-monthly.md` existem e não são placeholders.
 
-## Fluxo
+**Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv (source-of-truth do publicado), funcionando em qualquer máquina.
 
-## Phase 1 (este PR — implementada)
+## Phase 1 (implementada)
 
 ### Stage 1 — Coleta
 
-Lê edições diárias **localmente** em `data/editions/{AAMMDD}/` (parse de `02-reviewed.md` + enrichment via `_internal/01-approved.json`). A spec original do #188 prevê Beehiiv MCP como source-of-truth do publicado; migração fica como follow-up em #196 — Phase 1 assume que o editor está rodando o digest na mesma máquina onde as edições foram processadas.
+Coleta tem dois sub-passos: (1a) baixar markdown bruto via Beehiiv MCP, (1b) parsear destaques.
 
-Disparar `Bash`:
+**1a. Baixar via Beehiiv MCP** — disparar o subagent `collect-monthly-runner` via `Agent`:
+
+- Input: `yymm = $1`
+- O agent lista posts publicados via `list_posts` (paginação client-side filtrada pela janela do mês), baixa o markdown via `get_post_content` e grava em `data/monthly/{yymm}/raw-posts/post_{id8}_{AAMMDD}.txt`.
+- Resume-aware: pula posts já em disco.
+- Output JSON: `{ posts_count, skipped_existing, downloaded, warnings }`.
+
+Se `posts_count = 0`, abortar — o mês não tem edições publicadas no Beehiiv.
+
+**1b. Parsear destaques** — disparar `Bash`:
 
 ```bash
 npx tsx scripts/collect-monthly.ts $1
 ```
 
-Output: `data/monthly/$1/raw-destaques.json`. Reportar ao usuário:
+O script lê os raw-posts, extrai até 3 destaques por edição (h5 categoria + h1 link como discriminador), enriquece com flag 🇧🇷 (categoria BRASIL = sinal forte; reforço por host e keywords), e grava `data/monthly/{yymm}/raw-destaques.json`.
+
+Reportar ao usuário:
 - `editions_count` (quantas edições contribuíram)
-- `destaques_count` (total de destaques coletados)
-- `is_brazil` count (quantos foram marcados como Brasil)
-- Warnings (edições sem `02-reviewed.md` ou sem `_internal/01-approved.json`)
+- `destaques_count` (esperado: editions_count × 3)
+- `is_brazil` count
+- Warnings (edições com parse incompleto, formato inesperado, etc.)
 
 Se `destaques_count < 3`, abortar com mensagem clara: o mês não tem destaques suficientes pra um digest mensal.
 
@@ -76,7 +88,7 @@ Prioritized.md para o digest mensal {YYMM}:
 D1: {tema 1} ({N} artigos)
 D2: {tema 2} ({N} artigos)
 D3: {tema 3} ({N} artigos)
-Outras Notícias: {10 itens}
+Outras Notícias: {N} itens (top 10 standalones)
 
 {warnings se houver}
 

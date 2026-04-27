@@ -1,17 +1,19 @@
 /**
  * Coleta os ~90 destaques de todas as edições publicadas em um mês.
  *
- * Phase 1 — fonte: arquivos locais em `data/editions/{AAMMDD}/`. Para cada edição válida:
- *   - Parse `02-reviewed.md` (texto revisado) via `parseDestaques` (extract-destaques.ts).
- *   - Cruza com `_internal/01-approved.json` para metadata enriquecida (score, source, BR flag).
+ * Entrada: arquivos `.txt` em `data/monthly/{YYMM}/raw-posts/`, gerados pelo
+ * agent `collect-monthly-runner` que busca via Beehiiv MCP. Cada arquivo
+ * contém o markdown bruto de uma edição publicada (formato `get_post_content`):
+ * seções separadas por linhas de traços (`-` repetidos), com `##### CATEGORIA`
+ * + `# [Título](url)` por destaque.
  *
- * Limitação Phase 1: depende de a edição ter sido processada nesta máquina.
- * Edições publicadas de outra máquina (sem `02-reviewed.md` local) não entram.
- * O #188 spec original prevê Beehiiv MCP como source-of-truth — migração
- * fica como follow-up dedicado em #196.
+ * Output: `data/monthly/{YYMM}/raw-destaques.json` com todos os destaques do
+ * mês + metadata estruturada pro `analyst-monthly` agrupar por tema.
  *
- * Output: `data/monthly/{YYMM}/raw-destaques.json` com todos os destaques do mês +
- * metadata estruturada pro `analyst-monthly` agrupar por tema.
+ * Brasil detection: `category === "BRASIL"` é sinal forte (decisão editorial
+ * do scorer diário). Reforçado por host (`.br` + lista BR_HOSTS) e palavras-
+ * chave no título/body com word boundary (evita false-positives de tokens
+ * curtos como `stf`, `cade` casando dentro de palavras maiores).
  *
  * Uso:
  *   npx tsx scripts/collect-monthly.ts <YYMM>
@@ -19,56 +21,24 @@
  * Ex: `npx tsx scripts/collect-monthly.ts 2604` para abril 2026.
  */
 
-import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDestaques, type Destaque } from "./extract-destaques.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const EDITIONS_DIR = resolve(ROOT, "data/editions");
 const MONTHLY_DIR = resolve(ROOT, "data/monthly");
 
-interface ApprovedHighlight {
-  rank: number;
-  score: number;
-  bucket: string;
-  reason: string;
-  article: {
-    url: string;
-    title: string;
-    published_at: string;
-    summary: string;
-    source: string;
-    method: string;
-    category: string;
-  };
-  url: string;
-}
-
-interface ApprovedJson {
-  highlights: ApprovedHighlight[];
-  categorized?: {
-    lancamento?: unknown[];
-    pesquisa?: unknown[];
-    noticias?: unknown[];
-  };
-}
-
 interface MonthlyDestaque {
-  edition: string;        // AAMMDD
-  position: 1 | 2 | 3;    // D1/D2/D3 na edição original
-  category: string;       // category label do header (ex: "BRASIL", "LANÇAMENTO")
+  edition: string;          // AAMMDD (extraída do nome do arquivo)
+  beehiiv_post_id: string;  // prefixo do ID do post no Beehiiv
+  position: 1 | 2 | 3;      // ordem na edição original
+  category: string;         // ex: "BRASIL", "GEOPOLÍTICA", "INSTABILIDADE"
   title: string;
-  body: string;
-  why: string;
   url: string;
-  // Enriched from 01-approved.json (when found):
-  score?: number;
-  source?: string;
-  summary?: string;
-  published_at?: string;
-  is_brazil: boolean;     // hostname-based + content keywords + reason field
-  brazil_signals: string[]; // why we flagged it
+  body: string;             // corpo do destaque (excluindo "View image:" / "Caption:")
+  why: string;              // texto após "Por que isso importa:"
+  is_brazil: boolean;
+  brazil_signals: string[]; // motivos da flag (category, host, keyword)
 }
 
 interface MonthlyOutput {
@@ -127,14 +97,19 @@ const BR_KEYWORDS = [
 ];
 
 function detectBrazil(args: {
+  category: string;
   url: string;
   title: string;
-  summary?: string;
-  reason?: string;
+  body: string;
 }): { is_brazil: boolean; signals: string[] } {
   const signals: string[] = [];
 
-  // Host check
+  // Sinal forte: categoria BRASIL é decisão editorial do scorer diário.
+  if (args.category.trim().toUpperCase() === "BRASIL") {
+    signals.push("category:BRASIL");
+  }
+
+  // Host (.br + lista curada)
   try {
     const host = new URL(args.url).hostname.replace(/^www\./, "");
     if (host.endsWith(".br")) signals.push(`host:${host}`);
@@ -143,120 +118,120 @@ function detectBrazil(args: {
     // ignore malformed URL
   }
 
-  // Reason field from approved.json: heurística — captura tokens "BR"
-  // (ex: "BR coverage", "Score N: BR ...") OU palavra "Brasil" no reason.
-  // Não há contrato formal com o scorer diário; se a redação mudar, o sinal
-  // some silenciosamente. Mitigado pelos outros sinais (host, keywords).
-  if (args.reason && (/\bBR\b/.test(args.reason) || /\bBrasil\b/i.test(args.reason))) {
-    signals.push("reason:BR-mention");
-  }
-
-  // Keyword check on title + summary
-  const haystack = `${args.title} ${args.summary || ""}`.toLowerCase();
+  // Keywords com word boundary (evita "lulav", "cadeira", "stfu" casando)
+  const haystack = `${args.title} ${args.body}`.toLowerCase();
   for (const kw of BR_KEYWORDS) {
-    if (haystack.includes(kw)) {
+    const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "u");
+    if (re.test(haystack)) {
       signals.push(`kw:${kw}`);
-      break; // one keyword is enough
+      break; // um match já basta pra flagar
     }
   }
 
   return { is_brazil: signals.length > 0, signals };
 }
 
-// ── Edition discovery ──────────────────────────────────────────────
+// ── Raw post discovery ─────────────────────────────────────────────
 
-function listEditionsForMonth(yymm: string): string[] {
-  if (!/^\d{4}$/.test(yymm)) {
-    throw new Error(`YYMM inválido: ${yymm}. Use formato YYMM (ex: 2604).`);
-  }
-  if (!existsSync(EDITIONS_DIR)) return [];
-
-  const all = readdirSync(EDITIONS_DIR, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .filter((name) => /^\d{6}$/.test(name)) // strict AAMMDD only — exclude backups, locals, etc.
-    .filter((name) => name.startsWith(yymm))
-    .sort(); // chronological
-
-  return all;
+interface RawPostFile {
+  path: string;
+  filename: string;
+  beehiiv_post_id: string;
+  edition: string; // AAMMDD
 }
 
-// ── Per-edition extraction ─────────────────────────────────────────
-
-function loadApproved(editionDir: string): ApprovedJson | null {
-  const path = join(editionDir, "_internal", "01-approved.json");
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
-  } catch {
-    return null;
-  }
+function listRawPosts(yymm: string): RawPostFile[] {
+  const dir = join(MONTHLY_DIR, yymm, "raw-posts");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => /^post_[a-f0-9]+_\d{6}\.txt$/i.test(name))
+    .map((name) => {
+      const m = name.match(/^post_([a-f0-9]+)_(\d{6})\.txt$/i);
+      // m can't be null here because we filtered above, but TS doesn't know it.
+      const [, id, ed] = m as RegExpMatchArray;
+      return {
+        path: join(dir, name),
+        filename: name,
+        beehiiv_post_id: id,
+        edition: ed,
+      };
+    })
+    .sort((a, b) => a.edition.localeCompare(b.edition));
 }
 
-function findHighlightForUrl(approved: ApprovedJson | null, url: string): ApprovedHighlight | null {
-  if (!approved?.highlights) return null;
-  return approved.highlights.find((h) => h.url === url || h.article?.url === url) || null;
+// ── Parser ─────────────────────────────────────────────────────────
+
+function splitSections(raw: string): string[] {
+  // Separadores são linhas com 10+ traços (cobrem `----------` e `--------------------`).
+  return raw.split(/\r?\n-{10,}\r?\n/);
 }
 
-function extractEditionDestaques(edition: string): {
-  destaques: MonthlyDestaque[];
-  warnings: string[];
-} {
-  const editionDir = join(EDITIONS_DIR, edition);
-  const reviewedPath = join(editionDir, "02-reviewed.md");
-  const warnings: string[] = [];
+function parsePost(file: RawPostFile, raw: string, warnings: string[]): MonthlyDestaque[] {
+  const sections = splitSections(raw);
+  const destaques: MonthlyDestaque[] = [];
 
-  if (!existsSync(reviewedPath)) {
-    warnings.push(`${edition}: 02-reviewed.md não existe — pulando`);
-    return { destaques: [], warnings };
-  }
+  for (const section of sections) {
+    if (destaques.length >= 3) break;
+    const trimmed = section.trim();
+    if (!trimmed) continue;
 
-  const raw = readFileSync(reviewedPath, "utf8");
-  let parsed: Destaque[] = [];
-  try {
-    parsed = parseDestaques(raw);
-  } catch (err) {
-    warnings.push(`${edition}: erro ao parsear 02-reviewed.md (${(err as Error).message})`);
-    return { destaques: [], warnings };
-  }
+    // Estrutura de destaque = h5 categoria (`##### {CAT}`) + h1 com link (`# [Título](url)`).
+    // Sections de lista (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) usam `**[...](url)**`,
+    // não h1 — caem fora naturalmente. É AI?/Sorteio/Encerrar idem.
+    const catMatch = trimmed.match(/^##### (.+?)\s*$/m);
+    if (!catMatch) continue;
+    const category = catMatch[1].trim();
 
-  if (parsed.length !== 3) {
-    warnings.push(`${edition}: esperado 3 destaques, encontrado ${parsed.length}`);
-  }
+    const h1Match = trimmed.match(/^# \[(.+?)\]\((https?:\/\/[^\s)]+)\)\s*$/m);
+    if (!h1Match) continue;
+    const [h1Line, title, url] = h1Match;
 
-  const approved = loadApproved(editionDir);
-  if (!approved) {
-    warnings.push(`${edition}: _internal/01-approved.json não existe — metadata reduzida`);
-  }
+    // Body = depois do h1, antes de "Por que isso importa:" (variantes h0/h3 + bold).
+    const afterH1 = trimmed.substring(trimmed.indexOf(h1Line) + h1Line.length);
+    const whyDelim = afterH1.match(/^#{0,3}\s*\*?\*?Por que isso importa:?\*?\*?\s*$/im);
+    let bodyRaw: string;
+    let whyRaw: string;
+    if (whyDelim) {
+      const idx = afterH1.indexOf(whyDelim[0]);
+      bodyRaw = afterH1.substring(0, idx);
+      whyRaw = afterH1.substring(idx + whyDelim[0].length);
+    } else {
+      bodyRaw = afterH1;
+      whyRaw = "";
+    }
 
-  const result: MonthlyDestaque[] = parsed.map((d) => {
-    const hl = findHighlightForUrl(approved, d.url);
-    const article = hl?.article;
-    const brazil = detectBrazil({
-      url: d.url,
-      title: d.title,
-      summary: article?.summary,
-      reason: hl?.reason,
-    });
+    // Limpar `View image:` e `Caption:` que vêm antes do corpo.
+    const body = bodyRaw
+      .split(/\r?\n/)
+      .filter((line) => !/^View image:/i.test(line.trim()))
+      .filter((line) => !/^Caption:/i.test(line.trim()))
+      .join("\n")
+      .trim();
+    const why = whyRaw.trim();
 
-    return {
-      edition,
-      position: d.n,
-      category: d.category,
-      title: d.title,
-      body: d.body,
-      why: d.why,
-      url: d.url,
-      score: hl?.score,
-      source: article?.source,
-      summary: article?.summary,
-      published_at: article?.published_at,
+    const brazil = detectBrazil({ category, url, title, body });
+
+    destaques.push({
+      edition: file.edition,
+      beehiiv_post_id: file.beehiiv_post_id,
+      position: (destaques.length + 1) as 1 | 2 | 3,
+      category,
+      title,
+      url,
+      body,
+      why,
       is_brazil: brazil.is_brazil,
       brazil_signals: brazil.signals,
-    };
-  });
+    });
+  }
 
-  return { destaques: result, warnings };
+  if (destaques.length === 0) {
+    warnings.push(`${file.edition}: nenhum destaque parseado — verificar formato do post`);
+  } else if (destaques.length < 3) {
+    warnings.push(`${file.edition}: parseou ${destaques.length} destaques (esperado 3)`);
+  }
+
+  return destaques;
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -268,29 +243,36 @@ function main() {
     console.error("  Ex: npx tsx scripts/collect-monthly.ts 2604");
     process.exit(2);
   }
+  if (!/^\d{4}$/.test(yymm)) {
+    console.error(`YYMM inválido: ${yymm}. Formato esperado: YYMM (ex: 2604).`);
+    process.exit(2);
+  }
 
-  const editions = listEditionsForMonth(yymm);
-  if (editions.length === 0) {
-    console.error(`Nenhuma edição encontrada para ${yymm} em ${EDITIONS_DIR}`);
+  const files = listRawPosts(yymm);
+  if (files.length === 0) {
+    console.error(
+      `Nenhum raw-post encontrado em data/monthly/${yymm}/raw-posts/. ` +
+        `Rode o agent collect-monthly-runner antes do script (ver SKILL.md Stage 1a).`,
+    );
     process.exit(1);
   }
 
   const allDestaques: MonthlyDestaque[] = [];
-  const allWarnings: string[] = [];
+  const warnings: string[] = [];
 
-  for (const ed of editions) {
-    const { destaques, warnings } = extractEditionDestaques(ed);
-    allDestaques.push(...destaques);
-    allWarnings.push(...warnings);
+  for (const f of files) {
+    const text = readFileSync(f.path, "utf8");
+    const dest = parsePost(f, text, warnings);
+    allDestaques.push(...dest);
   }
 
   const output: MonthlyOutput = {
     yymm,
     generated_at: new Date().toISOString(),
-    editions_count: editions.length,
+    editions_count: files.length,
     destaques_count: allDestaques.length,
     destaques: allDestaques,
-    warnings: allWarnings,
+    warnings,
   };
 
   const outDir = join(MONTHLY_DIR, yymm);
@@ -298,13 +280,13 @@ function main() {
   const outPath = join(outDir, "raw-destaques.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
-  const brazilCount = allDestaques.filter((d) => d.is_brazil).length;
+  const brCount = allDestaques.filter((d) => d.is_brazil).length;
   console.log(
-    `OK: ${allDestaques.length} destaques de ${editions.length} edições (${brazilCount} marcados Brasil) → ${outPath}`
+    `OK: ${allDestaques.length} destaques de ${files.length} edições (${brCount} marcados Brasil) → ${outPath}`,
   );
-  if (allWarnings.length > 0) {
-    console.log(`Warnings: ${allWarnings.length}`);
-    for (const w of allWarnings) console.log(`  - ${w}`);
+  if (warnings.length > 0) {
+    console.log(`Warnings: ${warnings.length}`);
+    for (const w of warnings) console.log(`  - ${w}`);
   }
 }
 
