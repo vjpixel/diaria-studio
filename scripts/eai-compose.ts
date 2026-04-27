@@ -67,7 +67,7 @@ interface EaiMeta {
   composed_at: string;
   ai_image_file: string;
   real_image_file: string;
-  ai_side: string | null;
+  ai_side: "A" | "B" | null;
   wikimedia: {
     title: string;
     image_url: string;
@@ -76,6 +76,44 @@ interface EaiMeta {
     subject_wikipedia_url: string | null;
     image_date_used: string;
   };
+}
+
+export interface EaiSides {
+  realSide: "A" | "B";
+  aiSide: "A" | "B";
+}
+
+/**
+ * Sorteia qual slot (A/B) recebe a foto real e qual recebe a IA. Recebe um
+ * número aleatório [0, 1) — em produção `Math.random()`, em teste valor fixo
+ * pra cobrir os dois ramos de forma determinística.
+ */
+export function chooseSides(rand: number): EaiSides {
+  return rand < 0.5
+    ? { realSide: "A", aiSide: "B" }
+    : { realSide: "B", aiSide: "A" };
+}
+
+/**
+ * Monta o conteúdo do 01-eai.md com frontmatter YAML revelando A/B → real/ia.
+ * O frontmatter é pra leitura humana (editor no gate); scripts leem
+ * `_internal/01-eai-meta.json` para dados estruturados.
+ */
+export function buildEaiMd(sides: EaiSides, creditLine: string): string {
+  const aMapping = sides.realSide === "A" ? "real" : "ia";
+  const bMapping = sides.realSide === "B" ? "real" : "ia";
+  return [
+    "---",
+    "eai_answer:",
+    `  A: ${aMapping}`,
+    `  B: ${bMapping}`,
+    "---",
+    "",
+    "É IA?",
+    "",
+    creditLine,
+    "",
+  ].join("\n");
 }
 
 const NEGATIVE_PROMPT =
@@ -277,14 +315,20 @@ async function main(): Promise<void> {
     usedTitles,
   );
 
-  // 2. Download + crop
+  // 2. Coin flip (#192) — sorteia qual slot (A/B) recebe a foto real e qual recebe a IA.
+  // Mantém o exercício "É IA?" cego: nem o leitor nem o nome do arquivo revelam a resposta.
+  const sides = chooseSides(Math.random());
+  const realFilename = `01-eai-${sides.realSide}.jpg`;
+  const iaFilename = `01-eai-${sides.aiSide}.jpg`;
+
+  // 3. Download + crop (real)
   const imageUrl = image.image?.source ?? image.thumbnail?.source;
   if (!imageUrl) {
     throw new Error("POTD sem URL de imagem");
   }
   const rawPath = resolve(outDir, "01-eai-real-raw.jpg");
   curlDownload(imageUrl, rawPath);
-  const realPath = resolve(outDir, "01-eai-real.jpg");
+  const realPath = resolve(outDir, realFilename);
   runScript("scripts/crop-resize.ts", [
     rawPath,
     realPath,
@@ -295,7 +339,7 @@ async function main(): Promise<void> {
   ]);
   execFileSync("rm", [rawPath], { stdio: "inherit" });
 
-  // 3. Log used
+  // 4. Log used
   const credit = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
   runScript("scripts/eai-log-used.ts", [
     "--edition",
@@ -310,25 +354,25 @@ async function main(): Promise<void> {
     imageUrl,
   ]);
 
-  // 4. Build SD prompt + 5. Gemini
+  // 5. Build SD prompt + 6. Gemini → escreve no slot oposto à foto real
   const sdPrompt = buildSdPrompt(image);
   const sdPromptPath = resolve(internalDir, "01-eai-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
-  const iaPath = resolve(outDir, "01-eai-ia.jpg");
+  const iaPath = resolve(outDir, iaFilename);
   runNode("scripts/gemini-image.js", [sdPromptPath, iaPath, "diaria_eai_"]);
 
-  // 6. Write 01-eai.md
+  // 7. Write 01-eai.md (frontmatter + corpo)
   const creditLine = buildCreditLine(image);
   const mdPath = resolve(outDir, "01-eai.md");
-  writeFileSync(mdPath, `É IA?\n\n${creditLine}\n`);
+  writeFileSync(mdPath, buildEaiMd(sides, creditLine));
 
-  // 7. Write meta JSON
+  // 8. Write meta JSON
   const meta: EaiMeta = {
     edition,
     composed_at: new Date().toISOString(),
-    ai_image_file: "01-eai-ia.jpg",
-    real_image_file: "01-eai-real.jpg",
-    ai_side: null,
+    ai_image_file: iaFilename,
+    real_image_file: realFilename,
+    ai_side: sides.aiSide,
     wikimedia: {
       title: image.title ?? "",
       image_url: imageUrl,
@@ -348,6 +392,7 @@ async function main(): Promise<void> {
       out_real: realPath,
       out_ia: iaPath,
       out_meta: metaPath,
+      ai_side: sides.aiSide,
       image_title: image.title ?? "",
       image_credit: credit,
       image_date_used: imageDate,

@@ -68,8 +68,8 @@ interface Section {
 
 interface EAI {
   credit: string;
-  realImage: string;
-  iaImage: string;
+  imageA: string;
+  imageB: string;
 }
 
 interface NewsletterContent {
@@ -244,15 +244,33 @@ function subBlockToItem(block: string[]): SectionItem | null {
   return { title, description: descriptionParts.join(" "), url };
 }
 
-function parseEAI(text: string): EAI {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+function fallbackEAI(editionDir: string): EAI {
+  const newA = resolve(editionDir, "01-eai-A.jpg");
+  const newB = resolve(editionDir, "01-eai-B.jpg");
+  if (existsSync(newA) && existsSync(newB)) {
+    return { credit: "", imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
+  }
+  return { credit: "", imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
+}
+
+function parseEAI(text: string, editionDir: string): EAI {
+  // Pula frontmatter YAML se presente (#192 — eai_answer mapping é só pra editor).
+  let body = text;
+  const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  if (fmMatch) {
+    body = fmMatch[2];
+  }
+  const lines = body.split(/\r?\n/).filter((l) => l.trim().length > 0);
   const credit = lines.filter((l) => !l.startsWith("É IA?")).join("\n").trim();
 
-  return {
-    credit,
-    realImage: "01-eai-real.jpg",
-    iaImage: "01-eai-ia.jpg",
-  };
+  // #192: novo padrão é 01-eai-A.jpg / 01-eai-B.jpg (random).
+  // Fallback: edições antigas têm 01-eai-real.jpg / 01-eai-ia.jpg (real sempre primeiro).
+  const newA = resolve(editionDir, "01-eai-A.jpg");
+  const newB = resolve(editionDir, "01-eai-B.jpg");
+  if (existsSync(newA) && existsSync(newB)) {
+    return { credit, imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
+  }
+  return { credit, imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
 }
 
 function extractContent(editionDir: string): NewsletterContent {
@@ -283,8 +301,8 @@ function extractContent(editionDir: string): NewsletterContent {
 
   // É IA?
   const eai = existsSync(eaiPath)
-    ? parseEAI(readFileSync(eaiPath, "utf8"))
-    : { credit: "", realImage: "01-eai-real.jpg", iaImage: "01-eai-ia.jpg" };
+    ? parseEAI(readFileSync(eaiPath, "utf8"), editionDir)
+    : fallbackEAI(editionDir);
 
   return {
     title: destaques[0].title,
@@ -419,6 +437,9 @@ function renderDestaque(d: RenderDestaque): string {
 function renderEAI(eai: EAI): string {
   const creditHtml = processInlineLinks(eai.credit);
 
+  // #192: alt text usa A/B em vez de "Foto real"/"Foto gerada por IA" pra não
+  // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
+  // `01-eai.md` (frontmatter, leitura humana) e `_internal/01-eai-meta.json`.
   return `<!-- É IA? -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
@@ -426,8 +447,8 @@ function renderEAI(eai: EAI): string {
   <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
     <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
       ${renderCategoryLabel("🖼️", "É IA?")}
-      ${renderImageNoCaption(eai.realImage, "Foto real")}
-      ${renderImageNoCaption(eai.iaImage, "Foto gerada por IA")}
+      ${renderImageNoCaption(eai.imageA, "Imagem A")}
+      ${renderImageNoCaption(eai.imageB, "Imagem B")}
       <tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
         <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;">${creditHtml}</p>
       </td></tr>

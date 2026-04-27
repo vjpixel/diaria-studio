@@ -64,13 +64,13 @@ O JSON contém `title`, `subtitle`, `destaques[]` (com `category`, `emoji`, `tit
 
 **É IA?** — bloco separado:
 1. Label: `🖼️ É IA?`
-2. Upload `01-eai-real.jpg` (primeiro) e `01-eai-ia.jpg` (depois), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side)
+2. Upload `01-eai-A.jpg` (primeiro = slot A) e `01-eai-B.jpg` (depois = slot B), como **dois blocos de imagem separados empilhados verticalmente** (não side-by-side). Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.
 3. Crédito: `eai.credit` do JSON
-4. **Poll Trivia** (#107 test): inserir bloco Poll do Beehiiv. **Tipo = Trivia** (não Voting). Pergunta: `Qual delas é IA?`. Opções: `A` e `B`. **Marcar como correta** a letra correspondente à imagem IA — `B` se `01-eai-real.jpg` foi inserida primeiro (=A) e `01-eai-ia.jpg` depois (=B); `A` em caso contrário. **Após salvar o poll**, registrar `ai_side` (A ou B) em `_internal/01-eai-meta.json`:
+4. **Poll Trivia** (#107): inserir bloco Poll do Beehiiv. **Tipo = Trivia** (não Voting). Pergunta: `Qual delas é IA?`. Opções: `A` e `B`. **Marcar como correta** a letra do `ai_side` em `_internal/01-eai-meta.json` (já preenchido upstream pelo `eai-compose.ts` no sorteio A/B do #192):
    ```bash
-   npx tsx -e "const fs=require('fs');const p='data/editions/{AAMMDD}/_internal/01-eai-meta.json';const m=JSON.parse(fs.readFileSync(p));m.ai_side='B';fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n');"
+   node -e "console.log(JSON.parse(require('fs').readFileSync('data/editions/{AAMMDD}/_internal/01-eai-meta.json','utf8')).ai_side)"
    ```
-   Trocar `'B'` por `'A'` se a IA estiver na posição A. Esse campo é o que #107 usa pra calcular % de acerto.
+   Edições antigas pré-#192 podem ter `ai_side: null` no meta — nesse caso, o publish-newsletter deduz pela ordem de upload (real=A, ia=B) e atualiza o meta como antes.
 
 **Seções (Pesquisas, Lançamentos, Outras Notícias):**
 1. Para cada seção no JSON `sections[]`, encontrar o bloco correspondente

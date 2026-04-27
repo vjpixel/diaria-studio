@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findEligiblePotd } from "../scripts/eai-compose.ts";
+import {
+  findEligiblePotd,
+  chooseSides,
+  buildEaiMd,
+} from "../scripts/eai-compose.ts";
 
 interface MockImage {
   title?: string;
@@ -80,5 +84,52 @@ describe("findEligiblePotd", () => {
     const used = new Set<string>();
     const r = await findEligiblePotd("2026-04-26", used, 7, fetcher);
     assert.equal(r.image.title, "File:Square.jpg");
+  });
+});
+
+describe("chooseSides (#192)", () => {
+  it("rand < 0.5 → real=A, ai=B", () => {
+    assert.deepEqual(chooseSides(0), { realSide: "A", aiSide: "B" });
+    assert.deepEqual(chooseSides(0.4), { realSide: "A", aiSide: "B" });
+    assert.deepEqual(chooseSides(0.4999), { realSide: "A", aiSide: "B" });
+  });
+
+  it("rand >= 0.5 → real=B, ai=A", () => {
+    assert.deepEqual(chooseSides(0.5), { realSide: "B", aiSide: "A" });
+    assert.deepEqual(chooseSides(0.7), { realSide: "B", aiSide: "A" });
+    assert.deepEqual(chooseSides(0.9999), { realSide: "B", aiSide: "A" });
+  });
+
+  it("realSide e aiSide são sempre opostos", () => {
+    for (const r of [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1]) {
+      const s = chooseSides(r);
+      assert.notEqual(s.realSide, s.aiSide);
+    }
+  });
+});
+
+describe("buildEaiMd (#192)", () => {
+  it("escreve frontmatter com mapping A:real, B:ia quando realSide=A", () => {
+    const md = buildEaiMd({ realSide: "A", aiSide: "B" }, "Credit line.");
+    assert.match(md, /^---\n/, "começa com delimitador de frontmatter");
+    assert.match(md, /eai_answer:/);
+    assert.match(md, /A: real/);
+    assert.match(md, /B: ia/);
+    assert.match(md, /---\n\nÉ IA\?\n/, "frontmatter fecha antes do header");
+    assert.match(md, /Credit line\./);
+  });
+
+  it("escreve frontmatter com mapping A:ia, B:real quando realSide=B", () => {
+    const md = buildEaiMd({ realSide: "B", aiSide: "A" }, "Credit line.");
+    assert.match(md, /A: ia/);
+    assert.match(md, /B: real/);
+  });
+
+  it("frontmatter pode ser parseado por regex (compatível com render-newsletter-html)", () => {
+    const md = buildEaiMd({ realSide: "A", aiSide: "B" }, "Credit line.");
+    const fmMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+    assert.ok(fmMatch, "frontmatter encontrado");
+    assert.match(fmMatch![1], /A: real/);
+    assert.match(fmMatch![2], /Credit line\./);
   });
 });

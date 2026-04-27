@@ -458,8 +458,8 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
 - **Se o Agent do eai-composer ainda não completou:** aguardar sem bloquear outros stages. Quando completar, apresentar o gate abaixo assim que o usuário estiver disponível (entre gates de outros stages, ou logo após o gate anterior).
 - **Se o Agent já completou (ou `01-eai.md` já existe por resume):** apresentar o gate imediatamente.
 - Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-eai.md,01-eai-real.jpg,01-eai-ia.jpg")`. Anotar em `sync_results[1]` (eai); ignorar falhas.
-- **GATE HUMANO:** mostrar o texto de `01-eai.md` + `"Real: data/editions/{AAMMDD}/01-eai-real.jpg | IA: data/editions/{AAMMDD}/01-eai-ia.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg")`. Anotar em `sync_results[1]` (eai); ignorar falhas. (Edições antigas têm `01-eai-real.jpg`/`01-eai-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+- **GATE HUMANO:** mostrar o texto de `01-eai.md` (frontmatter `eai_answer` revela A↔real/ia pro editor) + `"Imagem A: data/editions/{AAMMDD}/01-eai-A.jpg | Imagem B: data/editions/{AAMMDD}/01-eai-B.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
   - **Atualizar _internal/cost.md.** Append linha na tabela de É IA?, recalcular `Total de chamadas`, gravar:
     ```
     | 1b | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
@@ -495,13 +495,13 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 #### 5a. Pré-requisitos + sync
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 publish parallel started'`.
-- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eai.md,01-eai-real.jpg,01-eai-ia.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive.
+- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
 - **Staleness check (#120) — APÓS o pull.** Rodar:
   ```bash
   npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
   ```
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
-- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-real.jpg`, `01-eai-ia.jpg`, `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
+- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 
 #### 5b. Dispatch paralelo (UMA mensagem, 3 chamadas)
 
@@ -619,8 +619,8 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
        • Inline D1  → 04-d1-2x1.jpg
        • Inline D2  → 04-d2.jpg
        • Inline D3  → 04-d3.jpg
-       • É IA? (A)  → 01-eai-real.jpg
-       • É IA? (B)  → 01-eai-ia.jpg
+       • É IA? (A)  → 01-eai-A.jpg
+       • É IA? (B)  → 01-eai-B.jpg
        📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
     ```
   Social posts não exigem upload manual — Facebook foi via Graph API com upload já feito; LinkedIn drafts têm imagens já anexadas pelo agent.
