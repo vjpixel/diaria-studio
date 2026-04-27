@@ -89,7 +89,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 Todo arquivo em `context/` entra no prompt cache. Mantenha esses arquivos **curados** — mudanças invalidam o cache.
 
 Model mix (definido no frontmatter de cada agente):
-- **Opus 4.7** — `orchestrator`
+- **Opus 4.7** — `orchestrator`, `title-picker` (decisão editorial pós-gate, volume baixo, alto impacto em CTR — #159)
 - **Opus 4.6** — `scorer`
 - **Sonnet 4.6** — `writer`, `publish-newsletter`, `publish-social`
 - **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`, `social-*`, `eai-composer`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync e inbox-drain foram migrados para scripts TS — não são mais agentes LLM.

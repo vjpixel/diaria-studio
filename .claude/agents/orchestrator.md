@@ -391,20 +391,31 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   ```
   Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
   - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
-  - **Validar 1 título por destaque (#178).** Antes de prosseguir pro Stage 3, rodar:
+  - **Auto-pick de título via Opus (#159).** Após aprovação, dispatch `title-picker` (Opus, Agent) passando:
+    - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
+    - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
+    - `audience_path = context/audience-profile.md`
+    - `editorial_rules_path = context/editorial-rules.md`
+    - `picks_log_path = data/editions/{AAMMDD}/_internal/02-title-picks.json`
+
+    Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
+
+    Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Stage 3 — não há fallback automático pra título inexistente.
+  - **Validar 1 título por destaque (#178).** Após o title-picker, validar que todo destaque tem exatamente 1 título:
     ```bash
     npx tsx scripts/lint-newsletter-md.ts \
       --check titles-per-highlight \
       --md data/editions/{AAMMDD}/02-reviewed.md
     ```
-    Exit 1 = algum destaque tem ≠1 título (editor aprovou sem podar). **Não prosseguir** — re-apresentar o gate com o erro destacado:
+    Exit 1 = algum destaque ainda tem ≠1 título (caso de borda — title-picker falhou ou editor depois apagou). **Não prosseguir** — re-apresentar o gate com o erro destacado:
     > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
 
-    Se exit 0, prosseguir pro Stage 3 normalmente.
+    Se exit 0, prosseguir pro Stage 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
     ```
-    | 2 | {stage_start} | {now} | writer:1, humanize:1, drive_syncer:1 | 1 | 1 |
+    | 2 | {stage_start} | {now} | writer:1, humanize:1, title_picker:?1, drive_syncer:1 | 1 | 1 |
     ```
+    `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
 
 ### 3. Stage 3 — Social
 
