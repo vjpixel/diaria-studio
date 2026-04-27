@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveReadPath } from "./lib/edition-paths.ts";
 
 export type Severity = "low" | "medium" | "high";
 
@@ -284,7 +285,8 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   }
 
   // Signal 2: publish-newsletter unfixed_issues
-  const publishedPath = resolve(editionDir, "05-published.json");
+  // resolveReadPath prefere _internal/ (#158) com fallback pra raiz (compat).
+  const publishedPath = resolveReadPath(editionDir, "05-published.json");
   if (existsSync(publishedPath)) {
     try {
       const published: PublishedJson = JSON.parse(

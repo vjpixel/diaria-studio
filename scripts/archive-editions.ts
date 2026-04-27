@@ -113,7 +113,10 @@ export function readPublishedStatus(
   fileReader: (p: string) => string = (p) => readFileSync(p, "utf8"),
   fileExists: (p: string) => boolean = (p) => existsSync(p),
 ): string {
-  const path = join(editionPath, "05-published.json");
+  // #158: prefer _internal/, fallback raiz (compat com edições antigas)
+  const internalPath = join(editionPath, "_internal", "05-published.json");
+  const rootPath = join(editionPath, "05-published.json");
+  const path = fileExists(internalPath) ? internalPath : rootPath;
   if (!fileExists(path)) return "missing";
   try {
     const data = JSON.parse(fileReader(path)) as { status?: string };
