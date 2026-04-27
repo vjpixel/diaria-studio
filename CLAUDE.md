@@ -82,6 +82,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Atacar todas as issues que dá pra atacar autonomamente.** A mandato anterior de "autonomia ampla" se aplica a issues também: revisar a fila aberta, identificar quais não têm bloqueio externo (allowlist, conta de terceiro, decisão editorial específica), e atacar até o fim — Tier A + Tier B quando a direção da issue é clara. Issues com trade-off real (escolha entre opções genuinamente equivalentes que afetam usuários finais) ainda merecem consulta. Bloqueio externo verdadeiro (precisa do editor abrir conta, mexer em allowlist GitHub, dar input de produto que não foi documentado) → comentar na issue com o que falta e pular. Tudo mais: avançar.
 
+- **Sempre indicar prioridade ao criar issues.** Nova issue **deve** entrar com 1 label `P0`/`P1`/`P2`/`P3` além do tipo (`enhancement`/`bug`/etc). Se a prioridade não estiver óbvia, sugerir uma com justificativa breve no corpo da issue (não deixar pra triagem depois). Default: `P2` pra bug com workaround / enhancement importante; `P3` pra cleanup, scoping, produto/decisão editorial; `P1` pra bug que afeta produção atual sem workaround; `P0` só pra fire (publicação corrompida, leak, etc).
+
 ---
 
 ## Otimização de tokens
