@@ -88,7 +88,7 @@ interface NewsletterContent {
  * Uses URL-anchored parsing: each item ends at a URL line.
  * Lines between URL boundaries are grouped as title + description.
  */
-function parseSections(text: string): Section[] {
+export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
   const sections: Section[] = [];
 
@@ -111,74 +111,137 @@ function parseSections(text: string): Section[] {
 /**
  * Parse list items from a section body.
  *
- * Format per item (enforced by writer):
- *   Title line
- *   Description line (1 sentence)
+ * Layout per item pós-#172 (URL imediatamente abaixo do título):
+ *   Título
  *   https://url
+ *   Descrição em 1 frase
+ *   <linha em branco>
  *
- * Strategy: scan for URL lines (^https?://) and work backwards to
- * group title + description. This is more robust than forward-scanning
- * because URLs are unambiguous anchors — description text can't be
- * confused with a URL.
+ * Layout legacy (pré-#172):
+ *   Título
+ *   Descrição em 1 frase
+ *   https://url
+ *   <linha em branco>
+ *
+ * Estratégia: separa o body em blocos por linhas em branco. Cada bloco
+ * é um item. Dentro do bloco, a URL pode estar na linha 2 (novo) ou na
+ * última (legacy). Título é sempre block[0]. Descrição é o resto.
  */
-function parseListItems(text: string): SectionItem[] {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+export function parseListItems(text: string): SectionItem[] {
+  const rawLines = text.split(/\r?\n/);
   const items: SectionItem[] = [];
 
-  // Find all URL line indices
-  const urlIndices: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (/^https?:\/\//.test(lines[i].trim())) {
-      urlIndices.push(i);
-    }
-  }
-
-  // Each URL terminates an item. Walk backwards from each URL to find
-  // its title (and optional description).
-  let prevEnd = -1; // index after the previous item's URL
-  for (const urlIdx of urlIndices) {
-    const url = lines[urlIdx].trim();
-    // Non-URL lines between prevEnd+1 and urlIdx-1 are title + description
-    const contentLines: string[] = [];
-    for (let j = prevEnd + 1; j < urlIdx; j++) {
-      const trimmed = lines[j].trim();
-      if (trimmed && !/^https?:\/\//.test(trimmed)) {
-        contentLines.push(trimmed);
+  // Separa em blocos por linhas em branco.
+  const blocks: string[][] = [];
+  let current: string[] = [];
+  for (const raw of rawLines) {
+    if (raw.trim() === "") {
+      if (current.length > 0) {
+        blocks.push(current);
+        current = [];
       }
+      continue;
+    }
+    current.push(raw.trim());
+  }
+  if (current.length > 0) blocks.push(current);
+
+  for (const block of blocks) {
+    if (block.length === 0) continue;
+
+    // Indices de http-lines no bloco
+    const urlIndices: number[] = [];
+    for (let k = 0; k < block.length; k++) {
+      if (/^https?:\/\//.test(block[k])) urlIndices.push(k);
     }
 
-    if (contentLines.length >= 2) {
-      // First line = title, rest = description (join multi-line descriptions)
+    if (urlIndices.length === 0) {
+      // Bloco sem URL — emite item incompleto preservando título + descrição.
       items.push({
-        title: contentLines[0],
-        description: contentLines.slice(1).join(" "),
-        url,
+        title: block[0],
+        description: block.slice(1).join(" "),
+        url: "",
       });
-    } else if (contentLines.length === 1) {
-      items.push({ title: contentLines[0], description: "", url });
+      continue;
     }
-    // else: URL with no preceding title — skip
 
-    prevEnd = urlIdx;
-  }
-
-  // Handle any trailing content after the last URL (items without URL)
-  const trailingLines: string[] = [];
-  for (let j = (urlIndices.length > 0 ? urlIndices[urlIndices.length - 1] + 1 : 0); j < lines.length; j++) {
-    const trimmed = lines[j].trim();
-    if (trimmed && !/^https?:\/\//.test(trimmed)) {
-      trailingLines.push(trimmed);
+    // M1: bloco com >1 URL = vários items colapsados (LLM esqueceu blank).
+    // Detectar formato pela posição da primeira URL:
+    //   - Novo (#172): primeira URL no índice 1 → ordem [Título, URL, Desc, Título, URL, Desc, ...]
+    //   - Legacy: primeira URL no índice ≥2 → ordem [Título, Desc, URL, Título, Desc, URL, ...]
+    // Quebrar em sub-items honrando a ordem detectada.
+    if (urlIndices.length > 1) {
+      const isNewFormat = urlIndices[0] === 1;
+      if (isNewFormat) {
+        for (let k = 0; k < urlIndices.length; k++) {
+          const urlAt = urlIndices[k];
+          const titleIdx = urlAt - 1;
+          if (titleIdx < 0) continue;
+          const nextItemStart = k + 1 < urlIndices.length ? urlIndices[k + 1] - 1 : block.length;
+          const descLines = block.slice(urlAt + 1, nextItemStart);
+          items.push({
+            title: block[titleIdx],
+            url: block[urlAt],
+            description: descLines.join(" "),
+          });
+        }
+      } else {
+        // Legacy: cada item é [Título, ...Desc..., URL]
+        let prevEnd = -1;
+        for (const u of urlIndices) {
+          const sub = block.slice(prevEnd + 1, u + 1);
+          if (sub.length === 0) continue;
+          const url = sub[sub.length - 1];
+          const title = sub[0];
+          const description = sub.slice(1, sub.length - 1).join(" ");
+          items.push({ title, url, description });
+          prevEnd = u;
+        }
+      }
+      continue;
     }
-  }
-  if (trailingLines.length > 0) {
-    items.push({
-      title: trailingLines[0],
-      description: trailingLines.slice(1).join(" "),
-      url: "",
-    });
+
+    // 1 URL única no bloco — caminho comum.
+    const urlIdx = urlIndices[0];
+
+    if (urlIdx === 0) {
+      // URL na primeira linha — sem título acima. Pula com warning visível.
+      console.error(
+        `[parseListItems] item órfão (URL sem título): ${block[0]}`,
+      );
+      continue;
+    }
+
+    const item = subBlockToItem(block);
+    if (item) items.push(item);
   }
 
   return items;
+}
+
+/**
+ * Converte um sub-bloco {títuloN linhas, URL, descriçãoN linhas} em item.
+ * Aceita ambos os layouts (URL após título OU URL no fim).
+ */
+function subBlockToItem(block: string[]): SectionItem | null {
+  if (block.length === 0) return null;
+
+  const urlIdx = block.findIndex((l) => /^https?:\/\//.test(l));
+  if (urlIdx === -1) {
+    return {
+      title: block[0],
+      description: block.slice(1).join(" "),
+      url: "",
+    };
+  }
+  if (urlIdx === 0) return null;
+
+  const title = block[0];
+  const url = block[urlIdx];
+  const before = block.slice(1, urlIdx);
+  const after = block.slice(urlIdx + 1);
+  const descriptionParts = after.length > 0 ? [...after, ...before] : [...before];
+  return { title, description: descriptionParts.join(" "), url };
 }
 
 function parseEAI(text: string): EAI {
@@ -436,30 +499,40 @@ ${parts.join("\n")}
 
 // ── Main ──────────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const editionDir = args.find((a) => !a.startsWith("--"));
-const format = args.includes("--format") ? args[args.indexOf("--format") + 1] : "html";
-const outIdx = args.indexOf("--out");
-const outPath = outIdx !== -1 ? args[outIdx + 1] : null;
+function main(): void {
+  const args = process.argv.slice(2);
+  const editionDir = args.find((a) => !a.startsWith("--"));
+  const format = args.includes("--format") ? args[args.indexOf("--format") + 1] : "html";
+  const outIdx = args.indexOf("--out");
+  const outPath = outIdx !== -1 ? args[outIdx + 1] : null;
 
-if (!editionDir) {
-  console.error("Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>]");
-  process.exit(1);
+  if (!editionDir) {
+    console.error("Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>]");
+    process.exit(1);
+  }
+
+  const resolvedDir = resolve(ROOT, editionDir);
+  const content = extractContent(resolvedDir);
+
+  let output: string;
+  if (format === "json") {
+    output = JSON.stringify(content, null, 2);
+  } else {
+    output = renderHTML(content);
+  }
+
+  if (outPath) {
+    writeFileSync(resolve(ROOT, outPath), output + "\n");
+    console.error(`Written to ${outPath}`);
+  } else {
+    process.stdout.write(output);
+  }
 }
 
-const resolvedDir = resolve(ROOT, editionDir);
-const content = extractContent(resolvedDir);
-
-let output: string;
-if (format === "json") {
-  output = JSON.stringify(content, null, 2);
-} else {
-  output = renderHTML(content);
-}
-
-if (outPath) {
-  writeFileSync(resolve(ROOT, outPath), output + "\n");
-  console.error(`Written to ${outPath}`);
-} else {
-  process.stdout.write(output);
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
 }

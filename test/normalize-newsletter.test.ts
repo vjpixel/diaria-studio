@@ -36,27 +36,45 @@ describe("splitConcatenatedHighlightHeader", () => {
 });
 
 describe("splitConcatenatedSectionItem", () => {
-  it("quebra item com markdown link [url](url) no fim", () => {
+  it("quebra item legacy com markdown link [url](url) no fim → ordem nova (#172)", () => {
     const line =
       "GPT-5.5 chega com Codex Superapp. OpenAI publica System Card e abre Codex como app standalone. [https://openai.com/index/introducing-gpt-5-5](https://openai.com/index/introducing-gpt-5-5)";
     const r = splitConcatenatedSectionItem(line);
     assert.equal(r.split, true);
     assert.equal(r.lines.length, 3);
     assert.equal(r.lines[0], "GPT-5.5 chega com Codex Superapp.");
+    // Pós-#172: URL na linha 2 (entre título e descrição)
+    assert.equal(r.lines[1], "https://openai.com/index/introducing-gpt-5-5");
     assert.equal(
-      r.lines[1],
+      r.lines[2],
       "OpenAI publica System Card e abre Codex como app standalone.",
     );
-    assert.equal(r.lines[2], "https://openai.com/index/introducing-gpt-5-5");
   });
 
-  it("quebra item com bare URL no fim", () => {
+  it("quebra item legacy com bare URL no fim → ordem nova (#172)", () => {
     const line =
       "Anthropic abre marketplace. Plataforma permite agentes negociarem. https://techcrunch.com/anthropic-marketplace";
     const r = splitConcatenatedSectionItem(line);
     assert.equal(r.split, true);
     assert.equal(r.lines.length, 3);
-    assert.equal(r.lines[2], "https://techcrunch.com/anthropic-marketplace");
+    assert.equal(r.lines[0], "Anthropic abre marketplace.");
+    assert.equal(r.lines[1], "https://techcrunch.com/anthropic-marketplace");
+    assert.equal(r.lines[2], "Plataforma permite agentes negociarem.");
+  });
+
+  it("quebra item novo com URL no meio (#172) → ordem nova", () => {
+    // LLM colapsou na ordem nova: título + URL + descrição em 1 linha
+    const line =
+      "GPT-5.5 chega com Codex Superapp https://openai.com/x OpenAI publica o System Card e abre Codex como app.";
+    const r = splitConcatenatedSectionItem(line);
+    assert.equal(r.split, true);
+    assert.equal(r.lines.length, 3);
+    assert.equal(r.lines[0], "GPT-5.5 chega com Codex Superapp");
+    assert.equal(r.lines[1], "https://openai.com/x");
+    assert.equal(
+      r.lines[2],
+      "OpenAI publica o System Card e abre Codex como app.",
+    );
   });
 
   it("sem ponto pra separar título/descrição: 2 linhas + warning", () => {
@@ -72,6 +90,25 @@ describe("splitConcatenatedSectionItem", () => {
     const line = "Apenas um título normal sem link";
     const r = splitConcatenatedSectionItem(line);
     assert.equal(r.split, false);
+  });
+
+  it("M2: 2 URLs distintas na mesma linha → recusa split + warning", () => {
+    const line =
+      "Título com https://first.com/a no meio. Descrição https://second.com/b com 2nd URL.";
+    const r = splitConcatenatedSectionItem(line);
+    assert.equal(r.split, false);
+    assert.ok(r.warning);
+    assert.match(r.warning ?? "", /URLs distintas/);
+    // Linha intocada
+    assert.deepEqual(r.lines, [line]);
+  });
+
+  it("M2: markdown link [url](url) NÃO conta como 2 URLs (mesma URL)", () => {
+    const line =
+      "Título da matéria. Descrição em 1 frase. [https://x.com/a](https://x.com/a)";
+    const r = splitConcatenatedSectionItem(line);
+    assert.equal(r.split, true);
+    assert.ok(!r.warning || !/URLs distintas/.test(r.warning));
   });
 });
 
@@ -110,21 +147,20 @@ describe("normalizeNewsletter — integração", () => {
     assert.ok(r.text.includes("https://hf.co/deepseek"));
   });
 
-  it("newsletter já bem formatada passa sem mudanças", () => {
+  it("newsletter já bem formatada (ordem nova #172) passa sem mudanças", () => {
     const input = [
       "DESTAQUE 1 | PRODUTO",
       "Título único",
+      "https://example.com/x",
       "",
       "Corpo do destaque.",
-      "",
-      "https://example.com/x",
       "",
       "---",
       "",
       "LANÇAMENTOS",
       "Item título",
-      "Item descrição.",
       "https://example.com/item",
+      "Item descrição.",
     ].join("\n");
 
     const r = normalizeNewsletter(input);

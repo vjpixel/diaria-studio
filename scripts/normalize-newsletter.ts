@@ -87,46 +87,106 @@ export function splitConcatenatedHighlightHeader(
 
 /**
  * Quebra item de seção concatenado.
- * Input típico: "Título Descrição em 1 frase. [https://...](https://...)"
- * Output: 3 linhas { título, descrição, url }.
+ *
+ * Layout esperado pós-#172: cada item é `Título / URL / Descrição` em
+ * 3 linhas. Aqui tratamos a forma colapsada (LLM colocou tudo numa
+ * linha só) e devolvemos as 3 linhas na ordem nova.
+ *
+ * Casos:
+ *  - "Título com pontuação. URL Descrição." → [título, URL, descrição]
+ *  - "Título sem ponto URL Descrição." → [título_textBefore, URL] (warning)
+ *  - "Título URL" (sem descrição depois) → [textBefore, URL]
+ *
+ * Compat: também aceitamos a forma legacy `Título Descrição URL` quando
+ * a URL está no fim — extraímos URL e re-emitimos na ordem nova.
  *
  * Heurística:
- *  1. Extrair URL (markdown link [url](url) OU bare url no fim)
- *  2. Texto antes do URL: separar em título + descrição usando
- *     último "." antes do URL (descrição é a última frase)
- *  3. Sem "." → não consegue separar título e descrição; emite warning
- *     mas retorna linha original (não destrói conteúdo)
+ *  1. Achar a URL na linha (qualquer posição).
+ *  2. Se há texto depois da URL → forma nova colapsada: textBefore +
+ *     URL + textAfter; usa textAfter como descrição (já é uma frase).
+ *     textBefore é o título.
+ *  3. Se NÃO há texto depois → forma legacy (URL no fim). Aplica a
+ *     heurística antiga: separa textBefore por último "." em
+ *     título + descrição e re-emite na ordem nova.
  */
 export function splitConcatenatedSectionItem(
   line: string,
 ): { lines: string[]; split: boolean; warning?: string } {
-  // Caso A: markdown link [url](url) no fim
-  const mdLinkMatch = line.match(/^(.+?)\s*\[([^\]]+)\]\(\2\)\s*$/);
-  // Caso B: bare URL no fim
-  const bareUrlMatch = line.match(/^(.+?)\s+(https?:\/\/\S+)\s*$/);
+  // M2: detecta múltiplas URLs na linha. Caso ambíguo — recusa split
+  // pra não chutar a fronteira errada e silenciosamente corromper o
+  // conteúdo. Conta tanto bare URLs quanto markdown links.
+  const bareUrlGlobalRe = /https?:\/\/[^\s\)\]]+/g;
+  const bareUrlMatches = [...line.matchAll(bareUrlGlobalRe)];
+  const mdLinkGlobalRe = /\[([^\]]+)\]\(\1\)/g;
+  const mdLinkMatches = [...line.matchAll(mdLinkGlobalRe)];
+  // Conta URLs distintas (2 matches dentro de 1 markdown link representam
+  // uma URL canônica só — bare match casa a parte do `[url]` E `(url)`).
+  const distinctUrls = new Set<string>();
+  for (const m of bareUrlMatches) {
+    distinctUrls.add(m[0].replace(/[).,;]+$/, ""));
+  }
+  for (const m of mdLinkMatches) {
+    distinctUrls.add(m[1].trim());
+  }
+  if (distinctUrls.size >= 2) {
+    return {
+      lines: [line],
+      split: false,
+      warning: `linha tem ${distinctUrls.size} URLs distintas — split ambíguo, não toquei: "${line.slice(0, 80)}..."`,
+    };
+  }
 
-  let textBefore: string;
+  // Caso A: markdown link [url](url) em qualquer posição
+  const mdLinkRe = /\[([^\]]+)\]\(\1\)/;
+  const mdLinkMatch = line.match(mdLinkRe);
+  // Caso B: bare URL em qualquer posição
+  const bareUrlRe = /https?:\/\/[^\s\)\]]+/;
+  const bareUrlMatch = line.match(bareUrlRe);
+
   let url: string;
+  let urlStart: number;
+  let urlEnd: number;
 
-  if (mdLinkMatch) {
-    textBefore = mdLinkMatch[1].trim();
-    url = mdLinkMatch[2].trim();
-  } else if (bareUrlMatch) {
-    textBefore = bareUrlMatch[1].trim();
-    url = bareUrlMatch[2].trim();
+  if (mdLinkMatch && mdLinkMatch.index !== undefined) {
+    url = mdLinkMatch[1].trim();
+    urlStart = mdLinkMatch.index;
+    urlEnd = urlStart + mdLinkMatch[0].length;
+  } else if (bareUrlMatch && bareUrlMatch.index !== undefined) {
+    url = bareUrlMatch[0].trim().replace(/[).,;]+$/, "");
+    urlStart = bareUrlMatch.index;
+    urlEnd = urlStart + bareUrlMatch[0].length;
   } else {
     return { lines: [line], split: false };
   }
 
-  // Se não tem texto antes da URL → linha tem só URL, sem concat. Não tocar.
-  if (!textBefore) return { lines: [line], split: false };
+  const textBefore = line.slice(0, urlStart).trim();
+  const textAfter = line.slice(urlEnd).trim();
 
-  // Tentar separar título + descrição usando último ". " no textBefore
+  if (!textBefore && !textAfter) {
+    // Linha só com URL, sem concat. Não tocar.
+    return { lines: [line], split: false };
+  }
+
+  if (!textBefore) {
+    // URL no início + texto depois — não dá pra inferir título com confiança.
+    return { lines: [line], split: false };
+  }
+
+  // Forma nova colapsada: título + URL + descrição (textAfter presente).
+  if (textAfter) {
+    if (textBefore.length < 5 || textBefore.length > 120) {
+      return {
+        lines: [textBefore, url, textAfter],
+        split: true,
+        warning: `split heurístico produziu título com ${textBefore.length} chars, fora da faixa esperada`,
+      };
+    }
+    return { lines: [textBefore, url, textAfter], split: true };
+  }
+
+  // Forma legacy: URL no fim. Tentar separar título/descrição no textBefore.
   const lastPeriodIdx = textBefore.lastIndexOf(". ");
   if (lastPeriodIdx === -1) {
-    // Não dá pra separar título de descrição com confiança.
-    // Caso B (bare url) — a linha já tem texto + url; ainda quebra em 2 linhas
-    // (texto / url). Caso A — converte markdown link em URL bare e quebra.
     return {
       lines: [textBefore, url],
       split: true,
@@ -137,7 +197,6 @@ export function splitConcatenatedSectionItem(
   const title = textBefore.slice(0, lastPeriodIdx + 1).trim();
   const description = textBefore.slice(lastPeriodIdx + 1).trim();
 
-  // Se title fica muito curto (<5 chars) ou muito longo (>120), fallback
   if (title.length < 5 || title.length > 120) {
     return {
       lines: [textBefore, url],
@@ -146,7 +205,8 @@ export function splitConcatenatedSectionItem(
     };
   }
 
-  return { lines: [title, description, url], split: true };
+  // Re-emite na ordem nova: título / URL / descrição.
+  return { lines: [title, url, description], split: true };
 }
 
 const SECTION_HEADERS = [

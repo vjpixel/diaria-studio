@@ -9,17 +9,20 @@
 //
 //   DESTAQUE 1 | CATEGORIA
 //   Título escolhido
+//   https://url-da-fonte    ← #172: URL imediatamente abaixo do título
 //
 //   Corpo (1–N parágrafos)...
 //
 //   Por que isso importa:
 //   Explicação (1–N parágrafos)...
 //
-//   https://url-da-fonte
-//
 //   ---
 //   DESTAQUE 2 | CATEGORIA
 //   ...
+//
+// Backward compat: layout legacy (pré-#172) tinha URL como última linha do
+// bloco. O parser aceita ambos: URL é o primeiro `^https?://` dentro do
+// bloco, em qualquer posição (linha 2 ou final).
 
 import fs from 'fs';
 
@@ -61,19 +64,70 @@ export function parseDestaques(raw: string): Destaque[] {
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
 
-    // URL = last non-empty line that starts with http.
-    const urlIdx = lines.map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
-                         .filter(i => i !== -1)
-                         .pop() ?? -1;
+    // Coletar todas as http-lines (linhas iniciando com http://) com seus índices.
+    // A URL canônica é uma das duas posições válidas:
+    //   - novo formato (#172): URL imediatamente após o bloco de títulos,
+    //     antes de qualquer linha em branco ou parágrafo do body.
+    //   - legacy: última http-line do bloco, depois de "Por que isso importa:"
+    //     (ou simplesmente a última se whyIdx não existe).
+    // URLs bare em parágrafos do body NÃO são canônicas — escolhemos a posição
+    // estrutural correta pra evitar B1 (URL inline ganhando da canônica).
+    const httpLines = lines
+      .map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
+      .filter(i => i !== -1);
 
-    const body = whyIdx !== -1
-      ? lines.slice(titleIdx + 1, whyIdx).join('\n').trim()
-      : lines.slice(titleIdx + 1, urlIdx !== -1 ? urlIdx : undefined).join('\n').trim();
+    // Novo formato: URL imediatamente após linhas de título (consecutivas,
+    // não-vazias, não-URL). Avança de titleIdx enquanto for título; primeira
+    // URL nessa janela é a canônica do formato novo.
+    let newFormatUrlIdx: number | undefined;
+    {
+      let k = titleIdx;
+      while (k < lines.length && lines[k].trim() !== '' && !/^https?:\/\//.test(lines[k].trim())) {
+        k++;
+      }
+      // Após avançar pelos títulos, se a próxima linha é URL → formato novo.
+      if (k < lines.length && /^https?:\/\//.test(lines[k].trim())) {
+        newFormatUrlIdx = k;
+      }
+    }
 
-    const why = whyIdx !== -1
-      ? lines.slice(whyIdx + 1, urlIdx !== -1 ? urlIdx : undefined)
-             .join('\n').trim()
-      : '';
+    // Legacy: última URL do bloco (se houver), prioritariamente após whyIdx.
+    const legacyUrlIdx = whyIdx !== -1
+      ? httpLines.filter(i => i > whyIdx).pop()
+      : httpLines[httpLines.length - 1];
+
+    let urlIdx: number;
+    let isNewFormat: boolean;
+    if (newFormatUrlIdx !== undefined) {
+      urlIdx = newFormatUrlIdx;
+      isNewFormat = true;
+    } else if (legacyUrlIdx !== undefined) {
+      urlIdx = legacyUrlIdx;
+      isNewFormat = false;
+    } else {
+      urlIdx = -1;
+      isNewFormat = false;
+    }
+
+    // Body começa após a URL (novo formato) OU após o título (legacy).
+    const bodyStart = isNewFormat ? urlIdx + 1 : titleIdx + 1;
+
+    // Body end: até "Por que isso importa:" (se existe) OU até a URL legacy
+    // no fim (se URL está depois do whyIdx) OU fim do bloco.
+    let bodyEnd: number;
+    if (whyIdx !== -1) {
+      bodyEnd = whyIdx;
+    } else if (urlIdx !== -1 && !isNewFormat) {
+      bodyEnd = urlIdx;
+    } else {
+      bodyEnd = lines.length;
+    }
+
+    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
+
+    // Why end: até URL legacy (se existe e está depois do whyIdx) OU fim.
+    const whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
+    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
 
     const url = urlIdx !== -1 ? lines[urlIdx].trim() : '';
 
@@ -114,12 +168,13 @@ function main() {
   }
 
   // Every destaque must have a source URL — publish-newsletter depends on it for
-  // the "Ler mais" link. URL is the last line starting with http inside the block;
-  // an empty value means the writer forgot it or the block is malformed.
+  // the "Ler mais" link. URL fica imediatamente abaixo do título (formato novo,
+  // #172) ou na última linha do bloco (legacy). Empty = writer esqueceu ou
+  // bloco malformado.
   const missingUrl = destaques.filter(d => !d.url);
   if (missingUrl.length > 0) {
     const which = missingUrl.map(d => `D${d.n} ("${d.title}")`).join(', ');
-    console.error(`Destaque(s) sem URL de fonte: ${which}. Adicione a URL como última linha do bloco em ${path}.`);
+    console.error(`Destaque(s) sem URL de fonte: ${which}. Adicione a URL na linha imediatamente abaixo do título em ${path}.`);
     process.exit(1);
   }
 
@@ -133,8 +188,11 @@ function main() {
   console.log(JSON.stringify(output, null, 2));
 }
 
-// Only run CLI when executed directly (not when imported)
-const isDirectRun = process.argv[1]?.replace(/\\/g, '/').includes('extract-destaques');
+// Only run CLI when executed directly (not when imported, e.g. from tests
+// or render-newsletter-html.ts). Match the script file name precisely
+// instead of substring — `extract-destaques.test.ts` was triggering CLI mode.
+const _argv1 = process.argv[1]?.replace(/\\/g, '/') ?? '';
+const isDirectRun = /\/scripts\/extract-destaques\.ts$/.test(_argv1);
 if (isDirectRun) {
   main();
 }

@@ -27,14 +27,15 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **Label editorial específico** para `[CATEGORIA]` no cabeçalho `DESTAQUE N | [CATEGORIA]`. Nunca usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`, ou criar um novo se nenhum se encaixar.
    - **3 opções de título** (cada ≤52 chars).
+   - **URL imediatamente abaixo das 3 opções de título** (#172) — antes dos parágrafos do corpo. Link canônico da fonte primária.
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
-   - Link canônico da fonte primária.
-3. Lançamentos, Pesquisas, Notícias: lista curta com 1 linha por item + link. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
+3. Lançamentos, Pesquisas, Notícias: lista curta — **3 linhas por item na ordem `Título / URL / Descrição`** (#172). URL imediatamente abaixo do título facilita o gate humano. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 4. Checklist pré-saída (todos devem passar):
    - Nenhum título >52 chars.
    - 3 opções por destaque.
+   - URL na linha imediatamente após o último título (antes do corpo).
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).

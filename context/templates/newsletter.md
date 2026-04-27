@@ -7,6 +7,7 @@ DESTAQUE 1 | [CATEGORIA]
 [Opção de título 1 — máx. 52 chars]
 [Opção de título 2 — máx. 52 chars]
 [Opção de título 3 — máx. 52 chars]
+[URL — sem paywall, dentro da janela, não usado nas últimas 3 edições]
 
 [Parágrafo 1 — abre a história]
 
@@ -18,8 +19,6 @@ DESTAQUE 1 | [CATEGORIA]
 
 Por que isso importa:
 [1 parágrafo — impacto prático para o público Diar.ia]
-
-[URL — sem paywall, dentro da janela, não usado nas últimas 3 edições]
 
 ---
 
@@ -35,12 +34,12 @@ DESTAQUE 3 | [CATEGORIA]
 
 LANÇAMENTOS
 [Título do item]
-[Frase descritiva em 1 linha]
 [URL limpa]
+[Frase descritiva em 1 linha]
 
 [Título do próximo item]
-[Frase descritiva]
 [URL limpa]
+[Frase descritiva]
 
 ---
 
@@ -52,6 +51,8 @@ PESQUISAS
 OUTRAS NOTÍCIAS
 [mesmo formato de Lançamentos]
 ```
+
+A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate humano (copiar/abrir/reordenar mais rápido). A ordem visual no email final (Beehiiv) é independente: o renderer rearranja como título → descrição → CTA.
 
 ## Regras de preenchimento
 
