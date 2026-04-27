@@ -391,6 +391,16 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   ```
   Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
   - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
+  - **Validar 1 título por destaque (#178).** Antes de prosseguir pro Stage 3, rodar:
+    ```bash
+    npx tsx scripts/lint-newsletter-md.ts \
+      --check titles-per-highlight \
+      --md data/editions/{AAMMDD}/02-reviewed.md
+    ```
+    Exit 1 = algum destaque tem ≠1 título (editor aprovou sem podar). **Não prosseguir** — re-apresentar o gate com o erro destacado:
+    > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
+
+    Se exit 0, prosseguir pro Stage 3 normalmente.
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
     ```
     | 2 | {stage_start} | {now} | writer:1, humanize:1, drive_syncer:1 | 1 | 1 |
