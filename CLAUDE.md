@@ -49,7 +49,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 | 1b | É IA? | Coleta resultado do `eai-composer` disparado em paralelo no Stage 1 — Wikimedia POTD + Gemini | `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg` |
 | 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`) | `02-reviewed.md` |
 | 3 | Social | 2× social writers paralelos (LinkedIn, Facebook) + 6× Clarice | `03-social.md` |
-| 4 | Imagens | `scripts/image-generate.ts` — Gemini API por default (fallback ComfyUI via `platform.config.json > image_generator`) | `04-d1-2x1.jpg`, `04-d2.jpg`, `04-d3.jpg` |
+| 4 | Imagens | `scripts/image-generate.ts` — Cloudflare Workers AI por default (FLUX-1-schnell, free tier ~1k imgs/dia); fallback Gemini ou ComfyUI via `platform.config.json > image_generator` | `04-d1-2x1.jpg`, `04-d2.jpg`, `04-d3.jpg` |
 | 5 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) + `review-test-email` (loop até 10×) | `05-published.json` |
 | 6 | Publish social | `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Claude in Chrome → LinkedIn × 3) em paralelo | `06-social-published.json` |
 
