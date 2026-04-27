@@ -70,6 +70,8 @@ export interface EAI {
   credit: string;
   imageA: string;
   imageB: string;
+  /** Linha "Resultado da última edição: X%..." auto-injetada por eai-compose (#107). */
+  prevResultLine?: string;
 }
 
 interface NewsletterContent {
@@ -260,17 +262,31 @@ export function parseEAI(text: string, editionDir: string): EAI {
   if (fmMatch) {
     body = fmMatch[2];
   }
-  const lines = body.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const credit = lines.filter((l) => !l.startsWith("É IA?")).join("\n").trim();
+  const allLines = body.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+  // Separa a linha "Resultado da última edição:" (#107) do crédito — vai
+  // pra um `<p>` próprio em renderEAI; misturada no mesmo paragráfo do
+  // crédito vira ilegível no email final.
+  const creditLines: string[] = [];
+  let prevResultLine: string | undefined;
+  for (const l of allLines) {
+    if (l.startsWith("É IA?")) continue;
+    if (/^Resultado da última edição:/i.test(l)) {
+      prevResultLine = l.trim();
+    } else {
+      creditLines.push(l);
+    }
+  }
+  const credit = creditLines.join("\n").trim();
 
   // #192: novo padrão é 01-eai-A.jpg / 01-eai-B.jpg (random).
   // Fallback: edições antigas têm 01-eai-real.jpg / 01-eai-ia.jpg (real sempre primeiro).
   const newA = resolve(editionDir, "01-eai-A.jpg");
   const newB = resolve(editionDir, "01-eai-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
-    return { credit, imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
+    return { credit, prevResultLine, imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
   }
-  return { credit, imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
+  return { credit, prevResultLine, imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
 }
 
 function extractContent(editionDir: string): NewsletterContent {
@@ -436,6 +452,17 @@ function renderDestaque(d: RenderDestaque): string {
 
 function renderEAI(eai: EAI): string {
   const creditHtml = processInlineLinks(eai.credit);
+  const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;`;
+  const cellStyle = `padding:0px 2px;text-align:left;word-break:break-word;`;
+
+  // #107: linha "Resultado da última edição: X%..." auto-injetada pelo eai-compose
+  // vai num `<p>` próprio (visualmente separado do crédito) — caso contrário ficaria
+  // emendada no mesmo parágrafo no email final.
+  const prevResultRow = eai.prevResultLine
+    ? `      <tr><td align="left" style="${cellStyle}">
+        <p style="${paragraphStyle}">${esc(eai.prevResultLine)}</p>
+      </td></tr>`
+    : "";
 
   // #192: alt text usa A/B em vez de "Foto real"/"Foto gerada por IA" pra não
   // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
@@ -449,9 +476,10 @@ function renderEAI(eai: EAI): string {
       ${renderCategoryLabel("🖼️", "É IA?")}
       ${renderImageNoCaption(eai.imageA, "Imagem A")}
       ${renderImageNoCaption(eai.imageB, "Imagem B")}
-      <tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-        <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;">${creditHtml}</p>
+      <tr><td align="left" style="${cellStyle}">
+        <p style="${paragraphStyle}">${creditHtml}</p>
       </td></tr>
+${prevResultRow}
     </table>
   </td></tr>
   ${renderSpacer()}
