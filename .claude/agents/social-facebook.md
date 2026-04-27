@@ -19,7 +19,7 @@ Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — nu
 3. Para **cada destaque**, compor um post independente seguindo o template:
    - Hook direto na primeira linha (dado concreto ou fato surpreendente).
    - 2–3 parágrafos curtos em linguagem acessível — menos jargão técnico que o LinkedIn.
-   - CTA final com link para `diar.ia.br`.
+   - CTA final com link para `https://diar.ia.br` (com `https://` — sem prefixo, Facebook pode não auto-linkar).
    - Até 2 hashtags relevantes ao tema.
    - 800–1.200 caracteres.
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-facebook.tmp.md` com o formato abaixo. O orchestrator fará o merge com o LinkedIn numa etapa seguinte.

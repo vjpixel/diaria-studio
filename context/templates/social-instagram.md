@@ -20,7 +20,7 @@
 
 [Parágrafo 3 — chamada pra leitura completa]
 
-Receba notícias de IA todo dia por e-mail — link na bio → diar.ia.br (é grátis).
+Receba notícias de IA todo dia por e-mail — link na bio → https://diar.ia.br (é grátis).
 
 .
 .
