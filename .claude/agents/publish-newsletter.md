@@ -180,7 +180,7 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 ## Regras
 
 - **Nunca publicar nem agendar.** Sempre rascunho + email de teste.
-- **Pré-extrair ANTES do browser.** Rodar `extract-destaques.ts` + `render-newsletter-html.ts --format json` antes de abrir Chrome. Isso elimina parsing durante a sessão do browser.
+- **Pré-render ANTES do browser** (ver passo 1). Rodar a sequência completa (`extract-destaques.ts` + `upload-images-public.ts --mode newsletter` + `render-newsletter-html.ts --format html` + `substitute-image-urls.ts`) produz `_internal/newsletter-final.html` pronto pra colar num único bloco Custom HTML — sem parsing durante a sessão.
 - **Template é obrigatório e verificável.** Selecionar exatamente o template configurado em `platform.config.json` → `publishing.newsletter.template` (ex: `"Default"`). Se não encontrar um template com esse nome exato, abortar com `{ "error": "template_not_found", "expected": "Default", "available": [...] }`. **Nunca usar "Blank" ou "blank" como fallback** — criar post sem template causa problemas estruturais (É IA? ausente, boxes não separados). Após criar o post, confirmar o template usado e gravar em `template_used` no output.
 - **Login expirado = abortar.** Não tente re-logar.
 - **Chrome desconectado:** se qualquer chamada `mcp__claude-in-chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar), retornar imediatamente:
