@@ -412,12 +412,20 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
     fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
   "
   ```
+- **Humanizar (#176, sem Agent):** rodar pass determinístico no `03-social.md` antes da Clarice — same script do Stage 2, escrevendo no próprio arquivo (in-place):
+  ```bash
+  npx tsx scripts/humanize.ts \
+    --in data/editions/{AAMMDD}/03-social.md \
+    --out data/editions/{AAMMDD}/03-social.md \
+    2> data/editions/{AAMMDD}/_internal/03-humanize-report.json
+  ```
+  Falha não bloqueia (fallback usa o arquivo original). Se `removals_count > 0` ou `substitutions_count > 0`, incluir no resumo do gate humano: `"Humanizer no social: X remoções, Y substituições, Z flags."`. Note: `humanize.ts` agora preserva URLs (#163 fix em master) — seguro rodar in-place.
 - **Revisar com Clarice (inline — sem Agent):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
-- **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/03-social.md`." Aprovar.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 03-social.md,_internal/03-humanize-report.json")`. Anotar em `sync_results[3]`; ignorar falhas.
+- **GATE HUMANO:** mostrar `03-social.md` + summary do humanize report (se houve mudanças). Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/03-social.md`." Aprovar.
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, drive_syncer:1 | 2 | 2 |
+    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, humanize:1, drive_syncer:1 | 2 | 2 |
     ```
     Atualizar `Fim: {now}` no cabeçalho. `Total de chamadas` inclui +1 pelo orchestrator.
 
