@@ -17,14 +17,16 @@ import {
  */
 
 describe("aammddFromIso (#238)", () => {
-  it("converte ISO completo pra AAMMDD UTC", () => {
-    assert.equal(aammddFromIso("2026-04-25T10:00:00Z"), "260425");
-    assert.equal(aammddFromIso("2025-12-31T23:59:59Z"), "251231");
-    assert.equal(aammddFromIso("2027-01-01T00:00:00Z"), "270101");
+  it("converte ISO em horário de dia BR (sem ambiguidade UTC vs BR)", () => {
+    // 13:00 UTC = 10:00 BR (UTC-3). Mesmo dia em ambos.
+    assert.equal(aammddFromIso("2026-04-25T13:00:00Z"), "260425");
+    assert.equal(aammddFromIso("2025-12-31T15:00:00Z"), "251231");
+    assert.equal(aammddFromIso("2027-01-01T18:00:00Z"), "270101");
   });
 
-  it("aceita ISO date-only", () => {
-    assert.equal(aammddFromIso("2026-04-25"), "260425");
+  it("aceita ISO date-only (interpretado como meia-noite UTC, 21h BR dia anterior)", () => {
+    // "2026-04-25" → 2026-04-25T00:00Z → BR 2026-04-24T21:00 → 260424
+    assert.equal(aammddFromIso("2026-04-25"), "260424");
   });
 
   it("retorna string vazia em ISO inválido", () => {
@@ -32,10 +34,24 @@ describe("aammddFromIso (#238)", () => {
     assert.equal(aammddFromIso(""), "");
   });
 
-  it("usa UTC (não local timezone)", () => {
-    // 2026-04-25T01:00:00Z em SP (UTC-3) seria 2026-04-24 22:00 — mas
-    // queremos AAMMDD pra UTC. Resultado: 260425.
-    assert.equal(aammddFromIso("2026-04-25T01:00:00Z"), "260425");
+  it("usa BR timezone — publicação noite BR fica no AAMMDD do dia BR (não UTC)", () => {
+    // Cenário real: edição "260425" publica às 22:30 BR (= 01:30 UTC do 26).
+    // Com UTC: AAMMDD = 260426 → script procura pasta errada.
+    // Com BR: AAMMDD = 260425 → script encontra a pasta correta.
+    assert.equal(aammddFromIso("2026-04-26T01:30:00Z"), "260425");
+    assert.equal(aammddFromIso("2026-04-26T02:59:00Z"), "260425");
+  });
+
+  it("publicação madrugada BR fica no AAMMDD BR correto", () => {
+    // 02:00 BR de 25/abr = 05:00 UTC de 25/abr. Mesmo dia em ambos.
+    assert.equal(aammddFromIso("2026-04-25T05:00:00Z"), "260425");
+  });
+
+  it("publicação 03:00 UTC = meia-noite BR (transição)", () => {
+    // Exatamente 03:00 UTC vira 00:00 BR — boundary.
+    assert.equal(aammddFromIso("2026-04-25T03:00:00Z"), "260425");
+    // 02:59 UTC vira 23:59 BR do dia anterior.
+    assert.equal(aammddFromIso("2026-04-25T02:59:00Z"), "260424");
   });
 });
 

@@ -178,15 +178,27 @@ export async function populateLinksFromTracking(
 
 /**
  * Converte ISO timestamp pra AAMMDD (formato usado em `data/editions/{N}/`).
- * Usa UTC pra ser consistente com o resto do pipeline.
+ *
+ * Usa timezone `America/Sao_Paulo` (UTC-3) — convenção do projeto: as pastas
+ * de edição refletem a data brasileira, não UTC. Sem isso, edições publicadas
+ * à noite BR (>=21h, em horário de verão >=22h) caem na pasta UTC do dia
+ * seguinte e o lookup do `_internal/01-approved.json` falha silenciosamente.
  */
 export function aammddFromIso(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const yy = String(d.getUTCFullYear()).slice(-2);
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${yy}${mm}${dd}`;
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts: Record<string, string> = {};
+  for (const p of fmt.formatToParts(d)) {
+    if (p.type !== "literal") parts[p.type] = p.value;
+  }
+  if (!parts.year || !parts.month || !parts.day) return "";
+  return `${parts.year}${parts.month}${parts.day}`;
 }
 
 /**
