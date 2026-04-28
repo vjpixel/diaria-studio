@@ -15,12 +15,12 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
   > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `--no-gate` (opcional) = pular o gate humano final, auto-aprovar. Drive sync continua normal.
 
-## Placeholders
+## Placeholders (substituídos em runtime pelo executor)
 
-Os blocos Bash/Agent abaixo contêm placeholders que **você (top-level) deve substituir pelo valor real antes de executar**. Bash não interpreta `$1` automaticamente fora de funções — paths como `data/editions/$1/` viram `data/editions//` se rodados literais.
+Os blocos Bash/Agent abaixo usam placeholders. **O Claude executando este skill substitui pelos valores reais antes de invocar cada tool — você (humano editor) não edita nada neste arquivo.** Bash não interpreta `$1` automaticamente fora de funções, então rodar literal `data/editions/$1/` cria path quebrado (`data/editions//`).
 
-- `$1` → AAMMDD literal recebido (ex: `260423`). Aparece em paths, prompts de Agent, e comandos Bash.
-- `{YYMM}` → primeiros 4 chars de `$1` (ex: `$1=260423` → `2604`). Aparece no path do Drive e no gate output.
+- `$1` → AAMMDD recebido como argumento (ex: `260423`). Aparece em paths, prompts de Agent, e comandos Bash.
+- `{YYMM}` → primeiros 4 chars de `$1` (ex: `2604`). Aparece no path do Drive e no gate output.
 
 Substituir antes de invocar `Bash`, antes de passar `prompt` pra `Agent`, e antes de emitir o gate output ao usuário.
 
