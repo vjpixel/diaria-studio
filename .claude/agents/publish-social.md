@@ -98,15 +98,21 @@ node -e "
 4. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
 5. **Fallback agendar** (se rascunho não disponível):
-   - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`):
+   - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`).
+
+     **Você (agent) substitui o placeholder `{DAY_OFFSET_FLAG}` em agent-time** (#289):
+     - Se o input `schedule_day_offset` foi recebido (ex: `/diaria-test` passa `10`), substituir por: ` --day-offset {schedule_day_offset}` (com espaço antes, valor literal). Ex: ` --day-offset 10`.
+     - Caso contrário, substituir por **string vazia** (sem o flag). Script cai no `day_offset` do config.
+
+     Importante: **não** usar bash parameter expansion (`${schedule_day_offset:+...}`) — não funciona porque `schedule_day_offset` é variable do agent input, não env var do shell. O bash veria a env undef e nunca passaria o flag.
+
      ```bash
      # Extrair AAMMDD do edition_dir (ex: data/editions/260428/ → 260428)
      EDITION=$(basename "{edition_dir}")
      npx tsx scripts/compute-social-schedule.ts \
        --edition "$EDITION" \
        --destaque d{N} \
-       --platform linkedin \
-       ${schedule_day_offset:+--day-offset $schedule_day_offset}
+       --platform linkedin{DAY_OFFSET_FLAG}
      ```
      O script lê `platform.config.json`, parseia `EDITION` em data real, soma `day_offset` (com override de `schedule_day_offset` se presente), e formata ISO 8601 com offset do timezone configurado. Output: `2026-04-28T09:00:00-03:00`.
    - **Validar `scheduled_at` no futuro** antes de agendar na UI: se ISO < `Date.now()`, abortar com `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={edition_date}, day_offset=N"`. Evita agendar pra passado em recovery de edição antiga.
