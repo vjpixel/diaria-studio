@@ -113,4 +113,79 @@ describe("filterDateWindow", () => {
       ["Hoje", "Ontem"],
     );
   });
+
+  describe("passthrough de campos extras (#247)", () => {
+    it("preserva clusters[] do topic-cluster output", () => {
+      const input = {
+        lancamento: [{ url: "https://a.com/1", title: "ok", date: "2026-04-24" }],
+        pesquisa: [],
+        noticias: [],
+        clusters: [
+          { top_url: "https://a.com/1", member_urls: ["https://a.com/1"], jaccard_min: 0.42 },
+        ],
+      };
+      const { kept } = filterDateWindow(input, "2026-04-24", 3);
+      assert.deepEqual(
+        (kept as unknown as { clusters: unknown[] }).clusters,
+        input.clusters,
+      );
+    });
+
+    it("preserva metadata arbitrária", () => {
+      const input = {
+        lancamento: [],
+        pesquisa: [],
+        noticias: [],
+        metadata: { source: "smoke", version: 3 },
+        custom_field: ["a", "b"],
+      };
+      const { kept } = filterDateWindow(input, "2026-04-24", 3);
+      assert.deepEqual(
+        (kept as unknown as { metadata: unknown }).metadata,
+        { source: "smoke", version: 3 },
+      );
+      assert.deepEqual(
+        (kept as unknown as { custom_field: unknown }).custom_field,
+        ["a", "b"],
+      );
+    });
+
+    it("clusters[] sobrevive mesmo quando articles do cluster são removidos", () => {
+      const input = {
+        lancamento: [
+          { url: "https://a.com/old", title: "Antigo", date: "2026-04-10" }, // será removido
+        ],
+        pesquisa: [],
+        noticias: [],
+        clusters: [
+          {
+            top_url: "https://a.com/old",
+            member_urls: ["https://a.com/old", "https://a.com/old2"],
+            jaccard_min: 0.5,
+          },
+        ],
+      };
+      const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+      assert.equal(removed.length, 1);
+      // Cluster info é informativa — preservada mesmo com members fora.
+      assert.deepEqual(
+        (kept as unknown as { clusters: unknown[] }).clusters,
+        input.clusters,
+      );
+    });
+
+    it("rest spread NÃO sobrescreve os 4 buckets", () => {
+      // Cenário hipotético: alguém passa `lancamento` extra no rest (não acontece
+      // pelo destructure, mas vale defensivo) — buckets reset garantidos.
+      const input = {
+        lancamento: [{ url: "https://a.com/1", title: "ok", date: "2026-04-24" }],
+        pesquisa: [],
+        noticias: [],
+      };
+      const { kept } = filterDateWindow(input, "2026-04-24", 3);
+      assert.ok(Array.isArray(kept.lancamento));
+      assert.equal(kept.lancamento.length, 1);
+      assert.equal(kept.lancamento[0].title, "ok");
+    });
+  });
 });

@@ -148,6 +148,63 @@ describe("parseDestaques (#172)", () => {
     assert.equal(destaques[0].why, "Impacto.");
   });
 
+  it("formato #245 double-newline: URL após bloco de título com blank lines", () => {
+    // Formato pós-#245: blank line entre header, título, URL, body
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título 245",
+      "",
+      "https://example.com/d1",
+      "",
+      "Parágrafo 1.",
+      "",
+      "Parágrafo 2.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 1);
+    assert.equal(destaques[0].title, "Título 245");
+    assert.equal(destaques[0].url, "https://example.com/d1");
+    // Body inclui ambos parágrafos
+    assert.ok(destaques[0].body.includes("Parágrafo 1."));
+    assert.ok(destaques[0].body.includes("Parágrafo 2."));
+    // Body NÃO inclui a URL nem "Por que isso importa:"
+    assert.ok(!destaques[0].body.includes("https://"));
+    assert.ok(!destaques[0].body.includes("Por que isso"));
+    assert.equal(destaques[0].why, "Impacto.");
+  });
+
+  it("formato #245 pre-gate: 3 opções de título com blank entre cada", () => {
+    // Pre-gate: writer emite 3 opções; parser pega a primeira como title.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Opção 1 do título",
+      "",
+      "Opção 2 do título",
+      "",
+      "Opção 3 do título",
+      "",
+      "https://example.com/d1",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 1);
+    // Parser pega a primeira opção como title (post-gate só tem 1 mesmo)
+    assert.equal(destaques[0].title, "Opção 1 do título");
+    assert.equal(destaques[0].url, "https://example.com/d1");
+    assert.ok(destaques[0].body.includes("Corpo do destaque."));
+  });
+
   it("B1: novo formato — URL inline no body NÃO ganha da canônica do topo", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",

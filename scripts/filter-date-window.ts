@@ -36,6 +36,13 @@ interface CategorizedInput {
   pesquisa: Article[];
   noticias: Article[];
   tutorial?: Article[];
+  /**
+   * Campos extras (ex: `clusters[]` produzido por `topic-cluster.ts`, ou
+   * metadata de stages futuros) são passados through inalterados pelo
+   * `filterDateWindow` (#247). Sem isso, qualquer transformação intermediária
+   * que produza campo novo precisa ser re-injetada manualmente pelo caller.
+   */
+  [key: string]: unknown;
 }
 
 interface RemovedEntry {
@@ -57,7 +64,13 @@ export function filterDateWindow(
   const cutoff = edDate.toISOString().split("T")[0];
 
   const removed: RemovedEntry[] = [];
+  // Passthrough de campos extras (#247): `clusters[]` do topic-cluster, ou
+  // qualquer metadata adicional do input. Os 4 buckets são reinicializados
+  // logo abaixo — não tem como o spread lá em cima sobrescrever.
+  const { lancamento, pesquisa, noticias, tutorial, ...rest } = input;
+  void lancamento; void pesquisa; void noticias; void tutorial; // descartar — substituídos abaixo
   const kept: Required<CategorizedInput> = {
+    ...rest,
     lancamento: [],
     pesquisa: [],
     noticias: [],

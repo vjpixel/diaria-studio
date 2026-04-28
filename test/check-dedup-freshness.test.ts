@@ -1,6 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { evaluateFreshness, parseArgs } from "../scripts/check-dedup-freshness.ts";
+
+/** Roda o script CLI e captura {stdout, stderr, exitCode}. */
+function runCli(args: string[]): { stdout: string; stderr: string; exitCode: number } {
+  try {
+    const stdout = execFileSync(
+      "npx",
+      ["tsx", "scripts/check-dedup-freshness.ts", ...args],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return { stdout, stderr: "", exitCode: 0 };
+  } catch (e) {
+    const err = e as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number };
+    return {
+      stdout: err.stdout?.toString() ?? "",
+      stderr: err.stderr?.toString() ?? "",
+      exitCode: err.status ?? 1,
+    };
+  }
+}
 
 const NOW_ISO = "2026-04-28T03:00:00Z";
 const NOW_MS = Date.parse(NOW_ISO);
@@ -97,6 +120,29 @@ describe("evaluateFreshness (#230)", () => {
     const decimals = (String(r.age_hours).split(".")[1] ?? "").length;
     assert.ok(decimals <= 1, `age_hours ${r.age_hours} tem mais de 1 decimal`);
   });
+
+  it("ok=false quando edição mais recente tem published_at no futuro (#241)", () => {
+    const posts = [{ id: "a", published_at: "2026-04-29T12:00:00Z" }]; // 33h no futuro
+    const r = evaluateFreshness(posts, NOW_MS, 48);
+    assert.equal(r.ok, false);
+    assert.equal(r.most_recent, "2026-04-29T12:00:00Z");
+    assert.match(r.reason ?? "", /futuro|à frente/);
+    // age_hours deve ser negativo (sinal de detecção)
+    assert.ok(r.age_hours !== null && r.age_hours < 0);
+  });
+
+  it("entrada futura não mascara stale real — escolhe ainda a mais recente (#241)", () => {
+    // Garantia: se houver mistura de futuro + passado, a função pega a mais recente
+    // (que pode ser a futura) e dispara o guard de futuro, não cai pra "stale".
+    const posts = [
+      { id: "future", published_at: "2026-05-01T00:00:00Z" }, // ~3 dias à frente
+      { id: "past", published_at: "2026-04-20T00:00:00Z" }, // ~8 dias atrás
+    ];
+    const r = evaluateFreshness(posts, NOW_MS, 48);
+    assert.equal(r.ok, false);
+    assert.equal(r.most_recent, "2026-05-01T00:00:00Z");
+    assert.match(r.reason ?? "", /futuro/);
+  });
 });
 
 describe("parseArgs", () => {
@@ -137,5 +183,113 @@ describe("parseArgs", () => {
     assert.ok("error" in r);
     const r2 = parseArgs(["--max-staleness-hours", "-5"]);
     assert.ok("error" in r2);
+  });
+});
+
+describe("CLI: emite JSON em todos os exit codes (#240)", () => {
+  let tmp: string;
+
+  function setup() {
+    tmp = mkdtempSync(join(tmpdir(), "freshness-"));
+    return tmp;
+  }
+  function cleanup() {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
+
+  it("path stale (exit 1) emite JSON parseável", () => {
+    const dir = setup();
+    try {
+      const raw = join(dir, "raw.json");
+      writeFileSync(
+        raw,
+        JSON.stringify([{ id: "a", published_at: "2026-04-20T00:00:00Z" }]),
+      );
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--now",
+        "2026-04-28T03:00:00Z",
+      ]);
+      assert.equal(exitCode, 1);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, false);
+      assert.match(parsed.reason ?? "", /publicada há/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("path raw missing (exit 1) emite JSON com reason de bootstrap", () => {
+    const { stdout, exitCode } = runCli(["--raw", "/tmp/never-exists-xyz.json"]);
+    assert.equal(exitCode, 1);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.reason ?? "", /bootstrap/);
+  });
+
+  it("path JSON corrompido (exit 2) emite JSON em vez de stderr", () => {
+    const dir = setup();
+    try {
+      const raw = join(dir, "broken.json");
+      writeFileSync(raw, "{ not valid json");
+      const { stdout, stderr, exitCode } = runCli(["--raw", raw]);
+      assert.equal(exitCode, 2);
+      // Antes de #240: vinha em stderr. Agora em stdout como JSON.
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, false);
+      assert.match(parsed.reason ?? "", /JSON parse falhou/);
+      // stderr deve estar limpo (ou pelo menos sem o texto livre legacy).
+      assert.ok(!stderr.includes("raw inválido (JSON parse"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("path raw não-array (exit 2) emite JSON", () => {
+    const dir = setup();
+    try {
+      const raw = join(dir, "obj.json");
+      writeFileSync(raw, JSON.stringify({ not: "an array" }));
+      const { stdout, exitCode } = runCli(["--raw", raw]);
+      assert.equal(exitCode, 2);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, false);
+      assert.match(parsed.reason ?? "", /esperado array/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("path --now inválido (exit 2) emite JSON", () => {
+    const dir = setup();
+    try {
+      const raw = join(dir, "raw.json");
+      writeFileSync(raw, "[]");
+      const { stdout, exitCode } = runCli([
+        "--raw",
+        raw,
+        "--now",
+        "not-a-date",
+      ]);
+      assert.equal(exitCode, 2);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.ok, false);
+      assert.match(parsed.reason ?? "", /--now inválido/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("path parseArgs error (exit 2) emite JSON", () => {
+    // --max-staleness-hours abc cai no error path do parseArgs
+    const { stdout, exitCode } = runCli([
+      "--max-staleness-hours",
+      "abc",
+    ]);
+    assert.equal(exitCode, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.reason ?? "", /max-staleness-hours inválido/);
   });
 });

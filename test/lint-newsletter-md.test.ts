@@ -171,20 +171,20 @@ describe("lintNewsletter", () => {
   });
 });
 
-describe("countTitlesPerHighlight (#178)", () => {
-  it("ok quando todos 3 destaques têm exatamente 1 título", () => {
+describe("countTitlesPerHighlight (#178, #245)", () => {
+  it("ok quando todos 3 destaques têm exatamente 1 título — formato single-newline (legado)", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",
       "Título único do destaque 1",
+      "https://example.com/1",
       "",
       "Corpo do destaque.",
-      "",
-      "https://example.com/1",
       "",
       "---",
       "",
       "DESTAQUE 2 | PESQUISA",
       "Título único do destaque 2",
+      "https://example.com/2",
       "",
       "Corpo.",
       "",
@@ -192,6 +192,7 @@ describe("countTitlesPerHighlight (#178)", () => {
       "",
       "DESTAQUE 3 | MERCADO",
       "Título único do destaque 3",
+      "https://example.com/3",
       "",
       "Corpo.",
     ].join("\n");
@@ -204,22 +205,64 @@ describe("countTitlesPerHighlight (#178)", () => {
     }
   });
 
-  it("erro quando destaque tem 3 títulos (editor não podou)", () => {
+  it("ok com formato double-newline (#245) — blank line entre cada elemento", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título único do destaque 1",
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo do destaque.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título único do destaque 2",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Título único do destaque 3",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.destaques.length, 3);
+    for (const d of r.destaques) {
+      assert.equal(d.title_count, 1);
+      assert.equal(d.status, "ok");
+    }
+  });
+
+  it("erro quando destaque tem 3 títulos (editor não podou) — single-newline", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",
       "Opção 1 de título",
       "Opção 2 de título",
       "Opção 3 de título",
+      "https://example.com/1",
       "",
       "Corpo.",
       "",
       "DESTAQUE 2 | PESQUISA",
       "Título único",
+      "https://example.com/2",
       "",
       "Corpo.",
       "",
       "DESTAQUE 3 | MERCADO",
       "Título único",
+      "https://example.com/3",
       "",
       "Corpo.",
     ].join("\n");
@@ -232,10 +275,56 @@ describe("countTitlesPerHighlight (#178)", () => {
     assert.equal(r.destaques[2].status, "ok");
   });
 
+  it("erro quando destaque tem 3 títulos (editor não podou) — double-newline (#245)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Opção 1 de título",
+      "",
+      "Opção 2 de título",
+      "",
+      "Opção 3 de título",
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título único",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Título único",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.destaques[0].title_count, 3);
+    assert.deepEqual(r.destaques[0].titles, [
+      "Opção 1 de título",
+      "Opção 2 de título",
+      "Opção 3 de título",
+    ]);
+    assert.equal(r.destaques[1].status, "ok");
+    assert.equal(r.destaques[2].status, "ok");
+  });
+
   it("erro quando há menos de 3 destaques", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",
+      "",
       "Título",
+      "",
+      "https://example.com/1",
       "",
       "Corpo.",
     ].join("\n");
@@ -245,8 +334,6 @@ describe("countTitlesPerHighlight (#178)", () => {
   });
 
   it("URL na linha logo abaixo do header é ignorada (não conta como título)", () => {
-    // #172 mudou layout pra URL imediatamente abaixo do título — esse check
-    // tolera ambas as ordens
     const md = [
       "DESTAQUE 1 | PRODUTO",
       "Título único",
@@ -256,12 +343,63 @@ describe("countTitlesPerHighlight (#178)", () => {
       "",
       "DESTAQUE 2 | PESQUISA",
       "Título único",
+      "https://example.com/2",
       "",
       "DESTAQUE 3 | MERCADO",
       "Título único",
+      "https://example.com/3",
     ].join("\n");
     const r = countTitlesPerHighlight(md);
     assert.equal(r.destaques[0].title_count, 1);
     assert.equal(r.destaques[0].titles[0], "Título único");
+  });
+
+  it("para em outro DESTAQUE quando bloco anterior não tem URL", () => {
+    // Caso degenerado: destaque sem URL nenhum. Sem URL, o terminador
+    // alternativo é o próximo DESTAQUE.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título único",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título 2",
+      "",
+      "https://example.com/2",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Título 3",
+      "",
+      "https://example.com/3",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.destaques[0].title_count, 1);
+    assert.equal(r.destaques[0].titles[0], "Título único");
+  });
+
+  it("para em section break --- quando não há URL no bloco", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título único",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título 2",
+      "",
+      "https://example.com/2",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Título 3",
+      "",
+      "https://example.com/3",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.destaques[0].title_count, 1);
   });
 });

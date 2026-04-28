@@ -103,19 +103,62 @@ export function evaluateFreshness(
 
   const ageMs = nowMs - maxMs;
   const ageHours = ageMs / (1000 * 60 * 60);
-  const ok = ageHours <= maxStalenessHours;
+  const ageHoursRounded = Math.round(ageHours * 10) / 10;
 
+  // Guarda contra `published_at` no futuro (#241): clock skew, dados de teste
+  // ou parsing quebrado podem produzir idade negativa. Tratar como anomalia
+  // — escolha do issue: failhar loud, deixar editor decidir.
+  if (ageHours < 0) {
+    return {
+      ok: false,
+      raw_path: rawPath,
+      count: posts.length,
+      most_recent: maxIso,
+      age_hours: ageHoursRounded,
+      max_staleness_hours: maxStalenessHours,
+      reason: `edição mais recente tem published_at no futuro (${maxIso}, ${Math.abs(ageHours).toFixed(1)}h à frente do agora) — verificar clock skew, dados de teste no raw, ou parsing quebrado`,
+    };
+  }
+
+  const ok = ageHours <= maxStalenessHours;
   return {
     ok,
     raw_path: rawPath,
     count: posts.length,
     most_recent: maxIso,
-    age_hours: Math.round(ageHours * 10) / 10,
+    age_hours: ageHoursRounded,
     max_staleness_hours: maxStalenessHours,
     reason: ok
       ? undefined
       : `edição mais recente publicada há ${ageHours.toFixed(1)}h (limite ${maxStalenessHours}h) — refresh-dedup-runner pode ter falhado silenciosamente; investigar antes de prosseguir`,
   };
+}
+
+/**
+ * Emite um FreshnessResult em formato JSON pra stdout (#240).
+ * Centraliza pra todos os paths de erro emitirem o mesmo schema —
+ * orchestrator pode `JSON.parse(stdout)` em qualquer exit code.
+ */
+function emitJson(
+  rawPath: string,
+  maxStalenessHours: number,
+  reason: string,
+): void {
+  process.stdout.write(
+    JSON.stringify(
+      {
+        ok: false,
+        raw_path: rawPath,
+        count: 0,
+        most_recent: null,
+        age_hours: null,
+        max_staleness_hours: maxStalenessHours,
+        reason,
+      } satisfies FreshnessResult,
+      null,
+      2,
+    ) + "\n",
+  );
 }
 
 interface CliFlags {
@@ -150,28 +193,22 @@ export function parseArgs(argv: string[]): CliFlags | { error: string } {
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  // Defaults conservadores pra error paths que disparam antes do parse.
+  const fallbackRaw = "data/past-editions-raw.json";
+  const fallbackHours = 48;
+
   const parsed = parseArgs(process.argv.slice(2));
   if ("error" in parsed) {
-    console.error(parsed.error);
+    emitJson(fallbackRaw, fallbackHours, parsed.error);
     process.exit(2);
   }
 
   const rawAbs = resolve(ROOT, parsed.rawPath);
   if (!existsSync(rawAbs)) {
-    process.stdout.write(
-      JSON.stringify(
-        {
-          ok: false,
-          raw_path: parsed.rawPath,
-          count: 0,
-          most_recent: null,
-          age_hours: null,
-          max_staleness_hours: parsed.maxStalenessHours,
-          reason: `raw não existe em ${parsed.rawPath} — rodar refresh-dedup-runner em modo bootstrap antes`,
-        },
-        null,
-        2,
-      ) + "\n",
+    emitJson(
+      parsed.rawPath,
+      parsed.maxStalenessHours,
+      `raw não existe em ${parsed.rawPath} — rodar refresh-dedup-runner em modo bootstrap antes`,
     );
     process.exit(1);
   }
@@ -180,25 +217,34 @@ function main(): void {
   try {
     posts = JSON.parse(readFileSync(rawAbs, "utf8")) as RawPost[];
   } catch (e) {
-    console.error(`raw inválido (JSON parse falhou): ${(e as Error).message}`);
+    emitJson(
+      parsed.rawPath,
+      parsed.maxStalenessHours,
+      `raw inválido (JSON parse falhou): ${(e as Error).message}`,
+    );
     process.exit(2);
-    return;
   }
-  if (!Array.isArray(posts)) {
-    console.error(`raw em formato inesperado: esperado array, recebido ${typeof posts}`);
+  if (!Array.isArray(posts!)) {
+    emitJson(
+      parsed.rawPath,
+      parsed.maxStalenessHours,
+      `raw em formato inesperado: esperado array, recebido ${typeof posts}`,
+    );
     process.exit(2);
-    return;
   }
 
   const nowMs = parsed.now ? Date.parse(parsed.now) : Date.now();
   if (Number.isNaN(nowMs)) {
-    console.error(`--now inválido: ${parsed.now}`);
+    emitJson(
+      parsed.rawPath,
+      parsed.maxStalenessHours,
+      `--now inválido: ${parsed.now}`,
+    );
     process.exit(2);
-    return;
   }
 
   const result = evaluateFreshness(
-    posts,
+    posts!,
     nowMs,
     parsed.maxStalenessHours,
     parsed.rawPath,

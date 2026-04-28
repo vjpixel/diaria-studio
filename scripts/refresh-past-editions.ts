@@ -27,7 +27,7 @@ const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
 const MD_PATH = resolve(ROOT, "context/past-editions.md");
 
-type Post = {
+export type Post = {
   id: string;
   title: string;
   slug?: string;
@@ -113,7 +113,15 @@ export async function resolveBeehiivTracking(
     const loc = res.headers.get("location");
     if (!loc) return null;
     try {
-      const host = new URL(loc).hostname.replace(/^www\./, "");
+      const parsed = new URL(loc);
+      // Defesa scheme (#249): rejeita javascript:, data:, ftp: etc. URLs
+      // exotic parseiam como URL válida mas não são páginas de conteúdo —
+      // dedup compara como string (sem RCE direta), mas downstream que
+      // renderiza em <a href> pode virar XSS.
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return null;
+      }
+      const host = parsed.hostname.replace(/^www\./, "");
       // Defesa: se o Location aponta de volta pro beehiiv (cadeia interna),
       // ignorar. Vale a pena resolver se vai pra fora do domínio.
       if (host === "diaria.beehiiv.com" || host.endsWith(".beehiiv.com")) {

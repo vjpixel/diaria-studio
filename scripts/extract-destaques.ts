@@ -76,19 +76,27 @@ export function parseDestaques(raw: string): Destaque[] {
       .map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
       .filter(i => i !== -1);
 
-    // Novo formato: URL imediatamente após linhas de título (consecutivas,
-    // não-vazias, não-URL). Avança de titleIdx enquanto for título; primeira
-    // URL nessa janela é a canônica do formato novo.
+    // Novo formato (#172, expandido em #245): URL imediatamente após o bloco
+    // de título(s). Pode ter blank lines entre elementos (double-newline) ou
+    // não (single-newline). Heurística pra distinguir título de body:
+    // título é curto (≤60 chars) e não termina em ponto; body é longo
+    // ou termina em ponto. Sem isso, a primeira URL "inline" no body do
+    // legacy seria escolhida como canônica (B1 regression).
     let newFormatUrlIdx: number | undefined;
     {
-      let k = titleIdx;
-      while (k < lines.length && lines[k].trim() !== '' && !/^https?:\/\//.test(lines[k].trim())) {
+      let k = titleIdx + 1;
+      let stoppedAtUrl = false;
+      while (k < lines.length) {
+        const t = lines[k].trim();
+        if (t === '') { k++; continue; }
+        if (/^https?:\/\//.test(t)) { stoppedAtUrl = true; break; }
+        if (/^Por que isso importa:/i.test(t)) break;
+        // Heurística: title option = curto, sem ponto final; senão é body.
+        const looksLikeTitle = t.length <= 60 && !/\.\s*$/.test(t);
+        if (!looksLikeTitle) break;
         k++;
       }
-      // Após avançar pelos títulos, se a próxima linha é URL → formato novo.
-      if (k < lines.length && /^https?:\/\//.test(lines[k].trim())) {
-        newFormatUrlIdx = k;
-      }
+      if (stoppedAtUrl) newFormatUrlIdx = k;
     }
 
     // Legacy: última URL do bloco (se houver), prioritariamente após whyIdx.
