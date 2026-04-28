@@ -140,9 +140,21 @@ Reler o arquivo, append a nova entry, gravar de volta. **Não acumular em memór
 
 **f. Fechar a aba/modal** antes do próximo post.
 
-### 5. Output final
+### 5. Validação final de unicidade (#266)
 
-Ao terminar as 3 iterações LinkedIn, retornar:
+Antes de retornar, validar que cada entry LinkedIn no `06-social-published.json` tem URL única — protege contra o caso onde 3 saves "successful" foram em cima do mesmo draft (data loss reportada como success).
+
+```bash
+npx tsx scripts/validate-social-published.ts {edition_dir}
+```
+
+- Exit 0 = todas as URLs únicas, prossegue.
+- Exit 1 = duplicates detectados. Output JSON em stdout indica quais destaques compartilham URL. **Marcar todos os posts duplicates** como `status: "failed"` com `reason: "linkedin_duplicate_url_detected"` e zerar `url`/`scheduled_at`. Reportar **honestamente** no `summary` — `failed: N` em vez de mascarar como `draft: 3`. Re-rodar o validator após o fix pra confirmar.
+- Exit 2 = arquivo missing/inválido. Investigar.
+
+### 6. Output final
+
+Ao terminar as 3 iterações LinkedIn (e a validação acima), retornar:
 
 ```json
 {
@@ -187,6 +199,8 @@ LinkedIn entries têm `requires_manual_image_upload: true`. Facebook entries tê
 
 - **Append imediato após cada post.** Nunca acumular em memória; gravar a cada um.
 - **Resume-aware.** Posts já em `06-social-published.json` (com status válido) são pulados por padrão.
+- **Composer fresh por iteração (#266).** Antes de cada post, re-navegar pra `/feed/` e clicar Start a post. Se LinkedIn oferecer "Continue your draft", **rejeitar** (Discard / Start new) — clicar Continue anexa conteúdo novo ao draft anterior, virando 3 posts em 1.
+- **Validar unicidade de drafts** após cada save: contar drafts em `/in/me/recent-activity/drafts/` e confirmar incremento de +1. Se não incrementar, marcar `status: "failed"` com `reason: "linkedin_draft_overwrite_detected"` e considerar switch pra schedule.
 - **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` com `reason: "linkedin_login_expired"` e seguir para o próximo destaque.
 - **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__claude-in-chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `06-social-published.json` já está atualizado por append imediato) e retornar:
   ```json
