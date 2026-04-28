@@ -24,7 +24,6 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 export interface Article {
   url: string;
@@ -227,10 +226,10 @@ function main(): void {
   }
 }
 
-const _argv1 = process.argv[1] ?? "";
-if (process.argv[1] && import.meta.url === `file://${_argv1}` || import.meta.url === fileURLToPath(import.meta.url)) {
-  // CLI guard simples
-}
-if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
   main();
 }
