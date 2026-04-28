@@ -14,6 +14,8 @@ import {
   extractFirstWikipediaUrl,
   extractCommonsUserUrl,
   buildCreditLine,
+  pickSubjectWikipediaLink,
+  tokenizeImageTitle,
 } from "../scripts/eai-compose.ts";
 
 interface MockImage {
@@ -506,5 +508,205 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     assert.match(credit, /Anonymous/);
     assert.ok(!credit.includes("[Anonymous]"));
     assert.match(credit, /\[CC0\]\(https:\/\/creativecommons\.org\/publicdomain\/zero\/1\.0\)/);
+  });
+});
+
+describe("tokenizeImageTitle (#284)", () => {
+  it("strip File: prefix + extensão", () => {
+    assert.deepEqual(
+      tokenizeImageTitle("File:Pilot_boat_at_Landsort_April_2012.jpg"),
+      ["pilot", "boat", "landsort", "april", "2012"],
+    );
+  });
+
+  it("filtra tokens curtos (≤3 chars)", () => {
+    // "of" e "at" são curtos demais; "the" é exatamente 3 (também filtra)
+    assert.deepEqual(
+      tokenizeImageTitle("File:View_of_the_Park.png"),
+      ["view", "park"],
+    );
+  });
+
+  it("normaliza separadores múltiplos (hífen, slash, underscore → espaço)", () => {
+    assert.deepEqual(
+      tokenizeImageTitle("File:Stockholm-Archipelago/Sweden_Coastal.jpg"),
+      ["stockholm", "archipelago", "sweden", "coastal"],
+    );
+  });
+
+  it("title undefined: array vazio", () => {
+    assert.deepEqual(tokenizeImageTitle(undefined), []);
+  });
+
+  it("title sem File: prefix funciona", () => {
+    assert.deepEqual(
+      tokenizeImageTitle("Pilot_Boat_Landsort.jpg"),
+      ["pilot", "boat", "landsort"],
+    );
+  });
+
+  it("case-insensitive (output sempre lowercase)", () => {
+    assert.deepEqual(
+      tokenizeImageTitle("FILE:PILOT_BOAT.JPG"),
+      ["pilot", "boat"],
+    );
+  });
+});
+
+describe("pickSubjectWikipediaLink (#284)", () => {
+  it("0 links: null", () => {
+    assert.equal(pickSubjectWikipediaLink("plain text without links"), null);
+    assert.equal(pickSubjectWikipediaLink(undefined), null);
+  });
+
+  it("1 link: retorna esse mesmo (sem ranking)", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Foo">Foo</a> bla bla.';
+    assert.deepEqual(pickSubjectWikipediaLink(html), {
+      url: "https://en.wikipedia.org/wiki/Foo",
+      text: "Foo",
+    });
+  });
+
+  it("título com tokens distintivos boost o link mais específico (Euganean Hills caso real)", () => {
+    // Caso real produzido por edição teste 260428: title "Parco_Regionale_dei_Colli_Euganei_2"
+    // gera tokens ["parco", "regionale", "colli", "euganei"]. Description.html teve só
+    // 1 link Wikipedia → trivialmente vence.
+    const html = '<a href="https://en.wikipedia.org/wiki/Euganean%20Hills">Euganean Hills</a> are a group of hills.';
+    const title = "File:Parco_Regionale_dei_Colli_Euganei_2.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Euganean%20Hills");
+  });
+
+  it("Pilot boat scenario: heurística favorece o link com mais tokens do title (limitação documentada)", () => {
+    // Title: "Pilot_boat_at_Landsort_April_2012" → tokens
+    // ["pilot", "boat", "landsort", "april", "2012"]
+    //
+    // - "Pilot boat" link: 2 tokens match (pilot, boat) × 10 + 2 (≤12 chars) = 22
+    // - "Landsort"  link: 1 token match × 10 + 2 (≤12 chars)             = 12
+    // - "Stockholm Archipelago": 0 + 0 (>12 chars)                        = 0
+    //
+    // Heurística vence pra Pilot boat (foreground subject literal). O issue #284
+    // citava Landsort como "subject editorial" — mas a heurística proposta no body
+    // do issue (esta mesma) também não alcança Landsort nesse caso. Trade-off
+    // editorialmente subjetivo: foreground concept vs location qualifier.
+    //
+    // Fica como follow-up se aparecer reclamação real do editor — solução
+    // exigiria sinais adicionais (ex: penalizar matches consecutivos de tokens).
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Pilot%20boat">Pilot boat</a> outside Öja island ' +
+      '(<a href="https://en.wikipedia.org/wiki/Landsort">Landsort</a>), ' +
+      '<a href="https://en.wikipedia.org/wiki/Stockholm%20Archipelago">Stockholm Archipelago</a>.';
+    const title = "File:Pilot_boat_at_Landsort_April_2012.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Pilot%20boat");
+  });
+
+  it("sem title: cai pra primeiro link (tie-break por posição) + bonus texto curto", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/A">First</a> e ' +
+      '<a href="https://en.wikipedia.org/wiki/B">Second</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    // Ambos com 0 score (sem title); ambos qualificam pra short-text bonus.
+    // Position vence empate → primeiro.
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/A");
+  });
+
+  it("texto curto (≤12 chars) ganha bonus quando títulos não dão match", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Long%20concept%20name">Long concept name</a> e ' +
+      '<a href="https://en.wikipedia.org/wiki/Short">Short</a>.';
+    const result = pickSubjectWikipediaLink(html, "File:Unrelated_title.jpg");
+    // "Long concept name" tem 17 chars (sem bonus), "Short" tem 5 chars (+2).
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Short");
+  });
+
+  it("title match (×10) supera bonus de texto curto (+2)", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Long%20Town%20Name">Long Town Name</a> e ' +
+      '<a href="https://en.wikipedia.org/wiki/AB">AB</a>.';
+    const result = pickSubjectWikipediaLink(html, "File:Visit_to_Long_Town.jpg");
+    // "Long Town Name" → tokens "long" e "town" no title → +20.
+    // "AB" → curto +2 mas zero token match.
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Long%20Town%20Name");
+  });
+
+  it("regex robusto a atributos extras no <a>", () => {
+    const html =
+      '<a rel="mw:WikiLink/Interwiki" class="extiw" href="https://en.wikipedia.org/wiki/Foo" title="Foo">Foo Bar</a>';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.text, "Foo Bar");
+  });
+});
+
+describe("buildCreditLine — wrap exato com link da description (#285)", () => {
+  it("subject não é primeira palavra: wrap só no texto exato do <a>", () => {
+    const image = {
+      title: "File:Landsort_island.jpg",
+      description: {
+        text: "The remote island of Landsort sits south of Stockholm.",
+        html:
+          'The remote island of <a href="https://en.wikipedia.org/wiki/Landsort">Landsort</a> ' +
+          'sits south of Stockholm.',
+      },
+      license: { type: "CC BY-SA 4.0", url: "https://example/cc" },
+    };
+    const credit = buildCreditLine(image);
+    // Wrap em "Landsort" exato, NÃO em "The remote"
+    assert.match(credit, /\[Landsort\]\(https:\/\/en\.wikipedia\.org\/wiki\/Landsort\)/);
+    assert.ok(!credit.includes("[The remote]"));
+    assert.ok(!credit.includes("[The remote island]"));
+  });
+
+  it("subject com pontuação interna ('U.S. Capitol'): wrap completo, sem truncar no ponto", () => {
+    const image = {
+      title: "File:US_Capitol_dome.jpg",
+      description: {
+        text: "U.S. Capitol is the meeting place of Congress.",
+        html:
+          '<a href="https://en.wikipedia.org/wiki/United%20States%20Capitol">U.S. Capitol</a> ' +
+          'is the meeting place of Congress.',
+      },
+      license: { type: "CC BY-SA 4.0" },
+    };
+    const credit = buildCreditLine(image);
+    // Wrap em "U.S. Capitol" inteiro, não em "U" só
+    assert.match(credit, /\[U\.S\. Capitol\]\(https:\/\/en\.wikipedia\.org\/wiki\/United%20States%20Capitol\)/);
+    assert.ok(!credit.match(/\[U\]\(/));
+  });
+
+  it("subject 3+ palavras: wrap completo (não trunca nas primeiras 1-2)", () => {
+    const image = {
+      title: "File:Stockholm_Archipelago.jpg",
+      description: {
+        text: "The Stockholm Archipelago is a large group of islands.",
+        html:
+          'The <a href="https://en.wikipedia.org/wiki/Stockholm%20Archipelago">Stockholm Archipelago</a> ' +
+          'is a large group of islands.',
+      },
+      license: { type: "CC BY-SA 4.0" },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /\[Stockholm Archipelago\]\(https:\/\/en\.wikipedia\.org\/wiki\/Stockholm%20Archipelago\)/);
+    // Não deve haver wrap em "The Stockholm" ou outras primeiras palavras
+    assert.ok(!credit.match(/\[The /));
+  });
+
+  it("texto do link não aparece literal na sentence: sem wrap (graceful)", () => {
+    // Cenário onde stripHtml mudaria o text (ex: HTML entities) e
+    // sentence.includes(text) falha → não wrap, sentence original.
+    const image = {
+      title: "File:Foo.jpg",
+      description: {
+        text: "AT&T is a company.",
+        // html tem &amp; mas stripHtml converteu pra & no text
+        html: '<a href="https://en.wikipedia.org/wiki/AT%26T">AT&amp;T</a> is a company.',
+      },
+      license: { type: "CC BY-SA 4.0" },
+    };
+    const credit = buildCreditLine(image);
+    // text do <a> = "AT&amp;T", sentence = "AT&T..." → não bate. Sem wrap.
+    assert.ok(!credit.match(/\[AT/));
+    assert.match(credit, /AT&T is a company\./);
   });
 });

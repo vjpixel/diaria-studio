@@ -310,15 +310,90 @@ export function extractFirstHref(html: string | undefined): string | null {
 }
 
 /**
- * Extrai a primeira href para `en.wikipedia.org/wiki/...` de um trecho HTML.
- * Heurística para subject_wikipedia_url (#256): tipicamente a description
- * de uma POTD começa com a entidade central wrapped em `<a>` apontando para
- * o artigo da Wikipedia. O primeiro link costuma ser o conceito principal.
+ * Tokeniza o title da imagem em palavras significativas para o ranking
+ * de subject (#284). Lowercase, normaliza separadores (`_`, `-`), remove
+ * extensões e tokens curtos (≤3 chars).
+ *
+ * Ex: `"File:Pilot_boat_at_Landsort_April_2012.jpg"` →
+ *     `["pilot", "boat", "landsort", "april", "2012"]`.
  */
-export function extractFirstWikipediaUrl(html: string | undefined): string | null {
+export function tokenizeImageTitle(imageTitle: string | undefined): string[] {
+  if (!imageTitle) return [];
+  return imageTitle
+    .toLowerCase()
+    .replace(/^file:/i, "")           // remove "File:" prefix
+    .replace(/\.(jpg|jpeg|png|gif|webp|svg)$/i, "")  // remove extensão
+    .replace(/[_\-/]/g, " ")          // separadores → espaço
+    .split(/\s+/)
+    .filter((t) => t.length > 3);
+}
+
+interface WikipediaLinkCandidate {
+  url: string;
+  text: string;
+  position: number;
+}
+
+/**
+ * Escolhe o melhor link Wikipedia da description.html pra usar como
+ * subject (#284). Substitui `extractFirstWikipediaUrl` que pegava sempre
+ * o primeiro — comum em POTDs ser conceito genérico (\"Pilot boat\") em
+ * vez do sujeito específico (\"Landsort\").
+ *
+ * Heurística:
+ * 1. Match com title da imagem — tokens do title (sem File:, extensão,
+ *    separadores) que aparecem no text do link → +10 cada (sinal forte).
+ * 2. Texto curto (≤12 chars) → +2 (lugares específicos costumam ter
+ *    nomes curtos; conceitos genéricos costumam ter textos longos).
+ * 3. Tie-break: posição (primeiro link mantém o pattern original).
+ *
+ * Retorna `{ url, text }` (texto do link em html) ou `null` se nenhum
+ * link Wikipedia encontrado.
+ */
+export function pickSubjectWikipediaLink(
+  html: string | undefined,
+  imageTitle?: string,
+): { url: string; text: string } | null {
   if (!html) return null;
-  const m = html.match(/href="(https:\/\/en\.wikipedia\.org\/wiki\/[^"]+)"/);
-  return m ? m[1] : null;
+
+  const links: WikipediaLinkCandidate[] = [];
+  const re = /<a[^>]+href="(https:\/\/en\.wikipedia\.org\/wiki\/[^"]+)"[^>]*>([^<]+)<\/a>/g;
+  let m: RegExpExecArray | null;
+  let pos = 0;
+  while ((m = re.exec(html)) !== null) {
+    links.push({ url: m[1], text: m[2], position: pos++ });
+  }
+
+  if (links.length === 0) return null;
+  if (links.length === 1) return { url: links[0].url, text: links[0].text };
+
+  const titleTokens = tokenizeImageTitle(imageTitle);
+
+  const scored = links
+    .map((l) => {
+      const lowerText = l.text.toLowerCase();
+      const titleMatch = titleTokens.filter((t) => lowerText.includes(t)).length;
+      const score = titleMatch * 10 + (l.text.length <= 12 ? 2 : 0);
+      return { ...l, score };
+    })
+    .sort((a, b) =>
+      b.score !== a.score ? b.score - a.score : a.position - b.position,
+    );
+
+  return { url: scored[0].url, text: scored[0].text };
+}
+
+/**
+ * Backward-compat wrapper: retorna só a URL do link escolhido por
+ * `pickSubjectWikipediaLink`. Mantido pra calcular `subject_wikipedia_url`
+ * no meta JSON sem precisar do text. Quando `imageTitle` não é passado, cai
+ * pro pattern original (primeiro link).
+ */
+export function extractFirstWikipediaUrl(
+  html: string | undefined,
+  imageTitle?: string,
+): string | null {
+  return pickSubjectWikipediaLink(html, imageTitle)?.url ?? null;
 }
 
 /**
@@ -362,15 +437,26 @@ function extractArtistName(artistText: string | undefined): string {
  */
 export function buildCreditLine(image: WikimediaImage): string {
   const description = stripHtml(image.description?.text ?? "");
-  const sentence = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
+  const firstSent = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
 
-  const subjectUrl = extractFirstWikipediaUrl(image.description?.html);
-  const sentenceMd = subjectUrl
-    ? sentence.replace(
-        /^([^\s.]+(?:\s+[^\s.]+)?)/,
-        (match) => `[${match}](${subjectUrl})`,
-      )
-    : sentence;
+  // #285: substituir o texto exato do link no html (em vez de regex de
+  // primeiras 1-2 palavras). Garante que o texto wrappado bate com o link
+  // semanticamente. #284: heurística smarter pra escolher o subject (não
+  // o primeiro link genérico).
+  const subj = pickSubjectWikipediaLink(image.description?.html, image.title);
+
+  // Fallback: se firstSentence cortou no meio de uma abreviação (ex: "U.S.")
+  // e perdeu o subject text, usar a description completa. Caso típico: subject
+  // text contém ponto interno → firstSentence regex termina no primeiro `.`.
+  const sentence =
+    subj && !firstSent.includes(subj.text) && description.includes(subj.text)
+      ? description
+      : firstSent;
+
+  const sentenceMd =
+    subj && sentence.includes(subj.text)
+      ? sentence.replace(subj.text, `[${subj.text}](${subj.url})`)
+      : sentence;
 
   const artistRaw = image.artist?.html ?? image.artist?.text ?? image.credit?.text;
   const artistName = extractArtistName(image.artist?.text ?? image.credit?.text);
@@ -551,7 +637,10 @@ async function main(): Promise<void> {
     extractCommonsUserUrl(image.artist?.html) ??
     extractFirstHref(image.artist?.html) ??
     extractCommonsUserUrl(image.artist?.text ?? image.credit?.text);
-  const subjectWikipediaUrl = extractFirstWikipediaUrl(image.description?.html);
+  const subjectWikipediaUrl = extractFirstWikipediaUrl(
+    image.description?.html,
+    image.title,
+  );
   const meta: EaiMeta = {
     edition,
     composed_at: new Date().toISOString(),
