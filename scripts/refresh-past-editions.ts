@@ -176,6 +176,88 @@ export async function populateLinksFromTracking(
   return { resolved: post.links.length, skipped };
 }
 
+/**
+ * Converte ISO timestamp pra AAMMDD (formato usado em `data/editions/{N}/`).
+ * Usa UTC pra ser consistente com o resto do pipeline.
+ */
+export function aammddFromIso(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const yy = String(d.getUTCFullYear()).slice(-2);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
+ * Lê `data/editions/{AAMMDD}/_internal/01-approved.json` e extrai todas
+ * as URLs cobertas pela edição (highlights + runners_up + buckets).
+ *
+ * `01-approved.json` é a source-of-truth pós-gate da edição — local,
+ * confiável, sem dependência de Beehiiv API. Resolve o gap do #234
+ * (`get_post_content` retorna URLs como tracking redirects).
+ *
+ * Refs #238.
+ */
+export function extractUrlsFromApproved(
+  yymmdd: string,
+  root: string = ROOT,
+): string[] {
+  if (!yymmdd) return [];
+  const path = resolve(root, `data/editions/${yymmdd}/_internal/01-approved.json`);
+  if (!existsSync(path)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+
+  const r = parsed as {
+    highlights?: Array<{ url?: string; article?: { url?: string } }>;
+    runners_up?: Array<{ url?: string; article?: { url?: string } }>;
+    lancamento?: Array<{ url?: string }>;
+    pesquisa?: Array<{ url?: string }>;
+    noticias?: Array<{ url?: string }>;
+    tutorial?: Array<{ url?: string }>;
+  };
+
+  const urls = new Set<string>();
+  for (const a of r.lancamento ?? []) if (a.url) urls.add(a.url);
+  for (const a of r.pesquisa ?? []) if (a.url) urls.add(a.url);
+  for (const a of r.noticias ?? []) if (a.url) urls.add(a.url);
+  for (const a of r.tutorial ?? []) if (a.url) urls.add(a.url);
+  for (const h of r.highlights ?? []) {
+    const url = h.url ?? h.article?.url;
+    if (url) urls.add(url);
+  }
+  for (const h of r.runners_up ?? []) {
+    const url = h.url ?? h.article?.url;
+    if (url) urls.add(url);
+  }
+  return [...urls];
+}
+
+/**
+ * Para um post sem `links[]`, popula a partir do `_internal/01-approved.json`
+ * local da edição correspondente. No-op se post já tem links ou se o
+ * arquivo local não existe.
+ *
+ * Refs #238.
+ */
+export function populateLinksFromApproved(
+  post: Post,
+  root: string = ROOT,
+): { populated: number } {
+  if (post.links && post.links.length > 0) return { populated: 0 };
+  const yymmdd = aammddFromIso(post.published_at);
+  const urls = extractUrlsFromApproved(yymmdd, root);
+  if (urls.length === 0) return { populated: 0 };
+  post.links = urls;
+  return { populated: urls.length };
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -274,6 +356,28 @@ async function main() {
     (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
   );
   const truncated = merged.slice(0, dedupEditionCount);
+
+  // Popular links[] do _internal/01-approved.json local quando disponível
+  // (#238). Source-of-truth completo pra cada edição produzida nesta máquina.
+  // Sempre-on, sem flag — só lê arquivos locais, sem network. No-op pra posts
+  // que já têm links (incluindo `--merge` com base existente populada).
+  {
+    let totalPopulated = 0;
+    let postsTouched = 0;
+    for (const post of truncated) {
+      if (post.links && post.links.length > 0) continue;
+      const { populated } = populateLinksFromApproved(post);
+      if (populated > 0) {
+        totalPopulated += populated;
+        postsTouched++;
+      }
+    }
+    if (postsTouched > 0) {
+      console.log(
+        `Populated links[] from approved.json: ${postsTouched} post(s), ${totalPopulated} URLs`,
+      );
+    }
+  }
 
   // Resolução de tracking URLs do Beehiiv (#234). Opt-in via --resolve-tracking.
   // Cada post sem `links[]` populado tenta resolver via HEAD requests.
