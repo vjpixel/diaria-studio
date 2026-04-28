@@ -10,20 +10,38 @@ Roteiro semântico para o agente `publish-social` operar o composer do LinkedIn 
 
 ## Objetivo
 
-Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar como rascunho primeiro**; se a UI não oferecer rascunho no momento, agendar conforme `publishing.social.fallback_schedule.linkedin`.
+Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar como rascunho primeiro**; se a UI não oferecer rascunho no momento OU se houver overwrite detectado, agendar conforme `publishing.social.fallback_schedule.linkedin`.
 
 ## Fluxo (por post)
 
-### 1. Abrir composer
-- Navegar para `https://www.linkedin.com/feed/`.
+### 1. Abrir composer **fresh** (#266 — crítico)
+
+LinkedIn reusa o composer entre invocações e oferece "Continue your draft" que faz o agent EDITAR um draft existente em vez de criar um novo. Resultado: 3 posts viraram 1 só draft (data loss reportada como success). Cada post precisa de composer isolado.
+
+- Navegar para `https://www.linkedin.com/feed/` (re-navegar **sempre**, mesmo entre iterações).
 - Se cair em login, abortar com `"LinkedIn login expirado"`.
 - Clicar em **Start a post** (no topo do feed).
-- Modal de composer abre.
+- **Se aparecer prompt "Continue your draft"**: clicar em **Discard** / **Start new** / fechar overlay e clicar Start a post de novo. **NUNCA** clicar Continue — anexa conteúdo novo ao draft anterior.
+- Modal de composer abre vazio.
+- **Validar via `javascript_tool`**: o `<div contenteditable>` deve ter `textContent.trim() === ""`. Se não estiver vazio, fechar e reabrir.
 
-### 2. Escolher autor (uma vez por sessão)
+### 2. Capturar baseline draft count (uma vez por sessão, antes do d1)
+
+Antes de criar o primeiro post (d1), registrar quantos drafts já existem na conta — usado pra validar unicidade de cada save (passo 6).
+
+```javascript
+// Via javascript_tool em https://www.linkedin.com/in/me/recent-activity/drafts/
+// (ajustar selector conforme UI atual; documentar quando mudar)
+const drafts = document.querySelectorAll('[data-test-id*="draft"], [data-urn*="draft"]').length;
+return drafts;  // baseline_draft_count
+```
+
+Após cada save subsequente, recontar — count deve incrementar de exatamente +1 por iteração. Se não incrementar, save sobrescreveu draft existente → falha de dados.
+
+### 3. Escolher autor (uma vez por sessão)
 - Se o composer mostrar dropdown de autor, escolher página **Diar.ia** se existir; senão, perfil pessoal.
 
-### 3. Inserir texto
+### 4. Inserir texto
 - O composer usa `<div contenteditable>` (ProseMirror) — `form_input` não funciona aqui. Usar `javascript_tool` para injetar o texto:
   ```javascript
   const el = document.querySelector('.ql-editor') || document.querySelector('[contenteditable="true"]');
@@ -33,7 +51,7 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 - Conteúdo: seção `## d{N}` dentro de `# LinkedIn` em `03-social.md`, com heading e comentários HTML removidos.
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
-### 4. Imagem via URL pública (Drive) — #48
+### 5. Imagem via URL pública (Drive) — #48
 
 **Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
 
@@ -55,24 +73,31 @@ Para cada destaque (d1/d2/d3), criar um post com texto + imagem. **Tentar salvar
 - Engagement **tipicamente menor** que native image (diferença concreta não medida — vale A/B se virar preocupação editorial).
 - Mas é o único approach 100% automatizado sem custo recorrente (ver #48 pra análise completa).
 
-### 5. Tentar salvar como rascunho
+### 6. Tentar salvar como rascunho **com validação de unicidade** (#266)
 - LinkedIn salva drafts automaticamente quando você fecha o composer com conteúdo. Procurar o **X** (fechar) → modal pergunta "Save as draft?" → confirmar.
+- **Após confirmar**, navegar imediatamente para `https://www.linkedin.com/in/me/recent-activity/drafts/` e:
+  1. Recontar drafts via `javascript_tool` (mesma query do passo 2).
+  2. Se `count == baseline + iteration_number`, draft NOVO foi criado ✅. Capturar URL do primeiro draft visível: `document.querySelector('a[href*="/feed/update/urn:li:fsd_share:"]')?.href`.
+  3. Se `count <= baseline + (iteration_number - 1)`, save **sobrescreveu** draft anterior. Marcar este post como `status: "failed"` com `reason: "linkedin_draft_overwrite_detected"`.
+  4. Se 2 saves consecutivos detectarem overwrite, switch para schedule no próximo (passo 7) — drafts viraram inviáveis nessa sessão.
 - Drafts ficam em **Posts** → **Drafts** (acessível pelo perfil/página).
-- Se conseguir salvar: capturar URL do draft (geralmente acessível via "View drafts"). Status = `"draft"`.
 
-### 6. Fallback: agendar
-- Se a opção de rascunho não aparecer (UI mudou ou só está disponível para alguns tipos de conta):
-  - Voltar ao composer (não fechar).
-  - Clicar no ícone de **clock/Schedule** (🕐) ao lado do botão Post.
-  - Selecionar data = hoje + `publishing.social.fallback_schedule.linkedin.day_offset` dias.
-  - Selecionar hora = `publishing.social.fallback_schedule.linkedin.d{N}_time` (timezone = `publishing.social.timezone`).
-  - Confirmar **Schedule**.
-  - Capturar URL do post agendado. Status = `"scheduled"`.
+### 7. Fallback: agendar
+- Triggers:
+  - Opção de rascunho não aparecer (UI mudou ou só disponível pra certos tipos de conta).
+  - Validação do passo 6 detectou overwrite duas vezes consecutivas (drafts não estão funcionando nessa sessão).
+- Schedule é mais robusto que draft pra automation — não tem o problema de overwrite single-instance.
+- Voltar ao composer (não fechar).
+- Clicar no ícone de **clock/Schedule** (🕐) ao lado do botão Post.
+- Selecionar data = hoje + `publishing.social.fallback_schedule.linkedin.day_offset` dias.
+- Selecionar hora = `publishing.social.fallback_schedule.linkedin.d{N}_time` (timezone = `publishing.social.timezone`).
+- Confirmar **Schedule**.
+- Capturar URL do post agendado em `https://www.linkedin.com/feed/scheduled-posts/`. Status = `"scheduled"`.
 
-### 7. Validar e fechar
+### 8. Validar e fechar
 - Verificar mensagem de confirmação ("Post scheduled" ou "Draft saved").
-- Capturar URL ou ID.
-- Fechar modal/aba antes do próximo post.
+- Capturar URL ou ID **único** (passo 6 garante unicidade pra drafts; scheduled posts são naturalmente únicos).
+- Fechar modal/aba antes do próximo post — re-navegar para `/feed/` no início da próxima iteração (passo 1).
 
 ## Modo rascunho
 
