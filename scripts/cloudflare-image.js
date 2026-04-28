@@ -20,6 +20,7 @@
 //   FLUX retorna { result: { image: base64 }, success: true }
 //   SDXL retorna binário PNG direto no body
 
+import 'dotenv/config';
 import fs from "node:fs";
 import sharp from "sharp";
 

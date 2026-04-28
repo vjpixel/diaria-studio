@@ -30,6 +30,7 @@
  * que foi aprovado no gate.
  */
 
+import 'dotenv/config';
 import {
   readFileSync,
   writeFileSync,

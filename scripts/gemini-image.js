@@ -11,6 +11,7 @@
 //   model       — override do modelo (opcional; default: platform.config.json > gemini.model)
 //   final_width / final_height — redimensionar via sharp (opcional)
 
+import 'dotenv/config';
 import fs from 'fs';
 import sharp from 'sharp';
 

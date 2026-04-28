@@ -38,6 +38,7 @@
  *   2  Erro de API (auth, network, rate limit, post não encontrado)
  */
 
+import 'dotenv/config';
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 

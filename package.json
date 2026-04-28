@@ -26,6 +26,7 @@
     "test": "node --import tsx --test"
   },
   "dependencies": {
+    "dotenv": "^16.0.0",
     "fast-xml-parser": "^5.7.1",
     "papaparse": "^5.4.1",
     "puppeteer": "^24.42.0",
