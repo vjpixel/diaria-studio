@@ -14,7 +14,7 @@
  *   2. Download + crop-resize 800×450
  *   3. Log em data/eai-used.json
  *   4. Gerar SD prompt (positive = description, negative = boilerplate)
- *   5. Chamar gemini-image.js
+ *   5. Chamar backend de imagem (gemini/cloudflare/comfyui via platform.config.json)
  *   6. Escrever 01-eai.md (template) + _internal/01-eai-meta.json
  *
  * Uso:
@@ -638,12 +638,23 @@ async function main(): Promise<void> {
     imageUrl,
   ]);
 
-  // 5. Build SD prompt + 6. Gemini → escreve no slot oposto à foto real
+  // 5. Build SD prompt + 6. Backend de imagem → escreve no slot oposto à foto real.
+  // Dispatch via platform.config.json > image_generator (#329) — mesmo pattern de
+  // scripts/image-generate.ts. Antes hardcodava gemini-image.js, o que fazia
+  // eai falhar quando Gemini estava unavailable mesmo com cloudflare/comfyui ativos.
   const sdPrompt = buildSdPrompt(image);
   const sdPromptPath = resolve(internalDir, "01-eai-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
   const iaPath = resolve(outDir, iaFilename);
-  runNode("scripts/gemini-image.js", [sdPromptPath, iaPath, "diaria_eai_"]);
+  const platformCfg = JSON.parse(
+    readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
+  );
+  const imageGenerator = (platformCfg.image_generator ?? "gemini") as string;
+  const imageScriptName =
+    imageGenerator === "comfyui" ? "scripts/comfyui-run.js" :
+    imageGenerator === "cloudflare" ? "scripts/cloudflare-image.js" :
+    "scripts/gemini-image.js";
+  runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eai_"]);
 
   // 7. Write 01-eai.md (frontmatter + corpo + opcional resultado da edição anterior #107)
   const creditLine = buildCreditLine(image);
