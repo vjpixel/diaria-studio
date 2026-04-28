@@ -282,7 +282,7 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
     "clusters": [...metadata de topic-cluster, runners-up consolidados (#237) — pode ser []...]
   }
   ```
-  Reinjetar `clusters` lendo `tmp-clustered.json` (o `filter-date-window.ts` não preserva esse campo). Se algum cluster member virou `removed` no filtro de janela, manter o cluster mesmo assim — é informativo.
+  `clusters` é preservado automaticamente por `filter-date-window.ts` (passthrough de campos extras desde #247) — não precisa re-inject manual. Mesmo se algum cluster member virou `removed` no filtro de janela, a metadata do cluster fica intacta — é informativo pro editor.
 - Salvar `data/editions/{AAMMDD}/_internal/01-categorized.json`.
 - **Renderizar `01-categorized.md` via script determinístico** (nunca gerar o MD livre-forma — o formato é responsabilidade do script, não do LLM):
   ```bash
