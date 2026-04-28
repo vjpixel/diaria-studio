@@ -15,7 +15,7 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
 
 1. Ler `platform.config.json`. Guardar:
    - `publicationId` (pode ser `null`)
-   - `dedupEditionCount` (default 5)
+   - `dedupEditionCount` (default 14)
 2. Verificar se `data/past-editions-raw.json` existe.
 
 ## Passo 1 — garantir `publicationId`
