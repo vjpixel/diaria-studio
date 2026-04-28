@@ -27,6 +27,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
 
 interface ApprovedArticle {
   url: string;
@@ -316,11 +317,10 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
       // Section break ou cabeçalho de seção secundária
       if (SECTION_BREAK_LINE_RE.test(t)) break;
       if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
-      // Heurística: title option = curto (≤60 chars) e sem ponto final;
-      // body paragraph = longo OU termina com ponto. Mesmo critério do
+      // Heurística #259: aceita título curto terminando em `?`, `!`, `...`
+      // ou palavras; rejeita ponto único final (= body). Mesmo critério do
       // parseDestaques (extract-destaques.ts).
-      const looksLikeTitle = t.length <= 60 && !/\.\s*$/.test(t);
-      if (!looksLikeTitle) break;
+      if (!looksLikeTitleOption(t)) break;
       titles.push(t);
       j++;
     }

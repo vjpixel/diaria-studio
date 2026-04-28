@@ -25,6 +25,7 @@
 // bloco, em qualquer posição (linha 2 ou final).
 
 import fs from 'fs';
+import { looksLikeTitleOption } from './lib/title-heuristic.ts';
 
 // ── Shared types & parsing (also used by render-newsletter-html.ts) ───
 
@@ -78,10 +79,11 @@ export function parseDestaques(raw: string): Destaque[] {
 
     // Novo formato (#172, expandido em #245): URL imediatamente após o bloco
     // de título(s). Pode ter blank lines entre elementos (double-newline) ou
-    // não (single-newline). Heurística pra distinguir título de body:
-    // título é curto (≤60 chars) e não termina em ponto; body é longo
-    // ou termina em ponto. Sem isso, a primeira URL "inline" no body do
-    // legacy seria escolhida como canônica (B1 regression).
+    // não (single-newline). Heurística (#259): looksLikeTitleOption aceita
+    // títulos curtos terminados em `?`, `!`, `...` ou palavras; rejeita
+    // linhas longas ou terminadas em ponto único (= parágrafo do body).
+    // Sem isso, a primeira URL "inline" no body do legacy seria escolhida
+    // como canônica (B1 regression).
     let newFormatUrlIdx: number | undefined;
     {
       let k = titleIdx + 1;
@@ -91,9 +93,7 @@ export function parseDestaques(raw: string): Destaque[] {
         if (t === '') { k++; continue; }
         if (/^https?:\/\//.test(t)) { stoppedAtUrl = true; break; }
         if (/^Por que isso importa:/i.test(t)) break;
-        // Heurística: title option = curto, sem ponto final; senão é body.
-        const looksLikeTitle = t.length <= 60 && !/\.\s*$/.test(t);
-        if (!looksLikeTitle) break;
+        if (!looksLikeTitleOption(t)) break;
         k++;
       }
       if (stoppedAtUrl) newFormatUrlIdx = k;

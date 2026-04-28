@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isRetryableStatus, backoffMs } from "../scripts/drive-sync.ts";
+import { isRetryableStatus, backoffMs, splitFilePath } from "../scripts/drive-sync.ts";
 
 describe("isRetryableStatus (#121)", () => {
   it("aceita transient HTTP errors comuns do Drive API", () => {
@@ -54,5 +54,46 @@ describe("backoffMs — exponential com jitter (#121)", () => {
     // Não deve crashar sem injection
     const result = backoffMs(0);
     assert.ok(result >= 1000 && result <= 1250);
+  });
+});
+
+describe("splitFilePath (#253)", () => {
+  it("filename sem `/`: subpath vazio, basename = filename", () => {
+    assert.deepEqual(splitFilePath("02-reviewed.md"), {
+      subpath: "",
+      basename: "02-reviewed.md",
+    });
+  });
+
+  it("`_internal/foo.md`: subpath e basename", () => {
+    assert.deepEqual(splitFilePath("_internal/02-clarice-diff.md"), {
+      subpath: "_internal",
+      basename: "02-clarice-diff.md",
+    });
+  });
+
+  it("subpasta aninhada: split na última barra", () => {
+    assert.deepEqual(splitFilePath("_internal/sub/foo.json"), {
+      subpath: "_internal/sub",
+      basename: "foo.json",
+    });
+  });
+
+  it("backslashes do Windows são normalizados pra forward slashes", () => {
+    assert.deepEqual(splitFilePath("_internal\\foo.md"), {
+      subpath: "_internal",
+      basename: "foo.md",
+    });
+  });
+
+  it("filename só com basename + extensão complexa", () => {
+    assert.deepEqual(splitFilePath("04-d1-2x1.jpg"), {
+      subpath: "",
+      basename: "04-d1-2x1.jpg",
+    });
+  });
+
+  it("não esquenta com filename vazio", () => {
+    assert.deepEqual(splitFilePath(""), { subpath: "", basename: "" });
   });
 });
