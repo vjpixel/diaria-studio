@@ -35,10 +35,13 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
+  unlinkSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+
+const IS_WINDOWS = process.platform === "win32";
 
 interface WikimediaImage {
   title?: string;
@@ -349,16 +352,23 @@ const CHILD_STDIO: ["inherit", "ignore", "inherit"] = [
 
 function runScript(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync("npx", ["tsx", cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
+  execFileSync("npx", ["tsx", cmd, ...args], {
+    cwd: ROOT,
+    stdio: CHILD_STDIO,
+    shell: IS_WINDOWS,
+  });
 }
 
 function runNode(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync("node", [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
+  execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
 }
 
 function curlDownload(url: string, outPath: string): void {
-  execFileSync("curl", ["-sL", url, "-o", outPath], { stdio: CHILD_STDIO });
+  execFileSync("curl", ["-sL", url, "-o", outPath], {
+    stdio: CHILD_STDIO,
+    shell: IS_WINDOWS,
+  });
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -433,7 +443,7 @@ async function main(): Promise<void> {
     "--height",
     "450",
   ]);
-  execFileSync("rm", [rawPath], { stdio: "inherit" });
+  unlinkSync(rawPath);
 
   // 4. Log used
   const credit = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
