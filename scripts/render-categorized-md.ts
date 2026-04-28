@@ -25,8 +25,8 @@
  * rodapé; caso contrário, omite a seção.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 interface Article {
   url: string;
@@ -362,6 +362,29 @@ function main() {
   ].join("\n");
 
   const footer = renderSourceHealth(cli.sourceHealth);
+
+  // #242: backup defensivo antes de sobrescrever. Se o editor já tinha
+  // curado o MD (movido artigos pra `## Destaques`, deletado items, etc.),
+  // re-renderizar do zero apaga o trabalho silenciosamente. Backup permite
+  // recuperação manual via `_internal/01-categorized.md.bak-{ts}` enquanto
+  // a solução completa (merge automático com curadoria) é tratada em
+  // follow-up.
+  if (existsSync(cli.out)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const baseName = basename(cli.out);
+    const backupDir = resolve(dirname(cli.out), "_internal");
+    const backupPath = resolve(backupDir, `${baseName}.bak-${ts}`);
+    try {
+      mkdirSync(backupDir, { recursive: true });
+      copyFileSync(cli.out, backupPath);
+    } catch (err) {
+      // Backup é defensivo — se falhar, segue (não bloqueia render). Loga
+      // pra audit em stderr; o orchestrator pode capturar pra run-log.
+      console.error(
+        `[render-categorized-md] backup falhou (continuando): ${(err as Error).message}`,
+      );
+    }
+  }
 
   const md = `${header}${instructions}\n${sections}${footer}`;
   writeFileSync(cli.out, md, "utf8");

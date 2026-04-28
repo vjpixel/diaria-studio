@@ -9,6 +9,7 @@ import {
   incrementEmptyDrain,
   resetEmptyDrain,
   shouldWarnEmptyDrains,
+  stripLabelFromQuery,
   EMPTY_DRAIN_WARN_THRESHOLD,
 } from "../scripts/inbox-drain.ts";
 
@@ -164,6 +165,55 @@ describe("contador de drains vazios consecutivos", () => {
         consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD + 5,
       }),
       true,
+    );
+  });
+});
+
+describe("stripLabelFromQuery (#274)", () => {
+  it("remove `label:Diaria` simples", () => {
+    assert.equal(stripLabelFromQuery("label:Diaria"), "");
+  });
+
+  it("remove `label:` no início preservando o resto", () => {
+    assert.equal(
+      stripLabelFromQuery("label:Diaria from:editor@gmail.com"),
+      "from:editor@gmail.com",
+    );
+  });
+
+  it("remove `label:` no meio preservando o resto", () => {
+    assert.equal(
+      stripLabelFromQuery("from:editor@gmail.com label:Diaria"),
+      "from:editor@gmail.com",
+    );
+  });
+
+  it("remove `label:` em várias ocorrências", () => {
+    assert.equal(
+      stripLabelFromQuery("label:Foo label:Bar from:editor@gmail.com"),
+      "from:editor@gmail.com",
+    );
+  });
+
+  it("query sem `label:` passa intacta", () => {
+    assert.equal(
+      stripLabelFromQuery("from:editor@gmail.com after:2026/04/01"),
+      "from:editor@gmail.com after:2026/04/01",
+    );
+  });
+
+  it("query vazia retorna vazia", () => {
+    assert.equal(stripLabelFromQuery(""), "");
+  });
+
+  it("é case-insensitive em LABEL", () => {
+    assert.equal(stripLabelFromQuery("LABEL:Diaria from:x"), "from:x");
+  });
+
+  it("preserva nome de label com hífen ou underscore (typical Gmail labels)", () => {
+    assert.equal(
+      stripLabelFromQuery("label:diar-ia/inbox after:2026/04/01"),
+      "after:2026/04/01",
     );
   });
 });
