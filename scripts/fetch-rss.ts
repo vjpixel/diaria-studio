@@ -282,10 +282,10 @@ async function main() {
   if (result.error) process.exit(2);
 }
 
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const invokedDirectly =
-  import.meta.url.startsWith("file:") &&
-  process.argv[1] &&
-  import.meta.url === `file://${process.argv[1]}`;
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`;
 
 if (invokedDirectly) {
   main().catch((e) => {
