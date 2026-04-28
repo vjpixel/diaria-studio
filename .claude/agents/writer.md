@@ -32,22 +32,24 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
 3. Lançamentos, Pesquisas, Notícias: lista curta — **3 linhas por item na ordem `Título / URL / Descrição`** (#172). URL imediatamente abaixo do título facilita o gate humano. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
-4. Checklist pré-saída (todos devem passar):
+4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, título/URL/descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
+5. Checklist pré-saída (todos devem passar):
    - Nenhum título >52 chars.
    - 3 opções por destaque.
-   - URL na linha imediatamente após o último título (antes do corpo).
+   - URL na linha imediatamente após o último título (antes do corpo) — separada por blank line.
+   - Linha em branco separando cada par de elementos (header/título/URL/parágrafo).
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - Sem repetir link das últimas 3 edições.
    - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
-5. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
+6. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
    - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)
    - `_internal/02-d2-prompt.md` — destaque 2
    - `_internal/02-d3-prompt.md` — destaque 3
    Gravar cada um no diretório da edição. Arquivos separados do texto — o editor pode editar cada prompt individualmente antes da geração.
-6. Gravar o texto da edição em `out_path`.
-7. **Validar o comprimento dos destaques** rodando:
+7. Gravar o texto da edição em `out_path`.
+8. **Validar o comprimento dos destaques** rodando:
    ```bash
    node scripts/validate-highlights.js {out_path}
    ```

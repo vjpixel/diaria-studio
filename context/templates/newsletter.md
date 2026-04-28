@@ -2,11 +2,17 @@
 
 Formato exato do output da edição. Seguir rigorosamente.
 
+**Importante (#245):** dentro de cada bloco DESTAQUE, sempre uma linha em branco entre header, cada opção de título, URL e cada parágrafo. Sem isso, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. Nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS), os 3 elementos do item (título / URL / descrição) ficam em linhas consecutivas — items separados entre si por linha em branco.
+
 ```
 DESTAQUE 1 | [CATEGORIA]
+
 [Opção de título 1 — máx. 52 chars]
+
 [Opção de título 2 — máx. 52 chars]
+
 [Opção de título 3 — máx. 52 chars]
+
 [URL — sem paywall, dentro da janela, não usado nas últimas 3 edições]
 
 [Parágrafo 1 — abre a história]
@@ -18,21 +24,25 @@ DESTAQUE 1 | [CATEGORIA]
 [Parágrafo 4 — fecha com consequência concreta]
 
 Por que isso importa:
+
 [1 parágrafo — impacto prático para o público Diar.ia]
 
 ---
 
 DESTAQUE 2 | [CATEGORIA]
+
 [mesmo formato]
 
 ---
 
 DESTAQUE 3 | [CATEGORIA]
+
 [mesmo formato]
 
 ---
 
 LANÇAMENTOS
+
 [Título do item]
 [URL limpa]
 [Frase descritiva em 1 linha]
@@ -44,11 +54,13 @@ LANÇAMENTOS
 ---
 
 PESQUISAS
+
 [mesmo formato de Lançamentos]
 
 ---
 
 OUTRAS NOTÍCIAS
+
 [mesmo formato de Lançamentos]
 ```
 

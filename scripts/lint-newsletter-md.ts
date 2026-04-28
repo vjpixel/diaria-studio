@@ -228,32 +228,41 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 /**
- * Conta linhas de título por bloco DESTAQUE (#178).
+ * Conta linhas de título por bloco DESTAQUE (#178, atualizado em #245).
  *
- * Espera que cada bloco DESTAQUE tenha exatamente 1 título por destaque
- * antes do gate de Stage 2 ser aprovado. Writer produz 3 opções; editor
- * deve podar pra 1 antes de prosseguir pro Stage 3.
+ * Espera que cada bloco DESTAQUE tenha exatamente 1 título antes do gate
+ * de Stage 2 ser aprovado. Writer produz 3 opções; editor deve podar
+ * pra 1 antes de prosseguir pro Stage 3.
  *
- * Estrutura esperada após poda:
+ * **Formato pós-#245** (double newlines entre cada elemento):
+ *
  *   DESTAQUE N | CATEGORIA
- *   <título único>
  *
- *   <parágrafos do corpo>
- *   ...
- *
- * Estrutura inicial (writer output):
- *   DESTAQUE N | CATEGORIA
  *   <opção 1>
- *   <opção 2>
+ *
+ *   <opção 2>      ← removidas pelo editor pré-Stage 3
+ *
  *   <opção 3>
  *
- *   <parágrafos do corpo>
+ *   <URL>
  *
- * Heurística: dentro de cada bloco DESTAQUE (entre header e primeira
- * linha em branco), contar linhas não-vazias. >1 = editor não podou.
+ *   <parágrafo 1>
+ *
+ * Algoritmo: após o header, pula linhas em branco e coleta linhas
+ * não-vazias e não-URL como títulos. Para no primeiro de:
+ *   - Linha de URL (terminator canônico — URL vem logo após títulos por #172)
+ *   - Próximo header DESTAQUE
+ *   - Header de seção secundária (LANÇAMENTOS/etc.)
+ *   - Section break `---`
+ *
+ * Compatível com formato pré-#245 (single newline) — a ausência de blank
+ * line entre título e URL ainda funciona porque a URL termina o bloco.
  */
 
 const HIGHLIGHT_HEADER_RE = /^DESTAQUE\s+(\d+)\s*\|\s*(.+)$/;
+const URL_LINE_RE = /^https?:\/\//;
+const SECTION_BREAK_LINE_RE = /^---\s*$/;
+const SECTION_HEADER_LINE_RE = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]{5,}$/;
 
 export interface TitleCheckResult {
   destaque: number;
@@ -284,15 +293,24 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
     }
     const destaqueNum = parseInt(m[1], 10);
     const category = m[2].trim();
-    // Próximas linhas até primeira linha em branco = títulos
+    // Coletar títulos: pula blanks, para em URL/header/section break (#245).
     const titles: string[] = [];
     let j = i + 1;
-    while (j < lines.length && lines[j].trim() !== "") {
+    while (j < lines.length) {
       const t = lines[j].trim();
-      // Ignore linhas que parecem URL (header concatenado com URL é outro bug, #157)
-      if (!/^https?:\/\//.test(t)) {
-        titles.push(t);
+      // Pula linhas em branco (blank line entre elementos no formato #245)
+      if (t === "") {
+        j++;
+        continue;
       }
+      // URL é o terminator canônico (URL imediatamente após títulos por #172)
+      if (URL_LINE_RE.test(t)) break;
+      // Outro DESTAQUE (raro — destaque sem URL/body)
+      if (HIGHLIGHT_HEADER_RE.test(t)) break;
+      // Section break ou cabeçalho de seção secundária
+      if (SECTION_BREAK_LINE_RE.test(t)) break;
+      if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
+      titles.push(t);
       j++;
     }
     destaques.push({
