@@ -88,47 +88,25 @@ function extractPostText(socialMd: string, platform: string, destaque: string): 
   return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
 }
 
+// computeScheduledAt foi movido pra `scripts/compute-social-schedule.ts` (#270)
+// pra ser compartilhado entre publish-facebook (Graph API) e publish-social
+// (LinkedIn via Chrome). Ambos respeitam o invariante:
+// target_date = parse(editionDate) + day_offset, nunca today() + day_offset.
+import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
+
 function computeScheduledAt(
   config: any,
   destaque: string,
   editionDate: string,
   dayOffsetOverride?: number
 ): string {
-  const sched = config.publishing.social.fallback_schedule.facebook;
-  const tz = config.publishing.social.timezone;
-  const timeKey = `${destaque}_time` as string;
-  const time = sched[timeKey];
-  const dayOffset = dayOffsetOverride ?? sched.day_offset ?? 0;
-
-  // Parse edition date (YYMMDD) to a real date
-  const yy = parseInt(editionDate.slice(0, 2));
-  const mm = parseInt(editionDate.slice(2, 4));
-  const dd = parseInt(editionDate.slice(4, 6));
-  const year = 2000 + yy;
-
-  const target = new Date(year, mm - 1, dd);
-  target.setDate(target.getDate() + dayOffset);
-
-  const [h, m] = time.split(":");
-  const dateStr = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(target.getDate()).padStart(2, "0")}`;
-
-  // For scheduled_publish_time, Facebook expects Unix timestamp
-  // We need to compute it in the configured timezone
-  // Use Intl to get the offset
-  const tzFmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" });
-  const tzName = tzFmt.formatToParts(target).find((p) => p.type === "timeZoneName")?.value || "GMT+0";
-  const tzMatch = tzName.match(/GMT([+-]\d+(?::\d+)?)/);
-  let offsetStr = "+00:00";
-  if (tzMatch) {
-    const raw = tzMatch[1];
-    if (raw.includes(":")) {
-      offsetStr = raw.padStart(6, "0");
-    } else {
-      offsetStr = `${raw}:00`;
-    }
-  }
-
-  return `${dateStr}T${h}:${m}:00${offsetStr}`;
+  return computeScheduledAtShared({
+    config,
+    editionDate,
+    destaque: destaque as "d1" | "d2" | "d3",
+    platform: "facebook",
+    dayOffsetOverride,
+  });
 }
 
 function isoToUnix(iso: string): number {
