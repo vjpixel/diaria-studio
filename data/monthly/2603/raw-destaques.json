@@ -1,0 +1,45 @@
+{
+  "yymm": "2603",
+  "generated_at": "2026-04-27T22:30:26.733Z",
+  "editions_count": 1,
+  "destaques_count": 3,
+  "destaques": [
+    {
+      "edition": "260302",
+      "beehiiv_post_id": "d8d75586",
+      "position": 1,
+      "category": "GEOPOLÍTICA",
+      "title": "A nova doutrina militar da IA",
+      "url": "https://www.npr.org/2026/02/27/nx-s1-5729118/trump-anthropic-pentagon-openai-ai-weapons-ban",
+      "body": "O cenário tecnológico testemunhou uma ruptura histórica nesta semana com um ataque de um estado a uma empresa de IA.\n\nO presidente dos Estados Unidos ordenou que todas as agências federais cessem imediatamente o uso das tecnologias da Anthropic.\n\n**A sanção ocorreu após a empresa se recusar a remover as salvaguardas éticas **contra o uso do modelo Claude em armamentos autônomos e vigilância em massa.\n\n**Horas depois, a **[**OpenAI assinou um acordo formal**](https://openai.com/index/our-agreement-with-the-department-of-war/)** com o Departamento de Guerra**, aceitando as exigências e assumindo o espaço logístico deixado pela concorrente.\n\n​**Por que isso importa:**\n\n**A decisão desencadeou o movimento \"**[**Cancel ChatGPT**](https://www.windowscentral.com/artificial-intelligence/cancel-chatgpt-movement-goes-mainstream-after-openai-closes-deal-with-u-s-department-of-war-as-anthropic-refuses-to-surveil-american-citizens)**\"**, que dominou a internet e [provocou uma onda massiva de cancelamentos](https://www.techradar.com/ai-platforms-assistants/chatgpt/no-ethics-at-all-the-cancel-chatgpt-trend-is-growing-after-openai-signs-a-deal-with-the-us-military) de assinaturas de usuários em protesto.​​",
+      "why": "",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260302",
+      "beehiiv_post_id": "d8d75586",
+      "position": 2,
+      "category": "INSTABILIDADE",
+      "title": "Apagão global atinge o Claude",
+      "url": "https://mashable.com/article/claude-down-ai-anthropic-outage",
+      "body": "A Anthropic confirmou, nesta segunda-feira, uma** interrupção massiva em seus serviços**, afetando tanto o chatbot Claude quanto o acesso à sua API de desenvolvimento.\n\nOs sistemas apresentaram falhas severas e altas taxas globais de erro, **paralisando operações de engenharia** que dependem do novo modelo Opus 4.6 e da plataforma Claude Code.\n\nA instabilidade técnica ocorre ironicamente no exato momento em que o aplicativo da empresa disparou para o primeiro lugar no ranking de downloads gratuitos da App Store da Apple nos Estados Unidos.\n\nEsta súbita explosão de acessos foi impulsionada pela imensa atenção midiática após a empresa ser oficialmente banida pelo governo americano no fim de semana.",
+      "why": "A queda de um dos principais modelos de fronteira evidencia o risco operacional da dependência exclusiva de um único provedor, tornando mandatória a adoção de estratégias de contingência e roteamento dinâmico entre múltiplas IAs.",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260302",
+      "beehiiv_post_id": "d8d75586",
+      "position": 3,
+      "category": "INDÚSTRIA",
+      "title": "Bezos e o Projeto Prometheus",
+      "url": "https://www.pymnts.com/news/artificial-intelligence/2026/jeff-bezos-project-prometheus-seeks-billions-reinvent-industrial-giants-with-ai/",
+      "body": "Jeff Bezos está estruturando silenciosamente uma nova e ambiciosa empreitada financeira no ecossistema da IA.\n\nO fundador da Amazon iniciou rodadas estratégicas para levantar bilhões de dólares, com o objetivo de capitalizar o chamado \"Projeto Prometheus\".\n\nA iniciativa tem como meta central reinventar e automatizar as operações de grandes indústrias e manufaturas tradicionais.\n\nO foco da nova empresa é transcender a automação de software de escritório e integrar inteligência algorítmica profunda diretamente nas cadeias produtivas globais e na logística pesada.",
+      "why": "Este movimento sinaliza que a próxima corrida de valor da IA focará na infraestrutura física e na modernização da indústria de base, exigindo novas arquiteturas que integrem hardware e modelos generativos.",
+      "is_brazil": false,
+      "brazil_signals": []
+    }
+  ],
+  "warnings": []
+}

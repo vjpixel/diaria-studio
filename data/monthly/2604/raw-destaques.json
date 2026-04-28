@@ -1,0 +1,260 @@
+{
+  "yymm": "2604",
+  "generated_at": "2026-04-27T12:42:22.152Z",
+  "editions_count": 8,
+  "destaques_count": 18,
+  "destaques": [
+    {
+      "edition": "260417",
+      "position": 1,
+      "category": "LANÇAMENTO",
+      "title": "Anthropic lança Claude Opus 4.7",
+      "body": "A Anthropic lançou o Claude Opus 4.7, descrito pela empresa como o modelo mais capaz disponível publicamente em seu portfólio. O lançamento acompanha o Claude Design, novo produto integrado ao Opus 4.7 voltado para a criação de designs, protótipos e apresentações em colaboração com IA.\n\nAs melhorias anunciadas cobrem três frentes: engenharia de software, visão computacional e capacidade de seguir instruções complexas. O foco em código posiciona o Opus 4.7 como concorrente direto dos modelos de raciocínio da OpenAI em tarefas de desenvolvimento.\n\nA Anthropic não divulgou benchmarks detalhados no anúncio, mas a ênfase em engenharia de software é consistente com o crescimento do uso de modelos Claude em ambientes de desenvolvimento — incluindo IDEs e pipelines de CI/CD.\n\nO Claude Design, alimentado pelo Opus 4.7, opera de forma colaborativa: o usuário descreve o que precisa e o modelo constrói protótipos iterativamente. O produto amplia o posicionamento da Anthropic para além do chat e da API.",
+      "why": "Para equipes de produto e engenharia, o Opus 4.7 chega como novo teto de capacidade em tarefas de código e visão. O Claude Design aponta para um segmento que a Anthropic ainda não ocupava diretamente — criação visual assistida por IA — abrindo frente de competição com ferramentas como Figma AI e o próprio GPT-4o em tarefas de design.",
+      "url": "https://www.anthropic.com/news/claude-opus-4-7",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260417",
+      "position": 2,
+      "category": "CONCEITO",
+      "title": "Por que a IA é boa e ruim ao mesmo tempo",
+      "body": "O conceito de \"jagged intelligence\" descreve um padrão observado em modelos de linguagem: desempenho excepcional em certas tarefas coexistindo com falhas inesperadas em tarefas aparentemente mais simples. O perfil de capacidade não é uniforme — apresenta picos e vales abruptos, como uma linha serrilhada.\n\nEsse padrão tem implicações diretas para quem toma decisões de implantação. Um modelo que redige textos complexos com fluência pode errar em aritmética básica; um sistema que resolve problemas de lógica formal, falha em senso comum contextual.\n\nA discussão em torno do termo busca reformular a forma como organizações avaliam e confiam em sistemas de IA. Em vez de tratar o modelo como \"capaz\" ou \"incapaz\" de forma genérica, a abordagem sugere mapear o perfil específico de competências e lacunas para cada caso de uso.\n\nPara o debate mais amplo sobre inteligência artificial, o conceito serve como contraponto a narrativas que projetam capacidade geral a partir de resultados pontuais — em qualquer direção, seja otimista ou pessimista.",
+      "why": "Profissionais que implantam IA em processos reais precisam entender que o desempenho observado em demonstrações pode não se generalizar. Mapear onde o modelo é confiável e onde falha sistematicamente é parte do trabalho de implantação responsável — e o conceito de jagged intelligence oferece um frame útil para essa conversa interna.",
+      "url": "https://exame.com/inteligencia-artificial/o-que-e-jagged-intelligence-e-como-ela-pode-reformular-o-debate-sobre-ia/",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:exame.com"
+      ]
+    },
+    {
+      "edition": "260417",
+      "position": 3,
+      "category": "MERCADO",
+      "title": "1 em 4 do S&P 500 já mede resultado com IA",
+      "body": "Uma em cada quatro empresas do S&P 500 já mensura resultados concretos obtidos com inteligência artificial. O dado marca uma virada: durante anos, a tecnologia foi protagonista de apresentações de estratégia, sem contrapartida mensurável nos relatórios financeiros.\n\nO movimento sinaliza que o ciclo de experimentação das grandes corporações globais está se encerrando. Empresas que antes testavam IA em projetos isolados agora reportam impactos em métricas de negócio — produtividade, custo operacional, receita.\n\nO recorte pelo S&P 500 é relevante porque essas empresas têm a obrigação de divulgar resultados com precisão auditável. Quando um quarto delas afirma mensurar retorno de IA, a afirmação tem peso diferente de declarações de marketing.\n\nA tendência pressiona o restante do índice — e empresas fora dele — a acelerar a implantação ou justificar a ausência de resultados comparáveis perante investidores e conselhos.",
+      "why": "Para profissionais de tecnologia, finanças e consultoria no Brasil, o dado muda o critério de avaliação de projetos de IA: não basta mais mostrar caso de uso; é preciso mostrar números. Quem ainda vende IA como visão de futuro perde espaço para quem apresenta linha no resultado.",
+      "url": "https://www.startse.com/artigos/ia-saiu-do-power-point-e-entrou-no-resultado/",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260419",
+      "position": 1,
+      "category": "NOTÍCIA",
+      "title": "OpenAI enterprise chega a 40% da receita",
+      "body": "Agents SDK ganha memória: agentes em produção\nOpenAI: enterprise cresce e SDK vira infraestrutura\n\nO OpenAI Agents SDK ganhou memória configurável, orquestração sandbox-aware e ferramentas de filesystem. O conjunto transforma o SDK em infraestrutura para agentes que operam por dias ou semanas sem reiniciar o contexto.\n\nNo mesmo lançamento, a OpenAI revelou que enterprise já representa mais de 40% da receita e deve alcançar paridade com consumer antes do fim de 2026. O OpenAI Frontier está em uso por Oracle, State Farm e Uber para agentes que operam por sistemas inteiros.\n\nA memória configurável resolve um problema prático central: agentes que \"esquecem\" o estado entre sessões. Com persistência gerenciada pelo SDK, é possível construir assistentes de longo prazo sem engenharia de memória personalizada.\n\nO sandbox-aware permite que agentes distingam ambiente de teste de produção — um requisito básico para qualquer implementação enterprise real.",
+      "why": "O enterprise em 40% da receita sinaliza que a adoção saiu do estágio de experimentação. O SDK com memória e sandbox transforma o que era protótipo em um produto de produção — a conversa muda de \"podemos construir?\" para \"quando colocamos em produção?\".",
+      "url": "https://openai.com/index/the-next-evolution-of-the-agents-sdk/",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260419",
+      "position": 2,
+      "category": "NOTÍCIA",
+      "title": "Modelo resolve problema em aberto há 12 anos",
+      "body": "Sistema autônomo resolve conjectura matemática\n80 horas, sem humanos: problema de 12 anos resolvido\n\nPesquisadores da Universidade de Pequim desenvolveram um sistema que resolveu a Conjectura de Anderson — problema de álgebra comutativa em aberto desde 2014 — de forma completamente autônoma.\n\nO sistema operou por cerca de 80 horas sem intervenção humana, combinando raciocínio informal com verificação formal. O resultado foi verificado por matemáticos e aceito como solução válida.\n\nA conjectura é um problema de classificação em álgebra comutativa, área com aplicações em geometria algébrica e teoria da computação.\n\nO mesmo método — raciocínio informal guiando buscas formais — pode ser aplicado a outras questões abertas em matemática e ciência da computação.",
+      "why": "Não é apenas uma vitória em benchmark. Um sistema autônomo resolvendo um problema genuinamente aberto muda as expectativas sobre onde os modelos podem chegar no curto prazo — e coloca a pesquisa científica autônoma no mapa de aplicações práticas.",
+      "url": "https://exame.com/inteligencia-artificial/ia-chinesa-resolve-em-horas-problema-matematico-que-desafiou-cientistas-por-uma-decada/",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:exame.com"
+      ]
+    },
+    {
+      "edition": "260419",
+      "position": 3,
+      "category": "NOTÍCIA",
+      "title": "Anthropic usa modelo para encontrar zero-days",
+      "body": "Project Glasswing: milhares de zero-days em escala\nClaude Mythos acha zero-days antes dos hackers\n\nA Anthropic lançou o Project Glasswing: seu novo modelo Claude Mythos Preview foi usado para encontrar milhares de vulnerabilidades zero-day críticas em sistemas operacionais e navegadores amplamente usados.\n\nO modelo está disponível apenas para 12 parceiros de segurança — Amazon, Apple, Microsoft, Cisco e CrowdStrike, entre eles — acompanhado de $100 milhões de dólares em créditos de uso.\n\nMythos identificou uma vulnerabilidade de 17 anos no FreeBSD e opera com 73% de sucesso em tarefas especializadas de segurança ofensiva. O modelo ainda não foi lançado publicamente.\n\nO foco é coordenado: os parceiros recebem acesso antecipado para corrigir as falhas antes que se tornem vetores de ataque em produção.",
+      "why": "Encontrar zero-days em escala muda a economia da segurança: o que exigia equipes especializadas por meses pode agora ser feito em horas. O dado de 73% indica que o gap entre a capacidade do modelo e do humano expert está fechando nesse domínio.",
+      "url": "https://www.anthropic.com/glasswing",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260420",
+      "position": 1,
+      "category": "PESQUISA",
+      "title": "Brasil tem lacuna digital em habilidades com IA",
+      "body": "Uma pesquisa da CNI mapeou habilidades digitais da força de trabalho brasileira. O resultado: apenas 44,5% dos trabalhadores possuem habilidades média-alta ou alta em tarefas digitais complexas com automação e modelos de linguagem.\n\nA maioria da população ativa está despreparada para as demandas do mercado em transformação. Setores como finanças, logística e saúde já exigem familiaridade com ferramentas de automação em processos cotidianos.\n\nO ritmo de adoção corporativa supera o de capacitação. Empresas implementam sistemas generativos enquanto a maior parte dos colaboradores não domina operações digitais intermediárias.\n\nA CNI recomenda investimento urgente em requalificação — pelo setor privado e por políticas públicas — antes que a defasagem vire gargalo estrutural.",
+      "why": "O dado quantifica um problema que gestores percebem de forma difusa: mais da metade da força de trabalho não opera com proficiência as ferramentas já presentes nos processos das empresas competitivas. Quem recruta, treina ou define estratégias de adoção tem agora um número para dimensionar o esforço.",
+      "url": "https://www.cnnbrasil.com.br/economia/macroeconomia/menos-da-metade-dos-brasileiros-domina-habilidades-digitais-complexas-aponta-cni/",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:cnnbrasil.com.br",
+        "kw:brasil"
+      ]
+    },
+    {
+      "edition": "260420",
+      "position": 2,
+      "category": "LANÇAMENTO",
+      "title": "Google integra Gemini ao Chrome com atalhos",
+      "body": "O Google anunciou uma biblioteca de Skills no Chrome. O recurso permite transformar comandos de linguagem natural em ferramentas reutilizáveis acessíveis com um clique na barra do navegador, integradas ao Gemini.\n\nUm usuário pode criar uma Skill que resume artigos, traduz trechos selecionados ou formata dados copiados — e reutilizar o atalho sem redigitar o comando. A biblioteca pode ser compartilhada entre usuários, criando um ecossistema de automações da comunidade.\n\nO anúncio posiciona o Chrome como camada de produtividade além do navegador tradicional, com o modelo da Google incorporado diretamente ao fluxo de navegação.",
+      "why": "O fluxo de automação passa a viver dentro da interface já aberta, sem extensões de terceiros ou abas separadas. A curva de adoção é mínima — o que tende a acelerar a penetração do recurso bem além do público técnico e colocar o Chrome como plataforma de produtividade padrão em equipes.",
+      "url": "https://exame.com/inteligencia-artificial/google-leva-ia-ao-navegador-e-transforma-comandos-em-atalhos-de-produtividade/",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:exame.com"
+      ]
+    },
+    {
+      "edition": "260420",
+      "position": 3,
+      "category": "INDÚSTRIA",
+      "title": "IA domina Bollywood e assusta diretores",
+      "body": "Estúdios indianos adotaram geração e dublagem automáticas em escala industrial. Bollywood usa modelos generativos para criar cenas, sincronizar diálogos e localizar filmes em dezenas de idiomas, reduzindo semanas do calendário de pós-produção.\n\nOs custos de dublagem para mercados regionais caíram expressivamente — relevante num país com centenas de línguas e dialetos. A equação econômica fecha, e os estúdios aceleraram a adoção.\n\nCineastas reagiram. Diretores e roteiristas argumentam que profundidade narrativa e carga emocional dependem de escolhas humanas que os sistemas automatizados não replicam com consistência.",
+      "why": "O Bollywood produz mais filmes por ano do que Hollywood e tem mercado consumidor de mais de um bilhão de pessoas. Se a equação fechar lá em larga escala, a pressão sobre outros mercados cinematográficos — incluindo o brasileiro — se intensifica e chega mais rápido do que a maioria dos setores criativos espera.",
+      "url": "https://www.cnnbrasil.com.br/entretenimento/bollywood-recorre-a-ia-mas-cineastas-temem-a-perda-da-narrativa-humana/",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:cnnbrasil.com.br"
+      ]
+    },
+    {
+      "edition": "260423",
+      "position": 1,
+      "category": "BRASIL",
+      "title": "FGV: 30 milhões de brasileiros expostos à automação",
+      "body": "FGV Ibre mapeia 30 milhões de trabalhadores em risco\nJovens, emprego e renda: o dado brasileiro\n\nPesquisa do economista Daniel Duque, do FGV Ibre, mede pela primeira vez o nível de exposição do mercado de trabalho brasileiro ao avanço dos modelos generativos. O resultado: 30 milhões de trabalhadores estão em ocupações com algum grau de risco de substituição ou alteração de tarefas.\n\nO estudo foca especialmente em jovens — a faixa que concentra trabalhos de entrada no mercado, mais rotineiros e mais facilmente automatizáveis. Esse grupo tem menor margem para se reposicionar, o que amplifica o impacto sobre empregabilidade e renda.\n\nA metodologia cruza características das ocupações com as capacidades dos modelos generativos atuais. Não é projeção de demissões em massa: é mapeamento de quais trabalhadores precisarão adaptar habilidades para manter empregabilidade.\n\nOs 30 milhões representam cerca de 29% da força de trabalho brasileira — número no mesmo patamar de estudos internacionais, agora com dados nacionais.",
+      "why": "O estudo dá substância local ao debate que circulava com números americanos ou europeus. Com metodologia aplicada à realidade brasileira, o dado de 30 milhões vira referência concreta para decisões de RH, formação profissional e estratégia corporativa de automação.",
+      "url": "https://gs10.com.br/impacto-ia-emprego-renda-jovens-brasil-estudo-fgv/",
+      "score": 75,
+      "source": "discovery",
+      "summary": "Pesquisa do economista Daniel Duque (FGV Ibre) indica que IA generativa impacta negativamente o mercado de trabalho brasileiro, com 30 milhões de trabalhadores em ocupações com algum nível de exposição à IA.",
+      "published_at": "2026-04-20",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:gs10.com.br",
+        "reason:BR-prefix",
+        "kw:brasil"
+      ]
+    },
+    {
+      "edition": "260423",
+      "position": 2,
+      "category": "LANÇAMENTO",
+      "title": "Google Cloud lança TPUs de 8ª geração",
+      "body": "Cloud Next '26: TPU gen 8 e agentes em escala\nGoogle: 16 bilhões de tokens por minuto na API\n\nNo Google Cloud Next '26, Sundar Pichai apresentou a oitava geração de TPUs e a Gemini Enterprise Agent Platform — camada para criar e orquestrar agentes autônomos em ambientes corporativos, integrada a Salesforce e ServiceNow.\n\nOs números revelam adoção real: 75% dos clientes do Google Cloud usam ao menos um produto do portfólio de modelos, e as APIs processam 16 bilhões de tokens por minuto — uso efetivo, não capacidade instalada.\n\nA plataforma de agentes transforma o modelo de trabalho: em vez de assistente de chat, a unidade passa a ser o agente executando fluxos completos. A nova geração de TPUs reduz o custo por token e amplia a capacidade de treinamento.",
+      "why": "Os 75% de adoção e 16 bilhões de tokens por minuto transformam o Cloud Next de evento de marketing em termômetro de mercado. Quem ainda avalia adoção mede o ritmo em que concorrentes já operam em produção.",
+      "url": "https://blog.google/innovation-and-ai/infrastructure-and-cloud/google-cloud/cloud-next-2026-sundar-pichai/",
+      "score": 90,
+      "source": "Google",
+      "summary": "Google apresenta sua oitava geração de TPUs e plataforma Gemini Enterprise Agent para gerenciar milhares de agentes de IA, revelando que 75% dos clientes Cloud usam produtos de IA e modelos processam 16 bilhões de tokens por minuto via API.",
+      "published_at": "2026-04-22",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260423",
+      "position": 3,
+      "category": "MERCADO",
+      "title": "Amazon e Anthropic: US$ 100 bilhões em uma década",
+      "body": "Anthropic e AWS ampliam para 5 GW de compute\nAmazon dobra: US$ 5 bilhões a mais na Anthropic\n\nA Amazon anunciou investimento adicional de US$ 5 bilhões na Anthropic e compromisso de mais de US$ 100 bilhões em despesas com AWS ao longo de uma década. O acordo inclui acesso a múltiplos gigawatts de TPUs de próxima geração a partir de 2027.\n\nO patamar de 5 gigawatts é incomum mesmo para os maiores contratos do setor. A escala sinaliza que a Anthropic quer crescimento de infraestrutura sem construir data centers próprios, ancorando expansão na nuvem da Amazon.\n\nO movimento consolida a AWS como principal provedor de infraestrutura da empresa, intensificando a disputa entre nuvens por contratos de longo prazo e reforçando o bloco Amazon-Anthropic frente à aliança Microsoft-OpenAI.",
+      "why": "Contratos dessa magnitude indicam que a corrida de infraestrutura passou de anúncios para capital comprometido por décadas. O mercado se organiza em alianças verticalizadas — e a janela para escolher parceiros estratégicos de longo prazo se fecha.",
+      "url": "https://www.anthropic.com/news/anthropic-amazon-compute",
+      "score": 88,
+      "source": "Anthropic",
+      "summary": "Anthropic e Amazon expandem parceria estratégica com investimento adicional de US$ 5 bilhões da Amazon e compromisso de US$ 100+ bilhões em despesas com AWS ao longo de uma década. Acordo inclui uso de múltiplos gigawatts de TPUs de próxima geração a partir de 2027, intensificando competição por infraestrutura de IA.",
+      "published_at": "2026-04-20",
+      "is_brazil": true,
+      "brazil_signals": [
+        "reason:BR-prefix"
+      ]
+    },
+    {
+      "edition": "260424",
+      "position": 1,
+      "category": "LANÇAMENTO",
+      "title": "OpenAI lança GPT-5.5 com foco em agentes",
+      "body": "A OpenAI lançou o GPT-5.5. A empresa descreve como o modelo mais inteligente e intuitivo até agora, com foco em tarefas agênticas, código e análise.\n\nO acesso fica restrito a planos Plus, Pro, Business e Enterprise. Usuários gratuitos e plano Go ficam de fora por enquanto, mesmo padrão dos últimos lançamentos.\n\nO lançamento cai na mesma semana em que a OpenAI redesenhou o ChatGPT como superapp, centralizando fluxos complexos numa única interface. O GPT-5.5 é o motor dessa aposta.\n\nE o timing não foi coincidência. A DeepSeek anunciou o V4 nos mesmos dias, e a Anthropic mantém o Claude Opus 4.7 como referência em raciocínio. A janela entre lançamentos de modelo frontier comprimiu pra semanas.",
+      "why": "Quem usa ChatGPT no trabalho ganha capacidade sem precisar trocar de plataforma. E o padrão do que é bom o suficiente sobe mais um pouco — quem ainda escolhe qual ferramenta adotar no time tem um argumento a mais pra ficar aqui.",
+      "url": "https://openai.com/index/introducing-gpt-5-5/",
+      "score": 93,
+      "summary": "OpenAI lança GPT-5.5, modelo mais inteligente e intuitivo, com foco em tarefas agênticas, código e análise. Disponível para usuários Plus, Pro, Business e Enterprise.",
+      "published_at": "2026-04-23",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260424",
+      "position": 2,
+      "category": "LANÇAMENTO",
+      "title": "Anthropic lança Project Deal",
+      "body": "A Anthropic lançou o Project Deal, uma entrada no Claude dedicada à negociação e ao fechamento de contratos. A página entrou no ar em 24 de abril.\n\nÉ mais um \"Project\", linha que a Anthropic vem construindo pra organizar tarefas com o Claude em contexto. O que muda nesse é o foco: deals corporativos, não tarefa genérica.\n\nO movimento vem logo depois do acordo de infraestrutura com a Amazon. Os dois sinais apontam pra mesma direção: a empresa está investindo pesado no segmento corporativo.",
+      "why": "Times de jurídico, vendas e procurement ganham uma interface dedicada no Claude. E o sinal estratégico vem junto: a Anthropic está saindo do assistente genérico e apostando em fluxos verticais, onde o uso gruda no dia a dia do time e a troca de ferramenta fica mais cara.",
+      "url": "https://www.anthropic.com/features/project-deal",
+      "score": 72,
+      "source": "Anthropic",
+      "summary": "Submissão do editor (Anthropic). Conteúdo ainda a verificar.",
+      "published_at": "2026-04-24",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260424",
+      "position": 3,
+      "category": "SEGURANÇA",
+      "title": "Breach no modelo mais restrito da Anthropic",
+      "body": "Um grupo de hackers acessou o Claude Mythos Preview, modelo de cibersegurança da Anthropic considerado perigoso demais pra acesso público.\n\nO caminho não foi uma falha nos sistemas da Anthropic. Foi por um fornecedor terceirizado que trabalhava com o modelo, o vetor clássico de ataque por cadeia de fornecedores.\n\nO Mythos tinha sido avaliado pelo UK AI Safety Institute em abril. O instituto documentou capacidades ofensivas concretas em cibersegurança, e era por isso que o modelo ficava fora do público.\n\nA Anthropic confirmou o incidente sem dar detalhes sobre o que foi acessado.",
+      "why": "Restringir acesso a um modelo perigoso não resolve se os parceiros que trabalham com ele não tiverem o mesmo nível de proteção. Toda equipe de segurança corporativa já coloca cadeia de fornecedores na lista de risco há anos, o caso mostra que colocar na lista não é o mesmo que mitigar.",
+      "url": "https://www.euronews.com/next/2026/04/22/hackers-breach-anthropics-too-dangerous-to-release-mythos-ai-model-report",
+      "score": 82,
+      "summary": "Grupo acessou o Claude Mythos Preview da Anthropic — modelo de cibersegurança classificado como perigoso — via fornecedor terceirizado.",
+      "published_at": "2026-04-22",
+      "is_brazil": false,
+      "brazil_signals": []
+    },
+    {
+      "edition": "260427",
+      "position": 1,
+      "category": "SAÚDE",
+      "title": "Pode confiar no ChatGPT para cuidar da sua saúde?",
+      "body": "Abi usa o ChatGPT para cuidar da saúde há mais de um ano. Está longe de ser exceção. Com consultas médicas difíceis de marcar e o chatbot sempre disponível, milhões passaram a usar modelos de linguagem como primeira fonte de orientação em saúde.\n\nO apelo é concreto: modelos conseguem descrever sintomas, sugerir diagnósticos diferenciais e recomendar se vale a pena ir ao pronto-socorro. Em estudos controlados, alguns superam médicos generalistas em acurácia para casos-texto. O problema é o que não aparece no benchmark.\n\nModelos alucinam. Erram doses. Não têm acesso ao histórico do paciente nem conseguem examinar. O tom seguro que transmitem não reflete a taxa real de erro. O usuário raramente consegue distinguir um acerto de uma alucinação bem formulada.\n\nHospitais já usam modelos para triagem com supervisão médica. O mesmo modelo que ajuda o médico pode estar respondendo ao paciente sem filtro pelo app. A linha entre ferramenta clínica e oráculo pessoal está evaporando.",
+      "why": "Qualquer profissional calibra quando confiar em IA e quando verificar. Em saúde, calibração errada tem consequência direta. O debate vai chegar para ferramentas corporativas no mesmo formato. A heurística precisa estar pronta antes.",
+      "url": "https://g1.globo.com/saude/noticia/2026/04/25/voce-deve-confiar-em-conselhos-de-saude-de-um-chatbot-de-ia.ghtml",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:g1.globo.com"
+      ]
+    },
+    {
+      "edition": "260427",
+      "position": 2,
+      "category": "ROBÓTICA",
+      "title": "Robô da Sony vence profissional de tênis de mesa",
+      "body": "O Ace é um robô autônomo desenvolvido pela divisão de pesquisa de IA da Sony. Em partidas com atletas de alto nível, incluindo profissionais, o robô venceu. É o primeiro a alcançar desempenho de especialista em um esporte físico competitivo.\n\nTênis de mesa exige velocidade de reação, controle fino de trajetória e leitura de adversário em tempo real. O Ace usa visão computacional para rastrear a bola e ajustar o golpe em milissegundos, combinando precisão mecânica com modelo de previsão de movimento.\n\nO resultado vai além de uma vitória esportiva. É prova de que percepção + decisão + atuação física em loop contínuo chegou ao nível humano em pelo menos um domínio, não só em fábricas controladas, mas em cenários dinâmicos e imprevisíveis.",
+      "why": "O benchmark que importa não é o tênis de mesa. É a prova de que sistemas físicos com IA chegaram ao nível humano em tarefas que exigem percepção, decisão e execução em tempo real. A próxima pergunta é quais domínios físicos do trabalho seguirão o mesmo caminho.",
+      "url": "https://g1.globo.com/inovacao/noticia/2026/04/24/robo-supera-jogadores-humanos-profissionais-em-partidas-de-tenis-de-mesa.ghtml",
+      "is_brazil": true,
+      "brazil_signals": [
+        "host:g1.globo.com"
+      ]
+    },
+    {
+      "edition": "260427",
+      "position": 3,
+      "category": "LANÇAMENTO",
+      "title": "Gemini app ganha 8 funções no Drop de abril",
+      "body": "O Google publicou o Gemini Drop de abril, atualização mensal que consolida o que entrou no app desde a versão anterior. Oito funções novas, com foco em produtividade pessoal e integração com o ecossistema Workspace.\n\nOs destaques: os agentes de organização que sugerem rotina semanal a partir do calendário, modo conversacional para Docs e Sheets, geração de Notebooks a partir de pastas inteiras do Drive e novo painel de privacidade para auditar quais dados o modelo acessou. A versão pro também ganhou execução de scripts em Python diretamente do chat.\n\nO Drop reforça a estratégia do Google de empacotar atualizações em ondas mensais, cadência que rivaliza com o ritmo da OpenAI no ChatGPT. A maioria das funções já está disponível em pt-BR, exceto o painel de privacidade, ainda em rollout.",
+      "why": "Para times que padronizam Workspace, o Drop reduz o gap competitivo com o Copilot da Microsoft e adiciona um vetor concreto de adoção entre usuários casuais, o que muda o cálculo de licenciamento para as próximas renovações.",
+      "url": "https://blog.google/innovation-and-ai/products/gemini-app/gemini-drop-april-2026/",
+      "score": 81,
+      "source": "Google",
+      "summary": "Gemini Drops is our regular monthly update on how to get the most out of the Gemini app.",
+      "published_at": "2026-04-24T16:00:00.000Z",
+      "is_brazil": false,
+      "brazil_signals": []
+    }
+  ],
+  "warnings": [
+    "260417: _internal/01-approved.json não existe — metadata reduzida",
+    "260418: 02-reviewed.md não existe — pulando",
+    "260419: _internal/01-approved.json não existe — metadata reduzida",
+    "260420: _internal/01-approved.json não existe — metadata reduzida",
+    "260422: 02-reviewed.md não existe — pulando"
+  ]
+}
