@@ -102,6 +102,15 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Regenera `context/past-editions.md` via `scripts/refresh-past-editions.ts`, respeitando `dedupEditionCount` do config.
   - Retorna JSON com `{ mode, new_posts, total_in_base, most_recent_date, skipped }`.
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
+- **Pre-flight de freshness do dedup (sempre roda, após refresh #230).** Rodar:
+  ```bash
+  npx tsx scripts/check-dedup-freshness.ts
+  ```
+  O script lê `data/past-editions-raw.json` e compara `max(published_at)` com `Date.now() - 48h`. Se a edição mais recente está fora dessa janela, **falha loud** (exit 1) — sintoma de que o `refresh-dedup-runner` caiu em fallback silencioso (ex: `--regen-md-only` sem fetch novo) ou de que a Diar.ia não publicou por mais de 2 dias. Em qualquer caso, dedup stale → risco real de aprovar links/temas repetidos. Se o script falhar:
+  1. Apresentar o JSON completo de output ao editor.
+  2. Pedir confirmação explícita: `[c] continuar mesmo assim (override) | [a] abortar`. Default = `a`.
+  3. Se editor escolher `c`, logar `level: warn` em `data/run-log.jsonl` com `{ event: "dedup_freshness_override", most_recent, age_hours }` e prosseguir. Caso contrário, abortar Stage 0.
+  Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`).
 - **Link CTR refresh (sempre roda).** Rodar `Bash("npx tsx scripts/build-link-ctr.ts")`. Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
 - **Audience profile refresh (sempre roda, após Link CTR).** Rodar `Bash("npx tsx scripts/update-audience.ts")`. Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia` (rodar semanalmente/mensalmente quando houver novas respostas).
 - **Pending issue drafts (sempre roda, gate opcional #90).** Check drafts do `auto-reporter` órfãos de edições anteriores (editor pulou o gate no Stage final, ou crash).

@@ -26,10 +26,10 @@ type Post = {
 };
 
 function loadConfig(): { dedupEditionCount: number; publicationId?: string } {
-  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 5 };
+  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 14 };
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
   return {
-    dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 5,
+    dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 14,
     publicationId: cfg?.beehiiv?.publicationId,
   };
 }

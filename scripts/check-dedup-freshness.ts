@@ -1,0 +1,216 @@
+/**
+ * check-dedup-freshness.ts
+ *
+ * Pre-flight de Stage 0: valida que `data/past-editions-raw.json` está fresh
+ * o suficiente pra base de dedup ser confiável.
+ *
+ * Compara `max(published_at)` no raw com `Date.now() - <maxStalenessHours>`.
+ * Se o raw está stale, o script falha loud (exit 1) — orchestrator deve
+ * apresentar ao editor antes de prosseguir, em vez de aprovar links repetidos
+ * com base congelada.
+ *
+ * Caso real (#230): edição 260428 com `data/past-editions-raw.json` carregando
+ * só 5 edições de 14-23/abril enquanto Beehiiv tinha posts de 04-25 e 04-27.
+ * Destaque GPT-5.5 do gate batia com edição 04-25 — dedup não pegou. Editor
+ * só notou no review manual.
+ *
+ * Uso pelo orchestrator no Stage 0, **após** o `refresh-dedup-runner`:
+ *
+ *   npx tsx scripts/check-dedup-freshness.ts
+ *
+ * Flags opcionais:
+ *   --max-staleness-hours <N>   default 48 (cobertura de fim de semana)
+ *   --raw <path>                default data/past-editions-raw.json
+ *   --now <ISO>                 override pra teste/CI; default Date.now()
+ *
+ * Output (stdout, JSON):
+ *   { "ok": true,  "most_recent": "2026-04-27T...", "age_hours": 12.3, ... }
+ *   { "ok": false, "most_recent": "2026-04-23T...", "age_hours": 96.7, ... }
+ *
+ * Exit codes:
+ *   0 = fresh (ou base vazia + bootstrap pendente, decidido pelo caller)
+ *   1 = stale (orchestrator: pedir ao editor pra investigar antes de prosseguir)
+ *   2 = erro (raw não existe, args inválidos, JSON corrompido)
+ *
+ * Refs #230.
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export interface FreshnessResult {
+  ok: boolean;
+  raw_path: string;
+  count: number;
+  most_recent: string | null;
+  age_hours: number | null;
+  max_staleness_hours: number;
+  reason?: string;
+}
+
+interface RawPost {
+  id?: string;
+  title?: string;
+  published_at?: string;
+}
+
+/**
+ * Pure: avalia freshness dado um array de posts e ts atual. Não toca filesystem.
+ */
+export function evaluateFreshness(
+  posts: RawPost[],
+  nowMs: number,
+  maxStalenessHours: number,
+  rawPath = "data/past-editions-raw.json",
+): FreshnessResult {
+  if (posts.length === 0) {
+    return {
+      ok: false,
+      raw_path: rawPath,
+      count: 0,
+      most_recent: null,
+      age_hours: null,
+      max_staleness_hours: maxStalenessHours,
+      reason: "raw vazio — bootstrap nunca rodou ou falhou",
+    };
+  }
+
+  let maxMs = -Infinity;
+  let maxIso: string | null = null;
+  for (const p of posts) {
+    const iso = p.published_at;
+    if (!iso) continue;
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) continue;
+    if (ms > maxMs) {
+      maxMs = ms;
+      maxIso = iso;
+    }
+  }
+
+  if (maxIso === null) {
+    return {
+      ok: false,
+      raw_path: rawPath,
+      count: posts.length,
+      most_recent: null,
+      age_hours: null,
+      max_staleness_hours: maxStalenessHours,
+      reason: "nenhuma entrada com published_at parseável",
+    };
+  }
+
+  const ageMs = nowMs - maxMs;
+  const ageHours = ageMs / (1000 * 60 * 60);
+  const ok = ageHours <= maxStalenessHours;
+
+  return {
+    ok,
+    raw_path: rawPath,
+    count: posts.length,
+    most_recent: maxIso,
+    age_hours: Math.round(ageHours * 10) / 10,
+    max_staleness_hours: maxStalenessHours,
+    reason: ok
+      ? undefined
+      : `edição mais recente publicada há ${ageHours.toFixed(1)}h (limite ${maxStalenessHours}h) — refresh-dedup-runner pode ter falhado silenciosamente; investigar antes de prosseguir`,
+  };
+}
+
+interface CliFlags {
+  maxStalenessHours: number;
+  rawPath: string;
+  now?: string;
+}
+
+export function parseArgs(argv: string[]): CliFlags | { error: string } {
+  let maxStalenessHours = 48;
+  let rawPath = "data/past-editions-raw.json";
+  let now: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--max-staleness-hours" && argv[i + 1]) {
+      const n = Number(argv[i + 1]);
+      if (!Number.isFinite(n) || n <= 0) {
+        return { error: `--max-staleness-hours inválido: ${argv[i + 1]}` };
+      }
+      maxStalenessHours = n;
+      i++;
+    } else if (a === "--raw" && argv[i + 1]) {
+      rawPath = argv[i + 1];
+      i++;
+    } else if (a === "--now" && argv[i + 1]) {
+      now = argv[i + 1];
+      i++;
+    }
+  }
+  return { maxStalenessHours, rawPath, now };
+}
+
+function main(): void {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const parsed = parseArgs(process.argv.slice(2));
+  if ("error" in parsed) {
+    console.error(parsed.error);
+    process.exit(2);
+  }
+
+  const rawAbs = resolve(ROOT, parsed.rawPath);
+  if (!existsSync(rawAbs)) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          ok: false,
+          raw_path: parsed.rawPath,
+          count: 0,
+          most_recent: null,
+          age_hours: null,
+          max_staleness_hours: parsed.maxStalenessHours,
+          reason: `raw não existe em ${parsed.rawPath} — rodar refresh-dedup-runner em modo bootstrap antes`,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    process.exit(1);
+  }
+
+  let posts: RawPost[];
+  try {
+    posts = JSON.parse(readFileSync(rawAbs, "utf8")) as RawPost[];
+  } catch (e) {
+    console.error(`raw inválido (JSON parse falhou): ${(e as Error).message}`);
+    process.exit(2);
+    return;
+  }
+  if (!Array.isArray(posts)) {
+    console.error(`raw em formato inesperado: esperado array, recebido ${typeof posts}`);
+    process.exit(2);
+    return;
+  }
+
+  const nowMs = parsed.now ? Date.parse(parsed.now) : Date.now();
+  if (Number.isNaN(nowMs)) {
+    console.error(`--now inválido: ${parsed.now}`);
+    process.exit(2);
+    return;
+  }
+
+  const result = evaluateFreshness(
+    posts,
+    nowMs,
+    parsed.maxStalenessHours,
+    parsed.rawPath,
+  );
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  process.exit(result.ok ? 0 : 1);
+}
+
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}
