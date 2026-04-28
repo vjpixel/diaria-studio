@@ -263,6 +263,7 @@ const HIGHLIGHT_HEADER_RE = /^DESTAQUE\s+(\d+)\s*\|\s*(.+)$/;
 const URL_LINE_RE = /^https?:\/\//;
 const SECTION_BREAK_LINE_RE = /^---\s*$/;
 const SECTION_HEADER_LINE_RE = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]{5,}$/;
+const WHY_MATTERS_LINE_RE = /^Por que isso importa:/i;
 
 export interface TitleCheckResult {
   destaque: number;
@@ -293,7 +294,10 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
     }
     const destaqueNum = parseInt(m[1], 10);
     const category = m[2].trim();
-    // Coletar títulos: pula blanks, para em URL/header/section break (#245).
+    // Coletar títulos: pula blanks, para em URL/header/section break/marker.
+    // Heurística adicional (#245): linha que parece body (longa OU termina
+    // com ponto) também encerra — protege legacy onde URL fica no fim do
+    // bloco e o título não tem URL imediatamente abaixo.
     const titles: string[] = [];
     let j = i + 1;
     while (j < lines.length) {
@@ -305,11 +309,18 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
       }
       // URL é o terminator canônico (URL imediatamente após títulos por #172)
       if (URL_LINE_RE.test(t)) break;
+      // "Por que isso importa:" termina o título block (legacy URL-no-fim)
+      if (WHY_MATTERS_LINE_RE.test(t)) break;
       // Outro DESTAQUE (raro — destaque sem URL/body)
       if (HIGHLIGHT_HEADER_RE.test(t)) break;
       // Section break ou cabeçalho de seção secundária
       if (SECTION_BREAK_LINE_RE.test(t)) break;
       if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
+      // Heurística: title option = curto (≤60 chars) e sem ponto final;
+      // body paragraph = longo OU termina com ponto. Mesmo critério do
+      // parseDestaques (extract-destaques.ts).
+      const looksLikeTitle = t.length <= 60 && !/\.\s*$/.test(t);
+      if (!looksLikeTitle) break;
       titles.push(t);
       j++;
     }
