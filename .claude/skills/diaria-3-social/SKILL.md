@@ -15,13 +15,14 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
   > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `--no-gate` (opcional) = pular o gate humano final, auto-aprovar. Drive sync continua normal.
 
-## Variáveis derivadas
+## Placeholders
 
-Antes de começar, derivar de `$1`:
+Os blocos Bash/Agent abaixo contêm placeholders que **você (top-level) deve substituir pelo valor real antes de executar**. Bash não interpreta `$1` automaticamente fora de funções — paths como `data/editions/$1/` viram `data/editions//` se rodados literais.
 
-- `YYMM` = primeiros 4 chars de `$1` (ex: `$1=260423` → `YYMM=2604`). Usado no path do Drive (`edicoes/{YYMM}/$1/...`).
+- `$1` → AAMMDD literal recebido (ex: `260423`). Aparece em paths, prompts de Agent, e comandos Bash.
+- `{YYMM}` → primeiros 4 chars de `$1` (ex: `$1=260423` → `2604`). Aparece no path do Drive e no gate output.
 
-`{YYMM}` aparece em strings ao longo deste playbook — substituir pelo valor real antes de emitir saída ao usuário.
+Substituir antes de invocar `Bash`, antes de passar `prompt` pra `Agent`, e antes de emitir o gate output ao usuário.
 
 ## Pré-requisitos
 
