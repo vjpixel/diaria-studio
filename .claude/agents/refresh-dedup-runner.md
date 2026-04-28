@@ -43,7 +43,7 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
 2. Para **cada** post retornado, chamar `mcp__ed929847-...__get_post_content(post_id)` e juntar `html`/`markdown` ao objeto.
 3. Montar array JSON com os campos `{ id, title, web_url, published_at, html, markdown }` (themes é opcional).
 4. Gravar em `data/past-editions-raw-incoming.json`.
-5. Rodar: `Bash("npx tsx scripts/refresh-past-editions.ts data/past-editions-raw-incoming.json")` — **sem** `--merge`. O script grava o raw canônico + o markdown.
+5. Rodar: `Bash("npx tsx scripts/refresh-past-editions.ts data/past-editions-raw-incoming.json --resolve-tracking")` — **sem** `--merge`. O `--resolve-tracking` resolve URLs de tracking do Beehiiv (`https://diaria.beehiiv.com/c/...`) pra suas URLs originais via HEAD request, populando `links[]` em cada post (#234 — sem isso, dedup URL contra past editions fica cego). O script grava o raw canônico + o markdown.
 6. Apagar `data/past-editions-raw-incoming.json` (limpeza).
 
 ## Passo 3b — Incremental
@@ -58,7 +58,7 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
 4. Se houver um ou mais posts novos:
    a. Para cada um, chamar `get_post_content` e compor o objeto completo.
    b. Gravar array em `data/past-editions-raw-incoming.json`.
-   c. Rodar: `Bash("npx tsx scripts/refresh-past-editions.ts data/past-editions-raw-incoming.json --merge")`. O script une com o raw existente, trunca a `dedupEditionCount`, regenera o markdown.
+   c. Rodar: `Bash("npx tsx scripts/refresh-past-editions.ts data/past-editions-raw-incoming.json --merge --resolve-tracking")`. O script une com o raw existente, trunca a `dedupEditionCount`, popula `links[]` resolvendo tracking URLs do Beehiiv (#234) pra entries novas, regenera o markdown.
    d. Apagar `data/past-editions-raw-incoming.json`.
 5. **Caso de borda — paginação:** se a primeira página tem `dedupEditionCount` posts **todos** mais novos que `maxKnownDate`, pode haver mais posts novos na página 2. Busque a próxima página, continue filtrando, até encontrar um post com `published_at <= maxKnownDate` (a partir daí, todos os seguintes são mais antigos e podem parar). Em geral, com refresh diário, essa situação não ocorre.
 
