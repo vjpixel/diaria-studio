@@ -10,6 +10,10 @@ import {
   isStage4Complete,
   buildPrevResultLine,
   readPrevPollStats,
+  extractFirstHref,
+  extractFirstWikipediaUrl,
+  extractCommonsUserUrl,
+  buildCreditLine,
 } from "../scripts/eai-compose.ts";
 
 interface MockImage {
@@ -358,5 +362,149 @@ describe("buildEaiMd com prevResultLine (#107)", () => {
       null,
     );
     assert.ok(!md.includes("Resultado"));
+  });
+});
+
+describe("extractFirstHref (#256)", () => {
+  it("extrai href absoluta", () => {
+    const html = '<a href="https://example.com/foo">link</a>';
+    assert.equal(extractFirstHref(html), "https://example.com/foo");
+  });
+
+  it("normaliza protocol-relative `//commons.wikimedia.org/...` para https", () => {
+    const html = '<a href="//commons.wikimedia.org/wiki/User:ArildV">name</a>';
+    assert.equal(extractFirstHref(html), "https://commons.wikimedia.org/wiki/User:ArildV");
+  });
+
+  it("expande `/wiki/...` para en.wikipedia.org", () => {
+    const html = '<a href="/wiki/Foo">Foo</a>';
+    assert.equal(extractFirstHref(html), "https://en.wikipedia.org/wiki/Foo");
+  });
+
+  it("retorna null para html undefined", () => {
+    assert.equal(extractFirstHref(undefined), null);
+  });
+
+  it("retorna null para html sem `<a>` tag", () => {
+    assert.equal(extractFirstHref("Plain text without links"), null);
+  });
+});
+
+describe("extractFirstWikipediaUrl (#256)", () => {
+  it("extrai a primeira href para en.wikipedia.org/wiki/", () => {
+    const html =
+      '<a rel="mw:WikiLink/Interwiki" href="https://en.wikipedia.org/wiki/Pilot%20boat">Pilot boat</a>';
+    assert.equal(
+      extractFirstWikipediaUrl(html),
+      "https://en.wikipedia.org/wiki/Pilot%20boat",
+    );
+  });
+
+  it("ignora URLs não-Wikipedia", () => {
+    const html =
+      '<a href="https://commons.wikimedia.org/wiki/Foo">commons</a> <a href="https://en.wikipedia.org/wiki/Real">subject</a>';
+    assert.equal(
+      extractFirstWikipediaUrl(html),
+      "https://en.wikipedia.org/wiki/Real",
+    );
+  });
+
+  it("pega o primeiro link wikipedia mesmo com múltiplos", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/A">A</a> e <a href="https://en.wikipedia.org/wiki/B">B</a>';
+    assert.equal(extractFirstWikipediaUrl(html), "https://en.wikipedia.org/wiki/A");
+  });
+
+  it("retorna null quando nada bate", () => {
+    assert.equal(extractFirstWikipediaUrl("plain text"), null);
+    assert.equal(extractFirstWikipediaUrl(undefined), null);
+  });
+});
+
+describe("extractCommonsUserUrl (#256, expansão)", () => {
+  it("extrai href protocol-relative do html field (formato real da API)", () => {
+    const html = '<a href="//commons.wikimedia.org/wiki/User:ArildV" title="User:ArildV">Arild Vågen</a>';
+    assert.equal(
+      extractCommonsUserUrl(html),
+      "https://commons.wikimedia.org/wiki/User:ArildV",
+    );
+  });
+
+  it("extrai href absoluta do html field", () => {
+    const html = '<a href="https://commons.wikimedia.org/wiki/User:Foo">Foo</a>';
+    assert.equal(
+      extractCommonsUserUrl(html),
+      "https://commons.wikimedia.org/wiki/User:Foo",
+    );
+  });
+
+  it("fallback: URL bare em texto plain (compat antiga)", () => {
+    const text = "Photo by https://commons.wikimedia.org/wiki/User:LegacyUser";
+    assert.equal(
+      extractCommonsUserUrl(text),
+      "https://commons.wikimedia.org/wiki/User:LegacyUser",
+    );
+  });
+
+  it("retorna null para input vazio ou sem padrão", () => {
+    assert.equal(extractCommonsUserUrl(undefined), null);
+    assert.equal(extractCommonsUserUrl("Just a name without URL"), null);
+  });
+});
+
+describe("buildCreditLine (#256 markdown links inline)", () => {
+  it("renderiza credit com links markdown quando html fields presentes", () => {
+    const image = {
+      title: "File:Pilot.jpg",
+      description: {
+        text: "Pilot boat outside Öja island.",
+        html: '<a rel="mw:WikiLink/Interwiki" href="https://en.wikipedia.org/wiki/Pilot%20boat">Pilot boat</a> outside Öja island.',
+      },
+      artist: {
+        text: "Arild Vågen",
+        html: '<a href="//commons.wikimedia.org/wiki/User:ArildV">Arild Vågen</a>',
+      },
+      license: {
+        type: "CC BY-SA 3.0",
+        url: "https://creativecommons.org/licenses/by-sa/3.0",
+      },
+    };
+    const credit = buildCreditLine(image);
+    // Subject link no início
+    assert.match(credit, /\[Pilot boat\]\(https:\/\/en\.wikipedia\.org\/wiki\/Pilot%20boat\)/);
+    // Artist link
+    assert.match(credit, /\[Arild Vågen\]\(https:\/\/commons\.wikimedia\.org\/wiki\/User:ArildV\)/);
+    // License link
+    assert.match(credit, /\[CC BY-SA 3\.0\]\(https:\/\/creativecommons\.org\/licenses\/by-sa\/3\.0\)/);
+  });
+
+  it("graceful degrade: html ausente vira plain text legado", () => {
+    const image = {
+      description: { text: "Algum sujeito qualquer." },
+      artist: { text: "Photographer Name" },
+      license: { type: "CC BY-SA 4.0" },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Photographer Name/);
+    assert.match(credit, /CC BY-SA 4\.0/);
+    // Sem brackets — plain text
+    assert.ok(!credit.includes("]("));
+  });
+
+  it("usa license default quando ausente", () => {
+    const credit = buildCreditLine({ description: { text: "Foo." }, artist: { text: "Bar" } });
+    assert.match(credit, /CC BY-SA 4\.0/);
+  });
+
+  it("artist sem URL: nome plain, license ainda link se url presente", () => {
+    const image = {
+      description: { text: "Foo bar." },
+      artist: { text: "Anonymous" },
+      license: { type: "CC0", url: "https://creativecommons.org/publicdomain/zero/1.0" },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Anonymous/);
+    assert.ok(!credit.includes("[Anonymous]"));
+    assert.match(credit, /\[CC0\]\(https:\/\/creativecommons\.org\/publicdomain\/zero\/1\.0\)/);
   });
 });
