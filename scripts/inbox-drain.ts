@@ -239,6 +239,17 @@ export function shouldWarnEmptyDrains(cursor: InboxCursor): boolean {
   return (cursor.consecutive_empty_drains ?? 0) >= EMPTY_DRAIN_WARN_THRESHOLD;
 }
 
+/**
+ * Strip do prefixo `label:NomeDoLabel` da query do Gmail (#274). Usado quando
+ * detectamos múltiplos drains consecutivos vazios pra rodar uma checagem
+ * alternativa sem o filtro de label — distingue inbox genuinamente vazio
+ * (editor não mandou nada) de label quebrado (e-mails chegando mas sem label
+ * aplicada).
+ */
+export function stripLabelFromQuery(query: string): string {
+  return query.replace(/(^|\s)label:[^\s]+/gi, "").trim();
+}
+
 // ---------------------------------------------------------------------------
 // Run log — registra exceções para /diaria-log ver (stderr é invisível)
 // ---------------------------------------------------------------------------
@@ -453,11 +464,47 @@ async function main(): Promise<void> {
   } else {
     updatedCursor = incrementEmptyDrain(cursor);
     if (shouldWarnEmptyDrains(updatedCursor)) {
-      warnReason = `inbox vazio em ${updatedCursor.consecutive_empty_drains} drains consecutivos — verificar se filtro Gmail (label '${extractLabelName(gmailQuery) || gmailQuery}') está aplicando aos novos e-mails.`;
-      console.error(`⚠️  ${warnReason}`);
-      logDrainWarn(warnReason, {
-        consecutive_empty_drains: updatedCursor.consecutive_empty_drains,
-      });
+      // #274: distinguir inbox genuinamente vazio de label quebrada.
+      // Roda 1 query alternativa sem `label:` na mesma janela. Se também
+      // voltar 0 → genuinamente vazio, reset silencioso pra não acumular
+      // ruído eterno. Se voltar >0 → label quebrada, escala pra error.
+      let labelBroken = false;
+      let altThreadCount = 0;
+      if (isLabelQuery(gmailQuery)) {
+        const altQuery = `${stripLabelFromQuery(gmailQuery)} after:${afterDate}`.trim();
+        try {
+          const altThreads = await searchThreads(altQuery);
+          altThreadCount = altThreads.length;
+          labelBroken = altThreadCount > 0;
+        } catch (err) {
+          // Falha na query alternativa não bloqueia — mantém comportamento
+          // anterior (warn padrão). Apenas registra pra audit.
+          logDrainWarn(
+            `auto-reset alt query falhou: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      if (labelBroken) {
+        warnReason = `label_broken: ${altThreadCount} thread(s) na janela após:${afterDate} sem label '${extractLabelName(gmailQuery)}' aplicada. Verifique o filtro do Gmail (docs/gmail-inbox-setup.md).`;
+        console.error(`❌ ${warnReason}`);
+        logDrainError(new Error(warnReason));
+      } else if (isLabelQuery(gmailQuery)) {
+        // Genuinamente vazio: reset silencioso, sem warning. Próximo
+        // drain re-verifica do zero.
+        updatedCursor = resetEmptyDrain(updatedCursor);
+        logDrainWarn(
+          `auto-reset: inbox genuinamente vazio (alt query também 0 threads). Silenciando warnings até voltar a aparecer e-mail.`,
+          { previous_consecutive_empty_drains: cursor.consecutive_empty_drains ?? 0 },
+        );
+      } else {
+        // Query custom sem label: mantém warning padrão (sem como diferenciar).
+        warnReason = `inbox vazio em ${updatedCursor.consecutive_empty_drains} drains consecutivos com query custom '${gmailQuery}' — verificar se filtro está correto.`;
+        console.error(`⚠️  ${warnReason}`);
+        logDrainWarn(warnReason, {
+          consecutive_empty_drains: updatedCursor.consecutive_empty_drains,
+        });
+      }
     }
   }
   saveCursor(updatedCursor);
