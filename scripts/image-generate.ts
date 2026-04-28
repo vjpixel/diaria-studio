@@ -125,12 +125,14 @@ function main() {
     renameSync(outJpgPath, wideJpgPath);
     console.error(`D1 wide: ${wideJpgPath} (1600×800)`);
 
-    // Crop centro para 1:1 (800×800)
+    // Crop centro para 1:1 (800×800).
+    // Usa process.execPath + --import tsx (em vez de npx + shell:true) pra
+    // preservar args com espaços e evitar DEP0190 — mesmo pattern do #213.
     try {
       execFileSync(
-        "npx",
-        ["tsx", cropScript, wideJpgPath, squareJpgPath, "--width", "800", "--height", "800"],
-        { stdio: "inherit", cwd: ROOT, shell: true }
+        process.execPath,
+        ["--import", "tsx", cropScript, wideJpgPath, squareJpgPath, "--width", "800", "--height", "800"],
+        { stdio: "inherit", cwd: ROOT }
       );
       console.error(`D1 square: ${squareJpgPath} (800×800)`);
     } catch (e: unknown) {
