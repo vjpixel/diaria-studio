@@ -223,9 +223,28 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-function firstSentence(text: string): string {
-  const match = text.match(/^[^.!?]+[.!?]/);
-  return (match ? match[0] : text).trim();
+const SENTENCE_ABBREVIATIONS = [
+  "U.S", "U.K", "U.N", "E.U", "D.C",
+  "Mr", "Mrs", "Ms", "Dr", "Prof",
+  "St", "Mt", "Ft",
+  "Jr", "Sr",
+  "Inc", "Ltd", "Co", "Corp",
+];
+
+export function firstSentence(text: string): string {
+  // Procura [.!?] seguido de espaço+Maiúscula (ou fim).
+  // Ignora `.` precedido de abreviação conhecida (#299).
+  const re = /([.!?])(?=\s+[A-Z]|\s*$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1] === ".") {
+      const before = text.slice(Math.max(0, m.index - 5), m.index);
+      const isAbbrev = SENTENCE_ABBREVIATIONS.some((abbr) => before.endsWith(abbr));
+      if (isAbbrev) continue;
+    }
+    return text.slice(0, m.index + 1).trim();
+  }
+  return text.trim();
 }
 
 async function fetchPotd(iso: string): Promise<WikimediaImage | null> {
