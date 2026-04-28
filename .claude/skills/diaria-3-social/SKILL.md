@@ -15,6 +15,14 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
   > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `--no-gate` (opcional) = pular o gate humano final, auto-aprovar. Drive sync continua normal.
 
+## Variáveis derivadas
+
+Antes de começar, derivar de `$1`:
+
+- `YYMM` = primeiros 4 chars de `$1` (ex: `$1=260423` → `YYMM=2604`). Usado no path do Drive (`edicoes/{YYMM}/$1/...`).
+
+`{YYMM}` aparece em strings ao longo deste playbook — substituir pelo valor real antes de emitir saída ao usuário.
+
 ## Pré-requisitos
 
 - `data/editions/$1/02-reviewed.md` deve existir (Stage 2 completo). Se não, parar e instruir: rode `/diaria-2-escrever $1` antes.
