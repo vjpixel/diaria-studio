@@ -101,7 +101,10 @@ export function applyClariceSuggestions(
     }
     const count = countOccurrences(patched, s.from);
     if (count === 1) {
-      patched = patched.replace(s.from, s.to);
+      // Function-form replacement evita interpretação de $ patterns ($&, $1,
+      // $`, $') no `to` — relevante se Clarice algum dia retornar correções
+      // que incluam esses caracteres literais.
+      patched = patched.replace(s.from, () => s.to);
       applied.push(s);
     } else if (count === 0) {
       skipped.push({ ...s, reason: "not_found", count });

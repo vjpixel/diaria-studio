@@ -123,6 +123,22 @@ describe("applyClariceSuggestions", () => {
     assert.equal(r.skipped[0].reason, "ambiguous");
   });
 
+  it("não interpreta $ patterns no replacement (function-form)", () => {
+    // String.replace(string, string) interpreta $&/$1/$`/$' como special
+    // patterns. Helper usa function-form pra preservar literal.
+    const r = applyClariceSuggestions("foo bar", [
+      { from: "foo", to: "x$&y" },
+    ]);
+    assert.equal(r.patched, "x$&y bar");
+  });
+
+  it("preserva $1 literal no replacement", () => {
+    const r = applyClariceSuggestions("foo bar", [
+      { from: "foo", to: "captured: $1" },
+    ]);
+    assert.equal(r.patched, "captured: $1 bar");
+  });
+
   it("smoke real (replicando caso do PR #211)", () => {
     // Caso descoberto no smoke do diaria-3-social
     const text = "para manter empregabilidade quem ainda avalia adoção e mais e mais";
