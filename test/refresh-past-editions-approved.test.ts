@@ -24,9 +24,13 @@ describe("aammddFromIso (#238)", () => {
     assert.equal(aammddFromIso("2027-01-01T18:00:00Z"), "270101");
   });
 
-  it("aceita ISO date-only (interpretado como meia-noite UTC, 21h BR dia anterior)", () => {
-    // "2026-04-25" → 2026-04-25T00:00Z → BR 2026-04-24T21:00 → 260424
-    assert.equal(aammddFromIso("2026-04-25"), "260424");
+  it("ISO date-only é tratado como dia BR sem rolagem timezone (guard)", () => {
+    // Sem o guard, "2026-04-25" viraria 260424 (UTC midnight = 21h BR dia-1).
+    // Com guard: trata como dia BR explícito.
+    assert.equal(aammddFromIso("2026-04-25"), "260425");
+    assert.equal(aammddFromIso("2025-12-31"), "251231");
+    // Whitespace tolerância
+    assert.equal(aammddFromIso("  2026-04-25  "), "260425");
   });
 
   it("retorna string vazia em ISO inválido", () => {

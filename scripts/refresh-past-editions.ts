@@ -183,8 +183,18 @@ export async function populateLinksFromTracking(
  * de edição refletem a data brasileira, não UTC. Sem isso, edições publicadas
  * à noite BR (>=21h, em horário de verão >=22h) caem na pasta UTC do dia
  * seguinte e o lookup do `_internal/01-approved.json` falha silenciosamente.
+ *
+ * ISO date-only (`"2026-04-25"`) é tratado como BR-local midnight do mesmo dia
+ * — sem isso, `new Date("2026-04-25")` interpreta como UTC midnight e a
+ * conversão pra BR rola pro dia anterior (260424 quando o usuário esperaria 260425).
  */
 export function aammddFromIso(iso: string): string {
+  const trimmed = iso.trim();
+  // Date-only: interpretar como dia BR sem rolar timezone (footgun).
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (dateOnly) {
+    return `${dateOnly[1].slice(-2)}${dateOnly[2]}${dateOnly[3]}`;
+  }
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const fmt = new Intl.DateTimeFormat("en-CA", {
