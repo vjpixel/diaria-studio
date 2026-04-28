@@ -98,26 +98,18 @@ node -e "
 4. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
 5. **Fallback agendar** (se rascunho não disponível):
-   - Calcular `scheduled_at` usando:
+   - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`):
      ```bash
-     node -e "
-       const cfg=JSON.parse(require('fs').readFileSync('platform.config.json','utf8'));
-       const sched=cfg.publishing.social.fallback_schedule.linkedin;
-       const tz=cfg.publishing.social.timezone;
-       const time=sched['d{N}_time'];
-       const dayOffset=sched.day_offset || 0; // Se schedule_day_offset foi recebido no input, usar esse valor aqui em vez de sched.day_offset
-       const [h,m]=time.split(':');
-       const target=new Date();
-       target.setDate(target.getDate()+dayOffset);
-       const parts=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(target).split('-');
-       const dateStr=parts.join('-');
-       const tzFmt=new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'longOffset'});
-       const tzName=tzFmt.formatToParts(target).find(p=>p.type==='timeZoneName')?.value||'GMT+0';
-       const tzMatch=tzName.match(/GMT([+-]\\d+(?::\\d+)?)/);
-       const tzOffset=tzMatch?tzMatch[1].padEnd(6,'0').replace(/^([+-]\\d{1,2})$/,'\\$100').slice(0,6):'+00:00';
-       process.stdout.write(\`\${dateStr}T\${h}:\${m}:00\${tzOffset}\`);
-     "
+     # Extrair AAMMDD do edition_dir (ex: data/editions/260428/ → 260428)
+     EDITION=$(basename "{edition_dir}")
+     npx tsx scripts/compute-social-schedule.ts \
+       --edition "$EDITION" \
+       --destaque d{N} \
+       --platform linkedin \
+       ${schedule_day_offset:+--day-offset $schedule_day_offset}
      ```
+     O script lê `platform.config.json`, parseia `EDITION` em data real, soma `day_offset` (com override de `schedule_day_offset` se presente), e formata ISO 8601 com offset do timezone configurado. Output: `2026-04-28T09:00:00-03:00`.
+   - **Validar `scheduled_at` no futuro** antes de agendar na UI: se ISO < `Date.now()`, abortar com `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={edition_date}, day_offset=N"`. Evita agendar pra passado em recovery de edição antiga.
    - Agendar na UI seguindo o playbook (data + hora).
    - Capturar URL, `status = "scheduled"`, `scheduled_at = <ISO>`.
 
