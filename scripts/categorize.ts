@@ -133,6 +133,12 @@ const LANCAMENTO_PATTERNS: RegExp[] = [
   /^blog\.research\.google\//,
   // Meta AI research (pages, não the /research/ section que é paper)
   /^ai\.meta\.com\/(blog|news)\//,
+  // GitHub Pages como site oficial de projeto open-source — qualquer
+  // {project}.github.io conta como lançamento (ex: openmoss.github.io
+  // pra MOSS-Audio na 260429). Subdomain obrigatório (github.io bare
+  // redireciona pra github.com). Tutoriais hospedados em github.io são
+  // re-classificados antes via TUTORIAL_DOMAINS/PATTERNS (linhas 307-317).
+  /^[a-z0-9][a-z0-9-]*\.github\.io\//,
 ];
 
 // ---------------------------------------------------------------------------
