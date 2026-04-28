@@ -32,6 +32,13 @@ export interface DateVerifyResult {
   verified_date: string | null; // null if fetch failed or no date found
   changed: boolean;
   fetch_failed: boolean;
+  /**
+   * Flag determinística pra renderização (#226). Hoje é alias de `fetch_failed`
+   * — true quando não foi possível confirmar a data via fetch da página.
+   * Pré-populada aqui em vez de no research-reviewer (Haiku) que divergia
+   * em produção, marcando como unverified mesmo quando date_corrected.
+   */
+  date_unverified: boolean;
   note?: string;
 }
 
@@ -190,6 +197,7 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
       verified_date: null,
       changed: false,
       fetch_failed: true,
+      date_unverified: true,
       note,
     };
   }
@@ -201,6 +209,7 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
     verified_date: date,
     changed,
     fetch_failed: false,
+    date_unverified: false,
     note: changed ? `era ${originalNorm ?? article.date} → encontrado ${date} (${note})` : undefined,
   };
 }

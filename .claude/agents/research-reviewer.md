@@ -24,10 +24,10 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    ```bash
    npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json
    ```
-4. Ler `tmp-dates-output.json`. Para cada artigo:
-   - Se `changed: true` e `fetch_failed: false`: substituir o campo `date` pelo `verified_date`. Marcar `date_unverified: false` no artigo.
-   - Se `changed: false` e `fetch_failed: false`: manter data original (confirmada). Marcar `date_unverified: false`.
-   - Se `fetch_failed: true`: usar a data original para o cálculo da janela (benefício da dúvida). **Marcar `date_unverified: true` no artigo** — o renderizador de MD usa essa flag para exibir `⚠️` ao lado da data, avisando o editor que é a data declarada pela fonte de pesquisa (não confirmada via fetch da página).
+4. Ler `tmp-dates-output.json`. Para cada entry, o script já populou `date_unverified` (#226 — não recalcule). Aplique mecanicamente:
+   - Substituir `article.date` por `verified_date` se `changed: true && fetch_failed: false` (data confirmada via fetch).
+   - Manter `article.date` original se `changed: false` ou `fetch_failed: true`.
+   - **Copiar `date_unverified` do output do script para o `article.date_unverified`** — `true` apenas quando `fetch_failed: true`. **Não decidir por conta própria** se a data está unverified; isso já vem resolvido do script. (#226: agente Haiku divergia, marcando 100% como unverified mesmo quando confirmado.)
 5. Gravar o `categorized` atualizado (com datas corrigidas) em `{edition_dir}tmp-categorized-dated.json`.
 6. **Filtrar por janela de publicação via script** (NÃO calcular no agente — usar o script determinístico):
    ```bash
