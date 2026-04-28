@@ -70,6 +70,11 @@ const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 interface EditionCache {
   day_folder_id: string;
   files: Record<string, FileEntry>;
+  /** Cache de subpastas dentro do dia (#253). Map subpath → Drive folder ID.
+   * Ex: `{"_internal": "abc123..."}`. Permite que arquivos com `/` no
+   * filename (ex: `_internal/02-clarice-diff.md`) sejam organizados em
+   * subpastas reais no Drive em vez de virarem parte do nome do arquivo. */
+  subfolder_ids?: Record<string, string>;
 }
 
 interface DriveCache {
@@ -341,6 +346,49 @@ async function resolveEdicoesFolder(cache: DriveCache): Promise<string> {
   return edicoes;
 }
 
+/**
+ * Pure: separa um filename relativo em `{ subpath, basename }`. Suporta
+ * múltiplos níveis (`a/b/c.md` → subpath=`a/b`, basename=`c.md`). Sem `/`
+ * no filename retorna subpath vazio. Exportado pra testes (#253).
+ */
+export function splitFilePath(filename: string): { subpath: string; basename: string } {
+  const norm = filename.replace(/\\/g, "/");
+  const idx = norm.lastIndexOf("/");
+  if (idx === -1) return { subpath: "", basename: norm };
+  return { subpath: norm.slice(0, idx), basename: norm.slice(idx + 1) };
+}
+
+async function resolveSubfolder(
+  cache: DriveCache,
+  yymmdd: string,
+  dayFolderId: string,
+  subpath: string
+): Promise<string> {
+  const edCache = cache.editions[yymmdd];
+  if (!edCache) throw new Error(`edition cache missing for ${yymmdd}`);
+  edCache.subfolder_ids ??= {};
+  if (edCache.subfolder_ids[subpath]) return edCache.subfolder_ids[subpath];
+
+  // Cria recursivamente cada segmento (`a/b/c` → cria `a`, depois `b` em `a`, etc.)
+  // Cache também os parents intermediários pra reuso entre arquivos da mesma edição.
+  const segments = subpath.split("/").filter(Boolean);
+  let currentParent = dayFolderId;
+  let accumulated = "";
+  for (const seg of segments) {
+    accumulated = accumulated ? `${accumulated}/${seg}` : seg;
+    const cached = edCache.subfolder_ids[accumulated];
+    if (cached) {
+      currentParent = cached;
+      continue;
+    }
+    let folder = await findFolderInParent(seg, currentParent);
+    if (!folder) folder = await driveCreateFolder(seg, currentParent);
+    edCache.subfolder_ids[accumulated] = folder;
+    currentParent = folder;
+  }
+  return currentParent;
+}
+
 async function resolveDayFolder(
   cache: DriveCache,
   yymmdd: string,
@@ -378,9 +426,21 @@ async function pushFile(
   const fileCache = edCache.files[filename];
   const pushCount = fileCache?.push_count ?? 0;
 
-  const ext = extname(filename);
-  const base = filename.slice(0, filename.length - ext.length);
-  const convertToDoc = CONVERT_TO_DOC.has(filename);
+  // #253: filename pode incluir subpath (ex: `_internal/02-clarice-diff.md`).
+  // Antes ia direto como nome do arquivo no dayFolder com `/` literal — Drive
+  // aceita mas vira poluição visual na pasta do dia. Agora resolve subpath em
+  // subpasta real, e usa só o basename como nome do arquivo no Drive.
+  const { subpath, basename } = splitFilePath(filename);
+  const targetParentId = subpath
+    ? await resolveSubfolder(cache, yymmdd, dayFolderId, subpath)
+    : dayFolderId;
+
+  const ext = extname(basename);
+  const base = basename.slice(0, basename.length - ext.length);
+  // CONVERT_TO_DOC contém só basenames (top-level files do dia). Subpasta
+  // raramente vai conter MD que vira Doc, mas a lookup por basename é
+  // consistente com o modelo "Doc é editorial, Tools/_internal é raw".
+  const convertToDoc = CONVERT_TO_DOC.has(basename);
   // Docs nativos não precisam de extensão — Drive trata extension como cosmético.
   // Pra arquivos convertidos, tiramos `.md` do título pra ficar consistente com
   // o modelo "arquivo sem extensão = Doc".
@@ -388,11 +448,11 @@ async function pushFile(
   // Estratégia (#37): o nome canônico (sem `.vN`) sempre aponta para a versão
   // mais recente. Versões anteriores ficam arquivadas como `.vN`. Editor abre o
   // arquivo canônico no Drive sem ter que procurar o maior N.
-  const canonicalTitle = convertToDoc ? base : filename;
+  const canonicalTitle = convertToDoc ? base : basename;
   const archiveTitle = convertToDoc
     ? `${base}.v${pushCount}`
     : `${base}.v${pushCount}${ext}`;
-  const mimeType = mimeTypeFor(filename);
+  const mimeType = mimeTypeFor(basename);
 
   // Primeiro arquiva a versão atual no Drive (se houver). Se a renomeação
   // falhar (arquivo deletado manualmente, permissão, etc.) registramos warning
@@ -415,7 +475,7 @@ async function pushFile(
     canonicalTitle,
     bytes,
     mimeType,
-    dayFolderId,
+    targetParentId,
     convertToDoc
   );
 
