@@ -94,11 +94,20 @@ npx tsx scripts/humanize.ts \
 ## Passo 5 — Clarice (inline, sem Agent)
 
 1. Ler `data/editions/$1/03-social.md`.
-2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. A ferramenta retorna sugestões — **aplicar todas** ao texto.
-4. Sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões).
-5. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Clarice deve mexer só em texto corrido. Se algum cabeçalho sumiu/mudou, restaurar via `Edit` antes de continuar.
-6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
+2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna lista de sugestões `{from, to, rule, explanation}`.
+3. Salvar sugestões em `data/editions/$1/_internal/03-clarice-suggestions.json`.
+4. Aplicar via helper (#212 — evita corromper palavras ambíguas):
+   ```bash
+   npx tsx scripts/clarice-apply.ts \
+     --text-file data/editions/$1/03-social.md \
+     --suggestions data/editions/$1/_internal/03-clarice-suggestions.json \
+     --out data/editions/$1/03-social.md \
+     --report data/editions/$1/_internal/03-clarice-report.json
+   ```
+   O helper aplica só sugestões com count===1 (uma ocorrência exata da palavra `from`); skipa ambíguas (count>1) e not_found (count=0).
+5. Ler `_internal/03-clarice-report.json` para extrair contagens (`applied`, `skipped`). Se `skipped > 0`, anotar pra mencionar no gate humano (review manual recomendada).
+6. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Clarice deve mexer só em texto corrido. Se algum cabeçalho sumiu/mudou, restaurar via `Edit` antes de continuar.
+7. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar. Falha do `clarice-apply.ts` (exit !0) também propaga.
 
 ## Passo 6 — Drive sync push (output)
 
@@ -121,6 +130,7 @@ Stage 3 — Social pronto.
 📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/03-social.md
 
 [Resumo do humanize: X remoções, Y substituições, Z flags] (se houve mudanças)
+[Clarice: A aplicadas, B skipadas (B>0 = review manual recomendada — ver _internal/03-clarice-report.json)]
 [⚠️ Drive sync: N warning(s)] (se houve)
 
 Posts:
