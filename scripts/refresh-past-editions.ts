@@ -40,9 +40,55 @@ type Post = {
 };
 
 function loadConfig(): { dedupEditionCount: number } {
-  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 5 };
+  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 14 };
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 5 };
+  return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 14 };
+}
+
+/**
+ * Verifica se a base de dedup está stale comparando o `published_at` mais recente
+ * com `now`. Diar.ia publica ~diariamente — gap maior que `thresholdDays` indica
+ * que o refresh-dedup-runner falhou silenciosamente ou MCP não retornou edições
+ * recentes (ver #230).
+ *
+ * Exportado pra testes unitários.
+ */
+export function checkFreshness(
+  posts: Post[],
+  now: Date = new Date(),
+  thresholdDays: number = 2,
+): { stale: boolean; daysStale: number | null; mostRecent: string | null } {
+  if (posts.length === 0) {
+    return { stale: true, daysStale: null, mostRecent: null };
+  }
+  const sorted = [...posts].sort(
+    (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime(),
+  );
+  const mostRecent = sorted[0].published_at;
+  const ageMs = now.getTime() - new Date(mostRecent).getTime();
+  const daysStale = Math.floor(ageMs / (1000 * 60 * 60 * 24));
+  return {
+    stale: daysStale > thresholdDays,
+    daysStale,
+    mostRecent,
+  };
+}
+
+function emitFreshnessWarning(posts: Post[], mode: string): void {
+  const result = checkFreshness(posts);
+  if (result.stale) {
+    if (result.mostRecent === null) {
+      process.stderr.write(
+        `⚠️  WARNING: dedup base is empty (mode='${mode}'). Run refresh-dedup-runner in bootstrap mode.\n`,
+      );
+    } else {
+      process.stderr.write(
+        `⚠️  WARNING: dedup base is ${result.daysStale} day(s) stale ` +
+          `(most recent: ${result.mostRecent.slice(0, 10)}, mode='${mode}'). ` +
+          `Investigate refresh-dedup-runner — Beehiiv may have edições mais novas que não chegaram aqui (#230).\n`,
+      );
+    }
+  }
 }
 
 function extractLinks(content: string): string[] {
@@ -124,6 +170,7 @@ function main() {
     console.log(
       `Regen MD-only: regenerated past-editions.md from raw (${posts.length} posts)`,
     );
+    emitFreshnessWarning(posts, "regen-md-only");
     return;
   }
 
@@ -166,6 +213,7 @@ function main() {
   console.log(
     `Wrote ${truncated.length} editions (dedupEditionCount=${dedupEditionCount}) → ${MD_PATH}`
   );
+  emitFreshnessWarning(truncated, isMerge ? "merge" : "full");
 }
 
 // Guard contra import em tests — só rodar main() quando invocado como CLI.

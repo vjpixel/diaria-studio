@@ -54,7 +54,10 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
    ```bash
    Bash("npx tsx scripts/refresh-past-editions.ts --regen-md-only")
    ```
-   Reporte `{"mode": "incremental", "new_posts": 0, "skipped": false, "md_regenerated": true}` e termine. **Não use `skipped: true`** — o markdown foi tocado mesmo sem posts novos.
+   **Freshness sanity check (#230).** Calcule `daysSinceMaxKnown = floor((now - maxKnownDate) / 1 dia)`. A Diar.ia publica diariamente, então gap > 2 dias com `incoming.length === 0` é suspeito — sinaliza que a Beehiiv MCP retornou lista incompleta ou que há filtro/paginação enganando. Se `daysSinceMaxKnown > 2`:
+   - Inclua `freshness_warning: true` e `most_recent_date_age_days: N` no JSON de saída.
+   - **Não falhe** (pode ser estado transitório), mas o orchestrator vai surfacear no gate.
+   Reporte `{"mode": "incremental", "new_posts": 0, "skipped": false, "md_regenerated": true, "freshness_warning": <bool>, "most_recent_date_age_days": N}` e termine. **Não use `skipped: true`** — o markdown foi tocado mesmo sem posts novos.
 4. Se houver um ou mais posts novos:
    a. Para cada um, chamar `get_post_content` e compor o objeto completo.
    b. Gravar array em `data/past-editions-raw-incoming.json`.
@@ -70,11 +73,15 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
   "new_posts": 3,
   "total_in_base": 5,
   "most_recent_date": "2026-04-17",
-  "skipped": false
+  "skipped": false,
+  "freshness_warning": false,
+  "most_recent_date_age_days": 0
 }
 ```
 
 Se `skipped: true`, o `context/past-editions.md` não foi tocado.
+
+`freshness_warning: true` indica que a base local pode estar dessincronizada com a Beehiiv (detalhes na seção Passo 3b). Não é erro, mas o orchestrator deve surfacear no gate do Stage 1 pra que o editor verifique manualmente.
 
 ## Regras
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../scripts/refresh-past-editions.ts";
+import { renderMarkdown, checkFreshness } from "../scripts/refresh-past-editions.ts";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -71,6 +71,65 @@ describe("renderMarkdown", () => {
     const md = renderMarkdown([]);
     assert.ok(md.includes("**edições carregadas:** 0"));
     assert.ok(!md.includes("##"));
+  });
+});
+
+describe("checkFreshness (#230)", () => {
+  it("detecta base vazia como stale", () => {
+    const result = checkFreshness([], new Date("2026-04-28T12:00:00Z"));
+    assert.equal(result.stale, true);
+    assert.equal(result.daysStale, null);
+    assert.equal(result.mostRecent, null);
+  });
+
+  it("detecta base recente (1 dia) como fresh", () => {
+    const posts = [
+      { id: "p1", title: "T", published_at: "2026-04-27T07:55:00Z" },
+    ];
+    const result = checkFreshness(posts, new Date("2026-04-28T12:00:00Z"));
+    assert.equal(result.stale, false);
+    assert.equal(result.daysStale, 1);
+    assert.equal(result.mostRecent, "2026-04-27T07:55:00Z");
+  });
+
+  it("detecta base 2 dias atrás como fresh (no limite, threshold default = 2)", () => {
+    const posts = [
+      { id: "p1", title: "T", published_at: "2026-04-26T12:00:00Z" },
+    ];
+    const result = checkFreshness(posts, new Date("2026-04-28T12:00:00Z"));
+    assert.equal(result.stale, false);
+    assert.equal(result.daysStale, 2);
+  });
+
+  it("detecta base 3 dias atrás como stale", () => {
+    const posts = [
+      { id: "p1", title: "T", published_at: "2026-04-25T12:00:00Z" },
+    ];
+    const result = checkFreshness(posts, new Date("2026-04-28T12:00:00Z"));
+    assert.equal(result.stale, true);
+    assert.equal(result.daysStale, 3);
+  });
+
+  it("usa o post mais recente quando há múltiplos (não depende de ordem)", () => {
+    const posts = [
+      { id: "p1", title: "Old", published_at: "2026-04-14T10:00:00Z" },
+      { id: "p2", title: "New", published_at: "2026-04-27T10:00:00Z" },
+      { id: "p3", title: "Mid", published_at: "2026-04-22T10:00:00Z" },
+    ];
+    const result = checkFreshness(posts, new Date("2026-04-28T10:00:00Z"));
+    assert.equal(result.stale, false);
+    assert.equal(result.daysStale, 1);
+    assert.equal(result.mostRecent, "2026-04-27T10:00:00Z");
+  });
+
+  it("threshold customizado (estrito, threshold=0)", () => {
+    const posts = [
+      { id: "p1", title: "T", published_at: "2026-04-28T08:00:00Z" },
+    ];
+    // Mesmo dia, 4h depois — daysStale = 0 → não-stale com threshold=0
+    const result = checkFreshness(posts, new Date("2026-04-28T12:00:00Z"), 0);
+    assert.equal(result.daysStale, 0);
+    assert.equal(result.stale, false);
   });
 });
 
