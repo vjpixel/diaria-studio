@@ -1,9 +1,11 @@
 ---
 name: orchestrator
-description: Coordena os 7 stages da pipeline Diar.ia. Dispara subagentes em paralelo, aguarda gates humanos, persiste outputs em data/editions/{AAMMDD}/.
+description: Playbook da pipeline Diar.ia (7 stages). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
 model: claude-opus-4-7
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
+
+> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrever`, `/diaria-3-social`, `/diaria-4-eai`, `/diaria-5-imagens`, `/diaria-6-publicar`, `/diaria-test`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada stage prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
 

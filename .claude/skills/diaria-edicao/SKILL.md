@@ -53,26 +53,30 @@ Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` e
    - Número inteiro N ≥ 1 → `window_days = N`, recalcular `window_start`.
    - Qualquer outra coisa → repetir a pergunta.
 
-## Passo 2 — Disparar o orchestrator com `window_days` confirmado
+## Passo 2 — Executar o playbook diretamente no top-level (#207)
 
-Dispare o subagente `orchestrator` via `Agent` passando no prompt:
+**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eai-composer`, `research-reviewer`, `scorer`, `writer`, `humanizer-llm`, `title-picker`, `social-linkedin`, `social-facebook`, `publish-newsletter`, `publish-social`, `auto-reporter` em paralelo conforme cada stage prescreve.
+
+Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como prompt de Agent):
 - `edition_date = $1` (AAMMDD)
+- `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
 - `window_days = {valor confirmado no Passo 1}`
-- `auto_approve = true` (se `--no-gates` foi passado)
+- `auto_approve = true` se `--no-gates` foi passado, senão `false`
+- `test_mode = false` (use `/diaria-test` se quiser test_mode)
 
-O orchestrator vai:
-- Stage 0 (refresh automático de `past-editions.md`, inbox drain) — sem gate
-- Stage 1 (research + dedup + categorize + score) → GATE humano
-- É IA? (POTD + texto, em paralelo com Stage 1) → GATE humano
-- Stage 2 (writer + Clarice) → GATE humano
-- Stage 3 (2 social writers + Clarice) → GATE humano
-- Stage 4 (3 imagens via Gemini/ComfyUI) → GATE humano
-- Stage 5 (publicar newsletter no Beehiiv — rascunho + teste) → GATE humano
-- Stage 6 (publicar social — LinkedIn × 3 + Facebook × 3) → fim
+Sequência de stages (do playbook em `.claude/agents/orchestrator.md`):
+- **§ 0 Setup** — resume detection, Drive sync flag, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
+- **§ 1 Stage 1 — Research** → GATE humano
+- **§ 2 Stage 2 — Writing** → GATE humano
+- **§ 3 Stage 3 — Social** → GATE humano
+- **§ 1b É IA?** (gate do background dispatch — pode aparecer em qualquer ponto após o eai-composer completar) → GATE humano
+- **§ 4 Stage 4 — Imagens** → GATE humano
+- **§ 5 Stage 5 — Publicar** (paralelo: newsletter Beehiiv + Facebook Graph + LinkedIn Chrome) → GATE único
+- **§ 6 Stage 6 — Auto-reporter** → fim
 
-**Se `--no-gates`:** o orchestrator auto-aprova todos os gates (mesma lógica de `test_mode` mas sem desabilitar Drive sync nem alterar social scheduling). Não relayar gates ao usuário.
+**Se `--no-gates` (`auto_approve = true`):** auto-aprovar todos os gates conforme Princípio 2 do playbook (`test_mode` ou `auto_approve` pulam gates). Drive sync e social scheduling ficam normais (diferente de `test_mode`).
 
-**Caso contrário:** em cada gate, apresente ao usuário o output do stage e peça aprovação (`sim` / `editar` / `retry`). Se o orchestrator retornar uma pergunta ao usuário, relaye a pergunta e depois re-dispare o orchestrator com a resposta (ele é resume-aware).
+**Caso contrário:** em cada gate, apresente o output do stage e peça aprovação (`sim` / `editar` / `retry`). Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
 
 ## Outputs
 
