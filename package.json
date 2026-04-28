@@ -6,6 +6,7 @@
   "description": "Pipeline Claude Code para produção da newsletter Diar.ia",
   "scripts": {
     "sync-sources": "tsx scripts/sync-sources.ts",
+    "discover-rss": "tsx scripts/discover-rss.ts",
     "validate-feeds": "tsx scripts/validate-feeds.ts",
     "smoke": "tsx scripts/smoke-test.ts",
     "verify-facebook-posts": "tsx scripts/verify-facebook-posts.ts",
