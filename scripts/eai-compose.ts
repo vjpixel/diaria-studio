@@ -41,8 +41,6 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
-const IS_WINDOWS = process.platform === "win32";
-
 interface WikimediaImage {
   title?: string;
   description?: { text?: string };
@@ -350,12 +348,14 @@ const CHILD_STDIO: ["inherit", "ignore", "inherit"] = [
   "inherit",
 ];
 
+// Roda um script .ts via Node + tsx loader (sem npx middleware, sem shell:true).
+// `--import tsx` registra o loader hooks do tsx (suportado em tsx 4.7+).
+// Sem shell:true → args com espaços são preservados corretamente (#213).
 function runScript(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync("npx", ["tsx", cmd, ...args], {
+  execFileSync(process.execPath, ["--import", "tsx", cmd, ...args], {
     cwd: ROOT,
     stdio: CHILD_STDIO,
-    shell: IS_WINDOWS,
   });
 }
 
@@ -364,11 +364,15 @@ function runNode(cmd: string, args: string[]): void {
   execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
 }
 
-function curlDownload(url: string, outPath: string): void {
-  execFileSync("curl", ["-sL", url, "-o", outPath], {
-    stdio: CHILD_STDIO,
-    shell: IS_WINDOWS,
-  });
+// Baixa URL pra arquivo via fetch nativo (Node 20+) — substitui curl shell-out.
+// Cross-platform sem depender de curl.exe no PATH e sem shell:true.
+async function downloadFile(url: string, outPath: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Download ${url} falhou: HTTP ${res.status}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  writeFileSync(outPath, buf);
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -433,7 +437,7 @@ async function main(): Promise<void> {
     throw new Error("POTD sem URL de imagem");
   }
   const rawPath = resolve(outDir, "01-eai-real-raw.jpg");
-  curlDownload(imageUrl, rawPath);
+  await downloadFile(imageUrl, rawPath);
   const realPath = resolve(outDir, realFilename);
   runScript("scripts/crop-resize.ts", [
     rawPath,
