@@ -10,7 +10,9 @@ import {
   resetEmptyDrain,
   shouldWarnEmptyDrains,
   stripLabelFromQuery,
+  decideEmptyDrainAction,
   EMPTY_DRAIN_WARN_THRESHOLD,
+  type AltQueryResult,
 } from "../scripts/inbox-drain.ts";
 
 describe("extractUrls() — extração via URL_REGEX + strip de pontuação", () => {
@@ -215,5 +217,107 @@ describe("stripLabelFromQuery (#274)", () => {
       stripLabelFromQuery("label:diar-ia/inbox after:2026/04/01"),
       "after:2026/04/01",
     );
+  });
+});
+
+describe("decideEmptyDrainAction (#274 + #286)", () => {
+  const AFTER_DATE = "2026/04/25";
+  const altRanZero: AltQueryResult = { ran: true, thread_count: 0, failed: false };
+  const altRanFound: AltQueryResult = { ran: true, thread_count: 5, failed: false };
+  const altFailed: AltQueryResult = { ran: true, thread_count: 0, failed: true };
+  const altNotRun: AltQueryResult = { ran: false, thread_count: 0, failed: false };
+
+  it("abaixo do threshold: kind=none (sem ação)", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD - 1,
+    };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    assert.deepEqual(r, { kind: "none" });
+  });
+
+  it("threshold + alt ran achou threads: label_broken", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanFound, AFTER_DATE);
+    assert.deepEqual(r, { kind: "label_broken", thread_count: 5 });
+  });
+
+  it("threshold + alt ran 0 threads: silent_reset", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    assert.deepEqual(r, { kind: "silent_reset" });
+  });
+
+  it("#286 fix: threshold + alt FAILED: warn padrão (NÃO silent reset)", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed, AFTER_DATE);
+    assert.equal(r.kind, "warn");
+    if (r.kind === "warn") {
+      assert.match(r.reason, /alt query.*falhou/);
+      assert.match(r.reason, /não dá pra distinguir/);
+      assert.match(r.reason, /Diaria/); // menciona o label name
+    }
+  });
+
+  it("threshold + query custom (sem label:): warn padrão (alt não roda)", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    };
+    const r = decideEmptyDrainAction(
+      cursor,
+      "from:editor@gmail.com",
+      altNotRun,
+      AFTER_DATE,
+    );
+    assert.equal(r.kind, "warn");
+    if (r.kind === "warn") {
+      assert.match(r.reason, /query custom/);
+      assert.match(r.reason, /from:editor@gmail\.com/);
+    }
+  });
+
+  it("threshold acima do limite (5 drains): mesmo comportamento do exato", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD + 5,
+    };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    assert.deepEqual(r, { kind: "silent_reset" });
+  });
+
+  it("warn reason inclui contagem de drains", () => {
+    const cursor = { last_drain_iso: null, consecutive_empty_drains: 7 };
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed, AFTER_DATE);
+    assert.equal(r.kind, "warn");
+    if (r.kind === "warn") {
+      assert.match(r.reason, /7 drains/);
+    }
+  });
+
+  it("label name é extraído da query no warn de alt-failed", () => {
+    const cursor = {
+      last_drain_iso: null,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    };
+    const r = decideEmptyDrainAction(
+      cursor,
+      "label:CustomLabel after:2026/01/01",
+      altFailed,
+      AFTER_DATE,
+    );
+    assert.equal(r.kind, "warn");
+    if (r.kind === "warn") {
+      assert.match(r.reason, /CustomLabel/);
+    }
   });
 });
