@@ -62,6 +62,112 @@ function extractLinks(content: string): string[] {
   return [...urls];
 }
 
+/**
+ * Extrai URLs de tracking do Beehiiv (`https://diaria.beehiiv.com/c/...`)
+ * que `extractLinks` filtra silenciosamente. Usado pelo `--resolve-tracking`
+ * pra resolver originais via HEAD antes de chamar extractLinks.
+ *
+ * Refs #234.
+ */
+export function extractBeehiivTrackingLinks(content: string): string[] {
+  const urls = new Set<string>();
+  const re = /https?:\/\/[^\s<>"')\]]+/gi;
+  for (const m of content.matchAll(re)) {
+    const url = m[0].replace(/[.,);]+$/, "");
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, "");
+      if (host === "diaria.beehiiv.com" || host.endsWith(".beehiiv.com")) {
+        urls.add(url);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return [...urls];
+}
+
+/**
+ * HEAD request com `redirect: 'manual'`, lê o header `Location` pra obter
+ * a URL original que o Beehiiv wrappou como tracking. Tolerante a falhas:
+ * retorna null em qualquer erro (timeout, 4xx, sem Location).
+ *
+ * Beehiiv geralmente responde 302 com Location → URL externa direta.
+ * Algumas sources usam cadeia de redirects; um único HEAD com manual
+ * pega só o primeiro hop, que é suficiente — o destino do primeiro hop
+ * já é a URL externa de interesse pra dedup (não a página final).
+ *
+ * Refs #234.
+ */
+export async function resolveBeehiivTracking(
+  trackingUrl: string,
+  timeoutMs = 5000,
+): Promise<string | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(trackingUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: ctrl.signal,
+    });
+    const loc = res.headers.get("location");
+    if (!loc) return null;
+    try {
+      const host = new URL(loc).hostname.replace(/^www\./, "");
+      // Defesa: se o Location aponta de volta pro beehiiv (cadeia interna),
+      // ignorar. Vale a pena resolver se vai pra fora do domínio.
+      if (host === "diaria.beehiiv.com" || host.endsWith(".beehiiv.com")) {
+        return null;
+      }
+      return loc;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Para um post, popula `links[]` resolvendo URLs de tracking do Beehiiv
+ * em paralelo com concurrency limit. Idempotente: se o post já tem
+ * `links[]` não-vazio, retorna sem alterar (caller decide quando re-resolver).
+ *
+ * Refs #234.
+ */
+export async function populateLinksFromTracking(
+  post: Post,
+  concurrency = 5,
+): Promise<{ resolved: number; skipped: number }> {
+  if (post.links && post.links.length > 0) {
+    return { resolved: 0, skipped: 0 };
+  }
+  const content = [post.html, post.markdown].filter(Boolean).join("\n");
+  if (!content) return { resolved: 0, skipped: 0 };
+
+  const trackingUrls = extractBeehiivTrackingLinks(content);
+  if (trackingUrls.length === 0) {
+    // Conteúdo sem tracking — fall-through pro extractLinks tradicional.
+    post.links = extractLinks(content);
+    return { resolved: 0, skipped: 0 };
+  }
+
+  const resolved = new Set<string>(extractLinks(content));
+  let skipped = 0;
+  for (let i = 0; i < trackingUrls.length; i += concurrency) {
+    const batch = trackingUrls.slice(i, i + concurrency);
+    const out = await Promise.all(batch.map((u) => resolveBeehiivTracking(u)));
+    for (const u of out) {
+      if (u) resolved.add(u);
+      else skipped++;
+    }
+  }
+  post.links = [...resolved];
+  return { resolved: post.links.length, skipped };
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -108,7 +214,7 @@ export function renderMarkdown(posts: Post[]): string {
   return lines.join("\n");
 }
 
-function main() {
+async function main() {
   // Modo regen-md-only (#162): regenera o MD a partir do raw existente.
   // Sem input file. Útil quando git resetou o tracked MD mas o raw
   // (gitignored) está atualizado.
@@ -130,12 +236,13 @@ function main() {
   const inputPath = process.argv[2];
   if (!inputPath) {
     console.error(
-      "Usage: refresh-past-editions.ts <input.json> [--merge] | --regen-md-only",
+      "Usage: refresh-past-editions.ts <input.json> [--merge] [--resolve-tracking] | --regen-md-only",
     );
     process.exit(1);
   }
 
   const isMerge = process.argv.includes("--merge");
+  const resolveTracking = process.argv.includes("--resolve-tracking");
   const { dedupEditionCount } = loadConfig();
 
   const incoming = readJson<Post[]>(inputPath);
@@ -160,6 +267,26 @@ function main() {
   );
   const truncated = merged.slice(0, dedupEditionCount);
 
+  // Resolução de tracking URLs do Beehiiv (#234). Opt-in via --resolve-tracking.
+  // Cada post sem `links[]` populado tenta resolver via HEAD requests.
+  if (resolveTracking) {
+    let totalResolved = 0;
+    let totalSkipped = 0;
+    let postsTouched = 0;
+    for (const post of truncated) {
+      if (post.links && post.links.length > 0) continue;
+      const { resolved, skipped } = await populateLinksFromTracking(post);
+      totalResolved += resolved;
+      totalSkipped += skipped;
+      postsTouched++;
+    }
+    if (postsTouched > 0) {
+      console.log(
+        `Tracking resolution: ${postsTouched} post(s) sem links — ${totalResolved} URLs resolvidas, ${totalSkipped} HEAD failures`,
+      );
+    }
+  }
+
   writeFileSync(RAW_PATH, JSON.stringify(truncated, null, 2), "utf8");
   writeFileSync(MD_PATH, renderMarkdown(truncated), "utf8");
 
@@ -174,5 +301,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
 }

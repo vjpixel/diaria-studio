@@ -46,7 +46,10 @@ interface Article {
 }
 
 interface Highlight {
-  url: string;
+  /** URL flat (formato legado pré-#229). */
+  url?: string;
+  /** Article com URL nested (formato spec-compliant pós-#229). */
+  article?: { url?: string; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -186,16 +189,19 @@ export function renderLine(
 }
 
 /**
- * Coleta URLs dos candidatos a destaque. Suporta dois formatos:
- *   1. `data.highlights[]` top-level (formato novo).
- *   2. Artigos nos buckets com `highlight: true` inline (formato legado).
+ * Coleta URLs dos candidatos a destaque. Suporta dois formatos no top-level
+ * `highlights[]` (#229):
+ *   - `{ url, ... }` (flat, formato pré-#229)
+ *   - `{ article: { url, ... }, ... }` (nested, spec-compliant pós-#229)
+ * Mais o formato legado de `highlight: true` inline em cada artigo do bucket.
  */
 export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   const urls = new Set<string>();
 
-  // Formato novo: top-level highlights[]
+  // Formato top-level highlights[] — aceita URL flat OU nested em article.
   for (const h of data.highlights ?? []) {
-    if (h.url) urls.add(h.url);
+    const url = h.url ?? h.article?.url;
+    if (url) urls.add(url);
   }
 
   // Formato legado: inline em cada artigo
@@ -216,10 +222,13 @@ export function buildHighlightUrls(data: CategorizedJson): Set<string> {
 export function buildRunnerUpUrls(data: CategorizedJson): Set<string> {
   const urls = new Set<string>();
   for (const r of data.runners_up ?? []) {
-    if (r && typeof r === "object" && "url" in r) {
-      const url = (r as { url?: unknown }).url;
-      if (typeof url === "string") urls.add(url);
-    }
+    if (!r || typeof r !== "object") continue;
+    // Aceita URL flat OU nested em article (mesmo pattern do #229).
+    const obj = r as { url?: unknown; article?: { url?: unknown } };
+    const flat = obj.url;
+    const nested = obj.article?.url;
+    if (typeof flat === "string") urls.add(flat);
+    else if (typeof nested === "string") urls.add(nested);
   }
   return urls;
 }

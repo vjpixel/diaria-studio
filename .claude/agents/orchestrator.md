@@ -244,10 +244,29 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
     --out data/editions/{AAMMDD}/tmp-categorized.json
   ```
   Ler `data/editions/{AAMMDD}/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
-- Disparar `research-reviewer` passando `{ categorized, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). Aplica dois filtros em sequência:
-  1. **Datas**: verifica datas reais via fetch, corrige campos `date`, remove artigos fora da janela de `window_days` dias.
-  2. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
-  Retorna `categorized` limpo + `stats` com contagens de removidos/corrigidos. Usar esse `categorized` daqui em diante. Logar `stats.removals[]` em caso de remoções para rastreabilidade.
+- **Topic clustering (#237).** Rodar `topic-cluster.ts` pra consolidar artigos do mesmo evento dentro do mesmo bucket (ex: 3 fontes diferentes cobrindo o mesmo lançamento). O script mantém o "melhor" representante de cada cluster (fonte cadastrada > discovered, score maior > menor) e captura os runners-up em `clusters[]` pra rastreabilidade.
+  ```bash
+  npx tsx scripts/topic-cluster.ts \
+    --in data/editions/{AAMMDD}/tmp-categorized.json \
+    --out data/editions/{AAMMDD}/tmp-clustered.json \
+    --threshold 0.3
+  ```
+  Threshold `0.3` é agressivo (Jaccard de tokens fraco em adjacency semântica — ver issue #237). False positives são amortecidos pelo ranking intra-cluster (o representante mantido é o de melhor qualidade). Daqui em diante usar `tmp-clustered.json` como input do filtro de janela. Logar `clusters.length` (zero é normal).
+- **Filtro determinístico de janela (#233).** Antes do `research-reviewer`, rodar `scripts/filter-date-window.ts` no nível do orchestrator pra garantir que **nenhum** artigo fora da janela chegue ao agente Haiku. O agente continua responsável pelo filtro de tema recente — mas o filtro de janela é booleano e tem script dedicado, não pode ser delegado.
+  ```bash
+  npx tsx scripts/filter-date-window.ts \
+    --articles data/editions/{AAMMDD}/tmp-clustered.json \
+    --edition-date {edition_iso} \
+    --window-days {window_days} \
+    --out data/editions/{AAMMDD}/tmp-filtered.json
+  # (edition_iso = "20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}")
+  ```
+  Logar `removed.length`. Daqui em diante o input do research-reviewer é `tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial } }`) — extrair `kept` e usar como `categorized`.
+- Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). O agent agora aplica:
+  1. **Datas (verificação + flag)**: roda `verify-dates.ts` pra confirmar `published_at` via fetch, corrige `article.date`, copia `date_unverified` direto do output do script (#226 — não recalcula).
+  2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
+  3. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
+  Retorna `categorized` limpo + `stats`. Logar `stats.removals[]`.
 - Disparar `scorer` (Sonnet) passando `categorized` (saída do research-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
 - **Validação pós-scorer (#104).** Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks: posição original → 1, primeiro promovido → próximo rank disponível, etc. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo. Razão: o spec do scorer é "sempre 6"; quando o LLM diverge, o orchestrator corrige automaticamente em vez de deixar o editor decidir entre menos candidatos.
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
@@ -259,9 +278,11 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
     "runners_up": [...2-3 candidatos com score...],
     "lancamento": [...artigos com campo score, ordenados por score desc...],
     "pesquisa": [...],
-    "noticias": [...]
+    "noticias": [...],
+    "clusters": [...metadata de topic-cluster, runners-up consolidados (#237) — pode ser []...]
   }
   ```
+  Reinjetar `clusters` lendo `tmp-clustered.json` (o `filter-date-window.ts` não preserva esse campo). Se algum cluster member virou `removed` no filtro de janela, manter o cluster mesmo assim — é informativo.
 - Salvar `data/editions/{AAMMDD}/_internal/01-categorized.json`.
 - **Renderizar `01-categorized.md` via script determinístico** (nunca gerar o MD livre-forma — o formato é responsabilidade do script, não do LLM):
   ```bash

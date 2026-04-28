@@ -240,7 +240,7 @@ describe("renderLine", () => {
 });
 
 describe("buildHighlightUrls", () => {
-  it("extrai do formato top-level highlights[]", () => {
+  it("extrai do formato top-level highlights[] (URL flat)", () => {
     const urls = buildHighlightUrls({
       highlights: [{ url: "https://a.com/1" }, { url: "https://b.com/2" }],
       lancamento: [],
@@ -249,6 +249,36 @@ describe("buildHighlightUrls", () => {
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://a.com/1"));
+  });
+
+  it("extrai do formato top-level highlights[] com URL nested em article (#229)", () => {
+    const urls = buildHighlightUrls({
+      highlights: [
+        { rank: 1, score: 92, article: { url: "https://a.com/1", title: "A" } },
+        { rank: 2, score: 88, article: { url: "https://b.com/2", title: "B" } },
+      ],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://a.com/1"));
+    assert.ok(urls.has("https://b.com/2"));
+  });
+
+  it("extrai mix flat e nested no mesmo array (#229)", () => {
+    const urls = buildHighlightUrls({
+      highlights: [
+        { url: "https://flat.com/1" },
+        { rank: 2, article: { url: "https://nested.com/2" } },
+      ],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://flat.com/1"));
+    assert.ok(urls.has("https://nested.com/2"));
   });
 
   it("extrai do formato legado (inline highlight: true)", () => {
@@ -321,6 +351,21 @@ describe("buildRunnerUpUrls (#104)", () => {
     });
     assert.equal(urls.size, 1);
     assert.ok(urls.has("https://r.com/1"));
+  });
+
+  it("aceita URL nested em article (#229)", () => {
+    const urls = buildRunnerUpUrls({
+      runners_up: [
+        { rank: 4, score: 75, article: { url: "https://r.com/nested", title: "X" } },
+        { rank: 5, score: 70, url: "https://r.com/flat" },
+      ],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+    });
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://r.com/nested"));
+    assert.ok(urls.has("https://r.com/flat"));
   });
 
   it("highlights e runners_up são sets disjuntos por construção", () => {
