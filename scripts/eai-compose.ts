@@ -43,11 +43,11 @@ import { execFileSync } from "node:child_process";
 
 interface WikimediaImage {
   title?: string;
-  description?: { text?: string };
+  description?: { text?: string; html?: string };
   thumbnail?: { source?: string; width?: number; height?: number };
   image?: { source?: string; width?: number; height?: number };
-  artist?: { text?: string };
-  credit?: { text?: string };
+  artist?: { text?: string; html?: string };
+  credit?: { text?: string; html?: string };
   license?: { type?: string; url?: string };
 }
 
@@ -81,6 +81,7 @@ interface EaiMeta {
     credit: string;
     artist_url: string | null;
     subject_wikipedia_url: string | null;
+    license_url: string | null;
     image_date_used: string;
   };
 }
@@ -293,13 +294,53 @@ export async function findEligiblePotd(
   );
 }
 
-function extractCommonsUserUrl(artistText: string | undefined): string | null {
-  if (!artistText) return null;
-  // Procura href para User: page no commons
-  const match = artistText.match(
+/**
+ * Extrai a primeira `href="..."` de um trecho HTML. Normaliza URLs
+ * protocol-relative (`//foo.com/...`) pra `https://foo.com/...`. Retorna
+ * null se não houver href ou input ausente.
+ */
+export function extractFirstHref(html: string | undefined): string | null {
+  if (!html) return null;
+  const m = html.match(/href="([^"]+)"/);
+  if (!m) return null;
+  const url = m[1];
+  if (url.startsWith("//")) return `https:${url}`;
+  if (url.startsWith("/wiki/")) return `https://en.wikipedia.org${url}`;
+  return url;
+}
+
+/**
+ * Extrai a primeira href para `en.wikipedia.org/wiki/...` de um trecho HTML.
+ * Heurística para subject_wikipedia_url (#256): tipicamente a description
+ * de uma POTD começa com a entidade central wrapped em `<a>` apontando para
+ * o artigo da Wikipedia. O primeiro link costuma ser o conceito principal.
+ */
+export function extractFirstWikipediaUrl(html: string | undefined): string | null {
+  if (!html) return null;
+  const m = html.match(/href="(https:\/\/en\.wikipedia\.org\/wiki\/[^"]+)"/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Extrai href específica de páginas User: do Wikimedia Commons. Cobre
+ * ambos formatos: `//commons.wikimedia.org/wiki/User:Foo` (protocol-rel,
+ * típico da response API) e `https://commons.wikimedia.org/wiki/User:Foo`.
+ */
+export function extractCommonsUserUrl(artistRaw: string | undefined): string | null {
+  if (!artistRaw) return null;
+  // Caminho preferido (#256): href em html field.
+  const hrefMatch = artistRaw.match(
+    /href="(\/\/|https:\/\/)?commons\.wikimedia\.org\/wiki\/User:[^"]+"/,
+  );
+  if (hrefMatch) {
+    const url = hrefMatch[0].slice(6, -1); // strip `href="` e `"`
+    return url.startsWith("//") ? `https:${url}` : url;
+  }
+  // Fallback legacy: URL bare em text plain.
+  const bare = artistRaw.match(
     /https:\/\/commons\.wikimedia\.org\/wiki\/User:[^\s"'<>]+/,
   );
-  return match ? match[0] : null;
+  return bare ? bare[0] : null;
 }
 
 function extractArtistName(artistText: string | undefined): string {
@@ -309,16 +350,41 @@ function extractArtistName(artistText: string | undefined): string {
   return stripped.replace(/^by\s+/i, "").trim() || "Wikimedia Commons";
 }
 
-function buildCreditLine(image: WikimediaImage): string {
+/**
+ * Constrói a linha de crédito do `01-eai.md` com markdown links inline (#256).
+ *
+ * Antes: plain text sem hyperlinks. Editor precisava buscar e adicionar à mão
+ * URLs do artista, do subject Wikipedia e da license em toda edição.
+ *
+ * Agora: extrai hrefs da response Wikimedia (`description.html`, `artist.html`,
+ * `license.url`) e renderiza como markdown links. Editor ainda pode polir,
+ * mas o caso normal sai pronto.
+ */
+export function buildCreditLine(image: WikimediaImage): string {
   const description = stripHtml(image.description?.text ?? "");
   const sentence = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
+
+  const subjectUrl = extractFirstWikipediaUrl(image.description?.html);
+  const sentenceMd = subjectUrl
+    ? sentence.replace(
+        /^([^\s.]+(?:\s+[^\s.]+)?)/,
+        (match) => `[${match}](${subjectUrl})`,
+      )
+    : sentence;
+
+  const artistRaw = image.artist?.html ?? image.artist?.text ?? image.credit?.text;
   const artistName = extractArtistName(image.artist?.text ?? image.credit?.text);
-  const artistUrl = extractCommonsUserUrl(image.artist?.text ?? image.credit?.text);
-  const license = image.license?.type ?? "CC BY-SA 4.0";
-  const artistMd = artistUrl
-    ? `[${artistName}](${artistUrl})`
-    : artistName;
-  return `${sentence} — ${artistMd} / ${license}.`;
+  const artistUrl =
+    extractCommonsUserUrl(image.artist?.html) ??
+    extractFirstHref(image.artist?.html) ??
+    extractCommonsUserUrl(artistRaw);
+  const artistMd = artistUrl ? `[${artistName}](${artistUrl})` : artistName;
+
+  const licenseType = image.license?.type ?? "CC BY-SA 4.0";
+  const licenseUrl = image.license?.url ?? null;
+  const licenseMd = licenseUrl ? `[${licenseType}](${licenseUrl})` : licenseType;
+
+  return `${sentenceMd} — ${artistMd} / ${licenseMd}.`;
 }
 
 function buildSdPrompt(image: WikimediaImage): {
@@ -479,6 +545,13 @@ async function main(): Promise<void> {
   writeFileSync(mdPath, buildEaiMd(sides, creditLine, prevResultLine));
 
   // 8. Write meta JSON
+  // #256: artist_url + subject_wikipedia_url + license_url extraídos do
+  // html field (não mais null silencioso). Editor não precisa adicionar à mão.
+  const artistUrl =
+    extractCommonsUserUrl(image.artist?.html) ??
+    extractFirstHref(image.artist?.html) ??
+    extractCommonsUserUrl(image.artist?.text ?? image.credit?.text);
+  const subjectWikipediaUrl = extractFirstWikipediaUrl(image.description?.html);
   const meta: EaiMeta = {
     edition,
     composed_at: new Date().toISOString(),
@@ -489,8 +562,9 @@ async function main(): Promise<void> {
       title: image.title ?? "",
       image_url: imageUrl,
       credit,
-      artist_url: extractCommonsUserUrl(image.artist?.text ?? image.credit?.text),
-      subject_wikipedia_url: null,
+      artist_url: artistUrl,
+      subject_wikipedia_url: subjectWikipediaUrl,
+      license_url: image.license?.url ?? null,
       image_date_used: imageDate,
     },
   };
