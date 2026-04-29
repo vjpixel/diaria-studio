@@ -221,7 +221,6 @@ describe("stripLabelFromQuery (#274)", () => {
 });
 
 describe("decideEmptyDrainAction (#274 + #286)", () => {
-  const AFTER_DATE = "2026/04/25";
   const altRanZero: AltQueryResult = { ran: true, thread_count: 0, failed: false };
   const altRanFound: AltQueryResult = { ran: true, thread_count: 5, failed: false };
   const altFailed: AltQueryResult = { ran: true, thread_count: 0, failed: true };
@@ -232,7 +231,7 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD - 1,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
     assert.deepEqual(r, { kind: "none" });
   });
 
@@ -241,7 +240,7 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanFound, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanFound);
     assert.deepEqual(r, { kind: "label_broken", thread_count: 5 });
   });
 
@@ -250,7 +249,7 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
     assert.deepEqual(r, { kind: "silent_reset" });
   });
 
@@ -259,7 +258,7 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed);
     assert.equal(r.kind, "warn");
     if (r.kind === "warn") {
       assert.match(r.reason, /alt query.*falhou/);
@@ -277,7 +276,6 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       cursor,
       "from:editor@gmail.com",
       altNotRun,
-      AFTER_DATE,
     );
     assert.equal(r.kind, "warn");
     if (r.kind === "warn") {
@@ -291,13 +289,13 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD + 5,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
     assert.deepEqual(r, { kind: "silent_reset" });
   });
 
   it("warn reason inclui contagem de drains", () => {
     const cursor = { last_drain_iso: null, consecutive_empty_drains: 7 };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed, AFTER_DATE);
+    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed);
     assert.equal(r.kind, "warn");
     if (r.kind === "warn") {
       assert.match(r.reason, /7 drains/);
@@ -313,7 +311,6 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
       cursor,
       "label:CustomLabel after:2026/01/01",
       altFailed,
-      AFTER_DATE,
     );
     assert.equal(r.kind, "warn");
     if (r.kind === "warn") {

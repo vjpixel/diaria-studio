@@ -263,6 +263,8 @@ export interface AltQueryResult {
   thread_count: number;
   /** True se a alt query lançou exceção. Distingue "0 threads achadas" (decidiu) de "não dá pra decidir". */
   failed: boolean;
+  /** Mensagem de erro da exceção (se failed). Incorporado no warn consolidado (#304). */
+  failReason?: string;
 }
 
 /**
@@ -290,7 +292,6 @@ export function decideEmptyDrainAction(
   cursor: InboxCursor,
   gmailQuery: string,
   altQuery: AltQueryResult,
-  afterDate: string,
 ): EmptyDrainAction {
   if (!shouldWarnEmptyDrains(cursor)) {
     return { kind: "none" };
@@ -309,12 +310,12 @@ export function decideEmptyDrainAction(
   }
 
   // #286 fix: alt query falhou — não dá pra distinguir vazio de label quebrada.
-  // Cai pro warn padrão pra editor investigar (em vez de silent reset que
-  // mascara o failure).
+  // Warn consolidado aqui (sem double-log no catch do caller — #304).
   if (altQuery.ran && altQuery.failed) {
+    const failDetail = altQuery.failReason ? ` (erro: ${altQuery.failReason})` : "";
     return {
       kind: "warn",
-      reason: `inbox vazio em ${consecutive} drains consecutivos; alt query (sem label '${labelName}') falhou — não dá pra distinguir inbox vazio de label quebrada. Verifique acesso ao Gmail (docs/gmail-inbox-setup.md) e tente de novo.`,
+      reason: `inbox vazio em ${consecutive} drains consecutivos; alt query (sem label '${labelName}') falhou${failDetail} — não dá pra distinguir inbox vazio de label quebrada. Verifique acesso ao Gmail (docs/gmail-inbox-setup.md) e tente de novo.`,
     };
   }
 
@@ -555,9 +556,8 @@ async function main(): Promise<void> {
         altQueryResult.thread_count = altThreads.length;
       } catch (err) {
         altQueryResult.failed = true;
-        logDrainWarn(
-          `auto-reset alt query falhou: ${(err as Error).message}`,
-        );
+        // Não logar aqui — decideEmptyDrainAction emite o warn consolidado (#304)
+        altQueryResult.failReason = (err as Error).message;
       }
     }
 
@@ -565,7 +565,6 @@ async function main(): Promise<void> {
       updatedCursor,
       gmailQuery,
       altQueryResult,
-      afterDate,
     );
 
     switch (action.kind) {
