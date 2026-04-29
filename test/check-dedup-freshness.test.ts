@@ -1,28 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateFreshness, parseArgs } from "../scripts/check-dedup-freshness.ts";
+import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 
-/** Roda o script CLI e captura {stdout, stderr, exitCode}. */
+/** Roda o script CLI e captura {stdout, stderr, exitCode}.
+ * Usa spawnSync (não execFileSync) para capturar stdout mesmo em exit != 0 (#311).
+ * shell:true no Windows pra resolver npx via cmd.exe.
+ */
 function runCli(args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  try {
-    const stdout = execFileSync(
-      "npx",
-      ["tsx", "scripts/check-dedup-freshness.ts", ...args],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    );
-    return { stdout, stderr: "", exitCode: 0 };
-  } catch (e) {
-    const err = e as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number };
-    return {
-      stdout: err.stdout?.toString() ?? "",
-      stderr: err.stderr?.toString() ?? "",
-      exitCode: err.status ?? 1,
-    };
-  }
+  const result = spawnSync(
+    NPX,
+    ["tsx", "scripts/check-dedup-freshness.ts", ...args],
+    { encoding: "utf8", stdio: "pipe", shell: isWindows },
+  );
+  // spawnSync não throw — retorna status null quando processo não iniciou (ENOENT)
+  if (result.error) throw result.error;
+  return {
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    exitCode: result.status ?? 1,
+  };
 }
 
 const NOW_ISO = "2026-04-28T03:00:00Z";

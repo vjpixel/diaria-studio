@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import {
   parseEditionDate,
   ageDays,
@@ -119,16 +119,17 @@ describe("classifyEdition — decision logic (#98)", () => {
 
 describe("archiveDestination", () => {
   it("agrupa por YYMM dentro do archive dir", () => {
+    // normalize() usa separador nativo do OS — cross-platform (#311)
     assert.equal(
-      archiveDestination("/x/data/archive", "260423"),
-      "/x/data/archive/2604/260423",
+      normalize(archiveDestination("/x/data/archive", "260423")),
+      normalize(join("/x", "data", "archive", "2604", "260423")),
     );
   });
 
   it("Janeiro vai pra YYMM=2601", () => {
     assert.equal(
-      archiveDestination("/x", "260105"),
-      "/x/2601/260105",
+      normalize(archiveDestination("/x", "260105")),
+      normalize(join("/x", "2601", "260105")),
     );
   });
 });

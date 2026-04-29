@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { renderMarkdown } from "../scripts/refresh-past-editions.ts";
 import { execFileSync } from "node:child_process";
+import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import {
   mkdtempSync,
   writeFileSync,
@@ -119,9 +120,9 @@ describe("--regen-md-only flag (#162)", () => {
       );
       // Não cria past-editions.md (simulando git reset)
       execFileSync(
-        "npx",
+        NPX,  // #311: cross-platform
         ["tsx", "scripts/refresh-past-editions.ts", "--regen-md-only"],
-        { cwd: sandboxRoot, stdio: "pipe" },
+        { cwd: sandboxRoot, stdio: "pipe", shell: isWindows },
       );
       const md = readFileSync(
         join(sandboxRoot, "context/past-editions.md"),
@@ -141,7 +142,7 @@ describe("--regen-md-only flag (#162)", () => {
       let exitCode = 0;
       try {
         execFileSync(
-          "npx",
+          NPX,  // #311: usa npx.cmd em Windows
           ["tsx", "scripts/refresh-past-editions.ts", "--regen-md-only"],
           { cwd: sandboxRoot, stdio: "pipe" },
         );
