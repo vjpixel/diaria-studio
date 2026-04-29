@@ -59,7 +59,7 @@ interface ApprovedJson {
   lancamento: Article[];
   pesquisa: Article[];
   noticias: Article[];
-  tutorial?: Article[];
+  tutorial: Article[]; // sempre array, nunca ausente (#328)
 }
 
 type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial";
@@ -248,15 +248,13 @@ function main() {
     lancamento: resolveBucket(sections.lancamento),
     pesquisa: resolveBucket(sections.pesquisa),
     noticias: resolveBucket(sections.noticias),
-    ...(tutorialResolved.length > 0 || (data.tutorial && data.tutorial.length > 0)
-      ? { tutorial: tutorialResolved }
-      : {}),
+    tutorial: tutorialResolved, // sempre array — consumers não precisam de ?? [] (#328)
   };
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
   const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length}`;
-  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial?.length ?? 0}`;
+  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial.length}`;
   console.error(
     `[apply-gate-edits] original ${origTotals} → approved ${approvedTotals} — destaques: ${approved.highlights.length}`,
   );
@@ -267,7 +265,7 @@ function main() {
       lancamento: approved.lancamento.length,
       pesquisa: approved.pesquisa.length,
       noticias: approved.noticias.length,
-      tutorial: approved.tutorial?.length ?? 0,
+      tutorial: approved.tutorial.length,
     }) + "\n",
   );
 }

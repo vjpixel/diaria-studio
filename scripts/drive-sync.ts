@@ -312,17 +312,25 @@ function saveCache(cache: DriveCache): void {
 // Folder resolution
 // ---------------------------------------------------------------------------
 
+// Escapa aspas simples em nomes de arquivo/pasta pra uso em queries Drive API (#282).
+// Drive API usa SQL-like syntax: aspas simples são escapadas como \\'
+function escapeDriveQueryString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 async function findFolderInParent(name: string, parentId: string): Promise<string | null> {
+  const safeName = escapeDriveQueryString(name);
   const files = await driveList(
-    `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`
+    `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`
   );
   return files[0]?.id ?? null;
 }
 
 async function findFolderInMyDriveRoot(name: string): Promise<string | null> {
   // Ancora no My Drive do usuário — evita matches em Shared Drives ou compartilhamentos homônimos
+  const safeName = escapeDriveQueryString(name);
   const files = await driveList(
-    `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`
+    `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`
   );
   return files[0]?.id ?? null;
 }

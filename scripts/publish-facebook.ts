@@ -28,6 +28,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,7 +93,7 @@ function extractPostText(socialMd: string, platform: string, destaque: string): 
 // pra ser compartilhado entre publish-facebook (Graph API) e publish-social
 // (LinkedIn via Chrome). Ambos respeitam o invariante:
 // target_date = parse(editionDate) + day_offset, nunca today() + day_offset.
-import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
+// (import movido pro topo do arquivo em #290)
 
 function computeScheduledAt(
   config: any,

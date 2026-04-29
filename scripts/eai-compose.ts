@@ -479,12 +479,13 @@ export async function getPtLabel(enUrl: string): Promise<string | null> {
  */
 export function extractCommonsUserUrl(artistRaw: string | undefined): string | null {
   if (!artistRaw) return null;
-  // Caminho preferido (#256): href em html field.
+  // Caminho preferido (#256, #283): href em html field — captura group pra evitar
+  // slice mágico acoplado ao regex.
   const hrefMatch = artistRaw.match(
-    /href="(\/\/|https:\/\/)?commons\.wikimedia\.org\/wiki\/User:[^"]+"/,
+    /href="((?:\/\/|https:\/\/)?commons\.wikimedia\.org\/wiki\/User:[^"]+)"/,
   );
   if (hrefMatch) {
-    const url = hrefMatch[0].slice(6, -1); // strip `href="` e `"`
+    const url = hrefMatch[1]; // capture group — sem slice magic (#283)
     return url.startsWith("//") ? `https:${url}` : url;
   }
   // Fallback legacy: URL bare em text plain.
@@ -538,10 +539,14 @@ export function buildCreditLine(
 
   let sentenceMd: string;
   if (displayLabel && displayUrl && subj && sentence.includes(subj.text)) {
-    // Substituir o texto en pelo label pt no link, apontando pra URL pt (#337)
-    sentenceMd = sentence.replace(subj.text, `[${displayLabel}](${displayUrl})`);
+    // Substituir o texto en pelo label pt no link, apontando pra URL pt (#337).
+    // Usar callback pra evitar interpretação de `$` em replacement string (#300).
+    const mdLink = `[${displayLabel}](${displayUrl})`;
+    sentenceMd = sentence.replace(subj.text, () => mdLink);
   } else if (subj && sentence.includes(subj.text)) {
-    sentenceMd = sentence.replace(subj.text, `[${subj.text}](${subj.url})`);
+    // Usar callback pra evitar interpretação de `$` em replacement string (#300).
+    const mdLink = `[${subj.text}](${subj.url})`;
+    sentenceMd = sentence.replace(subj.text, () => mdLink);
   } else {
     sentenceMd = sentence;
   }

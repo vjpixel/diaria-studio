@@ -70,7 +70,7 @@ Para cada destaque:
 
 **b. Ler conteúdo do post:**
 
-Ler `{edition_dir}/03-social.md`, isolar `# LinkedIn`, depois extrair `## d{N}`:
+Ler `{edition_dir}/03-social.md`, isolar `# LinkedIn`, depois extrair `## d{destaque_num}`:
 
 ```bash
 node -e "
@@ -80,9 +80,9 @@ node -e "
   const platM=md.match(platRe);
   if(!platM){process.stderr.write('LinkedIn section not found');process.exit(1);}
   const plat=platM[1];
-  const dRe=new RegExp('(?:^|\\n)## d{N}\\n([\\s\\S]*?)(?=\\n## d\\d|\\n# |$)','i');
+  const dRe=new RegExp('(?:^|\\n)## d{destaque_num}\\n([\\s\\S]*?)(?=\\n## d\\d|\\n# |$)','i');
   const dM=plat.match(dRe);
-  if(!dM){process.stderr.write('destaque d{N} not found');process.exit(1);}
+  if(!dM){process.stderr.write('destaque d{destaque_num} not found');process.exit(1);}
   let body=dM[1].replace(/<!--[\\s\\S]*?-->/g,'').trim();
   process.stdout.write(body);
 "
@@ -100,19 +100,19 @@ node -e "
 5. **Fallback agendar** (se rascunho não disponível):
    - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`).
 
-     **Você (agent) substitui o placeholder `{DAY_OFFSET_FLAG}` em agent-time** (#289):
-     - Se o input `schedule_day_offset` foi recebido (ex: `/diaria-test` passa `10`), substituir por: ` --day-offset {schedule_day_offset}` (com espaço antes, valor literal). Ex: ` --day-offset 10`.
-     - Caso contrário, substituir por **string vazia** (sem o flag). Script cai no `day_offset` do config.
+     **Você (agent) constrói o comando com ou sem `--day-offset` dependendo do input** (#289, #295, #296):
+     - Se o input `schedule_day_offset` foi recebido com valor `V` (ex: `10`): incluir `--day-offset V` no final.
+     - Caso contrário: omitir o flag. Script usa o `day_offset` do config.
 
-     Importante: **não** usar bash parameter expansion (`${schedule_day_offset:+...}`) — não funciona porque `schedule_day_offset` é variable do agent input, não env var do shell. O bash veria a env undef e nunca passaria o flag.
+     Importante: **não** usar bash parameter expansion — `schedule_day_offset` é input do agent, não env var do shell.
 
      ```bash
      # Extrair AAMMDD do edition_dir (ex: data/editions/260428/ → 260428)
      EDITION=$(basename "{edition_dir}")
-     npx tsx scripts/compute-social-schedule.ts \
-       --edition "$EDITION" \
-       --destaque d{N} \
-       --platform linkedin{DAY_OFFSET_FLAG}
+     # Sem day_offset (caso comum):
+     npx tsx scripts/compute-social-schedule.ts --edition "$EDITION" --destaque d{destaque_num} --platform linkedin
+     # Com day_offset (ex: /diaria-test passa 10):
+     npx tsx scripts/compute-social-schedule.ts --edition "$EDITION" --destaque d{destaque_num} --platform linkedin --day-offset 10
      ```
      O script lê `platform.config.json`, parseia `EDITION` em data real, soma `day_offset` (com override de `schedule_day_offset` se presente), e formata ISO 8601 com offset do timezone configurado. Output: `2026-04-28T09:00:00-03:00`.
    - **Validar `scheduled_at` no futuro** antes de agendar na UI: se ISO < `Date.now()`, abortar com `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={edition_date}, day_offset=N"`. Evita agendar pra passado em recovery de edição antiga.
@@ -134,7 +134,7 @@ Reler o arquivo, append a nova entry, gravar de volta. **Não acumular em memór
 }
 ```
 
-`requires_manual_image_upload: true` é o sinal pro editor (e pro orchestrator gate) de que o post está em rascunho **sem imagem** — editor precisa abrir cada rascunho no LinkedIn e anexar `04-d{N}.jpg` antes de publicar manualmente.
+`requires_manual_image_upload: true` é o sinal pro editor (e pro orchestrator gate) de que o post está em rascunho **sem imagem** — editor precisa abrir cada rascunho no LinkedIn e anexar `04-d{destaque_num}.jpg` antes de publicar manualmente.
 
 **f. Fechar a aba/modal** antes do próximo post.
 
