@@ -21,13 +21,13 @@
   "categorize": {
     "lancamento": [
       "https://anthropic.com/news/claude-4-7-launch/",
-      "https://blog.google/technology/ai/gemini-pro-update/",
       "https://openai.com/news/gpt-5-launch/"
     ],
     "pesquisa": [
       "https://arxiv.org/abs/2404.01234"
     ],
     "noticias": [
+      "https://blog.google/technology/ai/gemini-pro-update/",
       "https://canaltech.com.br/ia/governo-brasil-anuncia-lei.html",
       "https://techcrunch.com/2026/04/23/anthropic-b-funding/",
       "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
@@ -47,11 +47,11 @@
     "- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23"
   ],
   "roundtrip": {
-    "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Google atualiza Gemini Pro com novos recursos — https://blog.google/technology/ai/g",
+    "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Anthropic announces Claude 4.7 — https://anthropic.com/news/claude-4-7-launch/ — 20",
     "parsed_back": {
-      "lancamento": 3,
+      "lancamento": 2,
       "pesquisa": 1,
-      "noticias": 3
+      "noticias": 4
     }
   }
 }
