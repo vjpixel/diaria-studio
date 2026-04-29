@@ -13,7 +13,7 @@
  *
  * Configuração em platform.config.json:
  *   inbox.enabled       (default: true)
- *   inbox.gmailQuery    (default: "label:Diar.iaEditor")
+ *   inbox.gmailQuery    (default: "label:Diaria.Editor")
  *
  * Cursor: data/inbox-cursor.json  — { last_drain_iso: "2026-04-17T14:22:00Z" | null }
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
@@ -414,7 +414,7 @@ async function main(): Promise<void> {
   const configPath = resolve(ROOT, "platform.config.json");
   const config = JSON.parse(readFileSync(configPath, "utf8")) as PlatformConfig;
   const inboxEnabled = config.inbox?.enabled !== false;
-  const gmailQuery = config.inbox?.gmailQuery ?? "label:Diar.iaEditor";
+  const gmailQuery = config.inbox?.gmailQuery ?? "label:Diaria.Editor";
 
   if (!inboxEnabled) {
     const result: DrainResult = {
