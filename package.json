@@ -31,12 +31,12 @@
     "papaparse": "^5.4.1",
     "puppeteer": "^24.42.0",
     "sharp": "^0.34.0",
+    "tsx": "^4.19.0",
     "undici": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/papaparse": "^5.3.15",
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
 }

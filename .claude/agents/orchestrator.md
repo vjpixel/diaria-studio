@@ -190,6 +190,27 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
   - Extrair `inbox_urls` = lista de URLs vindas do drainer + URLs de entradas já existentes em `data/inbox.md` que ainda não foram arquivadas. Extrair `inbox_topics` idem.
 - Ler `context/sources.md` e extrair os nomes+site queries de todas as fontes ativas.
 - Ler `data/source-health.json` (se existir). Anotar fontes com 3+ `recent_outcomes` consecutivos não-ok — **ainda dispara**, mas sinaliza no relatório do Stage 1.
+- **Fetch poll stats da edição anterior (antes do É IA? dispatch — #201).** O `eai-compose.ts` auto-preenche a linha "Resultado da última edição" se `_internal/04-eai-poll-stats.json` existir. Para isso, buscar as stats da edição anterior **antes** de disparar o composer:
+  ```bash
+  # Pegar post_id da edição anterior (primeira entry do raw, que é a mais recente)
+  PREV_POST_ID=$(node -e "
+    const r=require('fs').existsSync('data/past-editions-raw.json')
+      ? JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8'))
+      : [];
+    process.stdout.write(r[0]?.id ?? '');
+  ")
+  if [ -n "$PREV_POST_ID" ] && [ -n "$BEEHIIV_API_KEY" ]; then
+    npx tsx scripts/fetch-beehiiv-poll-stats.ts \
+      --post-id "$PREV_POST_ID" \
+      --out data/editions/{AAMMDD}/_internal/poll-responses.json
+    npx tsx scripts/compute-eai-poll-stats.ts \
+      --edition {AAMMDD} \
+      --responses data/editions/{AAMMDD}/_internal/poll-responses.json \
+      --out data/editions/{AAMMDD}/_internal/04-eai-poll-stats.json
+  fi
+  ```
+  Se `PREV_POST_ID` estiver vazio (primeira edição) OU `BEEHIIV_API_KEY` não setada OU qualquer script falhar com exit != 0 — prosseguir silenciosamente sem stats (eai-compose.ts omite a linha graciosamente). **Não bloquear** o pipeline por ausência de stats.
+
 - **Disparar É IA? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Agent` em **background** (na mesma mensagem dos researchers abaixo) passando:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`

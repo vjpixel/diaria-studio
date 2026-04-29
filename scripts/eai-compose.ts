@@ -612,7 +612,11 @@ function runNode(cmd: string, args: string[]): void {
 // Baixa URL pra arquivo via fetch nativo (Node 20+) — substitui curl shell-out.
 // Cross-platform sem depender de curl.exe no PATH e sem shell:true.
 async function downloadFile(url: string, outPath: string): Promise<void> {
-  const res = await fetch(url);
+  // User-Agent conforme Wikimedia policy (#217); timeout de 30s evita pendurar Stage 1b.
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Diar.ia/1.0 (https://diar.ia.br; vjpixel@gmail.com)" },
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     throw new Error(`Download ${url} falhou: HTTP ${res.status}`);
   }
