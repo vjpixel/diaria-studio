@@ -259,6 +259,54 @@ async function driveUploadFile(
   return { ...json, mimeType: json.mimeType ?? targetMimeType };
 }
 
+/**
+ * Atualiza o conteúdo de um arquivo Drive existente in-place (#333).
+ * Usa multipart PATCH — mesmo boundary format do upload mas com PATCH method.
+ * Para Docs (convertToDoc=true), mantém a conversão MD→Doc passando mimeType
+ * no metadata.
+ */
+async function driveUpdateFile(
+  fileId: string,
+  content: Buffer,
+  mimeType: string,
+  convertToDoc = false,
+): Promise<{ id: string; modifiedTime: string; mimeType: string }> {
+  const targetMimeType = convertToDoc ? GOOGLE_DOC_MIME : mimeType;
+  const bodyMimeType = mimeType;
+  const metadata: Record<string, unknown> = {};
+  if (convertToDoc) metadata.mimeType = GOOGLE_DOC_MIME;
+
+  const boundary = "diaria_update_" + Date.now();
+  const metadataPart =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    JSON.stringify(metadata) +
+    `\r\n`;
+  const contentPart =
+    `--${boundary}\r\n` +
+    `Content-Type: ${bodyMimeType}\r\n\r\n`;
+  const closingBoundary = `\r\n--${boundary}--`;
+
+  const body = Buffer.concat([
+    Buffer.from(metadataPart, "utf8"),
+    Buffer.from(contentPart, "utf8"),
+    content,
+    Buffer.from(closingBoundary, "utf8"),
+  ]);
+
+  const res = await gFetchRetry(
+    `${DRIVE_UPLOAD}/files/${fileId}?uploadType=multipart&fields=id,modifiedTime,mimeType`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  );
+  if (!res.ok) throw new Error(`Drive update error (${res.status}): ${await res.text()}`);
+  const json = (await res.json()) as { id: string; modifiedTime: string; mimeType?: string };
+  return { ...json, mimeType: json.mimeType ?? targetMimeType };
+}
+
 async function driveDownloadFile(fileId: string): Promise<Buffer> {
   const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}?alt=media`);
   if (!res.ok) throw new Error(`Drive download error (${res.status}): ${await res.text()}`);
@@ -494,28 +542,39 @@ async function pushFile(
     : `${base}.v${pushCount}${ext}`;
   const mimeType = mimeTypeFor(basename);
 
-  // Primeiro arquiva a versão atual no Drive (se houver). Move pra
-  // `_internal/versions/` em vez de deixar na pasta do dia — reduz poluição visual
-  // na listagem do editor (#260). Se o move falhar, tenta só renomear (fallback).
+  const bytes = await getFileBytes(editionDir, filename);
+
+  // Se arquivo já existe no Drive (cache tem drive_file_id válido), atualizar
+  // in-place (#333) em vez de criar novo. Evita .vN orphans na pasta do editor.
   if (pushCount > 0 && fileCache?.drive_file_id) {
     try {
-      const versionsParentId = await resolveSubfolder(cache, yymmdd, dayFolderId, "_internal/versions");
-      await driveMoveFile(fileCache.drive_file_id, archiveTitle, versionsParentId, targetParentId);
-    } catch (moveErr) {
-      // Fallback: só renomear no lugar (mantém comportamento anterior se move falhar)
-      try {
-        await driveRenameFile(fileCache.drive_file_id, archiveTitle);
-      } catch (renameErr) {
-        const msg = renameErr instanceof Error ? renameErr.message : String(renameErr);
-        result.warnings.push({
-          file: filename,
-          error_message: `rename_archive_failed: ${canonicalTitle} → ${archiveTitle} (${msg})`,
-        });
-      }
+      const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUpdateFile(
+        fileCache.drive_file_id,
+        bytes,
+        mimeType,
+        convertToDoc,
+      );
+      const localPath = resolve(ROOT, editionDir, filename);
+      const localMtime = statSync(localPath).mtimeMs;
+      edCache.files[filename] = {
+        drive_file_id: driveFileId,
+        drive_modifiedTime: modifiedTime,
+        last_pushed_mtime: localMtime,
+        push_count: pushCount + 1,
+        drive_mimeType: driveMimeType,
+      };
+      result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle + " (updated in-place)" });
+      return;
+    } catch (updateErr) {
+      // Fallback: arquivo pode ter sido deletado no Drive — criar novo normalmente
+      const msg = updateErr instanceof Error ? updateErr.message : String(updateErr);
+      result.warnings.push({
+        file: filename,
+        error_message: `update_in_place_failed: ${canonicalTitle} (${msg}) — criando novo arquivo`,
+      });
     }
   }
 
-  const bytes = await getFileBytes(editionDir, filename);
   const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUploadFile(
     canonicalTitle,
     bytes,

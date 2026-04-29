@@ -21,6 +21,7 @@
     "verify-accessibility": "tsx scripts/verify-accessibility.ts",
     "build-link-ctr": "tsx scripts/build-link-ctr.ts",
     "validate-agents": "tsx scripts/validate-agent-frontmatter.ts",
+    "lint-agents": "tsx scripts/lint-agent-md.ts",
     "archive-editions": "tsx scripts/archive-editions.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test"
