@@ -99,6 +99,27 @@ export function extractPastUrls(md: string, window: number): Set<string> {
   return urls;
 }
 
+/**
+ * Extrai títulos das últimas `window` edições publicadas (#231 defense-in-depth).
+ * Captura o título de cada edição (`## YYYY-MM-DD — "Título"`) para comparação
+ * de similaridade com artigos candidatos.
+ *
+ * Nota: são títulos das newsletters (headline do destaque principal), não títulos
+ * individuais dos artigos. Sinal mais fraco que URL match, mas útil quando URL
+ * difere (mesma notícia, fonte diferente).
+ */
+export function extractPastTitles(md: string, window: number): string[] {
+  const titles: string[] = [];
+  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
+  for (const section of editionSections) {
+    const titleMatch = section.match(/^## \d{4}-\d{2}-\d{2}[^"]*"([^"]+)"/m);
+    if (titleMatch) titles.push(titleMatch[1]);
+  }
+  return titles;
+}
+
 // ---------------------------------------------------------------------------
 // Main dedup logic
 // ---------------------------------------------------------------------------
@@ -120,7 +141,9 @@ interface RemovedEntry {
 export function dedup(
   articles: Article[],
   pastUrlsSet: Set<string>,
-  titleThreshold: number
+  titleThreshold: number,
+  pastTitles: string[] = [],
+  titleVsPastThreshold = 0.70,
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -151,10 +174,43 @@ export function dedup(
     }
   }
 
+  // ---- Pass 1b: title similarity vs past edition headlines (#231 defense-in-depth) ---
+  // Threshold mais permissivo (0.70 vs 0.85 dentro da lista) — títulos de newsletter
+  // diferem em idioma/ângulo mas evento idêntico deve ter sim > 0.70.
+  // Só roda se pastTitles foi fornecido (backward-compat).
+  const afterPass1b: Article[] = [];
+  if (pastTitles.length > 0) {
+    for (const art of afterPass1) {
+      if (!art.title) {
+        afterPass1b.push(art);
+        continue;
+      }
+      let isDupVsPast = false;
+      for (const pastTitle of pastTitles) {
+        const sim = titleSimilarity(art.title, pastTitle);
+        if (sim >= titleVsPastThreshold) {
+          removed.push({
+            url: art.url,
+            title: art.title,
+            dedup_note: `título similar (${(sim * 100).toFixed(0)}%) ao headline de edição anterior "${pastTitle}"`,
+          });
+          isDupVsPast = true;
+          break;
+        }
+      }
+      if (!isDupVsPast) afterPass1b.push(art);
+    }
+    if (afterPass1.length > afterPass1b.length) {
+      console.error(`dedup Pass-1b: ${afterPass1.length - afterPass1b.length} artigo(s) removido(s) por similaridade com headline de edição anterior`);
+    }
+  } else {
+    afterPass1b.push(...afterPass1);
+  }
+
   // ---- Pass 2: dedup within the current list -----------------------------
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
-  for (const art of afterPass1) {
+  for (const art of afterPass1b) {
     const canon = canonicalize(art.url);
     const group = byUrl.get(canon) ?? [];
     group.push(art);
@@ -252,18 +308,20 @@ function main() {
   const outPath = args["out"];
 
   if (!articlesPath) {
-    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--window 3] [--title-threshold 0.85] [--out <out.json>]");
+    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--window 3] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--out <out.json>]");
     process.exit(1);
   }
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
   const pastMd = readFileSync(pastEditionsPath, "utf8");
   const pastUrls = extractPastUrls(pastMd, window);
+  const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
+  const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? "0.70");
 
-  const result = dedup(articles, pastUrls, titleThreshold);
+  const result = dedup(articles, pastUrls, titleThreshold, pastTitles, titleVsPastThreshold);
 
   console.error(
-    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold})`
+    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold})`
   );
 
   const json = JSON.stringify(result, null, 2);

@@ -25,7 +25,7 @@
  * rodapé; caso contrário, omite a seção.
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 interface Article {
@@ -389,6 +389,7 @@ function main() {
   // recuperação manual via `_internal/01-categorized.md.bak-{ts}` enquanto
   // a solução completa (merge automático com curadoria) é tratada em
   // follow-up.
+  // #288: pruning de backups antigos — manter só os últimos 3 antes de criar novo.
   if (existsSync(cli.out)) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const baseName = basename(cli.out);
@@ -396,6 +397,15 @@ function main() {
     const backupPath = resolve(backupDir, `${baseName}.bak-${ts}`);
     try {
       mkdirSync(backupDir, { recursive: true });
+      // Pruning: listar backups existentes, ordenar por nome (ISO timestamp → ordem cronológica),
+      // apagar os mais antigos se tiver mais que 3 (#288).
+      const existingBackups = readdirSync(backupDir)
+        .filter((f) => f.startsWith(`${baseName}.bak-`))
+        .sort(); // ISO timestamp → lexicográfico = cronológico
+      const MAX_BACKUPS = 3;
+      for (let i = 0; i < existingBackups.length - MAX_BACKUPS; i++) {
+        try { unlinkSync(resolve(backupDir, existingBackups[i])); } catch { /* ignore */ }
+      }
       copyFileSync(cli.out, backupPath);
     } catch (err) {
       // Backup é defensivo — se falhar, segue (não bloqueia render). Loga

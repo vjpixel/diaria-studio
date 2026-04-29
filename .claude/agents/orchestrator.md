@@ -138,7 +138,8 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   ```bash
   npx tsx scripts/check-dedup-freshness.ts
   ```
-  O script lê `data/past-editions-raw.json` e compara `max(published_at)` com `Date.now() - 48h`. Se a edição mais recente está fora dessa janela, **falha loud** (exit 1) — sintoma de que o `refresh-dedup-runner` caiu em fallback silencioso (ex: `--regen-md-only` sem fetch novo) ou de que a Diar.ia não publicou por mais de 2 dias. Em qualquer caso, dedup stale → risco real de aprovar links/temas repetidos. Se o script falhar:
+  O script lê `data/past-editions-raw.json` e compara `max(published_at)` com `Date.now() - 48h`. Se a edição mais recente está fora dessa janela, **falha loud** (exit 1) — sintoma de que o `refresh-dedup-runner` caiu em fallback silencioso (ex: `--regen-md-only` sem fetch novo) ou de que a Diar.ia não publicou por mais de 2 dias. Em qualquer caso, dedup stale → risco real de aprovar links/temas repetidos.
+  **Racional do threshold = 48h** (#236): tolera D-1 (atraso normal de fuso/processamento da Beehiiv) e fins de semana onde a newsletter não publica. Alarme dispara a partir de D-2, indicando provável falha real (não atraso operacional normal). Se o script falhar:
   1. Apresentar o JSON completo de output ao editor.
   2. Pedir confirmação explícita: `[c] continuar mesmo assim (override) | [a] abortar`. Default = `a`.
   3. Se editor escolher `c`, logar `level: warn` em `data/run-log.jsonl` com `{ event: "dedup_freshness_override", most_recent, age_hours }` e prosseguir. Caso contrário, abortar Stage 0.
