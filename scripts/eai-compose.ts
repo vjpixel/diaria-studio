@@ -235,7 +235,9 @@ const SENTENCE_ABBREVIATIONS = [
 export function firstSentence(text: string): string {
   // Procura [.!?] seguido de espaço+Maiúscula (ou fim).
   // Ignora `.` precedido de abreviação conhecida (#299).
-  const re = /([.!?])(?=\s+[A-Z]|\s*$)/g;
+  // \p{Lu} cobre maiúsculas Unicode (Á, É, Ç) — POTD descriptions são EN
+  // mas firstSentence é exportado e pode ser reusado em contexto pt-BR.
+  const re = /([.!?])(?=\s+\p{Lu}|\s*$)/gu;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m[1] === ".") {
