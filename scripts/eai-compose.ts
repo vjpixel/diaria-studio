@@ -419,6 +419,60 @@ export function extractFirstWikipediaUrl(
 }
 
 /**
+ * Dado um URL de en.wikipedia.org, tenta encontrar a página equivalente em
+ * pt.wikipedia.org via Wikipedia API `langlinks`. Retorna a URL em pt ou null
+ * se não existir (#337).
+ *
+ * Ex: https://en.wikipedia.org/wiki/Glyphoglossus_molossus
+ *   → https://pt.wikipedia.org/wiki/Sapo-escavador-de-cabe%C3%A7a-chata
+ */
+export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> {
+  try {
+    const pageTitle = decodeURIComponent(enUrl.split("/wiki/")[1] ?? "");
+    if (!pageTitle) return null;
+    const apiUrl =
+      `https://en.wikipedia.org/w/api.php?action=query&prop=langlinks&titles=${encodeURIComponent(pageTitle)}&lllang=pt&format=json&formatversion=2`;
+    const res = await fetch(apiUrl, {
+      headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      query?: { pages?: Array<{ langlinks?: Array<{ lang: string; title: string }> }> }
+    };
+    const pages = data.query?.pages ?? [];
+    const ptLink = pages[0]?.langlinks?.find((l) => l.lang === "pt");
+    if (!ptLink) return null;
+    return `https://pt.wikipedia.org/wiki/${encodeURIComponent(ptLink.title.replace(/ /g, "_"))}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dado um URL de en.wikipedia.org, retorna o label em português a partir do
+ * título da página pt equivalente (substitui "Blunt-headed burrowing frog" por
+ * "Sapo-escavador-de-cabeça-chata", etc.) (#337).
+ *
+ * Usa o título da página pt como label — Wikidata labels pt são curados e
+ * exatamente o texto do título em português.
+ *
+ * Retorna null se página pt não existir.
+ */
+export async function getPtLabel(enUrl: string): Promise<string | null> {
+  try {
+    const ptUrl = await findPtWikipediaUrl(enUrl);
+    if (!ptUrl) return null;
+    const ptTitle = decodeURIComponent(ptUrl.split("/wiki/")[1] ?? "")
+      .replace(/_/g, " ")
+      .trim();
+    return ptTitle || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Extrai href específica de páginas User: do Wikimedia Commons. Cobre
  * ambos formatos: `//commons.wikimedia.org/wiki/User:Foo` (protocol-rel,
  * típico da response API) e `https://commons.wikimedia.org/wiki/User:Foo`.
@@ -457,7 +511,10 @@ function extractArtistName(artistText: string | undefined): string {
  * `license.url`) e renderiza como markdown links. Editor ainda pode polir,
  * mas o caso normal sai pronto.
  */
-export function buildCreditLine(image: WikimediaImage): string {
+export function buildCreditLine(
+  image: WikimediaImage,
+  opts?: { ptLabel?: string | null; ptWikipediaUrl?: string | null },
+): string {
   const description = stripHtml(image.description?.text ?? "");
   const firstSent = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
 
@@ -467,6 +524,10 @@ export function buildCreditLine(image: WikimediaImage): string {
   // o primeiro link genérico).
   const subj = pickSubjectWikipediaLink(image.description?.html, image.title);
 
+  // #337: substituir label en por pt quando disponível, e usar pt Wikipedia URL.
+  const displayLabel = opts?.ptLabel ?? subj?.text;
+  const displayUrl = opts?.ptWikipediaUrl ?? subj?.url;
+
   // Fallback: se firstSentence cortou no meio de uma abreviação (ex: "U.S.")
   // e perdeu o subject text, usar a description completa. Caso típico: subject
   // text contém ponto interno → firstSentence regex termina no primeiro `.`.
@@ -475,10 +536,15 @@ export function buildCreditLine(image: WikimediaImage): string {
       ? description
       : firstSent;
 
-  const sentenceMd =
-    subj && sentence.includes(subj.text)
-      ? sentence.replace(subj.text, `[${subj.text}](${subj.url})`)
-      : sentence;
+  let sentenceMd: string;
+  if (displayLabel && displayUrl && subj && sentence.includes(subj.text)) {
+    // Substituir o texto en pelo label pt no link, apontando pra URL pt (#337)
+    sentenceMd = sentence.replace(subj.text, `[${displayLabel}](${displayUrl})`);
+  } else if (subj && sentence.includes(subj.text)) {
+    sentenceMd = sentence.replace(subj.text, `[${subj.text}](${subj.url})`);
+  } else {
+    sentenceMd = sentence;
+  }
 
   const artistRaw = image.artist?.html ?? image.artist?.text ?? image.credit?.text;
   const artistName = extractArtistName(image.artist?.text ?? image.credit?.text);
@@ -657,7 +723,21 @@ async function main(): Promise<void> {
   runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eai_"]);
 
   // 7. Write 01-eai.md (frontmatter + corpo + opcional resultado da edição anterior #107)
-  const creditLine = buildCreditLine(image);
+  // #337: tentar traduzir subject para pt-BR via Wikipedia API
+  const subjectEnUrl = extractFirstWikipediaUrl(image.description?.html, image.title);
+  let ptLabel: string | null = null;
+  let ptWikipediaUrl: string | null = null;
+  if (subjectEnUrl) {
+    try {
+      [ptLabel, ptWikipediaUrl] = await Promise.all([
+        getPtLabel(subjectEnUrl),
+        findPtWikipediaUrl(subjectEnUrl),
+      ]);
+    } catch {
+      // tradução opcional — falha silenciosa, mantém EN
+    }
+  }
+  const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl });
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eai.md");
@@ -670,10 +750,7 @@ async function main(): Promise<void> {
     extractCommonsUserUrl(image.artist?.html) ??
     extractFirstHref(image.artist?.html) ??
     extractCommonsUserUrl(image.artist?.text ?? image.credit?.text);
-  const subjectWikipediaUrl = extractFirstWikipediaUrl(
-    image.description?.html,
-    image.title,
-  );
+  const subjectWikipediaUrl = ptWikipediaUrl ?? subjectEnUrl;
   const meta: EaiMeta = {
     edition,
     composed_at: new Date().toISOString(),

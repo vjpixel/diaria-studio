@@ -104,6 +104,36 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Regenera `context/past-editions.md` via `scripts/refresh-past-editions.ts`, respeitando `dedupEditionCount` do config.
   - Retorna JSON com `{ mode, new_posts, total_in_base, most_recent_date, skipped }`.
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
+- **Summary do dedup refresh (#314).** Após o `refresh-dedup-runner` retornar, imprimir:
+  ```bash
+  node -e "
+    const fs=require('fs');
+    const md=fs.existsSync('context/past-editions.md')?fs.readFileSync('context/past-editions.md','utf8'):'';
+    const sections=md.match(/^## \d{4}-\d{2}-\d{2}[^\n]*/mg)?.slice(0,5)??[];
+    console.log('✓ Dedup refresh:', sections.length,'edições em context/past-editions.md');
+    sections.forEach(s=>console.log(' ',s.replace(/^## /,'')));
+  "
+  ```
+  Se o refresh trouxe novas edições (`new_posts > 0`), indicar: `+{new_posts} nova(s)`. Se `skipped`, indicar: `no-op (MD regenerado)`.
+
+- **Merge de edições locais pending-publish (#325) — sempre roda, após refresh.** Edições aprovadas localmente mas ainda não publicadas no Beehiiv (draft) não aparecem no `refresh-dedup-runner` (que só lê posts `published`). Para evitar que suas URLs vazem pra edição atual, fazer merge adicional:
+  ```bash
+  npx tsx scripts/merge-local-pending.ts \
+    --current {AAMMDD} \
+    --editions-dir data/editions/ \
+    --window-days 5 \
+    --past-raw data/past-editions-raw.json
+  ```
+  O script:
+  1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias que tenham `_internal/01-approved.json` mas **não** tenham `05-published.json` com `status: "published"`.
+  2. Extrai todas as URLs dessas edições e as injeta em `context/past-editions.md` com flag `pending_publish: true` (as entradas Beehiiv reais têm precedência no dedup).
+  3. Se encontrar edições pending há > 2 dias, alertar:
+     ```
+     🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv.
+        URLs dela bloqueadas no dedup de hoje. Considere publicar antes de prosseguir.
+     ```
+  Se o script não existir ainda (`ENOENT`): pular silenciosamente e logar warn — funcionalidade opcional, não bloqueia pipeline.
+
 - **Pre-flight de freshness do dedup (sempre roda, após refresh #230).** Rodar:
   ```bash
   npx tsx scripts/check-dedup-freshness.ts
@@ -218,10 +248,11 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
     data/editions/{AAMMDD}/tmp-urls-all.json \
     data/editions/{AAMMDD}/link-verify-all.json
   ```
-  Ler `data/editions/{AAMMDD}/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom? }`). Então:
+  Ler `data/editions/{AAMMDD}/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
   - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
+  - **Manter com flag** artigos com verdict `anti_bot` (publisher confiável bloqueou crawler mas é acessível a humanos, #320): adicionar `"access_uncertain": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no gate para revisão. **Não remover silenciosamente.** Incluir no relatório do gate: `"⚠️ N artigo(s) marcados anti_bot — accessible no browser mas bloqueados por crawler. Revisar antes de aprovar."` com a lista de domínios.
   - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no `01-categorized.md` para revisão manual no gate.
-  - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente.
+  - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente. Isso inclui URLs de shorteners (share.google, bit.ly, t.co, etc.) que foram resolvidos pro destino real (#317).
 - **Enriquecer artigos do inbox (#109).** URLs do editor entram com `title: "(inbox)"` e `summary: null`; o writer do Stage 2 pula esses itens silenciosamente porque não há conteúdo verificável. Após a substituição de URLs (passo anterior), rodar:
   ```bash
   # Gravar lista atual de artigos em arquivo temporário
@@ -535,17 +566,43 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 
-#### 5b. Dispatch paralelo (UMA mensagem, 3 chamadas)
+#### 5b. Confirmar modo de publicação por canal (#336)
 
-**Em uma única mensagem**, disparar simultaneamente:
+**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log (`"Stage 5 auto-approved: publish dispatch sem confirmação explícita"`).
+
+Antes do dispatch, perguntar ao editor (a menos que `auto_approve = true`):
+
+```
+Modo de publicação para a edição {AAMMDD}:
+
+  [1] Beehiiv automático  — Claude in Chrome cria rascunho + envia email de teste
+  [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo: data/editions/{AAMMDD}/02-reviewed.md
+  [3] LinkedIn automático — Claude in Chrome cria 3 rascunhos
+  [4] LinkedIn manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
+  [5] Facebook automático — Graph API agenda os 3 posts
+  [6] Facebook manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
+
+Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
+ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar.
+Default se não responder = manual em tudo.
+```
+
+Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`.
+Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Stage 5.
+
+#### 5c. Dispatch paralelo (UMA mensagem, 3 chamadas)
+
+**Só dispatchar os canais que o editor autorizou em 5b.** Canais manuais ficam com status `pending_manual`.
+
+**Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
 2. `Agent` → `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
 3. `Agent` → `publish-social` com `edition_dir = data/editions/{AAMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
 
 **Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
 
-**Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (5c).
-#### 5c. Retry chrome_disconnected (independente por agent)
+**Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (5d).
+#### 5d. Retry chrome_disconnected (independente por agent)
 
 Tanto `publish-newsletter` quanto `publish-social` usam o mesmo padrão de retry exponencial — cada um conta sozinho (falha de um não afeta o contador do outro).
 
@@ -567,7 +624,7 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 - Se `publish-newsletter` retornar `error: "beehiiv_login_expired"` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
 - Se `publish-social` retornar `status: "failed"` em algum post por login expirado, logar warn e prosseguir — editor re-roda `/diaria-publicar social` após re-logar.
 
-#### 5d. Validar template (publish-newsletter)
+#### 5e. Validar template (publish-newsletter)
 - Ler `05-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`, `template_used`.
 - **Validar template (obrigatório).** Ler `publishing.newsletter.template` de `platform.config.json` (ex: `"Default"`). Se `template_used` !== template esperado:
   1. Logar erro: `"Template incorreto: esperado '{expected}', usado '{template_used}'. Re-disparando publish-newsletter."`.
@@ -576,9 +633,9 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
   4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
   5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É IA? ausente, boxes não separados, etc.).
 
-#### 5e. Loop de review do email de teste (após newsletter retornar)
+#### 5f. Loop de review do email de teste (após newsletter retornar)
 
-> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 5b. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 5b.
+> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 5c. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 5c.
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral do Stage 5. O Stage 5 só está completo quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
@@ -614,9 +671,9 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
   Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** para garantir que o Stage 5 não é considerado completo sem a revisão do email de teste. **Se este campo estiver ausente ou `false`, o resume re-executa o loop de review.**
 - Ler `05-published.json` (pode ter sido atualizado pelo fix mode).
 
-#### 5f. Gate único (substitui os dois gates antigos de Stage 5 + Stage 6)
+#### 5g. Gate único (substitui os dois gates antigos de Stage 5 + Stage 6)
 
-- Ler `06-social-published.json` (já gerado por 5b).
+- Ler `06-social-published.json` (já gerado por 5c).
 - **GATE HUMANO:** mostrar **uma só vez**:
 
   **Newsletter (Beehiiv)**

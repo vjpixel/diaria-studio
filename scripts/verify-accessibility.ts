@@ -13,6 +13,44 @@ const PAYWALL_DOMAINS = new Set([
   "economist.com",
 ]);
 
+// Domínios que retornam anti-bot em crawlers mas são acessíveis a usuários humanos.
+// Quando esses sites retornam 403/bloqueio, o verdict vira `anti_bot` em vez de
+// `blocked`, e o artigo permanece no pool com flag `access_uncertain` (#320).
+const TRUSTED_PUBLISHERS = new Set([
+  "anthropic.com",
+  "openai.com",
+  "venturebeat.com",
+  "techcrunch.com",
+  "theverge.com",
+  "reuters.com",
+  "wired.com",
+  "ai.meta.com",
+  "blog.google",
+  "deepmind.google",
+  "deepmind.com",
+  "microsoft.com",
+  "blogs.microsoft.com",
+  "blogs.nvidia.com",
+]);
+
+// URL shorteners e redirecionadores que devem ter a URL final propagada (#317).
+// Qualquer redirect cross-origin é capturado, mas esses são os mais frequentes
+// nas submissões inbox do editor.
+const SHORTENER_HOSTS = new Set([
+  "share.google",
+  "bit.ly",
+  "t.co",
+  "lnkd.in",
+  "tinyurl.com",
+  "ow.ly",
+  "buff.ly",
+  "dlvr.it",
+]);
+
+function isShortener(host: string): boolean {
+  return SHORTENER_HOSTS.has(host) || host === "share.google";
+}
+
 // Sites que redistribuem conteúdo de terceiros sem produção editorial própria.
 // news.google.com NÃO está aqui — é indexador que aponta para o original.
 // Quando um desses domínios aparece, o verificador tenta resolver a fonte primária
@@ -60,13 +98,14 @@ const PAYWALL_MARKERS = [
   "conteúdo exclusivo para assinantes",
 ];
 
-type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain";
+type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
 
 type VerifyResult = {
   verdict: Verdict;
   finalUrl: string;
   note?: string;
   resolvedFrom?: string; // set when an aggregator URL was resolved to its primary source
+  access_uncertain?: boolean; // true para anti_bot em publisher confiável (#320)
 };
 
 export function canonicalize(url: string): string {
@@ -156,58 +195,105 @@ async function resolveAggregator(url: string, aggregatorHost: string, timeoutMs:
   }
 }
 
+/**
+ * Segue redirects HTTP via fetch nativo (Node 18+, redirect:'follow') e retorna
+ * a URL final. Para shorteners e redirects cross-origin, captura o destino pra
+ * popular `resolvedFrom` (#317).
+ */
+async function followRedirects(url: string, timeoutMs: number): Promise<{ finalUrl: string; redirected: boolean }> {
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const finalUrl = canonicalize(res.url || url);
+    const redirected = finalUrl !== canonicalize(url);
+    return { finalUrl, redirected };
+  } catch {
+    return { finalUrl: canonicalize(url), redirected: false };
+  }
+}
+
 export async function verify(url: string, timeoutMs = 8000, isRetry = false, browser?: Browser | null): Promise<VerifyResult> {
-  const finalUrl = canonicalize(url);
-  const host = domain(finalUrl);
+  let effectiveUrl = canonicalize(url);
+  let host = domain(effectiveUrl);
+  let resolvedFrom: string | undefined;
+
+  // ---- Resolve shorteners e redirects cross-origin (#317) ----------------
+  if (isShortener(host)) {
+    const { finalUrl, redirected } = await followRedirects(effectiveUrl, Math.min(timeoutMs, 5000));
+    const finalHost = domain(finalUrl);
+    if (redirected && finalHost !== host) {
+      resolvedFrom = effectiveUrl;
+      effectiveUrl = finalUrl;
+      host = finalHost;
+    }
+  }
 
   // Primary-source prefixes override aggregator domain rules.
-  const urlWithoutProtocol = finalUrl.replace(/^https?:\/\//, "");
+  const urlWithoutProtocol = effectiveUrl.replace(/^https?:\/\//, "");
   const isPrimarySource = PRIMARY_SOURCE_PREFIXES.some((prefix) => urlWithoutProtocol.startsWith(prefix));
 
   if (!isPrimarySource) {
     if (host === "perplexity.ai" || AGGREGATOR_DOMAINS.has(host)) {
       // Attempt to resolve to the primary source (first call only — no infinite recursion).
       if (!isRetry) {
-        const primary = await resolveAggregator(finalUrl, host, timeoutMs);
+        const primary = await resolveAggregator(effectiveUrl, host, timeoutMs);
         if (primary) {
           const primaryResult = await verify(primary, timeoutMs, true);
           if (primaryResult.verdict !== "aggregator") {
-            return { ...primaryResult, resolvedFrom: finalUrl };
+            return { ...primaryResult, resolvedFrom: resolvedFrom ?? effectiveUrl };
           }
         }
       }
-      return { verdict: "aggregator", finalUrl };
+      return { verdict: "aggregator", finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
   }
 
-  if (PAYWALL_DOMAINS.has(host)) return { verdict: "paywall", finalUrl, note: "known-paywall domain" };
+  if (PAYWALL_DOMAINS.has(host)) return { verdict: "paywall", finalUrl: effectiveUrl, note: "known-paywall domain", ...(resolvedFrom ? { resolvedFrom } : {}) };
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const head = await request(finalUrl, { method: "HEAD", signal: ctrl.signal });
-    if (head.statusCode >= 400) return { verdict: "blocked", finalUrl, note: `HEAD ${head.statusCode}` };
+    const head = await request(effectiveUrl, { method: "HEAD", signal: ctrl.signal });
+    if (head.statusCode >= 400) {
+      // Distinguir anti-bot de verdadeiramente bloqueado (#320)
+      if ((head.statusCode === 403 || head.statusCode === 429) && TRUSTED_PUBLISHERS.has(host)) {
+        return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `HEAD ${head.statusCode} (trusted publisher)`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
+      }
+      return { verdict: "blocked", finalUrl: effectiveUrl, note: `HEAD ${head.statusCode}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    }
 
-    const get = await request(finalUrl, {
+    const get = await request(effectiveUrl, {
       method: "GET",
       signal: ctrl.signal,
       headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
     });
-    if (get.statusCode >= 400) return { verdict: "blocked", finalUrl, note: `GET ${get.statusCode}` };
+    if (get.statusCode >= 400) {
+      if ((get.statusCode === 403 || get.statusCode === 429) && TRUSTED_PUBLISHERS.has(host)) {
+        return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `GET ${get.statusCode} (trusted publisher)`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
+      }
+      return { verdict: "blocked", finalUrl: effectiveUrl, note: `GET ${get.statusCode}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    }
 
     const body = (await get.body.text()).slice(0, 50_000).toLowerCase();
     for (const marker of PAYWALL_MARKERS) {
-      if (body.includes(marker)) return { verdict: "paywall", finalUrl, note: `marker: ${marker}` };
+      if (body.includes(marker)) return { verdict: "paywall", finalUrl: effectiveUrl, note: `marker: ${marker}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
     if (body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").length < 500) {
-      if (browser) return verifyWithBrowser(url, browser);
-      return { verdict: "uncertain", finalUrl, note: "body < 500 chars" };
+      if (browser) return { ...(await verifyWithBrowser(url, browser)), ...(resolvedFrom ? { resolvedFrom } : {}) };
+      return { verdict: "uncertain", finalUrl: effectiveUrl, note: "body < 500 chars", ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
-    return { verdict: "accessible", finalUrl };
+    return { verdict: "accessible", finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { verdict: "blocked", finalUrl, note: msg };
+    // Timeout/connection error em publisher confiável = provável anti-bot (#320)
+    if (TRUSTED_PUBLISHERS.has(host) && (msg.includes("abort") || msg.includes("timeout") || msg.includes("ECONNREFUSED"))) {
+      return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `fetch error: ${msg}`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    }
+    return { verdict: "blocked", finalUrl: effectiveUrl, note: msg, ...(resolvedFrom ? { resolvedFrom } : {}) };
   } finally {
     clearTimeout(timer);
   }

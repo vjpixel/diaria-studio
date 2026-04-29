@@ -2,7 +2,7 @@
 
 Formato exato do output da edição. Seguir rigorosamente.
 
-**Importante (#245):** dentro de cada bloco DESTAQUE, sempre uma linha em branco entre header, cada opção de título, URL e cada parágrafo. Sem isso, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. Nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS), os 3 elementos do item (título / URL / descrição) ficam em linhas consecutivas — items separados entre si por linha em branco.
+**Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único ilegível.
 
 ```
 DESTAQUE 1 | [CATEGORIA]
@@ -44,24 +44,28 @@ DESTAQUE 3 | [CATEGORIA]
 LANÇAMENTOS
 
 [Título do item]
+
 [URL limpa]
+
 [Frase descritiva em 1 linha]
 
 [Título do próximo item]
+
 [URL limpa]
+
 [Frase descritiva]
 
 ---
 
 PESQUISAS
 
-[mesmo formato de Lançamentos]
+[mesmo formato de Lançamentos — linha em branco entre cada elemento]
 
 ---
 
 OUTRAS NOTÍCIAS
 
-[mesmo formato de Lançamentos]
+[mesmo formato de Lançamentos — linha em branco entre cada elemento]
 ```
 
 A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate humano (copiar/abrir/reordenar mais rápido). A ordem visual no email final (Beehiiv) é independente: o renderer rearranja como título → descrição → CTA.

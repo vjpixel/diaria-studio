@@ -148,20 +148,32 @@ export function applySubstitutions(
 
 /**
  * Sentenças > 30 palavras viram flag (não auto-encurtar — mudança semântica).
+ *
+ * Fix #340: split por `.!?` real (não por `\n\n` nem por `---`). Só considera
+ * blocos que terminam com pontuação — headers e títulos sem ponto final são
+ * ignorados. URLs dentro da sentença não disparam o split.
  */
 export function flagLongSentences(text: string): HumanizeFlag[] {
   const flags: HumanizeFlag[] = [];
-  // Split por . ! ? mantendo o delimitador
-  const sentences = text
-    .split(/(?<=[.!?])\s+/)
-    .filter((s) => s.trim().length > 0);
-  for (const s of sentences) {
-    const words = s.trim().split(/\s+/).filter(Boolean);
+
+  // Extrai sentenças reais: delimitadas por [.!?] seguido de espaço/EOL.
+  // Lookahead negativo evita split dentro de URLs (https://...).
+  // Abreviações comuns (Sr., Dr., E.U.A., etc.) são ignoradas via heurística
+  // de "letra única + ponto" antes do split.
+  const sentenceRe = /[^.!?]*(?:[.!?](?!\w{2,}\/|[A-Z](?:\.|[A-Z])))+/g;
+  const matches = text.match(sentenceRe) ?? [];
+
+  for (const s of matches) {
+    const clean = s.replace(/^\s*[-#*>\d.\s]+/, "").trim(); // strip markdown prefixes
+    if (!clean || clean.length < 10) continue;
+    // Ignorar linhas que são headers (sem ponto final próprio, terminam com outro char)
+    if (!/[.!?]$/.test(clean)) continue;
+    const words = clean.split(/\s+/).filter(Boolean);
     if (words.length > 30) {
       flags.push({
         rule: "long_sentence",
         message: `Sentença com ${words.length} palavras (> 30) — considerar dividir`,
-        sample: s.slice(0, 100) + (s.length > 100 ? "..." : ""),
+        sample: clean.slice(0, 100) + (clean.length > 100 ? "..." : ""),
       });
     }
   }

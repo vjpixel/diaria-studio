@@ -170,6 +170,18 @@ Estimativa: 4-5h pra cobrir os 4 passos com confidence.
    - Cobertura dos 4 passos.
    - Smoke test com edição real.
 
+## Compatibilidade com princípio ToS (CLAUDE.md)
+
+`CLAUDE.md` descarta automação de sites de terceiros via browser/scraping em scale. **Beehiiv automation editorial** cabe na exceção documentada:
+
+- **Volume**: 1 edição/dia, não scraping em massa.
+- **Sessão logada pessoal**: Claude in Chrome opera na sessão autenticada do editor — não cria conta ou burla autenticação.
+- **Ações espelham trabalho manual**: paste HTML, upload thumbnail, criar poll, enviar email de teste são exatamente o que o editor faria manualmente a cada edição.
+- **Sem reverse-engineering**: só simulação de eventos UI no DOM principal (paste, click, fill), sem chamar endpoints não-documentados.
+- **ToS Beehiiv**: permite uso de ferramentas de terceiros para tarefas editoriais (não contém proibição de automação pessoal de baixo volume).
+
+Conclusão: está dentro da faixa de uso aceitável definida em `CLAUDE.md` — não é "scale", não é "scraping", não é "reverse-engineering de endpoints não-oficiais".
+
 ## Referencias
 
 - Issue #275 (root).

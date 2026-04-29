@@ -59,10 +59,14 @@ const STOPWORDS = new Set([
   "this", "that", "it", "as", "or", "but", "not",
 ]);
 
+// Abreviações curtas (≤3 chars) com significado editorial forte em tech/IA.
+// Excluídas do filtro de comprimento mínimo (#324).
+const TECH_SHORT_TOKENS = new Set(["ia", "ai", "ml", "llm", "api", "gpt", "ui", "ux", "ceo", "cto", "br"]);
+
 /**
  * Tokeniza título + summary: lowercase, remove diacritics, split por
- * não-alfanumerics, remove stopwords e tokens curtos (< 4 chars pra
- * focar em palavras de conteúdo).
+ * não-alfanumerics, remove stopwords e tokens curtos (< 4 chars, exceto
+ * TECH_SHORT_TOKENS como "ia", "llm", etc.) (#324).
  */
 export function tokenize(text: string): Set<string> {
   const normalized = text
@@ -72,7 +76,7 @@ export function tokenize(text: string): Set<string> {
   const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
   const set = new Set<string>();
   for (const t of tokens) {
-    if (t.length < 4) continue;
+    if (t.length < 4 && !TECH_SHORT_TOKENS.has(t)) continue;
     if (STOPWORDS.has(t)) continue;
     set.add(t);
   }

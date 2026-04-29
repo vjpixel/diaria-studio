@@ -148,8 +148,22 @@ export const BR_TIER1_RE =
 export const BR_TIER2_RE =
   /\b(ita[úu]|bradesco|nubank|ifood|mercado\s+livre|magalu|magazine\s+luiza|pagseguro|picpay|xp\s+inc|btg\s+pactual|banco\s+inter|c6\s+bank|embraer|gerdau|ambev|braskem|suzano|natura\s*&\s*co|localiza|vtex|totvs|movile|creditas|hotmart)\b/gi;
 
+/**
+ * Remove sufixos de atribuição de fonte do título antes de testar BR tier.
+ * Ex: "Spotify e IA — BBC News Brasil" → "Spotify e IA" (#319).
+ * Padrões: "— Fonte", "- Fonte", "| Fonte", "\ Fonte", ": Fonte".
+ */
+function stripSourceAttribution(title: string): string {
+  return title
+    .replace(/\s*[—\-|\\:]\s*[A-Z][^—\-|\\:\n]*$/, "")
+    .trim();
+}
+
 export function isBrazilianTheme(article: { title?: string; summary?: string }): boolean {
-  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  // Testar título sem o sufixo de fonte para evitar falso positivo de
+  // "... — BBC News Brasil" ou "... | InfoMoney" (#319).
+  const cleanTitle = stripSourceAttribution(article.title ?? "");
+  const hay = `${cleanTitle}\n${article.summary ?? ""}`;
   if (BR_TIER1_RE.test(hay)) return true;
   // Tier 2: exige 2+ matches distintos pra reduzir falso positivo.
   // Reset lastIndex porque regex global mantém estado entre chamadas.
@@ -158,11 +172,15 @@ export function isBrazilianTheme(article: { title?: string; summary?: string }):
   return matches !== null && matches.length >= 2;
 }
 
-/** Monta linha: `- [score] Título ⭐|✨ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD` */
+/**
+ * Monta linha: `{N}. [score] Título ⭐|✨ 🇧🇷 [inbox] (descoberta) ⚠️ — https://url — YYYY-MM-DD`
+ * Usa lista numerada pra facilitar referência no gate humano (#322).
+ */
 export function renderLine(
   article: Article,
   isHighlight?: boolean,
   isRunnerUp?: boolean,
+  lineNumber?: number,
 ): string {
   const scoreStr =
     typeof article.score === "number" ? `[${article.score}]` : "[--]";
@@ -185,7 +203,8 @@ export function renderLine(
   if (article.date_unverified) markers.push("⚠️");
 
   const markerStr = markers.length > 0 ? " " + markers.join(" ") : "";
-  return `- ${scoreStr} ${title}${markerStr} — ${url} — ${date}`;
+  const prefix = lineNumber != null ? `${lineNumber}.` : "-";
+  return `${prefix} ${scoreStr} ${title}${markerStr} — ${url} — ${date}`;
 }
 
 /**
@@ -248,8 +267,9 @@ function renderSection(
     const sb = typeof b.score === "number" ? b.score : -Infinity;
     return sb - sa;
   });
-  const lines = sorted.map((a) =>
-    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url)),
+  // Numeração por seção — facilita referência no gate humano (#322)
+  const lines = sorted.map((a, idx) =>
+    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), idx + 1),
   );
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }

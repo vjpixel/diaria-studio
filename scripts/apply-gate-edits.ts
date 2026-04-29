@@ -115,10 +115,11 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     }
     if (!currentBucket) continue;
 
-    // Extrai URL de linha-bullet (formato: `- [score] Título ... — URL [— YYYY-MM-DD]`)
-    // Exige prefixo `- ` no início e aceita trailing " — date" opcional (defensivo
-    // contra entradas com data ausente ou unknown).
-    const urlMatch = line.match(/^-\s.*?—\s+(https?:\/\/\S+?)(?:\s+—|\s*$)/);
+    // Extrai URL de linha-bullet OU numerada (#322).
+    // Formatos aceitos:
+    //   `- [score] Título ... — URL [— YYYY-MM-DD]`  (bullets legados)
+    //   `1. [score] Título ... — URL [— YYYY-MM-DD]` (numerado, novo padrão)
+    const urlMatch = line.match(/^(?:-|\d+\.)\s.*?—\s+(https?:\/\/\S+?)(?:\s+—|\s*$)/);
     if (urlMatch) {
       result[currentBucket].push(urlMatch[1]);
     }
@@ -191,11 +192,13 @@ function main() {
   // ---- Destaques ---------------------------------------------------------
   let destaquesUrls = [...sections.destaques];
   if (destaquesUrls.length < 3) {
-    // Completa com candidatos do scorer por rank
+    // Completa com candidatos do scorer por rank.
+    // JSON pode ter URL flat (h.url) OU nested (h.article.url) — suporta ambos (#323).
     const scorerRanked = [...originalHighlights].sort((a, b) => a.rank - b.rank);
     for (const h of scorerRanked) {
       if (destaquesUrls.length >= 3) break;
-      if (!destaquesUrls.includes(h.url)) destaquesUrls.push(h.url);
+      const url = h.url ?? (h.article as { url?: string } | null)?.url;
+      if (url && !destaquesUrls.includes(url)) destaquesUrls.push(url);
     }
     console.error(
       `[apply-gate-edits] Destaques incompletos (${sections.destaques.length}) — completando com ${destaquesUrls.length - sections.destaques.length} candidato(s) do scorer.`,

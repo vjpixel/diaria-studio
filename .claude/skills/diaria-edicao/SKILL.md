@@ -28,29 +28,29 @@ node -e "const s='$1';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-
 ```
 Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` em todo Date math abaixo.
 
-1. Calcular o default de `window_days` com base no dia da semana da edição:
+1. **Janela = 4 dias corridos terminando em D+0** (#315).
+   Stage 1 roda em D+0 (dia antes da publicação). Endpoint superior = D+0 = `$ISO − 1 dia`.
    ```bash
-   node -e "const d=new Date('$ISO');const day=d.getUTCDay();process.stdout.write(String(day===1||day===2?4:3))"
+   node -e "const d=new Date('$ISO');d.setUTCDate(d.getUTCDate()-1);process.stdout.write(d.toISOString().slice(0,10))"
    ```
-   - Segunda (`getUTCDay()===1`) ou terça (`getUTCDay()===2`): `window_days = 4` (cobre o fim de semana).
-   - Quarta a sexta: `window_days = 3`.
-2. Calcular `window_start = $ISO − window_days dias`:
+   Armazenar como `WINDOW_END`. `window_days = 4` fixo.
    ```bash
-   node -e "const d=new Date('$ISO');d.setUTCDate(d.getUTCDate()-{window_days});process.stdout.write(d.toISOString().slice(0,10))"
+   node -e "const d=new Date('$WINDOW_END');d.setUTCDate(d.getUTCDate()-3);process.stdout.write(d.toISOString().slice(0,10))"
    ```
+   Armazenar como `window_start`.
 
-**Se `--no-gates`:** usar o default calculado sem perguntar. Pular para o Passo 2.
+**Se `--no-gates`:** usar os valores calculados sem perguntar. Pular para o Passo 2.
 
 **Caso contrário:** exibir ao usuário e aguardar resposta:
 
    ```
-   Janela de publicacao aceita: {window_start} -> $1 ({window_days} dias)
+   Janela de publicacao aceita: {window_start} -> {WINDOW_END} (4 dias)
    Pressione Enter para confirmar ou digite outro numero de dias:
    ```
 
    Interpretar a resposta:
    - Vazia / "Enter" / "ok" / "sim" / "confirmar" → manter o default.
-   - Número inteiro N ≥ 1 → `window_days = N`, recalcular `window_start`.
+   - Número inteiro N ≥ 1 → `window_days = N`, recalcular `window_start` a partir de `WINDOW_END`.
    - Qualquer outra coisa → repetir a pergunta.
 
 ## Passo 2 — Executar o playbook diretamente no top-level (#207)

@@ -50,6 +50,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    - Comparar o `title` (e `summary` se disponível) do artigo com os títulos e resumos das edições recentes.
    - Critério conservador: remover **só** quando o overlap temático for claro e direto (mesma notícia, mesmo produto, mesmo anúncio). Artigos que aprofundam, contradizem ou atualizam um tema coberto devem ser **mantidos**.
    - Exemplos de remoção: "OpenAI lança GPT-5" quando Diar.ia já cobriu "OpenAI anuncia GPT-5" 3 dias atrás. Exemplo de manutenção: "Críticas ao lançamento do GPT-5" é atualização relevante, não repetição.
+   - **Artigos `editor_submitted` (inbox)** têm prioridade de score mas NÃO têm imunidade ao Filtro 2 (#321). Aplicar o mesmo critério de overlap — com bar levemente mais alta: remover só se 3+ artigos sobre o mesmo tema apareceram na edição anterior (overlap saturado). 1-2 artigos de mesmo tema → manter (angle diferente provável). Overlap exato (mesmo evento, mesma data) → remover independente da contagem.
 9. Marcar artigos removidos com razão (`topic_covered`).
 
 ## Output

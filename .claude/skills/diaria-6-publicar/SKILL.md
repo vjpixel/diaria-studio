@@ -23,6 +23,28 @@ Dispara o Stage 5 unificado (publish paralelo: Beehiiv + Facebook + LinkedIn em 
 - Bloco `publishing` em `platform.config.json` configurado
 - `FACEBOOK_PAGE_ACCESS_TOKEN` no env pra Graph API
 
+## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336)
+
+**OBRIGATÓRIO — executar antes de qualquer Agent ou Bash de publicação.** Perguntar explicitamente ao editor por canal:
+
+```
+Modo de publicação para esta edição:
+
+  [1] Beehiiv automático  — Claude in Chrome cria rascunho + envia email de teste
+  [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo está em data/editions/{AAMMDD}/02-reviewed.md
+  [3] LinkedIn automático — Claude in Chrome cria 3 rascunhos
+  [4] LinkedIn manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
+  [5] Facebook automático — Graph API agenda os 3 posts
+  [6] Facebook manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
+
+Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
+ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar:
+```
+
+Default se o editor não responder explicitamente = **manual em tudo** (não publicar nada automaticamente).
+
+Aguardar resposta antes de prosseguir. Só dispatcher os agents/scripts que o editor autorizou.
+
 ## O que faz
 
 ### Stage 5 — Publish paralelo (#38)

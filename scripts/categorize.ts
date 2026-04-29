@@ -214,6 +214,58 @@ const DEAL_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Updates incrementais / changelogs / melhorias em produto existente.
+ * Domínio oficial mas título claramente aponta pra update, não lançamento novo.
+ * Override → noticias (#318).
+ */
+const UPDATE_PATTERNS: RegExp[] = [
+  // "An update on...", "Update: X", "atualização de/do/da"
+  /\b(an\s+update\s+on|update\s*[:\-]\s|atualiza[çc][ãa]o\s+(de|do|da|sobre))\b/i,
+  // "Improvements to X", "Improving X"
+  /\b(improvements?\s+to|improving\b|melhor(i)?as?\s+(d[oae]|n[ao])\b)/i,
+  // "X now supports Y / X agora inclui Y"
+  /\bnow\s+(supports?|includes?|available|works?)\b|\bagora\s+(suporta|inclui|disponí?vel)\b/i,
+  // Release notes / changelog / patch notes
+  /\b(release\s+notes?|changelog|patch\s+notes?|notas\s+de\s+vers[ãa]o)\b/i,
+  // "Our commitment to X", "Our approach to X" — posicionamento editorial sem produto
+  /\bour\s+(commitment|approach|policy|stance|plans?)\s+to\b/i,
+  // "Election safeguards", "safety update", "policy update"
+  /\b(safety|security|election)\s+(safeguards?|update[sd]?|report)\b/i,
+];
+
+function isUpdate(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return UPDATE_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * Domínios que são predominantemente tutoriais / case studies, mesmo quando
+ * publicados em domínio oficial de empresa. Override → tutorial (#318).
+ */
+const TUTORIAL_DOMAIN_EXTRA_PATTERNS: RegExp[] = [
+  // AWS ML Blog — historicamente tutoriais e case studies, não anúncios de produto
+  /^aws\.amazon\.com\/blogs?\/(machine-learning|ai|compute|big-data)\//,
+  // Google Developers blog (distinto de blog.google que é anúncio)
+  /^developers\.googleblog\.com\//,
+];
+
+function isTutorialByDomainExtra(url: string): boolean {
+  const { full } = hostAndPath(url);
+  return TUTORIAL_DOMAIN_EXTRA_PATTERNS.some((p) => p.test(full));
+}
+
+/**
+ * Padrões de título/summary que indicam tutorial mesmo em domínio oficial (#318).
+ */
+const TUTORIAL_TITLE_EXTRA_RE =
+  /\b(migrat(ing|ion)\b|how\s+\w+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|getting\s+started\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
+
+function isTutorialByTitleExtra(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return TUTORIAL_TITLE_EXTRA_RE.test(hay);
+}
+
+/**
  * Anúncios de programa / bolsa / iniciativa não-produto. Cobrem blogs
  * oficiais que falam de scholarships, fellowships, grants, etc.
  */
@@ -322,16 +374,24 @@ export function categorize(article: Article): Category {
   //    como pesquisa acima.
   if (isTutorialByKeyword(article)) return "tutorial";
 
+  // 1c. Tutorial por domínio extra ou título (domínio oficial mas conteúdo é tutorial).
+  //     Aplicado ANTES do check de lançamento para que AWS ML Blog etc. não virem
+  //     lancamento por default (#318).
+  if (isTutorialByDomainExtra(article.url)) return "tutorial";
+  if (isTutorialByTitleExtra(article)) return "tutorial";
+
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
   //    - Business deals (parceria, aquisição, contrato de infra, investimento)
   //      → noticias.
   //    - Anúncios de programa/bolsa/grant/fellowship → noticias.
+  //    - Updates incrementais / changelogs → noticias (#318).
   //    - URLs em `/research/` de blogs de ML → pesquisa (papers, não produto).
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";
+    if (isUpdate(article)) return "noticias";
     return "lancamento";
   }
 

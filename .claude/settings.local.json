@@ -27,7 +27,9 @@
       "Bash(python3 -m json.tool)",
       "Bash(ffmpeg -y -i diaria_d1__00004_.png -q:v 3 /c/Users/vjpix/OneDrive/Documentos/Diaria/diaria-studio/data/editions/260417/05-d1.jpg)",
       "Bash(convert:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(rmdir .git/rebase-merge)",
+      "Bash(rm -f .git/AUTO_MERGE)"
     ]
   },
   "enableAllProjectMcpServers": true,

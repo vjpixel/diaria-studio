@@ -21,23 +21,25 @@ node -e "const s='$1';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-
 ```
 Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 
-1. Default de `window_days` por dia da semana:
+1. **Janela = 4 dias corridos terminando em D+0** (#315).
+   Stage 1 roda em D+0 (dia antes da publicação). O endpoint superior da janela é D+0 (`$ISO − 1 dia`), não `$ISO`.
    ```bash
-   node -e "const d=new Date('$ISO');const day=d.getUTCDay();process.stdout.write(String(day===1||day===2?4:3))"
+   node -e "const d=new Date('$ISO');d.setUTCDate(d.getUTCDate()-1);process.stdout.write(d.toISOString().slice(0,10))"
    ```
-   Segunda/terça = 4, quarta–sexta = 3.
-2. `window_start = $ISO − window_days dias`:
+   Armazenar como `WINDOW_END` (ex: `2026-04-28` quando `$ISO` = `2026-04-29`).
+   `window_days = 4` (fixo, sem depender do dia da semana).
    ```bash
-   node -e "const d=new Date('$ISO');d.setUTCDate(d.getUTCDate()-{window_days});process.stdout.write(d.toISOString().slice(0,10))"
+   node -e "const d=new Date('$WINDOW_END');d.setUTCDate(d.getUTCDate()-3);process.stdout.write(d.toISOString().slice(0,10))"
    ```
-3. Perguntar ao usuário e **aguardar resposta**:
+   Armazenar como `window_start` (ex: `2026-04-25`).
+2. Perguntar ao usuário e **aguardar resposta**:
 
    ```
-   Janela de publicacao aceita: {window_start} -> $1 ({window_days} dias)
+   Janela de publicacao aceita: {window_start} -> {WINDOW_END} (4 dias)
    Pressione Enter para confirmar ou digite outro numero de dias:
    ```
 
-4. Enter / "ok" / "sim" → manter default. Número N ≥ 1 → `window_days = N`.
+3. Enter / "ok" / "sim" → manter default. Número N ≥ 1 → `window_days = N`, recalcular `window_start`.
 
 ## Passo 2 — Pré-requisitos e execução do playbook
 

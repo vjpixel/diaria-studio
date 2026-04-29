@@ -84,6 +84,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Sempre indicar prioridade ao criar issues.** Nova issue **deve** entrar com 1 label `P0`/`P1`/`P2`/`P3` além do tipo (`enhancement`/`bug`/etc). Se a prioridade não estiver óbvia, sugerir uma com justificativa breve no corpo da issue (não deixar pra triagem depois). Default: `P2` pra bug com workaround / enhancement importante; `P3` pra cleanup, scoping, produto/decisão editorial; `P1` pra bug que afeta produção atual sem workaround; `P0` só pra fire (publicação corrompida, leak, etc).
 
+- **Stage 5/6 (publicadores) sempre exigem consentimento explícito por canal antes do dispatch (#336).** Antes de invocar qualquer `publish-*` agent ou script publicador (newsletter Beehiiv, LinkedIn, Facebook), perguntar explicitamente ao editor qual canal ele quer automático e qual vai fazer manual. Default se não responder = manual em tudo. Não há exceção pra `/diaria-edicao` sem `--no-gates`. Com `--no-gates` (`auto_approve = true`): auto-aprovar mas registrar warn no run-log. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
+
 ---
 
 ## Otimização de tokens
