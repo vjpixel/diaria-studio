@@ -79,7 +79,15 @@ export function parseEditionDate(editionDate: string): {
       `editionDate fora do range: '${editionDate}' (mm=${mm}, dd=${dd}).`,
     );
   }
-  return { year: 2000 + yy, month: mm, day: dd };
+  // Validação round-trip: rejeita datas impossíveis como Fev-31 que Date() rolaria silenciosamente (#291).
+  const year = 2000 + yy;
+  const target = new Date(year, mm - 1, dd);
+  if (target.getFullYear() !== year || target.getMonth() !== mm - 1 || target.getDate() !== dd) {
+    throw new Error(
+      `editionDate inválida (data não existe): '${editionDate}' (${year}-${mm}-${dd} → ${target.toISOString().slice(0, 10)}).`,
+    );
+  }
+  return { year, month: mm, day: dd };
 }
 
 /**

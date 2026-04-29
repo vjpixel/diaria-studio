@@ -434,11 +434,27 @@ async function pushFile(
   const fileCache = edCache.files[filename];
   const pushCount = fileCache?.push_count ?? 0;
 
-  // #253: filename pode incluir subpath (ex: `_internal/02-clarice-diff.md`).
+  // #253: filename pode incluir subpath (ex: `_internal/02-clauce-diff.md`).
   // Antes ia direto como nome do arquivo no dayFolder com `/` literal — Drive
   // aceita mas vira poluição visual na pasta do dia. Agora resolve subpath em
   // subpasta real, e usa só o basename como nome do arquivo no Drive.
   const { subpath, basename } = splitFilePath(filename);
+
+  // #280: detectar migração de legacy slash-literal → subpasta real.
+  // Se cache tem drive_file_id (arquivo antigo com nome literal `_internal/foo.md`)
+  // E agora há subpath (nova convenção de subpasta), o archive do arquivo antigo
+  // vai pra posição errada — logar warn pra editor limpar o órfão no Drive.
+  if (subpath && pushCount > 0 && fileCache?.drive_file_id) {
+    const edCache = cache.editions[yymmdd];
+    const hasSubfolderEntry = edCache?.subfolder_ids?.[subpath];
+    if (!hasSubfolderEntry) {
+      result.warnings.push({
+        file: filename,
+        error_message: `migração legacy: arquivo '${filename}' tinha drive_file_id no cache mas sem subpasta '${subpath}' registrada — arquivo antigo com '/' literal no nome pode existir na pasta do dia. Limpar manualmente no Drive se necessário.`,
+      });
+    }
+  }
+
   const targetParentId = subpath
     ? await resolveSubfolder(cache, yymmdd, dayFolderId, subpath)
     : dayFolderId;

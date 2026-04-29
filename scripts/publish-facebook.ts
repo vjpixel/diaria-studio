@@ -377,9 +377,27 @@ async function main() {
   const doReschedule = !!args.reschedule;
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
 
-  // Load credentials
-  const creds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
+  // Load credentials — pre-flight check de token (#263)
+  let creds: { page_id: string; page_access_token: string; api_version: string };
+  try {
+    creds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
+  } catch {
+    console.error(
+      "ERRO: data/.fb-credentials.json não encontrado ou inválido.\n" +
+      "Criar via: cp data/.fb-credentials.json.example data/.fb-credentials.json\n" +
+      "Preencher page_id e page_access_token (gerar em https://developers.facebook.com/tools/explorer)."
+    );
+    process.exit(1);
+  }
   const { page_id, page_access_token, api_version } = creds;
+  if (!page_access_token) {
+    console.error(
+      "ERRO: page_access_token não está setado em data/.fb-credentials.json.\n" +
+      "Regenerar em https://developers.facebook.com/tools/explorer\n" +
+      "(selecionar app + Page Diar.ia → Generate Page Access Token long-lived)."
+    );
+    process.exit(1);
+  }
 
   // Load config
   const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));

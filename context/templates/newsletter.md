@@ -72,7 +72,18 @@ A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate human
 
 ## Regras de preenchimento
 
-- CATEGORIA dos destaques: label editorial específico ao conteúdo do artigo, em caps. Não usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real da história. Exemplos: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`. Se nenhum se encaixar bem, criar um novo que faça sentido editorial.
+- CATEGORIA dos destaques: label editorial específico ao conteúdo do artigo, em caps, com emoji prefix (#265). Não usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real da história. Tabela de emojis canônicos:
+  | Categoria | Emoji | Categoria | Emoji |
+  |---|---|---|---|
+  | LANÇAMENTO | 🚀 | PRODUTO | 📦 |
+  | FERRAMENTA | 🛠️ | PESQUISA | 🔬 |
+  | MERCADO | 💼 | INDÚSTRIA | 🏭 |
+  | TENDÊNCIA | 📈 | CONCEITO | 💡 |
+  | CULTURA | 🎭 | BRASIL | 🇧🇷 |
+  | OPINIÃO | 💬 | DADOS | 📊 |
+  | REGULAÇÃO | ⚖️ | PRODUTO | 📦 |
+  Exemplo: `DESTAQUE 1 | 🚀 LANÇAMENTO`. Para categorias não listadas, escolher emoji semanticamente próximo.
+  Se nenhum se encaixar bem, criar uma nova categoria com emoji adequado.
 - Ordenar destaques por relevância editorial (scorer decide).
 - LANÇAMENTOS: itens da categoria `ferramenta` que não viraram destaque.
 - PESQUISAS: itens da categoria `pesquisa` (papers, estudos).
@@ -83,5 +94,5 @@ A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate human
 
 - Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.).
 - Não incluir texto fora do template.
-- Não adicionar emojis.
+- Não adicionar emojis no corpo do texto — apenas o emoji de categoria no header `DESTAQUE N | emoji CATEGORIA` é permitido (#265).
 - Não mencionar "Diar.ia" dentro do corpo dos destaques (é redundante).

@@ -360,6 +360,25 @@ function logDrainError(err: Error): void {
   }
 }
 
+function logDrainInfo(message: string, details?: Record<string, unknown>): void {
+  try {
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: 1,
+      agent: "inbox-drainer",
+      level: "info",
+      message,
+      details: details ?? null,
+    };
+    const logPath = getRunLogPath();
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // swallow
+  }
+}
+
 function logDrainWarn(message: string, details?: Record<string, unknown>): void {
   try {
     const event = {
@@ -575,7 +594,7 @@ async function main(): Promise<void> {
         break;
       case "silent_reset":
         updatedCursor = resetEmptyDrain(updatedCursor);
-        logDrainWarn(
+        logDrainInfo(  // INFO — não é problema, é confirmação que inbox está vazio (#287)
           `auto-reset: inbox genuinamente vazio (alt query também 0 threads). Silenciando warnings até voltar a aparecer e-mail.`,
           {
             previous_consecutive_empty_drains:

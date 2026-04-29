@@ -732,6 +732,12 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 
 Após o gate do Stage 5 (publish paralelo) aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
 
+0. **Validar social published (sempre, independente do exit code dos agents — #272):**
+   ```bash
+   npx tsx scripts/validate-social-published.ts data/editions/{AAMMDD}/
+   ```
+   Se exit != 0 (duplicates ou inconsistências detectados), incluir no relatório do gate de Stage 5 (`5g`) antes de seguir. Não bloqueia o pipeline, mas editor vê o problema antes de aprovar.
+
 1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
 
 2. **Avaliar output**: se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.

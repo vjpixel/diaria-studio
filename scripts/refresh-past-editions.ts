@@ -193,9 +193,13 @@ export function aammddFromIso(iso: string): string {
   // Date-only: interpretar como dia BR sem rolar timezone (footgun).
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
   if (dateOnly) {
+    // Validar ranges antes de retornar (#267) — previne "2026-13-99" → "261399" nonsense.
+    const mm = parseInt(dateOnly[2], 10);
+    const dd = parseInt(dateOnly[3], 10);
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return "";
     return `${dateOnly[1].slice(-2)}${dateOnly[2]}${dateOnly[3]}`;
   }
-  const d = new Date(iso);
+  const d = new Date(trimmed); // usa trimmed (consistência, #267)
   if (Number.isNaN(d.getTime())) return "";
   const fmt = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
