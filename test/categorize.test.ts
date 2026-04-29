@@ -266,12 +266,13 @@ describe("categorize() — non-product announcement override (#77)", () => {
 });
 
 describe("categorize() — patterns específicos (#77)", () => {
-  it("aws.amazon.com/blogs/ → lancamento via pattern", () => {
+  it("aws.amazon.com/blogs/machine-learning/ → tutorial (não lancamento) (#318)", () => {
+    // AWS ML Blog é historicamente tutoriais/case studies, não anúncios de produto.
     assert.equal(
       categorize({
         url: "https://aws.amazon.com/blogs/machine-learning/post-x",
       }),
-      "lancamento",
+      "tutorial",
     );
   });
 
@@ -525,6 +526,43 @@ describe("categorize() — ordem de precedência (#77)", () => {
         url: "https://theverge.com/microsoft-deal",
         title: "Microsoft announces $10 billion acquisition",
       }),
+      "noticias",
+    );
+  });
+});
+
+describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
+  it("'An update on our election safeguards' (anthropic.com) → noticias", () => {
+    assert.equal(
+      categorize({ url: "https://www.anthropic.com/news/election-safeguards", title: "An update on our election safeguards" }),
+      "noticias",
+    );
+  });
+
+  it("'Migrating a text agent to a voice assistant' (AWS ML) → tutorial", () => {
+    assert.equal(
+      categorize({ url: "https://aws.amazon.com/blogs/machine-learning/migrating-a-text-agent/", title: "Migrating a text agent to a voice assistant" }),
+      "tutorial",
+    );
+  });
+
+  it("'How Popsa used Amazon Nova to inspire customers' (AWS ML) → tutorial", () => {
+    assert.equal(
+      categorize({ url: "https://aws.amazon.com/blogs/machine-learning/how-popsa-used-amazon-nova/", title: "How Popsa used Amazon Nova to inspire customers" }),
+      "tutorial",
+    );
+  });
+
+  it("'Claude for Creative Work' (anthropic.com) continua lancamento", () => {
+    assert.equal(
+      categorize({ url: "https://www.anthropic.com/news/claude-for-creative-work", title: "Claude for Creative Work" }),
+      "lancamento",
+    );
+  });
+
+  it("release notes → noticias (UPDATE_PATTERNS)", () => {
+    assert.equal(
+      categorize({ url: "https://openai.com/news/release-notes-v2", title: "GPT-5 release notes for developers" }),
       "noticias",
     );
   });

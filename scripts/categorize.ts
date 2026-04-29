@@ -258,7 +258,7 @@ function isTutorialByDomainExtra(url: string): boolean {
  * Padrões de título/summary que indicam tutorial mesmo em domínio oficial (#318).
  */
 const TUTORIAL_TITLE_EXTRA_RE =
-  /\b(migrat(ing|ion)\b|how\s+\w+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|getting\s+started\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
+  /\b(migrat(ing|ion)\b|how\s+\w+\s+(used?|leverag(es?|ed?)|powered?)\b|case\s+stud(y|ies)\b|build\s+and\s+deploy\b|step[- ]by[- ]step\b|guia\s+(pr[áa]tico|completo|passo)\b)\b/i;
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
