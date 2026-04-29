@@ -284,6 +284,35 @@ export function populateLinksFromApproved(
   return { populated: urls.length };
 }
 
+/**
+ * Para um array de posts, popula `links[]` a partir do approved.json local
+ * de cada edição que não tem links ainda (#268 — extrai do block-scope inline
+ * de main() pra ser testável diretamente).
+ *
+ * Retorna stats: { posts_touched, total_urls_populated }.
+ */
+export function populateAllFromApproved(
+  posts: Post[],
+  root: string = ROOT,
+): { posts_touched: number; total_urls_populated: number } {
+  let totalPopulated = 0;
+  let postsTouched = 0;
+  for (const post of posts) {
+    if (post.links && post.links.length > 0) continue;
+    const { populated } = populateLinksFromApproved(post, root);
+    if (populated > 0) {
+      totalPopulated += populated;
+      postsTouched++;
+    }
+  }
+  if (postsTouched > 0) {
+    console.log(
+      `Populated links[] from approved.json: ${postsTouched} post(s), ${totalPopulated} URLs`,
+    );
+  }
+  return { posts_touched: postsTouched, total_urls_populated: totalPopulated };
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -387,23 +416,8 @@ async function main() {
   // (#238). Source-of-truth completo pra cada edição produzida nesta máquina.
   // Sempre-on, sem flag — só lê arquivos locais, sem network. No-op pra posts
   // que já têm links (incluindo `--merge` com base existente populada).
-  {
-    let totalPopulated = 0;
-    let postsTouched = 0;
-    for (const post of truncated) {
-      if (post.links && post.links.length > 0) continue;
-      const { populated } = populateLinksFromApproved(post);
-      if (populated > 0) {
-        totalPopulated += populated;
-        postsTouched++;
-      }
-    }
-    if (postsTouched > 0) {
-      console.log(
-        `Populated links[] from approved.json: ${postsTouched} post(s), ${totalPopulated} URLs`,
-      );
-    }
-  }
+  // #268: extraído de block-scope para função nomeada pra facilitar teste.
+  populateAllFromApproved(truncated);
 
   // Resolução de tracking URLs do Beehiiv (#234). Opt-in via --resolve-tracking.
   // Cada post sem `links[]` populado tenta resolver via HEAD requests.
