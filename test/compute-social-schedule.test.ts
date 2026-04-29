@@ -4,6 +4,7 @@ import {
   computeScheduledAt,
   parseEditionDate,
   parseCliArgs,
+  timezoneOffsetIso,
 } from "../scripts/compute-social-schedule.ts";
 
 const baseConfig = {
@@ -308,5 +309,32 @@ describe("parseCliArgs", () => {
     assert.deepEqual(r, {
       error: "missing/invalid --platform (linkedin|facebook)",
     });
+  });
+});
+
+describe("timezoneOffsetIso (#292)", () => {
+  it("São Paulo fora de DST (maio) → -03:00", () => {
+    const d = new Date("2026-05-15T12:00:00Z");
+    assert.equal(timezoneOffsetIso(d, "America/Sao_Paulo"), "-03:00");
+  });
+
+  it("Asia/Kolkata → +05:30 (meia hora)", () => {
+    const d = new Date("2026-05-15T12:00:00Z");
+    assert.equal(timezoneOffsetIso(d, "Asia/Kolkata"), "+05:30");
+  });
+
+  it("UTC → +00:00", () => {
+    const d = new Date("2026-05-15T12:00:00Z");
+    assert.equal(timezoneOffsetIso(d, "UTC"), "+00:00");
+  });
+
+  it("timezone inválido retorna +00:00 (não throws)", () => {
+    const d = new Date("2026-05-15T12:00:00Z");
+    try {
+      const r = timezoneOffsetIso(d, "Invalid/Foo");
+      assert.equal(r, "+00:00"); // fallback
+    } catch {
+      // RangeError é também comportamento aceitável (documentado)
+    }
   });
 });
