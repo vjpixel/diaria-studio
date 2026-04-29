@@ -1,11 +1,11 @@
 ---
 name: orchestrator
-description: Playbook da pipeline Diar.ia (7 stages). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
+description: Playbook da pipeline Diar.ia (4 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
 model: claude-opus-4-7
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
-> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrever`, `/diaria-3-social`, `/diaria-4-eai`, `/diaria-5-imagens`, `/diaria-6-publicar`, `/diaria-test`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada stage prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
+> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`, `/diaria-test`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
 
@@ -42,27 +42,27 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - **Manter social scheduling normal** (diferente de `test_mode` que usa `schedule_day_offset`).
   - No Stage 1, copiar `_internal/01-categorized.json` → `_internal/01-approved.json` diretamente (sem edição humana).
   - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
-- **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais no Stage 5 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
+- **Receber `schedule_day_offset` (opcional).** Se presente, usar este valor como `day_offset` para todos os agendamentos sociais na Etapa 4 (sobrescreve o valor de `platform.config.json`). Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
-- **Resume-aware.** Antes de iniciar qualquer stage, listar arquivos em `data/editions/{AAMMDD}/`. O pipeline principal é 1→2→3→4→5 (newsletter+social paralelos)→6 (auto-reporter); o É IA? roda em paralelo durante o Stage 1 e tem lógica de resume independente.
+- **Resume-aware.** Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. Pipeline principal: Etapa 1 → Etapa 2 (newsletter+social paralelos) → Etapa 3 (É IA? gate + imagens) → Etapa 4 (publicação+auto-reporter). O É IA? é dispatachado em background na Etapa 1 e coletado na Etapa 3.
   **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
-  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` → Stage 6 completo. Pipeline finalizado. (Entries `pending_manual` são LinkedIn posts aguardando retomada com Chrome MCP — tratados como "já tratados" para fins de resume.)
-  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Stage 6 parcial; re-disparar 6a (script Facebook) e 6b (publish-social LinkedIn) — ambos são resume-aware e pulam posts já publicados ou `pending_manual`.
-  - Se `05-published.json` existe **e** `status === "skipped"` (Chrome MCP estava indisponível na sessão anterior) → **re-probar Chrome MCP** (`mcp__claude-in-chrome__tabs_context_mcp`). Se probe suceder (`CHROME_MCP = true`): deletar o arquivo marcador e tratar como se Stage 5 não tivesse rodado — prosseguir para Stage 5 normalmente. Se probe falhar (`CHROME_MCP = false`): Stage 5 ainda impossível; pular diretamente para Stage 6 (com `CHROME_MCP = false` ativo para o Stage 6 também).
-  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para Stage 6.
-  - Se `05-published.json` existe mas `template_used` !== template esperado → Stage 5 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Stage 5 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
-  - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Stage 5 incompleto (newsletter parcial): pular publish-newsletter (rascunho já existe), rodar só o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-social`. Re-apresentar gate único.
-  - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Stage 5.
-  - Se `03-social.md` existe (mas não `04-d1-2x1.jpg`) → pular para Stage 4.
-  - Se `02-reviewed.md` existe (mas não `03-social.md`) → pular para Stage 3. Avisar: "Retomando no Stage 3 (Social).".
-  - Se `_internal/01-approved.json` existe (mas não `02-reviewed.md`) → pular para Stage 2.
-  - Se `_internal/01-categorized.json` existe mas não `_internal/01-approved.json` → Stage 1 foi interrompido no gate humano; reapresentar o gate.
+  - Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` → Etapa 4 completa. Pipeline finalizado. (Entries `pending_manual` são LinkedIn posts aguardando retomada com Chrome MCP — tratados como "já tratados" para fins de resume.)
+  - Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Etapa 4 parcial; re-disparar publicação Facebook e LinkedIn — ambos são resume-aware e pulam posts já publicados ou `pending_manual`.
+  - Se `05-published.json` existe **e** `status === "skipped"` (Chrome MCP estava indisponível na sessão anterior) → **re-probar Chrome MCP** (`mcp__claude-in-chrome__tabs_context_mcp`). Se probe suceder (`CHROME_MCP = true`): deletar o arquivo marcador e tratar como se Etapa 4 não tivesse rodado — prosseguir para Etapa 4 normalmente. Se probe falhar (`CHROME_MCP = false`): Etapa 4 ainda impossível; pular diretamente para auto-reporter (com `CHROME_MCP = false` ativo).
+  - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para auto-reporter (Etapa 4b).
+  - Se `05-published.json` existe mas `template_used` !== template esperado → Etapa 4 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Etapa 4 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
+  - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Etapa 4 incompleta (newsletter parcial): pular publish-newsletter (rascunho já existe), rodar só o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-social`. Re-apresentar gate único.
+  - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Etapa 4.
+  - Se `02-reviewed.md` + `03-social.md` existem (mas não `04-d1-2x1.jpg`) → pular para Etapa 3 (Imagens).
+  - Se `02-reviewed.md` existe mas **não** `03-social.md` → Etapa 2 parcial (newsletter ok, social não rodou); re-rodar Etapa 2 com `[social]`. Avisar: "Retomando Etapa 2 — só social.".
+  - Se `_internal/01-approved.json` existe (mas não `02-reviewed.md`) → pular para Etapa 2.
+  - Se `_internal/01-categorized.json` existe mas não `_internal/01-approved.json` → Etapa 1 foi interrompida no gate humano; reapresentar o gate.
   - Caso contrário → começar do Stage 0 normalmente.
   **É IA? (paralelo)** — verificar em qualquer ponto de resume:
   - Se `01-eai.md` já existe → não disparar eai-composer.
   - Se `01-eai.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eai-composer` em background (mesma lógica do Stage 1 dispatch).
   - O gate do É IA? será apresentado assim que o Agent completar, intercalado com o fluxo principal.
-  - **Pré-requisito do Stage 5:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando o Stage 5 for atingido, **bloquear e aguardar** o Agent — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
+  - **Pré-requisito da Etapa 4:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando a Etapa 4 for atingida, **bloquear e aguardar** o Agent — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
   - Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101, mesmo padrão de `git branch -D <name>`). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar. Nunca sobrescreva arquivos de stages anteriores sem essa dupla confirmação. Pra deleção manual real (CLI fora do pipeline), o editor usa `scripts/safe-delete-edition.ts` que aplica o mesmo padrão de literal-name confirmation.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
@@ -77,13 +77,13 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `CHROME_MCP = false`, logar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message 'claude-in-chrome MCP unavailable in this session — Stage 5 e LinkedIn do Stage 6 serão pulados'")`. Esse warn é detectado por `collect-edition-signals.ts` (Signal 4, #144) e gera issue automaticamente no auto-reporter.
   - **Em modo interativo** (não `auto_approve` e não `test_mode`): alertar editor antes de prosseguir:
     > 🔌 Claude in Chrome MCP indisponível nesta sessão.
-    > Consequência: Stage 5 (newsletter no Beehiiv) e LinkedIn × 3 do Stage 6 serão **pulados**. Facebook × 3 segue normal (Graph API). Os artefatos preparados (HTML, imagens, copy) ficam prontos pra retomada manual depois com `/diaria-6-publicar` quando o MCP estiver ativo.
+    > Consequência: Etapa 4 (newsletter no Beehiiv) e LinkedIn × 3 serão **pulados**. Facebook × 3 segue normal (Graph API). Os artefatos preparados (HTML, imagens, copy) ficam prontos pra retomada manual depois com `/diaria-4-publicar` quando o MCP estiver ativo.
     >
     > Continuar mesmo assim [y] ou abortar pra ativar a extensão [n]?
 
     Se `n`, abortar com exit. Se `y`, prosseguir com `CHROME_MCP = false`.
   - **Em modo `auto_approve` ou `test_mode`**: prosseguir silenciosamente com `CHROME_MCP = false`. O resumo final do pipeline já cita os stages pulados e o comando de retomada.
-  - **No Stage 5 e LinkedIn do Stage 6**: antes de invocar `publish-newsletter` / `publish-social`, checar `CHROME_MCP`. Se `false`, gravar output marcador (`05-published.json` com `status: "skipped"`, `review_completed: false`, `reason: "claude_in_chrome_mcp_unavailable"`, `prerequisites` apontando pros artefatos prontos; `06-social-published.json` LinkedIn entries com `status: "pending_manual"`) e pular a invocação do agent. **Não falhar** — o resumo final orienta a retomada.
+  - **Na Etapa 4 (newsletter e LinkedIn)**: antes de invocar `publish-newsletter` / `publish-social`, checar `CHROME_MCP`. Se `false`, gravar output marcador (`05-published.json` com `status: "skipped"`, `review_completed: false`, `reason: "claude_in_chrome_mcp_unavailable"`, `prerequisites` apontando pros artefatos prontos; `06-social-published.json` LinkedIn entries com `status: "pending_manual"`) e pular a invocação do agent. **Não falhar** — o resumo final orienta a retomada.
 - **Inicializar _internal/cost.md.** Se `data/editions/{AAMMDD}/_internal/cost.md` **não existe**, obter timestamp com `Bash("node -e \"process.stdout.write(new Date().toISOString())\"")` e gravar:
   ```markdown
   # Cost — Edição {AAMMDD}
@@ -180,7 +180,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
 
 ### 0b. Auto-reporter — preparado pra rodar no final
 
-Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Stage 6" abaixo.
+Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Auto-reporter" (Etapa 4b) abaixo.
 
 ### 1. Stage 1 — Research
 
@@ -219,9 +219,9 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
   **Logging por caminho** (#110 fix 4 — qualquer skip path deve gerar log explícito; antes era silêncio total e a falha só aparecia no Stage 5):
   - **Dispatch normal**: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
   - **Skip por resume** (`01-eai.md` já existir): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatch skipped: already_exists (resume)'`.
-  - **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'eai dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com Stage 1 — o gate 1b e a validação do gate de Stage 1 (abaixo) vão sinalizar a ausência e oferecer retry manual.
+  - **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'eai dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com a Etapa 1 — a Etapa 3 vai sinalizar a ausência e oferecer retry manual.
 
-  **Validação no gate de Stage 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eai.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-4-eai {AAMMDD} antes do gate de Stage 5.` Isso fail-loud na primeira oportunidade em vez de só descobrir no Stage 5.
+  **Validação no gate da Etapa 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eai.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.` Isso fail-loud na primeira oportunidade em vez de só descobrir na Etapa 4.
 - **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
   1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
   2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
@@ -399,20 +399,30 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
     ```
     `Total de chamadas` = soma de todas as chamadas em todas as linhas + 1 (orchestrator).
 
-### 2. Stage 2 — Writing
+### 2. Etapa 2 — Escrita
 
-Este stage é **sequencial** (writer → humanizador (skill) → clarice) porque cada etapa depende do output da anterior. Não tente paralelizar.
+Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.json` — nenhum depende do outro. O gate ao final é unificado.
 
-- Ler `data/editions/{AAMMDD}/_internal/01-approved.json`. Extrair `highlights[]` (já rankeados pelo scorer no Stage 1) e o objeto `categorized` (buckets `lancamento`, `pesquisa`, `noticias` com scores).
-- Disparar `writer` (Sonnet) passando:
-  - `highlights` (extraído de `_internal/01-approved.json` — sempre exatamente 3 entradas após o gate do Stage 1)
-  - `categorized` (o `_internal/01-approved.json` inteiro, para lançamentos/pesquisa/noticias)
-  - `edition_date`
-  - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
-  - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
-  - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
-  - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
-- Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+#### 2a. Writer + social em paralelo
+
+**Em uma única mensagem**, disparar os 3 agents simultaneamente:
+
+1. `Agent` → `writer` (Sonnet) passando:
+   - `highlights` (extraído de `_internal/01-approved.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
+   - `categorized` (o `_internal/01-approved.json` inteiro, para lançamentos/pesquisa/noticias)
+   - `edition_date`
+   - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
+   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
+   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
+   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
+
+2. `Agent` → `social-linkedin` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+
+3. `Agent` → `social-facebook` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+
+Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+
+#### 2b. Processar newsletter
 - **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
@@ -451,19 +461,47 @@ Este stage é **sequencial** (writer → humanizador (skill) → clarice) porque
   npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
   ```
   Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas.
-- **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` e instruir:
+#### 2c. Processar social
+
+Após os social agents retornarem, fazer merge em `03-social.md` via Bash:
+
+```bash
+node -e "
+  const fs=require('fs');
+  const dir='{edition_dir}';
+  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
+  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
+  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
+  fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
+  fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
+"
+```
+
+**Humanizar social (#308):** invocar skill `humanizador` in-place no `03-social.md`:
+```
+Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
+```
+Falha não bloqueia (fallback usa o arquivo original).
+
+**Revisar social com Clarice (inline):** ler `03-social.md`, chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar, propagar o erro.
+
+#### 2d. Sync push + gate unificado
+
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas.
+- **GATE HUMANO unificado (newsletter + social):** mostrar `_internal/02-clarice-diff.md` e o conteúdo de `03-social.md`. Instruir:
   ```
-  ✏️  Edite data/editions/{AAMMDD}/02-reviewed.md antes de aprovar:
+  ✏️  Etapa 2 — Escrita pronta.
+
+  Newsletter — edite data/editions/{AAMMDD}/02-reviewed.md:
       — Mantenha exatamente 1 título por destaque (delete os outros 2).
         URL fica na linha imediatamente abaixo do título escolhido (#172).
-      — Ajuste qualquer texto que queira alterar.
 
-  📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/02-reviewed.md
-      (pode editar direto no Drive — o Stage 3 faz pull antes de começar)
+  Social — revise data/editions/{AAMMDD}/03-social.md:
+      — 3 posts LinkedIn (d1/d2/d3) + 3 posts Facebook (d1/d2/d3)
+
+  📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
   ```
-  Quando o editor responder "sim", o `02-reviewed.md` local (ou a versão do Drive, via pull do Stage 3) é o texto final. O Stage 3 não usa o arquivo sem o pull — edições do editor sempre chegam.
-  - (O Stage 3 fará pull de `02-reviewed.md` antes de começar — cobre edições do editor feitas no Drive ou no local.)
+  Quando o editor responder "sim", os arquivos locais são os textos finais.
   - **Auto-pick de título via Opus (#159).** Após aprovação, dispatch `title-picker` (Opus, Agent) passando:
     - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
     - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
@@ -473,7 +511,7 @@ Este stage é **sequencial** (writer → humanizador (skill) → clarice) porque
 
     Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
 
-    Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Stage 3 — não há fallback automático pra título inexistente.
+    Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Etapa 3 — não há fallback automático pra título inexistente.
   - **Validar 1 título por destaque (#178).** Após o title-picker, validar que todo destaque tem exatamente 1 título:
     ```bash
     npx tsx scripts/lint-newsletter-md.ts \
@@ -483,61 +521,33 @@ Este stage é **sequencial** (writer → humanizador (skill) → clarice) porque
     Exit 1 = algum destaque ainda tem ≠1 título (caso de borda — title-picker falhou ou editor depois apagou). **Não prosseguir** — re-apresentar o gate com o erro destacado:
     > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
 
-    Se exit 0, prosseguir pro Stage 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
-  - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
+    Se exit 0, prosseguir pra Etapa 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
+  - **Atualizar _internal/cost.md.** Append linha na tabela da Etapa 2, recalcular `Total de chamadas`, gravar:
     ```
-    | 2 | {stage_start} | {now} | writer:1, humanizador:1, title_picker:?1, drive_syncer:1 | 1 | 1 |
+    | 2 | {stage_start} | {now} | writer:1, social_linkedin:1, social_facebook:1, humanizador:2, title_picker:?1, drive_syncer:1 | 3 | 3 |
     ```
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
 
-### 3. Stage 3 — Social
+### 3. Etapa 3 — Imagens
 
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 02-reviewed.md")`. Se o editor editou `02-reviewed.md` direto no Drive, o pull sobrescreve o local antes do stage consumir.
-- Disparar em paralelo (2 `Agent` calls em uma única mensagem) os subagentes `social-linkedin` e `social-facebook`. Cada um recebe `newsletter_path = 02-reviewed.md` e `out_dir = data/editions/{AAMMDD}/`. Cada agente grava um arquivo temporário com seções `## d1`, `## d2`, `## d3`: `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md`.
-- Após os 2 retornarem, fazer merge em `03-social.md` via Bash:
-  ```bash
-  node -e "
-    const fs=require('fs');
-    const dir='{edition_dir}';
-    const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
-    const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
-    fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
-    fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
-    fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
-  "
-  ```
-- **Humanizar (#308):** invocar skill `humanizador` in-place no `03-social.md`:
-  ```
-  Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
-  ```
-  Falha não bloqueia (fallback usa o arquivo original).
-- **Revisar com Clarice (inline — sem Agent):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
-- **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/03-social.md`." Aprovar.
-  - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 3, atualizar `Fim` e `Total de chamadas`, gravar:
-    ```
-    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, humanizador:1, drive_syncer:1 | 2 | 2 |
-    ```
-    Atualizar `Fim: {now}` no cabeçalho. `Total de chamadas` inclui +1 pelo orchestrator.
+#### 3a. É IA? (gate do background dispatch)
 
-### 1b. É IA? (gate do background dispatch)
+O `eai-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o resultado e apresentamos o gate antes de gerar as imagens de destaque.
 
-O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage" apenas coleta o resultado e apresenta o gate — **não bloqueia** o pipeline principal. O gate pode ser apresentado em qualquer momento após o Agent completar, intercalado com os gates de outros stages se necessário.
-
-- **Se o Agent do eai-composer ainda não completou:** aguardar sem bloquear outros stages. Quando completar, apresentar o gate abaixo assim que o usuário estiver disponível (entre gates de outros stages, ou logo após o gate anterior).
+- **Se o Agent do eai-composer ainda não completou:** aguardar. Quando completar, apresentar o gate abaixo.
 - **Se o Agent já completou (ou `01-eai.md` já existe por resume):** apresentar o gate imediatamente.
 - Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg")`. Anotar em `sync_results[1]` (eai); ignorar falhas. (Edições antigas têm `01-eai-real.jpg`/`01-eai-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg")`. Anotar em `sync_results[3]` (eai); ignorar falhas. (Edições antigas têm `01-eai-real.jpg`/`01-eai-ia.jpg`; ajustar manualmente em retry de pré-#192.)
 - **GATE HUMANO:** mostrar o texto de `01-eai.md` (frontmatter `eai_answer` revela A↔real/ia pro editor) + `"Imagem A: data/editions/{AAMMDD}/01-eai-A.jpg | Imagem B: data/editions/{AAMMDD}/01-eai-B.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
-  - **Atualizar _internal/cost.md.** Append linha na tabela de É IA?, recalcular `Total de chamadas`, gravar:
+  - **Atualizar _internal/cost.md.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:
     ```
-    | 1b | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
+    | 3a | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
     ```
 
-### 4. Stage 4 — Imagens
+#### 3b. Imagens de destaque
 
-- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'stage 4 images started'`.
-- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md")` — prompts de imagem derivam dos destaques, então edições do editor em `02-reviewed.md` precisam chegar aqui.
+- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level info --message 'etapa 3 imagens started'`.
+- **Sync pull antes de começar.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 02-d1-prompt.md,02-d2-prompt.md,02-d3-prompt.md")` — prompts de imagem derivam dos destaques escritos na Etapa 2.
 - Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível: `Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")`. Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
 - **Gerar imagens via script (sem Agent).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default):
   ```bash
@@ -547,24 +557,24 @@ O `eai-composer` já foi disparado em background durante o Stage 1. Este "stage"
     --destaque d{N}
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")`. Anotar em `sync_results[4]`; ignorar falhas.
-- **GATE HUMANO:** mostrar os 4 paths gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
-  - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 4, atualizar `Fim` e `Total de chamadas`, gravar:
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")`. Anotar em `sync_results[3]`; ignorar falhas.
+- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+  - **Atualizar _internal/cost.md.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 4 | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
+    | 3b | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
     ```
     Atualizar `Fim: {now}` no cabeçalho.
 
-### 5. Stage 5 — Publicar (paralelo: newsletter + social) — #38
+### 4. Etapa 4 — Publicação (paralelo: newsletter + social) — #38
 
-**Stages 5 e 6 antigos foram fundidos.** `publish-newsletter` (Beehiiv), `publish-facebook.ts` (Graph API) e `publish-social` (LinkedIn via Chrome) agora rodam **em paralelo na mesma mensagem**, com **gate único** depois. O auto-reporter (era "Stage final") passa a ser Stage 6.
+`publish-newsletter` (Beehiiv), `publish-facebook.ts` (Graph API) e `publish-social` (LinkedIn via Chrome) rodam **em paralelo na mesma mensagem**, com **gate único** depois. O auto-reporter fecha o loop de observabilidade.
 
 Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincronizado fica pra PR 2 (#38).
 
-#### 5a. Pré-requisitos + sync
+#### 4a. Pré-requisitos + sync
 
-- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level info --message 'stage 5 publish parallel started'`.
-- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 5 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
+- Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 publish parallel started'`.
+- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
 - **Staleness check (#120) — APÓS o pull.** Rodar:
   ```bash
   npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
@@ -572,9 +582,9 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 
-#### 5b. Confirmar modo de publicação por canal (#336)
+#### 4b. Confirmar modo de publicação por canal (#336)
 
-**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log (`"Stage 5 auto-approved: publish dispatch sem confirmação explícita"`).
+**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log (`"Etapa 4 auto-approved: publish dispatch sem confirmação explícita"`).
 
 Antes do dispatch, perguntar ao editor (a menos que `auto_approve = true`):
 
@@ -594,9 +604,9 @@ Default se não responder = manual em tudo.
 ```
 
 Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`.
-Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Stage 5.
+Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Etapa 4.
 
-#### 5c. Dispatch paralelo (UMA mensagem, 3 chamadas)
+#### 4c. Dispatch paralelo (UMA mensagem, 3 chamadas)
 
 **Só dispatchar os canais que o editor autorizou em 5b.** Canais manuais ficam com status `pending_manual`.
 
@@ -608,19 +618,19 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 **Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
 
 **Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (5d).
-#### 5d. Retry chrome_disconnected (independente por agent)
+#### 4d. Retry chrome_disconnected (independente por agent)
 
 Tanto `publish-newsletter` quanto `publish-social` usam o mesmo padrão de retry exponencial — cada um conta sozinho (falha de um não afeta o contador do outro).
 
 Se qualquer agent retornar `error: "chrome_disconnected"`:
 1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
-2. Logar warn: `"chrome_disconnected em Stage 5 ({agent}), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+2. Logar warn: `"chrome_disconnected em Etapa 4 ({agent}), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
 3. Aguardar: `Bash("sleep {delay}")`.
 4. Re-disparar **só** o agent que falhou (com mesmos parâmetros; publish-social com `skip_existing = true`).
 5. Se repetir, repetir do passo 1 incrementando N.
 6. **Após 10 falhas consecutivas** (~17h acumuladas), logar erro e pausar:
    ```
-   🔌 Claude in Chrome desconectou 10 vezes seguidas em {agent} (Stage 5).
+   🔌 Claude in Chrome desconectou 10 vezes seguidas em {agent} (Etapa 4).
       Verifique Chrome aberto + extensão Claude in Chrome ativa.
       ⚠️ Se publish-newsletter: rascunho parcial no Beehiiv pode existir — delete antes do retry.
       Responda "retry" pra mais 10 tentativas, ou "skip" pra pular este agent.
@@ -628,23 +638,23 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 - **Reset do contador**: re-dispatch que sucede (mesmo se falhar por outro motivo depois) reseta N=1.
 - Erros que **não** sejam `chrome_disconnected` (ex: login expirado, template errado) interrompem o loop e são tratados normalmente.
 - Se `publish-newsletter` retornar `error: "beehiiv_login_expired"` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
-- Se `publish-social` retornar `status: "failed"` em algum post por login expirado, logar warn e prosseguir — editor re-roda `/diaria-publicar social` após re-logar.
+- Se `publish-social` retornar `status: "failed"` em algum post por login expirado, logar warn e prosseguir — editor re-roda `/diaria-4-publicar social` após re-logar.
 
-#### 5e. Validar template (publish-newsletter)
+#### 4e. Validar template (publish-newsletter)
 - Ler `05-published.json` retornado. Extrair `draft_url`, `title`, `test_email_sent_to`, `template_used`.
 - **Validar template (obrigatório).** Ler `publishing.newsletter.template` de `platform.config.json` (ex: `"Default"`). Se `template_used` !== template esperado:
   1. Logar erro: `"Template incorreto: esperado '{expected}', usado '{template_used}'. Re-disparando publish-newsletter."`.
   2. Instruir o usuário a **deletar o rascunho incorreto** no Beehiiv antes do retry (rascunhos órfãos poluem a lista de posts): `"⚠️ Delete o rascunho '{title}' em {draft_url} antes do retry."`.
   3. Re-disparar `publish-newsletter` com os mesmos parâmetros (até 3 tentativas).
-  4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-6-publicar newsletter."`.
+  4. Se o template continuar errado após 3 tentativas, pausar e instruir o usuário: `"O template '{expected}' não foi selecionado. Verifique se existe no Beehiiv (Settings → Templates) e re-rode /diaria-4-publicar newsletter."`.
   5. **Não prosseguir para o loop de review** enquanto o template não estiver correto — a newsletter sem template terá problemas estruturais (É IA? ausente, boxes não separados, etc.).
 
-#### 5f. Loop de review do email de teste (após newsletter retornar)
+#### 4f. Loop de review do email de teste (após newsletter retornar)
 
-> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 5c. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 5c.
+> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 4c. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 4c.
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
-  > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral do Stage 5. O Stage 5 só está completo quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
+  > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral da Etapa 4. A Etapa 4 só está completa quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
 
   Para `attempt` de 1 a 10:
 
@@ -674,10 +684,10 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
   - `review_completed: true`
   - `review_attempts: N`
   - `review_final_issues: [...]` (vazio se tudo OK)
-  Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** para garantir que o Stage 5 não é considerado completo sem a revisão do email de teste. **Se este campo estiver ausente ou `false`, o resume re-executa o loop de review.**
+  Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** para garantir que a Etapa 4 não é considerada completa sem a revisão do email de teste. **Se este campo estiver ausente ou `false`, o resume re-executa o loop de review.**
 - Ler `05-published.json` (pode ter sido atualizado pelo fix mode).
 
-#### 5g. Gate único (substitui os dois gates antigos de Stage 5 + Stage 6)
+#### 4g. Gate único
 
 - Ler `06-social-published.json` (já gerado por 5c).
 - **GATE HUMANO:** mostrar **uma só vez**:
@@ -720,29 +730,29 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
     ```
   Social posts não exigem upload manual — Facebook foi via Graph API com upload já feito; LinkedIn drafts têm imagens já anexadas pelo agent.
 
-  **Instrução**: "Suba as imagens no Beehiiv, reenvie o email de teste pra conferir, revise os 6 social drafts no dashboard de cada plataforma, e só então aprove pra seguir ao Stage 6 (auto-reporter). Posts agendados serão publicados automaticamente no horário."
+  **Instrução**: "Suba as imagens no Beehiiv, reenvie o email de teste pra conferir, revise os 6 social drafts no dashboard de cada plataforma, e só então aprove. Posts agendados serão publicados automaticamente no horário."
 
   **Opções**:
-  - aprovar (segue pra Stage 6 auto-reporter)
+  - aprovar (segue para auto-reporter)
   - regenerar newsletter (re-dispatch `publish-newsletter`)
   - regenerar social (re-dispatch `publish-facebook` + `publish-social`, com `--skip-existing` / `skip_existing = true` pra resume-aware)
-  - regenerar tudo (volta a 5b)
+  - regenerar tudo (volta a 4b)
   - abortar
 
-- **Atualizar _internal/cost.md.** Append linha unificada na tabela de Stage 5, recalcular `Total de chamadas`, gravar:
+- **Atualizar _internal/cost.md.** Append linha unificada na tabela da Etapa 4, recalcular `Total de chamadas`, gravar:
   ```
-  | 5 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
+  | 4 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
   ```
 
-### 6. Stage 6 — Auto-reporter (#57 / #79)
+### 4b. Auto-reporter (#57 / #79)
 
-Após o gate do Stage 5 (publish paralelo) aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
+Após o gate da Etapa 4 (publicação paralela) aprovado, orchestrator coleta sinais da edição e apresenta gate de issues GitHub.
 
 0. **Validar social published (sempre, independente do exit code dos agents — #272):**
    ```bash
    npx tsx scripts/validate-social-published.ts data/editions/{AAMMDD}/
    ```
-   Se exit != 0 (duplicates ou inconsistências detectados), incluir no relatório do gate de Stage 5 (`5g`) antes de seguir. Não bloqueia o pipeline, mas editor vê o problema antes de aprovar.
+   Se exit != 0 (duplicates ou inconsistências detectados), incluir no relatório do gate de Etapa 4 (`4g`) antes de seguir. Não bloqueia o pipeline, mas editor vê o problema antes de aprovar.
 
 1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
 
@@ -766,33 +776,33 @@ Se o agent retornar `action: "fallback_md"` (GitHub MCP indisponível), mostrar 
 
 ## Formato de relatório ao usuário
 
-Ao final de cada stage, apresente:
+Ao final de cada etapa, apresente:
 
 ```
-✅ Stage {N} — {nome} completo
+✅ Etapa {N} — {nome} completa
 
 Output: data/editions/{AAMMDD}/{arquivo}
 Resumo:
   - {bullet 1}
   - {bullet 2}
 
-Aprovar e seguir para Stage {N+1}? (sim / editar / retry)
+Aprovar e seguir para Etapa {N+1}? (sim / editar / retry)
 ```
 
-### Resumo final (após Stage final)
+### Resumo final (após auto-reporter)
 
-Após Stage 6 + auto-reporter, apresentar resumo consolidado da edição. Se algum stage foi pulado (ex: `CHROME_MCP = false` levou Stage 5 e LinkedIn do Stage 6 a serem pulados), incluir bloco de retomada explícito:
+Após auto-reporter, apresentar resumo consolidado da edição. Se alguma parte foi pulada (ex: `CHROME_MCP = false` levou newsletter e LinkedIn a serem pulados), incluir bloco de retomada explícito:
 
 ```
 🔁 Retomada manual pendente
 
-Stage 5 (newsletter no Beehiiv): pulado (claude-in-chrome MCP indisponível)
-Stage 6 (LinkedIn × 3): pulado (claude-in-chrome MCP indisponível)
+Etapa 4a (newsletter no Beehiiv): pulado (claude-in-chrome MCP indisponível)
+Etapa 4a (LinkedIn × 3): pulado (claude-in-chrome MCP indisponível)
 Facebook × 3: agendado normal via Graph API ✓
 
 Quando o MCP estiver ativo, rodar:
-  /diaria-6-publicar newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
-  /diaria-6-publicar social {AAMMDD}       # cria 3 posts LinkedIn (Facebook já agendado)
+  /diaria-4-publicar newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
+  /diaria-4-publicar social {AAMMDD}       # cria 3 posts LinkedIn (Facebook já agendado)
 
 Artefatos prontos:
   - data/editions/{AAMMDD}/_internal/05-newsletter-body.html  (HTML pré-renderizado)

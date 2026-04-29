@@ -2,7 +2,7 @@
 
 Projeto Claude Code fim-a-fim para produção da newsletter **Diar.ia** (diar.ia.br).
 
-O fluxo editorial é modelado como 7 stages com gate humano em cada um. A execução acontece via skills (`/diaria-edicao`, `/diaria-1-pesquisa`, etc.) que disparam um orquestrador; o orquestrador distribui trabalho para subagentes especializados em paralelo quando possível.
+O fluxo editorial é modelado como 4 etapas com gate humano em cada uma. A execução acontece via skills (`/diaria-edicao`, `/diaria-1-pesquisa`, etc.) que disparam um orquestrador; o orquestrador distribui trabalho para subagentes especializados em paralelo quando possível.
 
 ---
 
@@ -23,10 +23,11 @@ O fluxo editorial é modelado como 7 stages com gate humano em cada um. A execu�
 
 **Para cada nova edição:**
 1. `/diaria-edicao AAMMDD [--no-gates]` — roda todos os stages em sequência. O próprio orchestrator regenera `context/past-editions.md` (Stage 0) e drena o inbox editorial (`diariaeditor@gmail.com`, Stage 1) automaticamente. Com `--no-gates`, auto-aprova todos os gates humanos mas mantém Drive sync e social scheduling normais (diferente de `/diaria-test` que também desabilita Drive e agenda social 10 dias à frente).
-2. Alternativamente, rodar stages isolados:
-   - **Fase 1** (textos): `/diaria-1-pesquisa` (também refresca dedup + drena inbox), `/diaria-2-escrever`, `/diaria-3-social`.
-   - **Fase 2** (imagens): `/diaria-4-eai` (É IA?), `/diaria-5-imagens [d1|d2|d3]` (Stage 4).
-   - **Fase 3** (publicação): `/diaria-6-publicar [newsletter|social|all]` (Stages 5 + 6).
+2. Alternativamente, rodar etapas isoladas:
+   - **Etapa 1** (pesquisa): `/diaria-1-pesquisa` (também refresca dedup + drena inbox).
+   - **Etapa 2** (escrita): `/diaria-2-escrita [newsletter|social]` (newsletter + social em paralelo a partir de `01-approved.json`).
+   - **Etapa 3** (imagens): `/diaria-3-imagens [eai|d1|d2|d3]` (É IA? + imagens de destaque).
+   - **Etapa 4** (publicação): `/diaria-4-publicar [newsletter|social|all]`.
 3. Skills auxiliares (debug, raramente usadas):
    - `/diaria-refresh-dedup` — testa conexão com Beehiiv MCP.
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
@@ -41,19 +42,16 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 ## Pipeline
 
-**Fases 1, 2 e 3 (implementadas):**
+**Todas as etapas implementadas:**
 
-| # | Stage | Subagentes | Output |
+| # | Etapa | Subagentes / Scripts | Output |
 |---|---|---|---|
-| 1 | Research | orchestrator → N× `source-researcher` + M× `discovery-searcher` + `eai-composer` (todos em paralelo) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` (datas + temas) → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
-| 1b | É IA? | Coleta resultado do `eai-composer` disparado em paralelo no Stage 1 — Wikimedia POTD + Gemini | `01-eai.md` + `01-eai-real.jpg` + `01-eai-ia.jpg` |
-| 2 | Writing | `scorer` (Sonnet) → `writer` (Sonnet) → skill `humanizador` → Clarice inline (`mcp__clarice__correct_text` + `scripts/clarice-diff.ts`) | `02-reviewed.md` |
-| 3 | Social | 2× social writers paralelos (LinkedIn, Facebook) → merge → skill `humanizador` → 1× Clarice (no arquivo merged) | `03-social.md` |
-| 4 | Imagens | `scripts/image-generate.ts` — Cloudflare Workers AI por default (FLUX-1-schnell, free tier ~1k imgs/dia); fallback Gemini ou ComfyUI via `platform.config.json > image_generator` | `04-d1-2x1.jpg`, `04-d2.jpg`, `04-d3.jpg` |
-| 5 | Publish newsletter | `publish-newsletter` — Claude in Chrome → Beehiiv (rascunho + email de teste) + `review-test-email` (loop até 10×) | `_internal/05-published.json` |
-| 6 | Publish social | `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Claude in Chrome → LinkedIn × 3) em paralelo | `_internal/06-social-published.json` |
+| 1 | Pesquisa | N× `source-researcher` + M× `discovery-searcher` + `eai-composer` (em paralelo, É IA? em background) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
+| 2 | Escrita | `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, todos a partir de `_internal/01-approved.json` → merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
+| 3 | Imagens | É IA? gate (coleta `eai-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eai.md` + `01-eai-A/B.jpg` + `04-d1-2x1.jpg`, `04-d2.jpg`, `04-d3.jpg` |
+| 4 | Publicação | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Chrome → LinkedIn × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
 
-**Sync com Google Drive (entre stages):** **antes de cada gate** (stages 1–4), `scripts/drive-sync.ts` sobe os outputs do stage para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada stage** que consome inputs que podem ter sido editados no Drive (3, 4, 5, 6), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
+**Sync com Google Drive (entre etapas):** **antes de cada gate** (etapas 1–3), `scripts/drive-sync.ts` sobe os outputs da etapa para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada etapa** que consome inputs que podem ter sido editados no Drive (2, 3, 4), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 
 ---
 
@@ -78,13 +76,13 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Data da edição é sempre explícita.** Skills `/diaria-*` que aceitam `AAMMDD` **nunca** inferem a partir de `today()` ou da edição mais recente em `data/editions/`. Se o usuário não passar a data, perguntar com sugestão de hoje/ontem como atalho mas exigir confirmação. Risco de rodar stage destrutivo/publicador (3, 5, 6) na edição errada é alto demais pra default silencioso.
 
-- **Edição é sempre D+1.** A pesquisa (Stage 1) é rodada no dia *anterior* à publicação — a data da edição é sempre **amanhã** (`today + 1 dia`), não hoje. Exemplo: se a rotina roda em 2026-04-26, a edição é `260427`. Isso vale para chamadas automáticas (CI, automação) e para chamadas manuais sem data explícita. Quando o usuário passar a data explicitamente, usar a data informada sem ajuste.
+- **Edição é sempre D+1.** A pesquisa (Etapa 1) é rodada no dia *anterior* à publicação — a data da edição é sempre **amanhã** (`today + 1 dia`), não hoje. Exemplo: se a rotina roda em 2026-04-26, a edição é `260427`. Isso vale para chamadas automáticas (CI, automação) e para chamadas manuais sem data explícita. Quando o usuário passar a data explicitamente, usar a data informada sem ajuste.
 
 - **Atacar todas as issues que dá pra atacar autonomamente.** A mandato anterior de "autonomia ampla" se aplica a issues também: revisar a fila aberta, identificar quais não têm bloqueio externo (allowlist, conta de terceiro, decisão editorial específica), e atacar até o fim — Tier A + Tier B quando a direção da issue é clara. Issues com trade-off real (escolha entre opções genuinamente equivalentes que afetam usuários finais) ainda merecem consulta. Bloqueio externo verdadeiro (precisa do editor abrir conta, mexer em allowlist GitHub, dar input de produto que não foi documentado) → comentar na issue com o que falta e pular. Tudo mais: avançar.
 
 - **Sempre indicar prioridade ao criar issues.** Nova issue **deve** entrar com 1 label `P0`/`P1`/`P2`/`P3` além do tipo (`enhancement`/`bug`/etc). Se a prioridade não estiver óbvia, sugerir uma com justificativa breve no corpo da issue (não deixar pra triagem depois). Default: `P2` pra bug com workaround / enhancement importante; `P3` pra cleanup, scoping, produto/decisão editorial; `P1` pra bug que afeta produção atual sem workaround; `P0` só pra fire (publicação corrompida, leak, etc).
 
-- **Stage 5/6 (publicadores) sempre exigem consentimento explícito por canal antes do dispatch (#336).** Antes de invocar qualquer `publish-*` agent ou script publicador (newsletter Beehiiv, LinkedIn, Facebook), perguntar explicitamente ao editor qual canal ele quer automático e qual vai fazer manual. Default se não responder = manual em tudo. Não há exceção pra `/diaria-edicao` sem `--no-gates`. Com `--no-gates` (`auto_approve = true`): auto-aprovar mas registrar warn no run-log. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
+- **Etapa 4 (publicadores) sempre exige consentimento explícito por canal antes do dispatch (#336).** Antes de invocar qualquer `publish-*` agent ou script publicador (newsletter Beehiiv, LinkedIn, Facebook), perguntar explicitamente ao editor qual canal ele quer automático e qual vai fazer manual. Default se não responder = manual em tudo. Não há exceção pra `/diaria-edicao` sem `--no-gates`. Com `--no-gates` (`auto_approve = true`): auto-aprovar mas registrar warn no run-log. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
 
 ---
 
@@ -124,6 +122,6 @@ platform.config.json     # { newsletter: "beehiiv", socials: [...] }
 
 ---
 
-## Fase atual
+## Estado atual
 
-**Fases 1, 2 e 3 implementadas** (stages 1–6). Pipeline fim-a-fim funcional: pesquisa → escrita → social → É IA? → imagens → newsletter (Beehiiv rascunho + teste) → social (LinkedIn + Facebook rascunho/agendado). Editor sempre revisa cada gate e dispara a publicação final manualmente do dashboard de cada plataforma.
+**Pipeline completo implementado** (4 etapas). Fluxo: Pesquisa → Escrita (newsletter + social em paralelo) → Imagens (É IA? + destaques) → Publicação (Beehiiv rascunho + teste + LinkedIn + Facebook). Editor revisa cada gate e dispara a publicação final manualmente do dashboard de cada plataforma.

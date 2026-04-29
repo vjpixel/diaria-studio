@@ -1,11 +1,11 @@
 ---
 name: diaria-1-pesquisa
-description: Roda apenas o Stage 1 (pesquisa + verify + dedup + categorize + score). Útil para retry isolado. Uso — `/diaria-1-pesquisa AAMMDD`.
+description: Roda apenas a Etapa 1 (pesquisa + verify + dedup + categorize + score). Útil para retry isolado. Uso — `/diaria-1-pesquisa AAMMDD`.
 ---
 
 # /diaria-1-pesquisa
 
-Executa só o Stage 1 da pipeline.
+Executa só a Etapa 1 da pipeline.
 
 ## Argumentos
 

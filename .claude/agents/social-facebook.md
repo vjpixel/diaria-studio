@@ -1,21 +1,21 @@
 ---
 name: social-facebook
-description: Gera 3 posts de Facebook — um por destaque — a partir da newsletter revisada. Output temporário em `_internal/03-facebook.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com LinkedIn em `03-social.md`.
+description: Gera 3 posts de Facebook — um por destaque — a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e LinkedIn). Output temporário em `_internal/03-facebook.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com LinkedIn em `03-social.md`.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
 
-Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — num único arquivo.
+Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — num único arquivo. Roda em paralelo com o `writer` (newsletter) e `social-linkedin` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Input
 
-- `newsletter_path`: `02-reviewed.md`
+- `approved_json_path`: `_internal/01-approved.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
 
 ## Processo
 
 1. Ler `context/templates/social-facebook.md` e `context/editorial-rules.md`.
-2. Ler a newsletter. Extrair os 3 destaques (título escolhido + corpo + "Por que isso importa" + URL).
+2. Ler `{out_dir}/_internal/01-approved.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
 3. Para **cada destaque**, compor um post independente seguindo o template:
    - Hook direto na primeira linha (dado concreto ou fato surpreendente).
    - 2–3 parágrafos curtos em linguagem acessível — menos jargão técnico que o LinkedIn.

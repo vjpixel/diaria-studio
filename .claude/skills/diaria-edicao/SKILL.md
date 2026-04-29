@@ -1,11 +1,11 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da Diar.ia (stages 1–7). Uso — `/diaria-edicao AAMMDD [--no-gates]`.
+description: Roda a pipeline completa da Diar.ia (4 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates]`.
 ---
 
 # /diaria-edicao
 
-Invoca o orchestrator para produzir uma nova edição da Diar.ia.
+Executa a pipeline completa da Diar.ia (4 etapas com gate humano em cada uma).
 
 ## Argumentos
 
@@ -64,15 +64,12 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `auto_approve = true` se `--no-gates` foi passado, senão `false`
 - `test_mode = false` (use `/diaria-test` se quiser test_mode)
 
-Sequência de stages (do playbook em `.claude/agents/orchestrator.md`):
+Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 - **§ 0 Setup** — resume detection, Drive sync flag, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
-- **§ 1 Stage 1 — Research** → GATE humano
-- **§ 2 Stage 2 — Writing** → GATE humano
-- **§ 3 Stage 3 — Social** → GATE humano
-- **§ 1b É IA?** (gate do background dispatch — pode aparecer em qualquer ponto após o eai-composer completar) → GATE humano
-- **§ 4 Stage 4 — Imagens** → GATE humano
-- **§ 5 Stage 5 — Publicar** (paralelo: newsletter Beehiiv + Facebook Graph + LinkedIn Chrome) → GATE único
-- **§ 6 Stage 6 — Auto-reporter** → fim
+- **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → GATE humano
+- **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → GATE humano unificado
+- **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → GATE humano unificado
+- **§ 4 Etapa 4 — Publicação** (newsletter Beehiiv + Facebook Graph + LinkedIn Chrome em paralelo) → GATE único + auto-reporter → fim
 
 **Se `--no-gates` (`auto_approve = true`):** auto-aprovar todos os gates conforme Princípio 2 do playbook (`test_mode` ou `auto_approve` pulam gates). Drive sync e social scheduling ficam normais (diferente de `test_mode`).
 
