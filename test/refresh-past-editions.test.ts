@@ -11,6 +11,7 @@ import {
   rmSync,
   cpSync,
   mkdirSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -87,12 +88,18 @@ describe("--regen-md-only flag (#162)", () => {
     cpSync(resolve(ROOT, "package.json"), join(sandboxRoot, "package.json"));
     cpSync(resolve(ROOT, "tsconfig.json"), join(sandboxRoot, "tsconfig.json"));
     if (existsSync(resolve(ROOT, "node_modules"))) {
-      // symlink em vez de copy pra ser rápido
-      execFileSync("ln", [
-        "-s",
-        resolve(ROOT, "node_modules"),
-        join(sandboxRoot, "node_modules"),
-      ]);
+      // symlinkSync com 'junction' no Windows (não precisa de admin) (#311)
+      // 'dir' no Unix equivale a symlink de diretório.
+      try {
+        symlinkSync(
+          resolve(ROOT, "node_modules"),
+          join(sandboxRoot, "node_modules"),
+          isWindows ? "junction" : "dir",
+        );
+      } catch {
+        // Fallback: se symlink falhar por qualquer motivo, copiar (mais lento mas seguro)
+        cpSync(resolve(ROOT, "node_modules"), join(sandboxRoot, "node_modules"), { recursive: true });
+      }
     }
     mkdirSync(join(sandboxRoot, "data"));
     mkdirSync(join(sandboxRoot, "context"));
