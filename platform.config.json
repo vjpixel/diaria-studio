@@ -9,7 +9,7 @@
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",
-    "gmailQuery": "label:Diaria",
+    "gmailQuery": "label:Diar.iaEditor",
     "enabled": true
   },
   "drive_sync": true,
