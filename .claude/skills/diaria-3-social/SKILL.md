@@ -5,7 +5,7 @@ description: Roda apenas o Stage 3 (social writers paralelos + Clarice). Requer 
 
 # /diaria-3-social
 
-Executa o Stage 3 da pipeline Diar.ia: 2 social writers em paralelo (`social-linkedin` + `social-facebook`) → merge → humanize → Clarice → gate humano.
+Executa o Stage 3 da pipeline Diar.ia: 2 social writers em paralelo (`social-linkedin` + `social-facebook`) → merge → humanizador (skill) → Clarice → gate humano.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 
@@ -78,18 +78,15 @@ node -e "
 "
 ```
 
-## Passo 4 — Humanize (#176)
+## Passo 4 — Humanize (#308)
 
-Pass determinístico in-place (sem Agent, sem LLM):
+Invocar skill `humanizador` in-place no `03-social.md`:
 
-```bash
-npx tsx scripts/humanize.ts \
-  --in data/editions/$1/03-social.md \
-  --out data/editions/$1/03-social.md \
-  2> data/editions/$1/_internal/03-humanize-report.json
+```
+Skill("humanizador", "Leia data/editions/$1/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
 ```
 
-`humanize.ts` preserva URLs (#163). Falha **não bloqueia** — fallback usa o arquivo original. Se `removals_count > 0` ou `substitutions_count > 0`, anotar pra incluir no resumo do gate.
+Falha **não bloqueia** — fallback usa o arquivo original.
 
 ## Passo 5 — Clarice (inline, sem Agent)
 
@@ -112,7 +109,7 @@ npx tsx scripts/humanize.ts \
 ## Passo 6 — Drive sync push (output)
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 03-social.md,_internal/03-humanize-report.json
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 03-social.md
 ```
 
 Anotar warnings (se houver) pra mencionar no gate. Falha não bloqueia.
@@ -129,7 +126,6 @@ Stage 3 — Social pronto.
 📁 Arquivo: data/editions/$1/03-social.md
 📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/03-social.md
 
-[Resumo do humanize: X remoções, Y substituições, Z flags] (se houve mudanças)
 [Clarice: A aplicadas, B skipadas (B>0 = review manual recomendada — ver _internal/03-clarice-report.json)]
 [⚠️ Drive sync: N warning(s)] (se houve)
 
@@ -145,7 +141,6 @@ Aguardar resposta. Se "sim", finalizar com sucesso. Se "retry", re-rodar Passo 2
 ## Outputs
 
 - `data/editions/$1/03-social.md` — final, com seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`/`## d2`/`## d3`
-- `data/editions/$1/_internal/03-humanize-report.json` — relatório do humanize
 
 ## Notas
 

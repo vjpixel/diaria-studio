@@ -17,13 +17,13 @@ Executa só o Stage 2.
 
 ## Execução
 
-**Executar o playbook diretamente no top-level (#207).** Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` § **2. Stage 2 — Writing** e executa os passos prescritos. **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `writer` (Sonnet), `humanizer-llm` (opcional), `title-picker` (Opus) conforme o playbook.
+**Executar o playbook diretamente no top-level (#207).** Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` § **2. Stage 2 — Writing** e executa os passos prescritos. **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `writer` (Sonnet), `title-picker` (Opus) conforme o playbook.
 
 Variáveis pra alimentar o playbook:
 - `edition_date = $1` (AAMMDD)
 - Inputs: `data/editions/{AAMMDD}/_internal/01-approved.json` (scorer já populou `highlights[]` no Stage 1).
 
-Sequência (§ 2 do playbook): ler `01-approved.json` → dispatch `writer` (Sonnet) → `scripts/lint-newsletter-md.ts` (lint seções vs buckets) → `scripts/normalize-newsletter.ts` → `scripts/humanize.ts` (inline) → `humanizer-llm` opcional (Sonnet, Agent — só se config ou flags ≥ threshold) → Clarice inline (`mcp__clarice__correct_text`) → `scripts/clarice-diff.ts` → `scripts/validate-lancamentos.ts` → drive push → GATE → `title-picker` (Opus, Agent) → `scripts/lint-newsletter-md.ts --check titles-per-highlight`.
+Sequência (§ 2 do playbook): ler `01-approved.json` → dispatch `writer` (Sonnet) → `scripts/lint-newsletter-md.ts` (lint seções vs buckets) → `scripts/normalize-newsletter.ts` → skill `humanizador` → Clarice inline (`mcp__clarice__correct_text`) → `scripts/clarice-diff.ts` → `scripts/validate-lancamentos.ts` → drive push → GATE → `title-picker` (Opus, Agent) → `scripts/lint-newsletter-md.ts --check titles-per-highlight`.
 
 ## Output
 

@@ -401,7 +401,7 @@ Após Stage 5 (publish paralelo) completar, orchestrator deve disparar `collect-
 
 ### 2. Stage 2 — Writing
 
-Este stage é **sequencial** (writer → humanizer → clarice) porque cada etapa depende do output da anterior. Não tente paralelizar.
+Este stage é **sequencial** (writer → humanizador (skill) → clarice) porque cada etapa depende do output da anterior. Não tente paralelizar.
 
 - Ler `data/editions/{AAMMDD}/_internal/01-approved.json`. Extrair `highlights[]` (já rankeados pelo scorer no Stage 1) e o objeto `categorized` (buckets `lancamento`, `pesquisa`, `noticias` com scores).
 - Disparar `writer` (Sonnet) passando:
@@ -428,23 +428,13 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
     2> data/editions/{AAMMDD}/_internal/02-normalize-report.json
   ```
   Heurístico conservador — só quebra quando o pattern é inequívoco. Se nenhum bug for detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script não bloqueia (log warn + fallback usa `02-draft.md`).
-- **Humanizar (inline — sem Agent, #45):** rodar pass determinístico que remove tics LLM antes da Clarice (a Clarice cobre ortografia/concordância; o humanizer pega muletas tipo "É importante notar que", "Vale destacar", etc).
-  ```bash
-  npx tsx scripts/humanize.ts \
-    --in data/editions/{AAMMDD}/_internal/02-normalized.md \
-    --out data/editions/{AAMMDD}/_internal/02-humanized.md \
-    2> data/editions/{AAMMDD}/_internal/02-humanize-report.json
+- **Humanizar (#308):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `context/past-editions.md` como referência:
   ```
-  (Input agora é `02-normalized.md` em vez de `02-draft.md` — reflete novo passo acima.)
-  O script é conservador: só remove/substitui padrões com tradução clara; padrões ambíguos (sentenças > 30 palavras, "não apenas X mas também Y", conectivos repetidos) viram flags no report — não alteram texto. Falha do humanizer (exit code != 0) **não bloqueia** — fallback usa o draft original como input pra Clarice. Logar warn em caso de falha: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanize falhou — usando draft original'`.
-- **LLM polish opcional (#45 Opção 3):** ler `platform.config.json > humanize`. Se `llm_polish: true` OU se `02-humanize-report.json > flags.length >= llm_polish_threshold_flags` (default 3), disparar `humanizer-llm` (Sonnet, Agent) passando:
-  - `in_path = data/editions/{AAMMDD}/_internal/02-humanized.md`
-  - `out_path = data/editions/{AAMMDD}/_internal/02-llm-polished.md`
-  - `report_path = data/editions/{AAMMDD}/_internal/02-humanize-report.json`
-
-  O agent é conservador (preserva fatos, formatação e voz). Retorna `{ out_path, changes_applied, flags_addressed[], flags_skipped[] }`. Se o agent falhar ou retornar `changes_applied: 0`, prosseguir sem o LLM polish — o `02-humanized.md` continua sendo o input do Clarice. Se sucedeu com mudanças, `02-llm-polished.md` vira o input do Clarice. Se `humanize` falhou e LLM polish foi acionado por config, pular o LLM (não tem input válido).
+  Skill("humanizador", "Leia data/editions/{AAMMDD}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado em data/editions/{AAMMDD}/_internal/02-humanized.md.")
+  ```
+  Falha da skill **não bloqueia** — fallback usa `02-normalized.md` como input pra Clarice. Em caso de falha, logar warn: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador falhou — usando normalized'`.
 - **Revisar com Clarice (inline — sem Agent):**
-  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-llm-polished.md` se existe (LLM polish foi aplicado); (2) `_internal/02-humanized.md` se existe (humanize sucedeu); (3) `_internal/02-normalized.md` se existe (normalize sucedeu); (4) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-humanized.md` se existe (humanizador aplicado); (2) `_internal/02-normalized.md` se existe (normalize sucedeu); (3) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
   1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
@@ -461,16 +451,13 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
   npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
   ```
   Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md,_internal/02-humanize-report.json,_internal/02-llm-polished.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas. (`02-llm-polished.md` só existe se LLM polish rodou — sync ignora arquivos ausentes.)
-- **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` + resumo do humanize report (`{ removals_count, substitutions_count, flags[].length }`) e instruir:
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,_internal/02-clarice-diff.md")`. Anotar resultado em `sync_results[2]`; ignorar falhas.
+- **GATE HUMANO:** mostrar `_internal/02-clarice-diff.md` e instruir:
   ```
   ✏️  Edite data/editions/{AAMMDD}/02-reviewed.md antes de aprovar:
       — Mantenha exatamente 1 título por destaque (delete os outros 2).
         URL fica na linha imediatamente abaixo do título escolhido (#172).
       — Ajuste qualquer texto que queira alterar.
-
-  🤖 Humanizer aplicou: {removals_count} removals, {substitutions_count} subs.
-      {flags.length} padrão(ões) flagged em _internal/02-humanize-report.json.
 
   📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/02-reviewed.md
       (pode editar direto no Drive — o Stage 3 faz pull antes de começar)
@@ -499,7 +486,7 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
     Se exit 0, prosseguir pro Stage 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 2, recalcular `Total de chamadas`, gravar:
     ```
-    | 2 | {stage_start} | {now} | writer:1, humanize:1, title_picker:?1, drive_syncer:1 | 1 | 1 |
+    | 2 | {stage_start} | {now} | writer:1, humanizador:1, title_picker:?1, drive_syncer:1 | 1 | 1 |
     ```
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
 
@@ -519,20 +506,17 @@ Este stage é **sequencial** (writer → humanizer → clarice) porque cada etap
     fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
   "
   ```
-- **Humanizar (#176, sem Agent):** rodar pass determinístico no `03-social.md` antes da Clarice — same script do Stage 2, escrevendo no próprio arquivo (in-place):
-  ```bash
-  npx tsx scripts/humanize.ts \
-    --in data/editions/{AAMMDD}/03-social.md \
-    --out data/editions/{AAMMDD}/03-social.md \
-    2> data/editions/{AAMMDD}/_internal/03-humanize-report.json
+- **Humanizar (#308):** invocar skill `humanizador` in-place no `03-social.md`:
   ```
-  Falha não bloqueia (fallback usa o arquivo original). Se `removals_count > 0` ou `substitutions_count > 0`, incluir no resumo do gate humano: `"Humanizer no social: X remoções, Y substituições, Z flags."`. Note: `humanize.ts` agora preserva URLs (#163 fix em master) — seguro rodar in-place.
+  Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
+  ```
+  Falha não bloqueia (fallback usa o arquivo original).
 - **Revisar com Clarice (inline — sem Agent):** ler `03-social.md`, chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna sugestões — aplicar todas ao texto, então sobrescrever `03-social.md` com o texto corrigido (não a lista de sugestões). **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem no arquivo (Clarice deve mexer apenas em texto corrido, não em cabeçalhos de seção). Se algum cabeçalho estiver ausente ou alterado, restaurá-lo com `Edit` antes de prosseguir. Se `mcp__clarice__correct_text` falhar, propagar o erro.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 03-social.md,_internal/03-humanize-report.json")`. Anotar em `sync_results[3]`; ignorar falhas.
-- **GATE HUMANO:** mostrar `03-social.md` + summary do humanize report (se houve mudanças). Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/03-social.md`." Aprovar.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 03-social.md")`. Anotar em `sync_results[3]`; ignorar falhas.
+- **GATE HUMANO:** mostrar `03-social.md`. Mencionar: "📁 Posts disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/03-social.md`." Aprovar.
   - **Atualizar _internal/cost.md.** Append linha na tabela de Stage 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
-    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, humanize:1, drive_syncer:1 | 2 | 2 |
+    | 3 | {stage_start} | {now} | social_linkedin:1, social_facebook:1, humanizador:1, drive_syncer:1 | 2 | 2 |
     ```
     Atualizar `Fim: {now}` no cabeçalho. `Total de chamadas` inclui +1 pelo orchestrator.
 
