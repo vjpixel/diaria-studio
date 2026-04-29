@@ -24,6 +24,13 @@
  * Input do JSON de sugestões (formato emitido pelo Clarice MCP):
  *   [{ "from": "manter", "to": "manter a", "rule": "...", "explanation": "..." }, ...]
  *
+ * Notas:
+ * - Substituições com `to: ""` (remoção) podem deixar whitespace duplo no texto resultante
+ *   (ex: "Mais e mais" → " e mais"). Editor revisa no gate; helper não normaliza pra
+ *   preservar idempotência das sugestões (#221).
+ * - Salvar o JSON de sugestões antes de chamar este script via `Write` tool com
+ *   `JSON.stringify(suggestions, null, 2)` — formato que JSON.parse espera (#222).
+ *
  * Output:
  *   - Arquivo em --out com texto patched (substituições aplicadas)
  *   - JSON de relatório em --report (ou stderr se omitido):
@@ -50,7 +57,7 @@ export interface ClariceSuggestion {
 }
 
 export interface SkippedSuggestion extends ClariceSuggestion {
-  reason: "ambiguous" | "not_found" | "empty_from";
+  reason: "ambiguous" | "not_found" | "empty_from" | "duplicate" | "invalid_shape";
   count: number;
 }
 
@@ -94,11 +101,33 @@ export function applyClariceSuggestions(
   const applied: ClariceSuggestion[] = [];
   const skipped: SkippedSuggestion[] = [];
 
-  for (const s of suggestions) {
+  // Dedup: skip sugestões já aplicadas (idempotência — protege contra Clarice
+  // retornar a mesma sugestão duas vezes, causando double-apply #219).
+  const appliedKeys = new Set<string>();
+
+  for (const [idx, s] of suggestions.entries()) {
+    // Validar shape antes de acessar s.from (protege contra {}, null, etc. #220).
+    if (s === null || typeof s !== "object") {
+      skipped.push({ from: String(s ?? "null"), to: "", reason: "invalid_shape", count: 0 });
+      continue;
+    }
+    if (typeof (s as ClariceSuggestion).from !== "string" || typeof (s as ClariceSuggestion).to !== "string") {
+      skipped.push({ from: String((s as ClariceSuggestion).from ?? ""), to: String((s as ClariceSuggestion).to ?? ""), reason: "invalid_shape", count: 0 });
+      continue;
+    }
+
     if (!s.from || !s.from.trim()) {
       skipped.push({ ...s, reason: "empty_from", count: 0 });
       continue;
     }
+
+    // Dedup check (#219)
+    const key = `${s.from}\0${s.to}`;
+    if (appliedKeys.has(key)) {
+      skipped.push({ ...s, reason: "duplicate", count: 0 });
+      continue;
+    }
+
     const count = countOccurrences(patched, s.from);
     if (count === 1) {
       // Function-form replacement evita interpretação de $ patterns ($&, $1,
@@ -106,6 +135,7 @@ export function applyClariceSuggestions(
       // que incluam esses caracteres literais.
       patched = patched.replace(s.from, () => s.to);
       applied.push(s);
+      appliedKeys.add(key);
     } else if (count === 0) {
       skipped.push({ ...s, reason: "not_found", count });
     } else {

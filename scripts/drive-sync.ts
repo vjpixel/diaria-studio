@@ -281,6 +281,22 @@ async function driveRenameFile(fileId: string, newName: string): Promise<void> {
 }
 
 /**
+ * Move (e opcionalmente renomeia) um arquivo Drive pra um novo parent folder (#260).
+ * Usa query params addParents/removeParents conforme Drive API v3 spec.
+ */
+async function driveMoveFile(fileId: string, newName: string, newParentId: string, oldParentId: string): Promise<void> {
+  const url = `${DRIVE_API}/files/${fileId}?addParents=${encodeURIComponent(newParentId)}&removeParents=${encodeURIComponent(oldParentId)}&fields=id,parents`;
+  const res = await gFetchRetry(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!res.ok) {
+    throw new Error(`Drive move error (${res.status}): ${await res.text()}`);
+  }
+}
+
+/**
  * Exporta um Google Doc nativo como arquivo em outro mimeType (#89).
  * Docs não suportam `?alt=media` — precisam de /export com mimeType target.
  */
@@ -478,19 +494,24 @@ async function pushFile(
     : `${base}.v${pushCount}${ext}`;
   const mimeType = mimeTypeFor(basename);
 
-  // Primeiro arquiva a versão atual no Drive (se houver). Se a renomeação
-  // falhar (arquivo deletado manualmente, permissão, etc.) registramos warning
-  // e seguimos — o novo upload ainda é válido, só perde-se 1 versão de
-  // histórico.
+  // Primeiro arquiva a versão atual no Drive (se houver). Move pra
+  // `_internal/versions/` em vez de deixar na pasta do dia — reduz poluição visual
+  // na listagem do editor (#260). Se o move falhar, tenta só renomear (fallback).
   if (pushCount > 0 && fileCache?.drive_file_id) {
     try {
-      await driveRenameFile(fileCache.drive_file_id, archiveTitle);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      result.warnings.push({
-        file: filename,
-        error_message: `rename_archive_failed: ${canonicalTitle} → ${archiveTitle} (${msg})`,
-      });
+      const versionsParentId = await resolveSubfolder(cache, yymmdd, dayFolderId, "_internal/versions");
+      await driveMoveFile(fileCache.drive_file_id, archiveTitle, versionsParentId, targetParentId);
+    } catch (moveErr) {
+      // Fallback: só renomear no lugar (mantém comportamento anterior se move falhar)
+      try {
+        await driveRenameFile(fileCache.drive_file_id, archiveTitle);
+      } catch (renameErr) {
+        const msg = renameErr instanceof Error ? renameErr.message : String(renameErr);
+        result.warnings.push({
+          file: filename,
+          error_message: `rename_archive_failed: ${canonicalTitle} → ${archiveTitle} (${msg})`,
+        });
+      }
     }
   }
 

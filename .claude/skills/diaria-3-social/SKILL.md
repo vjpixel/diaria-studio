@@ -95,7 +95,7 @@ npx tsx scripts/humanize.ts \
 
 1. Ler `data/editions/$1/03-social.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna lista de sugestões `{from, to, rule, explanation}`.
-3. Salvar sugestões em `data/editions/$1/_internal/03-clarice-suggestions.json`.
+3. Salvar sugestões via `Write` tool: `{ file_path: "data/editions/$1/_internal/03-clarice-suggestions.json", content: JSON.stringify(suggestions, null, 2) }` (#222).
 4. Aplicar via helper (#212 — evita corromper palavras ambíguas):
    ```bash
    npx tsx scripts/clarice-apply.ts \
