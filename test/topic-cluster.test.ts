@@ -15,9 +15,10 @@ describe("tokenize", () => {
     const set = tokenize("O Brasil avança em IA");
     assert.ok(set.has("brasil"));
     assert.ok(set.has("avanca"));
-    // "em" é stopword, "IA" < 4 chars
+    // "em" é stopword → removido
     assert.ok(!set.has("em"));
-    assert.ok(!set.has("ia"));
+    // "ia" é TECH_SHORT_TOKEN (#324) → mantido mesmo sendo < 4 chars
+    assert.ok(set.has("ia"));
   });
 
   it("remove stopwords PT/EN", () => {
