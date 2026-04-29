@@ -6,28 +6,28 @@ MIT Technology Review Brasil (IA),Brasil,https://mittechreview.com.br/category/i
 Tecnoblog (IA),Brasil,https://tecnoblog.net/topico/inteligencia-artificial/,
 CNN,Brasil,https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/,
 StartSe (IA),Brasil,https://www.startse.com/noticias/ia/,
-Meta AI Blog,Primária,https://ai.meta.com/blog/,
-arXiv,Pesquisa,https://arxiv.org/,
-Google,Primária,https://blog.google/,
-Cohere Blog,Primária,https://cohere.com/blog,
-DeepMind,Primária,https://deepmind.google/research/publications/,
-Hugging Face Blog,Primária,https://huggingface.co/blog,
-Apple Machine Learning Research,Primária,https://machinelearning.apple.com/,
+Meta AI Blog,Primária,https://ai.meta.com/blog/,https://ai.meta.com/feed/
+arXiv,Pesquisa,https://arxiv.org/,https://rss.arxiv.org/rss/cs.AI
+Google,Primária,https://blog.google/,https://blog.google/rss/
+Cohere Blog,Primária,https://cohere.com/blog,https://cohere.com/blog/rss
+DeepMind,Primária,https://deepmind.google/research/publications/,https://deepmind.google/blog/rss.xml
+Hugging Face Blog,Primária,https://huggingface.co/blog,https://huggingface.co/blog/feed.xml
+Apple Machine Learning Research,Primária,https://machinelearning.apple.com/,https://machinelearning.apple.com/rss-feed.rss
 Microsoft,Primária,https://microsoft.ai/news/,
-Mistral AI News,Primária,https://mistral.ai/news/,
-Nvidia,Primária,https://nvidianews.nvidia.com/,
-OpenAI,Primária,https://openai.com/news/company-announcements/,
+Mistral AI News,Primária,https://mistral.ai/news/,https://mistral.ai/news/feed/
+Nvidia,Primária,https://nvidianews.nvidia.com/,https://nvidianews.nvidia.com/rss
+OpenAI,Primária,https://openai.com/news/company-announcements/,https://openai.com/news/rss.xml
 Perplexity,Pesquisa,https://research.perplexity.ai/,
-Anthropic,Primária,https://www.anthropic.com/news/,
-Perplexity,Primária,https://www.perplexity.ai/hub,
-Agent Pulse,Secundária,https://agentpulse.beehiiv.com/,
-AI Breakfast,Secundária,https://aibreakfast.beehiiv.com/,
+Anthropic,Primária,https://www.anthropic.com/news/,https://www.anthropic.com/rss.xml
+Perplexity,Primária,https://www.perplexity.ai/hub,https://www.perplexity.ai/hub/feed
+Agent Pulse,Secundária,https://agentpulse.beehiiv.com/,https://agentpulse.beehiiv.com/feed
+AI Breakfast,Secundária,https://aibreakfast.beehiiv.com/,https://aibreakfast.beehiiv.com/feed
 AlphaSignal,Secundária,https://alphasignal.ai/,
 The Deep View,Secundária,https://archive.thedeepview.com/,
 Data Machina,Secundária,https://datamachina.com/,
-Import AI (Jack Clark),Secundária,https://importai.substack.com/,
-The AI Pulse,Secundária,https://theaipulse.beehiiv.com/,
-TLDR AI,Secundária,https://tldr.tech/ai,
+Import AI (Jack Clark),Secundária,https://importai.substack.com/,https://importai.substack.com/feed
+The AI Pulse,Secundária,https://theaipulse.beehiiv.com/,https://theaipulse.beehiiv.com/feed
+TLDR AI,Secundária,https://tldr.tech/ai,https://tldr.tech/ai/rss
 Ben's Bites,Secundária,https://www.bensbites.co/,
 Cyberman,Secundária,https://www.cyberman.ai/,
 Reuters,Secundária,https://www.reuters.com/technology/artificial-intelligence/,
@@ -40,8 +40,8 @@ Evolving AI,Secundária,https://evolvingai.io/,
 Simon Willison's Weblog,Tutoriais,https://simonwillison.net/,https://simonwillison.net/atom/everything/
 Anthropic Cookbook,Tutoriais,https://github.com/anthropics/anthropic-cookbook,
 HuggingFace Learn,Tutoriais,https://huggingface.co/learn,
-DeepLearning.ai The Batch,Tutoriais,https://www.deeplearning.ai/the-batch/,
+DeepLearning.ai The Batch,Tutoriais,https://www.deeplearning.ai/the-batch/,https://www.deeplearning.ai/the-batch/feed/
 Latent Space,Tutoriais,https://www.latent.space/,https://www.latent.space/feed
-Every Inc (Chain of Thought),Tutoriais,https://every.to/chain-of-thought,
-Google AI for Developers Blog,Tutoriais,https://developers.googleblog.com/en/ai/,
+Every Inc (Chain of Thought),Tutoriais,https://every.to/chain-of-thought,https://every.to/chain-of-thought/feed
+Google AI for Developers Blog,Tutoriais,https://developers.googleblog.com/en/ai/,https://feeds.feedburner.com/GDBcode
 AWS Machine Learning Blog,Tutoriais,https://aws.amazon.com/blogs/machine-learning/,https://aws.amazon.com/blogs/machine-learning/feed/

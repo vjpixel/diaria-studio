@@ -37,26 +37,32 @@
 ### Meta AI Blog
 - URL: https://ai.meta.com/blog/
 - Site query: `site:ai.meta.com/blog`
+- RSS: https://ai.meta.com/feed/
 
 ### Google
 - URL: https://blog.google/
 - Site query: `site:blog.google`
+- RSS: https://blog.google/rss/
 
 ### Cohere Blog
 - URL: https://cohere.com/blog
 - Site query: `site:cohere.com/blog`
+- RSS: https://cohere.com/blog/rss
 
 ### DeepMind
 - URL: https://deepmind.google/research/publications/
 - Site query: `site:deepmind.google/research/publications`
+- RSS: https://deepmind.google/blog/rss.xml
 
 ### Hugging Face Blog
 - URL: https://huggingface.co/blog
 - Site query: `site:huggingface.co/blog`
+- RSS: https://huggingface.co/blog/feed.xml
 
 ### Apple Machine Learning Research
 - URL: https://machinelearning.apple.com/
 - Site query: `site:machinelearning.apple.com`
+- RSS: https://machinelearning.apple.com/rss-feed.rss
 
 ### Microsoft
 - URL: https://microsoft.ai/news/
@@ -65,32 +71,39 @@
 ### Mistral AI News
 - URL: https://mistral.ai/news/
 - Site query: `site:mistral.ai/news`
+- RSS: https://mistral.ai/news/feed/
 
 ### Nvidia
 - URL: https://nvidianews.nvidia.com/
 - Site query: `site:nvidianews.nvidia.com`
+- RSS: https://nvidianews.nvidia.com/rss
 
 ### OpenAI
 - URL: https://openai.com/news/company-announcements/
 - Site query: `site:openai.com/news/company-announcements`
+- RSS: https://openai.com/news/rss.xml
 
 ### Anthropic
 - URL: https://www.anthropic.com/news/
 - Site query: `site:anthropic.com/news`
+- RSS: https://www.anthropic.com/rss.xml
 
 ### Perplexity
 - URL: https://www.perplexity.ai/hub
 - Site query: `site:perplexity.ai/hub`
+- RSS: https://www.perplexity.ai/hub/feed
 
 ## Secundária
 
 ### Agent Pulse
 - URL: https://agentpulse.beehiiv.com/
 - Site query: `site:agentpulse.beehiiv.com`
+- RSS: https://agentpulse.beehiiv.com/feed
 
 ### AI Breakfast
 - URL: https://aibreakfast.beehiiv.com/
 - Site query: `site:aibreakfast.beehiiv.com`
+- RSS: https://aibreakfast.beehiiv.com/feed
 
 ### AlphaSignal
 - URL: https://alphasignal.ai/
@@ -107,14 +120,17 @@
 ### Import AI (Jack Clark)
 - URL: https://importai.substack.com/
 - Site query: `site:importai.substack.com`
+- RSS: https://importai.substack.com/feed
 
 ### The AI Pulse
 - URL: https://theaipulse.beehiiv.com/
 - Site query: `site:theaipulse.beehiiv.com`
+- RSS: https://theaipulse.beehiiv.com/feed
 
 ### TLDR AI
 - URL: https://tldr.tech/ai
 - Site query: `site:tldr.tech/ai`
+- RSS: https://tldr.tech/ai/rss
 
 ### Ben's Bites
 - URL: https://www.bensbites.co/
@@ -157,6 +173,7 @@
 ### arXiv
 - URL: https://arxiv.org/
 - Site query: `site:arxiv.org`
+- RSS: https://rss.arxiv.org/rss/cs.AI
 
 ### Perplexity
 - URL: https://research.perplexity.ai/
@@ -180,6 +197,7 @@
 ### DeepLearning.ai The Batch
 - URL: https://www.deeplearning.ai/the-batch/
 - Site query: `site:deeplearning.ai/the-batch`
+- RSS: https://www.deeplearning.ai/the-batch/feed/
 
 ### Latent Space
 - URL: https://www.latent.space/
@@ -189,10 +207,12 @@
 ### Every Inc (Chain of Thought)
 - URL: https://every.to/chain-of-thought
 - Site query: `site:every.to/chain-of-thought`
+- RSS: https://every.to/chain-of-thought/feed
 
 ### Google AI for Developers Blog
 - URL: https://developers.googleblog.com/en/ai/
 - Site query: `site:developers.googleblog.com/en/ai`
+- RSS: https://feeds.feedburner.com/GDBcode
 
 ### AWS Machine Learning Blog
 - URL: https://aws.amazon.com/blogs/machine-learning/
