@@ -15,6 +15,7 @@
  *        Imprime o caminho do JPG principal em stdout.
  */
 
+import 'dotenv/config';
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";

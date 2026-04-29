@@ -10,6 +10,7 @@ import {
   isStage4Complete,
   buildPrevResultLine,
   readPrevPollStats,
+  firstSentence,
   extractFirstHref,
   extractFirstWikipediaUrl,
   extractCommonsUserUrl,
@@ -708,5 +709,57 @@ describe("buildCreditLine — wrap exato com link da description (#285)", () => 
     // text do <a> = "AT&amp;T", sentence = "AT&T..." → não bate. Sem wrap.
     assert.ok(!credit.match(/\[AT/));
     assert.match(credit, /AT&T is a company\./);
+  });
+});
+
+describe("firstSentence (#299)", () => {
+  it("preserva U.S. e segue até primeiro fim de sentença real", () => {
+    assert.equal(
+      firstSentence("U.S. Capitol is the meeting place. Built 1800."),
+      "U.S. Capitol is the meeting place.",
+    );
+  });
+
+  it("preserva Dr. em sentenças subsequentes", () => {
+    assert.equal(
+      firstSentence("Dr. Smith arrived. He spoke."),
+      "Dr. Smith arrived.",
+    );
+  });
+
+  it("Mt. Everest preservado", () => {
+    assert.equal(
+      firstSentence("Mt. Everest is the tallest peak."),
+      "Mt. Everest is the tallest peak.",
+    );
+  });
+
+  it("comportamento legado: sem regressão em sentença simples", () => {
+    assert.equal(firstSentence("Foo bar. Baz qux."), "Foo bar.");
+  });
+
+  it("single sentence sem continuação", () => {
+    assert.equal(firstSentence("Foo."), "Foo.");
+  });
+
+  it("texto sem terminador retorna texto inteiro trim", () => {
+    assert.equal(firstSentence("  Hello world  "), "Hello world");
+  });
+
+  it("string vazia retorna vazia", () => {
+    assert.equal(firstSentence(""), "");
+  });
+
+  it("ponto seguido de minúscula NÃO é fim de sentença (heurística)", () => {
+    // "v2.5 today" — ponto entre dígitos, regex pula porque não tem espaço+Maiúscula
+    assert.equal(
+      firstSentence("Released v2.5 today. Big update."),
+      "Released v2.5 today.",
+    );
+  });
+
+  it("aceita ! e ? como terminadores", () => {
+    assert.equal(firstSentence("Wow! Really?"), "Wow!");
+    assert.equal(firstSentence("Sure? Yes."), "Sure?");
   });
 });

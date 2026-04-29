@@ -40,15 +40,18 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
    - `context/editorial-rules.md` existe e >200 bytes
    - Se algum faltar, abortar com erro (não perguntar — é um teste).
 
-### 2. Disparar orchestrator
+### 2. Executar o playbook diretamente no top-level (#207)
 
-Disparar o subagente `orchestrator` via `Agent` passando no prompt:
+**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar todos os subagentes que cada stage prescreve (`source-researcher`, `writer`, `social-*`, `publish-*`, etc).
+
+Variáveis pra alimentar o playbook:
 - `edition_date = <date>` (AAMMDD)
+- `edition_iso = 20${date.slice(0,2)}-${date.slice(2,4)}-${date.slice(4,6)}`
 - `window_days = {valor calculado}`
-- `test_mode = true`
-- `schedule_day_offset = 10`
+- `test_mode = true` → auto-aprovar todos os gates, **desabilitar Drive sync** (pular blocos de push/pull), copiar `_internal/01-categorized.json` → `_internal/01-approved.json` direto sem edição humana
+- `schedule_day_offset = 10` → social posts agendados 10 dias à frente
 
-**Não relayar gates ao usuário.** O orchestrator auto-aprova tudo em `test_mode`.
+**Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
 
 ### 3. Ao completar
 
