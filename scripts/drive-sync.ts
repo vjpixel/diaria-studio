@@ -378,7 +378,7 @@ function saveCache(cache: DriveCache): void {
 
 // Escapa aspas simples em nomes de arquivo/pasta pra uso em queries Drive API (#282).
 // Drive API usa SQL-like syntax: aspas simples são escapadas como \\'
-function escapeDriveQueryString(s: string): string {
+export function escapeDriveQueryString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 

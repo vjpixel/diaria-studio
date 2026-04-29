@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isRetryableStatus, backoffMs, splitFilePath } from "../scripts/drive-sync.ts";
+import { isRetryableStatus, backoffMs, splitFilePath, escapeDriveQueryString } from "../scripts/drive-sync.ts";
 
 describe("isRetryableStatus (#121)", () => {
   it("aceita transient HTTP errors comuns do Drive API", () => {
@@ -95,5 +95,28 @@ describe("splitFilePath (#253)", () => {
 
   it("não esquenta com filename vazio", () => {
     assert.deepEqual(splitFilePath(""), { subpath: "", basename: "" });
+  });
+});
+
+describe("escapeDriveQueryString (#282)", () => {
+  it("string sem aspas simples passa sem alteração", () => {
+    assert.equal(escapeDriveQueryString("01-categorized.md"), "01-categorized.md");
+    assert.equal(escapeDriveQueryString("_internal"), "_internal");
+  });
+
+  it("aspa simples é escapada como \\'", () => {
+    assert.equal(escapeDriveQueryString("it's a test"), "it\\'s a test");
+  });
+
+  it("múltiplas aspas simples são todas escapadas", () => {
+    assert.equal(escapeDriveQueryString("it's 'fine'"), "it\\'s \\'fine\\'");
+  });
+
+  it("backslash é escapado primeiro (defesa contra double-escape)", () => {
+    assert.equal(escapeDriveQueryString("foo\\bar"), "foo\\\\bar");
+  });
+
+  it("string vazia passa sem alteração", () => {
+    assert.equal(escapeDriveQueryString(""), "");
   });
 });
