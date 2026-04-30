@@ -24,7 +24,7 @@ Antes de agrupar, releia:
 
 ### 1. Carregar input
 
-Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`. Não há `score`, `source`, `summary` ou `published_at` — esses campos eram dependentes de enrichment local que não está disponível (digest pode rodar em máquina diferente da edição).
+Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`. O campo `score` (0–100) estará presente se o `scorer-monthly` rodou antes; caso contrário será `null` ou ausente — trate ambos como "sem score" e use julgamento editorial como fallback.
 
 ### 2. Agrupar por tema
 
@@ -67,14 +67,15 @@ revisar manualmente no gate ou substituir o tema.
 
 ### 4. Para cada tema escolhido
 
-- **Título narrativo**: 1 frase de até 60 chars descrevendo o arco do tema. Ex: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes". Não copie título de artigo individual.
+- **3 opções de título narrativo**: gere 3 frases de até 60 chars cada, com ângulos editoriais distintos (ex: uma mais factual, uma mais dramática, uma com dado concreto). Não copie título de artigo individual. O editor escolhe uma no gate.
 - **Artigos de suporte**: lista de destaques pertencentes ao tema, ordenados **cronologicamente** (do mais antigo pro mais recente — facilita narrativa do `writer-monthly`). Inclua todos os destaques do grupo, não só os top.
 
 ### 5. Outras Notícias — top 10 standalones
 
 Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), selecionar os **10 mais relevantes** para a seção Outras Notícias do digest. Lista única, sem separação por categoria — decisão do template `newsletter-monthly.md`.
 
-- Sem `score` disponível (vem do scorer diário, que não enriquece o monthly), use **julgamento editorial**: categorias com maior CTR histórico em `audience-profile.md` primeiro; dentro da mesma categoria, recência (edition desc) ou impacto explícito do `body`/`why`.
+- Se o destaque tiver o campo `score` (adicionado pelo `scorer-monthly`), ordenar por `score desc`. Em caso de empate, desempatar por recência (`edition desc`).
+- Se `score` estiver ausente ou `null`, usar **julgamento editorial**: categorias com maior CTR histórico em `audience-profile.md` primeiro; dentro da mesma categoria, recência.
 - Se o mês tiver < 10 standalones no total, listar os que tiver e registrar warning (`destaques_unused < 10`).
 
 ### 6. Gerar `prioritized.md`
@@ -99,19 +100,28 @@ Formato exato:
 
 ## Destaques
 
-D1: {Título narrativo do tema 1}
+D1:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
 Tema: {tema}
 Artigos de suporte ({N}):
 - {AAMMDD} — {título do destaque} — {url}
 - {AAMMDD} — {título do destaque} — {url}
 ...
 
-D2: {Título narrativo do tema 2}
+D2:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
 Tema: {tema}
 Artigos de suporte ({N}):
 - ...
 
-D3: {Título narrativo do tema 3}
+D3:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
 Tema: {tema}
 Artigos de suporte ({N}):
 - ...
