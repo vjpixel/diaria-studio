@@ -187,12 +187,15 @@ export function parsePost(file: RawPostFile, raw: string, warnings: string[]): M
     const trimmed = section.trim();
     if (!trimmed) continue;
 
-    // Estrutura de destaque = h5 categoria (`##### {CAT}`) + h1 com link (`# [Título](url)`).
-    // Sections de lista (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) usam `**[...](url)**`,
-    // não h1 — caem fora naturalmente. É AI?/Sorteio/Encerrar idem.
-    const catMatch = trimmed.match(/^##### (.+?)\s*$/m);
+    // Estrutura de destaque = h5/h6 categoria (`##### {CAT}` ou `###### {CAT}`) + h1 com link
+    // (`# [Título](url)`). Sections de lista (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) usam
+    // `**[...](url)**`, não h1 — caem fora naturalmente. É AI?/Sorteio/Encerrar idem.
+    // Regex aceita 5 ou 6 hashes porque o formato Beehiiv usa `######` (h6) nas categorias reais
+    // mas `#####` (h5) em "Por que isso importa:" — edições mais antigas usam apenas bold.
+    const catMatch = trimmed.match(/^#{5,6} (.+?)\s*$/m);
     if (!catMatch) continue;
-    const category = catMatch[1].trim();
+    // Limpar bold/italic do nome da categoria (ex: `**SEGURANÇA**` → `SEGURANÇA`)
+    const category = catMatch[1].replace(/\*+/g, "").trim();
 
     const h1Match = trimmed.match(/^# \[(.+?)\]\((https?:\/\/[^\s)]+)\)\s*$/m);
     if (!h1Match) continue;
