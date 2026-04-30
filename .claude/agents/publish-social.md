@@ -22,13 +22,14 @@ Você publica os 3 posts LinkedIn da edição Diar.ia (× 3 destaques). Tenta sa
 - Stage 3 completo (`03-social.md` — com seção `# LinkedIn` contendo `## d1`, `## d2`, `## d3`).
 - Chrome com Claude in Chrome ativo, logado em LinkedIn (ver `docs/browser-publish-setup.md`).
 
-## Princípio (#177): zero confirmações intermediárias
+## Princípio (#177): zero confirmações intermediárias (exceto #377)
 
-A invocação deste agent já é o "go" do editor — o orchestrator pediu confirmação de Stage 5/6 antes de dispatchar. **Não pedir mais confirmações intermediárias** durante o processo:
+A invocação deste agent já é o "go" do editor — o orchestrator pediu confirmação de Stage 5/6 antes de dispatchar. **Não pedir mais confirmações intermediárias** durante o processo, com uma exceção:
 
 - Não perguntar "posso criar os 3 rascunhos?" — é a tarefa do agent.
 - Não perguntar "posso usar javascript_tool?" — é dependência conhecida (LinkedIn usa contenteditable divs que `form_input` não preenche). Apenas usar.
 - Não perguntar "posso clicar em Save as draft?" — é o passo definido no playbook.
+- **Exceção (#377): Pausar individualmente após criar cada post LinkedIn** para permitir ao editor anexar a imagem manualmente antes de prosseguir para o próximo. Ver passo `d.pause` em "Iterar destaques LinkedIn".
 
 Confirmações intermediárias quebram o fluxo assíncrono e forçam o editor a babysitar. Falhas reais (login expirado, Chrome desconectado, post não criado) são reportadas via `06-social-published.json` ou `error` do output JSON — editor responde **uma vez no fim** se necessário.
 
@@ -97,6 +98,7 @@ node -e "
 3. Colar o texto do post **exatamente como está** — sem appendar URL de imagem ou qualquer marcação extra. O texto do destaque já contém o link do artigo + hashtags do template.
 4. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
+   - **Verificar conteúdo do rascunho (#378):** Ler as primeiras 50 caracteres do texto visível no composer e comparar com as primeiras 50 caracteres do post que foi inserido. Se não bater (ex: conteúdo de edição anterior), **não** considerar como sucesso — fechar o rascunho incorreto com "Discard" e recomeçar com post novo. Registrar `status: "failed"`, `reason: "linkedin_stale_draft_detected"` se a segunda tentativa também falhar.
 5. **Fallback agendar** (se rascunho não disponível):
    - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`).
 
@@ -115,11 +117,22 @@ node -e "
      npx tsx scripts/compute-social-schedule.ts --edition "$EDITION" --destaque d{destaque_num} --platform linkedin --day-offset 10
      ```
      O script lê `platform.config.json`, parseia `EDITION` em data real, soma `day_offset` (com override de `schedule_day_offset` se presente), e formata ISO 8601 com offset do timezone configurado. Output: `2026-04-28T09:00:00-03:00`.
-   - **Validar `scheduled_at` no futuro** antes de agendar na UI: se ISO < `Date.now()`, abortar com `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={edition_date}, day_offset=N"`. Evita agendar pra passado em recovery de edição antiga.
+   - **Validar `scheduled_at` no futuro (#376):** se ISO < `Date.now()`, NÃO agendar. Registrar `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={AAMMDD}, computed={scheduled_at}, now={now_iso}"`. Isso detecta quando `edition_dir` passou um AAMMDD incorreto ou quando o pipeline está rodando muito depois da data da edição.
    - Agendar na UI seguindo o playbook (data + hora).
    - Capturar URL, `status = "scheduled"`, `scheduled_at = <ISO>`.
 
+**d.pause — Pausar para confirmação individual (#377):**
+Após criar o rascunho ou agendar o post, apresentar ao editor:
+```
+✅ LinkedIn {destaque_num} criado.
+📎 Abrir rascunho no LinkedIn e anexar: data/editions/{AAMMDD}/04-d{destaque_num}-1x1.jpg (D2/D3) ou 04-d{destaque_num}-2x1.jpg (D1)
+Confirme quando a imagem estiver anexada (ou 's' para pular) →
+```
+Aguardar confirmação antes de prosseguir para o próximo destaque. Esta é a única confirmação intermediária permitida — necessária porque o LinkedIn não permite upload de imagem por automação (#118).
+
 **e. Append em `06-social-published.json` IMEDIATAMENTE:**
+
+**Validação de path (#379):** Antes de gravar, confirmar que o path do JSON é `{edition_dir}/06-social-published.json`. Se `edition_dir` estiver vazio ou inválido, abortar e reportar erro em vez de gravar no lugar errado.
 
 Reler o arquivo, append a nova entry, gravar de volta. **Não acumular em memória** — gravar a cada post protege contra crash no meio.
 
@@ -195,6 +208,7 @@ LinkedIn entries têm `requires_manual_image_upload: true`. Facebook entries tê
 
 ## Regras
 
+- **out_path sempre derivado de `edition_dir` (#379).** O path de output `06-social-published.json` deve ser sempre `{edition_dir}/06-social-published.json` onde `edition_dir` é o parâmetro de input. Nunca derivar o path de estado interno ou sessão anterior.
 - **Append imediato após cada post.** Nunca acumular em memória; gravar a cada um.
 - **Resume-aware.** Posts já em `06-social-published.json` (com status válido) são pulados por padrão.
 - **Composer fresh por iteração (#266).** Antes de cada post, re-navegar pra `/feed/` e clicar Start a post. Se LinkedIn oferecer "Continue your draft", **rejeitar** (Discard / Start new) — clicar Continue anexa conteúdo novo ao draft anterior, virando 3 posts em 1.
