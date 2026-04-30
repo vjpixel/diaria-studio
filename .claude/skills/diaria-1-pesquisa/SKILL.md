@@ -36,7 +36,7 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 
    ```
    Janela de publicacao aceita: {window_start} -> {WINDOW_END} (4 dias)
-   Pressione Enter para confirmar ou digite outro numero de dias:
+   Digite ok para confirmar ou outro numero de dias:
    ```
 
 3. Enter / "ok" / "sim" → manter default. Número N ≥ 1 → `window_days = N`, recalcular `window_start`.

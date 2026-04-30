@@ -222,7 +222,7 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 
 ### 11. Anglicismos desnecessários
 
-**Palavras a vigiar:** insights, mindset, approach, deep dive, leverage (alavancar), game-changer, disruptivo, driver (com sentido de "motor"), stakeholder (em contextos onde "envolvido" cabe).
+**Palavras a vigiar:** insights, mindset, approach, deep dive, leverage (alavancar), game-changer, disruptivo, driver (com sentido de "motor"), stakeholder (em contextos onde "envolvido" cabe), workflow (fluxo/processo), output (resultado/saída — quando genérico), input (entrada/dado — quando genérico), rollout (lançamento gradual), benchmark (referência/avaliação comparativa), prompt (instrução/comando — quando usado fora de contexto técnico de IA).
 
 **Problema:** A IA copia o jargão corporativo em inglês mesmo quando há equivalente natural em português.
 
