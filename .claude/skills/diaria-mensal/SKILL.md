@@ -159,7 +159,16 @@ Opções de subject:
 Aprovar? sim [+ número do subject escolhido] / editar / retry
 ```
 
-**Após aprovação (#421):** se o editor informar o número do subject escolhido, salvar a linha escolhida em `data/monthly/$1/_internal/02-chosen-subject.txt`. Exemplo: `echo "2" > data/monthly/$1/_internal/02-chosen-subject.txt`.
+**Após aprovação (#421):** se o editor informar o número do subject escolhido (ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$1/_internal/02-chosen-subject.txt`:
+```bash
+CHOICE=2  # número informado pelo editor
+node -e "
+  const t = require('fs').readFileSync('data/monthly/$1/draft.md','utf8');
+  const m = t.match(/^ASSUNTO[\s\S]*?\n${CHOICE}\. (.+)/m);
+  if (m) require('fs').writeFileSync('data/monthly/$1/_internal/02-chosen-subject.txt', m[1].trim());
+"
+```
+Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empregos em risco`), não só o número. Qualquer reescrita posterior restaura exatamente essa linha no ASSUNTO.
 
 **Invariante do ASSUNTO:** qualquer passo posterior que modifique `draft.md` (humanizador, Clarice, ajustes de formato) deve usar `Edit` (substituição pontual), nunca `Write` (overwrite completo). Se `Write` for inevitável, ler `02-chosen-subject.txt` antes e restaurar o ASSUNTO correto imediatamente após. O ASSUNTO escolhido pelo editor nunca pode ser sobrescrito silenciosamente.
 

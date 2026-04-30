@@ -466,7 +466,8 @@ async function resolveSubfolder(
 async function resolveDayFolder(
   cache: DriveCache,
   yymmdd: string,
-  edicoesId: string
+  edicoesId: string,
+  isMonthly = false
 ): Promise<string> {
   const yymm = yymmdd.slice(0, 4);
   const edCache = (cache.editions[yymmdd] ??= { day_folder_id: "", files: {} });
@@ -476,8 +477,8 @@ async function resolveDayFolder(
   let yymmFolder = await findFolderInParent(yymm, edicoesId);
   if (!yymmFolder) yymmFolder = await driveCreateFolder(yymm, edicoesId);
 
-  // Resolver ou criar pasta YYMMDD (ou "mensal" para edições mensais com yymmdd de 4 chars)
-  const dayFolderName = yymmdd.length === 4 ? "mensal" : yymmdd;
+  // Resolver ou criar pasta YYMMDD (ou "mensal" para edições mensais)
+  const dayFolderName = isMonthly ? "mensal" : yymmdd;
   let dayFolder = await findFolderInParent(dayFolderName, yymmFolder);
   if (!dayFolder) dayFolder = await driveCreateFolder(dayFolderName, yymmFolder);
 
@@ -730,7 +731,7 @@ async function main(): Promise<void> {
     mode,
     stage,
     edition: yymmdd,
-    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${yymmdd.length === 4 ? "mensal" : yymmdd}`,
+    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${editionDir.includes("/monthly/") ? "mensal" : yymmdd}`,
     uploaded: [],
     pulled: [],
     warnings: [],
@@ -747,7 +748,8 @@ async function main(): Promise<void> {
 
   try {
     const edicoesId = await resolveEdicoesFolder(cache);
-    const dayFolderId = await resolveDayFolder(cache, yymmdd, edicoesId);
+    const isMonthly = editionDir.includes("/monthly/");
+    const dayFolderId = await resolveDayFolder(cache, yymmdd, edicoesId, isMonthly);
 
     for (const filename of files) {
       try {
