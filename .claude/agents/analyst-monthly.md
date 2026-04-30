@@ -104,7 +104,9 @@ D1:
 - Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
 - Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
 - Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - {AAMMDD} — {título do destaque} — {url}
 - {AAMMDD} — {título do destaque} — {url}
@@ -114,7 +116,9 @@ D2:
 - Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
 - Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
 - Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - ...
 
@@ -122,7 +126,9 @@ D3:
 - Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
 - Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
 - Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - ...
 
