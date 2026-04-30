@@ -9,17 +9,17 @@ describe("buildFilenameMap", () => {
   it("constrói map de filename → URL a partir de images dict", () => {
     const map = buildFilenameMap({
       cover: { file_id: "1", url: "https://drive.google.com/uc?id=1&export=view", filename: "04-d1-2x1.jpg" },
-      d2: { file_id: "2", url: "https://drive.google.com/uc?id=2&export=view", filename: "04-d2.jpg" },
+      d2: { file_id: "2", url: "https://drive.google.com/uc?id=2&export=view", filename: "04-d2-1x1.jpg" },
     });
     assert.equal(map.size, 2);
     assert.equal(map.get("04-d1-2x1.jpg"), "https://drive.google.com/uc?id=1&export=view");
-    assert.equal(map.get("04-d2.jpg"), "https://drive.google.com/uc?id=2&export=view");
+    assert.equal(map.get("04-d2-1x1.jpg"), "https://drive.google.com/uc?id=2&export=view");
   });
 
   it("pula entries sem filename ou url", () => {
     const map = buildFilenameMap({
       good: { file_id: "1", url: "https://a.com", filename: "04-d1.jpg" },
-      no_url: { file_id: "2", url: "", filename: "04-d2.jpg" },
+      no_url: { file_id: "2", url: "", filename: "04-d2-1x1.jpg" },
       no_filename: { file_id: "3", url: "https://a.com", filename: "" },
     });
     assert.equal(map.size, 1);
@@ -42,11 +42,11 @@ describe("substituteImagePlaceholders", () => {
   });
 
   it("substitui múltiplas placeholders", () => {
-    const html = `<img src="{{IMG:04-d1-2x1.jpg}}"/><img src="{{IMG:04-d2.jpg}}"/><img src="{{IMG:04-d3.jpg}}"/>`;
+    const html = `<img src="{{IMG:04-d1-2x1.jpg}}"/><img src="{{IMG:04-d2-1x1.jpg}}"/><img src="{{IMG:04-d3-1x1.jpg}}"/>`;
     const map = new Map([
       ["04-d1-2x1.jpg", "https://a.com/1"],
-      ["04-d2.jpg", "https://a.com/2"],
-      ["04-d3.jpg", "https://a.com/3"],
+      ["04-d2-1x1.jpg", "https://a.com/2"],
+      ["04-d3-1x1.jpg", "https://a.com/3"],
     ]);
     const result = substituteImagePlaceholders(html, map);
     assert.equal(result.substitutions, 3);

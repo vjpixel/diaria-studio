@@ -178,7 +178,7 @@ Ao terminar as 3 iterações LinkedIn (e a validação acima), retornar:
     "failed": 0
   },
   "posts": [ ... lista LinkedIn ... ],
-  "editor_action_required": "Anexar 04-d1.jpg, 04-d2.jpg, 04-d3.jpg em cada rascunho LinkedIn antes de publicar."
+  "editor_action_required": "Anexar 04-d1-1x1.jpg, 04-d2-1x1.jpg, 04-d3-1x1.jpg em cada rascunho LinkedIn antes de publicar."
 }
 ```
 

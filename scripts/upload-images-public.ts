@@ -79,10 +79,10 @@ export function mimeTypeFor(filename: string): string {
 
 /**
  * Escolhe o arquivo fonte pra cada destaque (modo social — LinkedIn/IG).
- * D1 usa variante 1x1 (social square); D2/D3 usam padrão.
+ * D1 usa variante 1x1 (social square); D2/D3 usam 1x1 (proporção forçada em #372).
  */
 export function sourceImageFor(destaque: "d1" | "d2" | "d3"): string {
-  return destaque === "d1" ? "04-d1-1x1.jpg" : `04-${destaque}.jpg`;
+  return destaque === "d1" ? "04-d1-1x1.jpg" : `04-${destaque}-1x1.jpg`;
 }
 
 /**
@@ -111,8 +111,8 @@ export interface ImageSpec {
 export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
   const social: ImageSpec[] = [
     { key: "d1", filename: "04-d1-1x1.jpg" },
-    { key: "d2", filename: "04-d2.jpg" },
-    { key: "d3", filename: "04-d3.jpg" },
+    { key: "d2", filename: "04-d2-1x1.jpg" },
+    { key: "d3", filename: "04-d3-1x1.jpg" },
   ];
 
   const eaiSpecs = (() => {
@@ -142,8 +142,8 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
 
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
-    { key: "d2", filename: "04-d2.jpg" },
-    { key: "d3", filename: "04-d3.jpg" },
+    { key: "d2", filename: "04-d2-1x1.jpg" },
+    { key: "d3", filename: "04-d3-1x1.jpg" },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;

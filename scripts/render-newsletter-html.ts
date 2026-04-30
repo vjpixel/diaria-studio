@@ -309,7 +309,7 @@ function extractContent(editionDir: string): NewsletterContent {
   const destaques: RenderDestaque[] = baseDestaques.map((d) => ({
     ...d,
     emoji: CATEGORY_EMOJI[d.category] || "📌",
-    imageFile: d.n === 1 ? "04-d1-2x1.jpg" : `04-d${d.n}.jpg`,
+    imageFile: d.n === 1 ? "04-d1-2x1.jpg" : `04-d${d.n}-1x1.jpg`,
   }));
 
   // Sections: parsed here (extract-destaques doesn't handle these)
