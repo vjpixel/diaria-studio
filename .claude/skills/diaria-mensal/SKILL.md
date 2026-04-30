@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + 10 Outras Notícias. Uso — `/diaria-mensal YYMM [--no-gate]`. Phase 1 implementada (collect → analyst → gate → writer); Phase 2 (imagem D1 + publish Beehiiv) é follow-up. Veja issue #188.
+description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + 10 Outras Notícias. Uso — `/diaria-mensal YYMM [--no-gate]`. Phase 1+2 implementadas (collect → analyst → gate → writer → imagem D1 → É IA? novo → gate imagens); publicação Beehiiv é follow-up. Veja issue #188. #188.
 ---
 
 # /diaria-mensal
@@ -146,30 +146,71 @@ Mesmo procedimento do Stage 3, agora com `draft.md`.
 
 **Caso contrário:** apresentar `draft.md` ao usuário pra revisão final. Aprovar / editar / retry.
 
-## Phase 2 (follow-up — issue #188, ainda não implementada)
+## Phase 2 (imagens — implementada; publicação Beehiiv — follow-up #188)
 
-### Stage 8 — Imagem D1
+### Stage 8 — Imagem D1 + É IA? mensal (em paralelo)
 
-Quando implementado, gerará a imagem do D1 (Van Gogh impasto, mesmo prompt do diário) via `scripts/image-generate.ts` adaptado.
+**Resume check:** Se `04-d1-2x1.jpg` **e** `01-eai.md` já existem → pular Stage 8 direto para o gate.
 
-Por ora, emitir aviso:
+Disparar **em paralelo**:
+
+**8a. Imagem D1:**
+
+```bash
+npx tsx scripts/image-generate.ts \
+  --editorial data/monthly/$1/_internal/02-d1-prompt.md \
+  --out-dir data/monthly/$1/ \
+  --destaque d1
+```
+
+Outputs: `04-d1-2x1.jpg` (1600×800) + `04-d1-1x1.jpg` (800×800). Se `_internal/02-d1-prompt.md` não existir (writer-monthly antigo), emitir aviso e pular — não bloquear.
+
+**8b. É IA? mensal (novo):**
+
+Derivar o último dia do mês a partir de `$1` (YYMM):
+
+```bash
+EAI_EDITION=$(node -e "
+  const yymm='$1';
+  const year=2000+parseInt(yymm.slice(0,2));
+  const month=parseInt(yymm.slice(2,4));
+  const lastDay=new Date(Date.UTC(year,month,0)).getUTCDate();
+  const yy=String(year).slice(2);
+  const mm=String(month).padStart(2,'0');
+  const dd=String(lastDay).padStart(2,'0');
+  process.stdout.write(yy+mm+dd);
+")
+npx tsx scripts/eai-compose.ts \
+  --edition $EAI_EDITION \
+  --out-dir data/monthly/$1/
+```
+
+Outputs em `data/monthly/$1/`: `01-eai.md`, `01-eai-A.jpg`, `01-eai-B.jpg`, `_internal/01-eai-meta.json`.
+
+Se `eai-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional no mensal.
+
+### Stage 9 — Gate imagens (pulado com `--no-gate`)
+
+**Se `--no-gate`:** prosseguir direto.
+
+**Caso contrário:** apresentar ao editor:
 
 ```
-⚠️ Imagem D1 não gerada automaticamente (Phase 2 follow-up — issue #188).
-Gere manualmente, ou aguarde implementação.
+📸 Imagem D1: data/monthly/$1/04-d1-2x1.jpg
+🤔 É IA? A: data/monthly/$1/01-eai-A.jpg
+🤔 É IA? B: data/monthly/$1/01-eai-B.jpg
+
+Aprovar? sim / regenerar-d1 / regenerar-eai / retry
 ```
 
-### Stage 9 — Publish Beehiiv
+- `sim` → concluído.
+- `regenerar-d1` → re-rodar Stage 8a apenas.
+- `regenerar-eai` → re-rodar Stage 8b apenas (novo `--force`).
 
-Quando implementado, adaptará `publish-newsletter` para `mode=monthly`:
-- `render-newsletter-html.ts` com template mensal.
-- `upload-images-public.ts --mode monthly` (só 1 imagem D1).
-- `publish-newsletter` cria rascunho na Beehiiv + email de teste.
-
-Por ora, emitir aviso:
+### Stage 10 — Publicação Beehiiv (follow-up)
 
 ```
-⚠️ Publicação automática Beehiiv não implementada (Phase 2 follow-up — issue #188).
+⚠️ Publicação automática Beehiiv não implementada (issue #188 — follow-up).
 Para publicar: copiar `data/monthly/{YYMM}/draft.md` manualmente para o
 editor Beehiiv como rascunho. Revisar e enviar.
 ```
@@ -180,9 +221,11 @@ Todos em `data/monthly/{YYMM}/` (ex: `data/monthly/2604/`):
 
 - `raw-destaques.json` — coleta bruta com metadata estruturada
 - `prioritized.md` — proposta do analista (revisada no gate)
-- `draft.md` — texto final pra publicação (Phase 1 ends here)
-- `04-d1.jpg` — imagem D1 (Phase 2)
-- `published.json` — metadata da publicação Beehiiv (Phase 2)
+- `draft.md` — texto final pra publicação
+- `_internal/02-d1-prompt.md` — prompt editorial da imagem D1 (gerado pelo writer-monthly)
+- `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Stage 8a)
+- `01-eai.md` + `01-eai-A.jpg` + `01-eai-B.jpg` — É IA? mensal novo (Stage 8b)
+- `published.json` — metadata da publicação Beehiiv (follow-up)
 
 ## Notas
 

@@ -125,7 +125,23 @@ OUTRAS NOTÍCIAS DO MÊS
 
 Sem score, sem categoria — só título e URL, na ordem do `prioritized.md`.
 
-### 7. É IA? — destaque do mês
+### 7. Prompt de imagem D1
+
+Gerar `data/monthly/{YYMM}/_internal/02-d1-prompt.md` com um prompt editorial Van Gogh impasto para a imagem de capa do digest:
+
+- Baseie na **narrativa do D1**: tema, eventos, protagonistas, ambiente.
+- Descreva uma cena **concreta e visual**: pessoas, objetos, ações, local. Sem metáforas abstratas.
+- Seguir as mesmas regras do writer diário (`context/editorial-rules.md` seção 2):
+  - Estilo Van Gogh impasto, proporção 2:1
+  - SEM resolução em pixels
+  - SEM Noite Estrelada, SEM céu noturno com redemoinhos
+  - Cena que capture a essência do tema D1, não uma ilustração literal do título
+
+Exemplo: se D1 é sobre Brasil + automação + empregos → cena de trabalhadores numa fábrica em transformação, máquinas e pessoas lado a lado, luz industrial quente, impasto espesso.
+
+Gravar com `Write` em `data/monthly/{YYMM}/_internal/02-d1-prompt.md`.
+
+### 8. É IA? — destaque do mês
 
 Esta seção é **opcional** se não houver dados de poll do mês. Por enquanto, **emitir um placeholder** com instrução clara ao editor:
 
@@ -175,6 +191,7 @@ Gravar `out_path`. Responder ao orchestrator com:
 ```json
 {
   "out_path": "data/monthly/2604/draft.md",
+  "d1_prompt_path": "data/monthly/2604/_internal/02-d1-prompt.md",
   "subject_options": [
     "Diar.ia | Abril 2026 — ...",
     "Diar.ia | Abril 2026 — ...",
@@ -189,7 +206,8 @@ Gravar `out_path`. Responder ao orchestrator com:
     "three_destaques": true,
     "outras_count_ok": true,
     "no_markdown_in_body": true,
-    "no_paywall_links": true
+    "no_paywall_links": true,
+    "d1_prompt_generated": true
   },
   "warnings": []
 }
