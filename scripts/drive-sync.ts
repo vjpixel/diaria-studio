@@ -575,6 +575,26 @@ async function pushFile(
     }
   }
 
+  // Antes de criar novo arquivo, buscar por nome na pasta destino para evitar
+  // duplicatas (#362 #370). Isso acontece quando o cache está divergente (ID
+  // inválido, arquivo movido, cache corrompido) e o update in-place falhou.
+  const searchQ = `name='${escapeDriveQueryString(canonicalTitle)}' and '${targetParentId}' in parents and trashed=false`;
+  const searchRes = await gFetchRetry(
+    `${DRIVE_API}/files?q=${encodeURIComponent(searchQ)}&fields=files(id,name,modifiedTime)`,
+    { headers: { "Content-Type": "application/json" } }
+  );
+  const searchData = (await searchRes.json()) as { files?: Array<{ id: string; name: string; modifiedTime: string }> };
+  const existingFiles = searchData.files ?? [];
+  if (existingFiles.length > 0) {
+    console.error(
+      `[drive-sync] WARN: encontrou ${existingFiles.length} arquivo(s) com mesmo nome '${canonicalTitle}' — apagou antes de criar novo (cache divergente).`
+    );
+    for (const existing of existingFiles) {
+      console.error(`[drive-sync] Apagando duplicata anterior: ${existing.name} (${existing.id})`);
+      await gFetchRetry(`${DRIVE_API}/files/${existing.id}`, { method: "DELETE" });
+    }
+  }
+
   const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUploadFile(
     canonicalTitle,
     bytes,
