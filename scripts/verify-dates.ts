@@ -46,7 +46,12 @@ function normalizeDate(raw: string): string | null {
   try {
     const d = new Date(raw);
     if (isNaN(d.getTime())) return null;
-    return d.toISOString().split("T")[0]; // YYYY-MM-DD
+    // Ajustar para fuso Brasil (UTC-3) para evitar off-by-one em artigos
+    // publicados à noite no BR (23h BRT = 02h UTC do dia seguinte).
+    const brOffset = -3 * 60; // minutos
+    const localMs = d.getTime() + brOffset * 60 * 1000;
+    const localDate = new Date(localMs);
+    return localDate.toISOString().split("T")[0];
   } catch {
     return null;
   }
@@ -154,6 +159,16 @@ async function extractPublishedDate(
       if (d) return { date: d, note: "time[itemprop=datePublished]" };
     }
 
+    // 6a. JSON embutido — buscar "datePublished" explicitamente antes do regex genérico.
+    //     Evita que "dateModified" apareça primeiro e seja capturado pelo regex abaixo.
+    const jsonDatePublished = body.match(
+      /"datePublished"\s*:\s*"([^"]+)"/
+    )?.[1];
+    if (jsonDatePublished) {
+      const d = normalizeDate(jsonDatePublished);
+      if (d) return { date: d, note: "json:datePublished-explicit" };
+    }
+
     // 6. `"published":"YYYY-MM-DD"` em JSON embutido (Apple, alguns Next.js)
     //    Pega a PRIMEIRA ocorrência — tipicamente a do artigo principal no
     //    topo do blob __NEXT_DATA__ / __SVELTE_DATA__ etc.
@@ -163,6 +178,21 @@ async function extractPublishedDate(
     if (jsonPublished) {
       const d = normalizeDate(jsonPublished);
       if (d) return { date: d, note: "json:published" };
+    }
+
+    // 6b. `<time datetime>` dentro de contexto de artigo (antes do fallback genérico).
+    //     Tenta elementos semânticos (article, main, header) antes de cair no
+    //     primeiro <time> qualquer do documento, que pode ser de sidebar/comentário/rodapé.
+    const articleTimeMatch =
+      body.match(
+        /<(?:article|main|header)[^>]*>[\s\S]*?<time[^>]+datetime=["']([^"']+)["']/i
+      ) ??
+      body.match(
+        /<[^>]+class=["'][^"']*(?:post-date|article-date|publish[^"']*|entry-date|byline)[^"']*["'][^>]*>[\s\S]{0,200}?<time[^>]+datetime=["']([^"']+)["']/i
+      );
+    if (articleTimeMatch) {
+      const d = normalizeDate(articleTimeMatch[1]);
+      if (d) return { date: d, note: "time:in-article-context" };
     }
 
     // 7. Primeiro `<time datetime="...">` do documento (fallback genérico —
