@@ -81,7 +81,7 @@ Todos em `data/editions/{AAMMDD}/` (ex: `260418/`):
 - `01-categorized.md`, `01-eai.md`, `01-eai-A.jpg`, `01-eai-B.jpg` (edições antigas pré-#192: `01-eai-real.jpg`/`01-eai-ia.jpg`)
 - `02-reviewed.md`
 - `03-social.md`
-- `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`
+- `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
 - `05-published.json`
 - `06-social-published.json`
 - `_internal/` — JSON intermediários, drafts, diffs, prompts

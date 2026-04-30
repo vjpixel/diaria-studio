@@ -58,9 +58,11 @@ Se `curl` retornar exit code != 0, retornar erro imediatamente — não prossegu
 Após o download, aplicar crop centralizado 16:9 + resize para 800×450 (mesma dimensão da imagem IA):
 
 ```bash
+# O script eai-compose.ts sorteia qual slot (A ou B) recebe a foto real.
+# Nomes finais: 01-eai-A.jpg e 01-eai-B.jpg (nunca real/ia legacy).
 npx tsx scripts/crop-resize.ts \
   {out_dir}/01-eai-real-raw.jpg \
-  {out_dir}/01-eai-real.jpg \
+  {out_dir}/01-eai-{realSide}.jpg \
   --width 800 --height 450
 ```
 
@@ -96,7 +98,7 @@ Chamar o gerador:
 ```bash
 node scripts/gemini-image.js \
   {out_dir}/_internal/01-eai-sd-prompt.json \
-  {out_dir}/01-eai-ia.jpg \
+  {out_dir}/01-eai-{aiSide}.jpg \
   diaria_eai_
 ```
 
@@ -163,8 +165,8 @@ Se `poll-responses.json` não existir, o script ainda gera o stats file com `tot
 ```json
 {
   "out_md": "data/editions/260418/01-eai.md",
-  "out_real": "data/editions/260418/01-eai-real.jpg",
-  "out_ia": "data/editions/260418/01-eai-ia.jpg",
+  "out_real": "data/editions/260418/01-eai-A.jpg",
+  "out_ia": "data/editions/260418/01-eai-B.jpg",
   "out_meta": "data/editions/260418/_internal/01-eai-meta.json",
   "image_title": "...",
   "image_credit": "...",
@@ -174,5 +176,7 @@ Se `poll-responses.json` não existir, o script ainda gera o stats file com `tot
   ]
 }
 ```
+
+> **Nota:** os valores de `out_real` e `out_ia` acima usam A e B como exemplo; o slot real/ia é definido pelo sorteio em `eai-compose.ts` e pode ser A ou B em qualquer edição. Consultar `_internal/01-eai-meta.json` (campo `ai_side`) para saber qual slot contém a imagem IA.
 
 `rejections` é opcional mas deve ser incluído quando houve fallback (dias pulados). `out_meta` aponta pro `_internal/01-eai-meta.json` (passo 5) — orchestrator preserva no resume e `publish-newsletter` lê pra preencher `ai_side` ao inserir as imagens.

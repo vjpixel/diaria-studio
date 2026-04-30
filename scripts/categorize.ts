@@ -60,7 +60,6 @@ const LANCAMENTO_DOMAINS = new Set([
   "cohere.com",
   // DeepMind / Google
   "ai.google",
-  "blog.google",
   "deepmind.com",
   "deepmind.google",
   // Fireworks AI
@@ -86,8 +85,7 @@ const LANCAMENTO_DOMAINS = new Set([
   // NVIDIA
   "blogs.nvidia.com",
   "developer.nvidia.com",
-  // OpenAI
-  "openai.com",
+  // OpenAI — removido: alto volume, usar LANCAMENTO_PATTERNS abaixo (#354)
   // Perplexity (apenas /hub/ e research. — resto é agregador)
   // tratado via LANCAMENTO_PATTERNS abaixo
   // Replicate
@@ -133,6 +131,10 @@ const LANCAMENTO_PATTERNS: RegExp[] = [
   /^blog\.research\.google\//,
   // Meta AI research (pages, não the /research/ section que é paper)
   /^ai\.meta\.com\/(blog|news)\//,
+  // Google blog — apenas anúncios de produto (blog.google tem posts de todo tipo) (#354)
+  /^blog\.google\/(products|technology|outreach-initiatives)\//,
+  // OpenAI — apenas blog/index de produto (não research, compliance, principles) (#354)
+  /^openai\.com\/(blog|index)\/(?!our-principles|safety-report|transparency|fedram|fido)/,
   // GitHub Pages como site oficial de projeto open-source — qualquer
   // {project}.github.io conta como lançamento (ex: openmoss.github.io
   // pra MOSS-Audio na 260429). Subdomain obrigatório (github.io bare
@@ -183,6 +185,39 @@ const PESQUISA_PATTERNS: RegExp[] = [
   // OpenAI research (não blog)
   /^openai\.com\/research\//,
 ];
+
+// ---------------------------------------------------------------------------
+// Domínios de veículos jornalísticos — ignorar type_hint do source-researcher
+// nesses domínios, pois qualquer conteúdo deles é cobertura (noticias), não
+// o estudo/pesquisa em si (#356).
+// ---------------------------------------------------------------------------
+const NOTICIAS_DOMAINS = new Set([
+  "cnnbrasil.com.br",
+  "exame.com",
+  "g1.globo.com",
+  "tecnoblog.net",
+  "canaltech.com.br",
+  "startse.com",
+  "mitsloanreview.com.br",
+  "techcrunch.com",
+  "theverge.com",
+  "reuters.com",
+  "wired.com",
+  "venturebeat.com",
+  "theregister.com",
+  "zdnet.com",
+  "arstechnica.com",
+  "bloomberg.com",
+  "ft.com",
+  "wsj.com",
+  "nytimes.com",
+  "bbc.com",
+  "folha.uol.com.br",
+  "estadao.com.br",
+  "infomoney.com.br",
+  "computerworld.com",
+  "infoq.com",
+]);
 
 // ---------------------------------------------------------------------------
 // Business-deal override — artigos cujo domínio é oficial (ex: anthropic.com/news)
@@ -395,8 +430,9 @@ export function categorize(article: Article): Category {
     return "lancamento";
   }
 
-  // 3. type_hint "pesquisa" como sinal secundário (quando domínio não é reconhecido)
-  if (article.type_hint === "pesquisa") return "pesquisa";
+  // 3. type_hint "pesquisa" como sinal secundário — ignorado em veículos jornalísticos
+  //    que cobrem pesquisas mas não as produzem (#356).
+  if (article.type_hint === "pesquisa" && !NOTICIAS_DOMAINS.has(host)) return "pesquisa";
 
   // 4. Default: notícia
   return "noticias";

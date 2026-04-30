@@ -58,15 +58,15 @@ export const STAGE_CHECKS: Record<string, StageCheck[]> = {
     { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
     { downstream: "04-d1-2x1.jpg", upstreams: ["02-reviewed.md"] },
     { downstream: "04-d1-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d2.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d3.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d2-1x1.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d3-1x1.jpg", upstreams: ["02-reviewed.md"] },
   ],
   // Stage 4 (imagens) deriva os prompts de 02-reviewed.md (highlights).
   "4": [
     { downstream: "04-d1-2x1.jpg", upstreams: ["02-reviewed.md"] },
     { downstream: "04-d1-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d2.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d3.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d2-1x1.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d3-1x1.jpg", upstreams: ["02-reviewed.md"] },
   ],
   // Stage 3 (social) deriva de 02-reviewed.md.
   "3": [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }],

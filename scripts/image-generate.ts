@@ -11,7 +11,7 @@
  *     --destaque d1
  *
  * Saída: D1 → 04-d1-2x1.jpg (1600×800) + 04-d1-1x1.jpg (800×800 center crop)
- *        D2/D3 → 04-d{N}.jpg (1024×1024 native Gemini)
+ *        D2/D3 → 04-d{N}-1x1.jpg (1024×1024 native Gemini)
  *        Imprime o caminho do JPG principal em stdout.
  */
 
@@ -76,18 +76,22 @@ function main() {
 
   // Montar SD prompt JSON.
   // D1 é gerada em 1600×800 (2:1). Depois gera crop 1:1 (800×800).
-  // D2/D3 são geradas em 1024×1024 (Gemini default).
+  // D2/D3 são geradas em 1024×1024 (forçado explícito pra garantir proporção 1:1).
   const isD1 = destaque === "d1";
   const sdPrompt: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
-    ...(isD1 ? { final_width: 1600, final_height: 800 } : {}),
+    ...(isD1
+      ? { final_width: 1600, final_height: 800 }
+      : { final_width: 1024, final_height: 1024 }),
   };
 
   // Gravar JSON de prompt
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
   const sdPromptPath = `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
-  const outJpgPath = `${normalizedOutDir}04-${destaque}.jpg`;
+  const outJpgPath = isD1
+    ? `${normalizedOutDir}04-${destaque}.jpg`  // D1 usa nomes próprios (2x1, 1x1) gerados abaixo
+    : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2), "utf8");

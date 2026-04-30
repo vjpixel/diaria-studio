@@ -52,7 +52,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para auto-reporter (Etapa 4b).
   - Se `05-published.json` existe mas `template_used` !== template esperado → Etapa 4 com template errado: instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Etapa 4 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
   - Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Etapa 4 incompleta (newsletter parcial): pular publish-newsletter (rascunho já existe), rodar só o **loop de review-test-email** a partir do `draft_url` e `title` salvos no JSON. Após completar o loop, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-social`. Re-apresentar gate único.
-  - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2.jpg` + `04-d3.jpg` existem (mas não `05-published.json`) → pular para Etapa 4.
+  - Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2-1x1.jpg` + `04-d3-1x1.jpg` existem (mas não `05-published.json`) → pular para Etapa 4.
   - Se `02-reviewed.md` + `03-social.md` existem (mas não `04-d1-2x1.jpg`) → pular para Etapa 3 (Imagens).
   - Se `02-reviewed.md` existe mas **não** `03-social.md` → Etapa 2 parcial (newsletter ok, social não rodou); re-rodar Etapa 2 com `[social]`. Avisar: "Retomando Etapa 2 — só social.".
   - Se `_internal/01-approved.json` existe (mas não `02-reviewed.md`) → pular para Etapa 2.
@@ -133,6 +133,12 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
         URLs dela bloqueadas no dedup de hoje. Considere publicar antes de prosseguir.
      ```
   Se o script não existir ainda (`ENOENT`): pular silenciosamente e logar warn — funcionalidade opcional, não bloqueia pipeline.
+
+- **Sync É IA? usado (#369) — sempre roda, após merge-local-pending.** Sincroniza `data/eai-used.json` a partir dos `_internal/01-eai-meta.json` de edições locais, garantindo que imagens já publicadas não sejam reusadas mesmo que o pipeline tenha rodado em outra máquina:
+  ```bash
+  npx tsx scripts/sync-eai-used.ts --editions-dir data/editions/
+  ```
+  Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added > 0`, logar `info` com a contagem. Falha do script → logar `warn`, nunca bloqueia pipeline.
 
 - **Pre-flight de freshness do dedup (sempre roda, após refresh #230).** Rodar:
   ```bash
@@ -322,7 +328,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
   2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
   3. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
   Retorna `categorized` limpo + `stats`. Logar `stats.removals[]`.
-- Disparar `scorer` (Sonnet) passando `categorized` (saída do research-reviewer). Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+- Disparar `scorer` (Opus) passando `categorized` (saída do research-reviewer) e `out_path: data/editions/{AAMMDD}/_internal/tmp-scored.json`. Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
 - **Validação pós-scorer (#104).** Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks: posição original → 1, primeiro promovido → próximo rank disponível, etc. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo. Razão: o spec do scorer é "sempre 6"; quando o LLM diverge, o orchestrator corrige automaticamente em vez de deixar o editor decidir entre menos candidatos.
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
 - **Strip do campo `verifier`**: antes de salvar, remover o campo `verifier` de cada artigo (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON).
@@ -348,7 +354,9 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
     --source-health data/source-health.json
   ```
   O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
-- **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir): `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md")`. Anotar em `sync_results[1]`; ignorar falhas.
+- **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir):
+  1. Montar lista de arquivos: sempre `01-categorized.md`; adicionar `01-eai.md,01-eai-A.jpg,01-eai-B.jpg` se `data/editions/{AAMMDD}/01-eai.md` existir.
+  2. `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files {lista}")`. Anotar em `sync_results[1]`; ignorar falhas.
 
 - **GATE HUMANO:** apresentar ao usuário:
 
@@ -423,6 +431,7 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
 #### 2b. Processar newsletter
+- **Pull pós-gate** (antes de qualquer edição local pós-aprovação): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md")`. Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
 - **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
@@ -557,8 +566,8 @@ O `eai-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o
     --destaque d{N}
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")`. Anotar em `sync_results[3]`; ignorar falhas.
-- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg")`. Anotar em `sync_results[3]`; ignorar falhas.
+- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar _internal/cost.md.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```
     | 3b | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
@@ -574,13 +583,13 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 #### 4a. Pré-requisitos + sync
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 publish parallel started'`.
-- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
+- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
 - **Staleness check (#120) — APÓS o pull.** Rodar:
   ```bash
   npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
   ```
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
-- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
+- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 
 #### 4b. Confirmar modo de publicação por canal (#336)
 
@@ -722,8 +731,8 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
     📎 Suba as imagens no rascunho do Beehiiv ANTES de aprovar:
        • Cover/Thumbnail → 04-d1-2x1.jpg (1600×800)
        • Inline D1  → 04-d1-2x1.jpg
-       • Inline D2  → 04-d2.jpg
-       • Inline D3  → 04-d3.jpg
+       • Inline D2  → 04-d2-1x1.jpg
+       • Inline D3  → 04-d3-1x1.jpg
        • É IA? (A)  → 01-eai-A.jpg
        • É IA? (B)  → 01-eai-B.jpg
        📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.

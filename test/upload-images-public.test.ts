@@ -64,12 +64,12 @@ describe("sourceImageFor", () => {
     assert.equal(sourceImageFor("d1"), "04-d1-1x1.jpg");
   });
 
-  it("d2 usa padrão", () => {
-    assert.equal(sourceImageFor("d2"), "04-d2.jpg");
+  it("d2 usa variante 1x1 (#372)", () => {
+    assert.equal(sourceImageFor("d2"), "04-d2-1x1.jpg");
   });
 
-  it("d3 usa padrão", () => {
-    assert.equal(sourceImageFor("d3"), "04-d3.jpg");
+  it("d3 usa variante 1x1 (#372)", () => {
+    assert.equal(sourceImageFor("d3"), "04-d3-1x1.jpg");
   });
 });
 

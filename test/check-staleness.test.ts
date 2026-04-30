@@ -85,8 +85,8 @@ describe("evaluateStaleness — orchestration (#120)", () => {
       "03-social.md": Date.parse("2026-04-24T22:30:00Z"),
       "04-d1-2x1.jpg": Date.parse("2026-04-24T22:35:00Z"),
       "04-d1-1x1.jpg": Date.parse("2026-04-24T22:35:00Z"),
-      "04-d2.jpg": Date.parse("2026-04-24T22:36:00Z"),
-      "04-d3.jpg": Date.parse("2026-04-24T22:37:00Z"),
+      "04-d2-1x1.jpg": Date.parse("2026-04-24T22:36:00Z"),
+      "04-d3-1x1.jpg": Date.parse("2026-04-24T22:37:00Z"),
       "02-reviewed.md": Date.parse("2026-04-24T22:13:13Z"),
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
@@ -133,10 +133,10 @@ describe("evaluateStaleness — orchestration (#120)", () => {
       "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"),
       "03-social.md": Date.parse("2026-04-24T19:00:00Z"),
       "04-d1-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
-      "04-d2.jpg": Date.parse("2026-04-24T19:00:00Z"),
+      "04-d2-1x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
-    assert.equal(stale.length, 3); // 03-social + 04-d1-2x1 + 04-d2
+    assert.equal(stale.length, 3); // 03-social + 04-d1-2x1 + 04-d2-1x1
   });
 
   it("formato ISO timestamp no output", () => {
@@ -156,8 +156,8 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     assert.ok(downstreams.includes("03-social.md"));
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
     assert.ok(downstreams.includes("04-d1-1x1.jpg"));
-    assert.ok(downstreams.includes("04-d2.jpg"));
-    assert.ok(downstreams.includes("04-d3.jpg"));
+    assert.ok(downstreams.includes("04-d2-1x1.jpg"));
+    assert.ok(downstreams.includes("04-d3-1x1.jpg"));
   });
 
   it("todos os checks de Stage 6 referenciam 02-reviewed.md", () => {

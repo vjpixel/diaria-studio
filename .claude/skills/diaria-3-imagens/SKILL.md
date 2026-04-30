@@ -100,7 +100,7 @@ npx tsx scripts/image-generate.ts \
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2.jpg,04-d3.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
@@ -120,8 +120,8 @@ Etapa 3 — Imagens prontas.
 
 Imagens de destaque:
   📁 data/editions/$1/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
-  📁 data/editions/$1/04-d2.jpg
-  📁 data/editions/$1/04-d3.jpg
+  📁 data/editions/$1/04-d2-1x1.jpg
+  📁 data/editions/$1/04-d3-1x1.jpg
 
 [⚠️ Drive sync: N warning(s)] (se houve)
 
@@ -136,7 +136,7 @@ Aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para
 - `data/editions/$1/01-eai-A.jpg` — slot A (real ou IA, depende do sorteio)
 - `data/editions/$1/01-eai-B.jpg` — slot B (oposto de A)
 - `data/editions/$1/_internal/01-eai-meta.json` — metadata com `ai_side`
-- `data/editions/$1/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2.jpg`, `04-d3.jpg`
+- `data/editions/$1/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
 - `data/editions/$1/04-d{N}-sd-prompt.json` — prompts usados na geração
 
 ## Notas
