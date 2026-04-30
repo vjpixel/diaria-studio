@@ -348,7 +348,9 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
     --source-health data/source-health.json
   ```
   O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
-- **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir): `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md")`. Anotar em `sync_results[1]`; ignorar falhas.
+- **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir):
+  1. Montar lista de arquivos: sempre `01-categorized.md`; adicionar `01-eai.md,01-eai-A.jpg,01-eai-B.jpg` se `data/editions/{AAMMDD}/01-eai.md` existir.
+  2. `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files {lista}")`. Anotar em `sync_results[1]`; ignorar falhas.
 
 - **GATE HUMANO:** apresentar ao usuário:
 
@@ -423,6 +425,7 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
 #### 2b. Processar newsletter
+- **Pull pós-gate** (antes de qualquer edição local pós-aprovação): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md")`. Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
 - **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
