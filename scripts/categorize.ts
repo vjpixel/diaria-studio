@@ -133,8 +133,8 @@ const LANCAMENTO_PATTERNS: RegExp[] = [
   /^ai\.meta\.com\/(blog|news)\//,
   // Google blog — apenas anúncios de produto (blog.google tem posts de todo tipo) (#354)
   /^blog\.google\/(products|technology|outreach-initiatives)\//,
-  // OpenAI — apenas blog/index de produto (não research, compliance, principles) (#354)
-  /^openai\.com\/(blog|index)\/(?!our-principles|safety-report|transparency|fedram|fido)/,
+  // OpenAI — blog/index/news de produto (não research, compliance, principles) (#354)
+  /^openai\.com\/(blog|index|news)\/(?!our-principles|safety-report|transparency|fedram|fido)/,
   // GitHub Pages como site oficial de projeto open-source — qualquer
   // {project}.github.io conta como lançamento (ex: openmoss.github.io
   // pra MOSS-Audio na 260429). Subdomain obrigatório (github.io bare

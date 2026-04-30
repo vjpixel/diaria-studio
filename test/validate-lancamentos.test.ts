@@ -74,7 +74,7 @@ describe("validateLancamentos", () => {
       "https://openai.com/index/gpt-5",
       "",
       "Item 2",
-      "https://blog.google/news/x",
+      "https://blog.google/technology/gemini-update",
     ].join("\n");
 
     const r = validateLancamentos(md);
@@ -122,7 +122,7 @@ describe("validateLancamentos", () => {
     const md = [
       "LANÇAMENTOS",
       "Item",
-      "[https://openai.com/x](https://openai.com/x)",
+      "[https://openai.com/index/x](https://openai.com/index/x)",
     ].join("\n");
     const r = validateLancamentos(md);
     // Mesma URL aparece 2x no markdown link mas conta como 1
