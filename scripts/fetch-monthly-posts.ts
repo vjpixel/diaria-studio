@@ -42,8 +42,10 @@ interface BeehiivListResponse {
 
 interface BeehiivPostDetail {
   content?: {
-    free?: { web?: string };
-    free_email?: string;
+    free?: {
+      web?: string;   // HTML versão web
+      email?: string; // HTML versão email (REST API não tem markdown)
+    };
   };
 }
 
@@ -141,10 +143,11 @@ async function fetchContent(
     `/publications/${pubId}/posts/${postId}?${params}`,
     apiKey,
   );
-  return {
-    markdown: res.data?.content?.free_email || undefined,
-    html: res.data?.content?.free?.web || undefined,
-  };
+  // REST API retorna apenas HTML — sem endpoint markdown na Beehiiv API v2.
+  // free.email (HTML email) é preferido por ser mais próximo do formato
+  // que o MCP retorna; free.web como fallback.
+  const html = res.data?.content?.free?.email || res.data?.content?.free?.web || undefined;
+  return { markdown: undefined, html };
 }
 
 async function main() {
