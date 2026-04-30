@@ -31,23 +31,33 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 4. **Para cada destaque (D1, D2, D3)** — estrutura fixa:
    - Cabeçalho: `DESTAQUE N | [TEMA EM CAPS]` + título narrativo (máx. 60 chars)
-   - Corpo 4 parágrafos: (1) evento mais marcante; (2) desenvolvimento cronológico com outras fontes; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; (4) leitura editorial fechando o arco
-   - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês]
-   - `Para aprofundar:` lista cronológica de título + URL de cada artigo de suporte
+   - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; quando o limite de chars apertar, fundir P3 e P4 em um único parágrafo conclusivo em vez de cortar o fio condutor.
+   - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês] — **obrigatório**. Se na primeira escrita o destaque não couber com o fio condutor dentro do limite, reescrever cortando a prosa narrativa, nunca o fio condutor.
+   - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
+   - **Links ancorados:** ao mencionar cada artigo de suporte, ancorar a URL ao texto que descreve o evento usando a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. Escolher como âncora o trecho de texto que melhor descreve o evento ou dado da fonte. Frases curtas podem ser âncora inteira; frases longas, ancorar só o núcleo informativo. O fio condutor não recebe links. Nas Outras Notícias, o título é a âncora: `[Título da notícia](url)`.
+   - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho, a linha de título e as URLs inline. Estimar ≈ 80–100 chars por linha de prosa; se suspeitar de excesso, encurtar antes de gravar.
+   - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → título + URL por item, na ordem do prioritized. Sem score nem categoria.
+5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized:
+   ```
+   [Título da notícia](https://url)
+
+   Descrição 1–2 frases — por que importa.
+   ```
+   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
 
 6. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
-7. **É IA? e encerramento.** Emitir placeholder do É IA? (editor preenche manualmente) + encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este email — leio cada um.`
+7. **É IA? e encerramento.** Verificar se `eai-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
 8. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
    - Intro 2-3 frases sem citar destaques
-   - 3 destaques completos (cabeçalho + 4 parágrafos + fio condutor + para aprofundar)
-   - Outras Notícias com 10 itens (warning se menos)
-   - É IA? e encerramento presentes
+   - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
+   - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
+   - Outras Notícias com 10 itens, formato `título URL\ndescrição 1-2 frases` (warning se menos)
+   - É IA? placeholder e encerramento presentes
    - Sem markdown excêntrico; sem links de paywall/agregador
    - `_internal/02-d1-prompt.md` gravado
 
@@ -84,5 +94,5 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - Cada destaque é narrativa de tema do mês — não resumo de artigo individual.
 - Conecte artigos com cronologia: "no início do mês X anunciou Y, duas semanas depois Z respondeu".
 - Não invente fatos, citações ou números — use apenas os campos `body` e `why` dos artigos de suporte.
-- Se um link parecer paywall/agregador, pule ele de "Para aprofundar" e registre em `warnings`.
+- Se um link parecer paywall/agregador, pule ele das Outras Notícias e registre em `warnings`.
 - **Output sem markdown** (regra absoluta do `editorial-rules.md` seção 6).
