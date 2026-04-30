@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSections } from "../scripts/apply-gate-edits.ts";
+import { parseSections, mergeWithNewJson } from "../scripts/apply-gate-edits.ts";
 
 describe("parseSections", () => {
   it("extrai URLs de todas as 4 seções", () => {
@@ -149,5 +149,86 @@ Texto qualquer com https://foo.com/x.
     const result = parseSections(md);
     assert.deepEqual(result.destaques, ["https://a.com/1"]);
     assert.deepEqual(result.lancamento, ["https://a.com/1"]);
+  });
+});
+
+// Helper para criar artigo de teste
+function makeArticle(url: string, score = 50, extra: Record<string, unknown> = {}) {
+  return { url, title: `Título de ${url}`, score, ...extra };
+}
+
+describe("mergeWithNewJson (#293)", () => {
+  it("preserva artigos no bucket do editor e ordem do editor", () => {
+    const existingMd = `## Destaques\n\n## Lançamentos\n\n- [80] L2 — https://lan2.com — 2026-04-01\n- [70] L1 — https://lan1.com — 2026-04-01\n\n## Pesquisas\n\n## Notícias\n\n`;
+    const newJson = {
+      highlights: [],
+      runners_up: [],
+      lancamento: [makeArticle("https://lan1.com", 70), makeArticle("https://lan2.com", 80)],
+      pesquisa: [],
+      noticias: [],
+      tutorial: [],
+    };
+    const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
+    // Editor colocou lan2 antes de lan1 → preservar essa ordem
+    assert.equal(merged.lancamento[0].url, "https://lan2.com");
+    assert.equal(merged.lancamento[1].url, "https://lan1.com");
+    assert.equal(warnings.length, 0);
+  });
+
+  it("artigos em Destaques do editor ficam no topo do bucket original", () => {
+    const existingMd = `## Destaques\n\n- [90] Art — https://art.com — 2026-04-01\n\n## Notícias\n\n- [50] B — https://b.com — 2026-04-01\n\n## Lançamentos\n\n## Pesquisas\n\n`;
+    const newJson = {
+      highlights: [],
+      runners_up: [],
+      lancamento: [],
+      pesquisa: [],
+      noticias: [makeArticle("https://b.com", 50), makeArticle("https://art.com", 90)],
+      tutorial: [],
+    };
+    const { merged } = mergeWithNewJson(existingMd, newJson);
+    // art.com estava nos Destaques → deve ser o primeiro em noticias
+    assert.equal(merged.noticias[0].url, "https://art.com");
+  });
+
+  it("artigo novo no JSON recebe new_in_pool=true", () => {
+    const existingMd = `## Destaques\n\n## Lançamentos\n\n- [70] A — https://a.com — 2026-04-01\n\n## Pesquisas\n\n## Notícias\n\n`;
+    const newJson = {
+      highlights: [], runners_up: [],
+      lancamento: [makeArticle("https://a.com", 70), makeArticle("https://new.com", 80)],
+      pesquisa: [], noticias: [], tutorial: [],
+    };
+    const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
+    const newArticle = merged.lancamento.find((a) => a.url === "https://new.com");
+    assert.ok(newArticle, "artigo novo deve estar no resultado");
+    assert.equal((newArticle as Record<string, unknown>).new_in_pool, true);
+    assert.equal(warnings.length, 0);
+  });
+
+  it("artigo removido do pool gera warning e é excluído", () => {
+    const existingMd = `## Destaques\n\n## Notícias\n\n- [60] Old — https://old.com — 2026-04-01\n\n## Lançamentos\n\n## Pesquisas\n\n`;
+    const newJson = {
+      highlights: [], runners_up: [],
+      lancamento: [], pesquisa: [],
+      noticias: [makeArticle("https://novo.com", 70)],
+      tutorial: [],
+    };
+    const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
+    assert.ok(warnings.some((w) => w.includes("https://old.com")));
+    assert.ok(!merged.noticias.some((a) => a.url === "https://old.com"));
+  });
+
+  it("editor moveu artigo entre buckets — respeita bucket do editor", () => {
+    const existingMd = `## Destaques\n\n## Lançamentos\n\n- [80] Art — https://art.com — 2026-04-01\n\n## Pesquisas\n\n## Notícias\n\n`;
+    const newJson = {
+      highlights: [], runners_up: [],
+      lancamento: [],
+      pesquisa: [makeArticle("https://art.com", 80)], // scorer coloca em pesquisa
+      noticias: [], tutorial: [],
+    };
+    const { merged } = mergeWithNewJson(existingMd, newJson);
+    // Editor moveu para lancamento — deve respeitar isso
+    assert.equal(merged.lancamento.length, 1);
+    assert.equal(merged.lancamento[0].url, "https://art.com");
+    assert.equal(merged.pesquisa.length, 0);
   });
 });

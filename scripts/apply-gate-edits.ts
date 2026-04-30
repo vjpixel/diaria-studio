@@ -276,6 +276,104 @@ function main() {
   );
 }
 
+/**
+ * Merge da curadoria do editor (MD existente) com um novo CategorizedJson (#293).
+ *
+ * Chamada pelo render-categorized-md quando detecta que o editor modificou o MD
+ * (via hash fingerprint) e um re-render seria solicitado — evitando perder edições.
+ *
+ * Regras:
+ * - URL em ambos: artigo do novo JSON (dados frescos) no bucket/ordem do editor.
+ * - URL só no novo JSON (novo artigo): bucket original, marcado `new_in_pool: true`.
+ * - URL só no MD do editor (removida do pool): warning, excluída do resultado.
+ * - URLs no Destaques do MD: flutuam ao topo do bucket original no novo JSON.
+ */
+export function mergeWithNewJson(
+  existingMd: string,
+  newJson: CategorizedJson,
+): { merged: CategorizedJson; warnings: string[] } {
+  const warnings: string[] = [];
+  const editorSections = parseSections(existingMd);
+
+  // Índice url → { article, origBucket } do novo JSON
+  const urlToNew = new Map<string, { article: Article; origBucket: string }>();
+  const bucketEntries: [string, Article[]][] = [
+    ["lancamento", newJson.lancamento],
+    ["pesquisa", newJson.pesquisa],
+    ["noticias", newJson.noticias],
+    ["tutorial", newJson.tutorial ?? []],
+  ];
+  for (const [bucketName, pool] of bucketEntries) {
+    for (const a of pool) {
+      urlToNew.set(a.url, { article: a, origBucket: bucketName });
+    }
+  }
+
+  // Todas as URLs que o editor tinha no MD (destaques incluídos)
+  const editorAllUrls = new Set<string>([
+    ...editorSections.destaques,
+    ...editorSections.lancamento,
+    ...editorSections.pesquisa,
+    ...editorSections.noticias,
+    ...editorSections.tutorial,
+  ]);
+
+  // URLs no MD do editor que sumiram do novo JSON → avisar
+  for (const url of editorAllUrls) {
+    if (!urlToNew.has(url)) {
+      warnings.push(`dropped from new pool: ${url}`);
+    }
+  }
+
+  // Construir buckets do resultado mesclado
+  const out: Record<string, Article[]> = {
+    lancamento: [], pesquisa: [], noticias: [], tutorial: [],
+  };
+  const placed = new Set<string>();
+
+  // 1. URLs nos Destaques do editor → topo do bucket original
+  for (const url of editorSections.destaques) {
+    const entry = urlToNew.get(url);
+    if (!entry || placed.has(url)) continue;
+    out[entry.origBucket].push(entry.article);
+    placed.add(url);
+  }
+
+  // 2. URLs nas seções regulares do editor → bucket do editor, na ordem do editor
+  for (const [editorBucket, urls] of [
+    ["lancamento", editorSections.lancamento],
+    ["pesquisa", editorSections.pesquisa],
+    ["noticias", editorSections.noticias],
+    ["tutorial", editorSections.tutorial],
+  ] as [string, string[]][]) {
+    for (const url of urls) {
+      const entry = urlToNew.get(url);
+      if (!entry || placed.has(url)) continue;
+      out[editorBucket].push(entry.article);
+      placed.add(url);
+    }
+  }
+
+  // 3. Artigos novos (não estavam no MD do editor) → bucket original, marcados
+  for (const [url, { article, origBucket }] of urlToNew) {
+    if (!placed.has(url)) {
+      out[origBucket].push({ ...article, new_in_pool: true });
+      placed.add(url);
+    }
+  }
+
+  return {
+    merged: {
+      ...newJson,
+      lancamento: out.lancamento,
+      pesquisa: out.pesquisa,
+      noticias: out.noticias,
+      tutorial: out.tutorial,
+    },
+    warnings,
+  };
+}
+
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 const _importMeta = import.meta.url;
 if (
