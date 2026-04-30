@@ -34,18 +34,18 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; quando o limite de chars apertar, fundir P3 e P4 em um único parágrafo conclusivo em vez de cortar o fio condutor.
    - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês] — **obrigatório**. Se na primeira escrita o destaque não couber com o fio condutor dentro do limite, reescrever cortando a prosa narrativa, nunca o fio condutor.
    - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
-   - **URLs inline:** ao mencionar cada artigo de suporte, inserir a URL do `raw_path` em parênteses imediatamente após a frase ou cláusula correspondente — ex: `...identificou 27 mil falhas. (https://...)`. Uma URL por fato; se vários fatos de um mesmo parágrafo vierem de fontes distintas, cada frase recebe sua URL. O fio condutor não recebe URLs.
+   - **Links ancorados:** ao mencionar cada artigo de suporte, ancorar a URL ao texto que descreve o evento usando a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. Escolher como âncora o trecho de texto que melhor descreve o evento ou dado da fonte. Frases curtas podem ser âncora inteira; frases longas, ancorar só o núcleo informativo. O fio condutor não recebe links. Nas Outras Notícias, o título é a âncora: `[Título da notícia](url)`.
    - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho, a linha de título e as URLs inline. Estimar ≈ 80–100 chars por linha de prosa; se suspeitar de excesso, encurtar antes de gravar.
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
 5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized:
    ```
-   Título https://url
+   [Título da notícia](https://url)
 
    Descrição 1–2 frases — por que importa.
    ```
-   Linha em branco entre a linha `Título URL` e a descrição, e linha em branco entre itens. Descrição derivada do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
+   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
 
 6. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
