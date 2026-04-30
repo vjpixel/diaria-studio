@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 export interface NormalizeReport {
   highlight_headers_split: number;
   section_items_split: number;
+  emdashes_removed: number;
   warnings: string[];
 }
 
@@ -316,6 +317,21 @@ export function addTrailingSpaces(text: string): string {
   return out.join("\n");
 }
 
+/**
+ * Remove travessões (—) restantes após humanizador, substituindo por vírgula.
+ * Rede de segurança para o zero-tolerance do #363 — o humanizador deve ter
+ * feito a substituição contextual; aqui só apanhamos o que escapou.
+ * Preserva meia-risca (–) em intervalos numéricos.
+ */
+function removeEmdashes(text: string): { text: string; count: number } {
+  let count = 0;
+  // " — " (espaço + travessão + espaço) → ", "
+  const result = text.replace(/ — /g, () => { count++; return ", "; });
+  // Travessão sem espaço (raro, mas possível) → vírgula simples
+  const result2 = result.replace(/—/g, () => { count++; return ","; });
+  return { text: result2, count };
+}
+
 export function normalizeNewsletter(text: string): {
   text: string;
   report: NormalizeReport;
@@ -325,6 +341,7 @@ export function normalizeNewsletter(text: string): {
   const report: NormalizeReport = {
     highlight_headers_split: 0,
     section_items_split: 0,
+    emdashes_removed: 0,
     warnings: [],
   };
 
@@ -379,7 +396,12 @@ export function normalizeNewsletter(text: string): {
     out.push(line);
   }
 
-  const normalized = addTrailingSpaces(out.join("\n"));
+  const withTrailingSpaces = addTrailingSpaces(out.join("\n"));
+  const { text: normalized, count: emdashes } = removeEmdashes(withTrailingSpaces);
+  report.emdashes_removed = emdashes;
+  if (emdashes > 0) {
+    report.warnings.push(`${emdashes} travessão(ões) substituído(s) por vírgula — humanizador deve ter corrigido antes`);
+  }
   return { text: normalized, report };
 }
 
