@@ -1,6 +1,9 @@
 {
   "newsletter": "beehiiv",
-  "socials": ["linkedin", "facebook"],
+  "socials": [
+    "linkedin",
+    "facebook"
+  ],
   "beehiiv": {
     "publicationName": "Diar.ia",
     "publicationUrl": "https://diar.ia.br",
@@ -13,10 +16,14 @@
     "enabled": true
   },
   "drive_sync": true,
-"logging": {
+  "logging": {
     "path": "data/run-log.jsonl"
   },
-  "image_generator": "cloudflare",
+  "image_generator": "gemini",
+  "openai": {
+    "model": "gpt-image-2",
+    "quality": "low"
+  },
   "gemini": {
     "model": "gemini-3.1-flash-image-preview"
   },
@@ -55,8 +62,18 @@
         "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/"
       },
       "fallback_schedule": {
-        "linkedin": { "d1_time": "09:00", "d2_time": "12:30", "d3_time": "16:00", "day_offset": 0 },
-        "facebook": { "d1_time": "10:00", "d2_time": "13:30", "d3_time": "17:00", "day_offset": 0 }
+        "linkedin": {
+          "d1_time": "09:00",
+          "d2_time": "12:30",
+          "d3_time": "16:00",
+          "day_offset": 0
+        },
+        "facebook": {
+          "d1_time": "10:00",
+          "d2_time": "13:30",
+          "d3_time": "17:00",
+          "day_offset": 0
+        }
       },
       "timezone": "America/Sao_Paulo"
     }

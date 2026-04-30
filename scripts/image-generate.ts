@@ -99,8 +99,9 @@ function main() {
   const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const generator = (platformCfg.image_generator ?? "gemini") as string;
   const scriptName =
-    generator === "comfyui" ? "comfyui-run.js" :
-    generator === "cloudflare" ? "cloudflare-image.js" :
+    generator === "comfyui"     ? "comfyui-run.js" :
+    generator === "cloudflare"  ? "cloudflare-image.js" :
+    generator === "openai"      ? "openai-image.js" :
     "gemini-image.js";
   const imageScript = resolve(ROOT, "scripts", scriptName);
 
