@@ -28,7 +28,8 @@ Antes de pontuar, releia:
    - **Recência dentro do mês** — destaque de edição mais recente leva leve vantagem sobre destaque de início do mês com score similar.
 3. Não normalizar forçadamente — scores podem se concentrar; o que importa é a ordem relativa.
 4. Atualizar cada objeto `destaque` no JSON original adicionando o campo `"score": <número inteiro>`.
-5. Gravar o JSON atualizado em `out_path` (sobrescreve `raw-destaques.json`).
+5. Adicionar `"scored_at": "<ISO timestamp>"` na raiz do JSON (ao lado de `generated_at`).
+6. Gravar o JSON atualizado em `out_path` (sobrescreve `raw-destaques.json`).
 
 ## Output
 

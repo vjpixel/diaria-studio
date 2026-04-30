@@ -64,7 +64,7 @@ Se `destaques_count < 3`, abortar.
 **Resume check:** verificar se todos os destaques em `raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
 
 ```bash
-node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null||x.score===undefined).length; console.log(missing===0?'scored':'missing:'+missing)"
+node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
 ```
 
 Se `missing > 0`, disparar `scorer-monthly` via `Agent`:
