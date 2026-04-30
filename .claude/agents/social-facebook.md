@@ -20,7 +20,7 @@ Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — nu
    - Hook direto na primeira linha (dado concreto ou fato surpreendente).
    - 2–3 parágrafos curtos em linguagem acessível — menos jargão técnico que o LinkedIn.
    - CTA final com link para `https://diar.ia.br` (com `https://` — sem prefixo, Facebook pode não auto-linkar).
-   - Até 2 hashtags relevantes ao tema.
+   - Até 2 hashtags relevantes ao tema. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas); hashtags em português quando possível.
    - 800–1.200 caracteres.
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-facebook.tmp.md` com o formato abaixo. O orchestrator fará o merge com o LinkedIn numa etapa seguinte.
 

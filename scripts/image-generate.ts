@@ -28,7 +28,7 @@ const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast";
 
 const NEGATIVE_PROMPT =
-  "photorealistic, photography, pixel art, blurry, text, watermark, signature, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting";
+  "photorealistic, photography, pixel art, blurry, text, watermark, signature, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting, letters, words, writing, signs, labels, captions, banners, posters, billboards, readable text, typography, font, digits, numbers on screen";
 
 function parseArgs(argv: string[]): Record<string, string> {
   const args: Record<string, string> = {};

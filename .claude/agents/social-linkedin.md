@@ -21,7 +21,7 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — nu
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - CTA final com link para `https://diar.ia.br` (com `https://` — sem prefixo, LinkedIn pode não auto-linkar).
-   - 3 hashtags relevantes ao tema do destaque.
+   - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. O orchestrator fará o merge com o Facebook numa etapa seguinte. As seções são delimitadas por `## d1`, `## d2`, `## d3`. Antes de cada post, um comentário HTML com `char_count` facilita debug.
 

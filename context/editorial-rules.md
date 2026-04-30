@@ -24,6 +24,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - **Não** mencionar "Noite Estrelada" ou obras reconhecíveis de Van Gogh. Evitar céu noturno estrelado com pinceladas giratórias — produz clone de Noite Estrelada.
 - Descrição em português, concreta, com elementos visuais claros.
 - **Composição para crop.** A imagem D1 é usada em 2:1 (wide, newsletter) e 1:1 (square, redes sociais). O prompt deve garantir que os elementos principais fiquem **centrados e distribuídos horizontalmente**, sem depender de bordas verticais. Evitar cenas verticais (foguete decolando, prédio alto) que perdem sentido no crop 2:1. Preferir composições panorâmicas onde o crop preserva a narrativa visual.
+- **Sem texto visível (#373).** Todo prompt deve terminar com: `Sem texto, letras, palavras, letreiros, placas ou legendas visíveis na imagem.` Não descrever elementos que implicitamente contenham texto (cartazes, painéis digitais com conteúdo, telas com texto legível). Alternativas: painel luminoso abstrato, cartazes coloridos sem texto, tela iluminada com cursor piscante.
 
 ## 3. Destaques
 
