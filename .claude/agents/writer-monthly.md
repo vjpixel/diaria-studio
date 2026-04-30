@@ -31,23 +31,26 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 4. **Para cada destaque (D1, D2, D3)** — estrutura fixa:
    - Cabeçalho: `DESTAQUE N | [TEMA EM CAPS]` + título narrativo (máx. 60 chars)
-   - Corpo 4 parágrafos: (1) evento mais marcante; (2) desenvolvimento cronológico com outras fontes; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; (4) leitura editorial fechando o arco
+   - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; (4) leitura editorial fechando o arco
    - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês]
-   - `Para aprofundar:` lista cronológica de título + URL de cada artigo de suporte
+   - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
+   - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho e a linha de título.
+   - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → título + URL por item, na ordem do prioritized. Sem score nem categoria.
+5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized, escrever `título URL` (na mesma linha) seguido de 1–2 frases de descrição (por que importa) derivadas do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
 
 6. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
-7. **É IA? e encerramento.** Emitir placeholder do É IA? (editor preenche manualmente) + encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este email — leio cada um.`
+7. **É IA? e encerramento.** Emitir placeholder do É IA? com nota: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Ver issue #419 para rastreamento automático futuro. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]` + encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
 8. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
    - Intro 2-3 frases sem citar destaques
-   - 3 destaques completos (cabeçalho + 4 parágrafos + fio condutor + para aprofundar)
-   - Outras Notícias com 10 itens (warning se menos)
-   - É IA? e encerramento presentes
+   - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
+   - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
+   - Outras Notícias com 10 itens, formato `título URL\ndescrição 1-2 frases` (warning se menos)
+   - É IA? placeholder e encerramento presentes
    - Sem markdown excêntrico; sem links de paywall/agregador
    - `_internal/02-d1-prompt.md` gravado
 
