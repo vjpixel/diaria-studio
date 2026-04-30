@@ -26,7 +26,9 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
+import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 
 interface Article {
   url: string;
@@ -201,6 +203,7 @@ export function renderLine(
   if (article.editor_submitted) markers.push("[inbox]");
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
+  if (article.new_in_pool) markers.push("🆕");
 
   const markerStr = markers.length > 0 ? " " + markers.join(" ") : "";
   const prefix = lineNumber != null ? `${lineNumber}.` : "-";
@@ -261,12 +264,19 @@ function renderSection(
   if (articles.length === 0) {
     return `## ${title}\n\n_(vazio)_\n`;
   }
-  // Ordenar por score desc (null/undefined ao final)
-  const sorted = [...articles].sort((a, b) => {
-    const sa = typeof a.score === "number" ? a.score : -Infinity;
-    const sb = typeof b.score === "number" ? b.score : -Infinity;
-    return sb - sa;
-  });
+  // Ordenar por score desc — exceto quando há artigos de merge do editor
+  // (new_in_pool presente = merge aconteceu → preservar ordem original).
+  // Só preserva ordem quando há artigos do editor (não-novos) misturados com novos.
+  // Se todos forem novos, reordenar por score ainda faz sentido.
+  const hasMerge = articles.some((a) => "new_in_pool" in a) &&
+                   articles.some((a) => !a.new_in_pool);
+  const sorted = hasMerge
+    ? [...articles]
+    : [...articles].sort((a, b) => {
+        const sa = typeof a.score === "number" ? a.score : -Infinity;
+        const sb = typeof b.score === "number" ? b.score : -Infinity;
+        return sb - sa;
+      });
   // Numeração por seção — facilita referência no gate humano (#322)
   const lines = sorted.map((a, idx) =>
     renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), idx + 1),
@@ -368,6 +378,7 @@ function main() {
     `\n> Candidatos recomendados pelo scorer:\n` +
     `>   - ⭐ — top do scorer (highlights[]).\n` +
     `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
+    `>   - 🆕 — artigo novo desde a última curadoria (não estava no MD anterior).\n` +
     `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
 
@@ -383,17 +394,50 @@ function main() {
 
   const footer = renderSourceHealth(cli.sourceHealth);
 
-  // #242: backup defensivo antes de sobrescrever. Se o editor já tinha
-  // curado o MD (movido artigos pra `## Destaques`, deletado items, etc.),
-  // re-renderizar do zero apaga o trabalho silenciosamente. Backup permite
-  // recuperação manual via `_internal/01-categorized.md.bak-{ts}` enquanto
-  // a solução completa (merge automático com curadoria) é tratada em
-  // follow-up.
+  // #293: Merge automático da curadoria do editor.
+  // Se o MD existente foi modificado pelo editor (detectado por hash fingerprint),
+  // mesclamos a curadoria com o novo JSON antes de renderizar — preservando
+  // destaques movidos, artigos deletados e reordenações.
+  const backupDir = resolve(dirname(cli.out), "_internal");
+  const hashFilePath = resolve(backupDir, "01-render-hash.json");
+  if (existsSync(cli.out)) {
+    const existingMd = readFileSync(cli.out, "utf8");
+    const currentHash = createHash("sha256").update(existingMd).digest("hex");
+    let savedHash: string | null = null;
+    if (existsSync(hashFilePath)) {
+      try {
+        savedHash = (JSON.parse(readFileSync(hashFilePath, "utf8")) as { md_hash: string }).md_hash;
+      } catch { /* hash file corrompido — trata como "editor editou" */ }
+    }
+    if (savedHash !== null && currentHash !== savedHash) {
+      // Editor modificou o MD desde o último render → merge automático
+      const { merged, warnings: mergeWarnings } = mergeWithNewJson(
+        existingMd,
+        data as unknown as Parameters<typeof mergeWithNewJson>[1],
+      );
+      Object.assign(data, {
+        lancamento: merged.lancamento,
+        pesquisa: merged.pesquisa,
+        noticias: merged.noticias,
+        tutorial: merged.tutorial,
+      });
+      if (mergeWarnings.length > 0) {
+        console.error(
+          `[render-categorized-md] merge curadoria: ${mergeWarnings.length} warn(s):\n` +
+          mergeWarnings.map((w) => `  - ${w}`).join("\n"),
+        );
+      }
+      console.error(
+        `[render-categorized-md] curadoria do editor preservada via merge (#293)`,
+      );
+    }
+  }
+
+  // #242: backup defensivo antes de sobrescrever.
   // #288: pruning de backups antigos — manter só os últimos 3 antes de criar novo.
   if (existsSync(cli.out)) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const baseName = basename(cli.out);
-    const backupDir = resolve(dirname(cli.out), "_internal");
     const backupPath = resolve(backupDir, `${baseName}.bak-${ts}`);
     try {
       mkdirSync(backupDir, { recursive: true });
@@ -418,6 +462,20 @@ function main() {
 
   const md = `${header}${instructions}\n${sections}${footer}`;
   writeFileSync(cli.out, md, "utf8");
+
+  // Salvar hash fingerprint do MD recém-renderizado (#293).
+  // Próxima chamada ao renderer usa esse hash para detectar edições do editor.
+  try {
+    mkdirSync(backupDir, { recursive: true });
+    writeFileSync(
+      hashFilePath,
+      JSON.stringify({
+        md_hash: createHash("sha256").update(md).digest("hex"),
+        rendered_at: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+  } catch { /* hash é opcional — não bloqueia se falhar */ }
 
   const total =
     data.lancamento.length + data.pesquisa.length + data.noticias.length + (data.tutorial?.length ?? 0);
