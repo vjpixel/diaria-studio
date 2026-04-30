@@ -144,7 +144,7 @@ Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqu
 
 ### Gate Etapa 2 (pulado com `--no-gate`)
 
-Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md` — **warning se falhar, nunca bloqueia**.
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se o editor tiver escolhido o subject no gate; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
 
 Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
