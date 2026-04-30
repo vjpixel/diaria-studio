@@ -156,7 +156,7 @@ breve análise.]
 
 Quando #107 (poll stats) estiver implementado, esta seção lerá `data/eai-poll-stats.json` e selecionará automaticamente. Por ora, fica como espaço pro editor preencher.
 
-### 8. Encerramento
+### 9. Encerramento
 
 Padrão (mesmo do diário):
 
@@ -169,7 +169,7 @@ com um colega? Responda este email — leio cada um.
 
 (Adapte o tom ao perfil em `audience-profile.md` se já houver convenção de encerramento estabelecida.)
 
-### 9. Validação pré-saída
+### 10. Validação pré-saída
 
 Antes de gravar `out_path`, validar:
 
@@ -184,7 +184,7 @@ Antes de gravar `out_path`, validar:
 - [ ] Sem markdown excêntrico (sem `**`, `#`, `-`, `>`).
 - [ ] Nenhum link de paywall ou agregador (verificar URLs com `editorial-rules.md` seção 1).
 
-### 10. Gravar e responder
+### 11. Gravar e responder
 
 Gravar `out_path`. Responder ao orchestrator com:
 

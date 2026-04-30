@@ -96,7 +96,9 @@ O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh 
 
 ### Gate Etapa 2 (pulado com `--no-gate`)
 
-Drive sync push: `draft.md`. Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push).
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md` — **warning se falhar, nunca bloqueia** (drive-sync pode não suportar estrutura `data/monthly/` ainda).
+
+Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
 Apresentar:
 ```
