@@ -10,6 +10,8 @@
 //   negative    — termos a evitar (opcional; incorporado no prompt como instrução)
 //   model       — override do modelo (opcional; default: platform.config.json > gemini.model)
 //   final_width / final_height — redimensionar via sharp (opcional)
+//
+// Nota: platform.config.json é lido com path relativo — executar a partir da raiz do projeto.
 
 import 'dotenv/config';
 import fs from 'fs';
@@ -99,8 +101,9 @@ async function callApi() {
     const retryAfterHeader = res.headers.get('retry-after');
     const baseWait = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 35_000;
     const waitMs = baseWait * Math.pow(2, attempt); // exponential when no Retry-After
+    const retryNum = attempt + 1;
     attempt += 1;
-    process.stderr.write(`rate limited (attempt ${attempt}/${MAX_RETRIES}) — retrying in ${waitMs / 1000}s...\n`);
+    process.stderr.write(`rate limited (retry ${retryNum}/${MAX_RETRIES}) — retrying in ${waitMs / 1000}s...\n`);
     await new Promise(r => setTimeout(r, waitMs));
   }
 

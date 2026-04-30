@@ -10,6 +10,8 @@
 //   negative    — termos a evitar (opcional; incorporado no prompt como instrução)
 //   model       — override do modelo (opcional; default: platform.config.json > openai.model)
 //   final_width / final_height — redimensionar via sharp (opcional)
+//
+// Nota: platform.config.json é lido com path relativo — executar a partir da raiz do projeto.
 
 import 'dotenv/config';
 import fs from 'node:fs';
@@ -107,8 +109,9 @@ async function callApi() {
     const waitMs = retryAfter
       ? parseInt(retryAfter, 10) * 1000
       : 35_000 * Math.pow(2, attempt);
+    const retryNum = attempt + 1;
     attempt++;
-    process.stderr.write(`Rate limited (tentativa ${attempt}/${MAX_RETRIES}) — aguardando ${waitMs / 1000}s...\n`);
+    process.stderr.write(`Rate limited (retry ${retryNum}/${MAX_RETRIES}) — aguardando ${waitMs / 1000}s...\n`);
     await new Promise(r => setTimeout(r, waitMs));
   }
 
