@@ -41,14 +41,24 @@ RAW_DESTAQUES=$(test -f data/monthly/$1/raw-destaques.json && echo "yes" || echo
 - Se `RAW_POSTS = 0` → Stage 1a não completou. Executar Stage 1a normalmente, independente de `raw-destaques.json` existir.
   - ⚠️ **Não usar `raw-destaques.json` como indicador de Stage 1a completo** — pode ter sido gerado por run anterior via fallback de edições locais (antes de `collect-monthly-runner` existir), sem nunca ter consultado o Beehiiv.
 
-**1a. Baixar via Beehiiv MCP** — disparar o subagent `collect-monthly-runner` via `Agent`:
+**1a. Baixar via Beehiiv MCP (inline — não via subagente) (#403):**
 
-- Input: `yymm = $1`
-- O agent lista posts publicados via `list_posts` (paginação client-side filtrada pela janela do mês), baixa o markdown via `get_post_content` e grava em `data/monthly/{yymm}/raw-posts/post_{id8}_{AAMMDD}.txt`.
-- Resume-aware: pula posts já em disco.
-- Output JSON: `{ posts_count, skipped_existing, downloaded, warnings }`.
+Chamar as ferramentas Beehiiv MCP **diretamente** neste contexto (sem disparar Agent). Subagentes não têm acesso aos MCPs nativos do Claude Code — este é o contexto correto para chamá-los.
 
-Se `posts_count = 0`, abortar — o mês não tem edições publicadas no Beehiiv.
+1. Chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` com:
+   - `publication_id = beehiiv.publicationId` (de `platform.config.json`)
+   - `status = "confirmed"`
+   - `per_page = 50`
+   - Paginar e filtrar client-side pela janela do mês `[$1]`
+2. Para cada post dentro da janela:
+   - Derivar `AAMMDD` do `published_at` e `id_prefix` (8 chars, sem prefixo `post_`)
+   - Path: `data/monthly/$1/raw-posts/post_{id_prefix}_{AAMMDD}.txt`
+   - Se já existe: pular (resume-aware)
+   - Caso contrário: chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` e gravar o `markdown` (preferido) ou `html` (fallback)
+3. Criar diretório `data/monthly/$1/raw-posts/` antes de gravar (se não existir)
+4. Reportar: `posts_found`, `downloaded`, `skipped_existing`, `posts_with_html_fallback`, `warnings`
+
+Se `posts_found = 0`, abortar — o mês não tem edições publicadas no Beehiiv.
 
 **1b. Parsear destaques** — disparar `Bash`:
 
