@@ -61,7 +61,7 @@ JSON com a mesma estrutura do input, cada destaque com `score` adicionado:
 
 Após gravar, verificar que o JSON é válido:
 ```bash
-node -e "try{JSON.parse(require('fs').readFileSync('<out_path>','utf8'));console.log('ok')}catch(e){process.stderr.write(e.message);process.exit(1)}"
+node -e "try{JSON.parse(require('fs').readFileSync('{out_path}','utf8'));console.log('ok')}catch(e){process.stderr.write(e.message);process.exit(1)}"
 ```
 
 Ao responder ao orchestrator:
