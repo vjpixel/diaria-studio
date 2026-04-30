@@ -185,7 +185,7 @@ async function extractPublishedDate(
     //     primeiro <time> qualquer do documento, que pode ser de sidebar/comentário/rodapé.
     const articleTimeMatch =
       body.match(
-        /<(?:article|main|header)[^>]*>[\s\S]*?<time[^>]+datetime=["']([^"']+)["']/i
+        /<(?:article|main|header)[^>]*>[\s\S]{0,5000}?<time[^>]+datetime=["']([^"']+)["']/i
       ) ??
       body.match(
         /<[^>]+class=["'][^"']*(?:post-date|article-date|publish[^"']*|entry-date|byline)[^"']*["'][^>]*>[\s\S]{0,200}?<time[^>]+datetime=["']([^"']+)["']/i
