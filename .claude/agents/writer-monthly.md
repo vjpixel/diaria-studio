@@ -31,10 +31,10 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 4. **Para cada destaque (D1, D2, D3)** — estrutura fixa:
    - Cabeçalho: `DESTAQUE N | [TEMA EM CAPS]` + título narrativo (máx. 60 chars)
-   - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; (4) leitura editorial fechando o arco
-   - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês]
+   - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; quando o limite de chars apertar, fundir P3 e P4 em um único parágrafo conclusivo em vez de cortar o fio condutor.
+   - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês] — **obrigatório**. Se na primeira escrita o destaque não couber com o fio condutor dentro do limite, reescrever cortando a prosa narrativa, nunca o fio condutor.
    - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
-   - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho e a linha de título.
+   - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho e a linha de título. Estimar ≈ 80–100 chars por linha de texto; se suspeitar de excesso, encurtar antes de gravar.
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
@@ -42,7 +42,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 6. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
-7. **É IA? e encerramento.** Emitir placeholder do É IA? com nota: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Ver issue #419 para rastreamento automático futuro. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]` + encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
+7. **É IA? e encerramento.** Verificar se `eai-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
 8. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
@@ -87,5 +87,5 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - Cada destaque é narrativa de tema do mês — não resumo de artigo individual.
 - Conecte artigos com cronologia: "no início do mês X anunciou Y, duas semanas depois Z respondeu".
 - Não invente fatos, citações ou números — use apenas os campos `body` e `why` dos artigos de suporte.
-- Se um link parecer paywall/agregador, pule ele de "Para aprofundar" e registre em `warnings`.
+- Se um link parecer paywall/agregador, pule ele das Outras Notícias e registre em `warnings`.
 - **Output sem markdown** (regra absoluta do `editorial-rules.md` seção 6).

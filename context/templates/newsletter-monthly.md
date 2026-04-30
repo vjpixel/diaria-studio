@@ -29,7 +29,7 @@ DESTAQUE 1 | [TEMA]
 
 [Parágrafo 3 — atores, dados, números do mês]
 
-[Parágrafo 4 — fecha com a leitura editorial — opcional se o limite de chars exigir corte]
+[Parágrafo 4 — fecha com a leitura editorial; se o limite de chars apertar, fundir P3+P4 em um parágrafo só]
 
 O fio condutor:
 [1 parágrafo — o que esse tema revelou sobre o mês de IA. Não é "Por que isso importa" do diário; é síntese do tema.]
@@ -101,9 +101,11 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - É IA? é recap de uma do mês, não comparação nova.
 - Limites de caracteres por destaque (D1: 1.500, D2/D3: 1.200).
 
-## Não fazer
+## Não fazer (no output gerado)
 
-- Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.).
+> Nota: as seções de instrução acima (fora do bloco de código) usam markdown (`**`, listas `-`) como formato de documento — isso não é output gerado. As regras abaixo se aplicam ao texto do draft em `out_path`.
+
+- Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.) no corpo da newsletter.
 - Não incluir texto fora do template.
 - Não adicionar emojis.
 - Não mencionar "Diar.ia" dentro do corpo dos destaques.
