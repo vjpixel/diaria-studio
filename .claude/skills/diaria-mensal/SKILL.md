@@ -108,7 +108,15 @@ Disparar `writer-monthly` via `Agent`:
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
-### 2b. Humanizador
+### 2b. Lint de chars
+
+```bash
+npx tsx scripts/lint-monthly-draft.ts $1
+```
+
+Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars.
+
+### 2c. Humanizador
 
 Invocar skill humanizador in-place no `draft.md`:
 
@@ -118,7 +126,7 @@ Skill("humanizador", "Leia data/monthly/$1/draft.md, humanize o texto removendo 
 
 Se falhar: warning, seguir com o arquivo original (não bloqueia).
 
-### 2c. Clarice
+### 2d. Clarice
 
 1. Ler `data/monthly/$1/draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -136,7 +144,7 @@ Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqu
 
 ### Gate Etapa 2 (pulado com `--no-gate`)
 
-Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md` — **warning se falhar, nunca bloqueia** (drive-sync pode não suportar estrutura `data/monthly/` ainda).
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se o editor tiver escolhido o subject no gate; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
 
 Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
@@ -148,8 +156,21 @@ Opções de subject:
   2. {opção 2}
   3. {opção 3}
 
-Aprovar? sim / editar / retry
+Aprovar? sim [+ número do subject escolhido] / editar / retry
 ```
+
+**Após aprovação (#421):** se o editor informar o número do subject escolhido (ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$1/_internal/02-chosen-subject.txt`:
+```bash
+CHOICE=2  # número informado pelo editor
+node -e "
+  const t = require('fs').readFileSync('data/monthly/$1/draft.md','utf8');
+  const m = t.match(/^ASSUNTO[\s\S]*?\n${CHOICE}\. (.+)/m);
+  if (m) require('fs').writeFileSync('data/monthly/$1/_internal/02-chosen-subject.txt', m[1].trim());
+"
+```
+Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empregos em risco`), não só o número. Qualquer reescrita posterior restaura exatamente essa linha no ASSUNTO.
+
+**Invariante do ASSUNTO:** qualquer passo posterior que modifique `draft.md` (humanizador, Clarice, ajustes de formato) deve usar `Edit` (substituição pontual), nunca `Write` (overwrite completo). Se `Write` for inevitável, ler `02-chosen-subject.txt` antes e restaurar o ASSUNTO correto imediatamente após. O ASSUNTO escolhido pelo editor nunca pode ser sobrescrito silenciosamente.
 
 ---
 

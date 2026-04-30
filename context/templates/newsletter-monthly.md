@@ -36,9 +36,21 @@ O fio condutor:
 
 ---
 
+CLARICE — DIVULGAÇÃO
+
+[Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link.]
+
+---
+
 DESTAQUE 2 | [TEMA]
 
 [mesmo formato]
+
+---
+
+CLARICE — TUTORIAL
+
+[Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais.]
 
 ---
 
