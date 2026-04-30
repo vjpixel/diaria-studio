@@ -24,7 +24,7 @@ Antes de agrupar, releia:
 
 ### 1. Carregar input
 
-Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`. Não há `score`, `source`, `summary` ou `published_at` — esses campos eram dependentes de enrichment local que não está disponível (digest pode rodar em máquina diferente da edição).
+Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`. O campo `score` (0–100) estará presente se o `scorer-monthly` rodou antes; caso contrário será `null` ou ausente — trate ambos como "sem score" e use julgamento editorial como fallback.
 
 ### 2. Agrupar por tema
 
@@ -74,7 +74,8 @@ revisar manualmente no gate ou substituir o tema.
 
 Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), selecionar os **10 mais relevantes** para a seção Outras Notícias do digest. Lista única, sem separação por categoria — decisão do template `newsletter-monthly.md`.
 
-- Sem `score` disponível (vem do scorer diário, que não enriquece o monthly), use **julgamento editorial**: categorias com maior CTR histórico em `audience-profile.md` primeiro; dentro da mesma categoria, recência (edition desc) ou impacto explícito do `body`/`why`.
+- Se o destaque tiver o campo `score` (adicionado pelo `scorer-monthly`), ordenar por `score desc`. Em caso de empate, desempatar por recência (`edition desc`).
+- Se `score` estiver ausente ou `null`, usar **julgamento editorial**: categorias com maior CTR histórico em `audience-profile.md` primeiro; dentro da mesma categoria, recência.
 - Se o mês tiver < 10 standalones no total, listar os que tiver e registrar warning (`destaques_unused < 10`).
 
 ### 6. Gerar `prioritized.md`

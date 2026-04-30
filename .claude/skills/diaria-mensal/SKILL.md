@@ -59,7 +59,21 @@ npx tsx scripts/collect-monthly.ts $1
 ```
 Se `destaques_count < 3`, abortar.
 
-### 1b. Análise temática
+### 1b. Scoring mensal
+
+**Resume check:** verificar se todos os destaques em `raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
+
+```bash
+node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
+```
+
+Se `missing > 0`, disparar `scorer-monthly` via `Agent`:
+- `raw_path = data/monthly/$1/raw-destaques.json`
+- `out_path = data/monthly/$1/raw-destaques.json`
+
+O scorer sobrescreve o arquivo adicionando `score` a cada destaque.
+
+### 1c. Análise temática
 
 Disparar `analyst-monthly` via `Agent`:
 - `raw_path = data/monthly/$1/raw-destaques.json`
