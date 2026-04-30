@@ -476,9 +476,10 @@ async function resolveDayFolder(
   let yymmFolder = await findFolderInParent(yymm, edicoesId);
   if (!yymmFolder) yymmFolder = await driveCreateFolder(yymm, edicoesId);
 
-  // Resolver ou criar pasta YYMMDD
-  let dayFolder = await findFolderInParent(yymmdd, yymmFolder);
-  if (!dayFolder) dayFolder = await driveCreateFolder(yymmdd, yymmFolder);
+  // Resolver ou criar pasta YYMMDD (ou "mensal" para edições mensais com yymmdd de 4 chars)
+  const dayFolderName = yymmdd.length === 4 ? "mensal" : yymmdd;
+  let dayFolder = await findFolderInParent(dayFolderName, yymmFolder);
+  if (!dayFolder) dayFolder = await driveCreateFolder(dayFolderName, yymmFolder);
 
   edCache.day_folder_id = dayFolder;
   return dayFolder;
@@ -729,7 +730,7 @@ async function main(): Promise<void> {
     mode,
     stage,
     edition: yymmdd,
-    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${yymmdd}`,
+    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${yymmdd.length === 4 ? "mensal" : yymmdd}`,
     uploaded: [],
     pulled: [],
     warnings: [],
