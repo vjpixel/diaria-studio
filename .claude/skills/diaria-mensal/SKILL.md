@@ -29,6 +29,18 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 Coleta tem dois sub-passos: (1a) baixar markdown bruto via Beehiiv MCP, (1b) parsear destaques.
 
+**Resume check Stage 1 (#400):** Antes de qualquer coisa, verificar o estado do disco:
+
+```bash
+RAW_POSTS=$(ls data/monthly/$1/raw-posts/*.txt 2>/dev/null | wc -l)
+RAW_DESTAQUES=$(test -f data/monthly/$1/raw-destaques.json && echo "yes" || echo "no")
+```
+
+- Se `RAW_POSTS > 0` **e** `RAW_DESTAQUES = yes` → ambos os sub-passos completos. Pular para Stage 2.
+- Se `RAW_POSTS > 0` **e** `RAW_DESTAQUES = no` → Stage 1a completo, 1b não rodou. Pular Stage 1a, executar Stage 1b.
+- Se `RAW_POSTS = 0` → Stage 1a não completou. Executar Stage 1a normalmente, independente de `raw-destaques.json` existir.
+  - ⚠️ **Não usar `raw-destaques.json` como indicador de Stage 1a completo** — pode ter sido gerado por run anterior via fallback de edições locais (antes de `collect-monthly-runner` existir), sem nunca ter consultado o Beehiiv.
+
 **1a. Baixar via Beehiiv MCP** — disparar o subagent `collect-monthly-runner` via `Agent`:
 
 - Input: `yymm = $1`
