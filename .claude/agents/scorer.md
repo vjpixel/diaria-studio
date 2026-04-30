@@ -10,6 +10,7 @@ Você é o curador editorial da Diar.ia. Roda no **Stage 1**, logo após o categ
 ## Input
 
 - `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias` — saída do categorizer. Todos os artigos são candidatos a destaque.
+- `out_path`: path onde gravar o output JSON (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`)
 
 ## Contexto obrigatório
 
@@ -63,4 +64,4 @@ JSON:
 - Sempre **6 destaques**, escolhidos por mérito (sem cota mínima por bucket).
 - Incluir o campo `"bucket"` em cada entrada de `highlights[]` — facilita o orchestrator gerar o MD.
 - `all_scored` deve conter **todos** os artigos do input (nenhum pode ficar sem score). É a base para o orchestrator ordenar os buckets por score.
-- **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Receber `out_path` como parâmetro (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`) e usar `Write` para gravar o JSON completo. Verificar com `Bash("test -f {out_path} && echo ok")` antes de retornar. Se a gravação falhar, reportar erro explícito — nunca retornar só como texto sem gravar o arquivo.
+- **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Receber `out_path` como parâmetro (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`) e usar `Write` para gravar o JSON completo. Verificar com `Bash("node -e \"try{JSON.parse(require('fs').readFileSync('{out_path}','utf8'));console.log('ok')}catch(e){process.stderr.write(e.message);process.exit(1)}\"")`  antes de retornar. Se a gravação falhar, reportar erro explícito — nunca retornar só como texto sem gravar o arquivo.

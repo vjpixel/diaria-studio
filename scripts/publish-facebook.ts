@@ -75,6 +75,9 @@ function savePublished(path: string, data: SocialPublished): void {
 }
 
 function extractPostText(socialMd: string, platform: string, destaque: string): string {
+  // Normalizar CRLF → LF (arquivo pode vir do Drive com Windows line endings)
+  socialMd = socialMd.replace(/\r\n/g, '\n');
+
   // First isolate the platform section (# Facebook or # LinkedIn)
   const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
   const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");

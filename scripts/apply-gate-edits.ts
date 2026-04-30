@@ -81,6 +81,12 @@ function parseArgs(argv: string[]): Record<string, string> {
  * section-name → URLs[] preservando ordem.
  */
 export function parseSections(md: string): Record<BucketName, string[]> {
+  // Normalizar formato de link Markdown que o Google Drive adiciona:
+  // [https://url](https://url) → https://url
+  md = md.replace(/\[https?:\/\/[^\]]+\]\((https?:\/\/[^)]+)\)/g, '$1');
+  // Colchetes escapados que o Drive adiciona: \[N\] → [N]
+  md = md.replace(/\\\[(\d+)\\\]/g, '[$1]');
+
   const result: Record<BucketName, string[]> = {
     destaques: [],
     lancamento: [],
