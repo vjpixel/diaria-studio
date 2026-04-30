@@ -46,6 +46,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
+   - **Nenhum travessão (—) no texto.** Substituir por dois-pontos (antes de definição ou exemplo), vírgula (aposto ou conector) ou ponto (remate). Exceção única: meia-risca (–) em intervalos numéricos ("1989–2002").
    - Sem repetir link das últimas 3 edições.
    - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
    - Trailing spaces em títulos/URLs: cada opção de título dos destaques e cada título+URL das seções secundárias termina com dois espaços (`  `).

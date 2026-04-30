@@ -63,6 +63,8 @@ const CONVERT_TO_DOC = new Set<string>([
   "02-reviewed.md",
   "03-social.md",
   "01-eai.md",
+  "prioritized.md",
+  "draft.md",
 ]);
 
 const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";

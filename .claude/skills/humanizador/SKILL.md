@@ -222,7 +222,29 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 
 ### 11. Anglicismos desnecessários
 
-**Palavras a vigiar:** insights, mindset, approach, deep dive, leverage (alavancar), game-changer, disruptivo, driver (com sentido de "motor"), stakeholder (em contextos onde "envolvido" cabe).
+**Palavras a vigiar (genéricas):** insights, mindset, approach, deep dive, leverage (alavancar), game-changer, disruptivo, driver (com sentido de "motor"), stakeholder (em contextos onde "envolvido" cabe), workflow (fluxo/processo), output (resultado/saída — quando genérico), input (entrada/dado — quando genérico), rollout (lançamento gradual), benchmark (referência/avaliação comparativa), prompt (instrução/comando — quando usado fora de contexto técnico de IA).
+
+**Palavras a vigiar (nicho de IA, produto e mercado de trabalho):**
+
+| Anglicismo | Substituto preferido |
+|---|---|
+| shelf life | prazo de validade |
+| runtime (fora de contexto técnico) | ambiente de execução / tempo de execução |
+| fine-tuning (fora de contexto técnico) | ajuste fino |
+| research preview | pré-lançamento / acesso antecipado |
+| token (unidade de texto, fora de contexto técnico) | unidade de texto |
+| pipeline (fora de contexto técnico de dados) | fluxo / processo |
+| crowdsourcing | colaboração distribuída |
+| upskilling | requalificação |
+| reskilling | reconversão profissional |
+| throughput (fora de contexto técnico) | capacidade / volume de processamento |
+| compute (substantivo) | capacidade computacional / infraestrutura |
+| deployment (fora de contexto técnico) | implantação / lançamento |
+| on-device | no dispositivo |
+| agentic (adjetivo) | agêntico / autônomo |
+| safety (substantivo isolado) | segurança na IA / proteção |
+
+**Regra geral:** quando o texto já é técnico e o público entende o termo em inglês (ex: "benchmark de programação", "fine-tuning de LLM" em contexto especializado), manter é aceitável. Substituir quando o contexto é genérico ou o texto claramente tem equivalente natural.
 
 **Problema:** A IA copia o jargão corporativo em inglês mesmo quando há equivalente natural em português.
 
@@ -336,9 +358,10 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 
 #### Quando o travessão é legítimo (não mexer)
 
-- **Diálogo.** A fala de personagem em narrativa pt-BR começa com travessão. Não é o caso típico do humanizador, mas se aparecer, deixar como está.
-- **Aposto longo, com vírgulas internas, ou com mudança brusca de assunto.** Quando o aposto já tem vírgulas, mais vírgulas confundem. Aí o par de travessões é a melhor solução.
+- **Diálogo.** A fala de personagem em narrativa pt-BR começa com travessão. Se aparecer, deixar como está.
 - **Meia-risca (–) em intervalos numéricos.** "1989–2002", "p. 5–10". Tecnicamente é meia-risca, não travessão, mas IA e teclado costumam confundir. Não trocar por travessão (—) nem por hífen (-); mantenha como meia-risca.
+
+Qualquer outro uso — incluindo conector ou remate — deve ser substituído. Aposto com vírgulas internas é exceção (ver passo 4).
 
 #### Padrões viciosos a corrigir
 
@@ -380,19 +403,17 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 
 #### Diretriz operacional
 
-**Default conservador:** na dúvida, sem travessão. Vírgula é a substituição padrão; o travessão precisa ser positivamente justificável por uma das três zonas legítimas listadas acima (diálogo, aposto longo com vírgulas internas, meia-risca em intervalo numérico). Tudo que não cai numa dessas três vai para vírgula, ponto ou dois-pontos.
-
-Ao encontrar um travessão (—), pergunte na ordem:
+**Default conservador:** na dúvida, sem travessão. Ao encontrar um travessão, aplique na ordem:
 
 1. É fala em diálogo? → não mexer.
 2. Está num intervalo numérico? → confirmar que é meia-risca (–), manter.
 3. Pode virar dois-pontos sem perder sentido? → trocar por `:`.
-4. Está em par envolvendo aposto curto, sem vírgulas internas? → trocar o par por vírgulas.
+4. Está em par (aposto)? → trocar o par por vírgulas, a não ser que o aposto já tenha vírgulas internas (geraria ambiguidade); nesse caso, manter.
 5. Vem no fim da frase como remate? → trocar por ponto.
-6. Substitui um *e*, *mas*, *porque* que ficaria mais claro explícito? → escrever o conector.
-7. É aposto longo com vírgulas internas? → manter. Senão → vírgula.
+6. Substitui um *e*, *mas*, *porque*? → escrever o conector.
+7. Qualquer outro caso → vírgula.
 
-**Meta quantitativa:** texto humanizado deve sair com no máximo **1 travessão a cada 3–4 parágrafos**. Não é regra rígida (não tem como o lint medir corretamente), é objetivo. Se passar disso, refaça a auditoria com olhar mais agressivo. Provavelmente um ou outro travessão dos "sobreviventes" cabia melhor como vírgula.
+**Meta quantitativa:** texto humanizado deve sair com no máximo **1 travessão a cada 5–6 parágrafos**. Se passar disso, refaça a auditoria com olhar mais agressivo — provavelmente algum sobrevivente cabia melhor como vírgula.
 
 
 ### 21. Negrito mecânico
