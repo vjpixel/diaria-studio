@@ -108,6 +108,32 @@ Disparar `writer-monthly` via `Agent`:
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
+### 2b. Humanizador
+
+Invocar skill humanizador in-place no `draft.md`:
+
+```
+Skill("humanizador", "Leia data/monthly/$1/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
+```
+
+Se falhar: warning, seguir com o arquivo original (não bloqueia).
+
+### 2c. Clarice
+
+1. Ler `data/monthly/$1/draft.md`.
+2. Chamar `mcp__clarice__correct_text` passando o texto completo.
+3. Salvar sugestões: `data/monthly/$1/_internal/02-clarice-suggestions.json`.
+4. Aplicar:
+```bash
+npx tsx scripts/clarice-apply.ts \
+  --text-file data/monthly/$1/draft.md \
+  --suggestions data/monthly/$1/_internal/02-clarice-suggestions.json \
+  --out data/monthly/$1/draft.md \
+  --report data/monthly/$1/_internal/02-clarice-report.json
+```
+
+Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
+
 ### Gate Etapa 2 (pulado com `--no-gate`)
 
 Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md` — **warning se falhar, nunca bloqueia** (drive-sync pode não suportar estrutura `data/monthly/` ainda).
