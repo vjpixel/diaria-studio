@@ -232,6 +232,90 @@ function looksLikeUrl(line: string): boolean {
   return /https?:\/\//.test(line);
 }
 
+/**
+ * Adiciona trailing spaces (`  `) para forçar quebra de linha no Drive/Google
+ * Docs (#382). Sem eles, linhas consecutivas colapsam em parágrafo único.
+ *
+ * Linhas afetadas:
+ * - Opções de título nos blocos DESTAQUE (antes da URL)
+ * - Linha de título de cada item nas seções secundárias
+ * - Linha de URL de cada item nas seções secundárias
+ *
+ * Não afetadas: URL do destaque, corpo/descrição, cabeçalhos, separadores `---`.
+ * Idempotente: aplica trimEnd() antes de adicionar `  `.
+ */
+export function addTrailingSpaces(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+
+  let ctx: "highlight" | "section" | null = null;
+  let highlightUrlSeen = false;
+  let sectionExpectTitle = false;
+  let sectionExpectUrl = false;
+
+  const isUrl = (s: string) => /^\s*\[?https?:\/\//.test(s);
+
+  for (const raw of lines) {
+    const t = raw.trimEnd();
+
+    // Reset em separadores
+    if (t === "---") {
+      ctx = null; highlightUrlSeen = false;
+      sectionExpectTitle = false; sectionExpectUrl = false;
+      out.push(t); continue;
+    }
+
+    // Header de destaque
+    if (isHighlightHeader(t)) {
+      ctx = "highlight"; highlightUrlSeen = false;
+      out.push(t); continue;
+    }
+
+    // Header de seção secundária
+    if (isSectionHeader(t)) {
+      ctx = "section"; sectionExpectTitle = true; sectionExpectUrl = false;
+      out.push(t); continue;
+    }
+
+    // Linha em branco — dentro de seção, próximo item começa
+    if (t === "") {
+      if (ctx === "section") { sectionExpectTitle = true; sectionExpectUrl = false; }
+      out.push(t); continue;
+    }
+
+    // Bloco DESTAQUE: títulos antes da URL recebem trailing spaces
+    if (ctx === "highlight" && !highlightUrlSeen) {
+      if (isUrl(t)) {
+        highlightUrlSeen = true;
+        out.push(t); // URL do destaque: sem trailing space
+      } else {
+        out.push(t + "  "); // opção de título
+      }
+      continue;
+    }
+
+    // Seção secundária: título + URL recebem trailing spaces
+    if (ctx === "section") {
+      if (sectionExpectTitle && !isUrl(t)) {
+        out.push(t + "  ");
+        sectionExpectTitle = false; sectionExpectUrl = true;
+        continue;
+      }
+      if (sectionExpectUrl && isUrl(t)) {
+        out.push(t + "  ");
+        sectionExpectUrl = false;
+        continue;
+      }
+      // Edge case: esperava URL mas veio outra coisa → reset expectativa
+      if (sectionExpectUrl) sectionExpectUrl = false;
+    }
+
+    out.push(t);
+  }
+
+  return out.join("\n");
+}
+
 export function normalizeNewsletter(text: string): {
   text: string;
   report: NormalizeReport;
@@ -295,7 +379,8 @@ export function normalizeNewsletter(text: string): {
     out.push(line);
   }
 
-  return { text: out.join("\n"), report };
+  const normalized = addTrailingSpaces(out.join("\n"));
+  return { text: normalized, report };
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
