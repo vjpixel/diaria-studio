@@ -266,7 +266,10 @@ function renderSection(
   }
   // Ordenar por score desc — exceto quando há artigos de merge do editor
   // (new_in_pool presente = merge aconteceu → preservar ordem original).
-  const hasMerge = articles.some((a) => "new_in_pool" in a);
+  // Só preserva ordem quando há artigos do editor (não-novos) misturados com novos.
+  // Se todos forem novos, reordenar por score ainda faz sentido.
+  const hasMerge = articles.some((a) => "new_in_pool" in a) &&
+                   articles.some((a) => !a.new_in_pool);
   const sorted = hasMerge
     ? [...articles]
     : [...articles].sort((a, b) => {
