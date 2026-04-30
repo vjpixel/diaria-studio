@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + 10 Outras Notícias. Uso — `/diaria-mensal YYMM [--no-gate]`. Phase 1 implementada (collect → analyst → gate → writer); Phase 2 (imagem D1 + publish Beehiiv) é follow-up. Veja issue #188.
+description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + 10 Outras Notícias. Uso — `/diaria-mensal YYMM [--no-gate]`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
 ---
 
 # /diaria-mensal
@@ -13,180 +13,169 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
   > "Você não passou o mês da edição mensal. Qual mês quer processar? mês atual ({YYMM_atual}) / mês anterior ({YYMM_anterior}) / outro (informe YYMM)"
 
-- `--no-gate` (opcional) = pular o gate humano sobre o `prioritized.md`. Auto-aprova a proposta do `analyst-monthly` e prossegue direto pro `writer-monthly`.
+- `--no-gate` (opcional) = pular todos os gates humanos. Auto-aprova cada etapa e prossegue direto ao final.
 
 ## Pré-requisitos
 
-- Beehiiv MCP funcional (conector nativo do Claude Code, mesmo usado por `refresh-dedup-runner` e `diaria-atualiza-audiencia`).
-- `platform.config.json → beehiiv.publicationId` populado (caso contrário, o agent `collect-monthly-runner` resolve via `list_publications` no primeiro passo).
+- Beehiiv MCP funcional (conector nativo do Claude Code).
+- `platform.config.json → beehiiv.publicationId` populado.
 - `context/audience-profile.md`, `context/editorial-rules.md`, `context/templates/newsletter-monthly.md` existem e não são placeholders.
 
-**Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv (source-of-truth do publicado), funcionando em qualquer máquina.
+**Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv, funcionando em qualquer máquina.
 
-## Phase 1 (implementada)
+## Resume check global
 
-### Stage 1 — Coleta
+Antes de iniciar, verificar o estado do disco (de baixo para cima):
 
-Coleta tem dois sub-passos: (1a) baixar markdown bruto via Beehiiv MCP, (1b) parsear destaques.
+- `01-eai.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
+- `draft.md` existe → Etapa 2 completa. Pular para Etapa 3.
+- `prioritized.md` existe → Etapa 1 completa. Pular para Etapa 2.
+- Caso contrário → começar pela Etapa 1.
 
-**Resume check Stage 1 (#400):** Antes de qualquer coisa, verificar o estado do disco:
+---
 
+## Etapa 1 — Coleta e Análise
+
+### 1a. Coleta via Beehiiv MCP
+
+**Resume check (#400):**
 ```bash
 RAW_POSTS=$(ls data/monthly/$1/raw-posts/*.txt 2>/dev/null | wc -l)
 RAW_DESTAQUES=$(test -f data/monthly/$1/raw-destaques.json && echo "yes" || echo "no")
 ```
+- `RAW_POSTS > 0` e `RAW_DESTAQUES = yes` → pular 1a e 1b.
+- `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
+- `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
-- Se `RAW_POSTS > 0` **e** `RAW_DESTAQUES = yes` → ambos os sub-passos completos. Pular para Stage 2.
-- Se `RAW_POSTS > 0` **e** `RAW_DESTAQUES = no` → Stage 1a completo, 1b não rodou. Pular Stage 1a, executar Stage 1b.
-- Se `RAW_POSTS = 0` → Stage 1a não completou. Executar Stage 1a normalmente, independente de `raw-destaques.json` existir.
-  - ⚠️ **Não usar `raw-destaques.json` como indicador de Stage 1a completo** — pode ter sido gerado por run anterior via fallback de edições locais (antes de `collect-monthly-runner` existir), sem nunca ter consultado o Beehiiv.
+**Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
+1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[$1]`.
+2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$1/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
 
-**1a. Baixar via Beehiiv MCP (inline — não via subagente) (#403):**
+Se `posts_found = 0`, abortar.
 
-Chamar as ferramentas Beehiiv MCP **diretamente** neste contexto (sem disparar Agent). Subagentes não têm acesso aos MCPs nativos do Claude Code — este é o contexto correto para chamá-los.
-
-1. Chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` com:
-   - `publication_id = beehiiv.publicationId` (de `platform.config.json`)
-   - `status = "confirmed"`
-   - `per_page = 50`
-   - Paginar e filtrar client-side pela janela do mês `[$1]`
-2. Para cada post dentro da janela:
-   - Derivar `AAMMDD` do `published_at` e `id_prefix` (8 chars, sem prefixo `post_`)
-   - Path: `data/monthly/$1/raw-posts/post_{id_prefix}_{AAMMDD}.txt`
-   - Se já existe: pular (resume-aware)
-   - Caso contrário: chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` e gravar o `markdown` (preferido) ou `html` (fallback)
-3. Criar diretório `data/monthly/$1/raw-posts/` antes de gravar (se não existir)
-4. Reportar: `posts_found`, `downloaded`, `skipped_existing`, `posts_with_html_fallback`, `warnings`
-
-Se `posts_found = 0`, abortar — o mês não tem edições publicadas no Beehiiv.
-
-**1b. Parsear destaques** — disparar `Bash`:
-
+**Parse:**
 ```bash
 npx tsx scripts/collect-monthly.ts $1
 ```
+Se `destaques_count < 3`, abortar.
 
-O script lê os raw-posts, extrai até 3 destaques por edição (h5 categoria + h1 link como discriminador), enriquece com flag 🇧🇷 (categoria BRASIL = sinal forte; reforço por host e keywords), e grava `data/monthly/{yymm}/raw-destaques.json`.
+### 1b. Análise temática
 
-Reportar ao usuário:
-- `editions_count` (quantas edições contribuíram)
-- `destaques_count` (esperado: editions_count × 3)
-- `is_brazil` count
-- Warnings (edições com parse incompleto, formato inesperado, etc.)
-
-Se `destaques_count < 3`, abortar com mensagem clara: o mês não tem destaques suficientes pra um digest mensal.
-
-### Stage 2 — Análise temática
-
-Disparar o subagente `analyst-monthly` via `Agent`, passando no prompt:
+Disparar `analyst-monthly` via `Agent`:
 - `raw_path = data/monthly/$1/raw-destaques.json`
 - `out_path = data/monthly/$1/prioritized.md`
 - `yymm = $1`
 
-O agente lê os destaques, agrupa por tema, garante Brasil como um dos 3, propõe títulos narrativos e gera `prioritized.md`.
+### Gate Etapa 1 (pulado com `--no-gate`)
 
-Reportar ao usuário:
-- 3 temas escolhidos com contagem de artigos de suporte
-- Outras Notícias (10 standalone)
-- Warnings (ex: `⚠️ Poucos destaques específicos do Brasil este mês`)
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
 
-### Stage 3 — Drive sync push (push do `prioritized.md`)
-
-Estrutura de Drive: `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMM}/` (pasta da edição mensal **dentro** da pasta do mês).
-
-Ler `platform.config.json` → `drive_sync` (default `true`). Se `true`, tentar push via `scripts/drive-sync.ts`. Se o script ainda não suportar a estrutura mensal, marcar como warning e seguir (Phase 2 follow-up).
-
-Falha de sync vira warning, **nunca bloqueia**.
-
-### Stage 4 — Gate humano (pulado com `--no-gate`)
-
-**Se `--no-gate`:** copiar `prioritized.md` direto pro próximo stage (sem pausa).
-
-**Caso contrário:** apresentar o `prioritized.md` ao usuário e pedir aprovação:
-
+Apresentar ao editor:
 ```
-Prioritized.md para o digest mensal {YYMM}:
-
-D1: {tema 1} ({N} artigos)
-D2: {tema 2} ({N} artigos)
-D3: {tema 3} ({N} artigos)
-Outras Notícias: {N} itens (top 10 standalones)
-
-{warnings se houver}
+D1: {tema} ({N} artigos)
+D2: {tema} ({N} artigos)
+D3: {tema} ({N} artigos)
+Outras Notícias: {N} itens
 
 Aprovar? sim / editar / retry
 ```
+- `editar` → editor edita `prioritized.md` local/Drive; re-rodar analista após confirmação.
+- `retry` → re-disparar `analyst-monthly`.
 
-- `sim` → prosseguir.
-- `editar` → o usuário edita `prioritized.md` direto no Drive ou local. Após edição, re-rodar a partir do Stage 5.
-- `retry` → re-disparar o `analyst-monthly` (útil se a proposta inicial ficou ruim).
+---
 
-### Stage 5 — Writing
+## Etapa 2 — Escrita
 
-Disparar o subagente `writer-monthly` via `Agent`, passando:
+Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$1/prioritized.md`
 - `raw_path = data/monthly/$1/raw-destaques.json`
 - `out_path = data/monthly/$1/draft.md`
 - `yymm = $1`
 
-O agente lê o prioritized aprovado, escreve a edição mensal completa em `draft.md` (com 3 opções de subject auto-geradas).
+O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
-Reportar ao usuário:
-- 3 opções de subject line
-- Preview line
-- Tamanho aproximado do draft (chars / palavras)
+### Gate Etapa 2 (pulado com `--no-gate`)
 
-### Stage 6 — Drive sync push (`draft.md`)
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md` — **warning se falhar, nunca bloqueia** (drive-sync pode não suportar estrutura `data/monthly/` ainda).
 
-Mesmo procedimento do Stage 3, agora com `draft.md`.
+Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
-### Stage 7 — Gate humano sobre o draft (pulado com `--no-gate`)
-
-**Se `--no-gate`:** prosseguir direto.
-
-**Caso contrário:** apresentar `draft.md` ao usuário pra revisão final. Aprovar / editar / retry.
-
-## Phase 2 (follow-up — issue #188, ainda não implementada)
-
-### Stage 8 — Imagem D1
-
-Quando implementado, gerará a imagem do D1 (Van Gogh impasto, mesmo prompt do diário) via `scripts/image-generate.ts` adaptado.
-
-Por ora, emitir aviso:
-
+Apresentar:
 ```
-⚠️ Imagem D1 não gerada automaticamente (Phase 2 follow-up — issue #188).
-Gere manualmente, ou aguarde implementação.
+📄 draft.md gerado.
+Opções de subject:
+  1. {opção 1}
+  2. {opção 2}
+  3. {opção 3}
+
+Aprovar? sim / editar / retry
 ```
 
-### Stage 9 — Publish Beehiiv
+---
 
-Quando implementado, adaptará `publish-newsletter` para `mode=monthly`:
-- `render-newsletter-html.ts` com template mensal.
-- `upload-images-public.ts --mode monthly` (só 1 imagem D1).
-- `publish-newsletter` cria rascunho na Beehiiv + email de teste.
+## Etapa 3 — Imagens
 
-Por ora, emitir aviso:
+**Resume check:** `04-d1-2x1.jpg` e `01-eai.md` existem → pular Etapa 3, ir para Etapa 4.
+
+Disparar **em paralelo** (mesma mensagem):
+
+**D1:**
+```bash
+npx tsx scripts/image-generate.ts \
+  --editorial data/monthly/$1/_internal/02-d1-prompt.md \
+  --out-dir data/monthly/$1/ \
+  --destaque d1
+```
+Se `_internal/02-d1-prompt.md` não existir, emitir aviso e pular (não bloquear).
+
+**É IA? mensal (novo):**
+```bash
+EAI_EDITION=$(node -e "
+  const y='$1', yr=2000+parseInt(y.slice(0,2)), mo=parseInt(y.slice(2,4));
+  const last=new Date(Date.UTC(yr,mo,0)).getUTCDate();
+  process.stdout.write(String(yr).slice(2)+String(mo).padStart(2,'0')+String(last).padStart(2,'0'));
+")
+npx tsx scripts/eai-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
+```
+Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
+
+### Gate Etapa 3 (pulado com `--no-gate`)
+
+Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eai-A.jpg,01-eai-B.jpg`.
+
+Apresentar:
+```
+📸 D1: data/monthly/$1/04-d1-2x1.jpg
+🤔 É IA? A: data/monthly/$1/01-eai-A.jpg
+🤔 É IA? B: data/monthly/$1/01-eai-B.jpg
+
+Aprovar? sim / regenerar-d1 / regenerar-eai
+```
+
+---
+
+## Etapa 4 — Publicação
 
 ```
-⚠️ Publicação automática Beehiiv não implementada (Phase 2 follow-up — issue #188).
+⚠️ Publicação automática Beehiiv não implementada (issue #188 — follow-up).
 Para publicar: copiar `data/monthly/{YYMM}/draft.md` manualmente para o
 editor Beehiiv como rascunho. Revisar e enviar.
 ```
 
+---
+
 ## Outputs
 
-Todos em `data/monthly/{YYMM}/` (ex: `data/monthly/2604/`):
+Todos em `data/monthly/{YYMM}/`:
 
-- `raw-destaques.json` — coleta bruta com metadata estruturada
-- `prioritized.md` — proposta do analista (revisada no gate)
-- `draft.md` — texto final pra publicação (Phase 1 ends here)
-- `04-d1.jpg` — imagem D1 (Phase 2)
-- `published.json` — metadata da publicação Beehiiv (Phase 2)
+- `raw-destaques.json` — coleta bruta (Etapa 1)
+- `prioritized.md` — destaques aprovados (Etapa 1)
+- `draft.md` — texto final (Etapa 2)
+- `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
+- `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
+- `01-eai.md` + `01-eai-A.jpg` + `01-eai-B.jpg` — É IA? novo (Etapa 3)
 
 ## Notas
 
-- **Apenas manual** — não há trigger automático/agendado por enquanto.
-- **Audiência diferente da diária** — quando publicar via Beehiiv (Phase 2), considerar segmento `mensal-only` ou similar pra evitar redundância com leitores que recebem o diário.
-- **Plataforma de envio é TBD** — por ora assume-se Beehiiv. Se mudar (ex: migração pra Kit), o `publish-newsletter` é trocado sem afetar o resto do fluxo.
-- Status detalhado e decisões editoriais: ver issue #188.
+- **Apenas manual** — sem agendamento automático.
+- **Publicação Beehiiv** é follow-up (#188) — não bloqueia o uso do digest.
