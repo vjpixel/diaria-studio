@@ -67,7 +67,7 @@ revisar manualmente no gate ou substituir o tema.
 
 ### 4. Para cada tema escolhido
 
-- **Título narrativo**: 1 frase de até 60 chars descrevendo o arco do tema. Ex: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes". Não copie título de artigo individual.
+- **3 opções de título narrativo**: gere 3 frases de até 60 chars cada, com ângulos editoriais distintos (ex: uma mais factual, uma mais dramática, uma com dado concreto). Não copie título de artigo individual. O editor escolhe uma no gate.
 - **Artigos de suporte**: lista de destaques pertencentes ao tema, ordenados **cronologicamente** (do mais antigo pro mais recente — facilita narrativa do `writer-monthly`). Inclua todos os destaques do grupo, não só os top.
 
 ### 5. Outras Notícias — top 10 standalones
@@ -100,20 +100,35 @@ Formato exato:
 
 ## Destaques
 
-D1: {Título narrativo do tema 1}
+D1:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - {AAMMDD} — {título do destaque} — {url}
 - {AAMMDD} — {título do destaque} — {url}
 ...
 
-D2: {Título narrativo do tema 2}
+D2:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - ...
 
-D3: {Título narrativo do tema 3}
+D3:
+- Opção 1: {Título narrativo — ângulo factual, ≤60 chars}
+- Opção 2: {Título narrativo — ângulo dramático, ≤60 chars}
+- Opção 3: {Título narrativo — com dado concreto, ≤60 chars}
+
 Tema: {tema}
+
 Artigos de suporte ({N}):
 - ...
 
