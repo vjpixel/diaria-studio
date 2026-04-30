@@ -23,16 +23,16 @@ DESTAQUE 1 | [TEMA]
 
 [Título narrativo do tema — máx. 60 chars]
 
-[Parágrafo 1 — abre o tema com o evento mais marcante do mês daquela área]
+[Parágrafo 1 — abre o tema com o evento mais marcante do mês, com URL inline após a frase que o referencia: "...detalhe relevante. (https://fonte.com/artigo)"]
 
-[Parágrafo 2 — desenvolve, conecta com outros artigos do tema]
+[Parágrafo 2 — desenvolve, conecta com outros artigos do tema; cada fato com URL inline da fonte correspondente]
 
-[Parágrafo 3 — atores, dados, números do mês]
+[Parágrafo 3 — atores, dados, números do mês; cada dado com URL inline]
 
 [Parágrafo 4 — fecha com a leitura editorial; se o limite de chars apertar, fundir P3+P4 em um parágrafo só]
 
 O fio condutor:
-[1 parágrafo — o que esse tema revelou sobre o mês de IA. Não é "Por que isso importa" do diário; é síntese do tema.]
+[1 parágrafo — o que esse tema revelou sobre o mês de IA. Não é "Por que isso importa" do diário; é síntese do tema. Sem URLs inline.]
 
 ---
 
@@ -51,12 +51,14 @@ DESTAQUE 3 | [TEMA]
 OUTRAS NOTÍCIAS DO MÊS
 
 [Título do destaque 1 https://url]
+
 [1-2 frases de descrição — por que importa.]
 
 [Título do destaque 2 https://url]
+
 [1-2 frases de descrição — por que importa.]
 
-[... 10 itens, mesmo formato da edição diária: título + URL na mesma linha, descrição abaixo]
+[... 10 itens: título + URL na mesma linha, linha em branco, descrição, linha em branco entre itens]
 
 ---
 
@@ -87,6 +89,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
+- **URLs inline nos destaques**: após cada frase ou cláusula que referencia um artigo de suporte, inserir a URL em parênteses: `...evento relevante. (https://fonte.com/artigo)`. O fio condutor não recebe URLs. Os limites de chars (D1: 1.500, D2/D3: 1.200) excluem as URLs inline da contagem.
 - **Sem bloco "Para aprofundar"**: não listar URLs ao final de cada destaque.
 - **Outras Notícias**: 10 destaques standalone que não couberam nos 3 temas. Formato: `Título URL` (mesma linha) + descrição de 1–2 frases abaixo. Igual à edição diária.
 - **É IA? recap**: preferir a edição com poll mais próximo de 50% de acerto (mais ambígua). Se poll não disponível (ver issue #419), escolher a mais visualmente difícil.
