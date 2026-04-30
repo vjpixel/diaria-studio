@@ -134,6 +134,12 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
      ```
   Se o script não existir ainda (`ENOENT`): pular silenciosamente e logar warn — funcionalidade opcional, não bloqueia pipeline.
 
+- **Sync É IA? usado (#369) — sempre roda, após merge-local-pending.** Sincroniza `data/eai-used.json` a partir dos `_internal/01-eai-meta.json` de edições locais, garantindo que imagens já publicadas não sejam reusadas mesmo que o pipeline tenha rodado em outra máquina:
+  ```bash
+  npx tsx scripts/sync-eai-used.ts --editions-dir data/editions/
+  ```
+  Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added > 0`, logar `info` com a contagem. Falha do script → logar `warn`, nunca bloqueia pipeline.
+
 - **Pre-flight de freshness do dedup (sempre roda, após refresh #230).** Rodar:
   ```bash
   npx tsx scripts/check-dedup-freshness.ts
