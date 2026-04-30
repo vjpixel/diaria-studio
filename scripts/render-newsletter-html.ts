@@ -382,7 +382,23 @@ function renderTitle(title: string, url: string): string {
 </td></tr>`;
 }
 
-function renderImage(placeholder: string, alt = "", caption = "Criada com Gemini"): string {
+function imageGeneratorCredit(): string {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    const gen = cfg.image_generator ?? "gemini";
+    const credits: Record<string, string> = {
+      gemini:     "Criada com Gemini",
+      openai:     "Criada com gpt-image-2",
+      cloudflare: "Criada com Cloudflare FLUX",
+      comfyui:    "Criada com ComfyUI",
+    };
+    return credits[gen] ?? "Criada com IA";
+  } catch {
+    return "Criada com IA";
+  }
+}
+
+function renderImage(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
   return `<tr><td align="center" valign="top" style="padding:2px;">
   <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
     <tr><td align="center" valign="top" style="width:578px;">
