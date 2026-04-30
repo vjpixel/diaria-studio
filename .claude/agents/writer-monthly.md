@@ -39,7 +39,21 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized:
+5. **Seções Clarice (placeholders fixos).** Após D1 e antes de D2, emitir:
+   ```
+   CLARICE — DIVULGAÇÃO
+
+   [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link.]
+   ```
+   Após D2 e antes de D3, emitir:
+   ```
+   CLARICE — TUTORIAL
+
+   [Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais.]
+   ```
+   O conteúdo é preenchido manualmente pelo editor antes da publicação. Não inventar texto para essas seções.
+
+6. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized:
    ```
    [Título da notícia](https://url)
 
@@ -47,11 +61,11 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    ```
    Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
 
-6. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
+7. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
-7. **É IA? e encerramento.** Verificar se `eai-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
+8. **É IA? e encerramento.** Verificar se `eai-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
-8. **Validar e gravar `out_path`.** Checklist pré-saída:
+9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
