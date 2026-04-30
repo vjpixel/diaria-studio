@@ -362,6 +362,8 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
 
   1. **Instrução de revisão** — não renderizar a lista no terminal. Apenas informar:
      ```
+     📊 {total_brutos} artigos garimpados → {kept_dedup} após dedup → {total_categorized} categorizados
+
      📄 Abra data/editions/{AAMMDD}/01-categorized.md para revisar.
      📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/01-categorized.md
 
@@ -371,6 +373,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
          Para reordenar, basta mover a linha dentro da seção Destaques.
          Se não mover nenhum artigo, os 3 primeiros candidatos do scorer serão usados.
      ```
+     (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = L+P+N+T do categorized.json)
 
   2. **Relatório de saúde das fontes:**
      - Um bullet `⚠️` por fonte com outcome não-ok *nesta execução* (ex: `⚠️ MIT Tech Review BR — timeout após 180s`).
