@@ -319,16 +319,15 @@ export function addTrailingSpaces(text: string): string {
 
 /**
  * Remove travessões (—) restantes após humanizador, substituindo por vírgula.
- * Rede de segurança para o zero-tolerance do #363 — o humanizador deve ter
- * feito a substituição contextual; aqui só apanhamos o que escapou.
- * Preserva meia-risca (–) em intervalos numéricos.
+ * Rede de segurança pós-humanizador — apanha os que escaparam da revisão contextual.
+ * Preserva meia-risca (–) em intervalos numéricos (U+2013 ≠ U+2014).
  */
 function removeEmdashes(text: string): { text: string; count: number } {
   let count = 0;
   // " — " (espaço + travessão + espaço) → ", "
   const result = text.replace(/ — /g, () => { count++; return ", "; });
-  // Travessão sem espaço (raro, mas possível) → vírgula simples
-  const result2 = result.replace(/—/g, () => { count++; return ","; });
+  // Travessão sem espaços adjacentes (raro) → ", " para manter legibilidade
+  const result2 = result.replace(/—/g, () => { count++; return ", "; });
   return { text: result2, count };
 }
 

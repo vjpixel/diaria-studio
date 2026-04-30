@@ -361,7 +361,7 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 - **Diálogo.** A fala de personagem em narrativa pt-BR começa com travessão. Se aparecer, deixar como está.
 - **Meia-risca (–) em intervalos numéricos.** "1989–2002", "p. 5–10". Tecnicamente é meia-risca, não travessão, mas IA e teclado costumam confundir. Não trocar por travessão (—) nem por hífen (-); mantenha como meia-risca.
 
-Qualquer outro uso — incluindo aposto longo, conector ou remate — deve ser substituído.
+Qualquer outro uso — incluindo conector ou remate — deve ser substituído. Aposto com vírgulas internas é exceção (ver passo 4).
 
 #### Padrões viciosos a corrigir
 
