@@ -241,9 +241,8 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 | compute (substantivo) | capacidade computacional / infraestrutura |
 | deployment (fora de contexto técnico) | implantação / lançamento |
 | on-device | no dispositivo |
-| open-weight / open weights | pesos abertos |
 | agentic (adjetivo) | agêntico / autônomo |
-| safety (substantivo isolado) | segurança / proteção |
+| safety (substantivo isolado) | segurança na IA / proteção |
 
 **Regra geral:** quando o texto já é técnico e o público entende o termo em inglês (ex: "benchmark de programação", "fine-tuning de LLM" em contexto especializado), manter é aceitável. Substituir quando o contexto é genérico ou o texto claramente tem equivalente natural.
 
@@ -359,9 +358,10 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 
 #### Quando o travessão é legítimo (não mexer)
 
+- **Diálogo.** A fala de personagem em narrativa pt-BR começa com travessão. Se aparecer, deixar como está.
 - **Meia-risca (–) em intervalos numéricos.** "1989–2002", "p. 5–10". Tecnicamente é meia-risca, não travessão, mas IA e teclado costumam confundir. Não trocar por travessão (—) nem por hífen (-); mantenha como meia-risca.
 
-Qualquer outro uso — incluindo aposto longo, conector, remate ou diálogo — deve ser substituído. A newsletter não usa travessão.
+Qualquer outro uso — incluindo aposto longo, conector ou remate — deve ser substituído.
 
 #### Padrões viciosos a corrigir
 
@@ -403,16 +403,17 @@ Qualquer outro uso — incluindo aposto longo, conector, remate ou diálogo — 
 
 #### Diretriz operacional
 
-**Zero tolerance:** nenhum travessão (—) no output. A newsletter não usa esse sinal tipográfico. Ao encontrar um travessão, aplique na ordem:
+**Default conservador:** na dúvida, sem travessão. Ao encontrar um travessão, aplique na ordem:
 
-1. Está num intervalo numérico? → confirmar que é meia-risca (–), manter.
-2. Pode virar dois-pontos sem perder sentido? → trocar por `:`.
-3. Está em par (aposto)? → trocar o par por vírgulas.
-4. Vem no fim da frase como remate? → trocar por ponto.
-5. Substitui um *e*, *mas*, *porque*? → escrever o conector.
-6. Qualquer outro caso → vírgula.
+1. É fala em diálogo? → não mexer.
+2. Está num intervalo numérico? → confirmar que é meia-risca (–), manter.
+3. Pode virar dois-pontos sem perder sentido? → trocar por `:`.
+4. Está em par (aposto)? → trocar o par por vírgulas, a não ser que o aposto já tenha vírgulas internas (geraria ambiguidade); nesse caso, manter.
+5. Vem no fim da frase como remate? → trocar por ponto.
+6. Substitui um *e*, *mas*, *porque*? → escrever o conector.
+7. Qualquer outro caso → vírgula.
 
-O `normalize-newsletter.ts` faz uma varredura final e substitui travessões restantes por vírgula como rede de segurança.
+**Meta quantitativa:** texto humanizado deve sair com no máximo **1 travessão a cada 5–6 parágrafos**. Se passar disso, refaça a auditoria com olhar mais agressivo — provavelmente algum sobrevivente cabia melhor como vírgula.
 
 
 ### 21. Negrito mecânico
