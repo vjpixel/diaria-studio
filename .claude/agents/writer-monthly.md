@@ -53,8 +53,6 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
    Gravar `out_path`. Responder ao orchestrator com:
 
-Gravar `out_path`. Responder ao orchestrator com:
-
 ```json
 {
   "out_path": "data/monthly/2604/draft.md",
