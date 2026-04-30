@@ -4,6 +4,7 @@ import {
   splitConcatenatedHighlightHeader,
   splitConcatenatedSectionItem,
   normalizeNewsletter,
+  addTrailingSpaces,
 } from "../scripts/normalize-newsletter.ts";
 
 describe("splitConcatenatedHighlightHeader", () => {
@@ -142,8 +143,8 @@ describe("normalizeNewsletter — integração", () => {
     assert.ok(lines[2].length > 5); // título 2
     assert.ok(lines[3].length > 5); // título 3
 
-    // Itens de seção quebrados
-    assert.ok(r.text.includes("https://openai.com/x\n"));
+    // Itens de seção quebrados (URLs têm trailing spaces após addTrailingSpaces)
+    assert.ok(r.text.includes("https://openai.com/x"));
     assert.ok(r.text.includes("https://hf.co/deepseek"));
   });
 
@@ -166,7 +167,22 @@ describe("normalizeNewsletter — integração", () => {
     const r = normalizeNewsletter(input);
     assert.equal(r.report.highlight_headers_split, 0);
     assert.equal(r.report.section_items_split, 0);
-    assert.equal(r.text, input);
+    // addTrailingSpaces adiciona "  " em título de destaque e título+URL de seção
+    const expectedWithSpaces = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título único  ",
+      "https://example.com/x",
+      "",
+      "Corpo do destaque.",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "Item título  ",
+      "https://example.com/item  ",
+      "Item descrição.",
+    ].join("\n");
+    assert.equal(r.text, expectedWithSpaces);
   });
 
   it("URL no meio do parágrafo de destaque NÃO é tocada", () => {
@@ -183,5 +199,78 @@ describe("normalizeNewsletter — integração", () => {
     // Não estamos em seção, então não tenta split
     assert.equal(r.report.section_items_split, 0);
     assert.ok(r.text.includes("link inline https://example.com/x no meio."));
+  });
+});
+
+describe("addTrailingSpaces (#382)", () => {
+  it("adiciona trailing spaces nos títulos do destaque (antes da URL)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Opção de título A",
+      "Opção de título B",
+      "Opção de título C",
+      "https://example.com/artigo",
+      "",
+      "Corpo do artigo aqui.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[1].endsWith("  "), "título A deve ter trailing spaces");
+    assert.ok(lines[2].endsWith("  "), "título B deve ter trailing spaces");
+    assert.ok(lines[3].endsWith("  "), "título C deve ter trailing spaces");
+    assert.ok(!lines[4].endsWith("  "), "URL do destaque não deve ter trailing spaces");
+    assert.ok(!lines[6].endsWith("  "), "corpo não deve ter trailing spaces");
+  });
+
+  it("adiciona trailing spaces em título e URL das seções secundárias", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "",
+      "Título do lançamento",
+      "https://example.com/lancamento",
+      "Descrição do lançamento aqui.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[2].endsWith("  "), "título de item deve ter trailing spaces");
+    assert.ok(lines[3].endsWith("  "), "URL de item deve ter trailing spaces");
+    assert.ok(!lines[4].endsWith("  "), "descrição não deve ter trailing spaces");
+  });
+
+  it("é idempotente — segunda execução não duplica espaços", () => {
+    const md = "LANÇAMENTOS\n\nTítulo\nhttps://x.com\nDescrição.";
+    const once = addTrailingSpaces(md);
+    const twice = addTrailingSpaces(once);
+    assert.equal(once, twice);
+  });
+
+  it("não adiciona trailing spaces em separadores e cabeçalhos", () => {
+    const md = ["---", "LANÇAMENTOS", "PESQUISAS"].join("\n");
+    const result = addTrailingSpaces(md);
+    for (const line of result.split("\n")) {
+      assert.ok(!line.endsWith("  "), `linha "${line}" não deveria ter trailing spaces`);
+    }
+  });
+
+  it("múltiplos itens em seção — cada título e URL recebem trailing spaces", () => {
+    const md = [
+      "PESQUISAS",
+      "",
+      "Artigo 1",
+      "https://a.com",
+      "Descrição A.",
+      "",
+      "Artigo 2",
+      "https://b.com",
+      "Descrição B.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[2].endsWith("  "), "título 1");
+    assert.ok(lines[3].endsWith("  "), "url 1");
+    assert.ok(!lines[4].endsWith("  "), "descrição 1");
+    assert.ok(lines[6].endsWith("  "), "título 2");
+    assert.ok(lines[7].endsWith("  "), "url 2");
+    assert.ok(!lines[8].endsWith("  "), "descrição 2");
   });
 });
