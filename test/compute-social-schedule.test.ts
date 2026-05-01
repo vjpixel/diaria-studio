@@ -12,18 +12,10 @@ const baseConfig = {
     social: {
       timezone: "America/Sao_Paulo",
       fallback_schedule: {
-        linkedin: {
-          d1_time: "09:00",
-          d2_time: "12:30",
-          d3_time: "16:00",
-          day_offset: 0,
-        },
-        facebook: {
-          d1_time: "10:00",
-          d2_time: "13:30",
-          d3_time: "17:00",
-          day_offset: 0,
-        },
+        d1_time: "09:00",
+        d2_time: "12:30",
+        d3_time: "17:00",
+        day_offset: 0,
       },
     },
   },
@@ -89,29 +81,29 @@ describe("computeScheduledAt (#270)", () => {
     assert.match(iso, /^2026-04-28T12:30:00-03:00$/);
   });
 
-  it("LinkedIn d3: 16:00 BRT", () => {
+  it("LinkedIn d3: 17:00 BRT (horário unificado)", () => {
     const iso = computeScheduledAt({
       config: baseConfig,
       editionDate: "260428",
       destaque: "d3",
       platform: "linkedin",
     });
-    assert.match(iso, /^2026-04-28T16:00:00-03:00$/);
+    assert.match(iso, /^2026-04-28T17:00:00-03:00$/);
   });
 
-  it("Facebook d1: 10:00 BRT (config separado)", () => {
+  it("Facebook d1: 09:00 BRT (config unificado com LinkedIn)", () => {
     const iso = computeScheduledAt({
       config: baseConfig,
       editionDate: "260428",
       destaque: "d1",
       platform: "facebook",
     });
-    assert.match(iso, /^2026-04-28T10:00:00-03:00$/);
+    assert.match(iso, /^2026-04-28T09:00:00-03:00$/);
   });
 
   it("day_offset positivo soma dias na editionDate", () => {
     const cfg = JSON.parse(JSON.stringify(baseConfig));
-    cfg.publishing.social.fallback_schedule.linkedin.day_offset = 1;
+    cfg.publishing.social.fallback_schedule.day_offset = 1;
     const iso = computeScheduledAt({
       config: cfg,
       editionDate: "260428",
@@ -167,9 +159,9 @@ describe("computeScheduledAt (#270)", () => {
     );
   });
 
-  it("rejeita platform sem fallback_schedule", () => {
+  it("rejeita fallback_schedule ausente", () => {
     const cfg = JSON.parse(JSON.stringify(baseConfig));
-    delete cfg.publishing.social.fallback_schedule.linkedin;
+    delete cfg.publishing.social.fallback_schedule;
     assert.throws(
       () =>
         computeScheduledAt({
@@ -178,13 +170,13 @@ describe("computeScheduledAt (#270)", () => {
           destaque: "d1",
           platform: "linkedin",
         }),
-      /fallback_schedule\.linkedin/,
+      /fallback_schedule/,
     );
   });
 
   it("rejeita time inválido", () => {
     const cfg = JSON.parse(JSON.stringify(baseConfig));
-    cfg.publishing.social.fallback_schedule.linkedin.d1_time = "9h";
+    cfg.publishing.social.fallback_schedule.d1_time = "9h";
     assert.throws(
       () =>
         computeScheduledAt({
@@ -236,6 +228,22 @@ describe("computeScheduledAt (#270)", () => {
       platform: "linkedin",
     });
     assert.match(iso, /^2026-04-28T09:00:00\+05:30$/);
+  });
+
+  it("LinkedIn e Facebook recebem mesmo horário d1 (config unificado)", () => {
+    const liIso = computeScheduledAt({
+      config: baseConfig,
+      editionDate: "260428",
+      destaque: "d1",
+      platform: "linkedin",
+    });
+    const fbIso = computeScheduledAt({
+      config: baseConfig,
+      editionDate: "260428",
+      destaque: "d1",
+      platform: "facebook",
+    });
+    assert.equal(liIso, fbIso);
   });
 });
 

@@ -35,10 +35,7 @@ interface ScheduleConfig {
 }
 
 interface SocialConfig {
-  fallback_schedule?: {
-    linkedin?: ScheduleConfig;
-    facebook?: ScheduleConfig;
-  };
+  fallback_schedule?: ScheduleConfig;
   timezone?: string;
   [k: string]: unknown;
 }
@@ -118,10 +115,10 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
 
   const social = config.publishing?.social;
   if (!social) throw new Error("config.publishing.social ausente.");
-  const sched = social.fallback_schedule?.[platform];
+  const sched = social.fallback_schedule;
   if (!sched) {
     throw new Error(
-      `config.publishing.social.fallback_schedule.${platform} ausente.`,
+      `config.publishing.social.fallback_schedule ausente.`,
     );
   }
   const tz = social.timezone;

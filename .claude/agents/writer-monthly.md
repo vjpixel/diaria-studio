@@ -1,6 +1,6 @@
 ---
 name: writer-monthly
-description: Stage 2 da pipeline mensal — recebe `prioritized.md` aprovado pelo editor + `raw-destaques.json`, escreve a edição mensal completa em `data/monthly/{YYMM}/draft.md` seguindo `context/templates/newsletter-monthly.md`. Cada destaque é narrativa multi-artigo cobrindo um tema do mês. Gera 3 opções de subject line auto-derivadas.
+description: Stage 2 da pipeline mensal — recebe `prioritized.md` aprovado pelo editor + `_internal/raw-destaques.json`, escreve a edição mensal completa em `data/monthly/{YYMM}/draft.md` seguindo `context/templates/newsletter-monthly.md`. Cada destaque é narrativa multi-artigo cobrindo um tema do mês. Gera 3 opções de subject line auto-derivadas.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
@@ -10,7 +10,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 ## Input
 
 - `prioritized_path`: ex: `data/monthly/2604/prioritized.md` — aprovado pelo editor no gate. Contém os 3 destaques temáticos com artigos de suporte + 10 Outras Notícias.
-- `raw_path`: ex: `data/monthly/2604/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
+- `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
 

@@ -25,18 +25,17 @@ Setup completo (tokens, MCPs, extensões) está documentado em [`CLAUDE.md`](./C
 
 ## Produzir uma edição
 
-Slash commands disponíveis (pipeline completa ou stages isolados):
+Slash commands disponíveis (pipeline completa ou etapas isoladas):
 
 | Skill | O que faz |
 |---|---|
-| `/diaria-edicao AAMMDD` | Pipeline completa (stages 1–6). Retoma do ponto que parou se interrompido. |
-| `/diaria-1-pesquisa AAMMDD` | Stage 1 apenas (pesquisa + dedup + categorize + score). |
-| `/diaria-2-escrever AAMMDD` | Stage 2 (writer + Clarice). |
-| `/diaria-3-social AAMMDD` | Stage 3 (posts LinkedIn/Facebook). |
-| `/diaria-4-eai AAMMDD` | Stage 4 (É IA? — Wikimedia POTD + Gemini). |
-| `/diaria-5-imagens [d1\|d2\|d3]` | Stage 5 (3 imagens de destaque via Gemini). |
-| `/diaria-6-publicar [all\|newsletter\|social] AAMMDD` | Stages 5+6 (Beehiiv rascunho + social). |
-| `/diaria-test` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
+| `/diaria-edicao AAMMDD [--no-gates]` | Pipeline completa (4 etapas). Retoma do ponto que parou se interrompido. |
+| `/diaria-1-pesquisa AAMMDD` | Etapa 1 (pesquisa + dedup + categorize + score). |
+| `/diaria-2-escrita AAMMDD [newsletter\|social]` | Etapa 2 (newsletter + posts sociais em paralelo). |
+| `/diaria-3-imagens AAMMDD [eai\|d1\|d2\|d3]` | Etapa 3 (É IA? + 3 imagens de destaque). |
+| `/diaria-4-publicar [all\|newsletter\|social] AAMMDD` | Etapa 4 (Beehiiv rascunho + LinkedIn + Facebook). |
+| `/diaria-mensal YYMM [--no-gate]` | Digest mensal (coleta → análise → escrita → imagens). |
+| `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
 | `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |
 | `/diaria-refresh-dedup` | Regenera `context/past-editions.md` (usado pra evitar links repetidos). |
 | `/diaria-inbox` | Drena submissões editoriais de `diariaeditor@gmail.com`. |
@@ -45,25 +44,24 @@ Slash commands disponíveis (pipeline completa ou stages isolados):
 
 ## Arquitetura
 
-Pipeline em 7 stages, cada um com gate humano:
+Pipeline em 4 etapas, cada uma com gate humano:
 
 ```
-Stage 1  Research   →  source-researcher ×N || discovery-searcher ×M
-                       dedup / categorize / topic-cluster / score
-                       → 01-categorized.md [gate]
+Etapa 1  Pesquisa  →  source-researcher ×N || discovery-searcher ×M || eai-composer
+                      verify / dedup / categorize / score
+                      → 01-categorized.md [gate]
 
-Stage 1b É IA?      →  Wikimedia POTD + Gemini → 01-eai-real.jpg + 01-eai-ia.jpg
+Etapa 2  Escrita   →  writer (newsletter) || social-linkedin || social-facebook
+                      → merge → humanizador × 2 → Clarice × 2
+                      → 02-reviewed.md + 03-social.md [gate]
 
-Stage 2  Writing    →  writer (Sonnet) + Clarice → 02-reviewed.md [gate]
+Etapa 3  Imagens   →  É IA? (Wikimedia POTD) + image-generate ×3 (Gemini/ComfyUI)
+                      → 01-eai.md + 04-d{1,2,3}.jpg [gate]
 
-Stage 3  Social     →  social-linkedin + social-facebook (paralelo)
-                       + Clarice → 03-social.md [gate]
-
-Stage 4  Imagens    →  Gemini API, Van Gogh impasto, 2:1 → 04-d{1,2,3}.jpg [gate]
-
-Stage 5  Publish NL →  Beehiiv rascunho + email teste (loop verify→fix) [gate]
-
-Stage 6  Publish SN →  Facebook Graph API × 3 || LinkedIn Claude-in-Chrome × 3
+Etapa 4  Publicação→  publish-newsletter (Chrome → Beehiiv rascunho + email teste)
+                      || publish-facebook (Graph API ×3)
+                      || publish-social (Chrome → LinkedIn ×3)
+                      → review-test-email (loop) → auto-reporter [gate]
 ```
 
 Outputs em `data/editions/{AAMMDD}/`. Detalhes em [`CLAUDE.md`](./CLAUDE.md).
@@ -121,13 +119,7 @@ CLAUDE.md                    # instruções do projeto (lidas pelo Claude)
 
 ## Status
 
-| Fase | Estado | Cobertura |
-|---|---|---|
-| **Fase 1** — textos | ✅ Completa | Stages 1–3 |
-| **Fase 2** — imagens | ✅ Completa | Stages 4–5 (Gemini default, ComfyUI fallback) |
-| **Fase 3** — publicação | ✅ Completa | Stages 5–6 (Beehiiv + LinkedIn + Facebook) |
-
-Pipeline fim-a-fim funcional. Editor revisa cada gate e dispara publicação final manualmente.
+Pipeline fim-a-fim funcional (4 etapas). Editor revisa cada gate e dispara publicação final manualmente do dashboard de cada plataforma. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
 
 Roadmap ativo acompanhado via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
 

@@ -432,7 +432,7 @@ export function splitFilePath(filename: string): { subpath: string; basename: st
   return { subpath: norm.slice(0, idx), basename: norm.slice(idx + 1) };
 }
 
-async function resolveSubfolder(
+export async function resolveSubfolder(
   cache: DriveCache,
   yymmdd: string,
   dayFolderId: string,

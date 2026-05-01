@@ -1,5 +1,7 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
+import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   extractUrls,
   URL_REGEX,
@@ -12,8 +14,35 @@ import {
   stripLabelFromQuery,
   decideEmptyDrainAction,
   EMPTY_DRAIN_WARN_THRESHOLD,
+  main as drainMain,
   type AltQueryResult,
 } from "../scripts/inbox-drain.ts";
+
+const ROOT = resolve(import.meta.dirname, "..");
+const CONFIG_PATH = resolve(ROOT, "platform.config.json");
+const CURSOR_PATH = resolve(ROOT, "data", "inbox-cursor.json");
+const INBOX_PATH = resolve(ROOT, "data", "inbox.md");
+const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
+
+const FAKE_CREDS = {
+  client_id: "fake",
+  client_secret: "fake",
+  access_token: "fake-token",
+  refresh_token: "fake-refresh",
+  expiry_ms: Date.now() + 3_600_000,
+};
+
+function makeGmailResponse(body: unknown, status = 200): Response {
+  const json = JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => json,
+    json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    headers: { get: () => null },
+  } as unknown as Response;
+}
 
 describe("extractUrls() — extração via URL_REGEX + strip de pontuação", () => {
   it("extrai URL limpa de texto corrido", () => {
@@ -316,5 +345,149 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
     if (r.kind === "warn") {
       assert.match(r.reason, /CustomLabel/);
     }
+  });
+});
+
+describe("inbox-drain main() integration (#306)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let savedConfig: string | null = null;
+  let savedCursor: string | null = null;
+  let savedCreds: string | null = null;
+  let savedInbox: string | null = null;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    // Save state
+    savedConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
+    savedCursor = existsSync(CURSOR_PATH) ? readFileSync(CURSOR_PATH, "utf8") : null;
+    savedCreds = existsSync(CREDS_PATH) ? readFileSync(CREDS_PATH, "utf8") : null;
+    savedInbox = existsSync(INBOX_PATH) ? readFileSync(INBOX_PATH, "utf8") : null;
+
+    // Write fake creds so getAccessToken() doesn't call fetch
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    // Restore state
+    if (savedConfig !== null) writeFileSync(CONFIG_PATH, savedConfig, "utf8");
+    if (savedCursor !== null) writeFileSync(CURSOR_PATH, savedCursor, "utf8");
+    else if (existsSync(CURSOR_PATH)) unlinkSync(CURSOR_PATH);
+    if (savedCreds !== null) writeFileSync(CREDS_PATH, savedCreds, "utf8");
+    else if (existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
+    if (savedInbox !== null) writeFileSync(INBOX_PATH, savedInbox, "utf8");
+    else if (existsSync(INBOX_PATH)) unlinkSync(INBOX_PATH);
+  });
+
+  it("drain com threads = [] → silent_reset path → cursor não avança", async () => {
+    // Set up cursor at THRESHOLD so silent_reset fires on empty drain
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    }), "utf8");
+
+    let fetchCalls: string[] = [];
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      fetchCalls.push(u);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        // primary query (with label) → empty
+        if (u.includes("label")) {
+          return makeGmailResponse({ threads: [] });
+        }
+        // alt query (without label) → empty too → silent_reset
+        return makeGmailResponse({ threads: [] });
+      }
+      return makeGmailResponse({});
+    };
+
+    const capturedOutput: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: any) => {
+      if (typeof chunk === "string") capturedOutput.push(chunk);
+      return true;
+    };
+    try {
+      await drainMain();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = JSON.parse(capturedOutput.join(""));
+    assert.equal(output.new_entries, 0);
+    assert.equal(output.skipped, false);
+
+    // After silent_reset cursor should reset consecutive_empty_drains to 0
+    const cursor = JSON.parse(readFileSync(CURSOR_PATH, "utf8"));
+    assert.equal(cursor.consecutive_empty_drains, 0);
+  });
+
+  it("drain com 1 thread com URL → URL extraída em data/inbox.md", async () => {
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-01-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    // Encode "Veja https://openai.com/blog/gpt-5" in base64url
+    const bodyText = "Veja https://openai.com/blog/gpt-5";
+    const b64 = Buffer.from(bodyText).toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads?")) {
+        return makeGmailResponse({
+          threads: [{ id: "thread1", snippet: "Veja link" }],
+        });
+      }
+      if (u.includes("/threads/thread1")) {
+        return makeGmailResponse({
+          id: "thread1",
+          messages: [{
+            id: "msg1",
+            internalDate: String(new Date("2026-04-15T10:00:00Z").getTime()),
+            payload: {
+              mimeType: "text/plain",
+              body: { data: b64 },
+              headers: [
+                { name: "From", value: "sender@example.com" },
+                { name: "Subject", value: "Test Subject" },
+              ],
+            },
+          }],
+        });
+      }
+      return makeGmailResponse({});
+    };
+
+    const capturedOutput: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: any) => {
+      if (typeof chunk === "string") capturedOutput.push(chunk);
+      return true;
+    };
+    try {
+      await drainMain();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = JSON.parse(capturedOutput.join(""));
+    assert.equal(output.new_entries, 1);
+    assert.ok(output.urls.some((u: { url: string }) => u.url === "https://openai.com/blog/gpt-5"));
+
+    // inbox.md deve conter a URL extraída
+    assert.ok(existsSync(INBOX_PATH));
+    const inboxContent = readFileSync(INBOX_PATH, "utf8");
+    assert.ok(inboxContent.includes("https://openai.com/blog/gpt-5"));
   });
 });

@@ -41,11 +41,11 @@ Antes de iniciar, verificar o estado do disco (de baixo para cima):
 **Resume check (#400):**
 ```bash
 RAW_POSTS=$(ls data/monthly/$1/raw-posts/*.txt 2>/dev/null | wc -l)
-RAW_DESTAQUES=$(test -f data/monthly/$1/raw-destaques.json && echo "yes" || echo "no")
+RAW_DESTAQUES=$(test -f data/monthly/$1/_internal/raw-destaques.json && echo "yes" || echo "no")
 ```
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = yes` → pular 1a e 1b.
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
-- `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
+- `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
 **Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
 1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[$1]`.
@@ -61,22 +61,22 @@ Se `destaques_count < 3`, abortar.
 
 ### 1b. Scoring mensal
 
-**Resume check:** verificar se todos os destaques em `raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
+**Resume check:** verificar se todos os destaques em `_internal/raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
 
 ```bash
-node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
+node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/_internal/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
 ```
 
 Se `missing > 0`, disparar `scorer-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/raw-destaques.json`
-- `out_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
+- `out_path = data/monthly/$1/_internal/raw-destaques.json`
 
 O scorer sobrescreve o arquivo adicionando `score` a cada destaque.
 
 ### 1c. Análise temática
 
 Disparar `analyst-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
 - `out_path = data/monthly/$1/prioritized.md`
 - `yymm = $1`
 
@@ -102,7 +102,7 @@ Aprovar? sim / editar / retry
 
 Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$1/prioritized.md`
-- `raw_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
 - `out_path = data/monthly/$1/draft.md`
 - `yymm = $1`
 
@@ -229,7 +229,7 @@ editor Beehiiv como rascunho. Revisar e enviar.
 
 Todos em `data/monthly/{YYMM}/`:
 
-- `raw-destaques.json` — coleta bruta (Etapa 1)
+- `_internal/raw-destaques.json` — coleta bruta (Etapa 1)
 - `prioritized.md` — destaques aprovados (Etapa 1)
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
