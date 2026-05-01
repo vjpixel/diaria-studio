@@ -102,6 +102,22 @@ const LANCAMENTO_DOMAINS = new Set([
   "together.ai",
   // xAI (Grok)
   "x.ai",
+  // Poolside (#355)
+  "poolside.ai",
+  // 01.ai / Yi (#355)
+  "01.ai",
+  // Aleph Alpha (#355)
+  "aleph-alpha.com",
+  // Reka AI (#355)
+  "reka.ai",
+  // Arcee AI (#355)
+  "arcee.ai",
+  // Liquid AI (#355)
+  "liquid.ai",
+  // Nomic AI (#355)
+  "nomic.ai",
+  // Imbue (#355)
+  "imbue.com",
 ]);
 
 /**

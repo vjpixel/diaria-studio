@@ -50,7 +50,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Sem repetir link das últimas 3 edições.
    - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
    - Trailing spaces em títulos/URLs: cada opção de título dos destaques e cada título+URL das seções secundárias termina com dois espaços (`  `).
-6. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque:
+6. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque. **Regra obrigatória (#373):** todo prompt deve terminar com `Sem texto, letras, palavras, letreiros, placas ou legendas visíveis na imagem.` Evitar elementos que implicitamente contenham texto (cartazes, painéis digitais com conteúdo, telas com texto legível, placas com inscrição) — substituir por equivalentes abstratos (painel luminoso, cartazes coloridos sem texto, tela iluminada com cursor).
    - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)
    - `_internal/02-d2-prompt.md` — destaque 2
    - `_internal/02-d3-prompt.md` — destaque 3
