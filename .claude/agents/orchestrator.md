@@ -246,8 +246,9 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
 
   **Validação no gate da Etapa 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eia.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.` Isso fail-loud na primeira oportunidade em vez de só descobrir na Etapa 4.
 - **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
-  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
+  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`. Fontes com filtro de tópico (#347) têm linha `- Topic filter: {term1,term2,...}` logo abaixo.
   2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
+     - **Se a fonte tem `Topic filter`** (#347): adicionar `--topic-filter "<termos>"` ao comando — só artigos cujo `title+summary` contém ao menos 1 dos termos passam. Crítico pro arXiv (~600 papers/dia → ~80-120 após filtro). Ex: `Bash("npx tsx scripts/fetch-rss.ts --url https://rss.arxiv.org/rss/cs.AI --source arXiv --days 4 --topic-filter \"AI,LLM,agent,...\"")`.
   3. **Se RSS falha ou retorna 0 artigos**: fallback automático — dispara `source-researcher` (WebSearch) pra mesma fonte. Marca `method: "websearch_fallback"`. Critério: 1 falha já dispara fallback (não retry dentro do RSS — se feed está down, parte pra WebSearch).
   4. **Se fonte NÃO tem RSS**: disparar `source-researcher` diretamente (fluxo atual, via WebSearch com `site:` query). Marca `method: "websearch"`.
 

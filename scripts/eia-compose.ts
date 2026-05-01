@@ -262,17 +262,24 @@ async function fetchPotd(iso: string): Promise<WikimediaImage | null> {
 }
 
 function readUsedTitles(): Set<string> {
-  const path = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "../data/eia-used.json",
-  );
-  if (!existsSync(path)) return new Set();
-  try {
-    const arr = JSON.parse(readFileSync(path, "utf8")) as UsedEntry[];
-    return new Set(arr.map((e) => e.title.toLowerCase()));
-  } catch {
-    return new Set();
+  // #257 migration: ler new path primeiro, fallback p/ legacy `eai-used.json`
+  // se o novo arquivo não existir. Garante dedup contínuo até que o editor
+  // delete o arquivo antigo (ou rode `sync-eai-used.ts`).
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(dir, "../data/eia-used.json"),
+    resolve(dir, "../data/eai-used.json"),
+  ];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      const arr = JSON.parse(readFileSync(path, "utf8")) as UsedEntry[];
+      return new Set(arr.map((e) => e.title.toLowerCase()));
+    } catch {
+      continue;
+    }
   }
+  return new Set();
 }
 
 interface EligibilityResult {

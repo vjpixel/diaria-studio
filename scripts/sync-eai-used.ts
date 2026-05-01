@@ -53,12 +53,22 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
 }
 
 function loadEaiUsed(): EaiUsedEntry[] {
-  if (!existsSync(EAI_USED_PATH)) return [];
-  try {
-    return JSON.parse(readFileSync(EAI_USED_PATH, "utf8")) as EaiUsedEntry[];
-  } catch {
-    return [];
+  // #257 migration: ler new path primeiro, fallback p/ legacy `eai-used.json`.
+  // Quando o novo arquivo for gravado pela primeira vez, ele assume; até lá,
+  // o registro histórico continua sendo respeitado.
+  const candidates = [
+    EAI_USED_PATH,
+    resolve(ROOT, "data", "eai-used.json"),
+  ];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as EaiUsedEntry[];
+    } catch {
+      continue;
+    }
   }
+  return [];
 }
 
 function isTitlePresent(entries: EaiUsedEntry[], title: string): boolean {
@@ -89,8 +99,15 @@ function main() {
   let alreadyPresent = 0;
 
   for (const yymmdd of editionDirs) {
-    const metaPath = join(editionsDir, yymmdd, "_internal", "01-eia-meta.json");
-    if (!existsSync(metaPath)) {
+    // #257 migration: tentar novo nome primeiro, fallback p/ legacy.
+    // Garante que edições históricas (com `01-eai-meta.json`) sejam reconstruídas
+    // corretamente após o rename, evitando que o set de POTDs usadas vire zero.
+    const candidates = [
+      join(editionsDir, yymmdd, "_internal", "01-eia-meta.json"),
+      join(editionsDir, yymmdd, "_internal", "01-eai-meta.json"),
+    ];
+    const metaPath = candidates.find((p) => existsSync(p));
+    if (!metaPath) {
       skipped++;
       continue;
     }
