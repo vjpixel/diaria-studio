@@ -111,7 +111,7 @@ O fluxo é **all-or-nothing**: 1 paste de HTML completo num único bloco Custom 
 - O nome do template é case-sensitive. Se a conta tem `"Default"` mas o config tem `"default"`, falha.
 - Beehiiv às vezes mostra modal de "Upgrade" para features pagas — fechar e prosseguir; o save de rascunho é gratuito.
 - **Imagem broken no preview.** Se uma das 5 imagens aparecer como ícone de imagem quebrada após o paste, geralmente é URL Drive ainda propagando no CDN. Solução: re-rodar `upload-images-public.ts --no-cache` (gera URLs novas) e re-colar o HTML. Registrar em `unfixed_issues[]` se persistir.
-- **Custom HTML block ausente no template.** Se a UI não mostrar bloco Custom HTML pré-configurado, abortar — editor precisa criar template adequado antes (Beehiiv cobra Custom HTML em planos pagos (verificar tier atual)).
+- **Custom HTML block ausente no template.** Se a UI não mostrar bloco Custom HTML pré-configurado, abortar — editor precisa criar template adequado antes (Beehiiv cobra Custom HTML em planos pagos, verificar tier atual).
 
 ## Validação de sucesso
 

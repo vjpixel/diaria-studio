@@ -121,8 +121,6 @@ CLAUDE.md                    # instruções do projeto (lidas pelo Claude)
 
 Pipeline fim-a-fim funcional (4 etapas). Editor revisa cada gate e dispara publicação final manualmente do dashboard de cada plataforma. Roadmap ativo via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
 
-Roadmap ativo acompanhado via [issues P0–P3](https://github.com/vjpixel/diaria-studio/issues).
-
 ## Documentação
 
 - [`CLAUDE.md`](./CLAUDE.md) — instruções do projeto (lidas automaticamente pelo Claude Code).
