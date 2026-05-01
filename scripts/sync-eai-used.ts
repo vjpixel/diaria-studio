@@ -1,10 +1,10 @@
 /**
  * sync-eai-used.ts (#369)
  *
- * Sincroniza `data/eai-used.json` a partir dos arquivos `_internal/01-eai-meta.json`
+ * Sincroniza `data/eia-used.json` a partir dos arquivos `_internal/01-eia-meta.json`
  * das edições locais. Garante que imagens já usadas — mesmo que o pipeline tenha
  * rodado em outra máquina ou o arquivo tenha sido apagado — sejam registradas
- * e não reusadas pelo eai-composer.
+ * e não reusadas pelo eia-composer.
  *
  * Uso:
  *   npx tsx scripts/sync-eai-used.ts [--editions-dir data/editions/] [--dry-run]
@@ -17,7 +17,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const EAI_USED_PATH = resolve(ROOT, "data", "eai-used.json");
+const EAI_USED_PATH = resolve(ROOT, "data", "eia-used.json");
 
 interface EaiUsedEntry {
   edition_date: string;
@@ -89,7 +89,7 @@ function main() {
   let alreadyPresent = 0;
 
   for (const yymmdd of editionDirs) {
-    const metaPath = join(editionsDir, yymmdd, "_internal", "01-eai-meta.json");
+    const metaPath = join(editionsDir, yymmdd, "_internal", "01-eia-meta.json");
     if (!existsSync(metaPath)) {
       skipped++;
       continue;

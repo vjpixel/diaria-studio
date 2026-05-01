@@ -7,7 +7,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCES_CSV = resolve(ROOT, "seed/sources.csv");
 const OUT = resolve(ROOT, "context/sources.md");
 
-type Source = { Nome: string; Tipo: string; URL: string; RSS?: string };
+type Source = { Nome: string; Tipo: string; URL: string; RSS?: string; topic_filter?: string };
 
 const csv = readFileSync(SOURCES_CSV, "utf8");
 const { data, errors } = Papa.parse<Source>(csv, { header: true, skipEmptyLines: true });
@@ -67,6 +67,8 @@ function renderSource(s: Source, out: string[]): void {
   out.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL)}\``);
   const rss = s.RSS?.trim();
   if (rss) out.push(`- RSS: ${rss}`);
+  const topicFilter = s.topic_filter?.trim();
+  if (topicFilter) out.push(`- Topic filter: ${topicFilter}`);
   out.push("");
 }
 

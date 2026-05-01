@@ -1,24 +1,24 @@
 /**
- * eai-compose.ts (#110 fix 2)
+ * eia-compose.ts (#110 fix 2)
  *
- * Substitui o agent `eai-composer` por script TS determinístico.
+ * Substitui o agent `eia-composer` por script TS determinístico.
  * Mata silent failure: orchestrator chama via Bash (não Agent), sem
  * dependência de Task tool aninhado.
  *
  * Trade-off vs agent LLM: credit line e SD prompt são template-based
- * (não natural-language poetry). Editor pode polir 01-eai.md no gate
+ * (não natural-language poetry). Editor pode polir 01-eia.md no gate
  * se quiser.
  *
  * Pipeline:
  *   1. Fetch Wikimedia POTD com eligibility loop (orientação + dedup, max 7 tentativas)
  *   2. Download + crop-resize 800×450
- *   3. Log em data/eai-used.json
+ *   3. Log em data/eia-used.json
  *   4. Gerar SD prompt (positive = description, negative = boilerplate)
  *   5. Chamar backend de imagem (gemini/cloudflare/comfyui via platform.config.json)
- *   6. Escrever 01-eai.md (template) + _internal/01-eai-meta.json
+ *   6. Escrever 01-eia.md (template) + _internal/01-eia-meta.json
  *
  * Uso:
- *   npx tsx scripts/eai-compose.ts --edition AAMMDD [--out-dir <path>] [--force]
+ *   npx tsx scripts/eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force]
  *
  * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[] }
  * Exit code != 0 em qualquer falha bloqueante (Wikimedia API down, sem POTD elegível, Gemini down).
@@ -70,7 +70,7 @@ interface Rejection {
   height?: number;
 }
 
-interface EaiMeta {
+interface EiaMeta {
   edition: string;
   composed_at: string;
   ai_image_file: string;
@@ -87,7 +87,7 @@ interface EaiMeta {
   };
 }
 
-export interface EaiSides {
+export interface EiaSides {
   realSide: "A" | "B";
   aiSide: "A" | "B";
 }
@@ -97,7 +97,7 @@ export interface EaiSides {
  * número aleatório [0, 1) — em produção `Math.random()`, em teste valor fixo
  * pra cobrir os dois ramos de forma determinística.
  */
-export function chooseSides(rand: number): EaiSides {
+export function chooseSides(rand: number): EiaSides {
   return rand < 0.5
     ? { realSide: "A", aiSide: "B" }
     : { realSide: "B", aiSide: "A" };
@@ -105,7 +105,7 @@ export function chooseSides(rand: number): EaiSides {
 
 /**
  * Stats do poll da edição anterior — formato emitido por
- * `scripts/compute-eai-poll-stats.ts`. Subset usado aqui pra construir
+ * `scripts/compute-eia-poll-stats.ts`. Subset usado aqui pra construir
  * a linha "Resultado da última edição" (#107).
  */
 export interface PrevPollStats {
@@ -131,11 +131,11 @@ export function buildPrevResultLine(stats: PrevPollStats | null): string | null 
 
 /**
  * Lê stats da edição anterior do canonical path
- * (`{outDir}/_internal/04-eai-poll-stats.json`). Retorna null quando o
+ * (`{outDir}/_internal/04-eia-poll-stats.json`). Retorna null quando o
  * arquivo não existe ou não parseia — caller lida com ausência.
  */
 export function readPrevPollStats(outDir: string): PrevPollStats | null {
-  const path = resolve(outDir, "_internal/04-eai-poll-stats.json");
+  const path = resolve(outDir, "_internal/04-eia-poll-stats.json");
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as PrevPollStats;
@@ -145,15 +145,15 @@ export function readPrevPollStats(outDir: string): PrevPollStats | null {
 }
 
 /**
- * Monta o conteúdo do 01-eai.md com frontmatter YAML revelando A/B → real/ia.
+ * Monta o conteúdo do 01-eia.md com frontmatter YAML revelando A/B → real/ia.
  * O frontmatter é pra leitura humana (editor no gate); scripts leem
- * `_internal/01-eai-meta.json` para dados estruturados.
+ * `_internal/01-eia-meta.json` para dados estruturados.
  *
  * Quando `prevResultLine` é fornecido (#107), inclui após o crédito:
  * "Resultado da última edição: X% das pessoas acertaram."
  */
-export function buildEaiMd(
-  sides: EaiSides,
+export function buildEiaMd(
+  sides: EiaSides,
   creditLine: string,
   prevResultLine: string | null = null,
 ): string {
@@ -161,7 +161,7 @@ export function buildEaiMd(
   const bMapping = sides.realSide === "B" ? "real" : "ia";
   const lines = [
     "---",
-    "eai_answer:",
+    "eia_answer:",
     `  A: ${aMapping}`,
     `  B: ${bMapping}`,
     "---",
@@ -179,21 +179,21 @@ export function buildEaiMd(
 
 /**
  * Detecta se o Stage 4 está completo num outDir (resume-aware): os 4 outputs
- * precisam existir em conjunto — `01-eai.md`, `_internal/01-eai-meta.json`, e
+ * precisam existir em conjunto — `01-eia.md`, `_internal/01-eia-meta.json`, e
  * o par de imagens (A/B novo padrão #192 OU legacy real/ia).
  *
- * Usado pra evitar re-run não-determinístico: re-rodar `eai-compose` faz novo
+ * Usado pra evitar re-run não-determinístico: re-rodar `eia-compose` faz novo
  * coin flip e troca o mapping A↔B vs o que já foi aprovado no gate / publicado.
  */
 export function isStage4Complete(outDir: string): boolean {
-  const md = existsSync(resolve(outDir, "01-eai.md"));
-  const meta = existsSync(resolve(outDir, "_internal/01-eai-meta.json"));
+  const md = existsSync(resolve(outDir, "01-eia.md"));
+  const meta = existsSync(resolve(outDir, "_internal/01-eia-meta.json"));
   const newAB =
-    existsSync(resolve(outDir, "01-eai-A.jpg")) &&
-    existsSync(resolve(outDir, "01-eai-B.jpg"));
+    existsSync(resolve(outDir, "01-eia-A.jpg")) &&
+    existsSync(resolve(outDir, "01-eia-B.jpg"));
   const legacyAB =
-    existsSync(resolve(outDir, "01-eai-real.jpg")) &&
-    existsSync(resolve(outDir, "01-eai-ia.jpg"));
+    existsSync(resolve(outDir, "01-eia-real.jpg")) &&
+    existsSync(resolve(outDir, "01-eia-ia.jpg"));
   return md && meta && (newAB || legacyAB);
 }
 
@@ -264,7 +264,7 @@ async function fetchPotd(iso: string): Promise<WikimediaImage | null> {
 function readUsedTitles(): Set<string> {
   const path = resolve(
     dirname(fileURLToPath(import.meta.url)),
-    "../data/eai-used.json",
+    "../data/eia-used.json",
   );
   if (!existsSync(path)) return new Set();
   try {
@@ -357,17 +357,33 @@ interface WikipediaLinkCandidate {
 }
 
 /**
+ * Stop words para `pickSubjectWikipediaLink` (#301): termos genéricos que
+ * penalizam em -5 cada quando presentes no texto do link (case-insensitive).
+ * Conceitos como "Pilot boat" ou "Bridge" são descrições do tipo de objeto,
+ * não o subject editorial específico (o lugar ou espécie concreta).
+ */
+const SUBJECT_STOP_WORDS = new Set([
+  "pilot", "boat", "view", "building", "bridge", "mountain", "river", "lake",
+  "sky", "landscape", "panorama", "sunset", "sunrise", "beach", "forest",
+  "road", "street", "field", "garden", "park",
+]);
+
+/**
  * Escolhe o melhor link Wikipedia da description.html pra usar como
  * subject (#284). Substitui `extractFirstWikipediaUrl` que pegava sempre
  * o primeiro — comum em POTDs ser conceito genérico (\"Pilot boat\") em
  * vez do sujeito específico (\"Landsort\").
  *
- * Heurística:
+ * Heurística (#284 + #301):
  * 1. Match com title da imagem — tokens do title (sem File:, extensão,
  *    separadores) que aparecem no text do link → +10 cada (sinal forte).
  * 2. Texto curto (≤12 chars) → +2 (lugares específicos costumam ter
  *    nomes curtos; conceitos genéricos costumam ter textos longos).
- * 3. Tie-break: posição (primeiro link mantém o pattern original).
+ * 3. Stop words (#301): cada termo genérico presente no texto do link → -5
+ *    (penaliza "Pilot boat", "Bridge", etc. em favor do subject específico).
+ * 4. Proper noun bias (#301): se o texto do link começa com letra maiúscula
+ *    e não está na stop words list → +3 (proper nouns são mais específicos).
+ * 5. Tie-break: posição (primeiro link mantém o pattern original).
  *
  * Retorna `{ url, text }` (texto do link em html) ou `null` se nenhum
  * link Wikipedia encontrado.
@@ -394,8 +410,18 @@ export function pickSubjectWikipediaLink(
   const scored = links
     .map((l) => {
       const lowerText = l.text.toLowerCase();
+      // 1. Title match
       const titleMatch = titleTokens.filter((t) => lowerText.includes(t)).length;
-      const score = titleMatch * 10 + (l.text.length <= 12 ? 2 : 0);
+      // 2. Short text bonus
+      const shortBonus = l.text.length <= 12 ? 2 : 0;
+      // 3. Stop word penalty (#301): -5 per stop word token present in text
+      const textTokens = lowerText.split(/\s+/);
+      const stopPenalty = textTokens.filter((t) => SUBJECT_STOP_WORDS.has(t)).length * -5;
+      // 4. Proper noun bias (#301): +3 if text starts with uppercase and no stop words in first word
+      const firstWord = lowerText.split(/\s+/)[0] ?? "";
+      const properNounBonus =
+        /^\p{Lu}/u.test(l.text) && !SUBJECT_STOP_WORDS.has(firstWord) ? 3 : 0;
+      const score = titleMatch * 10 + shortBonus + stopPenalty + properNounBonus;
       return { ...l, score };
     })
     .sort((a, b) =>
@@ -503,7 +529,7 @@ function extractArtistName(artistText: string | undefined): string {
 }
 
 /**
- * Constrói a linha de crédito do `01-eai.md` com markdown links inline (#256).
+ * Constrói a linha de crédito do `01-eia.md` com markdown links inline (#256).
  *
  * Antes: plain text sem hyperlinks. Editor precisava buscar e adicionar à mão
  * URLs do artista, do subject Wikipedia e da license em toda edição.
@@ -640,7 +666,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("Uso: eai-compose.ts --edition AAMMDD [--out-dir <path>] [--force]");
+    console.error("Uso: eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force]");
     process.exit(1);
   }
   const force = process.argv.includes("--force");
@@ -653,7 +679,7 @@ async function main(): Promise<void> {
   // coin flip e quebraria consistência com o que foi aprovado no gate.
   if (!force && isStage4Complete(outDir)) {
     console.error(
-      `[eai-compose] Stage 4 já completo em ${outDir}. ` +
+      `[eia-compose] Stage 4 já completo em ${outDir}. ` +
         `Re-rodar mudaria o sorteio A/B (#192). Use --force pra regenerar.`,
     );
     console.log(
@@ -677,15 +703,15 @@ async function main(): Promise<void> {
   // 2. Coin flip (#192) — sorteia qual slot (A/B) recebe a foto real e qual recebe a IA.
   // Mantém o exercício "É IA?" cego: nem o leitor nem o nome do arquivo revelam a resposta.
   const sides = chooseSides(Math.random());
-  const realFilename = `01-eai-${sides.realSide}.jpg`;
-  const iaFilename = `01-eai-${sides.aiSide}.jpg`;
+  const realFilename = `01-eia-${sides.realSide}.jpg`;
+  const iaFilename = `01-eia-${sides.aiSide}.jpg`;
 
   // 3. Download + crop (real)
   const imageUrl = image.image?.source ?? image.thumbnail?.source;
   if (!imageUrl) {
     throw new Error("POTD sem URL de imagem");
   }
-  const rawPath = resolve(outDir, "01-eai-real-raw.jpg");
+  const rawPath = resolve(outDir, "01-eia-real-raw.jpg");
   await downloadFile(imageUrl, rawPath);
   const realPath = resolve(outDir, realFilename);
   runScript("scripts/crop-resize.ts", [
@@ -700,7 +726,7 @@ async function main(): Promise<void> {
 
   // 4. Log used
   const credit = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
-  runScript("scripts/eai-log-used.ts", [
+  runScript("scripts/eia-log-used.ts", [
     "--edition",
     edition,
     "--image-date",
@@ -718,7 +744,7 @@ async function main(): Promise<void> {
   // scripts/image-generate.ts. Antes hardcodava gemini-image.js, o que fazia
   // eai falhar quando Gemini estava unavailable mesmo com cloudflare/comfyui ativos.
   const sdPrompt = buildSdPrompt(image);
-  const sdPromptPath = resolve(internalDir, "01-eai-sd-prompt.json");
+  const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
   const iaPath = resolve(outDir, iaFilename);
   const platformCfg = JSON.parse(
@@ -729,9 +755,9 @@ async function main(): Promise<void> {
     imageGenerator === "comfyui" ? "scripts/comfyui-run.js" :
     imageGenerator === "cloudflare" ? "scripts/cloudflare-image.js" :
     "scripts/gemini-image.js";
-  runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eai_"]);
+  runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eia_"]);
 
-  // 7. Write 01-eai.md (frontmatter + corpo + opcional resultado da edição anterior #107)
+  // 7. Write 01-eia.md (frontmatter + corpo + opcional resultado da edição anterior #107)
   // #337: tentar traduzir subject para pt-BR via Wikipedia API
   const subjectEnUrl = extractFirstWikipediaUrl(image.description?.html, image.title);
   let ptLabel: string | null = null;
@@ -749,8 +775,8 @@ async function main(): Promise<void> {
   const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl });
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
-  const mdPath = resolve(outDir, "01-eai.md");
-  writeFileSync(mdPath, buildEaiMd(sides, creditLine, prevResultLine));
+  const mdPath = resolve(outDir, "01-eia.md");
+  writeFileSync(mdPath, buildEiaMd(sides, creditLine, prevResultLine));
 
   // 8. Write meta JSON
   // #256: artist_url + subject_wikipedia_url + license_url extraídos do
@@ -760,7 +786,7 @@ async function main(): Promise<void> {
     extractFirstHref(image.artist?.html) ??
     extractCommonsUserUrl(image.artist?.text ?? image.credit?.text);
   const subjectWikipediaUrl = ptWikipediaUrl ?? subjectEnUrl;
-  const meta: EaiMeta = {
+  const meta: EiaMeta = {
     edition,
     composed_at: new Date().toISOString(),
     ai_image_file: iaFilename,
@@ -776,7 +802,7 @@ async function main(): Promise<void> {
       image_date_used: imageDate,
     },
   };
-  const metaPath = resolve(internalDir, "01-eai-meta.json");
+  const metaPath = resolve(internalDir, "01-eia-meta.json");
   writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n");
 
   // Output JSON pra orchestrator
@@ -801,7 +827,7 @@ if (
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
   main().catch((e) => {
-    console.error(`[eai-compose] ${(e as Error).message}`);
+    console.error(`[eia-compose] ${(e as Error).message}`);
     process.exit(2);
   });
 }

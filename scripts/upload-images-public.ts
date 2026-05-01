@@ -104,8 +104,8 @@ export interface ImageSpec {
 /**
  * Especifica quais imagens fazer upload por modo. Quando `editionDir` é
  * passado e o modo inclui newsletter, detecta o naming É IA? em disco:
- * novas edições usam `01-eai-A.jpg`/`01-eai-B.jpg` (#192, random); edições
- * antigas usam `01-eai-real.jpg`/`01-eai-ia.jpg`. Sem `editionDir`, default
+ * novas edições usam `01-eia-A.jpg`/`01-eia-B.jpg` (#192, random); edições
+ * antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`. Sem `editionDir`, default
  * pra naming novo (A/B).
  */
 export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
@@ -116,27 +116,27 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   ];
 
   const eaiSpecs = (() => {
-    const newA = editionDir ? resolve(editionDir, "01-eai-A.jpg") : null;
-    const newB = editionDir ? resolve(editionDir, "01-eai-B.jpg") : null;
+    const newA = editionDir ? resolve(editionDir, "01-eia-A.jpg") : null;
+    const newB = editionDir ? resolve(editionDir, "01-eia-B.jpg") : null;
     if (newA && newB && existsSync(newA) && existsSync(newB)) {
       return [
-        { key: "eai_a", filename: "01-eai-A.jpg" },
-        { key: "eai_b", filename: "01-eai-B.jpg" },
+        { key: "eia_a", filename: "01-eia-A.jpg" },
+        { key: "eia_b", filename: "01-eia-B.jpg" },
       ];
     }
     if (editionDir) {
-      const oldReal = resolve(editionDir, "01-eai-real.jpg");
+      const oldReal = resolve(editionDir, "01-eia-real.jpg");
       if (existsSync(oldReal)) {
         return [
-          { key: "eai_real", filename: "01-eai-real.jpg" },
-          { key: "eai_ia", filename: "01-eai-ia.jpg" },
+          { key: "eia_real", filename: "01-eia-real.jpg" },
+          { key: "eia_ia", filename: "01-eia-ia.jpg" },
         ];
       }
     }
     // Default sem disco: assume novo naming (caso de teste / dry-run).
     return [
-      { key: "eai_a", filename: "01-eai-A.jpg" },
-      { key: "eai_b", filename: "01-eai-B.jpg" },
+      { key: "eia_a", filename: "01-eia-A.jpg" },
+      { key: "eia_b", filename: "01-eia-B.jpg" },
     ];
   })();
 

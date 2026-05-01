@@ -27,7 +27,7 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 Antes de iniciar, verificar o estado do disco (de baixo para cima):
 
-- `01-eai.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
+- `01-eia.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
 - `draft.md` existe → Etapa 2 completa. Pular para Etapa 3.
 - `prioritized.md` existe → Etapa 1 completa. Pular para Etapa 2.
 - Caso contrário → começar pela Etapa 1.
@@ -176,7 +176,7 @@ Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empreg
 
 ## Etapa 3 — Imagens
 
-**Resume check:** `04-d1-2x1.jpg` e `01-eai.md` existem → pular Etapa 3, ir para Etapa 4.
+**Resume check:** `04-d1-2x1.jpg` e `01-eia.md` existem → pular Etapa 3, ir para Etapa 4.
 
 Disparar **em paralelo** (mesma mensagem):
 
@@ -196,21 +196,21 @@ EAI_EDITION=$(node -e "
   const last=new Date(Date.UTC(yr,mo,0)).getUTCDate();
   process.stdout.write(String(yr).slice(2)+String(mo).padStart(2,'0')+String(last).padStart(2,'0'));
 ")
-npx tsx scripts/eai-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
+npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
 ```
 Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
-Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eai-A.jpg,01-eai-B.jpg`.
+Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
 Apresentar:
 ```
 📸 D1: data/monthly/$1/04-d1-2x1.jpg
-🤔 É IA? A: data/monthly/$1/01-eai-A.jpg
-🤔 É IA? B: data/monthly/$1/01-eai-B.jpg
+🤔 É IA? A: data/monthly/$1/01-eia-A.jpg
+🤔 É IA? B: data/monthly/$1/01-eia-B.jpg
 
-Aprovar? sim / regenerar-d1 / regenerar-eai
+Aprovar? sim / regenerar-d1 / regenerar-eia
 ```
 
 ---
@@ -234,7 +234,7 @@ Todos em `data/monthly/{YYMM}/`:
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
-- `01-eai.md` + `01-eai-A.jpg` + `01-eai-B.jpg` — É IA? novo (Etapa 3)
+- `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
 
 ## Notas
 

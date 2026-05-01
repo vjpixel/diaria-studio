@@ -55,7 +55,7 @@ Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` e
 
 ## Passo 2 — Executar o playbook diretamente no top-level (#207)
 
-**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eai-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-linkedin`, `social-facebook`, `publish-newsletter`, `publish-social`, `auto-reporter` em paralelo conforme cada stage prescreve.
+**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-linkedin`, `social-facebook`, `publish-newsletter`, `publish-social`, `auto-reporter` em paralelo conforme cada stage prescreve.
 
 Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como prompt de Agent):
 - `edition_date = $1` (AAMMDD)
@@ -78,7 +78,7 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 ## Outputs
 
 Todos em `data/editions/{AAMMDD}/` (ex: `260418/`):
-- `01-categorized.md`, `01-eai.md`, `01-eai-A.jpg`, `01-eai-B.jpg` (edições antigas pré-#192: `01-eai-real.jpg`/`01-eai-ia.jpg`)
+- `01-categorized.md`, `01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg` (edições antigas pré-#192: `01-eia-real.jpg`/`01-eia-ia.jpg`)
 - `02-reviewed.md`
 - `03-social.md`
 - `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`

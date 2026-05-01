@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Usage:
-//   npx tsx scripts/eai-log-used.ts \
+//   npx tsx scripts/eia-log-used.ts \
 //     --edition 260420 \
 //     --image-date 2026-04-15 \
 //     --title "File:Example.jpg" \
 //     --credit "Photographer Name, CC BY-SA 4.0" \
 //     --url "https://..."
 //
-// Appends an entry to data/eai-used.json so future editions skip already-used POTDs.
+// Appends an entry to data/eia-used.json so future editions skip already-used POTDs.
 // Uses process.argv (safe from shell injection) instead of string interpolation
 // inside a `node -e` one-liner.
 
@@ -39,7 +39,7 @@ if (!edition || !imageDate || !title || !url) {
   process.exit(2);
 }
 
-const LOG_PATH = 'data/eai-used.json';
+const LOG_PATH = 'data/eia-used.json';
 
 // Schema changed from { used: [...] } (legacy) to top-level array.
 // Migrate on read so a stale local file doesn't crash log.push().

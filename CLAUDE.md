@@ -26,7 +26,7 @@ O fluxo editorial é modelado como 4 etapas com gate humano em cada uma. A execu
 2. Alternativamente, rodar etapas isoladas:
    - **Etapa 1** (pesquisa): `/diaria-1-pesquisa` (também refresca dedup + drena inbox).
    - **Etapa 2** (escrita): `/diaria-2-escrita [newsletter|social]` (newsletter + social em paralelo a partir de `01-approved.json`).
-   - **Etapa 3** (imagens): `/diaria-3-imagens [eai|d1|d2|d3]` (É IA? + imagens de destaque).
+   - **Etapa 3** (imagens): `/diaria-3-imagens [eia|d1|d2|d3]` (É IA? + imagens de destaque).
    - **Etapa 4** (publicação): `/diaria-4-publicar [newsletter|social|all]`.
 3. Skills auxiliares (debug, raramente usadas):
    - `/diaria-refresh-dedup` — testa conexão com Beehiiv MCP.
@@ -46,9 +46,9 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 | # | Etapa | Subagentes / Scripts | Output |
 |---|---|---|---|
-| 1 | Pesquisa | N× `source-researcher` + M× `discovery-searcher` + `eai-composer` (em paralelo, É IA? em background) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
+| 1 | Pesquisa | N× `source-researcher` + M× `discovery-searcher` + `eia-composer` (em paralelo, É IA? em background) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
 | 2 | Escrita | `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, todos a partir de `_internal/01-approved.json` → merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
-| 3 | Imagens | É IA? gate (coleta `eai-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eai.md` + `01-eai-A/B.jpg` + `04-d1-2x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
+| 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
 | 4 | Publicação | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Chrome → LinkedIn × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
 
 **Sync com Google Drive (entre etapas):** **antes de cada gate** (etapas 1–3), `scripts/drive-sync.ts` sobe os outputs da etapa para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada etapa** que consome inputs que podem ter sido editados no Drive (2, 3, 4), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
@@ -94,7 +94,7 @@ Model mix (definido no frontmatter de cada agente):
 - **Opus 4.7** — `orchestrator`, `title-picker` (decisão editorial pós-gate, volume baixo, alto impacto em CTR — #159)
 - **Opus 4.6** — `scorer`
 - **Sonnet 4.6** — `writer`, `publish-newsletter`, `publish-social`, `social-linkedin`, `social-facebook`.
-- **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`, `eai-composer`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync e inbox-drain foram migrados para scripts TS — não são mais agentes LLM.
+- **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`, `eia-composer`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync e inbox-drain foram migrados para scripts TS — não são mais agentes LLM.
 - **Haiku 4.5 (pinned `claude-haiku-4-5-20251001`)** — `research-reviewer` (lógica de raciocínio estruturado; re-avaliar pin a cada release).
 
 ---

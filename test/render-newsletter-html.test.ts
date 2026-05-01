@@ -178,11 +178,11 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
   it("parseia frontmatter YAML e detecta A/B em disco", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
       const md = [
         "---",
-        "eai_answer:",
+        "eia_answer:",
         "  A: real",
         "  B: ia",
         "---",
@@ -193,11 +193,11 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
         "",
       ].join("\n");
       const eai = parseEAI(md, dir);
-      assert.equal(eai.imageA, "01-eai-A.jpg");
-      assert.equal(eai.imageB, "01-eai-B.jpg");
+      assert.equal(eai.imageA, "01-eia-A.jpg");
+      assert.equal(eai.imageB, "01-eia-B.jpg");
       assert.match(eai.credit, /Credit line/);
       // Frontmatter NÃO entra no credit (escondido do leitor)
-      assert.ok(!eai.credit.includes("eai_answer"));
+      assert.ok(!eai.credit.includes("eia_answer"));
       assert.ok(!eai.credit.includes("real"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -207,12 +207,12 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
   it("fallback para legacy real/ia quando A/B não existem em disco", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai-real.jpg"));
-      touch(join(dir, "01-eai-ia.jpg"));
+      touch(join(dir, "01-eia-real.jpg"));
+      touch(join(dir, "01-eia-ia.jpg"));
       const md = "É IA?\n\nLegacy credit.\n";
       const eai = parseEAI(md, dir);
-      assert.equal(eai.imageA, "01-eai-real.jpg");
-      assert.equal(eai.imageB, "01-eai-ia.jpg");
+      assert.equal(eai.imageA, "01-eia-real.jpg");
+      assert.equal(eai.imageB, "01-eia-ia.jpg");
       assert.match(eai.credit, /Legacy credit/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -254,11 +254,11 @@ describe("fallbackEAI (#192)", () => {
   it("retorna A/B quando ambos existem", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
       const eai = fallbackEAI(dir);
-      assert.equal(eai.imageA, "01-eai-A.jpg");
-      assert.equal(eai.imageB, "01-eai-B.jpg");
+      assert.equal(eai.imageA, "01-eia-A.jpg");
+      assert.equal(eai.imageB, "01-eia-B.jpg");
       assert.equal(eai.credit, "");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -270,8 +270,8 @@ describe("fallbackEAI (#192)", () => {
     try {
       // dir vazio
       const eai = fallbackEAI(dir);
-      assert.equal(eai.imageA, "01-eai-real.jpg");
-      assert.equal(eai.imageB, "01-eai-ia.jpg");
+      assert.equal(eai.imageA, "01-eia-real.jpg");
+      assert.equal(eai.imageB, "01-eia-ia.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -290,11 +290,11 @@ describe("parseEAI prevResultLine (#107)", () => {
   it("separa a linha 'Resultado da última edição:' do crédito", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
       const md = [
         "---",
-        "eai_answer:",
+        "eia_answer:",
         "  A: real",
         "  B: ia",
         "---",
@@ -354,15 +354,15 @@ describe("parseEAI prevResultLine (#107)", () => {
     }
   });
 
-  it("E2E: md gerado por buildEaiMd com prevResultLine roundtrip via parseEAI", async () => {
-    // Simula o fluxo completo: eai-compose escreve, render-newsletter-html lê.
+  it("E2E: md gerado por buildEiaMd com prevResultLine roundtrip via parseEAI", async () => {
+    // Simula o fluxo completo: eia-compose escreve, render-newsletter-html lê.
     // Garante que o contrato writer↔reader não quebra silenciosamente.
-    const { buildEaiMd } = await import("../scripts/eai-compose.ts");
+    const { buildEiaMd } = await import("../scripts/eia-compose.ts");
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
-      const md = buildEaiMd(
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      const md = buildEiaMd(
         { realSide: "A", aiSide: "B" },
         "Crédito da foto.",
         "Resultado da última edição: 42% das pessoas acertaram.",
@@ -373,8 +373,8 @@ describe("parseEAI prevResultLine (#107)", () => {
         "Resultado da última edição: 42% das pessoas acertaram.",
       );
       assert.equal(eai.credit, "Crédito da foto.");
-      assert.equal(eai.imageA, "01-eai-A.jpg");
-      assert.equal(eai.imageB, "01-eai-B.jpg");
+      assert.equal(eai.imageA, "01-eia-A.jpg");
+      assert.equal(eai.imageB, "01-eia-B.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
