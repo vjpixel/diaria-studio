@@ -13,7 +13,7 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
   > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `$2` (opcional) = sub-comando:
   - Sem argumento → roda É IA? + todas as imagens de destaque (d1, d2, d3)
-  -  → roda só o É IA? (útil para regenerar sem refazer imagens)
+  - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
   - `d1` / `d2` / `d3` → regenera só aquela imagem de destaque
 
 ## Pré-requisitos
@@ -60,7 +60,7 @@ Aprovar (sim) / tentar dia anterior / pedir retry?
 
 Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer com data D-1.
 
-## Parte 2 — Imagens de destaque (pular se `$2$2 = eia`)
+## Parte 2 — Imagens de destaque (pular se `$2 = eia`)
 
 ### 2a. Drive sync pull
 
