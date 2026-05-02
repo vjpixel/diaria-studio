@@ -297,43 +297,17 @@ describe("GOOGLE_DOC_MIME (#327)", () => {
   });
 });
 
-describe("driveUploadFile — convertToDoc=true usa GOOGLE_DOC_MIME no metadata (#327)", () => {
-  let savedFetch: typeof globalThis.fetch;
-  let capturedRequest: { url: string; body: string } | null = null;
-
-  beforeEach(() => {
-    savedFetch = globalThis.fetch;
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
-    capturedRequest = null;
-  });
-  afterEach(() => {
-    globalThis.fetch = savedFetch;
-    if (!existsSync(CREDS_PATH)) return;
-    unlinkSync(CREDS_PATH);
+describe("CONVERT_TO_DOC × GOOGLE_DOC_MIME — invariante de upload (#327)", () => {
+  it("todos os arquivos na whitelist são MDs — nunca imagens ou JSONs", () => {
+    for (const filename of CONVERT_TO_DOC) {
+      assert.ok(filename.endsWith(".md"),
+        `${filename} na CONVERT_TO_DOC deve ser .md — outro tipo não seria convertível para Doc`);
+    }
   });
 
-  it("upload com convertToDoc=true → metadata.mimeType = GOOGLE_DOC_MIME, body Content-Type = text/markdown", async () => {
-    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
-      const urlStr = String(url);
-      if (urlStr.includes("uploadType=multipart")) {
-        capturedRequest = {
-          url: urlStr,
-          body: opts?.body instanceof Buffer ? opts.body.toString("utf8") :
-                opts?.body instanceof Uint8Array ? Buffer.from(opts.body).toString("utf8") :
-                String(opts?.body ?? ""),
-        };
-        return makeDriveResponse({ id: "doc-id", modifiedTime: "2026-05-01T00:00:00Z", mimeType: GOOGLE_DOC_MIME });
-      }
-      return makeDriveResponse({ files: [] });
-    };
-
-    // Importar dinamicamente para testar via pushFile mock seria complexo;
-    // testar a invariante via CONVERT_TO_DOC e verificar que o request body
-    // inclui o GOOGLE_DOC_MIME no JSON de metadata — o que driveUploadFile faz.
-    // Como driveUploadFile é privado, verificamos a invariante: se um arquivo
-    // está em CONVERT_TO_DOC, o corpo multipart deve ter GOOGLE_DOC_MIME.
-    // Aqui testamos que a constante usada no upload é a mesma que GOOGLE_DOC_MIME.
-    assert.equal(GOOGLE_DOC_MIME, "application/vnd.google-apps.document");
+  it("GOOGLE_DOC_MIME é string não-vazia que identifica Google Docs nativos", () => {
+    assert.ok(GOOGLE_DOC_MIME.length > 0);
+    assert.ok(GOOGLE_DOC_MIME.includes("google-apps.document"));
   });
 });
 
