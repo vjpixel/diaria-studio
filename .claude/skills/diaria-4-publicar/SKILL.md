@@ -17,7 +17,7 @@ Dispara a Etapa 4 unificada (publicação paralela: Beehiiv + Facebook + LinkedI
 
 ## Pré-requisitos
 
-- Etapas 1–3 completas: `02-reviewed.md`, `03-social.md`, `01-eai.md` + `01-eai.jpg`, `04-d{1,2,3}.jpg`
+- Etapas 1–3 completas: `02-reviewed.md`, `03-social.md`, `01-eia.md` + `01-eia.jpg`, `04-d{1,2,3}.jpg`
 - Chrome com extensão **Claude in Chrome** ativa (ver `docs/browser-publish-setup.md`)
 - Logado em Beehiiv, LinkedIn e Facebook (Meta Business Suite) no Chrome
 - Bloco `publishing` em `platform.config.json` configurado

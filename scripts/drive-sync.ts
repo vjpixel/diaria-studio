@@ -62,7 +62,7 @@ const CONVERT_TO_DOC = new Set<string>([
   "01-categorized.md",
   "02-reviewed.md",
   "03-social.md",
-  "01-eai.md",
+  "01-eia.md",
   "prioritized.md",
   "draft.md",
 ]);

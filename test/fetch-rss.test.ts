@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseFeed, filterByWindow, type Article } from "../scripts/fetch-rss.ts";
+import { parseFeed, filterByWindow, filterByTopic, type Article } from "../scripts/fetch-rss.ts";
 
 describe("parseFeed — RSS 2.0", () => {
   const rssSample = `<?xml version="1.0" encoding="UTF-8"?>
@@ -203,5 +203,75 @@ describe("filterByWindow", () => {
     const filtered = filterByWindow(articles, 0, now);
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].title, "Sem data");
+  });
+});
+
+describe("filterByTopic (#347)", () => {
+  const makeArticle = (title: string, summary = ""): Article => ({
+    url: `https://example.com/${title.replace(/\s+/g, "-").toLowerCase()}`,
+    title,
+    published_at: "2026-04-24T10:00:00.000Z",
+    summary,
+  });
+
+  it("sem termos: retorna todos os artigos sem filtro", () => {
+    const articles = [makeArticle("LLM Benchmark"), makeArticle("Weather Forecast")];
+    assert.deepEqual(filterByTopic(articles, []), articles);
+    assert.deepEqual(filterByTopic(articles, undefined as unknown as string[]), articles);
+  });
+
+  it("filtra artigos que não contêm nenhum dos termos", () => {
+    const articles = [
+      makeArticle("New LLM Released", "A large language model was released."),
+      makeArticle("Weather Forecast", "Sunny skies expected."),
+      makeArticle("GPT-5 Announced", "OpenAI reveals GPT-5."),
+    ];
+    const filtered = filterByTopic(articles, ["LLM", "GPT"]);
+    assert.equal(filtered.length, 2);
+    assert.equal(filtered[0].title, "New LLM Released");
+    assert.equal(filtered[1].title, "GPT-5 Announced");
+  });
+
+  it("match case-insensitive (LLM, llm, Llm)", () => {
+    const articles = [
+      makeArticle("Small model trained", "Using llm techniques."),
+      makeArticle("Unrelated article", "Nothing relevant here."),
+    ];
+    const filtered = filterByTopic(articles, ["LLM"]);
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].title, "Small model trained");
+  });
+
+  it("match no summary quando title não contém o termo", () => {
+    const articles = [
+      makeArticle("Research Paper", "Explores transformer architecture alignment."),
+      makeArticle("Sports News", "Football match results."),
+    ];
+    const filtered = filterByTopic(articles, ["alignment"]);
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].title, "Research Paper");
+  });
+
+  it("ao menos 1 termo suficiente para manter o artigo (OR semântico)", () => {
+    const articles = [
+      makeArticle("Neural network training", ""),
+      makeArticle("Reinforcement learning", ""),
+      makeArticle("Cat video compilation", ""),
+    ];
+    const filtered = filterByTopic(articles, ["neural network", "reinforcement"]);
+    assert.equal(filtered.length, 2);
+  });
+
+  it("retorna vazio quando nenhum artigo bate", () => {
+    const articles = [makeArticle("Cooking recipes"), makeArticle("Gardening tips")];
+    const filtered = filterByTopic(articles, ["artificial intelligence", "LLM"]);
+    assert.equal(filtered.length, 0);
+  });
+
+  it("termos parciais também batem (substring match)", () => {
+    // "large language" deve bater em "large language model"
+    const articles = [makeArticle("Large language model capabilities")];
+    const filtered = filterByTopic(articles, ["large language"]);
+    assert.equal(filtered.length, 1);
   });
 });

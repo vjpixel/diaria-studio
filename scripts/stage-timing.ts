@@ -37,7 +37,7 @@ interface StageTiming {
 // Map files to stages based on prefix
 function fileToStage(name: string): { stage: number; label: string } | null {
   if (name === "_internal/cost.json" || name === "_internal/cost.md") return { stage: 0, label: "Setup" };
-  if (name.startsWith("01-eai")) return { stage: 1, label: "É IA?" };
+  if (name.startsWith("01-eia")) return { stage: 1, label: "É IA?" };
   if (name.startsWith("01-") || name.startsWith("_internal/01-")) return { stage: 1, label: "Research" };
   if (name.startsWith("02-") || name.startsWith("_internal/02-")) return { stage: 2, label: "Writing" };
   if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 3, label: "Social" };

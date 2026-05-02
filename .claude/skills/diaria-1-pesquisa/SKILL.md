@@ -44,7 +44,7 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 ## Passo 2 — Pré-requisitos e execução do playbook
 
 1. Verificar pré-requisitos: `context/sources.md` e `context/audience-profile.md` (ambos não-placeholder). `past-editions.md` é regenerado automaticamente — não precisa estar atualizado.
-2. **Executar o playbook diretamente no top-level (#207).** Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa em sequência **§ 0 Setup** (que inclui refresh de `past-editions.md` via `scripts/refresh-past-editions.ts` e inbox drain via `scripts/inbox-drain.ts`) + **§ 1 Stage 1 — Research**. **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eai-composer`, `research-reviewer`, `scorer` em paralelo conforme o playbook prescreve.
+2. **Executar o playbook diretamente no top-level (#207).** Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa em sequência **§ 0 Setup** (que inclui refresh de `past-editions.md` via `scripts/refresh-past-editions.ts` e inbox drain via `scripts/inbox-drain.ts`) + **§ 1 Stage 1 — Research**. **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer` em paralelo conforme o playbook prescreve.
 
    Variáveis pra alimentar o playbook:
    - `edition_date = $1` (AAMMDD)
@@ -52,7 +52,7 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
    - `window_days = {valor confirmado no Passo 1}`
    - `stop_after_stage = 1` (parar após o gate do Stage 1)
 
-   O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eai-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → GATE.
+   O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eia-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → GATE.
 
 ## Output
 
