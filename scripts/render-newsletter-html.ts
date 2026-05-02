@@ -66,7 +66,7 @@ interface Section {
   items: SectionItem[];
 }
 
-export interface EAI {
+export interface EIA {
   credit: string;
   imageA: string;
   imageB: string;
@@ -79,7 +79,7 @@ interface NewsletterContent {
   subtitle: string;
   coverImage: string;
   destaques: RenderDestaque[];
-  eai: EAI;
+  eia: EIA;
   sections: Section[];
 }
 
@@ -246,7 +246,7 @@ function subBlockToItem(block: string[]): SectionItem | null {
   return { title, description: descriptionParts.join(" "), url };
 }
 
-export function fallbackEAI(editionDir: string): EAI {
+export function fallbackEIA(editionDir: string): EIA {
   const newA = resolve(editionDir, "01-eia-A.jpg");
   const newB = resolve(editionDir, "01-eia-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
@@ -255,7 +255,7 @@ export function fallbackEAI(editionDir: string): EAI {
   return { credit: "", imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg" };
 }
 
-export function parseEAI(text: string, editionDir: string): EAI {
+export function parseEIA(text: string, editionDir: string): EIA {
   // Pula frontmatter YAML se presente (#192 — eia_answer mapping é só pra editor).
   let body = text;
   const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -265,7 +265,7 @@ export function parseEAI(text: string, editionDir: string): EAI {
   const allLines = body.split(/\r?\n/).filter((l) => l.trim().length > 0);
 
   // Separa a linha "Resultado da última edição:" (#107) do crédito — vai
-  // pra um `<p>` próprio em renderEAI; misturada no mesmo paragráfo do
+  // pra um `<p>` próprio em renderEIA; misturada no mesmo paragráfo do
   // crédito vira ilegível no email final.
   const creditLines: string[] = [];
   let prevResultLine: string | undefined;
@@ -291,7 +291,7 @@ export function parseEAI(text: string, editionDir: string): EAI {
 
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
-  const eaiPath = resolve(editionDir, "01-eia.md");
+  const eiaPath = resolve(editionDir, "01-eia.md");
 
   if (!existsSync(reviewedPath)) {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
@@ -316,16 +316,16 @@ function extractContent(editionDir: string): NewsletterContent {
   const sections = parseSections(reviewedText);
 
   // É IA?
-  const eai = existsSync(eaiPath)
-    ? parseEAI(readFileSync(eaiPath, "utf8"), editionDir)
-    : fallbackEAI(editionDir);
+  const eia = existsSync(eiaPath)
+    ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
+    : fallbackEIA(editionDir);
 
   return {
     title: destaques[0].title,
     subtitle: buildSubtitle(destaques[1].title, destaques[2].title),
     coverImage: "04-d1-2x1.jpg",
     destaques,
-    eai,
+    eia,
     sections,
   };
 }
@@ -466,17 +466,17 @@ function renderDestaque(d: RenderDestaque): string {
 </td></tr>`;
 }
 
-function renderEAI(eai: EAI): string {
-  const creditHtml = processInlineLinks(eai.credit);
+function renderEIA(eia: EIA): string {
+  const creditHtml = processInlineLinks(eia.credit);
   const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;`;
   const cellStyle = `padding:0px 2px;text-align:left;word-break:break-word;`;
 
   // #107: linha "Resultado da última edição: X%..." auto-injetada pelo eia-compose
   // vai num `<p>` próprio (visualmente separado do crédito) — caso contrário ficaria
   // emendada no mesmo parágrafo no email final.
-  const prevResultRow = eai.prevResultLine
+  const prevResultRow = eia.prevResultLine
     ? `      <tr><td align="left" style="${cellStyle}">
-        <p style="${paragraphStyle}">${esc(eai.prevResultLine)}</p>
+        <p style="${paragraphStyle}">${esc(eia.prevResultLine)}</p>
       </td></tr>`
     : "";
 
@@ -490,8 +490,8 @@ function renderEAI(eai: EAI): string {
   <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
     <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
       ${renderCategoryLabel("🖼️", "É IA?")}
-      ${renderImageNoCaption(eai.imageA, "Imagem A")}
-      ${renderImageNoCaption(eai.imageB, "Imagem B")}
+      ${renderImageNoCaption(eia.imageA, "Imagem A")}
+      ${renderImageNoCaption(eia.imageB, "Imagem B")}
       <tr><td align="left" style="${cellStyle}">
         <p style="${paragraphStyle}">${creditHtml}</p>
       </td></tr>
@@ -547,8 +547,8 @@ function renderHTML(content: NewsletterContent): string {
     parts.push(renderDestaque(d));
   }
 
-  if (content.eai.credit) {
-    parts.push(renderEAI(content.eai));
+  if (content.eia.credit) {
+    parts.push(renderEIA(content.eia));
   }
 
   for (const section of content.sections) {
