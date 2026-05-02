@@ -131,7 +131,9 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     //   `1. [score] Título ... — URL [— YYYY-MM-DD]` (numerado, novo padrão)
     const urlMatch = line.match(/^(?:-|\d+\.)\s.*?—\s+(https?:\/\/\S+?)(?:\s+—|\s*$)/);
     if (urlMatch) {
-      result[currentBucket].push(urlMatch[1]);
+      // Strip pontuação trailing que editores mobile/autocomplete podem introduzir (#443)
+      const rawUrl = urlMatch[1].replace(/[.,);:!?]+$/, "");
+      result[currentBucket].push(rawUrl);
     }
   }
 
@@ -144,12 +146,36 @@ export function parseSections(md: string): Record<BucketName, string[]> {
   return result;
 }
 
+/**
+ * Canonicaliza URL para comparação: lowercase do scheme+host, remove trailing
+ * slash, remove fragment. Permite que variações triviais introduzidas por
+ * editores (mobile autocomplete, copy-paste com slash extra, etc.) ainda
+ * encontrem o artigo no pool original (#439).
+ */
+export function canonicalizeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    // lowercase scheme e host (case-insensitive por spec)
+    u.protocol = u.protocol.toLowerCase();
+    u.hostname = u.hostname.toLowerCase();
+    // remove fragment (nunca relevante para dedup)
+    u.hash = "";
+    // remove trailing slash do pathname apenas se não houver path real
+    const canonical = u.toString().replace(/\/$/, "");
+    return canonical;
+  } catch {
+    // URL inválida — retornar como está, sem crash
+    return url;
+  }
+}
+
 function findArticle(
   url: string,
   pools: Article[][],
 ): { article: Article; origBucket: string | null } | null {
+  const canonUrl = canonicalizeUrl(url);
   for (const pool of pools) {
-    const found = pool.find((a) => a.url === url);
+    const found = pool.find((a) => canonicalizeUrl(a.url) === canonUrl);
     if (found) return { article: found, origBucket: (found.category as string) ?? null };
   }
   return null;
