@@ -47,14 +47,14 @@ function main(): void {
     process.exit(1);
   }
 
-  if (email && choice) {
-    const url = generatePollUrl(email, edition, choice, secret);
-    console.log(url);
-  } else {
-    console.log("Template A:", generatePollTemplate(edition, "A"));
-    console.log("Template B:", generatePollTemplate(edition, "B"));
-    console.log("\nPara URL assinada: --email leitor@exemplo.com --choice A|B");
+  if (!email || !choice) {
+    console.error("Uso: poll-generate-url.ts --edition AAMMDD --email X --choice A|B");
+    console.error("Nota: URLs devem ser geradas por assinante (sig depende do email).");
+    process.exit(1);
   }
+
+  const url = generatePollUrl(email, edition, choice, secret);
+  console.log(url);
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
