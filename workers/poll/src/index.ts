@@ -50,7 +50,7 @@ async function hmacVerify(secret: string, message: string, sig: string): Promise
 
 function corsHeaders(env: Env): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": env.ALLOWED_ORIGINS ?? "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
@@ -107,7 +107,10 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
 
   await env.POLL.put(voteKey, JSON.stringify({ choice, ts: new Date().toISOString(), correct }));
 
-  // Atualizar score se resposta correta já está definida
+  // Atualizar counter agregado (evita N+1 reads no /stats)
+  await updateStatsCounter(env, edition, choice as "A" | "B", correct);
+
+  // Atualizar score individual se resposta correta já está definida
   if (correct !== null) {
     await updateScore(env, email, edition, correct);
   }
@@ -121,6 +124,23 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   return new Response(votePageHtml(msg, true), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
+}
+
+/** Mantém counter agregado stats:{edition} — evita N+1 reads no /stats. */
+async function updateStatsCounter(
+  env: Env,
+  edition: string,
+  choice: "A" | "B",
+  correct: boolean | null,
+): Promise<void> {
+  const statsKey = `stats:${edition}`;
+  const raw = await env.POLL.get(statsKey);
+  const stats = raw ? JSON.parse(raw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  stats.total += 1;
+  if (choice === "A") stats.voted_a += 1;
+  if (choice === "B") stats.voted_b += 1;
+  if (correct === true) stats.correct_count += 1;
+  await env.POLL.put(statsKey, JSON.stringify(stats));
 }
 
 async function updateScore(env: Env, email: string, edition: string, correct: boolean): Promise<void> {
@@ -146,30 +166,23 @@ async function handleStats(url: URL, env: Env): Promise<Response> {
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
 
-  const prefix = `vote:${edition}:`;
-  const list = await env.POLL.list({ prefix });
-  const correct = await env.POLL.get(`correct:${edition}`);
+  // Lê counter agregado (2 reads em vez de N+1)
+  const [statsRaw, correctRaw] = await Promise.all([
+    env.POLL.get(`stats:${edition}`),
+    env.POLL.get(`correct:${edition}`),
+  ]);
 
-  let total = 0, votedA = 0, votedB = 0, correctCount = 0;
-
-  for (const key of list.keys) {
-    const raw = await env.POLL.get(key.name);
-    if (!raw) continue;
-    const vote = JSON.parse(raw);
-    total++;
-    if (vote.choice === "A") votedA++;
-    if (vote.choice === "B") votedB++;
-    if (correct && vote.choice === correct) correctCount++;
-  }
+  const stats = statsRaw ? JSON.parse(statsRaw) : { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
+  const total = stats.total as number;
 
   return json({
     edition,
     total,
-    voted_a: votedA,
-    voted_b: votedB,
-    correct_answer: correct,
-    correct_count: correctCount,
-    correct_pct: total > 0 ? Math.round((correctCount / total) * 100) : null,
+    voted_a: stats.voted_a,
+    voted_b: stats.voted_b,
+    correct_answer: correctRaw,
+    correct_count: stats.correct_count,
+    correct_pct: total > 0 ? Math.round((stats.correct_count / total) * 100) : null,
   }, 200, env);
 }
 
@@ -252,18 +265,30 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
   const prefix = `vote:${edition}:`;
   const list = await env.POLL.list({ prefix });
   let updated = 0;
+  let correctCount = 0;
 
   for (const key of list.keys) {
     const raw = await env.POLL.get(key.name);
     if (!raw) continue;
     const vote = JSON.parse(raw);
-    if (vote.correct === null) {
+    if (vote.correct === null || vote.correct === undefined) {
       const correct = vote.choice === answer;
       await env.POLL.put(key.name, JSON.stringify({ ...vote, correct }));
       const email = key.name.replace(prefix, "");
       await updateScore(env, email, edition, correct);
+      if (correct) correctCount++;
       updated++;
+    } else if (vote.correct === true) {
+      correctCount++;
     }
+  }
+
+  // Actualizar counter agregado com correct_count real
+  const statsRaw = await env.POLL.get(`stats:${edition}`);
+  if (statsRaw) {
+    const stats = JSON.parse(statsRaw);
+    stats.correct_count = correctCount;
+    await env.POLL.put(`stats:${edition}`, JSON.stringify(stats));
   }
 
   return json({ ok: true, edition, answer, updated_votes: updated }, 200, env);

@@ -2,11 +2,14 @@
  * poll-generate-url.ts (#469)
  *
  * Gera URLs assinadas (HMAC) para votação no sistema É IA?.
- * Usadas pelo render-newsletter-html.ts para incluir links de voto na newsletter.
  *
- * Uso:
+ * **Fluxo correto:** como o sig depende do email de cada leitor, não é possível
+ * usar um único template com merge tag (o sig não pode ser pré-computado).
+ * O fluxo esperado é gerar URLs assinadas em batch via Kit API antes do envio
+ * (um par de URLs A/B por assinante, injetadas como custom fields).
+ *
+ * Uso (por assinante):
  *   npx tsx scripts/poll-generate-url.ts --email leitor@ex.com --edition 260502 --choice A
- *   npx tsx scripts/poll-generate-url.ts --edition 260502  # gera template com {{email}} para merge tag
  *
  * Variáveis de ambiente:
  *   POLL_SECRET        HMAC key (ver .env)
@@ -23,16 +26,6 @@ export function generatePollUrl(email: string, edition: string, choice: "A" | "B
   return `${POLL_WORKER_URL}/vote?email=${encodeURIComponent(email)}&edition=${edition}&choice=${choice}&sig=${sig}`;
 }
 
-/**
- * Gera a URL de template com placeholder de email para merge tags do Kit/Beehiiv.
- * O placeholder será substituído pela plataforma antes do envio.
- */
-export function generatePollTemplate(edition: string, choice: "A" | "B"): string {
-  // O sig não pode ser pré-computado para placeholder — usar modo sem HMAC ou HMAC com email real
-  // Para merge tags, retornar URL base sem sig (Worker aceita sem sig em modo "open")
-  // TODO: implementar geração em batch de URLs assinadas por assinante via Kit API
-  return `${POLL_WORKER_URL}/vote?edition=${edition}&choice=${choice}`;
-}
 
 function main(): void {
   const args = process.argv.slice(2);
