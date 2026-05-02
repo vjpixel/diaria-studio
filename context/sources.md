@@ -7,10 +7,12 @@
 ### Canaltech (IA)
 - URL: https://canaltech.com.br/inteligencia-artificial/
 - Site query: `site:canaltech.com.br/inteligencia-artificial`
+- RSS: https://canaltech.com.br/rss/
 
 ### Exame
 - URL: https://exame.com/inteligencia-artificial/
 - Site query: `site:exame.com/inteligencia-artificial`
+- RSS: https://exame.com/feed/
 
 ### G1 Tecnologia (IA)
 - URL: https://g1.globo.com/tecnologia/inteligencia-artificial/
@@ -19,14 +21,17 @@
 ### MIT Technology Review Brasil (IA)
 - URL: https://mittechreview.com.br/category/inteligencia-artificial/
 - Site query: `site:mittechreview.com.br/category/inteligencia-artificial`
+- RSS: https://mittechreview.com.br/feed/
 
 ### Tecnoblog (IA)
 - URL: https://tecnoblog.net/topico/inteligencia-artificial/
 - Site query: `site:tecnoblog.net/topico/inteligencia-artificial`
+- RSS: https://tecnoblog.net/tema/inteligencia-artificial/feed/
 
 ### CNN
 - URL: https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/
 - Site query: `site:cnnbrasil.com.br/tudo-sobre/inteligencia-artificial`
+- RSS: https://www.cnnbrasil.com.br/feed/
 
 ### StartSe (IA)
 - URL: https://www.startse.com/noticias/ia/
@@ -67,6 +72,7 @@
 ### Microsoft
 - URL: https://microsoft.ai/news/
 - Site query: `site:microsoft.ai/news`
+- RSS: https://blogs.microsoft.com/ai/feed/
 
 ### Mistral AI News
 - URL: https://mistral.ai/news/
@@ -108,14 +114,17 @@
 ### AlphaSignal
 - URL: https://alphasignal.ai/
 - Site query: `site:alphasignal.ai`
+- RSS: https://alphasignalai.substack.com/feed
 
 ### The Deep View
 - URL: https://archive.thedeepview.com/
 - Site query: `site:archive.thedeepview.com`
+- RSS: https://rss.beehiiv.com/feeds/nswNBn2yqy.xml
 
 ### Data Machina
 - URL: https://datamachina.com/
 - Site query: `site:datamachina.com`
+- RSS: https://datamachina.substack.com/feed
 
 ### Import AI (Jack Clark)
 - URL: https://importai.substack.com/
@@ -135,6 +144,7 @@
 ### Ben's Bites
 - URL: https://www.bensbites.co/
 - Site query: `site:bensbites.co`
+- RSS: https://www.bensbites.com/feed
 
 ### Cyberman
 - URL: https://www.cyberman.ai/
@@ -155,6 +165,7 @@
 ### The Rundown AI
 - URL: https://www.therundown.ai/archive
 - Site query: `site:therundown.ai/archive`
+- RSS: https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml
 
 ### Recaply
 - URL: https://www.recaply.co/
