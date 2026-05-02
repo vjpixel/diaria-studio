@@ -179,8 +179,9 @@ describe("clarice-apply CLI (#224)", () => {
     assert.equal(result.status, 0, `process exited with ${result.status}: ${result.stderr}`);
     const out = readFileSync(join(dir, "out.md"), "utf8");
     assert.ok(out.includes("manter a empregabilidade"));
-    // stderr deve ser JSON com campo "applied"
+    // stderr deve ser JSON com applied=1, skipped=0 (fixture tem 1 sugestão válida)
     const report = JSON.parse(result.stderr);
-    assert.ok(typeof report.applied === "number");
+    assert.equal(report.applied, 1);
+    assert.equal(report.skipped, 0);
   });
 });

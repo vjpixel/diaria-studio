@@ -161,11 +161,20 @@ describe("resolveSubfolder (#281)", () => {
   });
 
   afterEach(() => {
+    // Restore fetch first (no I/O, always safe).
     globalThis.fetch = originalFetch;
-    if (prevCredsContent !== null) {
-      writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-    } else if (!credsExistedBefore && existsSync(CREDS_PATH)) {
-      unlinkSync(CREDS_PATH);
+    // Restore creds file in a try/finally so a partial failure can't leave a
+    // fake token on disk and corrupt subsequent test runs or production usage.
+    try {
+      if (prevCredsContent !== null) {
+        writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
+      } else if (!credsExistedBefore && existsSync(CREDS_PATH)) {
+        unlinkSync(CREDS_PATH);
+      }
+    } catch (restoreErr) {
+      // Log but don't swallow — surface so it's visible even if the original
+      // test assertion already passed.
+      console.error("[drive-sync.test afterEach] failed to restore creds:", restoreErr);
     }
   });
 
