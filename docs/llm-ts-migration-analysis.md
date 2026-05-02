@@ -35,13 +35,13 @@ O pipeline Diar.ia roda 20+ agentes LLM distribuídos em 4 etapas. Vários desse
 | `title-picker` | Decisão editorial de alto impacto em CTR com raciocínio sobre concretude e tom. Opus por design. |
 | `inbox-drainer` (gate conversacional) | A extração de URLs é migrável, mas a interpretação de mensagens em formato livre (editor manda links sem contexto estruturado) beneficia de LLM. Migração parcial recomendada (parsing para script, julgamento para LLM como fallback). |
 | `auto-reporter` | Gate humano + síntese narrativa de sinais de múltiplas edições requer LLM. |
-| `eai-composer` | Já migrado para `scripts/eai-compose.ts`; agente é referência histórica. |
+| `eia-composer` | Já migrado para `scripts/eia-compose.ts`; agente é referência histórica. |
 
 ## Agentes já migrados (cleanup pendente)
 
 Os agentes abaixo têm frontmatter em `.claude/agents/` mas sua lógica real vive em scripts TypeScript. O agente LLM só adiciona overhead de boot sem valor:
 
-- `eai-composer` — `scripts/eai-compose.ts`
+- `eia-composer` — `scripts/eia-compose.ts`
 - `link-verifier` — `scripts/verify-accessibility.ts`
 - `drive-syncer` — `scripts/drive-sync.ts`
 - `collect-monthly-runner` — `scripts/collect-monthly.ts`
@@ -51,7 +51,7 @@ Os agentes abaixo têm frontmatter em `.claude/agents/` mas sua lógica real viv
 
 Issues sugeridas a abrir (com prioridade):
 
-1. **P3 — Remover agentes wrapper já migrados** (`eai-composer` doc, `drive-syncer`, `link-verifier`, `collect-monthly-runner`, `refresh-dedup-runner`): cleanup de arquivos em `.claude/agents/` + validar que orchestrator não chama mais via `Agent()` mas sim via `Bash`. Risco baixo, ganho de manutenibilidade.
+1. **P3 — Remover agentes wrapper já migrados** (`eia-composer` doc, `drive-syncer`, `link-verifier`, `collect-monthly-runner`, `refresh-dedup-runner`): cleanup de arquivos em `.claude/agents/` + validar que orchestrator não chama mais via `Agent()` mas sim via `Bash`. Risco baixo, ganho de manutenibilidade.
 
 2. **P2 — Migrar `categorizer` para script TypeScript com regras explícitas**: implementar `scripts/categorize-rules.ts` com árvore de decisão baseada em palavras-chave de título + domínio + `type_hint` do researcher. Comparar acurácia contra amostra de 100 artigos categorizados pelo agente atual. LLM como fallback opcional para casos `confidence < 0.7`.
 

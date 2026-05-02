@@ -205,9 +205,12 @@ export async function clusterArticlesWithEmbeddings(
 
   const allNull = embeddingResults.every((e) => e === null);
   if (allNull) {
-    // Fallback total para Jaccard
-    console.warn("topic-cluster: GEMINI_API_KEY ausente ou todos os embeddings falharam — usando Jaccard como fallback");
-    return clusterArticles(articles, threshold);
+    // Fallback total para Jaccard.
+    // Usa threshold Jaccard padrão (0.5) em vez do threshold cosine passado (0.85):
+    // threshold=0.85 para Jaccard é extremamente alto e produziria quase zero clusters.
+    const jaccardThreshold = Math.min(threshold, 0.5);
+    console.warn(`topic-cluster: todos os embeddings falharam — usando Jaccard com threshold=${jaccardThreshold}`);
+    return clusterArticles(articles, jaccardThreshold);
   }
 
   // Greedy cluster com cosine similarity

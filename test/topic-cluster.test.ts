@@ -387,12 +387,11 @@ describe("clusterArticlesWithEmbeddings — caminho com embeddings (fetch mockad
       },
     ];
 
-    // Embeddings retornarão null (500 error) → cai no Jaccard
+    // Embeddings retornarão null (500 error) → cai no Jaccard com threshold=0.5
     const clusters = await clusterArticlesWithEmbeddings(articles, 0.85);
     // Com Jaccard esses artigos são dissimilares → 2 clusters
     assert.equal(clusters.length, 2);
-    // Método pode ser "jaccard" (fallback) ou "cosine" dependendo da implementação
-    // O importante é que não quebrou
-    assert.ok(clusters[0].method === "cosine" || clusters[0].method === "jaccard");
+    // Fallback total deve usar Jaccard, não cosine
+    assert.equal(clusters[0].method, "jaccard");
   });
 });
