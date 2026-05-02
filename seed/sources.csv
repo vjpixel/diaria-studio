@@ -1,10 +1,10 @@
 Nome,Tipo,URL,RSS
-Canaltech (IA),Brasil,https://canaltech.com.br/inteligencia-artificial/,
-Exame,Brasil,https://exame.com/inteligencia-artificial/,
+Canaltech (IA),Brasil,https://canaltech.com.br/inteligencia-artificial/,https://canaltech.com.br/rss/
+Exame,Brasil,https://exame.com/inteligencia-artificial/,https://exame.com/feed/
 G1 Tecnologia (IA),Brasil,https://g1.globo.com/tecnologia/inteligencia-artificial/,
-MIT Technology Review Brasil (IA),Brasil,https://mittechreview.com.br/category/inteligencia-artificial/,
-Tecnoblog (IA),Brasil,https://tecnoblog.net/topico/inteligencia-artificial/,
-CNN,Brasil,https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/,
+MIT Technology Review Brasil (IA),Brasil,https://mittechreview.com.br/category/inteligencia-artificial/,https://mittechreview.com.br/feed/
+Tecnoblog (IA),Brasil,https://tecnoblog.net/topico/inteligencia-artificial/,https://tecnoblog.net/tema/inteligencia-artificial/feed/
+CNN,Brasil,https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/,https://www.cnnbrasil.com.br/feed/
 StartSe (IA),Brasil,https://www.startse.com/noticias/ia/,
 Meta AI Blog,Primária,https://ai.meta.com/blog/,https://ai.meta.com/feed/
 arXiv,Pesquisa,https://arxiv.org/,https://rss.arxiv.org/rss/cs.AI
@@ -13,7 +13,7 @@ Cohere Blog,Primária,https://cohere.com/blog,https://cohere.com/blog/rss
 DeepMind,Primária,https://deepmind.google/research/publications/,https://deepmind.google/blog/rss.xml
 Hugging Face Blog,Primária,https://huggingface.co/blog,https://huggingface.co/blog/feed.xml
 Apple Machine Learning Research,Primária,https://machinelearning.apple.com/,https://machinelearning.apple.com/rss-feed.rss
-Microsoft,Primária,https://microsoft.ai/news/,
+Microsoft,Primária,https://microsoft.ai/news/,https://blogs.microsoft.com/ai/feed/
 Mistral AI News,Primária,https://mistral.ai/news/,https://mistral.ai/news/feed/
 Nvidia,Primária,https://nvidianews.nvidia.com/,https://nvidianews.nvidia.com/rss
 OpenAI,Primária,https://openai.com/news/company-announcements/,https://openai.com/news/rss.xml
@@ -22,18 +22,18 @@ Anthropic,Primária,https://www.anthropic.com/news/,https://www.anthropic.com/rs
 Perplexity,Primária,https://www.perplexity.ai/hub,https://www.perplexity.ai/hub/feed
 Agent Pulse,Secundária,https://agentpulse.beehiiv.com/,https://agentpulse.beehiiv.com/feed
 AI Breakfast,Secundária,https://aibreakfast.beehiiv.com/,https://aibreakfast.beehiiv.com/feed
-AlphaSignal,Secundária,https://alphasignal.ai/,
-The Deep View,Secundária,https://archive.thedeepview.com/,
-Data Machina,Secundária,https://datamachina.com/,
+AlphaSignal,Secundária,https://alphasignal.ai/,https://alphasignalai.substack.com/feed
+The Deep View,Secundária,https://archive.thedeepview.com/,https://rss.beehiiv.com/feeds/nswNBn2yqy.xml
+Data Machina,Secundária,https://datamachina.com/,https://datamachina.substack.com/feed
 Import AI (Jack Clark),Secundária,https://importai.substack.com/,https://importai.substack.com/feed
 The AI Pulse,Secundária,https://theaipulse.beehiiv.com/,https://theaipulse.beehiiv.com/feed
 TLDR AI,Secundária,https://tldr.tech/ai,https://tldr.tech/ai/rss
-Ben's Bites,Secundária,https://www.bensbites.co/,
+Ben's Bites,Secundária,https://www.bensbites.co/,https://www.bensbites.com/feed
 Cyberman,Secundária,https://www.cyberman.ai/,
 Reuters,Secundária,https://www.reuters.com/technology/artificial-intelligence/,
 Superhuman AI,Secundária,https://www.superhuman.ai/,
 The Neuron,Secundária,https://www.theneurondaily.com/,
-The Rundown AI,Secundária,https://www.therundown.ai/archive,
+The Rundown AI,Secundária,https://www.therundown.ai/archive,https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml
 Recaply,Secundária,https://www.recaply.co/,
 7min.ai,Secundária,https://7min.ai/?lang=pt-br,
 Evolving AI,Secundária,https://evolvingai.io/,
