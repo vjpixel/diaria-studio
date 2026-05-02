@@ -19,7 +19,7 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
@@ -184,11 +184,22 @@ function getHeader(msg: GmailMessage, name: string): string {
 // Inbox cache
 // ---------------------------------------------------------------------------
 
-function loadCursor(): InboxCursor {
+export function loadCursor(): InboxCursor {
   const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
   if (!existsSync(cursorPath)) return { last_drain_iso: null };
   try {
-    return JSON.parse(readFileSync(cursorPath, "utf8")) as InboxCursor;
+    const cursor = JSON.parse(readFileSync(cursorPath, "utf8")) as InboxCursor;
+    // #441: cursor no futuro (clock drift, restore de backup, edição manual) trava
+    // drain silenciosamente — todos os emails ficam com iso < last_drain_iso.
+    // Se detectado: resetar para null com warn.
+    if (cursor.last_drain_iso && cursor.last_drain_iso > new Date().toISOString()) {
+      console.warn(
+        `[inbox-drain] WARN: cursor no futuro (${cursor.last_drain_iso}) — resetando para null. ` +
+        `Possível clock drift ou restore de backup. Drain vai buscar e-mails dos últimos 3 dias.`
+      );
+      return { last_drain_iso: null };
+    }
+    return cursor;
   } catch {
     return { last_drain_iso: null };
   }
@@ -413,16 +424,23 @@ function appendToInbox(entries: string[]): void {
   }
 
   const current = readFileSync(inboxPath, "utf8");
-  const markerIdx = current.indexOf("<!-- entries abaixo -->");
+  const MARKER = "<!-- entries abaixo -->";
+  const markerIdx = current.indexOf(MARKER);
+
+  let newContent: string;
   if (markerIdx === -1) {
-    // Fallback: append ao final
-    writeFileSync(inboxPath, current + "\n" + entries.join("\n"), "utf8");
-    return;
+    newContent = current + "\n" + entries.join("\n");
+  } else {
+    const before = current.slice(0, markerIdx + MARKER.length);
+    const after = current.slice(markerIdx + MARKER.length);
+    newContent = before + "\n" + entries.join("\n") + after;
   }
 
-  const before = current.slice(0, markerIdx + "<!-- entries abaixo -->".length);
-  const after = current.slice(markerIdx + "<!-- entries abaixo -->".length);
-  writeFileSync(inboxPath, before + "\n" + entries.join("\n") + after, "utf8");
+  // #444: write atômico via tmpfile + rename — evita corrupção em escrita parcial
+  // (disco cheio, arquivo locked por editor, antivirus interceptando).
+  const tmpPath = inboxPath + ".tmp";
+  writeFileSync(tmpPath, newContent, "utf8");
+  renameSync(tmpPath, inboxPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -453,12 +471,14 @@ async function main(): Promise<void> {
   let afterDate: string;
   if (!cursor.last_drain_iso) {
     // Primeira execução: 3 dias atrás
+    // #442: usar UTC para calcular a data — getDate/getMonth/getFullYear usam
+    // timezone local e perdem e-mails em máquinas fora do Brasil (CI, UTC).
     const d = new Date();
-    d.setDate(d.getDate() - 3);
-    afterDate = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    d.setUTCDate(d.getUTCDate() - 3);
+    afterDate = d.toISOString().slice(0, 10).replace(/-/g, "/");
   } else {
-    const d = new Date(cursor.last_drain_iso);
-    afterDate = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    // #442: cursor já é ISO string — fatiar diretamente sem conversão de timezone.
+    afterDate = cursor.last_drain_iso.slice(0, 10).replace(/-/g, "/");
   }
 
   const query = `${gmailQuery} after:${afterDate}`;
