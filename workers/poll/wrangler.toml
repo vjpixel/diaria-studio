@@ -1,0 +1,12 @@
+name = "diar-ia-poll"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "POLL"
+id = "72784da4ae39444481eb422ebac357c6"
+
+[vars]
+ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
