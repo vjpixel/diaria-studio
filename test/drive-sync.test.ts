@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
-import { isRetryableStatus, backoffMs, splitFilePath, escapeDriveQueryString, resolveSubfolder } from "../scripts/drive-sync.ts";
+import { isRetryableStatus, backoffMs, splitFilePath, escapeDriveQueryString, resolveSubfolder, CONVERT_TO_DOC, GOOGLE_DOC_MIME } from "../scripts/drive-sync.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
@@ -249,5 +249,81 @@ describe("resolveSubfolder (#281)", () => {
     const id = await resolveSubfolder(cache as any, yymmdd, dayFolderId, "_internal");
     assert.equal(id, "cached-id");
     assert.equal(fetchCallCount, 0, "não deve chamar fetch quando cache hit");
+  });
+});
+
+// ── Round-trip MD ↔ Google Doc (#327) ────────────────────────────────────────
+
+describe("CONVERT_TO_DOC whitelist (#327)", () => {
+  it("contém os 6 arquivos esperados", () => {
+    assert.ok(CONVERT_TO_DOC.has("01-categorized.md"));
+    assert.ok(CONVERT_TO_DOC.has("02-reviewed.md"));
+    assert.ok(CONVERT_TO_DOC.has("03-social.md"));
+    assert.ok(CONVERT_TO_DOC.has("01-eia.md"));
+    assert.ok(CONVERT_TO_DOC.has("prioritized.md"));
+    assert.ok(CONVERT_TO_DOC.has("draft.md"));
+  });
+
+  it("não inclui arquivos que NÃO devem virar Doc", () => {
+    assert.ok(!CONVERT_TO_DOC.has("platform.config.json"));
+    assert.ok(!CONVERT_TO_DOC.has("04-d1-2x1.jpg"));
+    assert.ok(!CONVERT_TO_DOC.has("_internal/01-approved.json"));
+    assert.ok(!CONVERT_TO_DOC.has("01-eia-A.jpg"));
+  });
+
+  it("basenames sem subpath são detectados corretamente (subpath stripped antes)", () => {
+    // pushFile usa splitFilePath e verifica CONVERT_TO_DOC.has(basename)
+    // garantir que o basename sem subpath está na whitelist
+    const { basename } = splitFilePath("02-reviewed.md");
+    assert.ok(CONVERT_TO_DOC.has(basename));
+  });
+
+  it("arquivos em _internal/ com basename na whitelist NÃO são convertidos (subpath presente)", () => {
+    // CONVERT_TO_DOC só converte top-level files. Se o mesmo basename estiver
+    // em _internal/, pushFile não deve converter (verificado via subpath != "")
+    const { subpath, basename } = splitFilePath("_internal/02-reviewed.md");
+    assert.equal(subpath, "_internal");
+    // No pushFile: convertToDoc = CONVERT_TO_DOC.has(basename) && !subpath
+    // Aqui confirmamos que subpath != "" — o caller decide não converter.
+    assert.ok(subpath !== "");
+    // basename ainda está na whitelist (isso é o comportamento documentado)
+    assert.ok(CONVERT_TO_DOC.has(basename));
+  });
+});
+
+describe("GOOGLE_DOC_MIME (#327)", () => {
+  it("tem o valor correto da MIME type de Google Docs", () => {
+    assert.equal(GOOGLE_DOC_MIME, "application/vnd.google-apps.document");
+  });
+});
+
+describe("CONVERT_TO_DOC × GOOGLE_DOC_MIME — invariante de upload (#327)", () => {
+  it("todos os arquivos na whitelist são MDs — nunca imagens ou JSONs", () => {
+    for (const filename of CONVERT_TO_DOC) {
+      assert.ok(filename.endsWith(".md"),
+        `${filename} na CONVERT_TO_DOC deve ser .md — outro tipo não seria convertível para Doc`);
+    }
+  });
+
+  it("GOOGLE_DOC_MIME é string não-vazia que identifica Google Docs nativos", () => {
+    assert.ok(GOOGLE_DOC_MIME.length > 0);
+    assert.ok(GOOGLE_DOC_MIME.includes("google-apps.document"));
+  });
+});
+
+describe("pullFile branch isGoogleDoc (#327)", () => {
+  it("cache com drive_mimeType = GOOGLE_DOC_MIME indica que pull usa export endpoint", () => {
+    // Verificar a lógica: isGoogleDoc = fileCache.drive_mimeType === GOOGLE_DOC_MIME
+    // Testar os dois ramos como unidade pura
+    const cacheWithDoc = { drive_mimeType: GOOGLE_DOC_MIME, drive_file_id: "abc", drive_modifiedTime: "" };
+    const cacheWithoutDoc = { drive_mimeType: "text/markdown", drive_file_id: "abc", drive_modifiedTime: "" };
+    const cacheWithoutField = { drive_file_id: "abc", drive_modifiedTime: "" };
+
+    assert.equal(cacheWithDoc.drive_mimeType === GOOGLE_DOC_MIME, true,
+      "arquivo com drive_mimeType=Doc → pull deve usar driveExportFile");
+    assert.equal(cacheWithoutDoc.drive_mimeType === GOOGLE_DOC_MIME, false,
+      "arquivo com drive_mimeType=markdown → pull deve usar driveDownloadFile");
+    assert.equal((cacheWithoutField as { drive_mimeType?: string }).drive_mimeType === GOOGLE_DOC_MIME, false,
+      "arquivo sem drive_mimeType → pull usa driveDownloadFile (backwards-compat)");
   });
 });

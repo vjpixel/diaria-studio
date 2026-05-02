@@ -58,7 +58,7 @@ interface FileEntry {
  *
  * Demais arquivos MD continuam como texto plano no Drive (MD download = MD).
  */
-const CONVERT_TO_DOC = new Set<string>([
+export const CONVERT_TO_DOC = new Set<string>([
   "01-categorized.md",
   "02-reviewed.md",
   "03-social.md",
@@ -67,7 +67,7 @@ const CONVERT_TO_DOC = new Set<string>([
   "draft.md",
 ]);
 
-const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
+export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
 interface EditionCache {
   day_folder_id: string;
