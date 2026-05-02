@@ -357,7 +357,7 @@ describe("inbox-drain main() integration (#306)", () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    // Save state
+    // Save state of all real files that main() may read or write.
     savedConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
     savedCursor = existsSync(CURSOR_PATH) ? readFileSync(CURSOR_PATH, "utf8") : null;
     savedCreds = existsSync(CREDS_PATH) ? readFileSync(CREDS_PATH, "utf8") : null;
@@ -369,42 +369,25 @@ describe("inbox-drain main() integration (#306)", () => {
   });
 
   afterEach(() => {
+    // Restore fetch first (no I/O, always safe).
     globalThis.fetch = originalFetch;
-    // Restore state
-    if (savedConfig !== null) writeFileSync(CONFIG_PATH, savedConfig, "utf8");
-    if (savedCursor !== null) writeFileSync(CURSOR_PATH, savedCursor, "utf8");
-    else if (existsSync(CURSOR_PATH)) unlinkSync(CURSOR_PATH);
-    if (savedCreds !== null) writeFileSync(CREDS_PATH, savedCreds, "utf8");
-    else if (existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    if (savedInbox !== null) writeFileSync(INBOX_PATH, savedInbox, "utf8");
-    else if (existsSync(INBOX_PATH)) unlinkSync(INBOX_PATH);
+    // Restore real files in a try/finally so a crash inside the test body
+    // can't permanently corrupt the workspace.
+    try {
+      if (savedConfig !== null) writeFileSync(CONFIG_PATH, savedConfig, "utf8");
+      if (savedCursor !== null) writeFileSync(CURSOR_PATH, savedCursor, "utf8");
+      else if (existsSync(CURSOR_PATH)) unlinkSync(CURSOR_PATH);
+      if (savedCreds !== null) writeFileSync(CREDS_PATH, savedCreds, "utf8");
+      else if (existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
+      if (savedInbox !== null) writeFileSync(INBOX_PATH, savedInbox, "utf8");
+      else if (existsSync(INBOX_PATH)) unlinkSync(INBOX_PATH);
+    } catch (restoreErr) {
+      console.error("[inbox-drain.test afterEach] failed to restore files:", restoreErr);
+    }
   });
 
-  it("drain com threads = [] → silent_reset path → cursor não avança", async () => {
-    // Set up cursor at THRESHOLD so silent_reset fires on empty drain
-    writeFileSync(CURSOR_PATH, JSON.stringify({
-      last_drain_iso: "2026-04-01T00:00:00Z",
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
-    }), "utf8");
-
-    let fetchCalls: string[] = [];
-    globalThis.fetch = async (url: string | URL | Request) => {
-      const u = String(url);
-      fetchCalls.push(u);
-      if (u.includes("/labels")) {
-        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
-      }
-      if (u.includes("/threads") && !u.includes("/threads/")) {
-        // primary query (with label) → empty
-        if (u.includes("label")) {
-          return makeGmailResponse({ threads: [] });
-        }
-        // alt query (without label) → empty too → silent_reset
-        return makeGmailResponse({ threads: [] });
-      }
-      return makeGmailResponse({});
-    };
-
+  /** Helper: capture stdout written by drainMain() and return parsed JSON. */
+  async function runDrain(): Promise<Record<string, unknown>> {
     const capturedOutput: string[] = [];
     const origWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk: any) => {
@@ -416,8 +399,28 @@ describe("inbox-drain main() integration (#306)", () => {
     } finally {
       process.stdout.write = origWrite;
     }
+    return JSON.parse(capturedOutput.join(""));
+  }
 
-    const output = JSON.parse(capturedOutput.join(""));
+  it("drain com threads = [] → silent_reset path → cursor não avança", async () => {
+    // Set up cursor at THRESHOLD so silent_reset fires on empty drain
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    }), "utf8");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        return makeGmailResponse({ threads: [] });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
     assert.equal(output.new_entries, 0);
     assert.equal(output.skipped, false);
 
@@ -469,25 +472,107 @@ describe("inbox-drain main() integration (#306)", () => {
       return makeGmailResponse({});
     };
 
-    const capturedOutput: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (chunk: any) => {
-      if (typeof chunk === "string") capturedOutput.push(chunk);
-      return true;
-    };
-    try {
-      await drainMain();
-    } finally {
-      process.stdout.write = origWrite;
-    }
-
-    const output = JSON.parse(capturedOutput.join(""));
+    const output = await runDrain();
     assert.equal(output.new_entries, 1);
-    assert.ok(output.urls.some((u: { url: string }) => u.url === "https://openai.com/blog/gpt-5"));
+    assert.ok((output.urls as Array<{ url: string }>).some((u) => u.url === "https://openai.com/blog/gpt-5"));
 
     // inbox.md deve conter a URL extraída
     assert.ok(existsSync(INBOX_PATH));
     const inboxContent = readFileSync(INBOX_PATH, "utf8");
     assert.ok(inboxContent.includes("https://openai.com/blog/gpt-5"));
+  });
+
+  it("inbox disabled → skipped=true sem chamar Gmail API (#430)", async () => {
+    // Write config with inbox.enabled: false
+    const config = JSON.parse(savedConfig ?? "{}");
+    config.inbox = { ...(config.inbox ?? {}), enabled: false };
+    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+
+    let fetchCalled = false;
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(output.skipped, true);
+    assert.equal(output.new_entries, 0);
+    assert.equal(fetchCalled, false, "Gmail API must not be called when inbox is disabled");
+  });
+
+  it("label ausente → validateLabel cria label, busca sem label → drain vazio (#430)", async () => {
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    const callLog: string[] = [];
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/labels") && (!opts?.method || opts.method === "GET")) {
+        callLog.push("GET /labels");
+        // Return labels without Diaria.Editor
+        return makeGmailResponse({ labels: [{ id: "0", name: "INBOX" }] });
+      }
+      if (u.includes("/labels") && opts?.method === "POST") {
+        callLog.push("POST /labels");
+        return makeGmailResponse({ id: "1", name: "Diaria.Editor" });
+      }
+      if (u.includes("/threads")) {
+        callLog.push("GET /threads");
+        return makeGmailResponse({ threads: [] });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    // After createLabel, the function returns early with skipped=true and reason=label_missing
+    assert.equal(output.skipped, true);
+    assert.equal(output.new_entries, 0);
+    assert.ok(callLog.includes("POST /labels"), "deve criar label ausente");
+    // No threads call — exits early after label creation
+    assert.equal(
+      callLog.filter((c) => c === "GET /threads").length,
+      0,
+      "não deve buscar threads depois de criar label (retorna early)",
+    );
+  });
+
+  it("alt query failure → não lança exceção, new_entries=0 (#431)", async () => {
+    // Set cursor at threshold so alt query runs after an empty primary drain
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    }), "utf8");
+
+    let primaryCalled = false;
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads")) {
+        if (!primaryCalled) {
+          // First call = primary query (with label) → empty → triggers alt query
+          primaryCalled = true;
+          return makeGmailResponse({ threads: [] });
+        }
+        // Second call = alt query (without label) → HTTP 500 → caught as altQuery.failed
+        return makeGmailResponse({ error: "internal server error" }, 500);
+      }
+      return makeGmailResponse({});
+    };
+
+    // Should not throw — main() wraps the alt query in try/catch and handles
+    // the failure via decideEmptyDrainAction (warn path), never re-throws.
+    let threw = false;
+    let output: Record<string, unknown> = {};
+    try {
+      output = await runDrain();
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, false, "drainMain() não deve lançar exceção quando alt query falha");
+    assert.equal(output.new_entries, 0);
   });
 });
