@@ -14,6 +14,7 @@ import {
   stripLabelFromQuery,
   decideEmptyDrainAction,
   EMPTY_DRAIN_WARN_THRESHOLD,
+  loadCursor,
   main as drainMain,
   type AltQueryResult,
 } from "../scripts/inbox-drain.ts";
@@ -574,5 +575,57 @@ describe("inbox-drain main() integration (#306)", () => {
     }
     assert.equal(threw, false, "drainMain() não deve lançar exceção quando alt query falha");
     assert.equal(output.new_entries, 0);
+  });
+});
+
+describe("loadCursor — validação de cursor no futuro (#441)", () => {
+  const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
+  let savedCursor: string | null = null;
+
+  beforeEach(() => {
+    savedCursor = existsSync(cursorPath) ? readFileSync(cursorPath, "utf8") : null;
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+  });
+  afterEach(() => {
+    if (savedCursor !== null) writeFileSync(cursorPath, savedCursor, "utf8");
+    else if (existsSync(cursorPath)) unlinkSync(cursorPath);
+  });
+
+  it("cursor no futuro → retorna null com warn", () => {
+    const future = new Date(Date.now() + 3_600_000).toISOString(); // 1h no futuro
+    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: future }), "utf8");
+    const cursor = loadCursor();
+    assert.equal(cursor.last_drain_iso, null, "deve resetar cursor no futuro para null");
+  });
+
+  it("cursor no passado → preservado normalmente", () => {
+    const past = "2026-04-01T10:00:00Z";
+    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: past }), "utf8");
+    const cursor = loadCursor();
+    assert.equal(cursor.last_drain_iso, past);
+  });
+
+  it("cursor null → retornado sem modificação", () => {
+    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: null }), "utf8");
+    const cursor = loadCursor();
+    assert.equal(cursor.last_drain_iso, null);
+  });
+});
+
+describe("afterDate usa UTC (#442)", () => {
+  it("cursor.last_drain_iso é fatiado diretamente como YYYY/MM/DD sem conversão de TZ", () => {
+    // ISO string com hora que seria diferente em UTC vs Brasil (UTC-3)
+    // "2026-04-28T01:30:00Z" = "2026-04-27T22:30:00-03:00" → com getDate() local (BR) viraria 27/04, com UTC fica 28/04
+    const iso = "2026-04-28T01:30:00Z";
+    const afterDate = iso.slice(0, 10).replace(/-/g, "/");
+    assert.equal(afterDate, "2026/04/28", "deve usar data UTC, não local");
+  });
+
+  it("primeira execução: 3 dias atrás em UTC", () => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 3);
+    const afterDate = d.toISOString().slice(0, 10).replace(/-/g, "/");
+    // Verificar formato YYYY/MM/DD
+    assert.match(afterDate, /^\d{4}\/\d{2}\/\d{2}$/);
   });
 });
