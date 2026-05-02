@@ -359,19 +359,27 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
 // ---------- É IA? block -------------------------------------------------
 
 /**
- * Lê `01-eai.md` do diretório da edição e monta o bloco para inserção
+ * Lê o arquivo do É IA? do diretório da edição e monta o bloco para inserção
  * entre as seções do `01-categorized.md`.
  *
+ * Suporta o padrão novo (`01-eia.md`, pós-#428) e o legacy (`01-eai.md`).
  * Se o arquivo existir: retorna o bloco completo com conteúdo + paths de imagem.
  * Se não existir (ainda processando em background): retorna placeholder.
  */
 export function renderEaiBlock(editionDir: string): string {
-  const eaiMd = join(editionDir, "01-eai.md");
   const separator = "---";
-  if (existsSync(eaiMd)) {
+
+  // Suporte a novo padrão (eia, pós-#428) e legacy (eai, pré-#428)
+  const eaiMd =
+    existsSync(join(editionDir, "01-eia.md")) ? join(editionDir, "01-eia.md") :
+    existsSync(join(editionDir, "01-eai.md")) ? join(editionDir, "01-eai.md") :
+    null;
+
+  if (eaiMd) {
     const content = readFileSync(eaiMd, "utf8").trim();
-    const imgA = join(editionDir, "01-eai-A.jpg");
-    const imgB = join(editionDir, "01-eai-B.jpg");
+    const prefix = eaiMd.endsWith("01-eia.md") ? "eia" : "eai";
+    const imgA = join(editionDir, `01-${prefix}-A.jpg`);
+    const imgB = join(editionDir, `01-${prefix}-B.jpg`);
     const imgLine = `Imagem A: ${imgA} | Imagem B: ${imgB}`;
     return `\n${separator}\n\n## É IA?\n\n${content}\n${imgLine}\n\n${separator}\n`;
   }
@@ -406,7 +414,7 @@ function main() {
 
   // Determinar o diretório da edição a partir do path do arquivo de saída (#371).
   // O É IA? é embutido entre Pesquisas e Notícias para revisão integrada no gate da Etapa 1.
-  const editionDir = dirname(resolve(cli.out));
+  const editionDir = cli.out ? dirname(resolve(cli.out)) : process.cwd();
   const eaiBlock = renderEaiBlock(editionDir);
 
   const sections = [
