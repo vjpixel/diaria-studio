@@ -1,16 +1,17 @@
 /**
  * topic-cluster.ts
  *
- * Agrupa artigos cobrindo o mesmo tema usando Jaccard similarity de tokens
- * de título + summary. Reduz buckets poluídos com N artigos do mesmo evento
- * (ex: Google Cloud Next coberto por blog.google + techtudo.com.br).
+ * Agrupa artigos cobrindo o mesmo tema usando embedding similarity (Gemini
+ * text-embedding-004) com fallback para Jaccard similarity de tokens.
+ * Reduz buckets poluídos com N artigos do mesmo evento (ex: Google Cloud
+ * Next coberto por blog.google + techtudo.com.br).
  *
- * Threshold default 0.5 é mais tolerante que o 0.85 de `dedup.ts` — dedup
- * só pega reescritas quase literais, clustering pega mesmo evento com
- * ângulos variantes.
+ * Threshold default:
+ *   - cosine (com GEMINI_API_KEY):  0.85  (documentado no CLI como --threshold 0.85)
+ *   - Jaccard (fallback sem key):   0.5   (mais tolerante — tokens são esparsos)
  *
  * Uso:
- *   npx tsx scripts/topic-cluster.ts --in <categorized.json> --out <clustered.json> [--threshold 0.5]
+ *   npx tsx scripts/topic-cluster.ts --in <categorized.json> --out <clustered.json> [--threshold 0.85]
  *
  * Input:  { lancamento: Article[], pesquisa: Article[], noticias: Article[] }
  * Output: mesmo shape + { clusters: ClusterMetadata[] } com os artigos
@@ -38,7 +39,10 @@ export interface Article {
 export interface Cluster {
   top_url: string;
   member_urls: string[];
+  /** @deprecated use similarity_min instead — kept for backwards compat */
   jaccard_min: number;
+  similarity_min: number;
+  similarity_method: "cosine" | "jaccard";
 }
 
 export interface CategorizedInput {
@@ -49,6 +53,51 @@ export interface CategorizedInput {
 
 export interface ClusterOutput extends CategorizedInput {
   clusters: Cluster[];
+}
+
+/**
+ * Fetches a text embedding from the Gemini text-embedding-004 model.
+ * Returns null when GEMINI_API_KEY is absent or the request fails.
+ */
+export async function embedText(text: string): Promise<number[] | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "models/text-embedding-004",
+          content: { parts: [{ text }] },
+        }),
+      }
+    );
+    const data = (await res.json()) as { embedding?: { values?: number[] } };
+    return data.embedding?.values ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cosine similarity between two vectors.
+ * Returns 1.0 for identical vectors and -1.0 for opposite vectors.
+ * Returns 0 for zero-length vectors to avoid division by zero.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom === 0 ? 0 : dot / denom;
 }
 
 const STOPWORDS = new Set([
@@ -96,15 +145,21 @@ function articleText(a: Article): string {
 }
 
 /**
- * Cluster greedy: itera artigos em ordem, assigna a cluster existente se
- * Jaccard >= threshold com qualquer membro; senão cria novo.
+ * Cluster greedy usando Jaccard similarity (síncrono).
+ * Itera artigos em ordem, assigna a cluster existente se Jaccard >= threshold
+ * com qualquer membro; senão cria novo.
  */
 export function clusterArticles(
   articles: Article[],
   threshold: number,
-): Array<{ members: Article[]; jaccardMin: number }> {
+): Array<{ members: Article[]; similarityMin: number; method: "jaccard" }> {
   const tokensByArt = articles.map((a) => tokenize(articleText(a)));
-  const clusters: Array<{ members: Article[]; memberTokens: Set<string>[]; jaccardMin: number }> = [];
+  const clusters: Array<{
+    members: Article[];
+    memberTokens: Set<string>[];
+    similarityMin: number;
+    method: "jaccard";
+  }> = [];
 
   for (let i = 0; i < articles.length; i++) {
     const art = articles[i];
@@ -116,7 +171,7 @@ export function clusterArticles(
         if (sim >= threshold) {
           c.members.push(art);
           c.memberTokens.push(toks);
-          c.jaccardMin = Math.min(c.jaccardMin, sim);
+          c.similarityMin = Math.min(c.similarityMin, sim);
           assigned = true;
           break;
         }
@@ -124,11 +179,85 @@ export function clusterArticles(
       if (assigned) break;
     }
     if (!assigned) {
-      clusters.push({ members: [art], memberTokens: [toks], jaccardMin: 1 });
+      clusters.push({ members: [art], memberTokens: [toks], similarityMin: 1, method: "jaccard" });
     }
   }
 
-  return clusters.map((c) => ({ members: c.members, jaccardMin: c.jaccardMin }));
+  return clusters.map((c) => ({ members: c.members, similarityMin: c.similarityMin, method: c.method }));
+}
+
+/**
+ * Cluster greedy usando cosine similarity de embeddings (assíncrono).
+ *
+ * Faz batch de todas as chamadas de embedding ANTES de comparar pares (N
+ * chamadas, não N²). Se qualquer embedding falhar, usa o vetor nulo e o
+ * par cai abaixo do threshold — safe degradation.
+ *
+ * Se nenhum embedding retornar, recai silenciosamente no Jaccard.
+ */
+export async function clusterArticlesWithEmbeddings(
+  articles: Article[],
+  threshold: number,
+): Promise<Array<{ members: Article[]; similarityMin: number; method: "cosine" | "jaccard" }>> {
+  // Batch: buscar todos os embeddings em paralelo
+  const texts = articles.map((a) => articleText(a));
+  const embeddingResults = await Promise.all(texts.map((t) => embedText(t)));
+
+  const allNull = embeddingResults.every((e) => e === null);
+  if (allNull) {
+    // Fallback total para Jaccard
+    console.warn("topic-cluster: GEMINI_API_KEY ausente ou todos os embeddings falharam — usando Jaccard como fallback");
+    return clusterArticles(articles, threshold);
+  }
+
+  // Greedy cluster com cosine similarity
+  const clusters: Array<{
+    members: Article[];
+    memberEmbeddings: (number[] | null)[];
+    memberTokens: Set<string>[];
+    similarityMin: number;
+    method: "cosine" | "jaccard";
+  }> = [];
+
+  for (let i = 0; i < articles.length; i++) {
+    const art = articles[i];
+    const emb = embeddingResults[i];
+    const toks = tokenize(articleText(art));
+    let assigned = false;
+
+    for (const c of clusters) {
+      for (let j = 0; j < c.members.length; j++) {
+        let sim: number;
+        const otherEmb = c.memberEmbeddings[j];
+        if (emb !== null && otherEmb !== null) {
+          sim = cosineSimilarity(emb, otherEmb);
+        } else {
+          // Fallback por par: ambos precisam de embedding; se um faltou, usa Jaccard
+          sim = jaccard(toks, c.memberTokens[j]);
+        }
+        if (sim >= threshold) {
+          c.members.push(art);
+          c.memberEmbeddings.push(emb);
+          c.memberTokens.push(toks);
+          c.similarityMin = Math.min(c.similarityMin, sim);
+          assigned = true;
+          break;
+        }
+      }
+      if (assigned) break;
+    }
+    if (!assigned) {
+      clusters.push({
+        members: [art],
+        memberEmbeddings: [emb],
+        memberTokens: [toks],
+        similarityMin: 1,
+        method: "cosine",
+      });
+    }
+  }
+
+  return clusters.map((c) => ({ members: c.members, similarityMin: c.similarityMin, method: c.method }));
 }
 
 /**
@@ -153,35 +282,43 @@ export function rankWithinCluster(members: Article[]): Article[] {
 /**
  * Aplica cluster + ranking a um bucket, retornando só os "top" de cada
  * cluster + a metadata dos clusters (com runners-up pra rastreabilidade).
+ *
+ * Usa embeddings quando GEMINI_API_KEY está disponível; fallback para Jaccard.
+ * Threshold padrão para cosine: 0.85. Threshold padrão para Jaccard: 0.5.
  */
-export function clusterBucket(
+export async function clusterBucket(
   articles: Article[],
   threshold: number,
-): { kept: Article[]; clusters: Cluster[] } {
-  const clusters = clusterArticles(articles, threshold);
+): Promise<{ kept: Article[]; clusters: Cluster[] }> {
+  const clusters = await clusterArticlesWithEmbeddings(articles, threshold);
   const kept: Article[] = [];
   const clusterMeta: Cluster[] = [];
   for (const c of clusters) {
     const ranked = rankWithinCluster(c.members);
     kept.push(ranked[0]);
     if (ranked.length > 1) {
+      const sim = Number(c.similarityMin.toFixed(3));
       clusterMeta.push({
         top_url: ranked[0].url,
         member_urls: ranked.map((a) => a.url),
-        jaccard_min: Number(c.jaccardMin.toFixed(3)),
+        jaccard_min: sim, // backwards compat alias
+        similarity_min: sim,
+        similarity_method: c.method,
       });
     }
   }
   return { kept, clusters: clusterMeta };
 }
 
-export function clusterCategorized(
+export async function clusterCategorized(
   input: CategorizedInput,
   threshold: number,
-): ClusterOutput {
-  const l = clusterBucket(input.lancamento, threshold);
-  const p = clusterBucket(input.pesquisa, threshold);
-  const n = clusterBucket(input.noticias, threshold);
+): Promise<ClusterOutput> {
+  const [l, p, n] = await Promise.all([
+    clusterBucket(input.lancamento, threshold),
+    clusterBucket(input.pesquisa, threshold),
+    clusterBucket(input.noticias, threshold),
+  ]);
   return {
     lancamento: l.kept,
     pesquisa: p.kept,
@@ -201,24 +338,34 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const inPath = args.in;
   const outPath = args.out;
-  const threshold = args.threshold ? parseFloat(args.threshold) : 0.5;
+
+  // Default threshold differs by method:
+  //   cosine (GEMINI_API_KEY present): 0.85
+  //   Jaccard (fallback):              0.5
+  // The CLI flag --threshold overrides both.
+  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const defaultThreshold = hasKey ? 0.85 : 0.5;
+  const threshold = args.threshold ? parseFloat(args.threshold) : defaultThreshold;
 
   if (!inPath) {
-    console.error("Uso: topic-cluster.ts --in <categorized.json> [--out <clustered.json>] [--threshold 0.5]");
+    console.error(
+      "Uso: topic-cluster.ts --in <categorized.json> [--out <clustered.json>] [--threshold 0.85]",
+    );
     process.exit(1);
   }
 
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
-  const result = clusterCategorized(input, threshold);
+  const result = await clusterCategorized(input, threshold);
 
   const totalIn = input.lancamento.length + input.pesquisa.length + input.noticias.length;
   const totalOut = result.lancamento.length + result.pesquisa.length + result.noticias.length;
+  const method = result.clusters[0]?.similarity_method ?? (hasKey ? "cosine" : "jaccard");
   console.error(
-    `topic-cluster: ${totalIn} in → ${totalOut} kept, ${result.clusters.length} cluster(s) com runners-up (threshold=${threshold})`,
+    `topic-cluster: ${totalIn} in → ${totalOut} kept, ${result.clusters.length} cluster(s) com runners-up (threshold=${threshold}, method=${method})`,
   );
 
   const json = JSON.stringify(result, null, 2);
@@ -235,5 +382,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }

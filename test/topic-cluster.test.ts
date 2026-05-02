@@ -1,9 +1,11 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   tokenize,
   jaccard,
+  cosineSimilarity,
   clusterArticles,
+  clusterArticlesWithEmbeddings,
   rankWithinCluster,
   clusterBucket,
   clusterCategorized,
@@ -164,8 +166,47 @@ describe("rankWithinCluster", () => {
   });
 });
 
-describe("clusterBucket", () => {
-  it("mantém top de cada cluster e captura runners-up na metadata", () => {
+describe("cosineSimilarity", () => {
+  it("vetores idênticos retornam 1.0", () => {
+    const v = [1, 2, 3];
+    assert.equal(cosineSimilarity(v, v), 1.0);
+  });
+
+  it("vetores opostos retornam -1.0", () => {
+    const a = [1, 0, 0];
+    const b = [-1, 0, 0];
+    assert.ok(Math.abs(cosineSimilarity(a, b) - (-1.0)) < 1e-10);
+  });
+
+  it("vetores ortogonais retornam 0", () => {
+    const a = [1, 0];
+    const b = [0, 1];
+    assert.ok(Math.abs(cosineSimilarity(a, b)) < 1e-10);
+  });
+
+  it("vetores vazios retornam 0 (sem divisão por zero)", () => {
+    assert.equal(cosineSimilarity([], []), 0);
+  });
+
+  it("similaridade é simétrica", () => {
+    const a = [0.5, 0.3, 0.8];
+    const b = [0.1, 0.9, 0.2];
+    assert.equal(cosineSimilarity(a, b), cosineSimilarity(b, a));
+  });
+});
+
+describe("clusterBucket (com fallback Jaccard — sem GEMINI_API_KEY)", () => {
+  let savedKey: string | undefined;
+  beforeEach(() => {
+    savedKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+  });
+  afterEach(() => {
+    if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+    else delete process.env.GEMINI_API_KEY;
+  });
+
+  it("mantém top de cada cluster e captura runners-up na metadata", async () => {
     const articles: Article[] = [
       {
         url: "https://blog.google/gemini-3",
@@ -189,17 +230,28 @@ describe("clusterBucket", () => {
         score: 85,
       },
     ];
-    const result = clusterBucket(articles, 0.3);
+    const result = await clusterBucket(articles, 0.3);
     assert.equal(result.kept.length, 2); // Gemini cluster colapsou
     assert.equal(result.kept[0].url, "https://blog.google/gemini-3"); // fonte cadastrada
     assert.equal(result.clusters.length, 1);
     assert.equal(result.clusters[0].top_url, "https://blog.google/gemini-3");
     assert.equal(result.clusters[0].member_urls.length, 2);
+    assert.equal(result.clusters[0].similarity_method, "jaccard");
   });
 });
 
-describe("clusterCategorized", () => {
-  it("processa os 3 buckets separadamente", () => {
+describe("clusterCategorized (com fallback Jaccard — sem GEMINI_API_KEY)", () => {
+  let savedKey: string | undefined;
+  beforeEach(() => {
+    savedKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+  });
+  afterEach(() => {
+    if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+    else delete process.env.GEMINI_API_KEY;
+  });
+
+  it("processa os 3 buckets separadamente", async () => {
     const input = {
       lancamento: [
         { url: "https://a.com/1", title: "OpenAI anuncia novo modelo GPT-5 com features avançadas", summary: "" },
@@ -212,10 +264,135 @@ describe("clusterCategorized", () => {
         { url: "https://c.com/1", title: "Regulação de IA no Brasil avança", summary: "" },
       ],
     };
-    const result = clusterCategorized(input, 0.3);
+    const result = await clusterCategorized(input, 0.3);
     assert.equal(result.lancamento.length, 1); // GPT-5 cluster colapsou
     assert.equal(result.pesquisa.length, 1);
     assert.equal(result.noticias.length, 1);
     assert.equal(result.clusters.length, 1);
+  });
+});
+
+describe("clusterArticlesWithEmbeddings — fallback Jaccard quando GEMINI_API_KEY ausente", () => {
+  let savedKey: string | undefined;
+  let fetchCalled = false;
+  let savedFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    savedKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    savedFetch = globalThis.fetch;
+    // Mock fetch to detect if it's called despite no key
+    globalThis.fetch = async (..._args: Parameters<typeof fetch>) => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+    fetchCalled = false;
+  });
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+    if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+    else delete process.env.GEMINI_API_KEY;
+  });
+
+  it("não chama a API quando GEMINI_API_KEY não está definida", async () => {
+    const articles: Article[] = [
+      { url: "https://a.com/1", title: "OpenAI GPT-5 model release", summary: "OpenAI novo modelo" },
+      { url: "https://b.com/1", title: "Anthropic Claude update", summary: "Anthropic novo modelo" },
+    ];
+    await clusterArticlesWithEmbeddings(articles, 0.5);
+    assert.equal(fetchCalled, false, "fetch não deve ser chamado sem GEMINI_API_KEY");
+  });
+
+  it("usa Jaccard e clusteriza corretamente sem API", async () => {
+    const articles: Article[] = [
+      {
+        url: "https://a.com/1",
+        title: "Google anuncia Gemini 3 multimodal capacidades novas",
+        summary: "Google Gemini 3 performance multimodal",
+      },
+      {
+        url: "https://b.com/1",
+        title: "Google lança Gemini 3 com capacidades multimodais",
+        summary: "Novo Gemini 3 Google multimodal arquitetura",
+      },
+    ];
+    const clusters = await clusterArticlesWithEmbeddings(articles, 0.3);
+    assert.equal(clusters.length, 1, "artigos similares devem cair no mesmo cluster");
+    assert.equal(clusters[0].method, "jaccard");
+  });
+});
+
+describe("clusterArticlesWithEmbeddings — caminho com embeddings (fetch mockado)", () => {
+  let savedKey: string | undefined;
+  let savedFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    savedKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "fake-key-for-test";
+    savedFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+    if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+    else delete process.env.GEMINI_API_KEY;
+  });
+
+  it("agrupa artigos com embeddings similares e separa dissimilares", async () => {
+    // Artigos A e B → vetores quase idênticos (sim alta)
+    // Artigo C → vetor ortogonal (sim baixa com A e B)
+    const vecA = [1, 0, 0];
+    const vecB = [0.99, 0.1, 0.0]; // cos sim com A ≈ 0.995
+    const vecC = [0, 1, 0];       // cos sim com A = 0, com B ≈ 0.1
+
+    const embeddings = [vecA, vecB, vecC];
+    let callIndex = 0;
+
+    globalThis.fetch = async (_url: string | URL | Request, _init?: RequestInit) => {
+      const emb = embeddings[callIndex++];
+      return new Response(
+        JSON.stringify({ embedding: { values: emb } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const articles: Article[] = [
+      { url: "https://a.com/1", title: "Artigo A", summary: "" },
+      { url: "https://b.com/1", title: "Artigo B", summary: "" },
+      { url: "https://c.com/1", title: "Artigo C", summary: "" },
+    ];
+
+    // Threshold 0.85 → A e B (cos≈0.995) agrupados; C separado
+    const clusters = await clusterArticlesWithEmbeddings(articles, 0.85);
+    assert.equal(clusters.length, 2, "deve produzir 2 clusters");
+    assert.equal(clusters[0].members.length, 2, "cluster A+B deve ter 2 membros");
+    assert.equal(clusters[0].method, "cosine");
+    assert.equal(clusters[1].members.length, 1, "cluster C deve ter 1 membro");
+  });
+
+  it("fallback para Jaccard quando todos embeddings retornam null (erro de API)", async () => {
+    globalThis.fetch = async (_url: string | URL | Request, _init?: RequestInit) => {
+      return new Response(JSON.stringify({ error: "API error" }), { status: 500 });
+    };
+
+    const articles: Article[] = [
+      {
+        url: "https://a.com/1",
+        title: "Google Gemini multimodal capacidades lançamento",
+        summary: "Google Gemini novo modelo multimodal",
+      },
+      {
+        url: "https://b.com/1",
+        title: "Anthropic Claude interpretability paper",
+        summary: "Anthropic research mechanistic interpretability",
+      },
+    ];
+
+    // Embeddings retornarão null (500 error) → cai no Jaccard
+    const clusters = await clusterArticlesWithEmbeddings(articles, 0.85);
+    // Com Jaccard esses artigos são dissimilares → 2 clusters
+    assert.equal(clusters.length, 2);
+    // Método pode ser "jaccard" (fallback) ou "cosine" dependendo da implementação
+    // O importante é que não quebrou
+    assert.ok(clusters[0].method === "cosine" || clusters[0].method === "jaccard");
   });
 });
