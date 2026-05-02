@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   getDate,
   isBrazilianTheme,
   renderLine,
   buildHighlightUrls,
   buildRunnerUpUrls,
+  renderEaiBlock,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -382,5 +386,67 @@ describe("buildRunnerUpUrls (#104)", () => {
     assert.equal(r.size, 2);
     // Sem overlap
     for (const url of r) assert.ok(!h.has(url));
+  });
+});
+
+describe("renderEaiBlock (#371)", () => {
+  it("retorna placeholder quando 01-eai.md não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("⏳"));
+      assert.ok(block.includes("ainda processando"));
+      assert.ok(block.includes("É IA?"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("inclui conteúdo do 01-eai.md quando existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const eaiContent = "---\neai_answer: A\n---\nConteúdo do É IA?";
+      writeFileSync(join(dir, "01-eai.md"), eaiContent, "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Conteúdo do É IA?"));
+      assert.ok(!block.includes("⏳"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("inclui paths das imagens A e B quando 01-eai.md existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eai.md"), "Texto", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("01-eai-A.jpg"));
+      assert.ok(block.includes("01-eai-B.jpg"));
+      assert.ok(block.includes("Imagem A:"));
+      assert.ok(block.includes("Imagem B:"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("bloco tem separadores --- antes e depois", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("---"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("bloco tem cabeçalho ## É IA?", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eai.md"), "Texto", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("## É IA?"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });

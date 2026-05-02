@@ -25,11 +25,13 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eai-composer` (dis
 
 ## Parte 1 — É IA? (pular se `$2 = d1|d2|d3`)
 
+> **Nota (#371):** a aprovação do É IA? acontece no gate integrado da Etapa 1, onde o bloco É IA? é embutido em `01-categorized.md` entre as seções Pesquisas e Notícias. Este skill usa o sub-comando `eai` principalmente para **regeneração** — quando o editor quer refazer o É IA? sem reprocessar as imagens de destaque.
+
 ### 1a. Coletar resultado do background dispatch
 
 O `eai-composer` foi disparado em background durante a Etapa 1. Verificar se já completou:
 
-- Se `data/editions/$1/01-eai.md` já existe → pular dispatch, ir direto ao gate do É IA?.
+- Se `data/editions/$1/01-eai.md` já existe → pular dispatch, ir direto ao gate do É IA? abaixo.
 - Se `01-eai.md` **não** existe:
   - Se há Agent em background ainda rodando → aguardar.
   - Caso contrário → disparar agora:
@@ -44,18 +46,21 @@ O `eai-composer` foi disparado em background durante a Etapa 1. Verificar se já
 
     Aguardar o Agent retornar antes de continuar.
 
-### 1b. Gate do É IA?
+### 1b. Gate do É IA? (relevante principalmente para sub-comando `eai`)
 
-Apresentar ao usuário:
+Apresentar ao usuário para confirmação/retry:
 
 ```
-Etapa 3 — É IA? pronto.
+É IA? pronto.
 
 📁 data/editions/$1/01-eai.md  (frontmatter revela o mapping real/IA pro editor)
 📁 data/editions/$1/01-eai-A.jpg
 📁 data/editions/$1/01-eai-B.jpg
 
-Aprovar (sim) / tentar dia anterior / pedir retry?
+ℹ️  A aprovação editorial já aconteceu (ou acontecerá) no gate integrado da Etapa 1,
+    onde o É IA? aparece embutido em 01-categorized.md (#371).
+
+Aprovar aqui (sim) / tentar dia anterior / pedir retry?
 ```
 
 Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eai-composer com data D-1.
@@ -100,7 +105,7 @@ npx tsx scripts/image-generate.ts \
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
