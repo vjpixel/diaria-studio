@@ -66,6 +66,16 @@ PESQUISAS
 OUTRAS NOTÍCIAS
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento]
+
+---
+
+VÍDEOS (opcional — omitir se bucket vazio)
+
+[Título do Vídeo] — [Canal]
+
+[URL do vídeo]
+
+[Frase descritiva em 1 linha]
 ```
 
 A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate humano (copiar/abrir/reordenar mais rápido). A ordem visual no email final (Beehiiv) é independente: o renderer rearranja como título → descrição → CTA.

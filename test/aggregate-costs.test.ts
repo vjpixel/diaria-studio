@@ -22,7 +22,7 @@ Total de chamadas: 28
 | 1 | 10:05 | 10:45 | source_researcher:10, discovery:5, categorizer:1 | 16 | 0 |
 | 2 | 10:45 | 11:15 | writer:1, clarice:3 | 0 | 1 |
 | 3 | 11:15 | 11:30 | social_linkedin:1, social_facebook:1 | 2 | 0 |
-| 4 | 11:30 | 12:00 | eai_composer:1 | 1 | 0 |
+| 4 | 11:30 | 12:00 | eia_composer:1 | 1 | 0 |
 | 5 | 12:00 | 13:00 | publish_newsletter:1 | 0 | 1 |
 | 6 | 13:00 | 14:00 | publish_social:1 | 0 | 1 |
 `;

@@ -31,7 +31,7 @@ export interface Article {
   [key: string]: unknown;
 }
 
-export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial";
+export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam LANÇAMENTO (anúncio oficial)
@@ -337,6 +337,28 @@ function isBusinessDeal(article: Article): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Detecção de vídeos — YouTube e Vimeo (#359)
+// ---------------------------------------------------------------------------
+
+/**
+ * Retorna true se a URL aponta para um vídeo em plataforma conhecida.
+ * Detectado antes de qualquer outra regra no categorize() — vídeos nunca
+ * devem cair em `lancamento`, `noticias` ou serem descartados como redes sociais.
+ */
+export function isVideoUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return true;
+    if (host === "youtube.com" && u.pathname.startsWith("/watch")) return true;
+    if (host === "vimeo.com") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -409,6 +431,11 @@ export function isOfficialLancamentoUrl(url: string): boolean {
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
 
+  // -1. Vídeo — detectado antes de qualquer outra regra (#359).
+  //     URLs de YouTube/Vimeo nunca caem em noticias/lancamento nem são
+  //     descartadas como redes sociais. Precedência absoluta.
+  if (isVideoUrl(article.url)) return "video";
+
   // 0. Tutorial — domínio/pattern DEDICADO (alta confiança).
   //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
   //    Keyword tutorial vem DEPOIS de pesquisa pra evitar falso positivo
@@ -478,6 +505,7 @@ function main(): void {
     pesquisa: [],
     noticias: [],
     tutorial: [],
+    video: [],
   };
 
   for (const article of articles) {
@@ -485,7 +513,12 @@ function main(): void {
     result[cat].push({ ...article, category: cat });
   }
 
-  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length}`;
+  // Limite de 2 vídeos por edição — manter os primeiros (maior relevância por ordem de entrada).
+  if (result.video.length > 2) {
+    result.video = result.video.slice(0, 2);
+  }
+
+  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length} video:${result.video.length}`;
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {

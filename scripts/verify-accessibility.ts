@@ -79,6 +79,24 @@ const SOCIAL_DOMAINS = new Set([
   "t.co",
 ]);
 
+/**
+ * Detecta URLs de vídeo (YouTube, Vimeo) que devem receber verdict `video`
+ * em vez de `aggregator` ou `blocked`. URLs de vídeo são conteúdo primário,
+ * não agregadores — precisam de tratamento especial (#359).
+ */
+function isVideoUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return true;
+    if (host === "youtube.com" && u.pathname.startsWith("/watch")) return true;
+    if (host === "vimeo.com") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // Prefixos de URL que são fontes primárias dentro de domínios parcialmente
 // agregadores. Verificados ANTES de checar AGGREGATOR_DOMAINS.
 const PRIMARY_SOURCE_PREFIXES = [
@@ -98,7 +116,7 @@ const PAYWALL_MARKERS = [
   "conteúdo exclusivo para assinantes",
 ];
 
-type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
+type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot" | "video";
 
 type VerifyResult = {
   verdict: Verdict;
@@ -219,6 +237,13 @@ export async function verify(url: string, timeoutMs = 8000, isRetry = false, bro
   let effectiveUrl = canonicalize(url);
   let host = domain(effectiveUrl);
   let resolvedFrom: string | undefined;
+
+  // ---- Vídeos: YouTube e Vimeo recebem verdict `video` (#359) ----------------
+  // Verificado ANTES de shorteners/aggregators para evitar que URLs de vídeo
+  // sejam tratadas como redes sociais bloqueadas ou agregadores.
+  if (isVideoUrl(effectiveUrl)) {
+    return { verdict: "video", finalUrl: effectiveUrl };
+  }
 
   // ---- Resolve shorteners e redirects cross-origin (#317) ----------------
   if (isShortener(host)) {

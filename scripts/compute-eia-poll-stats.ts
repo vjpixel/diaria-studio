@@ -1,5 +1,5 @@
 /**
- * compute-eai-poll-stats.ts (#107)
+ * compute-eia-poll-stats.ts (#107)
  *
  * Calcula estatísticas do poll do É IA? da edição anterior pra preencher
  * a linha "Resultado da última edição: X% das pessoas acertaram" automaticamente.
@@ -11,12 +11,12 @@
  *                                Cada entrada: { choice: string, responded_at?: iso }.
  *   --correct-choice <value>     (opcional) Override de qual choice é correta.
  *                                Default = derivado do `ai_side` em
- *                                `_internal/01-eai-meta.json` da edição anterior.
+ *                                `_internal/01-eia-meta.json` da edição anterior.
  *   --since <iso>                (opcional) Filtra responses por responded_at >= since.
  *   --threshold <int>            (opcional, default 5) Mínimo de respostas pra
  *                                reportar % com confiança.
  *   --out <path>                 (opcional) Override do output path.
- *                                Default: data/editions/{edition}/_internal/04-eai-poll-stats.json
+ *                                Default: data/editions/{edition}/_internal/04-eia-poll-stats.json
  *
  * Saídas (sempre exit 0 — nunca trava pipeline):
  *   - JSON em --out com stats (mesmo se total=0).
@@ -36,7 +36,7 @@ export interface PollResponse {
   responded_at?: string;
 }
 
-export interface EaiMeta {
+export interface EiaMeta {
   edition?: string;
   ai_side?: "A" | "B" | null;
   wikimedia?: { image_date_used?: string };
@@ -64,11 +64,11 @@ export function findPreviousEdition(
   return earlier.length > 0 ? earlier[earlier.length - 1] : null;
 }
 
-export function readEaiMeta(editionDir: string): EaiMeta | null {
-  const path = resolve(editionDir, "_internal/01-eai-meta.json");
+export function readEiaMeta(editionDir: string): EiaMeta | null {
+  const path = resolve(editionDir, "_internal/01-eia-meta.json");
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as EaiMeta;
+    return JSON.parse(readFileSync(path, "utf8")) as EiaMeta;
   } catch {
     return null;
   }
@@ -138,7 +138,7 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition) {
-    console.error("Uso: compute-eai-poll-stats.ts --edition <AAMMDD> [--prev-edition <AAMMDD>] [--responses <path>] [--correct-choice <A|B>] [--since <iso>] [--threshold <n>] [--out <path>]");
+    console.error("Uso: compute-eia-poll-stats.ts --edition <AAMMDD> [--prev-edition <AAMMDD>] [--responses <path>] [--correct-choice <A|B>] [--since <iso>] [--threshold <n>] [--out <path>]");
     process.exit(1);
   }
 
@@ -147,7 +147,7 @@ function main(): void {
     args["prev-edition"] ?? findPreviousEdition(editionsDir, edition);
   const outPath =
     args.out ??
-    resolve(editionsDir, edition, "_internal/04-eai-poll-stats.json");
+    resolve(editionsDir, edition, "_internal/04-eia-poll-stats.json");
 
   const skipBase: PollStats = {
     previous_edition: prevEdition,
@@ -161,23 +161,23 @@ function main(): void {
   };
 
   if (!prevEdition) {
-    console.warn("[compute-eai-poll-stats] sem edição anterior — skip");
+    console.warn("[compute-eia-poll-stats] sem edição anterior — skip");
     writeOutput(outPath, { ...skipBase, skipped: "no_previous_edition" });
     return;
   }
 
   const prevDir = resolve(editionsDir, prevEdition);
-  const meta = readEaiMeta(prevDir);
+  const meta = readEiaMeta(prevDir);
   const correctChoice =
     args["correct-choice"] ?? (meta?.ai_side ?? null);
 
   if (!correctChoice) {
     console.warn(
-      `[compute-eai-poll-stats] ai_side ausente em ${prevEdition}/_internal/01-eai-meta.json — skip`,
+      `[compute-eia-poll-stats] ai_side ausente em ${prevEdition}/_internal/01-eia-meta.json — skip`,
     );
     writeOutput(outPath, {
       ...skipBase,
-      skipped: meta ? "ai_side_null" : "no_eai_meta",
+      skipped: meta ? "ai_side_null" : "no_eia_meta",
     });
     return;
   }
@@ -196,11 +196,11 @@ function main(): void {
         }
       } catch (e) {
         console.warn(
-          `[compute-eai-poll-stats] erro lendo ${responsesPath}: ${(e as Error).message}`,
+          `[compute-eia-poll-stats] erro lendo ${responsesPath}: ${(e as Error).message}`,
         );
       }
     } else {
-      console.warn(`[compute-eai-poll-stats] responses file não existe: ${responsesPath}`);
+      console.warn(`[compute-eia-poll-stats] responses file não existe: ${responsesPath}`);
     }
   }
 

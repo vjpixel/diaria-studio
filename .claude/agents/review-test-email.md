@@ -78,7 +78,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
    `"boxes_merged: D{N} e D{M} estao no mesmo box/container"`
 
 3. **Box E IA? separado.** A secao "E IA?" deve ter seu proprio box, separado dos destaques. Se esta fundida com D2 ou D3:
-   `"eai_merged: Secao E IA? esta fundida com D{N}"`
+   `"eia_merged: Secao E IA? esta fundida com D{N}"`
 
 4. **Secoes nao duplicadas.** Cada secao (Lancamentos, Pesquisas, Outras Noticias) deve aparecer no maximo 1 vez. Se duplicada:
    `"section_duplicated: Secao '{nome}' aparece {X} vezes"`

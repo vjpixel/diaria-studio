@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { categorize, type Article } from "../scripts/categorize.ts";
+import { categorize, isVideoUrl, type Article } from "../scripts/categorize.ts";
 
 describe("categorize() — regras de domínio", () => {
   it("classifica anúncio oficial da OpenAI como lancamento", () => {
@@ -565,5 +565,82 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
       categorize({ url: "https://openai.com/news/release-notes-v2", title: "GPT-5 release notes for developers" }),
       "noticias",
     );
+  });
+});
+
+describe("categorize() — bucket video (#359)", () => {
+  it("youtube.com/watch → video", () => {
+    assert.equal(
+      categorize({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+      "video",
+    );
+  });
+
+  it("youtu.be shortlink → video", () => {
+    assert.equal(
+      categorize({ url: "https://youtu.be/dQw4w9WgXcQ" }),
+      "video",
+    );
+  });
+
+  it("vimeo.com → video", () => {
+    assert.equal(
+      categorize({ url: "https://vimeo.com/123456789" }),
+      "video",
+    );
+  });
+
+  it("youtube.com sem /watch (canal, playlist) → noticias (não video)", () => {
+    // Canais e playlists do YouTube sem /watch não são vídeos diretos
+    assert.equal(
+      categorize({ url: "https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw" }),
+      "noticias",
+    );
+  });
+
+  it("video tem precedência absoluta — mesmo se título parece lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.youtube.com/watch?v=abc123",
+        title: "OpenAI announces GPT-5",
+      }),
+      "video",
+    );
+  });
+
+  it("video tem precedência sobre tutorial keywords", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.youtube.com/watch?v=abc123",
+        title: "Tutorial: how to build a RAG system",
+      }),
+      "video",
+    );
+  });
+});
+
+describe("isVideoUrl (#359)", () => {
+  it("youtube.com/watch → true", () => {
+    assert.ok(isVideoUrl("https://www.youtube.com/watch?v=abc"));
+  });
+
+  it("youtu.be → true", () => {
+    assert.ok(isVideoUrl("https://youtu.be/abc"));
+  });
+
+  it("vimeo.com → true", () => {
+    assert.ok(isVideoUrl("https://vimeo.com/123456789"));
+  });
+
+  it("youtube.com sem /watch → false", () => {
+    assert.equal(isVideoUrl("https://youtube.com/channel/UCabc"), false);
+  });
+
+  it("techcrunch.com → false", () => {
+    assert.equal(isVideoUrl("https://techcrunch.com/article"), false);
+  });
+
+  it("URL inválida → false (sem crash)", () => {
+    assert.equal(isVideoUrl("not-a-url"), false);
   });
 });

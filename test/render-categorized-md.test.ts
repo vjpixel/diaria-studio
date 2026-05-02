@@ -10,6 +10,7 @@ import {
   buildHighlightUrls,
   buildRunnerUpUrls,
   renderEaiBlock,
+  renderSection,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -458,5 +459,63 @@ describe("renderEaiBlock (#371)", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+describe("renderSection — bucket Vídeos (#359)", () => {
+  const noHighlights = new Set<string>();
+  const noRunners = new Set<string>();
+
+  it("renderiza seção VÍDEOS com 1 item", () => {
+    const section = renderSection(
+      "Vídeos",
+      [{ url: "https://www.youtube.com/watch?v=abc", title: "Claude 4 demo", score: 80, date: "2026-05-01" }],
+      noHighlights,
+      noRunners,
+    );
+    assert.ok(section.includes("## Vídeos"));
+    assert.ok(section.includes("Claude 4 demo"));
+    assert.ok(section.includes("https://www.youtube.com/watch?v=abc"));
+  });
+
+  it("renderiza seção VÍDEOS com 2 itens", () => {
+    const section = renderSection(
+      "Vídeos",
+      [
+        { url: "https://www.youtube.com/watch?v=abc", title: "Video A", score: 80, date: "2026-05-01" },
+        { url: "https://vimeo.com/123", title: "Video B", score: 70, date: "2026-05-01" },
+      ],
+      noHighlights,
+      noRunners,
+    );
+    assert.ok(section.includes("Video A"));
+    assert.ok(section.includes("Video B"));
+  });
+
+  it("seção vazia quando bucket video está vazio (_(vazio)_ placeholder)", () => {
+    const section = renderSection("Vídeos", [], noHighlights, noRunners);
+    assert.ok(section.includes("_(vazio)_"));
+  });
+});
+
+describe("buildHighlightUrls — inclui bucket video (#359)", () => {
+  it("extrai URL com highlight=true do bucket video", () => {
+    const urls = buildHighlightUrls({
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+      video: [{ url: "https://www.youtube.com/watch?v=abc", highlight: true }],
+    });
+    assert.ok(urls.has("https://www.youtube.com/watch?v=abc"));
+  });
+
+  it("não adiciona video sem highlight flag", () => {
+    const urls = buildHighlightUrls({
+      lancamento: [],
+      pesquisa: [],
+      noticias: [],
+      video: [{ url: "https://www.youtube.com/watch?v=abc" }],
+    });
+    assert.equal(urls.size, 0);
   });
 });

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import {
   findEligiblePotd,
   chooseSides,
-  buildEaiMd,
+  buildEiaMd,
   isStage4Complete,
   buildPrevResultLine,
   readPrevPollStats,
@@ -17,7 +17,7 @@ import {
   buildCreditLine,
   pickSubjectWikipediaLink,
   tokenizeImageTitle,
-} from "../scripts/eai-compose.ts";
+} from "../scripts/eia-compose.ts";
 
 interface MockImage {
   title?: string;
@@ -121,11 +121,11 @@ describe("chooseSides (#192)", () => {
   });
 });
 
-describe("buildEaiMd (#192)", () => {
+describe("buildEiaMd (#192)", () => {
   it("escreve frontmatter com mapping A:real, B:ia quando realSide=A", () => {
-    const md = buildEaiMd({ realSide: "A", aiSide: "B" }, "Credit line.");
+    const md = buildEiaMd({ realSide: "A", aiSide: "B" }, "Credit line.");
     assert.match(md, /^---\n/, "começa com delimitador de frontmatter");
-    assert.match(md, /eai_answer:/);
+    assert.match(md, /eia_answer:/);
     assert.match(md, /A: real/);
     assert.match(md, /B: ia/);
     assert.match(md, /---\n\nÉ IA\?\n/, "frontmatter fecha antes do header");
@@ -133,13 +133,13 @@ describe("buildEaiMd (#192)", () => {
   });
 
   it("escreve frontmatter com mapping A:ia, B:real quando realSide=B", () => {
-    const md = buildEaiMd({ realSide: "B", aiSide: "A" }, "Credit line.");
+    const md = buildEiaMd({ realSide: "B", aiSide: "A" }, "Credit line.");
     assert.match(md, /A: ia/);
     assert.match(md, /B: real/);
   });
 
   it("frontmatter pode ser parseado por regex (compatível com render-newsletter-html)", () => {
-    const md = buildEaiMd({ realSide: "A", aiSide: "B" }, "Credit line.");
+    const md = buildEiaMd({ realSide: "A", aiSide: "B" }, "Credit line.");
     const fmMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
     assert.ok(fmMatch, "frontmatter encontrado");
     assert.match(fmMatch![1], /A: real/);
@@ -170,10 +170,10 @@ describe("isStage4Complete (#192 resume-aware)", () => {
   it("true quando todos os 4 outputs (md + meta + A/B) existem", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai.md"));
-      touch(join(dir, "_internal/01-eai-meta.json"));
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
       assert.equal(isStage4Complete(dir), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -183,10 +183,10 @@ describe("isStage4Complete (#192 resume-aware)", () => {
   it("true para edições legacy com real/ia (backward compat)", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai.md"));
-      touch(join(dir, "_internal/01-eai-meta.json"));
-      touch(join(dir, "01-eai-real.jpg"));
-      touch(join(dir, "01-eai-ia.jpg"));
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-real.jpg"));
+      touch(join(dir, "01-eia-ia.jpg"));
       assert.equal(isStage4Complete(dir), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -196,9 +196,9 @@ describe("isStage4Complete (#192 resume-aware)", () => {
   it("false quando md existe mas par de imagens incompleto", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai.md"));
-      touch(join(dir, "_internal/01-eai-meta.json"));
-      touch(join(dir, "01-eai-A.jpg")); // só A, falta B
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg")); // só A, falta B
       assert.equal(isStage4Complete(dir), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -208,10 +208,10 @@ describe("isStage4Complete (#192 resume-aware)", () => {
   it("false quando imagens existem mas meta JSON falta", () => {
     const dir = makeDir();
     try {
-      touch(join(dir, "01-eai.md"));
-      touch(join(dir, "01-eai-A.jpg"));
-      touch(join(dir, "01-eai-B.jpg"));
-      // sem _internal/01-eai-meta.json
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      // sem _internal/01-eia-meta.json
       assert.equal(isStage4Complete(dir), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -312,7 +312,7 @@ describe("readPrevPollStats (#107)", () => {
   it("retorna null quando JSON inválido", () => {
     const dir = makeDir();
     try {
-      writeFileSync(join(dir, "_internal/04-eai-poll-stats.json"), "{ not json");
+      writeFileSync(join(dir, "_internal/04-eia-poll-stats.json"), "{ not json");
       assert.equal(readPrevPollStats(dir), null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -328,7 +328,7 @@ describe("readPrevPollStats (#107)", () => {
         below_threshold: false,
       };
       writeFileSync(
-        join(dir, "_internal/04-eai-poll-stats.json"),
+        join(dir, "_internal/04-eia-poll-stats.json"),
         JSON.stringify(stats),
       );
       const parsed = readPrevPollStats(dir);
@@ -340,9 +340,9 @@ describe("readPrevPollStats (#107)", () => {
   });
 });
 
-describe("buildEaiMd com prevResultLine (#107)", () => {
+describe("buildEiaMd com prevResultLine (#107)", () => {
   it("inclui linha de resultado após o crédito quando passada", () => {
-    const md = buildEaiMd(
+    const md = buildEiaMd(
       { realSide: "A", aiSide: "B" },
       "Credit line.",
       "Resultado da última edição: 85% das pessoas acertaram.",
@@ -351,7 +351,7 @@ describe("buildEaiMd com prevResultLine (#107)", () => {
   });
 
   it("omite linha de resultado quando null (default)", () => {
-    const md = buildEaiMd(
+    const md = buildEiaMd(
       { realSide: "A", aiSide: "B" },
       "Credit line.",
     );
@@ -359,7 +359,7 @@ describe("buildEaiMd com prevResultLine (#107)", () => {
   });
 
   it("omite linha de resultado quando explicitamente null", () => {
-    const md = buildEaiMd(
+    const md = buildEiaMd(
       { realSide: "A", aiSide: "B" },
       "Credit line.",
       null,
@@ -579,28 +579,26 @@ describe("pickSubjectWikipediaLink (#284)", () => {
     assert.equal(result?.url, "https://en.wikipedia.org/wiki/Euganean%20Hills");
   });
 
-  it("Pilot boat scenario: heurística favorece o link com mais tokens do title (limitação documentada)", () => {
+  it("Pilot boat scenario: stop words (#301) penalizam 'pilot'+'boat' → Landsort vence", () => {
     // Title: "Pilot_boat_at_Landsort_April_2012" → tokens
     // ["pilot", "boat", "landsort", "april", "2012"]
     //
-    // - "Pilot boat" link: 2 tokens match (pilot, boat) × 10 + 2 (≤12 chars) = 22
-    // - "Landsort"  link: 1 token match × 10 + 2 (≤12 chars)             = 12
-    // - "Stockholm Archipelago": 0 + 0 (>12 chars)                        = 0
+    // Com stop words (#301):
+    // - "Pilot boat": 2 tokens match × 10 = 20, + 2 (≤12), - 10 (pilot -5, boat -5),
+    //   + 0 (proper noun bloqueado: first word "pilot" é stop word) = 12
+    // - "Landsort":   1 token match × 10 = 10, + 2 (≤12), - 0 (sem stop words),
+    //   + 3 (proper noun: "landsort" não é stop word) = 15 → Landsort vence
+    // - "Stockholm Archipelago": 0 + 0 (>12) - 0 + 3 (proper noun) = 3
     //
-    // Heurística vence pra Pilot boat (foreground subject literal). O issue #284
-    // citava Landsort como "subject editorial" — mas a heurística proposta no body
-    // do issue (esta mesma) também não alcança Landsort nesse caso. Trade-off
-    // editorialmente subjetivo: foreground concept vs location qualifier.
-    //
-    // Fica como follow-up se aparecer reclamação real do editor — solução
-    // exigiria sinais adicionais (ex: penalizar matches consecutivos de tokens).
+    // Stop words resolvem o problema editorial: "Pilot boat" era genérico;
+    // Landsort (o local específico) é o subject editorial correto.
     const html =
       '<a href="https://en.wikipedia.org/wiki/Pilot%20boat">Pilot boat</a> outside Öja island ' +
       '(<a href="https://en.wikipedia.org/wiki/Landsort">Landsort</a>), ' +
       '<a href="https://en.wikipedia.org/wiki/Stockholm%20Archipelago">Stockholm Archipelago</a>.';
     const title = "File:Pilot_boat_at_Landsort_April_2012.jpg";
     const result = pickSubjectWikipediaLink(html, title);
-    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Pilot%20boat");
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Landsort");
   });
 
   it("sem title: cai pra primeiro link (tie-break por posição) + bonus texto curto", () => {
@@ -637,6 +635,195 @@ describe("pickSubjectWikipediaLink (#284)", () => {
       '<a rel="mw:WikiLink/Interwiki" class="extiw" href="https://en.wikipedia.org/wiki/Foo" title="Foo">Foo Bar</a>';
     const result = pickSubjectWikipediaLink(html);
     assert.equal(result?.text, "Foo Bar");
+  });
+});
+
+describe("pickSubjectWikipediaLink — stop words + proper noun bias (#301)", () => {
+  it("stop words penalizam link genérico em favor do link específico", () => {
+    // "Bridge" tem stop word "bridge" → -5; "Rialto Bridge" tem "bridge" → -5.
+    // "Venice" não tem stop word → +0; "Venice" começa com maiúscula → +3.
+    // Com 0 title match: Bridge = -5 + 2 (short) + 3 (proper) = 0
+    //                    Venice = +2 (short) + 3 (proper) = 5 → Venice wins
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Bridge">Bridge</a> in ' +
+      '<a href="https://en.wikipedia.org/wiki/Venice">Venice</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Venice");
+  });
+
+  it("stop word 'park' penaliza link genérico; proper noun sem stop word vence", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Park">Park</a> near ' +
+      '<a href="https://en.wikipedia.org/wiki/Yosemite">Yosemite</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Yosemite");
+  });
+
+  it("proper noun bias (+3) favorece link capitalized sem stop word", () => {
+    // Sem title match, sem stop words em nenhum.
+    // "tokyo" começa com minúscula → sem proper noun bonus.
+    // "Tokyo" começa com maiúscula → +3.
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/lowercase">lowercase city</a> vs ' +
+      '<a href="https://en.wikipedia.org/wiki/Tokyo">Tokyo</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Tokyo");
+  });
+
+  it("múltiplas stop words penalizam cada uma separadamente (-5 each)", () => {
+    // "Mountain river landscape" tem 3 stop words → -15
+    // "Danube" tem 0 stop words → 0; começa com maiúscula → +3; ≤12 → +2 = 5
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Mountain%20river%20landscape">Mountain river landscape</a> near ' +
+      '<a href="https://en.wikipedia.org/wiki/Danube">Danube</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Danube");
+  });
+
+  it("1 link único: retorna sem aplicar heurística (fast path)", () => {
+    const html = '<a href="https://en.wikipedia.org/wiki/Bridge">Bridge</a>.';
+    // 1 link → retorna imediatamente sem penalidade
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Bridge");
+  });
+
+  it("stop word case-insensitive: 'PILOT' também penaliza", () => {
+    // "PILOT BOAT" em caixa alta: tokens "pilot" e "boat" são stop words
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Pilot%20Boat">PILOT BOAT</a> near ' +
+      '<a href="https://en.wikipedia.org/wiki/Helsinki">Helsinki</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    // PILOT BOAT: -10 (2 stop words) + 2 (≤12) + 3 (começa P maiúsculo) = -5
+    // Helsinki: 0 + 2 (≤12) + 3 (proper) = 5 → Helsinki wins
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Helsinki");
+  });
+});
+
+describe("pickSubjectWikipediaLink — extended stop words (#434)", () => {
+  it("stop word 'flower' penaliza link genérico; specific subject wins", () => {
+    // "Flower" tem stop word "flower" → -5 + 2 (short) + 3 (proper) = 0
+    // "Kyoto" não tem stop word → 0 + 2 (short) + 3 (proper) = 5 → Kyoto vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Flower">Flower</a> in ' +
+      '<a href="https://en.wikipedia.org/wiki/Kyoto">Kyoto</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Kyoto");
+  });
+
+  it("stop word 'tree' penaliza link genérico; specific subject wins", () => {
+    // "Tree" → stop word "tree" → -5 + 2 (short) + 3 (proper) = 0
+    // "Amazon" → 0 + 2 (short) + 3 (proper) = 5 → Amazon vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Tree">Tree</a> in the ' +
+      '<a href="https://en.wikipedia.org/wiki/Amazon">Amazon</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Amazon");
+  });
+
+  it("stop word 'bird' penaliza link genérico", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Bird">Bird</a> near ' +
+      '<a href="https://en.wikipedia.org/wiki/Galapagos">Galapagos</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Galapagos");
+  });
+
+  it("stop word 'statue' penaliza link genérico", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Statue">Statue</a> at ' +
+      '<a href="https://en.wikipedia.org/wiki/Rhodes">Rhodes</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Rhodes");
+  });
+
+  it("stop word 'night' penaliza link genérico", () => {
+    // "Night" → stop word → -5 + 2 (short) + 3 (proper) = 0
+    // "Vienna" → 0 + 2 (short) + 3 (proper) = 5 → Vienna vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Night">Night</a> scene in ' +
+      '<a href="https://en.wikipedia.org/wiki/Vienna">Vienna</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Vienna");
+  });
+
+  it("stop word 'frog' penaliza link genérico; specific species wins", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Frog">Frog</a> species ' +
+      '<a href="https://en.wikipedia.org/wiki/Glyphoglossus_molossus">Glyphoglossus molossus</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Glyphoglossus_molossus");
+  });
+});
+
+describe("isStage4Complete — legacy eai.* paths (#436)", () => {
+  function makeDir(): string {
+    const root = mkdtempSync(join(tmpdir(), "diaria-eai-legacy-"));
+    mkdirSync(join(root, "_internal"), { recursive: true });
+    return root;
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("true com arquivos 01-eai.* (legacy pré-PR#428, md+meta+real+ia)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true com arquivos 01-eia.* novo padrão (regressão)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando só tem 01-eai.md mas sem imagens", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      // sem imagens
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando nenhum dos dois padrões existe", () => {
+    const dir = makeDir();
+    try {
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando 01-eai.md existe mas meta legacy falta", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      // sem _internal/01-eai-meta.json
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

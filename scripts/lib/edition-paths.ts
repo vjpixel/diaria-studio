@@ -17,7 +17,7 @@ import { resolve } from "node:path";
 
 /**
  * Filenames cobertos pelo move pra _internal/.
- * 01-eai-meta.json e 01-eai-sd-prompt.json já estão em _internal/ (não
+ * 01-eia-meta.json e 01-eia-sd-prompt.json já estão em _internal/ (não
  * mudaram convenção). Esses são os outros que precisaram migrar:
  */
 export const INTERNAL_JSON_FILES = [

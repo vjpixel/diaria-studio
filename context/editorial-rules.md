@@ -95,6 +95,36 @@ Antes de aprovar o texto final da edição, validar:
 - [ ] Texto sem markdown (sem bold, bullets, headers).
 - [ ] Máximo 3 destaques, distribuídos pelas categorias válidas.
 
+## Seção "Vídeos" (#359)
+
+Seção opcional após Outras Notícias. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho).
+
+### Fontes elegíveis
+
+- **Canais oficiais de labs** (OpenAI, Anthropic, Google DeepMind, Meta AI, NVIDIA, Mistral): incluir se o conteúdo for relevante para a edição.
+- **Criadores técnicos reconhecidos** (ex: Andrej Karpathy, Yannic Kilcher, Lex Fridman em entrevistas técnicas): incluir com julgamento editorial — preferir conteúdo com substância técnica.
+- **Conferências e palestras** (NeurIPS, ICML, ACL, etc.): incluir sessões plenárias ou palestras keynote.
+
+### Critérios de qualidade
+
+- **Duração máxima sugerida: 30 minutos.** Vídeos mais longos só se o conteúdo for excepcional.
+- **Sem tutoriais básicos sem substância técnica.** Cookbooks e walkthroughs práticos vão para "Aprenda hoje", não "Vídeos".
+- **Conteúdo recente**: dentro da janela de publicação padrão (3-4 dias).
+
+### Formato na newsletter
+
+```
+VÍDEOS
+
+[Título do Vídeo] — [Canal]
+
+[URL]
+
+[Frase descritiva em 1 linha]
+```
+
+---
+
 ## Seção "Aprenda hoje" (#59 — em scoping)
 
 Seção editorial opcional pra conteúdo acionável (tutoriais, walkthroughs, cookbooks). Toda edição pode (mas não precisa) incluir 1 tutorial curado.

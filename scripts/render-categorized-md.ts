@@ -62,6 +62,7 @@ interface CategorizedJson {
   pesquisa: Article[];
   noticias: Article[];
   tutorial?: Article[];
+  video?: Article[];
 }
 
 interface SourceHealth {
@@ -227,7 +228,7 @@ export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   }
 
   // Formato legado: inline em cada artigo
-  for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial]) {
+  for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
     for (const a of bucket ?? []) {
       if (a.highlight) urls.add(a.url);
     }
@@ -255,7 +256,7 @@ export function buildRunnerUpUrls(data: CategorizedJson): Set<string> {
   return urls;
 }
 
-function renderSection(
+export function renderSection(
   title: string,
   articles: Article[],
   highlightUrls: Set<string>,
@@ -346,7 +347,7 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
     );
     if (uncertainUrls.size === 0) return;
 
-    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial]) {
+    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
       for (const a of bucket ?? []) {
         if (uncertainUrls.has(a.url)) a.date_unverified = true;
       }
@@ -426,6 +427,9 @@ function main() {
     ...(data.tutorial && data.tutorial.length > 0
       ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls)]
       : []),
+    ...(data.video && data.video.length > 0
+      ? [renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls)]
+      : []),
   ].join("\n");
 
   const footer = renderSourceHealth(cli.sourceHealth);
@@ -456,6 +460,7 @@ function main() {
         pesquisa: merged.pesquisa,
         noticias: merged.noticias,
         tutorial: merged.tutorial,
+        video: merged.video,
       });
       if (mergeWarnings.length > 0) {
         console.error(
@@ -514,13 +519,14 @@ function main() {
   } catch { /* hash é opcional — não bloqueia se falhar */ }
 
   const total =
-    data.lancamento.length + data.pesquisa.length + data.noticias.length + (data.tutorial?.length ?? 0);
+    data.lancamento.length + data.pesquisa.length + data.noticias.length + (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
   const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
     ...data.pesquisa,
     ...data.noticias,
     ...(data.tutorial ?? []),
+    ...(data.video ?? []),
   ].filter((a) => a.date_unverified).length;
 
   process.stdout.write(

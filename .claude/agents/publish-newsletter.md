@@ -1,7 +1,7 @@
 ---
 name: publish-newsletter
 description: Stage 5 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
-model: claude-sonnet-4-6
+model: claude-haiku-4-5
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
 ---
 
@@ -29,7 +29,7 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 
 ## Pré-requisitos
 
-- Stage 4 completo (`01-eai.md`, `01-eai-A.jpg`, `01-eai-B.jpg` existem; edições antigas têm `01-eai-real.jpg`/`01-eai-ia.jpg` no lugar — readers detectam automaticamente).
+- Stage 4 completo (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` no lugar — readers detectam automaticamente).
 - Stage 5 completo (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
@@ -59,9 +59,9 @@ npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsl
 Faz upload de 5 imagens pro Drive como shareable:
 - `04-d1-2x1.jpg` (cover, também usada inline no D1)
 - `04-d2-1x1.jpg`, `04-d3-1x1.jpg` (inline D2/D3)
-- `01-eai-A.jpg`, `01-eai-B.jpg` (É IA? — random A/B; mapping em `01-eai.md` frontmatter; edições antigas usam `01-eai-real.jpg`/`01-eai-ia.jpg`, detectadas em runtime)
+- `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
 
-Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eai_a, eai_b: { url, file_id, filename } }` (edições antigas: `eai_real`/`eai_ia` no lugar de `eai_a`/`eai_b`).
+Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
 
 Resume-aware: re-execução pula imagens já no cache.
 

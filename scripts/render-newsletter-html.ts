@@ -70,7 +70,7 @@ export interface EAI {
   credit: string;
   imageA: string;
   imageB: string;
-  /** Linha "Resultado da última edição: X%..." auto-injetada por eai-compose (#107). */
+  /** Linha "Resultado da última edição: X%..." auto-injetada por eia-compose (#107). */
   prevResultLine?: string;
 }
 
@@ -247,16 +247,16 @@ function subBlockToItem(block: string[]): SectionItem | null {
 }
 
 export function fallbackEAI(editionDir: string): EAI {
-  const newA = resolve(editionDir, "01-eai-A.jpg");
-  const newB = resolve(editionDir, "01-eai-B.jpg");
+  const newA = resolve(editionDir, "01-eia-A.jpg");
+  const newB = resolve(editionDir, "01-eia-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
-    return { credit: "", imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
+    return { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg" };
   }
-  return { credit: "", imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
+  return { credit: "", imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg" };
 }
 
 export function parseEAI(text: string, editionDir: string): EAI {
-  // Pula frontmatter YAML se presente (#192 — eai_answer mapping é só pra editor).
+  // Pula frontmatter YAML se presente (#192 — eia_answer mapping é só pra editor).
   let body = text;
   const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (fmMatch) {
@@ -279,19 +279,19 @@ export function parseEAI(text: string, editionDir: string): EAI {
   }
   const credit = creditLines.join("\n").trim();
 
-  // #192: novo padrão é 01-eai-A.jpg / 01-eai-B.jpg (random).
-  // Fallback: edições antigas têm 01-eai-real.jpg / 01-eai-ia.jpg (real sempre primeiro).
-  const newA = resolve(editionDir, "01-eai-A.jpg");
-  const newB = resolve(editionDir, "01-eai-B.jpg");
+  // #192: novo padrão é 01-eia-A.jpg / 01-eia-B.jpg (random).
+  // Fallback: edições antigas têm 01-eia-real.jpg / 01-eia-ia.jpg (real sempre primeiro).
+  const newA = resolve(editionDir, "01-eia-A.jpg");
+  const newB = resolve(editionDir, "01-eia-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
-    return { credit, prevResultLine, imageA: "01-eai-A.jpg", imageB: "01-eai-B.jpg" };
+    return { credit, prevResultLine, imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg" };
   }
-  return { credit, prevResultLine, imageA: "01-eai-real.jpg", imageB: "01-eai-ia.jpg" };
+  return { credit, prevResultLine, imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg" };
 }
 
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
-  const eaiPath = resolve(editionDir, "01-eai.md");
+  const eaiPath = resolve(editionDir, "01-eia.md");
 
   if (!existsSync(reviewedPath)) {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
@@ -471,7 +471,7 @@ function renderEAI(eai: EAI): string {
   const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;`;
   const cellStyle = `padding:0px 2px;text-align:left;word-break:break-word;`;
 
-  // #107: linha "Resultado da última edição: X%..." auto-injetada pelo eai-compose
+  // #107: linha "Resultado da última edição: X%..." auto-injetada pelo eia-compose
   // vai num `<p>` próprio (visualmente separado do crédito) — caso contrário ficaria
   // emendada no mesmo parágrafo no email final.
   const prevResultRow = eai.prevResultLine
@@ -482,7 +482,7 @@ function renderEAI(eai: EAI): string {
 
   // #192: alt text usa A/B em vez de "Foto real"/"Foto gerada por IA" pra não
   // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
-  // `01-eai.md` (frontmatter, leitura humana) e `_internal/01-eai-meta.json`.
+  // `01-eia.md` (frontmatter, leitura humana) e `_internal/01-eia-meta.json`.
   return `<!-- É IA? -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
