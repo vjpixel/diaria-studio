@@ -1,6 +1,32 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { isRetryableStatus, backoffMs, splitFilePath, escapeDriveQueryString } from "../scripts/drive-sync.ts";
+import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
+import { isRetryableStatus, backoffMs, splitFilePath, escapeDriveQueryString, resolveSubfolder } from "../scripts/drive-sync.ts";
+
+const ROOT = resolve(import.meta.dirname, "..");
+const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
+
+/** Fake credentials with expiry far in the future — avoids token refresh fetch. */
+const FAKE_CREDS = {
+  client_id: "fake",
+  client_secret: "fake",
+  access_token: "fake-token",
+  refresh_token: "fake-refresh",
+  expiry_ms: Date.now() + 3_600_000, // 1h
+};
+
+function makeDriveResponse(body: unknown, status = 200): Response {
+  const json = JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => json,
+    json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    headers: { get: () => null },
+  } as unknown as Response;
+}
 
 describe("isRetryableStatus (#121)", () => {
   it("aceita transient HTTP errors comuns do Drive API", () => {
@@ -118,5 +144,101 @@ describe("escapeDriveQueryString (#282)", () => {
 
   it("string vazia passa sem alteração", () => {
     assert.equal(escapeDriveQueryString(""), "");
+  });
+});
+
+describe("resolveSubfolder (#281)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let credsExistedBefore: boolean;
+  let prevCredsContent: string | null;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    credsExistedBefore = existsSync(CREDS_PATH);
+    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (prevCredsContent !== null) {
+      writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
+    } else if (!credsExistedBefore && existsSync(CREDS_PATH)) {
+      unlinkSync(CREDS_PATH);
+    }
+  });
+
+  function makeCache(yymmdd: string, dayFolderId = "day-folder-id"): {
+    cache: { editions: Record<string, { day_folder_id: string; files: Record<string, unknown>; subfolder_ids?: Record<string, string> }> };
+    yymmdd: string;
+    dayFolderId: string;
+  } {
+    return {
+      cache: { editions: { [yymmdd]: { day_folder_id: dayFolderId, files: {} } } },
+      yymmdd,
+      dayFolderId,
+    };
+  }
+
+  it("subpath simples '_internal' — cria pasta e cacheia em subfolder_ids", async () => {
+    const { cache, yymmdd, dayFolderId } = makeCache("260428");
+    let listCalled = false;
+    let createCalled = false;
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/files?") && urlStr.includes("_internal")) {
+        listCalled = true;
+        return makeDriveResponse({ files: [] }); // not found → create
+      }
+      if (urlStr.includes("/files") && opts?.method === "POST") {
+        createCalled = true;
+        return makeDriveResponse({ id: "new-internal-id" });
+      }
+      return makeDriveResponse({ files: [] });
+    };
+    const id = await resolveSubfolder(cache as any, yymmdd, dayFolderId, "_internal");
+    assert.equal(id, "new-internal-id");
+    assert.equal(cache.editions[yymmdd].subfolder_ids?.["_internal"], "new-internal-id");
+    assert.ok(listCalled, "should call Drive list");
+    assert.ok(createCalled, "should call Drive create");
+  });
+
+  it("subpath aninhado '_internal/sub' — cria _internal depois sub dentro", async () => {
+    const { cache, yymmdd, dayFolderId } = makeCache("260428");
+    const callLog: string[] = [];
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/files?")) {
+        if (urlStr.includes("_internal")) callLog.push("list:_internal");
+        else if (urlStr.includes("sub")) callLog.push("list:sub");
+        return makeDriveResponse({ files: [] });
+      }
+      if (urlStr.includes("/files") && opts?.method === "POST") {
+        const body = JSON.parse(String(opts.body ?? "{}"));
+        callLog.push(`create:${body.name}`);
+        return makeDriveResponse({ id: `id-${body.name}` });
+      }
+      return makeDriveResponse({ files: [] });
+    };
+    const id = await resolveSubfolder(cache as any, yymmdd, dayFolderId, "_internal/sub");
+    assert.equal(id, "id-sub");
+    assert.equal(cache.editions[yymmdd].subfolder_ids?.["_internal"], "id-_internal");
+    assert.equal(cache.editions[yymmdd].subfolder_ids?.["_internal/sub"], "id-sub");
+    assert.ok(callLog.includes("create:_internal"), "deve criar _internal");
+    assert.ok(callLog.includes("create:sub"), "deve criar sub");
+  });
+
+  it("cache hit — não recria pasta, reusa ID cacheado", async () => {
+    const { cache, yymmdd, dayFolderId } = makeCache("260428");
+    cache.editions[yymmdd].subfolder_ids = { "_internal": "cached-id" };
+    let fetchCallCount = 0;
+    globalThis.fetch = async () => {
+      fetchCallCount++;
+      return makeDriveResponse({ files: [] });
+    };
+    const id = await resolveSubfolder(cache as any, yymmdd, dayFolderId, "_internal");
+    assert.equal(id, "cached-id");
+    assert.equal(fetchCallCount, 0, "não deve chamar fetch quando cache hit");
   });
 });

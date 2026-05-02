@@ -301,7 +301,8 @@ function main() {
 
   const outDir = join(MONTHLY_DIR, yymm);
   mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, "raw-destaques.json");
+  mkdirSync(join(outDir, "_internal"), { recursive: true });
+  const outPath = join(outDir, "_internal", "raw-destaques.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
   const brCount = allDestaques.filter((d) => d.is_brazil).length;
