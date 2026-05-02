@@ -22,3 +22,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run smoke
+      - name: Validate RSS feeds
+        run: npm run validate-feeds
+        continue-on-error: true

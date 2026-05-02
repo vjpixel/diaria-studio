@@ -509,6 +509,12 @@ function main(): void {
   };
 
   for (const article of articles) {
+    // #445: artigos com url null/undefined causam crash silencioso em categorize()
+    // (hostAndPath(undefined) → TypeError). Filtrar antes de processar.
+    if (!article.url || typeof article.url !== "string") {
+      console.warn(`[categorize] artigo ignorado: url inválida (${JSON.stringify(article.url)})`);
+      continue;
+    }
     const cat = categorize(article);
     result[cat].push({ ...article, category: cat });
   }

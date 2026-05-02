@@ -6,8 +6,8 @@ import { join } from "node:path";
 import {
   parseListItems,
   parseSections,
-  parseEAI,
-  fallbackEAI,
+  parseEIA,
+  fallbackEIA,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -166,9 +166,9 @@ describe("parseSections (#172)", () => {
   });
 });
 
-describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
+describe("parseEIA (#192 — frontmatter + runtime detection)", () => {
   function makeDir(): string {
-    return mkdtempSync(join(tmpdir(), "diaria-eai-parse-"));
+    return mkdtempSync(join(tmpdir(), "diaria-eia-parse-"));
   }
 
   function touch(path: string): void {
@@ -192,13 +192,13 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
         "Credit line com [link](https://x.com).",
         "",
       ].join("\n");
-      const eai = parseEAI(md, dir);
-      assert.equal(eai.imageA, "01-eia-A.jpg");
-      assert.equal(eai.imageB, "01-eia-B.jpg");
-      assert.match(eai.credit, /Credit line/);
+      const eia = parseEIA(md, dir);
+      assert.equal(eia.imageA, "01-eia-A.jpg");
+      assert.equal(eia.imageB, "01-eia-B.jpg");
+      assert.match(eia.credit, /Credit line/);
       // Frontmatter NÃO entra no credit (escondido do leitor)
-      assert.ok(!eai.credit.includes("eia_answer"));
-      assert.ok(!eai.credit.includes("real"));
+      assert.ok(!eia.credit.includes("eia_answer"));
+      assert.ok(!eia.credit.includes("real"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -210,10 +210,10 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
       touch(join(dir, "01-eia-real.jpg"));
       touch(join(dir, "01-eia-ia.jpg"));
       const md = "É IA?\n\nLegacy credit.\n";
-      const eai = parseEAI(md, dir);
-      assert.equal(eai.imageA, "01-eia-real.jpg");
-      assert.equal(eai.imageB, "01-eia-ia.jpg");
-      assert.match(eai.credit, /Legacy credit/);
+      const eia = parseEIA(md, dir);
+      assert.equal(eia.imageA, "01-eia-real.jpg");
+      assert.equal(eia.imageB, "01-eia-ia.jpg");
+      assert.match(eia.credit, /Legacy credit/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -223,8 +223,8 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
     const dir = makeDir();
     try {
       const md = "É IA?\n\nNo frontmatter here.\n";
-      const eai = parseEAI(md, dir);
-      assert.match(eai.credit, /No frontmatter/);
+      const eia = parseEIA(md, dir);
+      assert.match(eia.credit, /No frontmatter/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -234,17 +234,17 @@ describe("parseEAI (#192 — frontmatter + runtime detection)", () => {
     const dir = makeDir();
     try {
       const md = "É IA?\n\nApenas o crédito.\n";
-      const eai = parseEAI(md, dir);
-      assert.equal(eai.credit, "Apenas o crédito.");
+      const eia = parseEIA(md, dir);
+      assert.equal(eia.credit, "Apenas o crédito.");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-describe("fallbackEAI (#192)", () => {
+describe("fallbackEIA (#192)", () => {
   function makeDir(): string {
-    return mkdtempSync(join(tmpdir(), "diaria-eai-fallback-"));
+    return mkdtempSync(join(tmpdir(), "diaria-eia-fallback-"));
   }
 
   function touch(path: string): void {
@@ -256,10 +256,10 @@ describe("fallbackEAI (#192)", () => {
     try {
       touch(join(dir, "01-eia-A.jpg"));
       touch(join(dir, "01-eia-B.jpg"));
-      const eai = fallbackEAI(dir);
-      assert.equal(eai.imageA, "01-eia-A.jpg");
-      assert.equal(eai.imageB, "01-eia-B.jpg");
-      assert.equal(eai.credit, "");
+      const eia = fallbackEIA(dir);
+      assert.equal(eia.imageA, "01-eia-A.jpg");
+      assert.equal(eia.imageB, "01-eia-B.jpg");
+      assert.equal(eia.credit, "");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -269,18 +269,18 @@ describe("fallbackEAI (#192)", () => {
     const dir = makeDir();
     try {
       // dir vazio
-      const eai = fallbackEAI(dir);
-      assert.equal(eai.imageA, "01-eia-real.jpg");
-      assert.equal(eai.imageB, "01-eia-ia.jpg");
+      const eia = fallbackEIA(dir);
+      assert.equal(eia.imageA, "01-eia-real.jpg");
+      assert.equal(eia.imageB, "01-eia-ia.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-describe("parseEAI prevResultLine (#107)", () => {
+describe("parseEIA prevResultLine (#107)", () => {
   function makeDir(): string {
-    return mkdtempSync(join(tmpdir(), "diaria-eai-prev-"));
+    return mkdtempSync(join(tmpdir(), "diaria-eia-prev-"));
   }
 
   function touch(path: string): void {
@@ -306,14 +306,14 @@ describe("parseEAI prevResultLine (#107)", () => {
         "Resultado da última edição: 85% das pessoas acertaram.",
         "",
       ].join("\n");
-      const eai = parseEAI(md, dir);
-      assert.match(eai.credit, /Foto da paisagem/);
+      const eia = parseEIA(md, dir);
+      assert.match(eia.credit, /Foto da paisagem/);
       assert.ok(
-        !eai.credit.includes("Resultado da última edição"),
+        !eia.credit.includes("Resultado da última edição"),
         "credit não pode conter a linha de resultado",
       );
       assert.equal(
-        eai.prevResultLine,
+        eia.prevResultLine,
         "Resultado da última edição: 85% das pessoas acertaram.",
       );
     } finally {
@@ -325,9 +325,9 @@ describe("parseEAI prevResultLine (#107)", () => {
     const dir = makeDir();
     try {
       const md = "É IA?\n\nFoto sem result line.\n";
-      const eai = parseEAI(md, dir);
-      assert.equal(eai.prevResultLine, undefined);
-      assert.match(eai.credit, /Foto sem result line/);
+      const eia = parseEIA(md, dir);
+      assert.equal(eia.prevResultLine, undefined);
+      assert.match(eia.credit, /Foto sem result line/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -344,9 +344,9 @@ describe("parseEAI prevResultLine (#107)", () => {
         "resultado da última edição: 0% das pessoas acertaram.",
         "",
       ].join("\n");
-      const eai = parseEAI(md, dir);
+      const eia = parseEIA(md, dir);
       assert.match(
-        eai.prevResultLine ?? "",
+        eia.prevResultLine ?? "",
         /resultado da última edição: 0%/i,
       );
     } finally {
@@ -354,7 +354,7 @@ describe("parseEAI prevResultLine (#107)", () => {
     }
   });
 
-  it("E2E: md gerado por buildEiaMd com prevResultLine roundtrip via parseEAI", async () => {
+  it("E2E: md gerado por buildEiaMd com prevResultLine roundtrip via parseEIA", async () => {
     // Simula o fluxo completo: eia-compose escreve, render-newsletter-html lê.
     // Garante que o contrato writer↔reader não quebra silenciosamente.
     const { buildEiaMd } = await import("../scripts/eia-compose.ts");
@@ -367,14 +367,14 @@ describe("parseEAI prevResultLine (#107)", () => {
         "Crédito da foto.",
         "Resultado da última edição: 42% das pessoas acertaram.",
       );
-      const eai = parseEAI(md, dir);
+      const eia = parseEIA(md, dir);
       assert.equal(
-        eai.prevResultLine,
+        eia.prevResultLine,
         "Resultado da última edição: 42% das pessoas acertaram.",
       );
-      assert.equal(eai.credit, "Crédito da foto.");
-      assert.equal(eai.imageA, "01-eia-A.jpg");
-      assert.equal(eai.imageB, "01-eia-B.jpg");
+      assert.equal(eia.credit, "Crédito da foto.");
+      assert.equal(eia.imageA, "01-eia-A.jpg");
+      assert.equal(eia.imageB, "01-eia-B.jpg");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
