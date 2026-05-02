@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSections, mergeWithNewJson } from "../scripts/apply-gate-edits.ts";
+import { parseSections, mergeWithNewJson, canonicalizeUrl } from "../scripts/apply-gate-edits.ts";
 
 describe("parseSections", () => {
   it("extrai URLs de todas as 4 seções", () => {
@@ -231,5 +231,55 @@ describe("mergeWithNewJson (#293)", () => {
     assert.equal(merged.lancamento.length, 1);
     assert.equal(merged.lancamento[0].url, "https://art.com");
     assert.equal(merged.pesquisa.length, 0);
+  });
+});
+
+describe("canonicalizeUrl (#439)", () => {
+  it("normaliza trailing slash", () => {
+    assert.equal(canonicalizeUrl("https://example.com/"), "https://example.com");
+    assert.equal(canonicalizeUrl("https://example.com/path/"), "https://example.com/path");
+  });
+
+  it("lowercase scheme e host", () => {
+    assert.equal(canonicalizeUrl("HTTPS://Example.COM/path"), "https://example.com/path");
+  });
+
+  it("remove fragment", () => {
+    assert.equal(canonicalizeUrl("https://example.com/page#section"), "https://example.com/page");
+  });
+
+  it("preserva query string", () => {
+    assert.equal(canonicalizeUrl("https://example.com/search?q=ai"), "https://example.com/search?q=ai");
+  });
+
+  it("URL inválida retorna como está sem crash", () => {
+    assert.equal(canonicalizeUrl("not-a-url"), "not-a-url");
+  });
+
+  it("URLs equivalentes canonicalizam para o mesmo valor", () => {
+    const a = canonicalizeUrl("https://openai.com/blog/gpt-5/");
+    const b = canonicalizeUrl("https://openai.com/blog/gpt-5");
+    assert.equal(a, b);
+  });
+});
+
+describe("parseSections — strip pontuação trailing na URL (#443)", () => {
+  it("remove ponto final da URL", () => {
+    const md = `## Destaques\n\n1. [85] Título — https://example.com/article. — 2026-05-01\n\n## Lançamentos\n\n## Pesquisas\n\n## Notícias\n`;
+    const result = parseSections(md);
+    assert.ok(result.destaques.includes("https://example.com/article"));
+    assert.ok(!result.destaques.some((u) => u.endsWith(".")));
+  });
+
+  it("remove vírgula trailing da URL", () => {
+    const md = `## Destaques\n\n1. [80] Título — https://example.com/article, — 2026-05-01\n\n## Lançamentos\n\n## Pesquisas\n\n## Notícias\n`;
+    const result = parseSections(md);
+    assert.ok(result.destaques.includes("https://example.com/article"));
+  });
+
+  it("URL sem pontuação trailing preservada intacta", () => {
+    const md = `## Destaques\n\n1. [90] Título — https://example.com/article — 2026-05-01\n\n## Lançamentos\n\n## Pesquisas\n\n## Notícias\n`;
+    const result = parseSections(md);
+    assert.ok(result.destaques.includes("https://example.com/article"));
   });
 });
