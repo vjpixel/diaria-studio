@@ -1,5 +1,5 @@
 /**
- * sync-eai-used.ts (#369)
+ * sync-eia-used.ts (#369)
  *
  * Sincroniza `data/eia-used.json` a partir dos arquivos `_internal/01-eia-meta.json`
  * das edições locais. Garante que imagens já usadas — mesmo que o pipeline tenha
@@ -7,7 +7,7 @@
  * e não reusadas pelo eia-composer.
  *
  * Uso:
- *   npx tsx scripts/sync-eai-used.ts [--editions-dir data/editions/] [--dry-run]
+ *   npx tsx scripts/sync-eia-used.ts [--editions-dir data/editions/] [--dry-run]
  *
  * Output (stdout): JSON { scanned, added, already_present, skipped_no_meta }
  */
@@ -161,7 +161,7 @@ function main() {
   };
 
   if (dryRun && toAdd.length > 0) {
-    console.error(`[sync-eai-used] dry-run: ${toAdd.length} entradas seriam adicionadas:`);
+    console.error(`[sync-eia-used] dry-run: ${toAdd.length} entradas seriam adicionadas:`);
     for (const e of toAdd) {
       console.error(`  + ${e.edition_date} — ${e.title} (${e.image_date})`);
     }

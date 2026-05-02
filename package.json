@@ -23,6 +23,7 @@
     "validate-agents": "tsx scripts/validate-agent-frontmatter.ts",
     "lint-agents": "tsx scripts/lint-agent-md.ts",
     "archive-editions": "tsx scripts/archive-editions.ts",
+    "setup-hooks": "node -e \"const fs=require('fs');const src='scripts/hooks/pre-commit';const dst='.git/hooks/pre-commit';fs.copyFileSync(src,dst);fs.chmodSync(dst,'755');console.log('Hook instalado.');\"",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test"
   },
