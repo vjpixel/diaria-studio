@@ -62,7 +62,7 @@ const CONVERT_TO_DOC = new Set<string>([
   "01-categorized.md",
   "02-reviewed.md",
   "03-social.md",
-  "01-eai.md",
+  "01-eia.md",
   "prioritized.md",
   "draft.md",
 ]);
@@ -432,7 +432,7 @@ export function splitFilePath(filename: string): { subpath: string; basename: st
   return { subpath: norm.slice(0, idx), basename: norm.slice(idx + 1) };
 }
 
-async function resolveSubfolder(
+export async function resolveSubfolder(
   cache: DriveCache,
   yymmdd: string,
   dayFolderId: string,

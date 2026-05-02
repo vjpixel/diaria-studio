@@ -1,11 +1,11 @@
 ---
 name: diaria-3-imagens
-description: Roda a Etapa 3 (É IA? + imagens de destaque). Uso — `/diaria-3-imagens AAMMDD [eai|d1|d2|d3]`.
+description: Roda a Etapa 3 (É IA? + imagens de destaque). Uso — `/diaria-3-imagens AAMMDD [eia|d1|d2|d3]`.
 ---
 
 # /diaria-3-imagens
 
-Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eai-composer` (disparado em background na Etapa 1) e gera as 3 imagens de destaque em estilo impasto Van Gogh via Gemini API.
+Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (disparado em background na Etapa 1) e gera as 3 imagens de destaque em estilo impasto Van Gogh via Gemini API.
 
 ## Argumentos
 
@@ -13,7 +13,7 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eai-composer` (dis
   > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
 - `$2` (opcional) = sub-comando:
   - Sem argumento → roda É IA? + todas as imagens de destaque (d1, d2, d3)
-  - `eai` → roda só o É IA? (útil para regenerar sem refazer imagens)
+  - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
   - `d1` / `d2` / `d3` → regenera só aquela imagem de destaque
 
 ## Pré-requisitos
@@ -27,18 +27,18 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eai-composer` (dis
 
 ### 1a. Coletar resultado do background dispatch
 
-O `eai-composer` foi disparado em background durante a Etapa 1. Verificar se já completou:
+O `eia-composer` foi disparado em background durante a Etapa 1. Verificar se já completou:
 
-- Se `data/editions/$1/01-eai.md` já existe → pular dispatch, ir direto ao gate do É IA?.
-- Se `01-eai.md` **não** existe:
+- Se `data/editions/$1/01-eia.md` já existe → pular dispatch, ir direto ao gate do É IA?.
+- Se `01-eia.md` **não** existe:
   - Se há Agent em background ainda rodando → aguardar.
   - Caso contrário → disparar agora:
 
     ```
     Agent({
-      subagent_type: "eai-composer",
+      subagent_type: "eia-composer",
       description: "É IA? composer",
-      prompt: "Gera o bloco É IA? para a edição $1. edition_date=$1, out_dir=data/editions/$1/. Seguir as instruções completas do agente eai-composer."
+      prompt: "Gera o bloco É IA? para a edição $1. edition_date=$1, out_dir=data/editions/$1/. Seguir as instruções completas do agente eia-composer."
     })
     ```
 
@@ -51,16 +51,16 @@ Apresentar ao usuário:
 ```
 Etapa 3 — É IA? pronto.
 
-📁 data/editions/$1/01-eai.md  (frontmatter revela o mapping real/IA pro editor)
-📁 data/editions/$1/01-eai-A.jpg
-📁 data/editions/$1/01-eai-B.jpg
+📁 data/editions/$1/01-eia.md  (frontmatter revela o mapping real/IA pro editor)
+📁 data/editions/$1/01-eia-A.jpg
+📁 data/editions/$1/01-eia-B.jpg
 
 Aprovar (sim) / tentar dia anterior / pedir retry?
 ```
 
-Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eai-composer com data D-1.
+Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer com data D-1.
 
-## Parte 2 — Imagens de destaque (pular se `$2 = eai`)
+## Parte 2 — Imagens de destaque (pular se `$2 = eia`)
 
 ### 2a. Drive sync pull
 
@@ -100,7 +100,7 @@ npx tsx scripts/image-generate.ts \
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
@@ -115,8 +115,8 @@ Anotar warnings pra mencionar no gate. Falha não bloqueia.
 Etapa 3 — Imagens prontas.
 
 É IA?:
-  📁 data/editions/$1/01-eai-A.jpg
-  📁 data/editions/$1/01-eai-B.jpg
+  📁 data/editions/$1/01-eia-A.jpg
+  📁 data/editions/$1/01-eia-B.jpg
 
 Imagens de destaque:
   📁 data/editions/$1/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
@@ -132,16 +132,16 @@ Aguardar resposta. "sim" → finalizar. "d1"/"d2"/"d3" → re-rodar Parte 2 para
 
 ## Outputs
 
-- `data/editions/$1/01-eai.md` — frontmatter `eai_answer` + linha de crédito
-- `data/editions/$1/01-eai-A.jpg` — slot A (real ou IA, depende do sorteio)
-- `data/editions/$1/01-eai-B.jpg` — slot B (oposto de A)
-- `data/editions/$1/_internal/01-eai-meta.json` — metadata com `ai_side`
+- `data/editions/$1/01-eia.md` — frontmatter `eia_answer` + linha de crédito
+- `data/editions/$1/01-eia-A.jpg` — slot A (real ou IA, depende do sorteio)
+- `data/editions/$1/01-eia-B.jpg` — slot B (oposto de A)
+- `data/editions/$1/_internal/01-eia-meta.json` — metadata com `ai_side`
 - `data/editions/$1/04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`
 - `data/editions/$1/04-d{N}-sd-prompt.json` — prompts usados na geração
 
 ## Notas
 
 - Requer conexão com internet (Wikimedia API pública para É IA?, Gemini API para geração).
-- Se `01-eai-A.jpg`/`01-eai-B.jpg` já existirem, perguntar se quer regenerar.
-- Edições antigas (pré-#192) têm `01-eai-real.jpg`/`01-eai-ia.jpg` no lugar.
+- Se `01-eia-A.jpg`/`01-eia-B.jpg` já existirem, perguntar se quer regenerar.
+- Edições antigas (pré-#192) têm `01-eia-real.jpg`/`01-eia-ia.jpg` no lugar.
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.

@@ -185,6 +185,7 @@
 - URL: https://arxiv.org/
 - Site query: `site:arxiv.org`
 - RSS: https://rss.arxiv.org/rss/cs.AI
+- Topic filter: AI,artificial intelligence,language model,LLM,large language,agent,agentic,GPT,Claude,Gemini,Llama,deep learning,neural network,transformer,alignment,safety,benchmark,reasoning,multimodal,generative,fine-tuning,RAG,retrieval,foundation model,reinforcement learning
 
 ### Perplexity
 - URL: https://research.perplexity.ai/

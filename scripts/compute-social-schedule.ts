@@ -35,10 +35,7 @@ interface ScheduleConfig {
 }
 
 interface SocialConfig {
-  fallback_schedule?: {
-    linkedin?: ScheduleConfig;
-    facebook?: ScheduleConfig;
-  };
+  fallback_schedule?: ScheduleConfig;
   timezone?: string;
   [k: string]: unknown;
 }
@@ -53,6 +50,8 @@ export interface ComputeScheduleInput {
   config: PlatformConfig;
   editionDate: string;
   destaque: "d1" | "d2" | "d3";
+  /** Mantido para compatibilidade de API. O schedule é atualmente unificado entre
+   *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma. */
   platform: "linkedin" | "facebook";
   dayOffsetOverride?: number;
 }
@@ -114,14 +113,15 @@ export function timezoneOffsetIso(date: Date, timezone: string): string {
  * (parse de AAMMDD), nunca `Date.now()` (#270).
  */
 export function computeScheduledAt(input: ComputeScheduleInput): string {
+  // platform mantido na assinatura por compat (#345 — schedule unificado)
   const { config, editionDate, destaque, platform, dayOffsetOverride } = input;
 
   const social = config.publishing?.social;
   if (!social) throw new Error("config.publishing.social ausente.");
-  const sched = social.fallback_schedule?.[platform];
+  const sched = social.fallback_schedule;
   if (!sched) {
     throw new Error(
-      `config.publishing.social.fallback_schedule.${platform} ausente.`,
+      `config.publishing.social.fallback_schedule ausente.`,
     );
   }
   const tz = social.timezone;

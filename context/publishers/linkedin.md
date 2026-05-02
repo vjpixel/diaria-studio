@@ -29,14 +29,30 @@ LinkedIn reusa o composer entre invocações e oferece "Continue your draft" que
 
 Antes de criar o primeiro post (d1), registrar quantos drafts já existem na conta — usado pra validar unicidade de cada save (passo 6).
 
+<!-- Se count sempre retornar 0, verificar a estrutura HTML atual da página de drafts e atualizar os seletores aqui. -->
+
 ```javascript
 // Via javascript_tool em https://www.linkedin.com/in/me/recent-activity/drafts/
-// (ajustar selector conforme UI atual; documentar quando mudar)
-const drafts = document.querySelectorAll('[data-test-id*="draft"], [data-urn*="draft"]').length;
-return drafts;  // baseline_draft_count
+// Tentativa 1: seletores específicos de draft
+let count = document.querySelectorAll('[data-test-id*="draft"], [data-urn*="draft"]').length;
+// Fallback: seletor genérico de itens de lista (se seletores específicos retornarem 0)
+if (count === 0) {
+  count = document.querySelectorAll('.scaffold-finite-scroll__content > li').length;
+}
+return {
+  count,
+  warn: count === 0 ? 'Seletores de draft não encontraram nada — possível mudança de UI' : null
+};
+// O agente lê: const baseline = result.count; if (result.warn) registrar no output
 ```
 
-Após cada save subsequente, recontar — count deve incrementar de exatamente +1 por iteração. Se não incrementar, save sobrescreveu draft existente → falha de dados.
+O agente deve:
+1. Ler `result.count` como `baseline_draft_count`.
+2. Se `result.warn !== null`, incluir `warn: result.warn` no JSON de output (não bloquear).
+
+Após cada save subsequente, recontar com a mesma lógica de fallback — count deve incrementar de exatamente +1 por iteração. Se não incrementar, save sobrescreveu draft existente → falha de dados.
+
+**Se nenhum seletor funcionar após 2 tentativas**, continuar com `baseline = 0` — nunca bloquear o pipeline por conta de seletor frágil.
 
 ### 3. Escolher autor (uma vez por sessão)
 - Se o composer mostrar dropdown de autor, escolher página **Diar.ia** se existir; senão, perfil pessoal.
@@ -76,8 +92,15 @@ Após cada save subsequente, recontar — count deve incrementar de exatamente +
 ### 6. Tentar salvar como rascunho **com validação de unicidade** (#266)
 - LinkedIn salva drafts automaticamente quando você fecha o composer com conteúdo. Procurar o **X** (fechar) → modal pergunta "Save as draft?" → confirmar.
 - **Após confirmar**, navegar imediatamente para `https://www.linkedin.com/in/me/recent-activity/drafts/` e:
-  1. Recontar drafts via `javascript_tool` (mesma query do passo 2).
-  2. Se `count == baseline + iteration_number`, draft NOVO foi criado ✅. Capturar URL do primeiro draft visível: `document.querySelector('a[href*="/feed/update/urn:li:fsd_share:"]')?.href`.
+  1. Recontar drafts via `javascript_tool` (mesma lógica de fallback do passo 2).
+  2. Se `count == baseline + iteration_number`, draft NOVO foi criado ✅. Capturar URL do primeiro draft visível usando seletores com fallback:
+     ```javascript
+     let url = document.querySelector('a[href*="/feed/update/urn:li:fsd_share:"]')?.href;
+     if (!url) url = document.querySelector('a[href*="/feed/update/"]')?.href;
+     return { url: url ?? null, warn: !url ? 'URL do draft não encontrada' : null };
+     // O agente lê: result.url como draft_url; se result.warn !== null, incluir no output
+     ```
+     O agente deve: ler `result.url` como `draft_url`; se `result.warn !== null`, incluir `warn: result.warn` no JSON de output.
   3. Se `count <= baseline + (iteration_number - 1)`, save **sobrescreveu** draft anterior. Marcar este post como `status: "failed"` com `reason: "linkedin_draft_overwrite_detected"`.
   4. Se 2 saves consecutivos detectarem overwrite, switch para schedule no próximo (passo 7) — drafts viraram inviáveis nessa sessão.
 - Drafts ficam em **Posts** → **Drafts** (acessível pelo perfil/página).

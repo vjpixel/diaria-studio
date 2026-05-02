@@ -59,10 +59,10 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Se `_internal/01-categorized.json` existe mas não `_internal/01-approved.json` → Etapa 1 foi interrompida no gate humano; reapresentar o gate.
   - Caso contrário → começar do Stage 0 normalmente.
   **É IA? (paralelo)** — verificar em qualquer ponto de resume:
-  - Se `01-eai.md` já existe → não disparar eai-composer.
-  - Se `01-eai.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eai-composer` em background (mesma lógica do Stage 1 dispatch).
+  - Se `01-eia.md` já existe → não disparar eia-composer.
+  - Se `01-eia.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eia-composer` em background (mesma lógica do Stage 1 dispatch).
   - O gate do É IA? será apresentado assim que o Agent completar, intercalado com o fluxo principal.
-  - **Pré-requisito da Etapa 4:** `01-eai.md` + imagens devem existir antes de publicar. Se o eai-composer ainda não completou quando a Etapa 4 for atingida, **bloquear e aguardar** o Agent — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
+  - **Pré-requisito da Etapa 4:** `01-eia.md` + imagens devem existir antes de publicar. Se o eia-composer ainda não completou quando a Etapa 4 for atingida, **bloquear e aguardar** o Agent — publicar sem É IA? nunca é válido. Se falhou, reportar erro e oferecer retry antes de prosseguir.
   - Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101, mesmo padrão de `git branch -D <name>`). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar. Nunca sobrescreva arquivos de stages anteriores sem essa dupla confirmação. Pra deleção manual real (CLI fora do pipeline), o editor usa `scripts/safe-delete-edition.ts` que aplica o mesmo padrão de literal-name confirmation.
 - **Log de início.** Rodar `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`. A partir daqui, logue `info` no começo de cada stage e `error` quando qualquer subagente retornar falha — isso alimenta `/diaria-log`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário: "⚠️ Drive sync desabilitado (`drive_sync: false` em `platform.config.json`). Arquivos não serão sincronizados com o Google Drive nesta sessão." Todos os blocos de **Sync push** e **Sync pull** ao longo do pipeline verificam esta flag antes de chamar `drive-sync.ts` — se `false`, pular silenciosamente (não logar como erro).
@@ -134,9 +134,9 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
      ```
   Se o script não existir ainda (`ENOENT`): pular silenciosamente e logar warn — funcionalidade opcional, não bloqueia pipeline.
 
-- **Sync É IA? usado (#369) — sempre roda, após merge-local-pending.** Sincroniza `data/eai-used.json` a partir dos `_internal/01-eai-meta.json` de edições locais, garantindo que imagens já publicadas não sejam reusadas mesmo que o pipeline tenha rodado em outra máquina:
+- **Sync É IA? usado (#369) — sempre roda, após merge-local-pending.** Sincroniza `data/eia-used.json` a partir dos `_internal/01-eia-meta.json` de edições locais, garantindo que imagens já publicadas não sejam reusadas mesmo que o pipeline tenha rodado em outra máquina:
   ```bash
-  npx tsx scripts/sync-eai-used.ts --editions-dir data/editions/
+  npx tsx scripts/sync-eia-used.ts --editions-dir data/editions/
   ```
   Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added > 0`, logar `info` com a contagem. Falha do script → logar `warn`, nunca bloqueia pipeline.
 
@@ -184,6 +184,23 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   ```
   **Não bloqueia** pipeline — se credenciais FB não existem, script falha, ou nenhuma edição anterior tem `06-social-published.json`, apenas loga `warn` e segue. O status updates melhora observabilidade mas não é crítico pra edição atual.
 
+- **Verificação pré-edição — posts da edição anterior (#366, sempre roda, após Verify FB).** Busca `06-social-published.json` da edição mais recente para alertar posts que precisam de atenção:
+  ```bash
+  # Glob data/editions/*/06-social-published.json; pegar o mais recente por nome de pasta (sort alfanumérico desc)
+  PREV_SOCIAL=$(node -e "
+    const fs=require('fs');
+    const dirs=fs.readdirSync('data/editions').filter(d=>/^\d{6}$/.test(d)).sort().reverse();
+    const found=dirs.find(d=>fs.existsSync('data/editions/'+d+'/06-social-published.json'));
+    process.stdout.write(found?'data/editions/'+found+'/06-social-published.json':'');
+  ")
+  ```
+  Se o arquivo existir:
+  1. Ler `posts[]` do JSON.
+  2. Posts com `status === "scheduled"` e `scheduled_at < now` (prazo passou): alertar editor com a lista de posts que deveriam ter publicado.
+  3. Posts com `status === "failed"`: alertar editor com a lista.
+  4. Tudo ok (nenhum scheduled vencido, nenhum failed) ou arquivo não existe: silencioso.
+  Exibir alertas inline antes de prosseguir — editor pode querer resolver manualmente antes de começar a nova edição. Não bloqueia.
+
 ### 0b. Auto-reporter — preparado pra rodar no final
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes na seção "Auto-reporter" (Etapa 4b) abaixo.
@@ -196,7 +213,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
   - Extrair `inbox_urls` = lista de URLs vindas do drainer + URLs de entradas já existentes em `data/inbox.md` que ainda não foram arquivadas. Extrair `inbox_topics` idem.
 - Ler `context/sources.md` e extrair os nomes+site queries de todas as fontes ativas.
 - Ler `data/source-health.json` (se existir). Anotar fontes com 3+ `recent_outcomes` consecutivos não-ok — **ainda dispara**, mas sinaliza no relatório do Stage 1.
-- **Fetch poll stats da edição anterior (antes do É IA? dispatch — #201).** O `eai-compose.ts` auto-preenche a linha "Resultado da última edição" se `_internal/04-eai-poll-stats.json` existir. Para isso, buscar as stats da edição anterior **antes** de disparar o composer:
+- **Fetch poll stats da edição anterior (antes do É IA? dispatch — #201).** O `eia-compose.ts` auto-preenche a linha "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Para isso, buscar as stats da edição anterior **antes** de disparar o composer:
   ```bash
   # Pegar post_id da edição anterior (primeira entry do raw, que é a mais recente)
   PREV_POST_ID=$(node -e "
@@ -209,28 +226,29 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
     npx tsx scripts/fetch-beehiiv-poll-stats.ts \
       --post-id "$PREV_POST_ID" \
       --out data/editions/{AAMMDD}/_internal/poll-responses.json
-    npx tsx scripts/compute-eai-poll-stats.ts \
+    npx tsx scripts/compute-eia-poll-stats.ts \
       --edition {AAMMDD} \
       --responses data/editions/{AAMMDD}/_internal/poll-responses.json \
-      --out data/editions/{AAMMDD}/_internal/04-eai-poll-stats.json
+      --out data/editions/{AAMMDD}/_internal/04-eia-poll-stats.json
   fi
   ```
-  Se `PREV_POST_ID` estiver vazio (primeira edição) OU `BEEHIIV_API_KEY` não setada OU qualquer script falhar com exit != 0 — prosseguir silenciosamente sem stats (eai-compose.ts omite a linha graciosamente). **Não bloquear** o pipeline por ausência de stats.
+  Se `PREV_POST_ID` estiver vazio (primeira edição) OU `BEEHIIV_API_KEY` não setada OU qualquer script falhar com exit != 0 — prosseguir silenciosamente sem stats (eia-compose.ts omite a linha graciosamente). **Não bloquear** o pipeline por ausência de stats.
 
-- **Disparar É IA? em paralelo (background).** O `eai-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Agent` em **background** (na mesma mensagem dos researchers abaixo) passando:
+- **Disparar É IA? em paralelo (background).** O `eia-composer` não depende de nenhum output do pipeline principal — pode rodar desde o início. Disparar como `Agent` em **background** (na mesma mensagem dos researchers abaixo) passando:
   - `edition_date`
   - `out_dir = data/editions/{AAMMDD}/`
-  Armazenar `eai_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Agent completar — o que vier depois).
+  Armazenar `eia_dispatch_ts` (timestamp do momento do dispatch) — será usado no _internal/cost.md do É IA?. O resultado será coletado mais adiante, após o gate do Stage 1 (ou quando o Agent completar — o que vier depois).
 
   **Logging por caminho** (#110 fix 4 — qualquer skip path deve gerar log explícito; antes era silêncio total e a falha só aparecia no Stage 5):
-  - **Dispatch normal**: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatched (background)'`.
-  - **Skip por resume** (`01-eai.md` já existir): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eai dispatch skipped: already_exists (resume)'`.
-  - **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'eai dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com a Etapa 1 — a Etapa 3 vai sinalizar a ausência e oferecer retry manual.
+  - **Dispatch normal**: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eia dispatched (background)'`.
+  - **Skip por resume** (`01-eia.md` já existir): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'eia dispatch skipped: already_exists (resume)'`.
+  - **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'eia dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com a Etapa 1 — a Etapa 3 vai sinalizar a ausência e oferecer retry manual.
 
-  **Validação no gate da Etapa 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eai.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.` Isso fail-loud na primeira oportunidade em vez de só descobrir na Etapa 4.
+  **Validação no gate da Etapa 1** (#110 fix 1): antes de apresentar o gate principal abaixo, checar se `data/editions/{AAMMDD}/01-eia.md` existe OU se há Agent em background ativo aguardando completar. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório de saúde do gate: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.` Isso fail-loud na primeira oportunidade em vez de só descobrir na Etapa 4.
 - **Método de fetch por fonte (#54)**. Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinístico) e WebSearch (fallback):
-  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`.
+  1. Ler coluna `RSS` do `seed/sources.csv` via `sync-sources.ts` output — fontes com RSS populado têm linha `- RSS: {url}` em `context/sources.md`. Fontes com filtro de tópico (#347) têm linha `- Topic filter: {term1,term2,...}` logo abaixo.
   2. **Se fonte tem RSS**: disparar `Bash("npx tsx scripts/fetch-rss.ts --url <rss> --source <nome> --days <window_days>")` em paralelo. Rápido (~1-2s por fonte). Marca `method: "rss"` nos articles retornados.
+     - **Se a fonte tem `Topic filter`** (#347): adicionar `--topic-filter "<termos>"` ao comando — só artigos cujo `title+summary` contém ao menos 1 dos termos passam. Crítico pro arXiv (~600 papers/dia → ~80-120 após filtro). Ex: `Bash("npx tsx scripts/fetch-rss.ts --url https://rss.arxiv.org/rss/cs.AI --source arXiv --days 4 --topic-filter \"AI,LLM,agent,...\"")`.
   3. **Se RSS falha ou retorna 0 artigos**: fallback automático — dispara `source-researcher` (WebSearch) pra mesma fonte. Marca `method: "websearch_fallback"`. Critério: 1 falha já dispara fallback (não retry dentro do RSS — se feed está down, parte pra WebSearch).
   4. **Se fonte NÃO tem RSS**: disparar `source-researcher` diretamente (fluxo atual, via WebSearch com `site:` query). Marca `method: "websearch"`.
 
@@ -270,13 +288,13 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
   O script retorna JSON com `summary.sources_with_consecutive_failures_ge3` — use isso no relatório do gate do Stage 1 pra sinalizar fontes que mereceriam desativação temporária.
 - Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 - **Injetar `inbox_urls`** na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. O script de verificação decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
-- **Link verification (script direto):** gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/tmp-urls-all.json` (array de strings) e rodar:
+- **Link verification (script direto):** gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tmp-urls-all.json` (array de strings) e rodar:
   ```bash
   npx tsx scripts/verify-accessibility.ts \
-    data/editions/{AAMMDD}/tmp-urls-all.json \
-    data/editions/{AAMMDD}/link-verify-all.json
+    data/editions/{AAMMDD}/_internal/tmp-urls-all.json \
+    data/editions/{AAMMDD}/_internal/link-verify-all.json
   ```
-  Ler `data/editions/{AAMMDD}/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
+  Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
   - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
   - **Manter com flag** artigos com verdict `anti_bot` (publisher confiável bloqueou crawler mas é acessível a humanos, #320): adicionar `"access_uncertain": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no gate para revisão. **Não remover silenciosamente.** Incluir no relatório do gate: `"⚠️ N artigo(s) marcados anti_bot — accessible no browser mas bloqueados por crawler. Revisar antes de aprovar."` com a lista de domínios.
   - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no `01-categorized.md` para revisão manual no gate.
@@ -284,45 +302,45 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
 - **Enriquecer artigos do inbox (#109).** URLs do editor entram com `title: "(inbox)"` e `summary: null`; o writer do Stage 2 pula esses itens silenciosamente porque não há conteúdo verificável. Após a substituição de URLs (passo anterior), rodar:
   ```bash
   # Gravar lista atual de artigos em arquivo temporário
-  # (escrever lista em data/editions/{AAMMDD}/tmp-articles-enrich.json)
+  # (escrever lista em data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json)
   npx tsx scripts/enrich-inbox-articles.ts \
-    --in data/editions/{AAMMDD}/tmp-articles-enrich.json
+    --in data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json
   ```
   O script só toca artigos com `flag: "editor_submitted"` ou `source: "inbox"` cujo título seja placeholder (`(inbox)`, `[INBOX] ...`) ou cujo `summary` esteja vazio. Para cada um, fetch da URL final + extração de `og:title` / `og:description` (com fallback pra `<title>` e `meta name=description`). Títulos curados pelo editor são preservados; só placeholders são substituídos. Falhas de fetch viram outcome `fetch_failed` no stdout — não bloqueiam pipeline. Ler o JSON de volta após o script (mutated in place).
 - **Deduplicar** a lista filtrada rodando:
   ```bash
   npx tsx scripts/dedup.ts \
-    --articles {tmp-articles.json} \
+    --articles data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
     --past-editions context/past-editions.md \
     --window {window_days} \
-    --out {tmp-dedup-output.json}
+    --out data/editions/{AAMMDD}/_internal/tmp-dedup-output.json
   ```
   Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
-- **Categorizar** a lista pós-dedup: gravar `kept[]` em `data/editions/{AAMMDD}/tmp-kept.json` e rodar:
+- **Categorizar** a lista pós-dedup: gravar `kept[]` em `data/editions/{AAMMDD}/_internal/tmp-kept.json` e rodar:
   ```bash
   npx tsx scripts/categorize.ts \
-    --articles data/editions/{AAMMDD}/tmp-kept.json \
-    --out data/editions/{AAMMDD}/tmp-categorized.json
+    --articles data/editions/{AAMMDD}/_internal/tmp-kept.json \
+    --out data/editions/{AAMMDD}/_internal/tmp-categorized.json
   ```
-  Ler `data/editions/{AAMMDD}/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
+  Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
 - **Topic clustering (#237).** Rodar `topic-cluster.ts` pra consolidar artigos do mesmo evento dentro do mesmo bucket (ex: 3 fontes diferentes cobrindo o mesmo lançamento). O script mantém o "melhor" representante de cada cluster (fonte cadastrada > discovered, score maior > menor) e captura os runners-up em `clusters[]` pra rastreabilidade.
   ```bash
   npx tsx scripts/topic-cluster.ts \
-    --in data/editions/{AAMMDD}/tmp-categorized.json \
-    --out data/editions/{AAMMDD}/tmp-clustered.json \
+    --in data/editions/{AAMMDD}/_internal/tmp-categorized.json \
+    --out data/editions/{AAMMDD}/_internal/tmp-clustered.json \
     --threshold 0.3
   ```
-  Threshold `0.3` é agressivo (Jaccard de tokens fraco em adjacency semântica — ver issue #237). False positives são amortecidos pelo ranking intra-cluster (o representante mantido é o de melhor qualidade). Daqui em diante usar `tmp-clustered.json` como input do filtro de janela. Logar `clusters.length` (zero é normal).
+  Threshold `0.3` é agressivo (Jaccard de tokens fraco em adjacency semântica — ver issue #237). False positives são amortecidos pelo ranking intra-cluster (o representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json` como input do filtro de janela. Logar `clusters.length` (zero é normal).
 - **Filtro determinístico de janela (#233).** Antes do `research-reviewer`, rodar `scripts/filter-date-window.ts` no nível do orchestrator pra garantir que **nenhum** artigo fora da janela chegue ao agente Haiku. O agente continua responsável pelo filtro de tema recente — mas o filtro de janela é booleano e tem script dedicado, não pode ser delegado.
   ```bash
   npx tsx scripts/filter-date-window.ts \
-    --articles data/editions/{AAMMDD}/tmp-clustered.json \
+    --articles data/editions/{AAMMDD}/_internal/tmp-clustered.json \
     --edition-date {edition_iso} \
     --window-days {window_days} \
-    --out data/editions/{AAMMDD}/tmp-filtered.json
+    --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
   # (edition_iso = "20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}")
   ```
-  Logar `removed.length`. Daqui em diante o input do research-reviewer é `tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial } }`) — extrair `kept` e usar como `categorized`.
+  Logar `removed.length`. Daqui em diante o input do research-reviewer é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial } }`) — extrair `kept` e usar como `categorized`.
 - Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_dir, window_days }` (valor confirmado pelo usuário no início do stage). O agent agora aplica:
   1. **Datas (verificação + flag)**: roda `verify-dates.ts` pra confirmar `published_at` via fetch, corrige `article.date`, copia `date_unverified` direto do output do script (#226 — não recalcula).
   2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
@@ -356,7 +374,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
   ```
   O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 - **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir):
-  1. Montar lista de arquivos: sempre `01-categorized.md`; adicionar `01-eai.md,01-eai-A.jpg,01-eai-B.jpg` se `data/editions/{AAMMDD}/01-eai.md` existir.
+  1. Montar lista de arquivos: sempre `01-categorized.md`; adicionar `01-eia.md,01-eia-A.jpg,01-eia-B.jpg` se `data/editions/{AAMMDD}/01-eia.md` existir.
   2. `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files {lista}")`. Anotar em `sync_results[1]`; ignorar falhas.
 
 - **GATE HUMANO:** apresentar ao usuário:
@@ -376,7 +394,21 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
      ```
      (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = `lancamento.length` + `pesquisa.length` + `noticias.length` do categorized.json)
 
-  2. **Relatório de saúde das fontes:**
+  2. **Métricas de cobertura (#346) — derivadas dos arquivos de pipeline:**
+     - Ler `_internal/tmp-articles-raw.json` (ou `_internal/researcher-results.json`) → total bruto de artigos antes dos filtros.
+     - Ler `_internal/tmp-dedup-output.json` → contagem após dedup; extrair `removed[]` para detalhes por motivo.
+     - Ler `_internal/link-verify-all.json` → artigos removidos por paywall/blocked/aggregator.
+     - Ler `_internal/tmp-categorized.json` → artigos após todos os filtros.
+     - Derivar perdas e exibir:
+       ```
+       Artigos garimpados: {N_brutos} brutos → {N_final} após filtros
+         -janela: {N_janela} (fora da janela de {window_days}d)
+         -dedup: {N_dedup} (URLs repetidas das últimas edições)
+         -link-verify: {N_verify} (paywall/blocked/aggregator)
+       ```
+     - Se arquivo não existir ou falhar o parse, exibir "N/A" para aquela métrica — nunca bloquear.
+
+  3. **Relatório de saúde das fontes:**
      - Um bullet `⚠️` por fonte com outcome não-ok *nesta execução* (ex: `⚠️ MIT Tech Review BR — timeout após 180s`).
      - Um bullet `🔴` por fonte com streak 3+, com os timestamps de cada falha: ex:
        `🔴 AI Breakfast — 3 timeouts seguidos: 2026-04-15T14:18Z, 2026-04-16T14:20Z, 2026-04-17T14:22Z — considere desativar em seed/sources.csv`.
@@ -417,11 +449,19 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 
 #### 2a. Writer + social em paralelo
 
+**Limites por bucket (#358) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
+- Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
+- Destaques: preservar todos (sempre ≤3).
+- Lançamentos: top-5 por score (se houver mais de 5, truncar nos 5 de maior score).
+- Pesquisas: top-3 por score (se houver mais de 3, truncar nos 3 de maior score).
+- Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
+- Passar o `categorized` truncado ao writer no campo `categorized` (não salvar em disco — só memória do orchestrator).
+
 **Em uma única mensagem**, disparar os 3 agents simultaneamente:
 
 1. `Agent` → `writer` (Sonnet) passando:
    - `highlights` (extraído de `_internal/01-approved.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
-   - `categorized` (o `_internal/01-approved.json` inteiro, para lançamentos/pesquisa/noticias)
+   - `categorized` (o `_internal/01-approved.json` com buckets truncados pelos limites acima — nunca o arquivo bruto)
    - `edition_date`
    - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
    - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
@@ -545,16 +585,16 @@ Falha não bloqueia (fallback usa o arquivo original).
 
 #### 3a. É IA? (gate do background dispatch)
 
-O `eai-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o resultado e apresentamos o gate antes de gerar as imagens de destaque.
+O `eia-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o resultado e apresentamos o gate antes de gerar as imagens de destaque.
 
-- **Se o Agent do eai-composer ainda não completou:** aguardar. Quando completar, apresentar o gate abaixo.
-- **Se o Agent já completou (ou `01-eai.md` já existe por resume):** apresentar o gate imediatamente.
-- Se o eai-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eai-composer` com os mesmos parâmetros).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eai.md,01-eai-A.jpg,01-eai-B.jpg")`. Anotar em `sync_results[3]` (eai); ignorar falhas. (Edições antigas têm `01-eai-real.jpg`/`01-eai-ia.jpg`; ajustar manualmente em retry de pré-#192.)
-- **GATE HUMANO:** mostrar o texto de `01-eai.md` (frontmatter `eai_answer` revela A↔real/ia pro editor) + `"Imagem A: data/editions/{AAMMDD}/01-eai-A.jpg | Imagem B: data/editions/{AAMMDD}/01-eai-B.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eai-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
+- **Se o Agent do eia-composer ainda não completou:** aguardar. Quando completar, apresentar o gate abaixo.
+- **Se o Agent já completou (ou `01-eia.md` já existe por resume):** apresentar o gate imediatamente.
+- Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros).
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg")`. Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+- **GATE HUMANO:** mostrar o texto de `01-eia.md` (frontmatter `eia_answer` revela A↔real/ia pro editor) + `"Imagem A: data/editions/{AAMMDD}/01-eia-A.jpg | Imagem B: data/editions/{AAMMDD}/01-eia-B.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eia-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
   - **Atualizar _internal/cost.md.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:
     ```
-    | 3a | {eai_dispatch_ts} | {now} | eai_composer:1, drive_syncer:1 | 2 | 0 |
+    | 3a | {eia_dispatch_ts} | {now} | eia_composer:1, drive_syncer:1 | 2 | 0 |
     ```
 
 #### 3b. Imagens de destaque
@@ -587,13 +627,13 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 #### 4a. Pré-requisitos + sync
 
 - Logar início: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 publish parallel started'`.
-- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eai.md,01-eai-A.jpg,01-eai-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eai-real.jpg`/`01-eai-ia.jpg`.)
+- **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social): `Bash("npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eia.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg")` — editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eia-real.jpg`/`01-eia-ia.jpg`.)
 - **Staleness check (#120) — APÓS o pull.** Rodar:
   ```bash
   npx tsx scripts/check-staleness.ts --edition-dir data/editions/{AAMMDD}/ --stage 6
   ```
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`, conceito não mudou). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
-- Verificar pré-requisitos: `02-reviewed.md`, `01-eai.md`, `01-eai-A.jpg` + `01-eai-B.jpg` (ou legacy `01-eai-real.jpg` + `01-eai-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
+- Verificar pré-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 
 #### 4b. Confirmar modo de publicação por canal (#336)
 
@@ -737,8 +777,8 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
        • Inline D1  → 04-d1-2x1.jpg
        • Inline D2  → 04-d2-1x1.jpg
        • Inline D3  → 04-d3-1x1.jpg
-       • É IA? (A)  → 01-eai-A.jpg
-       • É IA? (B)  → 01-eai-B.jpg
+       • É IA? (A)  → 01-eia-A.jpg
+       • É IA? (B)  → 01-eia-B.jpg
        📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
     ```
   Social posts não exigem upload manual — Facebook foi via Graph API com upload já feito; LinkedIn drafts têm imagens já anexadas pelo agent.

@@ -1,11 +1,11 @@
 ---
 name: publish-social
 description: Stage 6 — Publica os 3 posts LinkedIn como rascunho usando Claude in Chrome. Editor anexa imagens manualmente antes de publicar (ver #118). Facebook é publicado em paralelo via scripts/publish-facebook.ts (Graph API). Resume-aware. Outputs em `06-social-published.json`.
-model: claude-sonnet-4-6
+model: claude-haiku-4-5
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
 
-Você publica os 3 posts LinkedIn da edição Diar.ia (× 3 destaques). Tenta salvar como rascunho primeiro; se a plataforma não oferecer rascunho no momento, agenda usando o horário configurado em `platform.config.json` → `publishing.social.fallback_schedule.linkedin`.
+Você publica os 3 posts LinkedIn da edição Diar.ia (× 3 destaques). Tenta salvar como rascunho primeiro; se a plataforma não oferecer rascunho no momento, agenda usando o horário configurado em `platform.config.json` → `publishing.social.fallback_schedule`.
 
 **Facebook não é responsabilidade deste agente** (#114). Posts FB são publicados por `scripts/publish-facebook.ts` via Graph API direta — princípio "API oficial > browser automation" (CLAUDE.md). Orchestrator dispara os dois fluxos em paralelo no Stage 6; este agente cuida só de LinkedIn.
 
