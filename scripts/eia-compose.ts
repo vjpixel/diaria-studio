@@ -188,13 +188,20 @@ export function buildEiaMd(
 export function isStage4Complete(outDir: string): boolean {
   const md = existsSync(resolve(outDir, "01-eia.md"));
   const meta = existsSync(resolve(outDir, "_internal/01-eia-meta.json"));
+  // #436: legacy path — editions before PR #428 used "01-eai.*" naming
+  const legacyMd = existsSync(resolve(outDir, "01-eai.md"));
+  const legacyMeta = existsSync(resolve(outDir, "_internal/01-eai-meta.json"));
   const newAB =
     existsSync(resolve(outDir, "01-eia-A.jpg")) &&
     existsSync(resolve(outDir, "01-eia-B.jpg"));
   const legacyAB =
     existsSync(resolve(outDir, "01-eia-real.jpg")) &&
     existsSync(resolve(outDir, "01-eia-ia.jpg"));
-  return md && meta && (newAB || legacyAB);
+  // #436: also accept the pre-PR#428 file names (01-eai-real.jpg / 01-eai-ia.jpg)
+  const eaiLegacyAB =
+    existsSync(resolve(outDir, "01-eai-real.jpg")) &&
+    existsSync(resolve(outDir, "01-eai-ia.jpg"));
+  return ((md && meta) || (legacyMd && legacyMeta)) && (newAB || legacyAB || eaiLegacyAB);
 }
 
 const NEGATIVE_PROMPT =
@@ -373,6 +380,10 @@ const SUBJECT_STOP_WORDS = new Set([
   "pilot", "boat", "view", "building", "bridge", "mountain", "river", "lake",
   "sky", "landscape", "panorama", "sunset", "sunrise", "beach", "forest",
   "road", "street", "field", "garden", "park",
+  // #434: extended stop words (generics that describe object type, not specific subject)
+  "tower", "dome", "gate", "statue", "fountain", "flower", "bird",
+  "animal", "frog", "fish", "butterfly", "leaf", "tree", "cloud",
+  "night", "morning", "evening", "scene",
 ]);
 
 /**
