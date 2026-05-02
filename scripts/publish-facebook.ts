@@ -185,7 +185,11 @@ async function deleteFacebookPost(
   const formData = new FormData();
   formData.append("access_token", pageToken);
   const res = await fetch(url, { method: "DELETE", body: formData });
-  const data = await res.json();
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Facebook DELETE HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = await res.json() as { error?: unknown };
   if (data.error) {
     throw new Error(`Facebook DELETE error: ${JSON.stringify(data.error)}`);
   }
@@ -220,13 +224,17 @@ async function publishPhoto(
   }
 
   const res = await fetch(url, { method: "POST", body: formData });
-  const data = await res.json();
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Facebook POST HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = await res.json() as { id?: string; post_id?: string; error?: unknown };
 
   if (data.error) {
     throw new Error(`Facebook API error: ${JSON.stringify(data.error)}`);
   }
 
-  return data;
+  return data as { id: string; post_id?: string };
 }
 
 async function rescheduleFacebookPosts(opts: {

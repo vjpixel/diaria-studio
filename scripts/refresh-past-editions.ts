@@ -41,8 +41,18 @@ export type Post = {
 
 function loadConfig(): { dedupEditionCount: number } {
   if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 14 };
-  const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 14 };
+  let raw: string;
+  try {
+    raw = readFileSync(CONFIG_PATH, "utf8");
+  } catch (e) {
+    throw new Error(`Não foi possível ler ${CONFIG_PATH}: ${(e as Error).message}`);
+  }
+  try {
+    const cfg = JSON.parse(raw);
+    return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 14 };
+  } catch (e) {
+    throw new Error(`${CONFIG_PATH} contém JSON inválido — verifique sintaxe (trailing commas, aspas, etc.): ${(e as Error).message}`);
+  }
 }
 
 function extractLinks(content: string): string[] {
