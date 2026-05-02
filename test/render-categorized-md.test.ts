@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   getDate,
   isBrazilianTheme,
   renderLine,
   buildHighlightUrls,
   buildRunnerUpUrls,
+  renderEaiBlock,
   renderSection,
 } from "../scripts/render-categorized-md.ts";
 
@@ -383,6 +387,78 @@ describe("buildRunnerUpUrls (#104)", () => {
     assert.equal(r.size, 2);
     // Sem overlap
     for (const url of r) assert.ok(!h.has(url));
+  });
+});
+
+describe("renderEaiBlock (#371)", () => {
+  it("retorna placeholder quando nem 01-eia.md nem 01-eai.md existem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("⏳"));
+      assert.ok(block.includes("ainda processando"));
+      assert.ok(block.includes("É IA?"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("novo padrão: inclui conteúdo do 01-eia.md quando existe (pós-#428)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const eiaContent = "---\neia_answer: A\n---\nConteúdo do É IA?";
+      writeFileSync(join(dir, "01-eia.md"), eiaContent, "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Conteúdo do É IA?"));
+      assert.ok(!block.includes("⏳"));
+      assert.ok(block.includes("01-eia-A.jpg"));
+      assert.ok(block.includes("01-eia-B.jpg"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("legacy: inclui conteúdo do 01-eai.md quando 01-eia.md não existe (pré-#428)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      const eaiContent = "---\neai_answer: A\n---\nConteúdo legacy";
+      writeFileSync(join(dir, "01-eai.md"), eaiContent, "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Conteúdo legacy"));
+      assert.ok(!block.includes("⏳"));
+      assert.ok(block.includes("01-eai-A.jpg"));
+      assert.ok(block.includes("01-eai-B.jpg"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("novo padrão tem precedência quando ambos os arquivos existem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eia.md"), "Novo", "utf8");
+      writeFileSync(join(dir, "01-eai.md"), "Legacy", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Novo"));
+      assert.ok(!block.includes("Legacy"));
+      assert.ok(block.includes("01-eia-A.jpg"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("bloco tem separadores --- e cabeçalho ## É IA?", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eia.md"), "Texto", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("---"));
+      assert.ok(block.includes("## É IA?"));
+      assert.ok(block.includes("Imagem A:"));
+      assert.ok(block.includes("Imagem B:"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
 

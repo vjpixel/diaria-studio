@@ -391,6 +391,11 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
          A ORDEM FÍSICA das linhas em "Destaques" define D1/D2/D3 (de cima para baixo).
          Para reordenar, basta mover a linha dentro da seção Destaques.
          Se não mover nenhum artigo, os 3 primeiros candidatos do scorer serão usados.
+
+     🖼️  É IA? está embutido no MD entre as seções Pesquisas e Notícias (#371).
+         Se aparecer "⏳ ainda processando", o eai-composer ainda está em background —
+         será revisado no gate da Etapa 3 quando as imagens forem aprovadas.
+         Se a imagem do É IA? já estiver disponível, aprovação aqui consolida o review.
      ```
      (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = `lancamento.length` + `pesquisa.length` + `noticias.length` do categorized.json)
 
@@ -583,15 +588,16 @@ Falha não bloqueia (fallback usa o arquivo original).
 
 ### 3. Etapa 3 — Imagens
 
-#### 3a. É IA? (gate do background dispatch)
+#### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371)
 
-O `eia-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o resultado e apresentamos o gate antes de gerar as imagens de destaque.
+O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
 
-- **Se o Agent do eia-composer ainda não completou:** aguardar. Quando completar, apresentar o gate abaixo.
-- **Se o Agent já completou (ou `01-eia.md` já existe por resume):** apresentar o gate imediatamente.
-- Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros).
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg")`. Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
-- **GATE HUMANO:** mostrar o texto de `01-eia.md` (frontmatter `eia_answer` revela A↔real/ia pro editor) + `"Imagem A: data/editions/{AAMMDD}/01-eia-A.jpg | Imagem B: data/editions/{AAMMDD}/01-eia-B.jpg"`. Mencionar: "📁 Disponível no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Se `rejections[]` no output do composer não estiver vazio, exibir: `"Pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` para contextualizar o editor. Opções: aprovar / tentar dia anterior (re-disparar `eia-composer` — ele decrementa a data; re-disparar o push com os novos arquivos).
+- **Se o Agent do eia-composer ainda não completou:** aguardar. Quando completar, seguir.
+- **Se o Agent já completou (ou `01-eia.md` já existe por resume):** continuar.
+- Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros). Após retry bem-sucedido, re-renderizar `01-categorized.md` para incluir o bloco atualizado (se o gate da Etapa 1 ainda não foi aprovado) ou informar o editor que o arquivo foi atualizado localmente.
+- **Sync push das imagens do É IA? para o Drive.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg")`. Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+- **Sem gate separado (#371).** O editor já aprovou (ou verá) o É IA? no gate integrado da Etapa 1. Se o eia-composer completou com sucesso, prosseguir diretamente para 3b. Se `rejections[]` no output do composer não estiver vazio, informar: `"É IA?: pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` — contexto para o editor, sem bloquear o pipeline.
+- **Opção de retry do É IA?:** se o editor precisar regenerar o É IA? isoladamente (ex: imagem insatisfatória), usar `/diaria-3-imagens {AAMMDD} eia` — o sub-skill tem gate próprio de aprovação para esse caso.
   - **Atualizar _internal/cost.md.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:
     ```
     | 3a | {eia_dispatch_ts} | {now} | eia_composer:1, drive_syncer:1 | 2 | 0 |
@@ -610,7 +616,7 @@ O `eia-composer` foi disparado em background durante a Etapa 1. Aqui coletamos o
     --destaque d{N}
   ```
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
-- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg")`. Anotar em `sync_results[3]`; ignorar falhas.
+- **Sync push antes do gate.** Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md")`. Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
   - **Atualizar _internal/cost.md.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
     ```

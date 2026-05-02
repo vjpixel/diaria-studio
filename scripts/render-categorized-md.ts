@@ -357,6 +357,36 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
   }
 }
 
+// ---------- É IA? block -------------------------------------------------
+
+/**
+ * Lê o arquivo do É IA? do diretório da edição e monta o bloco para inserção
+ * entre as seções do `01-categorized.md`.
+ *
+ * Suporta o padrão novo (`01-eia.md`, pós-#428) e o legacy (`01-eai.md`).
+ * Se o arquivo existir: retorna o bloco completo com conteúdo + paths de imagem.
+ * Se não existir (ainda processando em background): retorna placeholder.
+ */
+export function renderEaiBlock(editionDir: string): string {
+  const separator = "---";
+
+  // Suporte a novo padrão (eia, pós-#428) e legacy (eai, pré-#428)
+  const eaiMd =
+    existsSync(join(editionDir, "01-eia.md")) ? join(editionDir, "01-eia.md") :
+    existsSync(join(editionDir, "01-eai.md")) ? join(editionDir, "01-eai.md") :
+    null;
+
+  if (eaiMd) {
+    const content = readFileSync(eaiMd, "utf8").trim();
+    const prefix = eaiMd.endsWith("01-eia.md") ? "eia" : "eai";
+    const imgA = join(editionDir, `01-${prefix}-A.jpg`);
+    const imgB = join(editionDir, `01-${prefix}-B.jpg`);
+    const imgLine = `Imagem A: ${imgA} | Imagem B: ${imgB}`;
+    return `\n${separator}\n\n## É IA?\n\n${content}\n${imgLine}\n\n${separator}\n`;
+  }
+  return `\n${separator}\n\n## É IA? ⏳ (ainda processando — será revisado quando disponível)\n\n${separator}\n`;
+}
+
 // ---------- Main ---------------------------------------------------------
 
 function main() {
@@ -383,10 +413,16 @@ function main() {
     `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
 
+  // Determinar o diretório da edição a partir do path do arquivo de saída (#371).
+  // O É IA? é embutido entre Pesquisas e Notícias para revisão integrada no gate da Etapa 1.
+  const editionDir = cli.out ? dirname(resolve(cli.out)) : process.cwd();
+  const eaiBlock = renderEaiBlock(editionDir);
+
   const sections = [
     `## Destaques\n\n_(mova 3 artigos para cá)_\n`,
     renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls),
     renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls),
+    eaiBlock,
     renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls),
     ...(data.tutorial && data.tutorial.length > 0
       ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls)]
