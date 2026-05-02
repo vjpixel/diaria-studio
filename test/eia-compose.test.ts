@@ -699,6 +699,134 @@ describe("pickSubjectWikipediaLink — stop words + proper noun bias (#301)", ()
   });
 });
 
+describe("pickSubjectWikipediaLink — extended stop words (#434)", () => {
+  it("stop word 'flower' penaliza link genérico; specific subject wins", () => {
+    // "Flower" tem stop word "flower" → -5 + 2 (short) + 3 (proper) = 0
+    // "Kyoto" não tem stop word → 0 + 2 (short) + 3 (proper) = 5 → Kyoto vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Flower">Flower</a> in ' +
+      '<a href="https://en.wikipedia.org/wiki/Kyoto">Kyoto</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Kyoto");
+  });
+
+  it("stop word 'tree' penaliza link genérico; specific subject wins", () => {
+    // "Tree" → stop word "tree" → -5 + 2 (short) + 3 (proper) = 0
+    // "Amazon" → 0 + 2 (short) + 3 (proper) = 5 → Amazon vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Tree">Tree</a> in the ' +
+      '<a href="https://en.wikipedia.org/wiki/Amazon">Amazon</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Amazon");
+  });
+
+  it("stop word 'bird' penaliza link genérico", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Bird">Bird</a> near ' +
+      '<a href="https://en.wikipedia.org/wiki/Galapagos">Galapagos</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Galapagos");
+  });
+
+  it("stop word 'statue' penaliza link genérico", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Statue">Statue</a> at ' +
+      '<a href="https://en.wikipedia.org/wiki/Rhodes">Rhodes</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Rhodes");
+  });
+
+  it("stop word 'night' penaliza link genérico", () => {
+    // "Night" → stop word → -5 + 2 (short) + 3 (proper) = 0
+    // "Vienna" → 0 + 2 (short) + 3 (proper) = 5 → Vienna vence
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Night">Night</a> scene in ' +
+      '<a href="https://en.wikipedia.org/wiki/Vienna">Vienna</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Vienna");
+  });
+
+  it("stop word 'frog' penaliza link genérico; specific species wins", () => {
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Frog">Frog</a> species ' +
+      '<a href="https://en.wikipedia.org/wiki/Glyphoglossus_molossus">Glyphoglossus molossus</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://en.wikipedia.org/wiki/Glyphoglossus_molossus");
+  });
+});
+
+describe("isStage4Complete — legacy eai.* paths (#436)", () => {
+  function makeDir(): string {
+    const root = mkdtempSync(join(tmpdir(), "diaria-eai-legacy-"));
+    mkdirSync(join(root, "_internal"), { recursive: true });
+    return root;
+  }
+
+  function touch(path: string): void {
+    writeFileSync(path, "x");
+  }
+
+  it("true com arquivos 01-eai.* (legacy pré-PR#428, md+meta+real+ia)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true com arquivos 01-eia.* novo padrão (regressão)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando só tem 01-eai.md mas sem imagens", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "_internal/01-eai-meta.json"));
+      // sem imagens
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando nenhum dos dois padrões existe", () => {
+    const dir = makeDir();
+    try {
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando 01-eai.md existe mas meta legacy falta", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eai.md"));
+      touch(join(dir, "01-eai-real.jpg"));
+      touch(join(dir, "01-eai-ia.jpg"));
+      // sem _internal/01-eai-meta.json
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("buildCreditLine — wrap exato com link da description (#285)", () => {
   it("subject não é primeira palavra: wrap só no texto exato do <a>", () => {
     const image = {

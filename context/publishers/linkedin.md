@@ -39,12 +39,16 @@ let count = document.querySelectorAll('[data-test-id*="draft"], [data-urn*="draf
 if (count === 0) {
   count = document.querySelectorAll('.scaffold-finite-scroll__content > li').length;
 }
-// Se ainda 0, usar baseline=0 com warn (não bloquear)
-if (count === 0) {
-  console.warn('[linkedin] baseline draft count = 0 (seletores não encontraram drafts — possível mudança de UI)');
-}
-return count;  // baseline_draft_count
+return {
+  count,
+  warn: count === 0 ? 'Seletores de draft não encontraram nada — possível mudança de UI' : null
+};
+// O agente lê: const baseline = result.count; if (result.warn) registrar no output
 ```
+
+O agente deve:
+1. Ler `result.count` como `baseline_draft_count`.
+2. Se `result.warn !== null`, incluir `warn: result.warn` no JSON de output (não bloquear).
 
 Após cada save subsequente, recontar com a mesma lógica de fallback — count deve incrementar de exatamente +1 por iteração. Se não incrementar, save sobrescreveu draft existente → falha de dados.
 
@@ -91,13 +95,12 @@ Após cada save subsequente, recontar com a mesma lógica de fallback — count 
   1. Recontar drafts via `javascript_tool` (mesma lógica de fallback do passo 2).
   2. Se `count == baseline + iteration_number`, draft NOVO foi criado ✅. Capturar URL do primeiro draft visível usando seletores com fallback:
      ```javascript
-     // Tentativa 1: seletor específico de fsd_share
      let url = document.querySelector('a[href*="/feed/update/urn:li:fsd_share:"]')?.href;
-     // Fallback: qualquer link de feed/update
      if (!url) url = document.querySelector('a[href*="/feed/update/"]')?.href;
-     // Se nenhum encontrar, registrar url: null mas não falhar
-     return url ?? null;
+     return { url: url ?? null, warn: !url ? 'URL do draft não encontrada' : null };
+     // O agente lê: result.url como draft_url; se result.warn !== null, incluir no output
      ```
+     O agente deve: ler `result.url` como `draft_url`; se `result.warn !== null`, incluir `warn: result.warn` no JSON de output.
   3. Se `count <= baseline + (iteration_number - 1)`, save **sobrescreveu** draft anterior. Marcar este post como `status: "failed"` com `reason: "linkedin_draft_overwrite_detected"`.
   4. Se 2 saves consecutivos detectarem overwrite, switch para schedule no próximo (passo 7) — drafts viraram inviáveis nessa sessão.
 - Drafts ficam em **Posts** → **Drafts** (acessível pelo perfil/página).
