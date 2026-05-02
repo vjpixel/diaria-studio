@@ -51,6 +51,7 @@ interface CategorizedJson {
   pesquisa: Article[];
   noticias: Article[];
   tutorial?: Article[];
+  video?: Article[];
 }
 
 interface ApprovedJson {
@@ -60,9 +61,10 @@ interface ApprovedJson {
   pesquisa: Article[];
   noticias: Article[];
   tutorial: Article[]; // sempre array, nunca ausente (#328)
+  video: Article[]; // sempre array, nunca ausente
 }
 
-type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial";
+type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -93,6 +95,7 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     pesquisa: [],
     noticias: [],
     tutorial: [],
+    video: [],
   };
 
   const headingToBucket: Record<string, BucketName> = {
@@ -101,6 +104,7 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     "Pesquisas": "pesquisa",
     "Notícias": "noticias",
     "Aprenda hoje": "tutorial",
+    "Vídeos": "video",
   };
 
   // Split por ## headings
@@ -192,8 +196,9 @@ function main() {
     pesquisa: data.pesquisa,
     noticias: data.noticias,
     tutorial: data.tutorial ?? [],
+    video: data.video ?? [],
   };
-  const allPools = [data.lancamento, data.pesquisa, data.noticias, data.tutorial ?? []];
+  const allPools = [data.lancamento, data.pesquisa, data.noticias, data.tutorial ?? [], data.video ?? []];
 
   // ---- Destaques ---------------------------------------------------------
   let destaquesUrls = [...sections.destaques];
@@ -248,6 +253,7 @@ function main() {
   }
 
   const tutorialResolved = resolveBucket(sections.tutorial);
+  const videoResolved = resolveBucket(sections.video);
   const approved: ApprovedJson = {
     highlights,
     runners_up: data.runners_up ?? [],
@@ -255,12 +261,13 @@ function main() {
     pesquisa: resolveBucket(sections.pesquisa),
     noticias: resolveBucket(sections.noticias),
     tutorial: tutorialResolved, // sempre array — consumers não precisam de ?? [] (#328)
+    video: videoResolved, // sempre array
   };
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
-  const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length}`;
-  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial.length}`;
+  const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length} V=${originalBuckets.video.length}`;
+  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial.length} V=${approved.video.length}`;
   console.error(
     `[apply-gate-edits] original ${origTotals} → approved ${approvedTotals} — destaques: ${approved.highlights.length}`,
   );
@@ -302,6 +309,7 @@ export function mergeWithNewJson(
     ["pesquisa", newJson.pesquisa],
     ["noticias", newJson.noticias],
     ["tutorial", newJson.tutorial ?? []],
+    ["video", newJson.video ?? []],
   ];
   for (const [bucketName, pool] of bucketEntries) {
     for (const a of pool) {
@@ -316,6 +324,7 @@ export function mergeWithNewJson(
     ...editorSections.pesquisa,
     ...editorSections.noticias,
     ...editorSections.tutorial,
+    ...editorSections.video,
   ]);
 
   // URLs no MD do editor que sumiram do novo JSON → avisar
@@ -327,7 +336,7 @@ export function mergeWithNewJson(
 
   // Construir buckets do resultado mesclado
   const out: Record<string, Article[]> = {
-    lancamento: [], pesquisa: [], noticias: [], tutorial: [],
+    lancamento: [], pesquisa: [], noticias: [], tutorial: [], video: [],
   };
   const placed = new Set<string>();
 
@@ -345,6 +354,7 @@ export function mergeWithNewJson(
     ["pesquisa", editorSections.pesquisa],
     ["noticias", editorSections.noticias],
     ["tutorial", editorSections.tutorial],
+    ["video", editorSections.video],
   ] as [string, string[]][]) {
     for (const url of urls) {
       const entry = urlToNew.get(url);
@@ -369,6 +379,7 @@ export function mergeWithNewJson(
       pesquisa: out.pesquisa,
       noticias: out.noticias,
       tutorial: out.tutorial,
+      video: out.video,
     },
     warnings,
   };

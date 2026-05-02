@@ -110,6 +110,7 @@ Tudo certo.
       pesquisa: [],
       noticias: [],
       tutorial: [],
+      video: [],
     });
   });
 
