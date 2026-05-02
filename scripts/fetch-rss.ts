@@ -40,6 +40,22 @@ export interface FetchOptions {
   days?: number;
   timeoutMs?: number;
   now?: Date;
+  /** #347: filtrar artigos por tópico (ao menos 1 termo deve aparecer no title+summary). Case-insensitive. */
+  topicFilter?: string[];
+}
+
+/**
+ * Filtra artigos por tópico (#347): mantém apenas artigos cujo
+ * `(title + " " + summary).toLowerCase()` contenha ao menos 1 dos termos.
+ * Se `terms` estiver vazio ou ausente, retorna todos os artigos sem filtro.
+ */
+export function filterByTopic(articles: Article[], terms: string[]): Article[] {
+  if (!terms || terms.length === 0) return articles;
+  const lowerTerms = terms.map((t) => t.toLowerCase());
+  return articles.filter((a) => {
+    const haystack = (a.title + " " + (a.summary ?? "")).toLowerCase();
+    return lowerTerms.some((t) => haystack.includes(t));
+  });
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -232,7 +248,10 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
 
     const xml = await res.text();
     const { articles } = parseFeed(xml);
-    const filtered = filterByWindow(articles, days, now);
+    const byWindow = filterByWindow(articles, days, now);
+    const filtered = opts.topicFilter && opts.topicFilter.length > 0
+      ? filterByTopic(byWindow, opts.topicFilter)
+      : byWindow;
     return { source: opts.sourceName, method: "rss", feed_url: opts.url, articles: filtered };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
@@ -271,13 +290,17 @@ async function main() {
   const url = args.url;
   const sourceName = args.source ?? "unknown";
   const days = args.days ? Number(args.days) : DEFAULT_DAYS;
+  // #347: --topic-filter "term1,term2,..." (parse por vírgula)
+  const topicFilter = args["topic-filter"]
+    ? args["topic-filter"].split(",").map((t) => t.trim()).filter(Boolean)
+    : undefined;
 
   if (!url) {
-    console.error("Uso: tsx fetch-rss.ts --url <feed_url> --source <name> [--days 3]");
+    console.error("Uso: tsx fetch-rss.ts --url <feed_url> --source <name> [--days 3] [--topic-filter \"term1,term2,...\"]");
     process.exit(1);
   }
 
-  const result = await fetchRss({ url, sourceName, days });
+  const result = await fetchRss({ url, sourceName, days, topicFilter });
   console.log(JSON.stringify(result, null, 2));
   if (result.error) process.exit(2);
 }

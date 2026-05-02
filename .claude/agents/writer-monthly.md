@@ -1,6 +1,6 @@
 ---
 name: writer-monthly
-description: Stage 2 da pipeline mensal — recebe `prioritized.md` aprovado pelo editor + `raw-destaques.json`, escreve a edição mensal completa em `data/monthly/{YYMM}/draft.md` seguindo `context/templates/newsletter-monthly.md`. Cada destaque é narrativa multi-artigo cobrindo um tema do mês. Gera 3 opções de subject line auto-derivadas.
+description: Stage 2 da pipeline mensal — recebe `prioritized.md` aprovado pelo editor + `_internal/raw-destaques.json`, escreve a edição mensal completa em `data/monthly/{YYMM}/draft.md` seguindo `context/templates/newsletter-monthly.md`. Cada destaque é narrativa multi-artigo cobrindo um tema do mês. Gera 3 opções de subject line auto-derivadas.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
@@ -10,7 +10,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 ## Input
 
 - `prioritized_path`: ex: `data/monthly/2604/prioritized.md` — aprovado pelo editor no gate. Contém os 3 destaques temáticos com artigos de suporte + 10 Outras Notícias.
-- `raw_path`: ex: `data/monthly/2604/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
+- `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
 
@@ -63,7 +63,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 7. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
-8. **É IA? e encerramento.** Verificar se `eai-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
+8. **É IA? e encerramento.** Verificar se `eia-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars

@@ -27,7 +27,7 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 Antes de iniciar, verificar o estado do disco (de baixo para cima):
 
-- `01-eai.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
+- `01-eia.md` + `04-d1-2x1.jpg` existem → Etapa 3 completa. Pular para Etapa 4.
 - `draft.md` existe → Etapa 2 completa. Pular para Etapa 3.
 - `prioritized.md` existe → Etapa 1 completa. Pular para Etapa 2.
 - Caso contrário → começar pela Etapa 1.
@@ -41,11 +41,11 @@ Antes de iniciar, verificar o estado do disco (de baixo para cima):
 **Resume check (#400):**
 ```bash
 RAW_POSTS=$(ls data/monthly/$1/raw-posts/*.txt 2>/dev/null | wc -l)
-RAW_DESTAQUES=$(test -f data/monthly/$1/raw-destaques.json && echo "yes" || echo "no")
+RAW_DESTAQUES=$(test -f data/monthly/$1/_internal/raw-destaques.json && echo "yes" || echo "no")
 ```
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = yes` → pular 1a e 1b.
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
-- `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
+- `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
 **Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
 1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[$1]`.
@@ -61,22 +61,22 @@ Se `destaques_count < 3`, abortar.
 
 ### 1b. Scoring mensal
 
-**Resume check:** verificar se todos os destaques em `raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
+**Resume check:** verificar se todos os destaques em `_internal/raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
 
 ```bash
-node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
+node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/_internal/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
 ```
 
 Se `missing > 0`, disparar `scorer-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/raw-destaques.json`
-- `out_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
+- `out_path = data/monthly/$1/_internal/raw-destaques.json`
 
 O scorer sobrescreve o arquivo adicionando `score` a cada destaque.
 
 ### 1c. Análise temática
 
 Disparar `analyst-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
 - `out_path = data/monthly/$1/prioritized.md`
 - `yymm = $1`
 
@@ -102,7 +102,7 @@ Aprovar? sim / editar / retry
 
 Disparar `writer-monthly` via `Agent`:
 - `prioritized_path = data/monthly/$1/prioritized.md`
-- `raw_path = data/monthly/$1/raw-destaques.json`
+- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
 - `out_path = data/monthly/$1/draft.md`
 - `yymm = $1`
 
@@ -176,7 +176,7 @@ Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empreg
 
 ## Etapa 3 — Imagens
 
-**Resume check:** `04-d1-2x1.jpg` e `01-eai.md` existem → pular Etapa 3, ir para Etapa 4.
+**Resume check:** `04-d1-2x1.jpg` e `01-eia.md` existem → pular Etapa 3, ir para Etapa 4.
 
 Disparar **em paralelo** (mesma mensagem):
 
@@ -196,21 +196,21 @@ EAI_EDITION=$(node -e "
   const last=new Date(Date.UTC(yr,mo,0)).getUTCDate();
   process.stdout.write(String(yr).slice(2)+String(mo).padStart(2,'0')+String(last).padStart(2,'0'));
 ")
-npx tsx scripts/eai-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
+npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
 ```
 Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
-Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eai-A.jpg,01-eai-B.jpg`.
+Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
 Apresentar:
 ```
 📸 D1: data/monthly/$1/04-d1-2x1.jpg
-🤔 É IA? A: data/monthly/$1/01-eai-A.jpg
-🤔 É IA? B: data/monthly/$1/01-eai-B.jpg
+🤔 É IA? A: data/monthly/$1/01-eia-A.jpg
+🤔 É IA? B: data/monthly/$1/01-eia-B.jpg
 
-Aprovar? sim / regenerar-d1 / regenerar-eai
+Aprovar? sim / regenerar-d1 / regenerar-eia
 ```
 
 ---
@@ -229,12 +229,12 @@ editor Beehiiv como rascunho. Revisar e enviar.
 
 Todos em `data/monthly/{YYMM}/`:
 
-- `raw-destaques.json` — coleta bruta (Etapa 1)
+- `_internal/raw-destaques.json` — coleta bruta (Etapa 1)
 - `prioritized.md` — destaques aprovados (Etapa 1)
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
-- `01-eai.md` + `01-eai-A.jpg` + `01-eai-B.jpg` — É IA? novo (Etapa 3)
+- `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
 
 ## Notas
 

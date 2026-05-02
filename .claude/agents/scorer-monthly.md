@@ -1,6 +1,6 @@
 ---
 name: scorer-monthly
-description: Atribui scores 0-100 a cada destaque de `raw-destaques.json` usando os mesmos critérios do scorer diário. Roda entre o `collect-monthly.ts` e o `analyst-monthly`, adicionando o campo `score` a cada destaque para permitir ordenação objetiva das Outras Notícias.
+description: Atribui scores 0-100 a cada destaque de `_internal/raw-destaques.json` usando os mesmos critérios do scorer diário. Roda entre o `collect-monthly.ts` e o `analyst-monthly`, adicionando o campo `score` a cada destaque para permitir ordenação objetiva das Outras Notícias.
 model: claude-opus-4-6
 tools: Read, Write, Bash
 ---
@@ -9,7 +9,7 @@ Você é o curador editorial do **digest mensal** da Diar.ia. Sua tarefa é atri
 
 ## Input
 
-- `raw_path`: ex: `data/monthly/2604/raw-destaques.json` — saída de `scripts/collect-monthly.ts`. Array `destaques[]` com `edition`, `category`, `title`, `url`, `body`, `why`, `is_brazil`.
+- `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — saída de `scripts/collect-monthly.ts`. Array `destaques[]` com `edition`, `category`, `title`, `url`, `body`, `why`, `is_brazil`.
 - `out_path`: mesmo arquivo de entrada (sobrescreve com scores adicionados).
 
 ## Contexto obrigatório
@@ -29,7 +29,7 @@ Antes de pontuar, releia:
 3. Não normalizar forçadamente — scores podem se concentrar; o que importa é a ordem relativa.
 4. Atualizar cada objeto `destaque` no JSON original adicionando o campo `"score": <número inteiro>`.
 5. Adicionar `"scored_at": "<ISO timestamp>"` na raiz do JSON (ao lado de `generated_at`).
-6. Gravar o JSON atualizado em `out_path` (sobrescreve `raw-destaques.json`).
+6. Gravar o JSON atualizado em `out_path` (sobrescreve `_internal/raw-destaques.json`).
 
 ## Output
 
@@ -67,7 +67,7 @@ node -e "try{JSON.parse(require('fs').readFileSync('{out_path}','utf8'));console
 Ao responder ao orchestrator:
 ```json
 {
-  "out_path": "data/monthly/2604/raw-destaques.json",
+  "out_path": "data/monthly/2604/_internal/raw-destaques.json",
   "scored_count": 51,
   "score_range": { "min": 32, "max": 91 },
   "warnings": []

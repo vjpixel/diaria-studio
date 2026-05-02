@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { writeFileSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   countOccurrences,
   applyClariceSuggestions,
@@ -155,5 +159,29 @@ describe("applyClariceSuggestions", () => {
       r.skipped.map((s) => s.reason).sort(),
       ["ambiguous", "ambiguous"],
     );
+  });
+});
+
+describe("clarice-apply CLI (#224)", () => {
+  it("aplica sugestão e emite report JSON no stderr", () => {
+    const dir = mkdtempSync(join(tmpdir(), "clarice-cli-"));
+    writeFileSync(join(dir, "text.md"), "Para manter empregabilidade.");
+    writeFileSync(join(dir, "sugs.json"), JSON.stringify([
+      { from: "manter", to: "manter a" },
+    ]));
+    const result = spawnSync(process.execPath, [
+      "--import", "tsx",
+      "scripts/clarice-apply.ts",
+      "--text-file", join(dir, "text.md"),
+      "--suggestions", join(dir, "sugs.json"),
+      "--out", join(dir, "out.md"),
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, `process exited with ${result.status}: ${result.stderr}`);
+    const out = readFileSync(join(dir, "out.md"), "utf8");
+    assert.ok(out.includes("manter a empregabilidade"));
+    // stderr deve ser JSON com applied=1, skipped=0 (fixture tem 1 sugestão válida)
+    const report = JSON.parse(result.stderr);
+    assert.equal(report.applied, 1);
+    assert.equal(report.skipped, 0);
   });
 });
