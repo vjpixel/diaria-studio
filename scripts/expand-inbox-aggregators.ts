@@ -32,7 +32,6 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { runMain } from "./lib/exit-handler.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -360,5 +359,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  runMain(main);
+  main().catch((err) => {
+    console.error("expand-inbox-aggregators error:", err);
+    process.exit(1);
+  });
 }

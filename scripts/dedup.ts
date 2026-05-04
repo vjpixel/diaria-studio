@@ -15,7 +15,6 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
-import { runMain } from "./lib/exit-handler.ts";
 
 // ---------------------------------------------------------------------------
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
@@ -439,5 +438,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  runMain(main);
+  main().catch((err) => {
+    console.error("dedup error:", err);
+    process.exit(1);
+  });
 }

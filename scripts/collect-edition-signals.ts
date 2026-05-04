@@ -33,7 +33,6 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveReadPath } from "./lib/edition-paths.ts";
-import { runMain } from "./lib/exit-handler.ts";
 
 export type Severity = "low" | "medium" | "high";
 
@@ -543,5 +542,5 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  runMain(async () => main());
+  main();
 }
