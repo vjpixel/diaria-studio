@@ -296,11 +296,19 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
     data/editions/{AAMMDD}/_internal/link-verify-all.json
   ```
   Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
-  - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`).
+  - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`) que **não** sejam de inbox. Artigos inbox com verdict `aggregator` são tratados no passo seguinte.
   - **Manter com flag** artigos com verdict `anti_bot` (publisher confiável bloqueou crawler mas é acessível a humanos, #320): adicionar `"access_uncertain": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no gate para revisão. **Não remover silenciosamente.** Incluir no relatório do gate: `"⚠️ N artigo(s) marcados anti_bot — accessible no browser mas bloqueados por crawler. Revisar antes de aprovar."` com a lista de domínios.
   - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true` ao objeto do artigo. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no `01-categorized.md` para revisão manual no gate.
   - **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar o campo `url` do artigo para `finalUrl` (fonte primária encontrada) e adicionar `resolved_from` ao artigo para rastreabilidade. Esses artigos continuam no pipeline normalmente. Isso inclui URLs de shorteners (share.google, bit.ly, t.co, etc.) que foram resolvidos pro destino real (#317).
-- **Enriquecer artigos do inbox (#109).** URLs do editor entram com `title: "(inbox)"` e `summary: null`; o writer do Stage 2 pula esses itens silenciosamente porque não há conteúdo verificável. Após a substituição de URLs (passo anterior), rodar:
+- **Expandir links de agregadores do inbox (#483).** Quando o editor submete um link de agregador (ex: Perplexity Page, Flipboard), o link não é simplesmente descartado — seus links primários são extraídos e injetados no pipeline. Gravar a lista atual de artigos (com veredictos mesclados) em arquivo temporário e rodar:
+  ```bash
+  npx tsx scripts/expand-inbox-aggregators.ts \
+    --articles data/editions/{AAMMDD}/_internal/tmp-articles-post-verify.json \
+    --verify   data/editions/{AAMMDD}/_internal/link-verify-all.json \
+    --out      data/editions/{AAMMDD}/_internal/tmp-articles-expanded.json
+  ```
+  Ler `articles` do JSON de saída como lista de artigos daqui em diante. O script substitui cada artigo inbox com `verdict: "aggregator"` pelos links primários extraídos (até 10 por agregador, `source: "inbox_via_aggregator"`). Se nenhum link for encontrado, o agregador é descartado com warning. Artigos não-inbox com verdict `aggregator` continuam sendo descartados normalmente (passo anterior).
+- **Enriquecer artigos do inbox (#109).** URLs do editor entram com `title: "(inbox)"` e `summary: null`; o writer do Stage 2 pula esses itens silenciosamente porque não há conteúdo verificável. Após a expansão de agregadores (passo anterior), rodar:
   ```bash
   # Gravar lista atual de artigos em arquivo temporário
   # (escrever lista em data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json)
@@ -316,7 +324,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
     --window {window_days} \
     --out data/editions/{AAMMDD}/_internal/tmp-dedup-output.json
   ```
-  Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
+  O script executa um pré-passo automático (#485): artigos inbox com título placeholder `(inbox)` têm o título real resolvido via fetch antes do dedup principal, evitando falsos-positivos de similaridade entre artigos com mesmo placeholder. Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
 - **Categorizar** a lista pós-dedup: gravar `kept[]` em `data/editions/{AAMMDD}/_internal/tmp-kept.json` e rodar:
   ```bash
   npx tsx scripts/categorize.ts \
