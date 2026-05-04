@@ -1,3 +1,4 @@
+// Migrado de eai-compose.ts em PR #428 (rename EAI→EIA).
 /**
  * eia-compose.ts (#110 fix 2)
  *
@@ -54,6 +55,11 @@ interface WikimediaImage {
 
 interface WikimediaResponse {
   image?: WikimediaImage;
+}
+
+interface GeminiGenerateResponse {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  [k: string]: unknown;
 }
 
 interface UsedEntry {
@@ -524,7 +530,7 @@ ${text}`
       }
     );
     if (!res.ok) return null;
-    const data = await res.json() as any;
+    const data = await res.json() as GeminiGenerateResponse;
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
   } catch {
     return null;
