@@ -1,0 +1,165 @@
+---
+name: orchestrator-stage-2
+description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+---
+
+> Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
+
+---
+
+## Etapa 2 — Escrita
+
+Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.json` — nenhum depende do outro. O gate ao final é unificado.
+
+### 2a. Writer + social em paralelo
+
+**Limites por bucket (#358) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
+- Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
+- Destaques: preservar todos (sempre ≤3).
+- Lançamentos: top-5 por score (se houver mais de 5, truncar nos 5 de maior score).
+- Pesquisas: top-3 por score (se houver mais de 3, truncar nos 3 de maior score).
+- Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
+- Passar o `categorized` truncado ao writer no campo `categorized` (não salvar em disco — só memória do orchestrator).
+
+**Em uma única mensagem**, disparar os 3 agents simultaneamente:
+
+1. `Agent` → `writer` (Sonnet) passando:
+   - `highlights` (extraído de `_internal/01-approved.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
+   - `categorized` (o `_internal/01-approved.json` com buckets truncados pelos limites acima — nunca o arquivo bruto)
+   - `edition_date`
+   - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
+   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
+   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
+   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
+
+2. `Agent` → `social-linkedin` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+
+3. `Agent` → `social-facebook` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+
+Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+
+### 2b. Processar newsletter
+
+- **Pull pós-gate** (antes de qualquer edição local pós-aprovação):
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md
+  ```
+  Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
+
+- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --md data/editions/{AAMMDD}/_internal/02-draft.md \
+    --approved data/editions/{AAMMDD}/_internal/01-approved.json
+  ```
+  Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com `bucket: "noticias"` que o writer põe em LANÇAMENTOS por associação temática.
+
+- **Normalizar layout (inline — sem Agent, #157):**
+  ```bash
+  npx tsx scripts/normalize-newsletter.ts \
+    --in data/editions/{AAMMDD}/_internal/02-draft.md \
+    --out data/editions/{AAMMDD}/_internal/02-normalized.md \
+    2> data/editions/{AAMMDD}/_internal/02-normalize-report.json
+  ```
+  Heurístico conservador — só quebra quando o pattern é inequívoco (ex: 3 títulos do destaque colados no header, ou título+URL+descrição colados num item de seção). Se nenhum bug detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script → log warn + fallback usa `02-draft.md`.
+
+- **Humanizar (#308):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `context/past-editions.md` como referência:
+  ```
+  Skill("humanizador", "Leia data/editions/{AAMMDD}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado em data/editions/{AAMMDD}/_internal/02-humanized.md.")
+  ```
+  Falha da skill **não bloqueia** — fallback usa `02-normalized.md` como input pra Clarice. Em caso de falha, logar warn: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador falhou — usando normalized'`.
+
+- **Revisar com Clarice (inline — sem Agent):**
+  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-humanized.md` se existe (humanizador aplicado); (2) `_internal/02-normalized.md` se existe (normalize sucedeu); (3) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
+  1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
+  2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
+  3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
+  4. Gerar diff legível usando o mesmo `CLARICE_INPUT` definido acima:
+     ```bash
+     npx tsx scripts/clarice-diff.ts \
+       data/editions/{AAMMDD}/{CLARICE_INPUT} \
+       data/editions/{AAMMDD}/02-reviewed.md \
+       data/editions/{AAMMDD}/_internal/02-clarice-diff.md
+     ```
+  Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+
+- **Validar LANÇAMENTOS oficiais (#160):**
+  ```bash
+  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
+
+### 2c. Processar social
+
+Após os social agents retornarem, fazer merge em `03-social.md` via Bash:
+
+```bash
+node -e "
+  const fs=require('fs');
+  const dir='{edition_dir}';
+  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
+  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
+  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
+  fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
+  fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
+"
+```
+
+**Humanizar social (#308):** invocar skill `humanizador` in-place no `03-social.md`:
+```
+Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
+```
+Falha não bloqueia (fallback usa o arquivo original).
+
+**Revisar social com Clarice (inline):** ler `03-social.md`, chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar, propagar o erro.
+
+### 2d. Sync push + gate unificado
+
+- **Sync push antes do gate:**
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md
+  ```
+  Anotar resultado em `sync_results[2]`; ignorar falhas.
+
+- **GATE HUMANO unificado (newsletter + social):** mostrar `_internal/02-clarice-diff.md` e o conteúdo de `03-social.md`. Instruir:
+  ```
+  ✏️  Etapa 2 — Escrita pronta.
+
+  Newsletter — edite data/editions/{AAMMDD}/02-reviewed.md:
+      — Mantenha exatamente 1 título por destaque (delete os outros 2).
+        URL fica na linha imediatamente abaixo do título escolhido (#172).
+
+  Social — revise data/editions/{AAMMDD}/03-social.md:
+      — 3 posts LinkedIn (d1/d2/d3) + 3 posts Facebook (d1/d2/d3)
+
+  📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
+  ```
+  Quando o editor responder "sim", os arquivos locais são os textos finais.
+
+  - **Auto-pick de título via Opus (#159).** Após aprovação, dispatch `title-picker` (Opus, Agent) passando:
+    - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
+    - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
+    - `audience_path = context/audience-profile.md`
+    - `editorial_rules_path = context/editorial-rules.md`
+    - `picks_log_path = data/editions/{AAMMDD}/_internal/02-title-picks.json`
+
+    Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
+
+    Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Etapa 3 — não há fallback automático pra título inexistente.
+
+  - **Validar 1 título por destaque (#178).** Após o title-picker:
+    ```bash
+    npx tsx scripts/lint-newsletter-md.ts \
+      --check titles-per-highlight \
+      --md data/editions/{AAMMDD}/02-reviewed.md
+    ```
+    Exit 1 = algum destaque ainda tem ≠1 título. **Não prosseguir** — re-apresentar o gate com o erro destacado:
+    > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
+
+    Se exit 0, prosseguir pra Etapa 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
+
+  - **Atualizar `_internal/cost.md`.** Append linha na tabela da Etapa 2, recalcular `Total de chamadas`, gravar:
+    ```
+    | 2 | {stage_start} | {now} | writer:1, social_linkedin:1, social_facebook:1, humanizador:2, title_picker:?1, drive_syncer:1 | 3 | 3 |
+    ```
+    `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
