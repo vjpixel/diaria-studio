@@ -199,7 +199,7 @@ const PESQUISA_DOMAINS = new Set([
  * prefere-se manter um paper de borda do que perder um paper relevante.
  */
 export const ARXIV_RELEVANT_TERMS =
-  /\b(language\s+model|llm|transformer|diffusion|neural\s+network|deep\s+learn|reinforcement\s+learn|computer\s+vision|natural\s+language|multimodal|foundation\s+model|generative|bert|gpt|attention\s+mechanism|fine.?tun|instruction|alignment|benchmark|reasoning|chain.of.thought|rag|retrieval|embedding|agent|chatbot|text.to.image|speech\s+recognition|sentiment|named\s+entity|question\s+answer|text\s+generation|image\s+generation|video\s+generation|code\s+generation|protein|genomic|drug\s+discovery)\b/i;
+  /\b(language\s+model\w*|llm\b|transformer\w*|diffusion\b|neural\s+network\w*|deep\s+learn\w*|reinforcement\s+learn\w*|computer\s+vision\b|natural\s+language\b|multimodal\b|foundation\s+model\w*|generative\b|bert\b|gpt\b|attention\s+mechanism\w*|fine.?tun\w*|instruction\b|alignment\b|benchmark\w*|reasoning\b|chain.of.thought\b|rag\b|retrieval\b|embedding\w*|agent\b|chatbot\w*|text.to.image\b|speech\s+recognition\b|sentiment\b|named\s+entit\w*|question\s+answer\w*|text\s+generation\b|image\s+generation\b|video\s+generation\b|code\s+generation\b|protein\b|genomic\b|drug\s+discovery\b)/i;
 
 /**
  * Retorna `true` se o artigo deve passar pelo pipeline editorial.
