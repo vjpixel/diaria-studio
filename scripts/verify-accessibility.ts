@@ -341,8 +341,8 @@ async function verifyWithBrowser(
     // Stealth evasions: hide WebDriver flag and mock chrome runtime
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, "webdriver", { get: () => false });
-      // @ts-ignore — mock window.chrome for anti-bot checks
-      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+      // Mock window.chrome for anti-bot checks — globalThis avoids `window` type issues in Node context
+      (globalThis as Record<string, unknown>).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
     });
     await page.goto(finalUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     // Extra wait for JS-heavy sites to hydrate

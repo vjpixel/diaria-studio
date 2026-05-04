@@ -41,6 +41,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { runMain } from "./lib/exit-handler.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -54,6 +55,11 @@ interface WikimediaImage {
 
 interface WikimediaResponse {
   image?: WikimediaImage;
+}
+
+interface GeminiGenerateResponse {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  [k: string]: unknown;
 }
 
 interface UsedEntry {
@@ -524,7 +530,7 @@ ${text}`
       }
     );
     if (!res.ok) return null;
-    const data = await res.json() as any;
+    const data = await res.json() as GeminiGenerateResponse;
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
   } catch {
     return null;
@@ -906,8 +912,5 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main().catch((e) => {
-    console.error(`[eia-compose] ${(e as Error).message}`);
-    process.exit(2);
-  });
+  runMain(main);
 }
