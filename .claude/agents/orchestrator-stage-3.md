@@ -1,0 +1,64 @@
+---
+name: orchestrator-stage-3
+description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+---
+
+> Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
+
+---
+
+## Etapa 3 — Imagens
+
+### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371)
+
+O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
+
+- **Se o Agent do eia-composer ainda não completou:** aguardar. Quando completar, seguir.
+- **Se o Agent já completou (ou `01-eia.md` já existe por resume):** continuar.
+- Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros). Após retry bem-sucedido, re-renderizar `01-categorized.md` para incluir o bloco atualizado (se o gate da Etapa 1 ainda não foi aprovado) ou informar o editor que o arquivo foi atualizado localmente.
+- **Sync push das imagens do É IA? para o Drive:**
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg
+  ```
+  Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+- **Sem gate separado (#371).** O editor já aprovou (ou verá) o É IA? no gate integrado da Etapa 1. Se o eia-composer completou com sucesso, prosseguir diretamente para 3b. Se `rejections[]` no output do composer não estiver vazio, informar: `"É IA?: pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` — contexto para o editor, sem bloquear o pipeline.
+- **Opção de retry do É IA?:** se o editor precisar regenerar o É IA? isoladamente (ex: imagem insatisfatória), usar `/diaria-3-imagens {AAMMDD} eia` — o sub-skill tem gate próprio de aprovação para esse caso.
+- **Atualizar `_internal/cost.md`.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:
+  ```
+  | 3a | {eia_dispatch_ts} | {now} | eia_composer:1, drive_syncer:1 | 2 | 0 |
+  ```
+
+### 3b. Imagens de destaque
+
+- Logar início:
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level info --message 'etapa 3 imagens started'
+  ```
+- **Sync pull antes de começar** — prompts de imagem derivam dos destaques escritos na Etapa 2:
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 02-d1-prompt.md,02-d2-prompt.md,02-d3-prompt.md
+  ```
+- Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível:
+  ```bash
+  Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")
+  ```
+  Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
+- **Gerar imagens via script (sem Agent).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default):
+  ```bash
+  npx tsx scripts/image-generate.ts \
+    --editorial data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md \
+    --out-dir data/editions/{AAMMDD}/ \
+    --destaque d{N}
+  ```
+  Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
+- **Sync push antes do gate:**
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+  ```
+  Anotar em `sync_results[3]`; ignorar falhas.
+- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **Atualizar `_internal/cost.md`.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
+  ```
+  | 3b | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
+  ```
+  Atualizar `Fim: {now}` no cabeçalho.
