@@ -497,6 +497,41 @@ export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> 
 }
 
 /**
+ * Traduz texto EN para pt-BR via Gemini Flash (#480).
+ * Mantém nomes próprios, científicos e siglas em inglês.
+ * Retorna null se GEMINI_API_KEY ausente ou em falha (fallback silencioso).
+ */
+async function translateToPtBR(text: string): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `Traduza para português brasileiro, mantendo nomes próprios, nomes científicos e siglas em inglês. Retorne apenas a tradução, sem explicações.
+
+${text}`
+            }]
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 200 }
+        }),
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Dado um URL de en.wikipedia.org, retorna o label em português a partir do
  * título da página pt equivalente (substitui "Blunt-headed burrowing frog" por
  * "Sapo-escavador-de-cabeça-chata", etc.) (#337).
@@ -561,7 +596,7 @@ function extractArtistName(artistText: string | undefined): string {
  */
 export function buildCreditLine(
   image: WikimediaImage,
-  opts?: { ptLabel?: string | null; ptWikipediaUrl?: string | null },
+  opts?: { ptLabel?: string | null; ptWikipediaUrl?: string | null; translatedSentence?: string | null },
 ): string {
   const description = stripHtml(image.description?.text ?? "");
   const firstSent = firstSentence(description) || "Imagem do dia da Wikimedia Commons.";
@@ -576,16 +611,29 @@ export function buildCreditLine(
   const displayLabel = opts?.ptLabel ?? subj?.text;
   const displayUrl = opts?.ptWikipediaUrl ?? subj?.url;
 
+  // #480: usar frase traduzida pra pt-BR se disponível; fallback para EN.
+  const baseSentence = opts?.translatedSentence ?? null;
+
   // Fallback: se firstSentence cortou no meio de uma abreviação (ex: "U.S.")
   // e perdeu o subject text, usar a description completa. Caso típico: subject
   // text contém ponto interno → firstSentence regex termina no primeiro `.`.
+  // Para o texto traduzido, não temos essa garantia — usamos diretamente.
   const sentence =
-    subj && !firstSent.includes(subj.text) && description.includes(subj.text)
+    baseSentence ??
+    (subj && !firstSent.includes(subj.text) && description.includes(subj.text)
       ? description
-      : firstSent;
+      : firstSent);
 
   let sentenceMd: string;
-  if (displayLabel && displayUrl && subj && sentence.includes(subj.text)) {
+  if (baseSentence && displayLabel && displayUrl) {
+    // #480: frase traduzida — substituir ptLabel no texto traduzido se presente.
+    if (baseSentence.includes(displayLabel)) {
+      const mdLink = `[${displayLabel}](${displayUrl})`;
+      sentenceMd = baseSentence.replace(displayLabel, () => mdLink);
+    } else {
+      sentenceMd = baseSentence;
+    }
+  } else if (displayLabel && displayUrl && subj && sentence.includes(subj.text)) {
     // Substituir o texto en pelo label pt no link, apontando pra URL pt (#337).
     // Usar callback pra evitar interpretação de `$` em replacement string (#300).
     const mdLink = `[${displayLabel}](${displayUrl})`;
@@ -793,7 +841,18 @@ async function main(): Promise<void> {
       // tradução opcional — falha silenciosa, mantém EN
     }
   }
-  const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl });
+  // #480: traduzir firstSentence EN → pt-BR via Gemini Flash antes de buildCreditLine.
+  // Fallback silencioso: se GEMINI_API_KEY ausente ou Gemini falhar, usa texto EN original.
+  let translatedSentence: string | null = null;
+  try {
+    translatedSentence = await translateToPtBR(firstSentence(stripHtml(image.description?.text ?? '')));
+  } catch {
+    // fallback silencioso
+  }
+  if (translatedSentence === null) {
+    process.stderr.write('[eia-compose] warn: tradução pt-BR indisponível — usando firstSentence EN\n');
+  }
+  const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl, translatedSentence });
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eia.md");

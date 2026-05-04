@@ -32,7 +32,7 @@ Modo de publicação para esta edição:
 
   [1] Beehiiv automático  — Claude in Chrome cria rascunho + envia email de teste
   [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo está em data/editions/{AAMMDD}/02-reviewed.md
-  [3] LinkedIn automático — Claude in Chrome cria 3 rascunhos
+  [3] LinkedIn automático — Make.com webhook agenda/posta 3 posts (#506)
   [4] LinkedIn manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
   [5] Facebook automático — Graph API agenda os 3 posts
   [6] Facebook manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
@@ -52,9 +52,12 @@ Aguardar resposta antes de prosseguir. Só dispatchar os agents/scripts que o ed
 **3 dispatches em uma única mensagem** (ver `.claude/agents/orchestrator.md` § Etapa 4):
 1. `publish-facebook.ts --schedule` (Graph API, ~30s) — `--schedule` é obrigatório (#503); nunca chamar sem essa flag
 2. `publish-newsletter` (Chrome → Beehiiv) — cria rascunho + envia email de teste
-3. `publish-social` (Chrome → LinkedIn) — 3 LinkedIn drafts
+3. `publish-linkedin.ts` (Make.com webhook → LinkedIn company page) — 3 posts (#506):
+   ```bash
+   npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD} --schedule
+   ```
 
-Cada agent Chrome usa tab isolada (`tabs_create_mcp`) — sem conflito.
+LinkedIn não usa mais Chrome — sem necessidade de tab isolada para LinkedIn.
 
 Após todos retornarem, **loop de review-test-email** roda em cima do draft Beehiiv (não bloqueia social, que já está pronto).
 
