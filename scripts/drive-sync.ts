@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, appendFil
 import { resolve, extname, dirname } from "node:path";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");

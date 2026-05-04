@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 
 export interface Article {
   url: string;
