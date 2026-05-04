@@ -100,6 +100,25 @@ function isInboxArticle(article: Article): boolean {
 // Core extraction logic (exported for testing)
 // ---------------------------------------------------------------------------
 
+const SOCIAL_DOMAINS = new Set([
+  "twitter.com",
+  "x.com",
+  "facebook.com",
+  "linkedin.com",
+  "instagram.com",
+  "youtube.com",
+]);
+
+const TRACKER_DOMAINS = new Set([
+  "t.co",
+  "bit.ly",
+  "tinyurl.com",
+  "ow.ly",
+  "buff.ly",
+  "dlvr.it",
+  "share.google",
+]);
+
 /**
  * Fetches the HTML of an aggregator URL and extracts external links that
  * could be primary sources. Returns at most 10 unique, de-duped external URLs.
@@ -107,29 +126,11 @@ function isInboxArticle(article: Article): boolean {
  * Filtering rules:
  *   - Must be http(s)
  *   - Must be on a different hostname than the aggregator
- *   - No fragment-only links (#…)
+ *   - No pure fragment links (`#section`); URLs with query+fragment OK
  *   - Social domains excluded (twitter, x.com, facebook, linkedin, instagram)
  *   - Known tracking/redirect domains excluded (t.co, bit.ly, etc.)
  */
 export async function expandAggregatorLinks(url: string): Promise<string[]> {
-  const SOCIAL_DOMAINS = new Set([
-    "twitter.com",
-    "x.com",
-    "facebook.com",
-    "linkedin.com",
-    "instagram.com",
-    "youtube.com",
-  ]);
-  const TRACKER_DOMAINS = new Set([
-    "t.co",
-    "bit.ly",
-    "tinyurl.com",
-    "ow.ly",
-    "buff.ly",
-    "dlvr.it",
-    "share.google",
-  ]);
-
   try {
     const res = await fetch(url, {
       headers: {
@@ -154,7 +155,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
 
     while ((m = re.exec(html)) !== null) {
       const href = m[1];
-      if (href.includes("#")) continue; // skip fragment links
+      if (href.startsWith("#")) continue; // skip pure fragment links (URLs with query+fragment OK)
 
       let hrefHost: string;
       try {
