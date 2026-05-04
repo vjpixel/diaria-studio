@@ -541,16 +541,15 @@ export function categorize(article: Article): Category {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const articlesIdx = args.indexOf("--articles");
-  const outIdx = args.indexOf("--out");
+  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
 
-  if (articlesIdx === -1 || !args[articlesIdx + 1]) {
+  if (!values["articles"]) {
     console.error("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
     process.exit(1);
   }
 
-  const articlesPath = args[articlesIdx + 1];
-  const outPath = outIdx !== -1 ? args[outIdx + 1] : null;
+  const articlesPath = values["articles"];
+  const outPath = values["out"] ?? null;
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
 

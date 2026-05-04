@@ -715,18 +715,18 @@ async function healthCheck(): Promise<void> {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const get = (flag: string) => args[args.indexOf(flag) + 1] ?? "";
+  const { flags, values } = parseCliArgs(args); // #535: fix indexOf+1 bug
 
   // Health check mode — independent of edition/files (#121).
-  if (args.includes("--health-check")) {
+  if (flags.has("health-check")) {
     await healthCheck();
     return;
   }
 
-  const mode = get("--mode");
-  const editionDir = get("--edition-dir");
-  const stage = parseInt(get("--stage") || "0", 10);
-  const filesStr = get("--files");
+  const mode = values["mode"] ?? "";
+  const editionDir = values["edition-dir"] ?? "";
+  const stage = parseInt(values["stage"] ?? "0", 10);
+  const filesStr = values["files"] ?? "";
 
   if (!mode || !editionDir) {
     console.error(
