@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { request } from "undici";
 import puppeteer, { type Browser } from "puppeteer";
 import { CONFIG } from "./lib/config.ts";
+import { canonicalize, extractHost } from "./lib/url-utils.ts";
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -127,29 +128,10 @@ type VerifyResult = {
   access_uncertain?: boolean; // true para anti_bot em publisher confiável (#320)
 };
 
-export function canonicalize(url: string): string {
-  try {
-    const u = new URL(url);
-    for (const key of [...u.searchParams.keys()]) {
-      if (key.startsWith("utm_") || key === "ref" || key === "ref_src") u.searchParams.delete(key);
-    }
-    u.hash = "";
-    if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.slice(0, -1);
-    if (u.hostname === "arxiv.org" && u.pathname.startsWith("/pdf/")) {
-      u.pathname = u.pathname.replace(/^\/pdf\//, "/abs/").replace(/\.pdf$/, "");
-    }
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
+export { canonicalize };
 
 export function domain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
+  return extractHost(url) ?? "";
 }
 
 /**
