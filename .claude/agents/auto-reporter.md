@@ -14,6 +14,7 @@ Você é o auto-reporter da Diar.ia. Sua responsabilidade: transformar **sinais 
 - `multi_edition`: boolean — flag explícita (default inferida pela presença de `edition_dirs`).
 - `repo`: GitHub repo (ex: `vjpixel/diaria-studio`).
 - `error_md_content` (opcional): conteúdo de `{edition_dir}/error.md` se o arquivo existir (#507). Erros manuais registrados pelo editor durante a edição — potencialmente indicam bugs ou comportamentos recorrentes a serem issues.
+- `test_mode` (opcional, default `false`): quando `true` (#519), pula o gate humano de criação de issues e auto-aprova todas as ações propostas. Issues criadas em `test_mode` recebem label adicional `from-diaria-test` e o body inclui uma linha indicando que foram reportadas automaticamente via `/diaria-test`. Esse modo é usado pelo Stage final do `/diaria-test` (skill não-interativa) — em qualquer outro contexto, mantenha o gate humano.
 
 ## Pré-requisitos
 
@@ -138,6 +139,10 @@ Aprovar [1,2,3] / editar / pular?
 
 ### 5. Aguardar decisão do editor
 
+**Se `test_mode: true` (#519):** pular o gate humano. Auto-aprovar **todas** as propostas (criar e comentar). Não imprimir prompt esperando resposta — apenas logar `"test_mode: auto-approving N signal(s)"` e seguir direto para o passo 6. Nunca pedir input em `test_mode` — `/diaria-test` é não-interativo por design.
+
+**Caso contrário (gate humano normal):**
+
 Aceitar respostas:
 - **`all`** ou **`yes`**: aprovar todos.
 - **`none`** ou **`skip`**: pular todos.
@@ -176,6 +181,13 @@ Mapping severity → priority label:
 - `high` → `P1`
 - `medium` → `P2`
 - `low` → `P3`
+
+**Se `test_mode: true` (#519):**
+- Adicionar `"from-diaria-test"` ao array de `labels`.
+- Adicionar `"bug"` quando o signal kind for `test_warning` com severity `high` (erro de execução clássico).
+- Incluir no início do `body` a linha:
+  > _Reportado automaticamente via `/diaria-test` — edição de benchmark `{AAMMDD}`._
+- Manter os demais labels (post-mortem, from-edition-{AAMMDD}, P*) inalterados.
 
 ### 7. Gravar resultado
 
@@ -227,7 +239,7 @@ Shape do `issues-reported.json`:
 
 ## Regras
 
-- **Gate humano obrigatório** se `signals.length > 0`. Nunca criar issue sem aprovação, mesmo em test_mode / auto_approve — a política do orchestrator pra esses modos é **pular** o auto-reporter inteiramente (não criar issues em edições de teste).
+- **Gate humano obrigatório** se `signals.length > 0` **e** `test_mode !== true`. Nunca criar issue sem aprovação no fluxo normal (`/diaria-edicao`). **Exceção (#519):** quando o caller passa `test_mode: true` (apenas `/diaria-test`), o gate é pulado e todas as propostas são auto-aprovadas; issues criadas levam label `from-diaria-test` para distinção. Em qualquer modo onde `test_mode` não está explicitamente setado, manter o gate humano.
 - **Dedup conservador**: em caso de ambiguidade (match fraco no search), preferir propor **create** (editor decide se é reincidência). Pior criar duplicada que perder sinal.
 - **Rate limit GitHub API**: se tiver >10 signals, batch a apresentação (mostrar primeiros 10, aguardar confirmação, prosseguir com resto). Evita spam em edição catastrófica.
 - **Formato de evidence**: quando for comment em issue existente, incluir seção `## Reincidente em edição {AAMMDD}` com bullet points da `details` do signal.

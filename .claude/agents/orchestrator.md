@@ -852,7 +852,9 @@ Após o gate da Etapa 4 (publicação paralela) aprovado, orchestrator coleta si
 
 2. **Avaliar output**: se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.
 
-3. **Se `test_mode = true` ou `auto_approve = true`**: **pular auto-reporter inteiramente**. Auto-approve de criação de issues em GitHub seria invasivo; edições de teste não devem poluir backlog.
+3. **Se `test_mode = true`**: **pular auto-reporter aqui** (orchestrator). O Stage final do `/diaria-test` (#519) roda `collect-edition-signals.ts --include-test-warnings` + `auto-reporter` com `test_mode: true` por conta própria, capturando regressões silenciosas que viram issues automáticas com label `from-diaria-test`. Não duplicar o trabalho.
+
+   **Se `auto_approve = true` mas `test_mode = false`** (ex: `/diaria-edicao --no-gates`): manter o comportamento conservador — pular o auto-reporter inteiramente. Criação automática só é aceitável no fluxo de teste.
 
 4. **Se há sinais e não é test_mode**: disparar agent `auto-reporter` via `Agent` com:
    - `edition_dir`
