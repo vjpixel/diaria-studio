@@ -117,26 +117,6 @@ function extractPostText(socialMd: string, destaque: string): string {
 }
 
 /**
- * Resolve a URL da imagem para um destaque.
- * LinkedIn (via Make.com) precisa de URL pública — tenta URL Cloudflare Images
- * se disponível (via 05-published.json ou meta), caso contrário null.
- *
- * Nota: Make.com pode hospedar a imagem via upload direto se o campo
- * image_url for null — o workflow de Make decide a estratégia.
- */
-function resolveImageUrl(editionDir: string, destaque: string): string | null {
-  // Tentar ler URL de Cloudflare Images de um meta JSON futuro; por ora, null.
-  // O workflow Make.com deve fazer upload da imagem se precisar de URL pública.
-  // Retorna caminho local como referência (Make.com não consegue usar — só URL).
-  const imageFile = destaque === "d1" ? `04-${destaque}-1x1.jpg` : `04-${destaque}.jpg`;
-  const imagePath = resolve(editionDir, imageFile);
-  if (!existsSync(imagePath)) return null;
-  // Caminho local — Make.com receberá null quando não houver URL pública.
-  // O campo image_url só é útil quando o arquivo estiver em storage acessível.
-  return null;
-}
-
-/**
  * Envia payload ao webhook Make.com com retry (até `maxAttempts` tentativas).
  * Retorna a resposta parseada ou lança em falha total.
  */
@@ -315,8 +295,9 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Resolver imagem (URL pública ou null)
-    const imageUrl = resolveImageUrl(editionDir, d);
+    // image_url é null — Make.com workflow decide a estratégia (upload direto, R2, etc).
+    // Quando hosting público estiver disponível, passar a URL aqui.
+    const imageUrl: string | null = null;
 
     // Calcular scheduled_at
     let scheduledAt: string | null = null;

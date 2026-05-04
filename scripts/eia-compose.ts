@@ -616,7 +616,7 @@ export function buildCreditLine(
 
   // Fallback: se firstSentence cortou no meio de uma abreviação (ex: "U.S.")
   // e perdeu o subject text, usar a description completa. Caso típico: subject
-  // text contém ponto interno → firstSentence regex termina no primeiro `.
+  // text contém ponto interno → firstSentence regex termina no primeiro `.`.
   // Para o texto traduzido, não temos essa garantia — usamos diretamente.
   const sentence =
     baseSentence ??
