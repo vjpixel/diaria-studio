@@ -81,6 +81,15 @@ Dispatchar `social-linkedin` + `social-facebook` em paralelo. Pular steps de new
 
 Aguardar todos os Agents retornarem antes do passo seguinte.
 
+## Passo 2b — Push intermediário ao Drive (antes de Clarice/Humanize)
+
+Copiar draft para raiz e fazer push para o editor poder revisar enquanto o processamento continua. Falha não bloqueia.
+
+```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md,03-social.md
+```
+
 ## Passo 3 — Processar newsletter (pular se `$2 = social`)
 
 ### 3a. Lint + normalize
@@ -90,15 +99,7 @@ npx tsx scripts/lint-newsletter-md.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/normalize-newsletter.ts data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.md
 ```
 
-### 3b. Humanize
-
-```
-Skill("humanizador", "Leia data/editions/$1/_internal/02-draft.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
-```
-
-Falha **não bloqueia** — fallback usa o arquivo original.
-
-### 3c. Clarice (inline)
+### 3b. Clarice (inline)
 
 1. Ler `data/editions/$1/_internal/02-draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -113,6 +114,38 @@ Falha **não bloqueia** — fallback usa o arquivo original.
    ```
 5. Ler `_internal/02-clarice-report.json` para extrair contagens (`applied`, `skipped`).
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
+
+### 3c. Humanize
+
+```
+Agent({
+  description: "Humanizar newsletter $1",
+  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
+
+Arquivo: data/editions/$1/_internal/02-draft.md
+
+OBRIGATÓRIO — execute em ordem:
+
+ETAPA 1 — RASCUNHO:
+- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
+- Reescreva os trechos problemáticos
+- Salve com Write
+- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
+- Liste os resquícios (bullets curtos, seja crítico)
+
+ETAPA 2 — VERSÃO FINAL:
+- Reescreva os resquícios listados
+- Salve a versão final com Write
+- Escreva: '### Versão final salva.'
+
+ETAPA 3 — RESUMO:
+- Liste as principais mudanças
+
+Regras de preservação: sem markdown (nada de **, #, - ), preservar template da newsletter (seções, estrutura, links, listas de notícias), não alterar URLs."
+})
+```
+
+Falha **não bloqueia** — fallback usa o arquivo original.
 
 ### 3d. Validações finais
 
@@ -142,15 +175,7 @@ node -e "
 "
 ```
 
-### 4b. Humanize
-
-```
-Skill("humanizador", "Leia data/editions/$1/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
-```
-
-Falha **não bloqueia**.
-
-### 4c. Clarice
+### 4b. Clarice
 
 1. Ler `data/editions/$1/03-social.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -165,6 +190,38 @@ Falha **não bloqueia**.
    ```
 5. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro**.
+
+### 4c. Humanize
+
+```
+Agent({
+  description: "Humanizar social $1",
+  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
+
+Arquivo: data/editions/$1/03-social.md
+
+OBRIGATÓRIO — execute em ordem:
+
+ETAPA 1 — RASCUNHO:
+- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
+- Reescreva os trechos problemáticos
+- Salve com Write
+- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
+- Liste os resquícios (bullets curtos, seja crítico)
+
+ETAPA 2 — VERSÃO FINAL:
+- Reescreva os resquícios listados
+- Salve a versão final com Write
+- Escreva: '### Versão final salva.'
+
+ETAPA 3 — RESUMO:
+- Liste as principais mudanças
+
+Regras de preservação: preservar hashtags, emojis, estrutura de seções (# LinkedIn, # Facebook, ## d1, ## d2, ## d3), não alterar URLs."
+})
+```
+
+Falha **não bloqueia**.
 
 ## Passo 5 — Drive sync push (outputs)
 
