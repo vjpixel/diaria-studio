@@ -288,10 +288,12 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   // #556, #559 — by-design no /diaria-test: warns que mencionam test_mode
   // não merecem virar issue (são comportamento esperado em modo teste).
   /test_mode/i,
-  // #557 — warnings explicitamente marcados como informativos pelo orchestrator
-  // (já surfados pro editor via stage 0l, não precisam virar issue).
-  /\(informativo\)/i,
 ];
+
+// Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
+// no message (acoplamento textual frágil). Substituído por flag estruturada
+// `details.informational === true`, checada abaixo em signalsFromTestWarnings.
+// Callers usam `--informational` em scripts/log-event.ts.
 
 /** Patterns que casam contra `details.reason` do log. Mesmo critério de skip
  *  que TEST_WARNING_SKIP_PATTERNS, mas inspeciona o details em vez do message
@@ -347,7 +349,10 @@ export function signalsFromTestWarnings(
     const message = parsed.message ?? "";
     if (!message) continue;
     if (TEST_WARNING_SKIP_PATTERNS.some((re) => re.test(message))) continue;
-    const reason = (parsed.details as { reason?: unknown } | undefined)?.reason;
+    const detailsObj = parsed.details as Record<string, unknown> | undefined;
+    // #565 — flag estruturada substitui regex `/\(informativo\)/i` em message.
+    if (detailsObj?.informational === true) continue;
+    const reason = detailsObj?.reason;
     if (
       typeof reason === "string" &&
       TEST_WARNING_SKIP_REASON_PATTERNS.some((re) => re.test(reason))

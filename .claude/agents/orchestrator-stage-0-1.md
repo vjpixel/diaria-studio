@@ -208,6 +208,15 @@ Se o arquivo existir:
 3. Tudo ok ou arquivo não existe: silencioso.
 Não bloqueia — alertas são informativos para o editor resolver antes de começar a nova edição.
 
+**Importante (#565):** ao logar esses alertas via `scripts/log-event.ts`, **incluir flag `--informational`** pra evitar que o auto-reporter promova esses warns a issues GitHub falsas. Exemplo:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn \
+  --informational \
+  --message "edição anterior {PREV} tem N posts FB com status=failed" \
+  --details '{"prev_edition":"{PREV}","failed_count":N}'
+```
+A flag injeta `informational: true` em `details` — `collect-edition-signals.ts` filtra por essa flag estruturada em vez do tag textual `(informativo)` no message (que era frágil).
+
 ### 0m. Auto-reporter — preparado pra rodar no final
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").

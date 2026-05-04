@@ -378,19 +378,37 @@ describe("signalsFromTestWarnings (#519)", () => {
     assert.equal(signals[0].details.agent, "writer");
   });
 
-  it("filtra warns informativos (#557) — message contém '(informativo)'", () => {
+  it("filtra warns com details.informational=true (#565, replaces #557 textual tag)", () => {
     const lines = [
       mkLine({
         edition: "260509",
         stage: 0,
         agent: "orchestrator",
         level: "warn",
-        message: "edição anterior 260504 tem 3 posts FB com status=failed (informativo)",
-        details: { prev_edition: "260504", failed_count: 3 },
+        message: "edição anterior 260504 tem 3 posts FB com status=failed",
+        details: { prev_edition: "260504", failed_count: 3, informational: true },
       }),
     ];
     const signals = signalsFromTestWarnings(lines, "260509");
     assert.equal(signals.length, 0);
+  });
+
+  it("warn sem flag informational ainda vira signal (regressão #565)", () => {
+    // Mesmo agent/message/edition do teste acima, mas SEM informational:true.
+    // Garante que a flag é o único mecanismo — sem ela, o warn vira issue.
+    const lines = [
+      mkLine({
+        edition: "260509",
+        stage: 0,
+        agent: "orchestrator",
+        level: "warn",
+        message: "edição anterior 260504 tem 3 posts FB com status=failed",
+        details: { prev_edition: "260504", failed_count: 3 },
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260509");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.agent, "orchestrator");
   });
 
   it("filtra warns com details.reason='test_mode' (#556) — dedup_freshness_override", () => {
