@@ -60,7 +60,9 @@
       "linkedin": {
         "make_webhook_url": "",
         "company_page_id": "110742958",
-        "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/"
+        "company_page_name": "Diar.ia",
+        "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/",
+        "scheduled_posts_url": "https://www.linkedin.com/company/110742958/admin/scheduled-posts/"
       },
       "fallback_schedule": {
         "d1_time": "09:00",
