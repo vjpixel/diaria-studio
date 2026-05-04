@@ -50,7 +50,7 @@ Aguardar resposta antes de prosseguir. Só dispatchar os agents/scripts que o ed
 ### Etapa 4a — Publicação paralela (#38)
 
 **3 dispatches em uma única mensagem** (ver `.claude/agents/orchestrator.md` § Etapa 4):
-1. `publish-facebook.ts` (Graph API, ~30s)
+1. `publish-facebook.ts --schedule` (Graph API, ~30s) — `--schedule` é obrigatório (#503); nunca chamar sem essa flag
 2. `publish-newsletter` (Chrome → Beehiiv) — cria rascunho + envia email de teste
 3. `publish-social` (Chrome → LinkedIn) — 3 LinkedIn drafts
 

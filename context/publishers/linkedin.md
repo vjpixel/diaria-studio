@@ -6,7 +6,7 @@ Roteiro semântico para o agente `publish-social` operar o composer do LinkedIn 
 
 - URL: `https://www.linkedin.com/`
 - Pré-condição: usuário já logado no Chrome.
-- Post como **pessoa** ou **página** Diar.ia (o composer pergunta no início — escolher conforme estratégia editorial; default = página Diar.ia se existir).
+- Post sempre como **página Diar.ia** (ID: 110742958) — nunca como perfil pessoal (ver Passo 3).
 
 ## Objetivo
 
@@ -54,8 +54,14 @@ Após cada save subsequente, recontar com a mesma lógica de fallback — count 
 
 **Se nenhum seletor funcionar após 2 tentativas**, continuar com `baseline = 0` — nunca bloquear o pipeline por conta de seletor frágil.
 
-### 3. Escolher autor (uma vez por sessão)
-- Se o composer mostrar dropdown de autor, escolher página **Diar.ia** se existir; senão, perfil pessoal.
+### 3. Escolher autor (uma vez por sessão) — OBRIGATÓRIO
+
+O composer abre por padrão no contexto do perfil pessoal. É obrigatório trocar para a página Diar.ia antes de postar.
+
+- Localizar o dropdown de autor (avatar/nome no topo do composer).
+- Clicar e selecionar **Diar.ia** (página da empresa, ID: 110742958).
+- Verificar que o nome/avatar mudou para Diar.ia antes de continuar.
+- **Se o dropdown não aparecer ou Diar.ia não estiver listada:** ABORTAR com erro `"linkedin_page_not_found: página Diar.ia não disponível no composer — verificar acesso à página"`. **NUNCA continuar como perfil pessoal.**
 
 ### 4. Inserir texto
 - O composer usa `<div contenteditable>` (ProseMirror) — `form_input` não funciona aqui. Usar `javascript_tool` para injetar o texto:
@@ -115,7 +121,7 @@ Após cada save subsequente, recontar com a mesma lógica de fallback — count 
 - Selecionar data = hoje + `publishing.social.fallback_schedule.linkedin.day_offset` dias.
 - Selecionar hora = `publishing.social.fallback_schedule.linkedin.d{N}_time` (timezone = `publishing.social.timezone`).
 - Confirmar **Schedule**.
-- Capturar URL do post agendado em `https://www.linkedin.com/feed/scheduled-posts/`. Status = `"scheduled"`.
+- Capturar URL do post agendado em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/`. Status = `"scheduled"`.
 
 ### 8. Validar e fechar
 - Verificar mensagem de confirmação ("Post scheduled" ou "Draft saved").
@@ -141,7 +147,7 @@ Após cada save subsequente, recontar com a mesma lógica de fallback — count 
 ## Validação de sucesso
 
 - **Draft**: aparece em `https://www.linkedin.com/in/me/recent-activity/drafts/` (perfil) ou na seção Drafts da página.
-- **Scheduled**: aparece em `https://www.linkedin.com/feed/scheduled-posts/` (ou similar) com data/hora.
+- **Scheduled**: aparece em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` com data/hora.
 
 ## Erros recuperáveis
 

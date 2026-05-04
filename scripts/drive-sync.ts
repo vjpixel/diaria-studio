@@ -527,6 +527,18 @@ async function pushFile(
     ? await resolveSubfolder(cache, yymmdd, dayFolderId, subpath)
     : dayFolderId;
 
+  // #496: verificar se Drive foi modificado externamente após último push
+  if (fileCache?.drive_file_id && fileCache?.drive_modifiedTime) {
+    const meta = await driveGetMetadata(fileCache.drive_file_id);
+    if (meta.modifiedTime > fileCache.drive_modifiedTime) {
+      result.warnings.push({
+        file: filename,
+        error_message: `CONFLICT: ${filename} foi modificado no Drive (${meta.modifiedTime}) após o último push (${fileCache.drive_modifiedTime}). Push abortado — fazer pull primeiro para não sobrescrever edições do editor.`,
+      });
+      return; // não sobrescrever
+    }
+  }
+
   const ext = extname(basename);
   const base = basename.slice(0, basename.length - ext.length);
   // CONVERT_TO_DOC contém só basenames (top-level files do dia). Subpasta
