@@ -21,6 +21,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -567,9 +568,9 @@ ${parts.join("\n")}
 function main(): void {
   const args = process.argv.slice(2);
   const editionDir = args.find((a) => !a.startsWith("--"));
-  const format = args.includes("--format") ? args[args.indexOf("--format") + 1] : "html";
-  const outIdx = args.indexOf("--out");
-  const outPath = outIdx !== -1 ? args[outIdx + 1] : null;
+  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
+  const format = values["format"] ?? "html";
+  const outPath = values["out"] ?? null;
 
   if (!editionDir) {
     console.error("Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>]");

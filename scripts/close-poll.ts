@@ -21,6 +21,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
@@ -31,11 +32,10 @@ function adminSig(secret: string, edition: string, answer: string): string {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const idx = (f: string) => args.indexOf(f);
-  const get = (f: string) => idx(f) !== -1 ? args[idx(f) + 1] : undefined;
+  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
 
-  const edition = get("--edition");
-  let answer = get("--answer")?.toUpperCase();
+  const edition = values["edition"];
+  let answer = values["answer"]?.toUpperCase();
   const secret = process.env.POLL_SECRET;
 
   if (!secret) {
