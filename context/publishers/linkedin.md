@@ -60,18 +60,31 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 
 - Localizar o dropdown de autor (avatar/nome no topo do composer).
 - Clicar e selecionar **Diar.ia** (página da empresa, ID: 110742958).
-- **Verificar troca via `javascript_tool`** — não confiar só no visual:
+- **Verificar troca via `javascript_tool`** — não confiar só no visual. A verificação tem que olhar o seletor de autor ativo, não o `textContent` inteiro do dialog (a string "Diar.ia" também aparece nas opções do dropdown e em sugestões, gerando falso positivo):
   ```javascript
-  // O nome do autor selecionado fica em algum elemento visível do composer.
-  // Buscar texto "Diar.ia" perto do dropdown de autor.
+  // Tentativa em ordem: aria-label do botão de autor → data-test-id → fallback.
   const composer = document.querySelector('[role="dialog"]') || document.body;
-  const text = composer.textContent || '';
-  return { has_company_name: text.includes('Diar.ia'), preview: text.slice(0, 200) };
+  const authorBtn =
+    composer.querySelector('[aria-label*="author" i]') ||
+    composer.querySelector('[data-test-id*="actor" i]') ||
+    composer.querySelector('button[id*="post-as"]') ||
+    composer.querySelector('header [role="button"]');
+  const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();
+  // Match pelo nome configurado em platform.config.json → company_page_name.
+  return {
+    has_company_name: authorText.includes('Diar.ia'),
+    author_text: authorText.slice(0, 100),
+    selector_found: !!authorBtn,
+  };
   ```
+  Interpretação:
+  - `has_company_name: true` → tudo certo, prosseguir.
+  - `has_company_name: false` + `selector_found: true` → autor ainda é perfil pessoal, retry.
+  - `selector_found: false` → seletor de autor mudou (UI shift), retry mas registrar warn no output.
 - **Retry até 3×** se a verificação falhar (#506):
   - Tentativa 1: clicar dropdown, esperar 1s, selecionar Diar.ia, verificar.
   - Tentativa 2: fechar composer, reabrir (Passo 1), repetir.
-  - Tentativa 3: fechar composer, navegar pra `https://www.linkedin.com/company/110742958/admin/dashboard/` e clicar "Start a post" lá (composer abre já no contexto da página). Verificar.
+  - Tentativa 3: fechar composer, navegar pra `publishing.social.linkedin.company_page_url` (admin dashboard da página) e procurar o botão "Start a post" no header. Se não achar o botão, considerar tentativa falha.
 - **Se as 3 tentativas falharem:** ABORTAR com erro `"linkedin_page_not_found: página Diar.ia não disponível no composer após 3 tentativas — verificar acesso à página"`. **NUNCA continuar como perfil pessoal** — `status: "failed"`, `reason: "linkedin_page_not_found"`. Posts seguintes do mesmo run também abortam (sem retry novo) porque a sessão claramente não tem acesso à página.
 
 ### 4. Inserir texto
@@ -132,7 +145,7 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 - Selecionar data = hoje + `publishing.social.fallback_schedule.linkedin.day_offset` dias.
 - Selecionar hora = `publishing.social.fallback_schedule.linkedin.d{N}_time` (timezone = `publishing.social.timezone`).
 - Confirmar **Schedule**.
-- Capturar URL do post agendado em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/`. Status = `"scheduled"`.
+- Capturar URL do post agendado navegando pra `publishing.social.linkedin.scheduled_posts_url` (página da empresa). Status = `"scheduled"`.
 
 ### 8. Validar e fechar — verificação em 2 etapas (#506)
 
@@ -140,7 +153,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 1. **Confirmação UI**: ler mensagem ("Post scheduled" ou "Draft saved").
 2. **Verificação de contexto via navegação** — navegar pra `publishing.social.linkedin.scheduled_posts_url` (página da empresa, NÃO `linkedin.com/feed/scheduled-posts/` do perfil pessoal):
-   - Para scheduled: ir pra `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` e via `javascript_tool` confirmar que o texto do post (primeiros 50 chars) aparece nessa página.
+   - Para scheduled: ir pra `scheduled_posts_url` do config e via `javascript_tool` confirmar que o texto do post (primeiros 50 chars) aparece nessa página.
    - Para draft: ir pra Drafts da página da empresa (acessível via composer da página) e idem.
    - Se o texto **não** aparecer na página da empresa, o post foi pro lugar errado → marcar `status: "failed"` com `reason: "linkedin_published_to_wrong_context"`. NÃO incluir URL pessoal no output como se fosse sucesso.
 - Capturar URL ou ID **único** (passo 6 garante unicidade pra drafts; scheduled posts são naturalmente únicos).
@@ -165,7 +178,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 ## Validação de sucesso
 
 - **Draft**: aparece na seção Drafts da **página Diar.ia** (acessível via composer da página). Drafts do perfil pessoal **não** contam — são sinal de erro no Passo 3.
-- **Scheduled**: aparece em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` com data/hora. Capturar a URL aqui — `linkedin.com/feed/scheduled-posts/` é do perfil pessoal e nunca deve ser registrada como sucesso (#504, #506).
+- **Scheduled**: aparece em `publishing.social.linkedin.scheduled_posts_url` (página da empresa) com data/hora. Capturar a URL aqui — `linkedin.com/feed/scheduled-posts/` é do perfil pessoal e nunca deve ser registrada como sucesso (#504, #506).
 
 ## Erros recuperáveis
 

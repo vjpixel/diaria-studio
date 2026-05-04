@@ -95,12 +95,12 @@ node -e "
 
 1. Abrir composer (URL inicial do playbook).
 2. Detectar login: se aparecer formulário de login, registrar `status: "failed"` com `reason: "linkedin_login_expired"` e prosseguir para o próximo (não abortar a iteração inteira).
-3. **Trocar autor pra página Diar.ia** seguindo o Passo 3 do playbook (`context/publishers/linkedin.md`). Retry até 3×. Se falhar, registrar `status: "failed"` com `reason: "linkedin_page_not_found"` (#504, #506) — esse erro **se aplica a todos os destaques restantes** desta sessão, então marcar d{destaque_num+1} e d{destaque_num+2} como `failed` / `linkedin_page_not_found` sem retry novo.
+3. **Trocar autor pra página Diar.ia** seguindo o Passo 3 do playbook (`context/publishers/linkedin.md`). Retry até 3×. Se falhar, registrar `status: "failed"` com `reason: "linkedin_page_not_found"` (#504, #506) — esse erro **se aplica a todos os destaques restantes** desta sessão, então marcar cada destaque restante (todos com `destaque_num` maior que o atual) como `failed` / `linkedin_page_not_found` sem retry novo. Sair do loop e ir direto pro output JSON.
 4. Colar o texto do post **exatamente como está** — sem appendar URL de imagem ou qualquer marcação extra. O texto do destaque já contém o link do artigo + hashtags do template.
 5. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
    - **Verificar conteúdo do rascunho (#378):** Ler as primeiras 50 caracteres do texto visível no composer e comparar com as primeiras 50 caracteres do post que foi inserido. Se não bater (ex: conteúdo de edição anterior), **não** considerar como sucesso — fechar o rascunho incorreto com "Discard" e recomeçar com post novo. Registrar `status: "failed"`, `reason: "linkedin_stale_draft_detected"` se a segunda tentativa também falhar.
-5. **Fallback agendar** (se rascunho não disponível):
+6. **Fallback agendar** (se rascunho não disponível):
    - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`).
 
      **Você (agent) constrói o comando com ou sem `--day-offset` dependendo do input** (#289, #295, #296):
