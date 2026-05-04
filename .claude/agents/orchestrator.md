@@ -104,6 +104,7 @@ O usuário invoca `/diaria-edicao AAMMDD`. Você deve:
   - Regenera `context/past-editions.md` via `scripts/refresh-past-editions.ts`, respeitando `dedupEditionCount` do config.
   - Retorna JSON com `{ mode, new_posts, total_in_base, most_recent_date, skipped }`.
   - **Se falhar**, propague o erro ao usuário e pare — não prossiga com dedup stale.
+  - **Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar. O orchestrator do próximo `/diaria-edicao` também roda Stage 0 automaticamente — então o dedup correto na próxima edição depende de rodar a pipeline completa, não em partes isoladas.
 - **Summary do dedup refresh (#314).** Após o `refresh-dedup-runner` retornar, imprimir:
   ```bash
   node -e "
@@ -374,8 +375,15 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
   ```
   O script produz o formato combinado (seção Destaques vazia no topo + seções Lançamentos/Pesquisas/Notícias com `⭐`, `[inbox]`, `(descoberta)` e `⚠️` inline) a partir do JSON. Candidatos do scorer ficam marcados com `⭐` nas seções de bucket; o editor move linhas para a seção Destaques. **Regra absoluta: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de uma nova chamada deste script para manter o MD em sincronia.** Se você só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 - **Sync push do MD para o Drive** (antes do gate — o editor precisa ver para decidir):
-  1. Montar lista de arquivos: sempre `01-categorized.md`; adicionar `01-eia.md,01-eia-A.jpg,01-eia-B.jpg` se `data/editions/{AAMMDD}/01-eia.md` existir.
-  2. `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files {lista}")`. Anotar em `sync_results[1]`; ignorar falhas.
+  1. Se `data/editions/{AAMMDD}/01-eia.md` existir (É IA? já completou em background), incluir as imagens no push:
+     ```
+     npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md,01-eia.md,01-eia-A.jpg,01-eia-B.jpg
+     ```
+     Se `01-eia.md` ainda não existir (É IA? ainda processando), usar só:
+     ```
+     npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md
+     ```
+  2. Anotar resultado em `sync_results[1]`; ignorar falhas (warn, nunca bloqueia).
 
 - **GATE HUMANO:** apresentar ao usuário:
 

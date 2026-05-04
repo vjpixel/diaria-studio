@@ -357,6 +357,35 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
   }
 }
 
+/**
+ * Reintegra scores do `_internal/tmp-scored.json` nos artigos de cada bucket.
+ * O scorer grava scores em `all_scored[]` nesse arquivo; o categorized.json
+ * final pode não ter o campo `score` em todos os artigos (ex: re-render após
+ * gate edit). Este função garante que o renderizador sempre mostre o score
+ * correto ao editor, independente de qual caminho o JSON tomou no pipeline.
+ *
+ * O arquivo é auto-descoberto: substitui o sufixo `01-categorized.json` (ou
+ * `01-approved.json`) por `tmp-scored.json` no mesmo diretório `_internal/`.
+ */
+function mergeScores(jsonPath: string, data: CategorizedJson): void {
+  const scoredPath = jsonPath.replace('01-categorized.json', 'tmp-scored.json')
+                             .replace('01-approved.json', 'tmp-scored.json');
+  if (!existsSync(scoredPath)) return;
+  try {
+    const scored: { url: string; score: number }[] = JSON.parse(readFileSync(scoredPath, 'utf8')).all_scored ?? [];
+    const scoreMap = new Map(scored.map(s => [s.url, s.score]));
+    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
+      for (const art of (bucket ?? [])) {
+        if (art.url && scoreMap.has(art.url)) {
+          (art as any).score = scoreMap.get(art.url);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — tmp-scored.json may be absent (partial run) or malformed
+  }
+}
+
 // ---------- É IA? block -------------------------------------------------
 
 /**
@@ -393,6 +422,7 @@ function main() {
   const cli = parseArgs();
   const data: CategorizedJson = JSON.parse(readFileSync(cli.in, "utf8"));
   mergeVerifiedFlags(cli.in, data);
+  mergeScores(cli.in, data);
 
   if (!data.lancamento || !data.pesquisa || !data.noticias) {
     console.error(
