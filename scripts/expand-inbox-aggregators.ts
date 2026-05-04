@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
+import { runMain } from "./lib/exit-handler.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -344,8 +345,5 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main().catch((err) => {
-    console.error("expand-inbox-aggregators error:", err);
-    process.exit(1);
-  });
+  runMain(main);
 }

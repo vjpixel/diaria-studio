@@ -43,6 +43,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { CONFIG } from "./lib/config.ts";
+import { runMain } from "./lib/exit-handler.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -913,8 +914,5 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main().catch((e) => {
-    console.error(`[eia-compose] ${(e as Error).message}`);
-    process.exit(2);
-  });
+  runMain(main);
 }
