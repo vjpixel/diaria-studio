@@ -381,7 +381,7 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
     for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
       for (const art of (bucket ?? [])) {
         if (art.url && scoreMap.has(art.url)) {
-          (art as any).score = scoreMap.get(art.url);
+          art.score = scoreMap.get(art.url);
         }
       }
     }
