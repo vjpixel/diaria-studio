@@ -85,6 +85,10 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Etapa 4 (publicadores) sempre exige consentimento explícito por canal antes do dispatch (#336).** Antes de invocar qualquer `publish-*` agent ou script publicador (newsletter Beehiiv, LinkedIn, Facebook), perguntar explicitamente ao editor qual canal ele quer automático e qual vai fazer manual. Default se não responder = manual em tudo. Não há exceção pra `/diaria-edicao` sem `--no-gates`. Com `--no-gates` (`auto_approve = true`): auto-aprovar mas registrar warn no run-log. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
 
+- **Pull antes de editar arquivo que existe no Drive (#494).** Antes de usar `Edit` ou `Write` em qualquer arquivo que o editor pode ter modificado no Google Drive (`01-categorized.md`, `02-reviewed.md`, `03-social.md`), sempre fazer pull para trazer a versão mais recente: `npx tsx scripts/drive-sync.ts --mode pull --edition-dir {edition_dir} --stage {N} --files {arquivo}`. Nunca assumir que o arquivo local está atualizado.
+
+- **Edições em arquivos Drive são sempre cirúrgicas (#495).** Ao modificar um arquivo que o editor pode ter editado, usar substituições linha a linha (`Edit` com `old_string` mínimo) em vez de substituir blocos grandes. Nunca incluir no `old_string` linhas que o editor pode ter alterado além das linhas que precisam mudar.
+
 ---
 
 ## Otimização de tokens
