@@ -391,7 +391,7 @@ describe("buildRunnerUpUrls (#104)", () => {
   });
 });
 
-describe("renderEaiBlock (#371)", () => {
+describe("renderEaiBlock (#371, #481)", () => {
   it("retorna placeholder quando nem 01-eia.md nem 01-eai.md existem", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {
@@ -404,31 +404,41 @@ describe("renderEaiBlock (#371)", () => {
     }
   });
 
-  it("novo padrão: inclui conteúdo do 01-eia.md quando existe (pós-#428)", () => {
+  it("#481: novo padrão: emite apenas a linha de crédito (sem frontmatter, sem paths de imagem)", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {
-      const eiaContent = "---\neia_answer: A\n---\nConteúdo do É IA?";
+      const eiaContent = "---\neia_answer: A\n---\nÉ IA?\n\nFoto: Linha de crédito real";
       writeFileSync(join(dir, "01-eia.md"), eiaContent, "utf8");
       const block = renderEaiBlock(dir);
-      assert.ok(block.includes("Conteúdo do É IA?"));
+      // Deve incluir apenas a linha de crédito
+      assert.ok(block.includes("Foto: Linha de crédito real"));
       assert.ok(!block.includes("⏳"));
-      assert.ok(block.includes("01-eia-A.jpg"));
-      assert.ok(block.includes("01-eia-B.jpg"));
+      // NÃO deve incluir frontmatter YAML
+      assert.ok(!block.includes("eia_answer:"));
+      // NÃO deve incluir paths de imagem
+      assert.ok(!block.includes("01-eia-A.jpg"));
+      assert.ok(!block.includes("01-eia-B.jpg"));
+      assert.ok(!block.includes("Imagem A:"));
+      assert.ok(!block.includes("Imagem B:"));
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("legacy: inclui conteúdo do 01-eai.md quando 01-eia.md não existe (pré-#428)", () => {
+  it("#481: legacy: emite apenas linha de crédito do 01-eai.md (sem paths de imagem)", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {
-      const eaiContent = "---\neai_answer: A\n---\nConteúdo legacy";
+      const eaiContent = "---\neai_answer: A\n---\nÉ IA?\n\nCrédito legacy aqui";
       writeFileSync(join(dir, "01-eai.md"), eaiContent, "utf8");
       const block = renderEaiBlock(dir);
-      assert.ok(block.includes("Conteúdo legacy"));
+      assert.ok(block.includes("Crédito legacy aqui"));
       assert.ok(!block.includes("⏳"));
-      assert.ok(block.includes("01-eai-A.jpg"));
-      assert.ok(block.includes("01-eai-B.jpg"));
+      // NÃO deve incluir frontmatter nem paths
+      assert.ok(!block.includes("eai_answer:"));
+      assert.ok(!block.includes("01-eai-A.jpg"));
+      assert.ok(!block.includes("01-eai-B.jpg"));
+      assert.ok(!block.includes("Imagem A:"));
+      assert.ok(!block.includes("Imagem B:"));
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -437,26 +447,66 @@ describe("renderEaiBlock (#371)", () => {
   it("novo padrão tem precedência quando ambos os arquivos existem", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {
-      writeFileSync(join(dir, "01-eia.md"), "Novo", "utf8");
-      writeFileSync(join(dir, "01-eai.md"), "Legacy", "utf8");
+      writeFileSync(join(dir, "01-eia.md"), "---\neia_answer: A\n---\nCrédito novo", "utf8");
+      writeFileSync(join(dir, "01-eai.md"), "---\neai_answer: B\n---\nCrédito legacy", "utf8");
       const block = renderEaiBlock(dir);
-      assert.ok(block.includes("Novo"));
-      assert.ok(!block.includes("Legacy"));
-      assert.ok(block.includes("01-eia-A.jpg"));
+      assert.ok(block.includes("Crédito novo"));
+      assert.ok(!block.includes("Crédito legacy"));
+      // NÃO deve incluir paths de imagem
+      assert.ok(!block.includes("01-eia-A.jpg"));
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("bloco tem separadores --- e cabeçalho ## É IA?", () => {
+  it("bloco tem separadores --- e cabeçalho ## É IA? (sem paths de imagem)", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {
-      writeFileSync(join(dir, "01-eia.md"), "Texto", "utf8");
+      writeFileSync(join(dir, "01-eia.md"), "---\neia_answer: A\n---\nCrédito da foto", "utf8");
       const block = renderEaiBlock(dir);
       assert.ok(block.includes("---"));
       assert.ok(block.includes("## É IA?"));
-      assert.ok(block.includes("Imagem A:"));
-      assert.ok(block.includes("Imagem B:"));
+      assert.ok(block.includes("Crédito da foto"));
+      // #481: NÃO deve incluir "Imagem A:" nem "Imagem B:"
+      assert.ok(!block.includes("Imagem A:"));
+      assert.ok(!block.includes("Imagem B:"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#481: arquivo sem frontmatter — pega primeira linha não-vazia como crédito", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      // Sem frontmatter, linha de crédito direta
+      writeFileSync(join(dir, "01-eia.md"), "\n\nCrédito direto sem frontmatter", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Crédito direto sem frontmatter"));
+      assert.ok(!block.includes("⏳"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#481: arquivo só com frontmatter (sem linha de crédito) → placeholder ⏳", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eia.md"), "---\neia_answer: A\n---\n", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("⏳"));
+      assert.ok(block.includes("ainda processando"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#481: ignora linha 'É IA?' no corpo e pega a próxima linha não-vazia", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(join(dir, "01-eia.md"), "---\neia_answer: A\n---\nÉ IA?\n\nFoto real", "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Foto real"));
+      assert.ok(!block.includes("eia_answer"));
     } finally {
       rmSync(dir, { recursive: true });
     }

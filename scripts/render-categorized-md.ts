@@ -436,7 +436,13 @@ export function computeTotalConsidered(inputPath: string, data: CategorizedJson)
  * entre as seções do `01-categorized.md`.
  *
  * Suporta o padrão novo (`01-eia.md`, pós-#428) e o legacy (`01-eai.md`).
- * Se o arquivo existir: retorna o bloco completo com conteúdo + paths de imagem.
+ *
+ * Fix #481: emite APENAS a linha de crédito editável pelo editor, sem
+ * frontmatter YAML, sem "É IA?" duplicado e sem paths de imagem. Os paths
+ * ficam exclusivamente no `01-eia.md` (informação estruturada para o
+ * publisher). O writer lê a linha de crédito desta seção do categorized.md.
+ *
+ * Se o arquivo existir: retorna o bloco com apenas a linha de crédito.
  * Se não existir (ainda processando em background): retorna placeholder.
  */
 export function renderEaiBlock(editionDir: string): string {
@@ -449,12 +455,32 @@ export function renderEaiBlock(editionDir: string): string {
     null;
 
   if (eaiMd) {
-    const content = readFileSync(eaiMd, "utf8").trim();
-    const prefix = eaiMd.endsWith("01-eia.md") ? "eia" : "eai";
-    const imgA = join(editionDir, `01-${prefix}-A.jpg`);
-    const imgB = join(editionDir, `01-${prefix}-B.jpg`);
-    const imgLine = `Imagem A: ${imgA} | Imagem B: ${imgB}`;
-    return `\n${separator}\n\n## É IA?\n\n${content}\n${imgLine}\n\n${separator}\n`;
+    const content = readFileSync(eaiMd, "utf8");
+    // Extrair apenas a linha de crédito (#481):
+    // - Ignorar bloco frontmatter (--- ... ---)
+    // - Ignorar linha "É IA?"
+    // - Pegar a primeira linha não-vazia restante
+    const lines = content.split('\n');
+    let inFrontmatter = false;
+    let frontmatterDone = false;
+    let creditLine = '';
+    // Se o arquivo não começa com frontmatter (primeira linha não-vazia não é ---),
+    // tratar todo o conteúdo como pós-frontmatter.
+    const firstNonEmpty = lines.find((l) => l.trim() !== '');
+    if (firstNonEmpty && firstNonEmpty.trim() !== '---') frontmatterDone = true;
+    for (const line of lines) {
+      if (line.trim() === '---') {
+        if (!frontmatterDone) { inFrontmatter = !inFrontmatter; if (!inFrontmatter) frontmatterDone = true; }
+        continue;
+      }
+      if (inFrontmatter) continue;
+      if (!frontmatterDone) continue;
+      if (line.trim() === 'É IA?' || line.trim() === '') continue;
+      creditLine = line.trim();
+      break;
+    }
+    if (!creditLine) return `\n${separator}\n\n## É IA? ⏳ (ainda processando)\n\n${separator}\n`;
+    return `\n${separator}\n\n## É IA?\n\n${creditLine}\n\n${separator}\n`;
   }
   return `\n${separator}\n\n## É IA? ⏳ (ainda processando — será revisado quando disponível)\n\n${separator}\n`;
 }

@@ -44,19 +44,19 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
    - Escrever DESTAQUE 1 e DESTAQUE 2 seguindo as regras acima, depois executar o passo 2b antes de escrever DESTAQUE 3.
 2b. **Seção É IA?** — após DESTAQUE 2 e antes de DESTAQUE 3:
-   - Ler `{edition_dir}/01-eia.md` (ou `01-eai.md` — fallback legado).
-   - Extrair apenas a linha de crédito (ignorar o frontmatter `---` e a linha `É IA?`).
+   - Ler `{edition_dir}/01-categorized.md` e extrair a linha de crédito da seção `## É IA?` (primeira linha não-vazia após o cabeçalho `## É IA?`, ignorando separadores `---`).
+   - Fallback: se a seção não existir ou estiver vazia no categorized.md, ler `{edition_dir}/01-eia.md` e extrair a linha de crédito ignorando o bloco frontmatter (`---…---`), a linha `É IA?` e linhas vazias.
    - Inserir no draft:
      ```
      ---
 
      É IA?
 
-     {linha de crédito do 01-eia.md}
+     {linha de crédito}
 
      ---
      ```
-   - Se `01-eia.md` não existir, omitir a seção É IA? e incluir aviso em `warnings`.
+   - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
 3. Lançamentos, Pesquisas, Notícias: lista curta — **3 linhas por item na ordem `Título / URL / Descrição`** (#172). URL imediatamente abaixo do título facilita o gate humano. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, título/URL/descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
