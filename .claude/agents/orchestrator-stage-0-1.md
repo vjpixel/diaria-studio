@@ -370,7 +370,13 @@ npx tsx scripts/categorize.ts \
   --articles data/editions/{AAMMDD}/_internal/tmp-kept.json \
   --out data/editions/{AAMMDD}/_internal/tmp-categorized.json
 ```
-Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
+
+Em seguida, rodar **enrich-primary-source** (#487) pra sinalizar notícias que parecem cobrir lançamentos (verbo + empresa conhecida no título) — o editor verá um marker `🚀→{dominio}` no MD do gate sugerindo busca da fonte primária:
+```bash
+npx tsx scripts/enrich-primary-source.ts \
+  --in data/editions/{AAMMDD}/_internal/tmp-categorized.json
+```
+In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
 
 ### 1n. Topic clustering (#237)
 

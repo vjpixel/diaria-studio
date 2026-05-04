@@ -40,6 +40,10 @@ interface Article {
   editor_submitted?: boolean;
   discovered_source?: boolean;
   date_unverified?: boolean;
+  /** #487 — notícia que provavelmente cobre um lançamento e merece busca por
+   *  fonte primária oficial. Setado por `enrich-primary-source.ts`. */
+  launch_candidate?: boolean;
+  suggested_primary_domain?: string;
   /** Marcador inline de destaque (formato legado do scorer). */
   highlight?: boolean;
   /** Rank 1..6 do scorer (formato inline). */
@@ -209,6 +213,10 @@ export function renderLine(
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
   if (article.new_in_pool) markers.push("🆕");
+  if (article.launch_candidate && article.suggested_primary_domain) {
+    // #487 — pista pra editor: provavelmente é lançamento, fonte oficial em outro domínio
+    markers.push(`🚀→${article.suggested_primary_domain}`);
+  }
 
   const markerStr = markers.length > 0 ? " " + markers.join(" ") : "";
   const prefix = lineNumber != null ? `${lineNumber}.` : "-";
