@@ -58,6 +58,7 @@
     "social": {
       "mode": "draft_or_schedule",
       "linkedin": {
+        "make_webhook_url": "",
         "company_page_id": "110742958",
         "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/"
       },
