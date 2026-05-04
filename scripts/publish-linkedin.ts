@@ -32,6 +32,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
+import { CONFIG } from "./lib/config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -132,7 +133,7 @@ async function postToMakeWebhook(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
       });
       if (!res.ok) {
         const body = await res.text();

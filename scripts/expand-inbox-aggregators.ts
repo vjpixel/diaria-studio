@@ -32,6 +32,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { CONFIG } from "./lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,7 +138,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
         "User-Agent":
           "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
     });
     if (!res.ok) return [];
     const html = await res.text();
@@ -172,7 +173,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
       if (TRACKER_DOMAINS.has(hrefHost)) continue;
 
       links.push(canonicalize(href));
-      if (links.length >= 10) break;
+      if (links.length >= CONFIG.inboxAggregator.maxPrimaryLinks) break;
     }
 
     // Deduplicate preserving order
