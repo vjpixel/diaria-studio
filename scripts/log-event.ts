@@ -13,6 +13,12 @@
  *
  * Níveis: info | warn | error
  *
+ * Flag opcional `--informational` (#565): marca o warn como por-design /
+ * informativo (não é regressão). Injeta `informational: true` no details.
+ * O `auto-reporter` filtra esses warns automaticamente, evitando issues
+ * GitHub falsas em /diaria-test ou /diaria-edicao com warns conhecidos.
+ * Substituí o tag textual `(informativo)` no message (acoplamento frágil).
+ *
  * Grava em `data/run-log.jsonl` (ou no path definido em platform.config.json > logging.path).
  * Formato: 1 linha JSON por evento. Append-only.
  */
@@ -80,6 +86,15 @@ if (args.details) {
     details = JSON.parse(args.details);
   } catch {
     details = args.details;
+  }
+}
+
+// #565 — `--informational` injeta flag estruturada em details.
+if (args.informational === "true") {
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    (details as Record<string, unknown>).informational = true;
+  } else {
+    details = { informational: true };
   }
 }
 
