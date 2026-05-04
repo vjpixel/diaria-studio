@@ -1,3 +1,4 @@
+// Migrado de eai-compose.ts em PR #428 (rename EAI→EIA).
 /**
  * eia-compose.ts (#110 fix 2)
  *
@@ -41,7 +42,6 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { runMain } from "./lib/exit-handler.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -912,5 +912,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  runMain(main);
+  main().catch((e) => {
+    console.error(`[eia-compose] ${(e as Error).message}`);
+    process.exit(2);
+  });
 }
