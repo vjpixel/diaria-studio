@@ -72,7 +72,7 @@ O fluxo é **all-or-nothing**: 1 paste de HTML completo num único bloco Custom 
 - **Tipo:** Trivia (não Voting).
 - **Pergunta:** `Qual delas é IA?`
 - **Opções:** `A` e `B`.
-- **Marcar como correta** a letra do `ai_side` em `_internal/01-eai-meta.json` (preenchido upstream pelo `eai-compose.ts` no sorteio A/B do #192):
+- **Marcar como correta** a letra do `ai_side` em `_internal/01-eai-meta.json` (preenchido upstream pelo `eia-compose.ts` no sorteio A/B do #192):
   ```bash
   node -e "console.log(JSON.parse(require('fs').readFileSync('data/editions/{AAMMDD}/_internal/01-eai-meta.json','utf8')).ai_side)"
   ```
