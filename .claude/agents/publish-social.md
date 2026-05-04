@@ -95,8 +95,9 @@ node -e "
 
 1. Abrir composer (URL inicial do playbook).
 2. Detectar login: se aparecer formulário de login, registrar `status: "failed"` com `reason: "linkedin_login_expired"` e prosseguir para o próximo (não abortar a iteração inteira).
-3. Colar o texto do post **exatamente como está** — sem appendar URL de imagem ou qualquer marcação extra. O texto do destaque já contém o link do artigo + hashtags do template.
-4. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
+3. **Trocar autor pra página Diar.ia** seguindo o Passo 3 do playbook (`context/publishers/linkedin.md`). Retry até 3×. Se falhar, registrar `status: "failed"` com `reason: "linkedin_page_not_found"` (#504, #506) — esse erro **se aplica a todos os destaques restantes** desta sessão, então marcar d{destaque_num+1} e d{destaque_num+2} como `failed` / `linkedin_page_not_found` sem retry novo.
+4. Colar o texto do post **exatamente como está** — sem appendar URL de imagem ou qualquer marcação extra. O texto do destaque já contém o link do artigo + hashtags do template.
+5. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
    - **Verificar conteúdo do rascunho (#378):** Ler as primeiras 50 caracteres do texto visível no composer e comparar com as primeiras 50 caracteres do post que foi inserido. Se não bater (ex: conteúdo de edição anterior), **não** considerar como sucesso — fechar o rascunho incorreto com "Discard" e recomeçar com post novo. Registrar `status: "failed"`, `reason: "linkedin_stale_draft_detected"` se a segunda tentativa também falhar.
 5. **Fallback agendar** (se rascunho não disponível):
@@ -119,7 +120,8 @@ node -e "
      O script lê `platform.config.json`, parseia `EDITION` em data real, soma `day_offset` (com override de `schedule_day_offset` se presente), e formata ISO 8601 com offset do timezone configurado. Output: `2026-04-28T09:00:00-03:00`.
    - **Validar `scheduled_at` no futuro (#376):** se ISO < `Date.now()`, NÃO agendar. Registrar `status: "failed"`, `reason: "scheduled_at_in_past — edition_date={AAMMDD}, computed={scheduled_at}, now={now_iso}"`. Isso detecta quando `edition_dir` passou um AAMMDD incorreto ou quando o pipeline está rodando muito depois da data da edição.
    - Agendar na UI seguindo o playbook (data + hora).
-   - Capturar URL, `status = "scheduled"`, `scheduled_at = <ISO>`.
+   - **Verificar contexto do post (#506)** seguindo o Passo 8 do playbook: navegar pra `publishing.social.linkedin.scheduled_posts_url` (página da empresa) e confirmar que o texto do post aparece lá. Se aparecer só em `linkedin.com/feed/scheduled-posts/` (perfil pessoal), marcar `status: "failed"`, `reason: "linkedin_published_to_wrong_context"` e zerar `url`/`scheduled_at`. **Nunca registrar URL do perfil pessoal como sucesso** (#504).
+   - Capturar URL da página da empresa, `status = "scheduled"`, `scheduled_at = <ISO>`.
 
 **d.pause — Pausar para confirmação individual (#377):**
 Após criar o rascunho ou agendar o post, apresentar ao editor:
@@ -214,6 +216,8 @@ LinkedIn entries têm `requires_manual_image_upload: true`. Facebook entries tê
 - **Composer fresh por iteração (#266).** Antes de cada post, re-navegar pra `/feed/` e clicar Start a post. Se LinkedIn oferecer "Continue your draft", **rejeitar** (Discard / Start new) — clicar Continue anexa conteúdo novo ao draft anterior, virando 3 posts em 1.
 - **Validar unicidade de drafts** após cada save: contar drafts em `/in/me/recent-activity/drafts/` e confirmar incremento de +1. Se não incrementar, marcar `status: "failed"` com `reason: "linkedin_draft_overwrite_detected"` e considerar switch pra schedule.
 - **Login expirado = falha individual, não aborto geral.** Registrar `status: "failed"` com `reason: "linkedin_login_expired"` e seguir para o próximo destaque.
+- **Página Diar.ia inacessível (#504, #506) = falha em cascata.** Se Passo 3 do playbook abortar com `linkedin_page_not_found` após 3 retries, marcar todos os destaques restantes desta sessão como `failed`/`linkedin_page_not_found` sem retry — sessão claramente não tem permissão pra postar pela página, retentar não vai resolver. Editor precisa fixar acesso à página antes de re-disparar.
+- **Contexto do post — perfil pessoal nunca conta como sucesso (#504).** O post tem que aparecer em `linkedin.com/company/{id}/admin/scheduled-posts/` (ou Drafts da página). Se só apareceu em `linkedin.com/feed/scheduled-posts/` (perfil pessoal), `status: "failed"` com `reason: "linkedin_published_to_wrong_context"`.
 - **Chrome desconectado = aborto geral imediato.** Se qualquer chamada `mcp__claude-in-chrome__*` retornar erro de desconexão (mensagem contém "not connected", "extension", "disconnected", "no tab", "connection refused" ou similar) — distinto de login expirado, que carrega uma página de formulário — **salvar o progresso atual** (o `06-social-published.json` já está atualizado por append imediato) e retornar:
   ```json
   { "error": "chrome_disconnected", "last_post": { "platform": "linkedin", "destaque": "..." }, "details": "<mensagem de erro bruta>" }

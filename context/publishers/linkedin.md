@@ -56,12 +56,23 @@ Após cada save subsequente, recontar com a mesma lógica de fallback — count 
 
 ### 3. Escolher autor (uma vez por sessão) — OBRIGATÓRIO
 
-O composer abre por padrão no contexto do perfil pessoal. É obrigatório trocar para a página Diar.ia antes de postar.
+O composer abre por padrão no contexto do perfil pessoal. É obrigatório trocar para a página Diar.ia (configurada em `publishing.social.linkedin.company_page_name`) antes de postar.
 
 - Localizar o dropdown de autor (avatar/nome no topo do composer).
 - Clicar e selecionar **Diar.ia** (página da empresa, ID: 110742958).
-- Verificar que o nome/avatar mudou para Diar.ia antes de continuar.
-- **Se o dropdown não aparecer ou Diar.ia não estiver listada:** ABORTAR com erro `"linkedin_page_not_found: página Diar.ia não disponível no composer — verificar acesso à página"`. **NUNCA continuar como perfil pessoal.**
+- **Verificar troca via `javascript_tool`** — não confiar só no visual:
+  ```javascript
+  // O nome do autor selecionado fica em algum elemento visível do composer.
+  // Buscar texto "Diar.ia" perto do dropdown de autor.
+  const composer = document.querySelector('[role="dialog"]') || document.body;
+  const text = composer.textContent || '';
+  return { has_company_name: text.includes('Diar.ia'), preview: text.slice(0, 200) };
+  ```
+- **Retry até 3×** se a verificação falhar (#506):
+  - Tentativa 1: clicar dropdown, esperar 1s, selecionar Diar.ia, verificar.
+  - Tentativa 2: fechar composer, reabrir (Passo 1), repetir.
+  - Tentativa 3: fechar composer, navegar pra `https://www.linkedin.com/company/110742958/admin/dashboard/` e clicar "Start a post" lá (composer abre já no contexto da página). Verificar.
+- **Se as 3 tentativas falharem:** ABORTAR com erro `"linkedin_page_not_found: página Diar.ia não disponível no composer após 3 tentativas — verificar acesso à página"`. **NUNCA continuar como perfil pessoal** — `status: "failed"`, `reason: "linkedin_page_not_found"`. Posts seguintes do mesmo run também abortam (sem retry novo) porque a sessão claramente não tem acesso à página.
 
 ### 4. Inserir texto
 - O composer usa `<div contenteditable>` (ProseMirror) — `form_input` não funciona aqui. Usar `javascript_tool` para injetar o texto:
@@ -123,8 +134,15 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 - Confirmar **Schedule**.
 - Capturar URL do post agendado em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/`. Status = `"scheduled"`.
 
-### 8. Validar e fechar
-- Verificar mensagem de confirmação ("Post scheduled" ou "Draft saved").
+### 8. Validar e fechar — verificação em 2 etapas (#506)
+
+A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no contexto errado (perfil pessoal em vez da página). Fazer verificação ativa em 2 passos:
+
+1. **Confirmação UI**: ler mensagem ("Post scheduled" ou "Draft saved").
+2. **Verificação de contexto via navegação** — navegar pra `publishing.social.linkedin.scheduled_posts_url` (página da empresa, NÃO `linkedin.com/feed/scheduled-posts/` do perfil pessoal):
+   - Para scheduled: ir pra `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` e via `javascript_tool` confirmar que o texto do post (primeiros 50 chars) aparece nessa página.
+   - Para draft: ir pra Drafts da página da empresa (acessível via composer da página) e idem.
+   - Se o texto **não** aparecer na página da empresa, o post foi pro lugar errado → marcar `status: "failed"` com `reason: "linkedin_published_to_wrong_context"`. NÃO incluir URL pessoal no output como se fosse sucesso.
 - Capturar URL ou ID **único** (passo 6 garante unicidade pra drafts; scheduled posts são naturalmente únicos).
 - Fechar modal/aba antes do próximo post — re-navegar para `/feed/` no início da próxima iteração (passo 1).
 
@@ -146,8 +164,8 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 
 ## Validação de sucesso
 
-- **Draft**: aparece em `https://www.linkedin.com/in/me/recent-activity/drafts/` (perfil) ou na seção Drafts da página.
-- **Scheduled**: aparece em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` com data/hora.
+- **Draft**: aparece na seção Drafts da **página Diar.ia** (acessível via composer da página). Drafts do perfil pessoal **não** contam — são sinal de erro no Passo 3.
+- **Scheduled**: aparece em `https://www.linkedin.com/company/110742958/admin/scheduled-posts/` com data/hora. Capturar a URL aqui — `linkedin.com/feed/scheduled-posts/` é do perfil pessoal e nunca deve ser registrada como sucesso (#504, #506).
 
 ## Erros recuperáveis
 
