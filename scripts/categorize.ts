@@ -22,6 +22,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { exitWithError } from "./lib/exit-handler.ts";
 
 export interface Article {
   url: string;
@@ -316,7 +317,7 @@ const UPDATE_PATTERNS: RegExp[] = [
   /\bexpansion\s+to\s+(more|new)\b/i,
 ];
 
-function isUpdate(article: Article): boolean {
+export function isUpdate(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
   return UPDATE_PATTERNS.some((p) => p.test(hay));
 }
@@ -342,7 +343,7 @@ const TUTORIAL_DOMAIN_EXTRA_PATTERNS: RegExp[] = [
   /^blog\.google\/.*\b(adapt|how-to|get-started|tips|guide|learn|discover)\b/i,
 ];
 
-function isTutorialByDomainExtra(url: string): boolean {
+export function isTutorialByDomainExtra(url: string): boolean {
   const { full } = hostAndPath(url);
   return TUTORIAL_DOMAIN_EXTRA_PATTERNS.some((p) => p.test(full));
 }
@@ -570,8 +571,7 @@ function main(): void {
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
 
   if (!values["articles"]) {
-    console.error("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
-    process.exit(1);
+    exitWithError("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
   }
 
   const articlesPath = values["articles"];
