@@ -212,15 +212,10 @@ async function publishPhoto(
   formData.append("caption", caption);
   formData.append("access_token", pageToken);
 
+  formData.append("published", "false");
   if (scheduledAt) {
     const unixTs = isoToUnix(scheduledAt);
-    // Facebook requires scheduled time to be between 10 min and 6 months in the future
-    const now = Math.floor(Date.now() / 1000);
-    if (unixTs > now + 600) {
-      formData.append("published", "false");
-      formData.append("scheduled_publish_time", String(unixTs));
-    }
-    // If time is in the past or too soon, publish immediately
+    formData.append("scheduled_publish_time", String(unixTs));
   }
 
   const res = await fetch(url, { method: "POST", body: formData });
@@ -296,7 +291,7 @@ async function rescheduleFacebookPosts(opts: {
       continue;
     }
 
-    const imageFile = d === "d1" ? `04-${d}-1x1.jpg` : `04-${d}.jpg`;
+    const imageFile = `04-${d}-1x1.jpg`;
     const imagePath = resolve(opts.editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);
@@ -514,8 +509,8 @@ async function main() {
       continue;
     }
 
-    // Check image — D1 uses square variant (1x1), D2/D3 use standard
-    const imageFile = d === "d1" ? `04-${d}-1x1.jpg` : `04-${d}.jpg`;
+    // Check image — all destaques use 1x1 variant (#502: image-generate always outputs 04-dN-1x1.jpg)
+    const imageFile = `04-${d}-1x1.jpg`;
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);
