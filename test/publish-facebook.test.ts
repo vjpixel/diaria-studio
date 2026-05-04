@@ -20,11 +20,11 @@ describe("validateScheduledTime 15 min boundary (#527)", () => {
   const now = new Date("2026-04-28T12:00:00Z");
   it("aceita > 15 min futuro com margem 900s", () => { assert.doesNotThrow(() => validateScheduledTime("2026-04-28T12:20:00Z", now, 900)); });
   it("aceita > 10 min futuro (margem default)", () => { assert.doesNotThrow(() => validateScheduledTime("2026-04-28T13:00:00Z", now)); });
-  it("rejeita passado", () => { assert.throws(() => validateScheduledTime("2026-04-28T11:30:00Z", now), /ja passou/); });
-  it("rejeita exato agora (boundary zero a frente)", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:00:00Z", now), /ja passou/); });
-  it("rejeita < 15 min com margem 900s", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:10:00Z", now, 900), /margem minima de 15min/); });
-  it("rejeita < 10 min (margem default)", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:05:00Z", now), /margem minima de 10min/); });
-  it("rejeita data invalida", () => { assert.throws(() => validateScheduledTime("bad", now), /data invalida/); });
+  it("rejeita passado", () => { assert.throws(() => validateScheduledTime("2026-04-28T11:30:00Z", now), /já passou/); });
+  it("rejeita exato agora (boundary zero a frente)", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:00:00Z", now), /já passou/); });
+  it("rejeita < 15 min com margem 900s", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:10:00Z", now, 900), /margem mínima de 15min/); });
+  it("rejeita < 10 min (margem default)", () => { assert.throws(() => validateScheduledTime("2026-04-28T12:05:00Z", now), /margem mínima de 10min/); });
+  it("rejeita data invalida", () => { assert.throws(() => validateScheduledTime("bad", now), /data inválida/); });
 });
 
 describe("published=false sempre enviado no formData fix #505 (#527)", () => {
