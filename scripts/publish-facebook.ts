@@ -212,6 +212,8 @@ async function publishPhoto(
   formData.append("caption", caption);
   formData.append("access_token", pageToken);
 
+  // Always unpublished — prevents immediate live publication when called without scheduledAt.
+  // Timing validation (min 10 min ahead) is the caller's responsibility via validateScheduledTime().
   formData.append("published", "false");
   if (scheduledAt) {
     const unixTs = isoToUnix(scheduledAt);
