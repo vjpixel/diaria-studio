@@ -150,13 +150,12 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
     }
 
     const links: string[] = [];
+    // Captura apenas URLs http(s) — pure fragment links (#section) são excluídas pelo regex.
     const re = /href="(https?:\/\/[^"]+)"/gi;
     let m: RegExpExecArray | null;
 
     while ((m = re.exec(html)) !== null) {
       const href = m[1];
-      if (href.startsWith("#")) continue; // skip pure fragment links (URLs with query+fragment OK)
-
       let hrefHost: string;
       try {
         hrefHost = new URL(href).hostname.replace(/^www\./, "").toLowerCase();
