@@ -63,6 +63,10 @@ interface CategorizedJson {
   noticias: Article[];
   tutorial?: Article[];
   video?: Article[];
+  /** Número total de artigos considerados antes da filtragem do scorer.
+   * Injetado pelo orchestrator a partir de `_internal/tmp-categorized.json`
+   * ou auto-descoberto pelo render script se ausente (#477). */
+  total_considered?: number;
 }
 
 interface SourceHealth {
@@ -357,6 +361,77 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
   }
 }
 
+/**
+ * Reintegra scores do `_internal/tmp-scored.json` nos artigos de cada bucket.
+ * O scorer grava scores em `all_scored[]` nesse arquivo; o categorized.json
+ * final pode não ter o campo `score` em todos os artigos (ex: re-render após
+ * gate edit). Este função garante que o renderizador sempre mostre o score
+ * correto ao editor, independente de qual caminho o JSON tomou no pipeline.
+ *
+ * O arquivo é auto-descoberto: substitui o sufixo `01-categorized.json` (ou
+ * `01-approved.json`) por `tmp-scored.json` no mesmo diretório `_internal/`.
+ */
+function mergeScores(jsonPath: string, data: CategorizedJson): void {
+  const scoredPath = jsonPath.replace('01-categorized.json', 'tmp-scored.json')
+                             .replace('01-approved.json', 'tmp-scored.json');
+  if (!existsSync(scoredPath)) return;
+  try {
+    const scored: { url: string; score: number }[] = JSON.parse(readFileSync(scoredPath, 'utf8')).all_scored ?? [];
+    const scoreMap = new Map(scored.map(s => [s.url, s.score]));
+    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
+      for (const art of (bucket ?? [])) {
+        if (art.url && scoreMap.has(art.url)) {
+          (art as any).score = scoreMap.get(art.url);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — tmp-scored.json may be absent (partial run) or malformed
+  }
+}
+
+// ---------- Coverage metrics (#477) -------------------------------------
+
+/**
+ * Calcula o total de artigos "considerados" antes da filtragem do scorer.
+ *
+ * Estratégia de auto-descoberta (sem mudar o caller):
+ *  1. Se o JSON já tiver `total_considered` (injetado pelo orchestrator), usar diretamente.
+ *  2. Tentar ler `_internal/tmp-categorized.json` no mesmo diretório do JSON de input:
+ *     esse arquivo tem os artigos pós-dedup e pós-categorize, antes do filtro de score.
+ *     É o melhor proxy para "quanto foi analisado".
+ *  3. Fallback: retornar `null` (placeholder `???` no MD).
+ *
+ * O path do `tmp-categorized.json` é derivado do `inputPath` substituindo o
+ * basename pelo path relativo dentro do `_internal/`.
+ */
+export function computeTotalConsidered(inputPath: string, data: CategorizedJson): number | null {
+  // 1. Campo explícito no JSON (mais preciso, injetado pelo orchestrator)
+  if (typeof data.total_considered === "number") return data.total_considered;
+
+  // 2. Auto-descoberta via tmp-categorized.json no mesmo _internal/
+  const tmpCategorizedPath = inputPath
+    .replace("01-categorized.json", "tmp-categorized.json")
+    .replace("01-approved.json", "tmp-categorized.json");
+
+  if (existsSync(tmpCategorizedPath)) {
+    try {
+      const tmpData: Record<string, unknown[]> = JSON.parse(readFileSync(tmpCategorizedPath, "utf8"));
+      const total =
+        (tmpData.lancamento?.length ?? 0) +
+        (tmpData.pesquisa?.length ?? 0) +
+        (tmpData.noticias?.length ?? 0) +
+        (tmpData.tutorial?.length ?? 0) +
+        (tmpData.video?.length ?? 0);
+      if (total > 0) return total;
+    } catch {
+      // Non-fatal — tmp-categorized.json may be malformed
+    }
+  }
+
+  return null;
+}
+
 // ---------- É IA? block -------------------------------------------------
 
 /**
@@ -393,6 +468,7 @@ function main() {
   const cli = parseArgs();
   const data: CategorizedJson = JSON.parse(readFileSync(cli.in, "utf8"));
   mergeVerifiedFlags(cli.in, data);
+  mergeScores(cli.in, data);
 
   if (!data.lancamento || !data.pesquisa || !data.noticias) {
     console.error(
@@ -404,9 +480,20 @@ function main() {
   const highlightUrls = buildHighlightUrls(data);
   const runnerUpUrls = buildRunnerUpUrls(data);
 
+  // #477: métricas de cobertura — N considerados, M selecionados.
+  const totalSelected =
+    data.lancamento.length + data.pesquisa.length + data.noticias.length +
+    (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
+  const totalConsidered = computeTotalConsidered(cli.in, data);
+  const coverageLine = totalConsidered !== null
+    ? `> Para essa edição, foram considerados ${totalConsidered} artigos e selecionados ${totalSelected}.\n`
+    : `> Para essa edição, foram considerados ??? artigos e selecionados ${totalSelected}.\n`;
+
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
-    `\n> Candidatos recomendados pelo scorer:\n` +
+    coverageLine +
+    `>\n` +
+    `> Candidatos recomendados pelo scorer:\n` +
     `>   - ⭐ — top do scorer (highlights[]).\n` +
     `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
     `>   - 🆕 — artigo novo desde a última curadoria (não estava no MD anterior).\n` +

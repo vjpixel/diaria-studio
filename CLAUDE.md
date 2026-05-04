@@ -89,6 +89,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Edições em arquivos Drive são sempre cirúrgicas (#495).** Ao modificar um arquivo que o editor pode ter editado, usar substituições linha a linha (`Edit` com `old_string` mínimo) em vez de substituir blocos grandes. Nunca incluir no `old_string` linhas que o editor pode ter alterado além das linhas que precisam mudar.
 
+- **Publicação manual requer refresh-dedup.** Sempre que uma edição for publicada manualmente no Beehiiv (sem `/diaria-4-publicar`), rodar `/diaria-refresh-dedup` imediatamente após para manter `context/past-editions.md` atualizado. Sem isso, a próxima edição pode repetir URLs já publicadas.
+
 ---
 
 ## Otimização de tokens
