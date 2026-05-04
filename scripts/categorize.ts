@@ -470,6 +470,32 @@ export function isOfficialLancamentoUrl(url: string): boolean {
   );
 }
 
+/**
+ * Classifica um artigo em uma categoria editorial.
+ *
+ * Ordem de avaliacao (primeira regra que bater vence):
+ *  -1. Video -- YouTube/Vimeo tem precedencia absoluta sobre tudo.
+ *   0. Tutorial por dominio dedicado (TUTORIAL_DOMAINS).
+ *   0. Tutorial por pattern dedicado (TUTORIAL_PATTERNS).
+ *   1. Pesquisa por dominio dedicado (PESQUISA_DOMAINS) + filtro arXiv.
+ *   1. Pesquisa por pattern (PESQUISA_PATTERNS) + filtro arXiv.
+ *  1b. Tutorial por keyword no titulo/summary (isTutorialByKeyword)
+ *      -- vem depois de pesquisa pra evitar falso positivo em papers.
+ *  1c. Tutorial por dominio extra com padrao de tutorial (isTutorialByDomainExtra).
+ *  1c. Tutorial por titulo extra em dominio oficial (isTutorialByTitleExtra).
+ *   2. Lancamento (dominio/pattern oficial), com overrides internos em ordem:
+ *      a. Caminho /research/ -> pesquisa.
+ *      b. Business deal (DEAL_PATTERNS) -> noticias.
+ *      c. Anuncio nao-produto (bolsa/grant/fellowship) -> noticias.
+ *      d. Update incremental (UPDATE_PATTERNS) -> noticias.
+ *         IMPORTANTE: UPDATE_PATTERNS e avaliado ANTES de RESEARCH_IN_LAUNCH_DOMAIN.
+ *         Titulo como An update on our research toward AGI vira noticias,
+ *         nao pesquisa -- update ganha de research nesse conflito.
+ *      e. Titulo com keyword de pesquisa (RESEARCH_IN_LAUNCH_DOMAIN) -> pesquisa.
+ *      f. Default -> lancamento.
+ *   3. type_hint pesquisa (quando dominio nao e jornalistico).
+ *   4. Default -> noticias.
+ */
 export function categorize(article: Article): Category {
   const { host, full } = hostAndPath(article.url);
 

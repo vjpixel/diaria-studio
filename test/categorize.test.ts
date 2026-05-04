@@ -874,3 +874,139 @@ describe("categorize() — arXiv off-topic vai para noticias (#501)", () => {
     );
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// Edge cases: precedencia, dominios ambiguos e casos limite (#534)
+// // #534-edge-cases-appended
+// ---------------------------------------------------------------------------
+
+describe("categorize() -- edge cases: UPDATE_PATTERNS vs RESEARCH_IN_LAUNCH_DOMAIN (#534)", () => {
+  it("An update on research toward AGI em openai.com -> noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/update-on-research-toward-agi",
+        title: "An update on our research toward AGI",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Update: exploring path to AGI em anthropic.com -> noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/update-exploring-path-to-agi",
+        title: "Update: exploring path to AGI",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Introducing GPT-5: path to AGI em openai.com -> pesquisa (RESEARCH, sem UPDATE)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/introducing-gpt5-path-to-agi",
+        title: "Introducing GPT-5: path to AGI",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("Researching the path toward AI co-clinician em deepmind.google -> pesquisa", () => {
+    assert.equal(
+      categorize({
+        url: "https://deepmind.google/blog/researching-path-toward-ai-co-clinician",
+        title: "Researching the path toward AI co-clinician",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("Exploring multimodal agents em openai.com -> pesquisa (RESEARCH_IN_LAUNCH_DOMAIN)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/exploring-multimodal-agents",
+        title: "Exploring multimodal agents",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("Introducing GPT-5 em openai.com -> lancamento (sem keyword research ou update)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/introducing-gpt-5",
+        title: "Introducing GPT-5",
+      }),
+      "lancamento",
+    );
+  });
+});
+
+describe("categorize() -- edge cases: TUTORIAL_DOMAIN_EXTRA antes de LANCAMENTO (#534)", () => {
+  it("How to get started with Gemini em blog.google (slug how-to) -> tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/technology/how-to-get-started-with-gemini",
+        title: "How to get started with Gemini",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("Gemini turns 2 em blog.google -> noticias (UPDATE_PATTERNS)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/gemini-turns-2",
+        title: "Gemini turns 2",
+      }),
+      "noticias",
+    );
+  });
+});
+
+describe("categorize() -- edge cases: dominios ambiguos (#534)", () => {
+  it("deepmind.google/research -> pesquisa (caminho /research/ no bloco lancamento)", () => {
+    assert.equal(
+      categorize({ url: "https://deepmind.google/research/publications/gemini-nano" }),
+      "pesquisa",
+    );
+  });
+
+  it("ai.google/blog -> lancamento (LANCAMENTO_DOMAINS, sem override)", () => {
+    assert.equal(
+      categorize({
+        url: "https://ai.google/blog/new-feature-announcement",
+        title: "Announcing a new AI feature",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("blog.google/products -> lancamento (sem slug de tutorial)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/gemini-2-0-flash",
+        title: "Gemini 2.0 Flash",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("arXiv sem titulo nem summary -> noticias (off-topic por ausencia de termos)", () => {
+    assert.equal(
+      categorize({ url: "https://arxiv.org/abs/2501.55555" }),
+      "noticias",
+    );
+  });
+
+  it("title inbox nao crasha -- retorna noticias para URL jornalistica", () => {
+    const result = categorize({ url: "https://techcrunch.com/article-x", title: "(inbox)" });
+    assert.equal(result, "noticias");
+  });
+
+  it("title inbox em dominio lancamento -> nao crasha, avalia URL normalmente", () => {
+    const result = categorize({ url: "https://anthropic.com/news/new-model", title: "(inbox)" });
+    assert.equal(result, "lancamento");
+  });
+});
