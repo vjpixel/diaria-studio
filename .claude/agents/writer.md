@@ -24,7 +24,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Processo
 
 1. Ler os 4 arquivos de contexto acima.
-0. **Linha de cobertura** — primeira linha do draft:
+1b. **Linha de cobertura** — primeira linha do draft:
    - Ler `{edition_dir}/01-categorized.md` e extrair o número total de artigos considerados (linha "foram considerados N artigos").
    - Calcular total selecionado: `highlights.length + categorized.lancamento.length + categorized.pesquisa.length + categorized.noticias.length`.
    - Escrever como primeira linha do draft (antes de DESTAQUE 1):
