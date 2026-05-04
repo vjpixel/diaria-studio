@@ -65,6 +65,42 @@ Variáveis pra alimentar o playbook:
    - Lembrete: "Social posts agendados para {date+10}. Delete do Facebook/LinkedIn antes dessa data."
    - Link para o rascunho no Beehiiv (de `05-published.json`)
 
+### 4. Stage final — Coleta de erros e auto-reporter (#519)
+
+**Roda independente de sucesso/falha dos stages anteriores** — captura tudo o que merece virar issue. O `/diaria-test` existe pra surfar regressões; este stage fecha o loop.
+
+1. Coletar sinais com a flag `--include-test-warnings` (capta também error/warn genéricos do run-log da edição):
+
+   ```bash
+   npx tsx scripts/collect-edition-signals.ts \
+     --edition-dir data/editions/{AAMMDD}/ \
+     --include-test-warnings
+   ```
+
+2. Ler `data/editions/{AAMMDD}/_internal/issues-draft.json`:
+   - **Se `signals_count === 0`:** logar info ("nada a reportar — edição de teste limpa") e finalizar.
+   - **Se `signals_count > 0`:** dispatchar `auto-reporter` com `test_mode: true`:
+
+     ```
+     Agent({
+       subagent_type: "auto-reporter",
+       description: "Auto-criar issues do test run {AAMMDD}",
+       prompt: "Coletar issues-draft.json em data/editions/{AAMMDD}/_internal/. test_mode=true (auto-aprovar criação sem gate humano). repo=vjpixel/diaria-studio. edition_dir=data/editions/{AAMMDD}/."
+     })
+     ```
+
+3. Em `test_mode`, o `auto-reporter` pula o gate humano, dedup contra issues abertas, cria/comenta issues e tagga as criadas com `from-diaria-test` (ver `.claude/agents/auto-reporter.md`).
+
+4. No resumo final ao usuário, incluir bloco:
+
+   ```
+   📋 Auto-reporter (test_mode):
+      {issues_created} issues novas: #NN, #NN
+      {issues_commented} issues comentadas: #NN
+   ```
+
+   (omitir se zero.)
+
 ## Output
 
-Mesmo de `/diaria-edicao`: todos os arquivos em `data/editions/{AAMMDD}/`.
+Mesmo de `/diaria-edicao`: todos os arquivos em `data/editions/{AAMMDD}/`. Adicional: issues GitHub abertas com label `from-diaria-test` quando o run captou regressões.
