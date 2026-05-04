@@ -185,6 +185,34 @@ const PESQUISA_DOMAINS = new Set([
   "research.google",
 ]);
 
+// ---------------------------------------------------------------------------
+// Filtro arXiv — relevância editorial (#501)
+// ---------------------------------------------------------------------------
+
+/**
+ * Termos relevantes para o tema da Diar.ia (IA, ML, NLP).
+ * Artigos arXiv sem nenhum desses termos no título/resumo são off-topic
+ * (ex: física, biologia computacional, econometria) e descartados antes
+ * de entrar no pipeline de curadoria.
+ *
+ * O filtro é permissivo (basta 1 match) pra minimizar falsos negativos —
+ * prefere-se manter um paper de borda do que perder um paper relevante.
+ */
+export const ARXIV_RELEVANT_TERMS =
+  /\b(language\s+model|llm|transformer|diffusion|neural\s+network|deep\s+learn|reinforcement\s+learn|computer\s+vision|natural\s+language|multimodal|foundation\s+model|generative|bert|gpt|attention\s+mechanism|fine.?tun|instruction|alignment|benchmark|reasoning|chain.of.thought|rag|retrieval|embedding|agent|chatbot|text.to.image|speech\s+recognition|sentiment|named\s+entity|question\s+answer|text\s+generation|image\s+generation|video\s+generation|code\s+generation|protein|genomic|drug\s+discovery)\b/i;
+
+/**
+ * Retorna `true` se o artigo deve passar pelo pipeline editorial.
+ * Para artigos não-arXiv, sempre retorna `true` (sem filtro).
+ * Para artigos arXiv, exige ao menos 1 match de `ARXIV_RELEVANT_TERMS`
+ * no título ou resumo (#501).
+ */
+export function isArxivRelevant(article: Article): boolean {
+  if (!article.url?.includes("arxiv.org")) return true; // não é arXiv → passa
+  const text = `${article.title ?? ""} ${article.summary ?? ""}`;
+  return ARXIV_RELEVANT_TERMS.test(text);
+}
+
 const PESQUISA_PATTERNS: RegExp[] = [
   // arxiv (inclui /abs/ e /pdf/)
   /^arxiv\.org\//,
@@ -458,8 +486,18 @@ export function categorize(article: Article): Category {
   if (TUTORIAL_PATTERNS.some((p) => p.test(full))) return "tutorial";
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
-  if (PESQUISA_DOMAINS.has(host)) return "pesquisa";
-  if (PESQUISA_PATTERNS.some((p) => p.test(full))) return "pesquisa";
+  if (PESQUISA_DOMAINS.has(host)) {
+    // #501: arXiv retorna muitos papers off-topic. Filtrar por termos relevantes
+    // ao tema da Diar.ia antes de classificar como pesquisa. Papers sem match
+    // vão para "noticias" — o scorer vai penalizá-los por falta de contexto de IA
+    // e eles dificilmente chegam ao gate editorial.
+    if (!isArxivRelevant(article)) return "noticias";
+    return "pesquisa";
+  }
+  if (PESQUISA_PATTERNS.some((p) => p.test(full))) {
+    if (!isArxivRelevant(article)) return "noticias";
+    return "pesquisa";
+  }
 
   // 1b. Tutorial por keyword — só depois da checagem de pesquisa.
   //    Papers acadêmicos com "tutorial" no título já foram classificados

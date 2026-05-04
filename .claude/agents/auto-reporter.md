@@ -13,6 +13,7 @@ Você é o auto-reporter da Diar.ia. Sua responsabilidade: transformar **sinais 
 - `edition_dirs`: array de paths — **modo multi-edition** (#90, Stage 0 processando drafts órfãos). Se ambos passados, `edition_dirs` tem precedência.
 - `multi_edition`: boolean — flag explícita (default inferida pela presença de `edition_dirs`).
 - `repo`: GitHub repo (ex: `vjpixel/diaria-studio`).
+- `error_md_content` (opcional): conteúdo de `{edition_dir}/error.md` se o arquivo existir (#507). Erros manuais registrados pelo editor durante a edição — potencialmente indicam bugs ou comportamentos recorrentes a serem issues.
 
 ## Pré-requisitos
 
@@ -28,6 +29,8 @@ Você é o auto-reporter da Diar.ia. Sua responsabilidade: transformar **sinais 
 ```bash
 cat {edition_dir}/_internal/issues-draft.json
 ```
+
+**Se `error_md_content` foi passado (#507):** após carregar o JSON, verificar se o conteúdo de `error.md` descreve erros não cobertos pelos signals existentes (ex: bug de conteúdo editorial, fonte com dados incorretos, falha de imagem). Se sim, criar signal adicional com `kind: "editor_error_log"`, `severity: "medium"`, `title: "Erro manual registrado em error.md — edição {AAMMDD}"`, `details: { content: {error_md_content} }`, `suggested_action: "Revisar se é bug recorrente e criar issue se aplicável"`. Adicionar ao array antes do dedup. Se o conteúdo parecer one-off editorial (sem implicação de bug de sistema), pular a criação do signal.
 
 **Modo multi-edition** (`edition_dirs` array passado, #90):
 Pra cada path em `edition_dirs`, ler `{path}/_internal/issues-draft.json`. Consolidar todos os signals em um único array, **tagueando cada com sua edição de origem** (campo `_edition`) pra rastreabilidade.
@@ -97,6 +100,7 @@ Baseada em `kind` + `details`:
 - `unfixed_issue` com `related_issue`: pular busca, usar issue number direto (ex: `#39`).
 - `unfixed_issue` sem `related_issue`: `"{reason}" state:open`
 - `chrome_disconnects`: `"chrome_disconnected" state:open`
+- `editor_error_log`: busca livre por palavras-chave do conteúdo do `error.md`; se não encontrar match, propor criar nova issue com label `editor-reported`.
 
 #### 3b. `mcp__github__search_issues` com a query
 

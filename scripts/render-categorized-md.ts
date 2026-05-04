@@ -63,6 +63,10 @@ interface CategorizedJson {
   noticias: Article[];
   tutorial?: Article[];
   video?: Article[];
+  /** Número total de artigos considerados antes da filtragem do scorer.
+   * Injetado pelo orchestrator a partir de `_internal/tmp-categorized.json`
+   * ou auto-descoberto pelo render script se ausente (#477). */
+  total_considered?: number;
 }
 
 interface SourceHealth {
@@ -386,6 +390,45 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
   }
 }
 
+// ---------- Coverage metrics (#477) -------------------------------------
+
+/**
+ * Calcula o total de artigos "considerados" antes da filtragem do scorer.
+ *
+ * Estratégia de auto-descoberta (sem mudar o caller):
+ *  1. Se o JSON já tiver `total_considered` (injetado pelo orchestrator), usar diretamente.
+ *  2. Tentar ler `_internal/tmp-categorized.json` no mesmo diretório do JSON de input:
+ *     esse arquivo tem os artigos pós-dedup e pós-categorize, antes do filtro de score.
+ *     É o melhor proxy para "quanto foi analisado".
+ *  3. Fallback: retornar `null` (placeholder `???` no MD).
+ */
+export function computeTotalConsidered(inputPath: string, data: CategorizedJson): number | null {
+  // 1. Campo explícito no JSON (mais preciso, injetado pelo orchestrator)
+  if (typeof data.total_considered === "number") return data.total_considered;
+
+  // 2. Auto-descoberta via tmp-categorized.json no mesmo _internal/
+  const tmpCategorizedPath = inputPath
+    .replace("01-categorized.json", "tmp-categorized.json")
+    .replace("01-approved.json", "tmp-categorized.json");
+
+  if (existsSync(tmpCategorizedPath)) {
+    try {
+      const tmpData: Record<string, unknown[]> = JSON.parse(readFileSync(tmpCategorizedPath, "utf8"));
+      const total =
+        (tmpData.lancamento?.length ?? 0) +
+        (tmpData.pesquisa?.length ?? 0) +
+        (tmpData.noticias?.length ?? 0) +
+        (tmpData.tutorial?.length ?? 0) +
+        (tmpData.video?.length ?? 0);
+      if (total > 0) return total;
+    } catch {
+      // Non-fatal — tmp-categorized.json may be malformed
+    }
+  }
+
+  return null;
+}
+
 // ---------- É IA? block -------------------------------------------------
 
 /**
@@ -434,9 +477,20 @@ function main() {
   const highlightUrls = buildHighlightUrls(data);
   const runnerUpUrls = buildRunnerUpUrls(data);
 
+  // #477: métricas de cobertura — N considerados, M selecionados.
+  const totalSelected =
+    data.lancamento.length + data.pesquisa.length + data.noticias.length +
+    (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
+  const totalConsidered = computeTotalConsidered(cli.in, data);
+  const coverageLine = totalConsidered !== null
+    ? `> Para essa edição, foram considerados ${totalConsidered} artigos e selecionados ${totalSelected}.\n`
+    : `> Para essa edição, foram considerados ??? artigos e selecionados ${totalSelected}.\n`;
+
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
-    `\n> Candidatos recomendados pelo scorer:\n` +
+    coverageLine +
+    `>\n` +
+    `> Candidatos recomendados pelo scorer:\n` +
     `>   - ⭐ — top do scorer (highlights[]).\n` +
     `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
     `>   - 🆕 — artigo novo desde a última curadoria (não estava no MD anterior).\n` +
@@ -548,8 +602,6 @@ function main() {
     );
   } catch { /* hash é opcional — não bloqueia se falhar */ }
 
-  const total =
-    data.lancamento.length + data.pesquisa.length + data.noticias.length + (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
   const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
@@ -562,7 +614,8 @@ function main() {
   process.stdout.write(
     JSON.stringify({
       out: cli.out,
-      total_articles: total,
+      total_articles: totalSelected,
+      total_considered: totalConsidered,
       highlights_rendered: highlighted,
       runners_up_rendered: runnerUpUrls.size,
       date_unverified: unverified,
