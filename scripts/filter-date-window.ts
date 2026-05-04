@@ -2,19 +2,31 @@
  * filter-date-window.ts
  *
  * Filtra artigos pela janela de publicação, removendo os que estão
- * fora do intervalo [cutoff, edition_date].
+ * mais antigos que o cutoff (anchor − window_days).
+ *
+ * Anchor: por default `today` (UTC) — a janela cobre os últimos N dias do
+ * ponto de vista de quem está rodando o pipeline (#560). Edições agendadas
+ * pra publicar dias à frente (test_mode, /diaria-edicao com data futura) já
+ * não filtram conteúdo da semana corrente, que é o que importa pra pesquisa.
+ *
+ * Override explícito via `--anchor-date YYYY-MM-DD` quando se quer
+ * reproduzir a janela de uma run histórica ou simular publicação atrasada.
+ *
+ * `--edition-date` continua sendo aceito como metadata (vai pro log/cabeçalho
+ * do removed[]), mas não influencia mais o cutoff.
  *
  * Uso:
  *   npx tsx scripts/filter-date-window.ts \
  *     --articles <verified.json> \
- *     --edition-date YYYY-MM-DD \
  *     --window-days 3 \
+ *     [--anchor-date YYYY-MM-DD] \
+ *     [--edition-date YYYY-MM-DD] \
  *     [--out <out.json>]
  *
  * Input:  objeto JSON com chaves { lancamento, pesquisa, noticias },
  *         cada uma contendo array de artigos com campo `date` (YYYY-MM-DD ou null).
  *
- * Output: { kept: { lancamento, pesquisa, noticias }, removed: [...] }
+ * Output: { kept: { lancamento, pesquisa, noticias }, removed: [...], cutoff, anchor }
  *         `removed` inclui motivo e detalhes para log.
  *
  * Artigos com date=null são mantidos (benefício da dúvida) mas marcados
@@ -54,14 +66,24 @@ interface RemovedEntry {
   detail: string;
 }
 
+export function todayUtcIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export function filterDateWindow(
   input: CategorizedInput,
-  editionDate: string,
+  anchorDate: string,
   windowDays: number,
-): { kept: Required<CategorizedInput>; removed: RemovedEntry[]; cutoff: string } {
-  const edDate = new Date(editionDate + "T00:00:00Z");
-  edDate.setUTCDate(edDate.getUTCDate() - windowDays);
-  const cutoff = edDate.toISOString().split("T")[0];
+  editionDate?: string,
+): {
+  kept: Required<CategorizedInput>;
+  removed: RemovedEntry[];
+  cutoff: string;
+  anchor: string;
+} {
+  const anDate = new Date(anchorDate + "T00:00:00Z");
+  anDate.setUTCDate(anDate.getUTCDate() - windowDays);
+  const cutoff = anDate.toISOString().split("T")[0];
 
   const removed: RemovedEntry[] = [];
   // Passthrough de campos extras (#247): `clusters[]` do topic-cluster, ou
@@ -77,6 +99,10 @@ export function filterDateWindow(
     tutorial: [],
   };
 
+  const detailSuffix = editionDate
+    ? ` (anchor ${anchorDate} - ${windowDays}d; edition ${editionDate})`
+    : ` (anchor ${anchorDate} - ${windowDays}d)`;
+
   for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial"] as const) {
     for (const article of input[bucket] || []) {
       if (article.date == null) {
@@ -91,7 +117,7 @@ export function filterDateWindow(
           date: article.date,
           bucket,
           reason: "date_window",
-          detail: `date ${normDate} < cutoff ${cutoff} (edition ${editionDate} - ${windowDays}d)`,
+          detail: `date ${normDate} < cutoff ${cutoff}${detailSuffix}`,
         });
       } else {
         kept[bucket].push(article);
@@ -99,12 +125,13 @@ export function filterDateWindow(
     }
   }
 
-  return { kept, removed, cutoff };
+  return { kept, removed, cutoff, anchor: anchorDate };
 }
 
 function parseArgs(argv: string[]) {
   let articles = "";
   let editionDate = "";
+  let anchorDate = "";
   let windowDays = 3;
   let out = "";
 
@@ -116,6 +143,9 @@ function parseArgs(argv: string[]) {
       case "--edition-date":
         editionDate = argv[++i];
         break;
+      case "--anchor-date":
+        anchorDate = argv[++i];
+        break;
       case "--window-days":
         windowDays = parseInt(argv[++i], 10);
         break;
@@ -125,24 +155,39 @@ function parseArgs(argv: string[]) {
     }
   }
 
-  if (!articles || !editionDate || isNaN(windowDays) || windowDays < 1) {
+  if (!articles || isNaN(windowDays) || windowDays < 1) {
     console.error(
-      "Uso: filter-date-window.ts --articles <file> --edition-date YYYY-MM-DD --window-days N [--out <file>]"
+      "Uso: filter-date-window.ts --articles <file> --window-days N [--anchor-date YYYY-MM-DD] [--edition-date YYYY-MM-DD] [--out <file>]"
     );
     process.exit(1);
   }
 
-  return { articles, editionDate, windowDays, out };
+  return { articles, editionDate, anchorDate, windowDays, out };
 }
 
 function main() {
-  const { articles: articlesPath, editionDate, windowDays, out } = parseArgs(process.argv);
+  const {
+    articles: articlesPath,
+    editionDate,
+    anchorDate: anchorArg,
+    windowDays,
+    out,
+  } = parseArgs(process.argv);
 
+  const anchorDate = anchorArg || todayUtcIso();
   const input: CategorizedInput = JSON.parse(readFileSync(articlesPath, "utf8"));
 
-  const { kept, removed, cutoff } = filterDateWindow(input, editionDate, windowDays);
+  const { kept, removed, cutoff, anchor } = filterDateWindow(
+    input,
+    anchorDate,
+    windowDays,
+    editionDate || undefined,
+  );
 
-  console.error(`filter-date-window: edition=${editionDate}, window=${windowDays}d, cutoff=${cutoff}`);
+  const editionTag = editionDate ? `, edition=${editionDate}` : "";
+  console.error(
+    `filter-date-window: anchor=${anchor}${editionTag}, window=${windowDays}d, cutoff=${cutoff}`,
+  );
 
   const totalInput =
     (input.lancamento?.length || 0) +
@@ -164,7 +209,7 @@ function main() {
     }
   }
 
-  const result = { kept, removed };
+  const result = { kept, removed, cutoff, anchor };
 
   if (out) {
     writeFileSync(out, JSON.stringify(result, null, 2), "utf8");

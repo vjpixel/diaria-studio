@@ -188,4 +188,46 @@ describe("filterDateWindow", () => {
       assert.equal(kept.lancamento[0].title, "ok");
     });
   });
+
+  describe("anchor vs edition_date (#560)", () => {
+    it("anchor independente do edition_date — janela cobre passado do anchor", () => {
+      const input = {
+        // anchor=2026-05-04, window=3 → cutoff=2026-05-01
+        // edition_date=2026-05-09 (futuro) — não deve mudar nada.
+        lancamento: [
+          { url: "https://a.com/1", title: "Recente", date: "2026-05-03" },
+          { url: "https://a.com/2", title: "Antes do cutoff", date: "2026-04-30" },
+        ],
+        pesquisa: [],
+        noticias: [],
+      };
+      const { kept, removed, cutoff, anchor } = filterDateWindow(
+        input,
+        "2026-05-04",
+        3,
+        "2026-05-09",
+      );
+      assert.equal(anchor, "2026-05-04");
+      assert.equal(cutoff, "2026-05-01");
+      assert.equal(kept.lancamento.length, 1);
+      assert.equal(kept.lancamento[0].title, "Recente");
+      assert.equal(removed[0].title, "Antes do cutoff");
+      assert.ok(removed[0].detail.includes("edition 2026-05-09"));
+    });
+
+    it("removed.detail menciona anchor e (quando passado) edition_date", () => {
+      const input = {
+        lancamento: [{ url: "https://a.com/1", title: "Antigo", date: "2026-04-10" }],
+        pesquisa: [],
+        noticias: [],
+      };
+      const { removed: r1 } = filterDateWindow(input, "2026-04-24", 3);
+      assert.ok(r1[0].detail.includes("anchor 2026-04-24"));
+      assert.ok(!r1[0].detail.includes("edition"));
+
+      const { removed: r2 } = filterDateWindow(input, "2026-04-24", 3, "2026-04-25");
+      assert.ok(r2[0].detail.includes("anchor 2026-04-24"));
+      assert.ok(r2[0].detail.includes("edition 2026-04-25"));
+    });
+  });
 });

@@ -17,6 +17,15 @@ description: Detalhe dos Stages 0 (setup + dedup + checks) e 1 (pesquisa + É IA
   Bash("node -e \"const s='{edition_date}';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6))\"")
   ```
   Armazenar como `edition_iso` (ex: `2026-04-23`).
+- **Calcular `anchor_iso` e `cutoff_iso` (#560).** A janela de pesquisa é ancorada em "agora" (data de execução), não na publication date. Edições agendadas pra publicar dias à frente (test_mode, ou /diaria-edicao chamado com data futura) **continuam pesquisando o que foi publicado nos últimos `window_days` dias do ponto de vista de quem está rodando**, não a janela futura entre `today` e `edition_date`.
+  ```bash
+  Bash("node -e \"process.stdout.write(new Date().toISOString().slice(0,10))\"")
+  ```
+  Armazenar como `anchor_iso` (ex: `2026-05-04`). Calcular também `cutoff_iso = anchor_iso - window_days`:
+  ```bash
+  Bash("node -e \"const a=new Date('{anchor_iso}T00:00:00Z');a.setUTCDate(a.getUTCDate()-{window_days});process.stdout.write(a.toISOString().slice(0,10))\"")
+  ```
+  Esses dois valores **substituem** `edition_iso` em qualquer prompt de agente de pesquisa (1f) e qualquer chamada a `filter-date-window.ts` (1o). `edition_iso` permanece só como identificador da edição.
 - Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
 - **Receber `test_mode` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, desabilitar Drive sync, copiar `_internal/01-categorized.json` → `_internal/01-approved.json` diretamente.
@@ -274,8 +283,8 @@ Preserva saúde da fonte em todos os casos: propagar `method` como campo extra n
 
 ### 1f. Dispatch de researchers e discovery
 
-- Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, passando: nome da fonte, site query, data da edição, `window_days`, `timeout_seconds: 180`.
-- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). Passar `timeout_seconds: 180`.
+- Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, passando: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
+- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
 
 ### 1g. Registrar saúde + log (batch, #40)
@@ -374,12 +383,13 @@ npx tsx scripts/topic-cluster.ts \
 ```
 Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
 
-### 1o. Filtro determinístico de janela (#233)
+### 1o. Filtro determinístico de janela (#233, #560)
 
-Antes do `research-reviewer`, rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao agente Haiku:
+Antes do `research-reviewer`, rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao agente Haiku. **Anchor = `anchor_iso`** (today UTC), não `edition_iso` — assim a janela cobre o que foi publicado de fato nos últimos `window_days` dias, e não uma janela hipotética entre hoje e a publication date:
 ```bash
 npx tsx scripts/filter-date-window.ts \
   --articles data/editions/{AAMMDD}/_internal/tmp-clustered.json \
+  --anchor-date {anchor_iso} \
   --edition-date {edition_iso} \
   --window-days {window_days} \
   --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
@@ -388,7 +398,7 @@ Logar `removed.length`. Daqui em diante o input do research-reviewer é `_intern
 
 ### 1p. Research-reviewer
 
-Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_dir, window_days }`. O agent aplica:
+Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_iso, anchor_iso, edition_dir, window_days }`. O agent aplica:
 1. **Datas (verificação + flag)**: roda `verify-dates.ts` pra confirmar `published_at` via fetch, corrige `article.date`, copia `date_unverified` direto do output do script (#226 — não recalcula).
 2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
 3. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
