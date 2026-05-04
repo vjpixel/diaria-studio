@@ -356,6 +356,82 @@ describe("signalsFromTestWarnings (#519)", () => {
     assert.equal(signals[0].details.count, 1);
   });
 
+  it("filtra warns by-design em test_mode (#556, #559) — message contém 'test_mode'", () => {
+    const lines = [
+      mkLine({
+        edition: "260509",
+        stage: 4,
+        agent: "orchestrator",
+        level: "warn",
+        message: "stage 4 publishers skipped (test_mode + CHROME_MCP=false)",
+      }),
+      mkLine({
+        edition: "260509",
+        stage: 1,
+        agent: "writer",
+        level: "error",
+        message: "writer falhou de verdade",
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260509");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.agent, "writer");
+  });
+
+  it("filtra warns informativos (#557) — message contém '(informativo)'", () => {
+    const lines = [
+      mkLine({
+        edition: "260509",
+        stage: 0,
+        agent: "orchestrator",
+        level: "warn",
+        message: "edição anterior 260504 tem 3 posts FB com status=failed (informativo)",
+        details: { prev_edition: "260504", failed_count: 3 },
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260509");
+    assert.equal(signals.length, 0);
+  });
+
+  it("filtra warns com details.reason='test_mode' (#556) — dedup_freshness_override", () => {
+    const lines = [
+      mkLine({
+        edition: "260509",
+        stage: 0,
+        agent: "orchestrator",
+        level: "warn",
+        message: "dedup_freshness_override",
+        details: {
+          most_recent: "2026-04-30T08:00:00Z",
+          age_hours: 104.8,
+          reason: "test_mode auto-approve",
+        },
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260509");
+    assert.equal(signals.length, 0);
+  });
+
+  it("dedup_freshness_override em produção (sem test_mode no reason) ainda vira signal", () => {
+    const lines = [
+      mkLine({
+        edition: "260424",
+        stage: 0,
+        agent: "orchestrator",
+        level: "warn",
+        message: "dedup_freshness_override",
+        details: {
+          most_recent: "2026-04-22T08:00:00Z",
+          age_hours: 50,
+          reason: "editor override após falha real",
+        },
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260424");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.agent, "orchestrator");
+  });
+
   it("não duplica chrome_disconnected nem mcp_unavailable (signals 3 e 4 já cobrem)", () => {
     const lines = [
       mkLine({ edition: "260424", agent: "publish-social", level: "error", message: "chrome_disconnected mid-flight" }),

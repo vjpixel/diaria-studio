@@ -285,6 +285,20 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   /chrome desconectado/i,
   /claude-in-chrome mcp unavailable/i,
   /claude_in_chrome_mcp_unavailable/i,
+  // #556, #559 — by-design no /diaria-test: warns que mencionam test_mode
+  // não merecem virar issue (são comportamento esperado em modo teste).
+  /test_mode/i,
+  // #557 — warnings explicitamente marcados como informativos pelo orchestrator
+  // (já surfados pro editor via stage 0l, não precisam virar issue).
+  /\(informativo\)/i,
+];
+
+/** Patterns que casam contra `details.reason` do log. Mesmo critério de skip
+ *  que TEST_WARNING_SKIP_PATTERNS, mas inspeciona o details em vez do message
+ *  — alguns warns têm message neutro e o "by-design" só fica explícito no
+ *  details.reason (ex: dedup_freshness_override com reason='test_mode auto-approve'). */
+const TEST_WARNING_SKIP_REASON_PATTERNS: RegExp[] = [
+  /test_mode/i,
 ];
 
 /** Normaliza mensagem para chave de dedup (lowercase, primeiros 80 chars
@@ -333,6 +347,13 @@ export function signalsFromTestWarnings(
     const message = parsed.message ?? "";
     if (!message) continue;
     if (TEST_WARNING_SKIP_PATTERNS.some((re) => re.test(message))) continue;
+    const reason = (parsed.details as { reason?: unknown } | undefined)?.reason;
+    if (
+      typeof reason === "string" &&
+      TEST_WARNING_SKIP_REASON_PATTERNS.some((re) => re.test(reason))
+    ) {
+      continue;
+    }
 
     const agent = parsed.agent ?? "unknown";
     const key = `${agent}::${parsed.level}::${normalizeMessageKey(message)}`;
