@@ -198,9 +198,12 @@ export function isStage4Complete(outDir: string): boolean {
     existsSync(resolve(outDir, "01-eia-real.jpg")) &&
     existsSync(resolve(outDir, "01-eia-ia.jpg"));
   // #436: also accept the pre-PR#428 file names (01-eai-real.jpg / 01-eai-ia.jpg)
+  // #489: also accept the naming used between PR#192 and PR#428 (01-eai-A.jpg / 01-eai-B.jpg)
   const eaiLegacyAB =
-    existsSync(resolve(outDir, "01-eai-real.jpg")) &&
-    existsSync(resolve(outDir, "01-eai-ia.jpg"));
+    (existsSync(resolve(outDir, "01-eai-real.jpg")) &&
+     existsSync(resolve(outDir, "01-eai-ia.jpg"))) ||
+    (existsSync(resolve(outDir, "01-eai-A.jpg")) &&
+     existsSync(resolve(outDir, "01-eai-B.jpg")));
   return ((md && meta) || (legacyMd && legacyMeta)) && (newAB || legacyAB || eaiLegacyAB);
 }
 
