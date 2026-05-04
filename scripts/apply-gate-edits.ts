@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { canonicalize as canonicalize_ } from "./lib/url-utils.ts";
 
 interface Article {
   url: string;
@@ -147,26 +148,13 @@ export function parseSections(md: string): Record<BucketName, string[]> {
 }
 
 /**
- * Canonicaliza URL para comparação: lowercase do scheme+host, remove trailing
- * slash, remove fragment. Permite que variações triviais introduzidas por
- * editores (mobile autocomplete, copy-paste com slash extra, etc.) ainda
+ * Canonicaliza URL para comparação: lowercase do scheme+host, remove tracking
+ * params, hash e trailing slash. Permite que variações triviais introduzidas
+ * por editores (mobile autocomplete, copy-paste com slash extra, etc.) ainda
  * encontrem o artigo no pool original (#439).
  */
 export function canonicalizeUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    // lowercase scheme e host (case-insensitive por spec)
-    u.protocol = u.protocol.toLowerCase();
-    u.hostname = u.hostname.toLowerCase();
-    // remove fragment (nunca relevante para dedup)
-    u.hash = "";
-    // remove trailing slash do pathname apenas se não houver path real
-    const canonical = u.toString().replace(/\/$/, "");
-    return canonical;
-  } catch {
-    // URL inválida — retornar como está, sem crash
-    return url;
-  }
+  return canonicalize_(url);
 }
 
 function findArticle(

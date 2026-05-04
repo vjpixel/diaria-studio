@@ -236,7 +236,8 @@ describe("mergeWithNewJson (#293)", () => {
 
 describe("canonicalizeUrl (#439)", () => {
   it("normaliza trailing slash", () => {
-    assert.equal(canonicalizeUrl("https://example.com/"), "https://example.com");
+    // root slash preserved (url-utils: only removes trailing slash when pathname.length > 1)
+    assert.equal(canonicalizeUrl("https://example.com/"), "https://example.com/");
     assert.equal(canonicalizeUrl("https://example.com/path/"), "https://example.com/path");
   });
 

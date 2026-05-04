@@ -15,27 +15,13 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
+import { canonicalize } from "./lib/url-utils.ts";
 
-// ---------------------------------------------------------------------------
-// URL canonicalization (mesma lógica do verify-accessibility.ts)
+export { canonicalize };
+
+// URL canonicalization — centralizada em scripts/lib/url-utils.ts (#523)
 // ---------------------------------------------------------------------------
 
-export function canonicalize(url: string): string {
-  try {
-    const u = new URL(url);
-    for (const key of [...u.searchParams.keys()]) {
-      if (key.startsWith("utm_") || key === "ref" || key === "ref_src") u.searchParams.delete(key);
-    }
-    u.hash = "";
-    if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.slice(0, -1);
-    if (u.hostname === "arxiv.org" && u.pathname.startsWith("/pdf/")) {
-      u.pathname = u.pathname.replace(/^\/pdf\//, "/abs/").replace(/\.pdf$/, "");
-    }
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Levenshtein similarity (0 = completamente diferente, 1 = idêntico)
