@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
+import { CONFIG } from "./lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // URL canonicalization (mesma lógica do verify-accessibility.ts)
@@ -147,7 +148,7 @@ export async function fetchTitle(url: string): Promise<string | null> {
       headers: {
         "User-Agent": "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
       redirect: "follow",
     });
     if (!res.ok) return null;
@@ -170,7 +171,7 @@ export async function fetchTitle(url: string): Promise<string | null> {
  */
 export async function resolveInboxTitles(
   articles: { url: string; title?: string | null; [key: string]: unknown }[],
-  concurrency = 15,
+  concurrency = CONFIG.dedup.titleResolutionConcurrency,
 ): Promise<{ resolved: number; failed: number }> {
   const targets = articles
     .map((a, i) => ({ idx: i, article: a }))
@@ -394,7 +395,7 @@ async function main() {
   const articlesPath = args["articles"];
   const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
   const window = parseInt(args["window"] ?? "3", 10);
-  const titleThreshold = parseFloat(args["title-threshold"] ?? "0.85");
+  const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
   const outPath = args["out"];
 
   if (!articlesPath) {
@@ -416,7 +417,7 @@ async function main() {
   const pastMd = readFileSync(pastEditionsPath, "utf8");
   const pastUrls = extractPastUrls(pastMd, window);
   const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
-  const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? "0.70");
+  const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? String(CONFIG.dedup.titleVsPastThreshold));
 
   const result = dedup(articles, pastUrls, titleThreshold, pastTitles, titleVsPastThreshold);
 

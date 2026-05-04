@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { request } from "undici";
 import puppeteer, { type Browser } from "puppeteer";
+import { CONFIG } from "./lib/config.ts";
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -233,7 +234,7 @@ async function followRedirects(url: string, timeoutMs: number): Promise<{ finalU
   }
 }
 
-export async function verify(url: string, timeoutMs = 8000, isRetry = false, browser?: Browser | null): Promise<VerifyResult> {
+export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, isRetry = false, browser?: Browser | null): Promise<VerifyResult> {
   let effectiveUrl = canonicalize(url);
   let host = domain(effectiveUrl);
   let resolvedFrom: string | undefined;
