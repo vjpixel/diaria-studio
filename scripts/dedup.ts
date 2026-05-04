@@ -15,15 +15,28 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
-import { canonicalize } from "./lib/url-utils.ts";
-
-export { canonicalize };
 import { runMain } from "./lib/exit-handler.ts";
-import { CONFIG } from "./lib/config.ts";
 
-// URL canonicalization — centralizada em scripts/lib/url-utils.ts (#523)
+// ---------------------------------------------------------------------------
+// URL canonicalization (mesma lógica do verify-accessibility.ts)
 // ---------------------------------------------------------------------------
 
+export function canonicalize(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const key of [...u.searchParams.keys()]) {
+      if (key.startsWith("utm_") || key === "ref" || key === "ref_src") u.searchParams.delete(key);
+    }
+    u.hash = "";
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) u.pathname = u.pathname.slice(0, -1);
+    if (u.hostname === "arxiv.org" && u.pathname.startsWith("/pdf/")) {
+      u.pathname = u.pathname.replace(/^\/pdf\//, "/abs/").replace(/\.pdf$/, "");
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Levenshtein similarity (0 = completamente diferente, 1 = idêntico)
@@ -135,7 +148,7 @@ export async function fetchTitle(url: string): Promise<string | null> {
       headers: {
         "User-Agent": "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
-      signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
+      signal: AbortSignal.timeout(8_000),
       redirect: "follow",
     });
     if (!res.ok) return null;
@@ -158,7 +171,7 @@ export async function fetchTitle(url: string): Promise<string | null> {
  */
 export async function resolveInboxTitles(
   articles: { url: string; title?: string | null; [key: string]: unknown }[],
-  concurrency = CONFIG.dedup.titleResolutionConcurrency,
+  concurrency = 15,
 ): Promise<{ resolved: number; failed: number }> {
   const targets = articles
     .map((a, i) => ({ idx: i, article: a }))
@@ -382,7 +395,7 @@ async function main() {
   const articlesPath = args["articles"];
   const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
   const window = parseInt(args["window"] ?? "3", 10);
-  const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
+  const titleThreshold = parseFloat(args["title-threshold"] ?? "0.85");
   const outPath = args["out"];
 
   if (!articlesPath) {
@@ -404,7 +417,7 @@ async function main() {
   const pastMd = readFileSync(pastEditionsPath, "utf8");
   const pastUrls = extractPastUrls(pastMd, window);
   const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
-  const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? String(CONFIG.dedup.titleVsPastThreshold));
+  const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? "0.70");
 
   const result = dedup(articles, pastUrls, titleThreshold, pastTitles, titleVsPastThreshold);
 

@@ -32,9 +32,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
-import { CONFIG } from "./lib/config.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +73,21 @@ export interface ExpandOutput {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function canonicalize(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const key of [...u.searchParams.keys()]) {
+      if (key.startsWith("utm_") || key === "ref" || key === "ref_src")
+        u.searchParams.delete(key);
+    }
+    u.hash = "";
+    if (u.pathname.length > 1 && u.pathname.endsWith("/"))
+      u.pathname = u.pathname.slice(0, -1);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 
 function isInboxArticle(article: Article): boolean {
   return (
@@ -125,7 +138,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
         "User-Agent":
           "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
-      signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return [];
     const html = await res.text();
@@ -160,7 +173,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
       if (TRACKER_DOMAINS.has(hrefHost)) continue;
 
       links.push(canonicalize(href));
-      if (links.length >= CONFIG.inboxAggregator.maxPrimaryLinks) break;
+      if (links.length >= 10) break;
     }
 
     // Deduplicate preserving order

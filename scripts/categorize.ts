@@ -23,7 +23,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 
 export interface Article {
   url: string;
@@ -543,14 +542,15 @@ export function categorize(article: Article): Category {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
+  const articlesIdx = args.indexOf("--articles");
+  const outIdx = args.indexOf("--out");
 
-  if (!values["articles"]) {
+  if (articlesIdx === -1 || !args[articlesIdx + 1]) {
     exitWithError("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
   }
 
-  const articlesPath = values["articles"];
-  const outPath = values["out"] ?? null;
+  const articlesPath = args[articlesIdx + 1];
+  const outPath = outIdx !== -1 ? args[outIdx + 1] : null;
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
 
