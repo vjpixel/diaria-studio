@@ -41,6 +41,8 @@ import {
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { runMain } from "./lib/exit-handler.ts";
+import { CONFIG } from "./lib/config.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -301,7 +303,7 @@ interface EligibilityResult {
 export async function findEligiblePotd(
   startIso: string,
   usedTitles: Set<string>,
-  maxAttempts = 7,
+  maxAttempts = CONFIG.eiaCompose.maxWikiAttempts,
   fetcher: (iso: string) => Promise<WikimediaImage | null> = fetchPotd,
 ): Promise<EligibilityResult> {
   const rejections: Rejection[] = [];
@@ -481,7 +483,7 @@ export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> 
       `https://en.wikipedia.org/w/api.php?action=query&prop=langlinks&titles=${encodeURIComponent(pageTitle)}&lllang=pt&format=json&formatversion=2`;
     const res = await fetch(apiUrl, {
       headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(CONFIG.timeouts.wikimedia),
     });
     if (!res.ok) return null;
     const data = await res.json() as {
@@ -520,7 +522,7 @@ ${text}`
           }],
           generationConfig: { temperature: 0.1, maxOutputTokens: 200 }
         }),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(CONFIG.timeouts.gemini),
       }
     );
     if (!res.ok) return null;
@@ -710,7 +712,7 @@ async function downloadFile(url: string, outPath: string): Promise<void> {
   // User-Agent conforme Wikimedia policy (#217); timeout de 30s evita pendurar Stage 1b.
   const res = await fetch(url, {
     headers: { "User-Agent": "Diar.ia/1.0 (https://diar.ia.br; vjpixel@gmail.com)" },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(CONFIG.timeouts.wikimediaDownload),
   });
   if (!res.ok) {
     throw new Error(`Download ${url} falhou: HTTP ${res.status}`);
@@ -906,8 +908,5 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main().catch((e) => {
-    console.error(`[eia-compose] ${(e as Error).message}`);
-    process.exit(2);
-  });
+  runMain(main);
 }
