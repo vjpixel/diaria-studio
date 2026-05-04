@@ -28,7 +28,7 @@
  * Posts com status "failed" são retentados.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
@@ -89,7 +89,9 @@ function loadPublished(path: string): SocialPublished {
 }
 
 function savePublished(path: string, data: SocialPublished): void {
-  writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
+  const tmpPath = path + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n");
+  renameSync(tmpPath, path);
 }
 
 /**
