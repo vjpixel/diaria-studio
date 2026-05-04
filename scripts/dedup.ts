@@ -247,6 +247,12 @@ export function dedup(
     for (let j = 0; j < i; j++) {
       const artJ = afterUrlDedup[j];
       if (!artJ.title) continue;
+      // #482: artigos inbox têm título "(inbox)" — não comparar por título;
+      // deduplicação real já foi feita por URL na sub-pass 2a.
+      if (
+        artI.title.toLowerCase() === "(inbox)" ||
+        artJ.title.toLowerCase() === "(inbox)"
+      ) continue;
       const sim = titleSimilarity(artI.title, artJ.title);
       if (sim >= titleThreshold) {
         // Keep the one from a registered source; in a tie, keep artJ (already in kept)

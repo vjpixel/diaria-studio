@@ -237,6 +237,45 @@ Links usados:
   });
 });
 
+describe("dedup pass 2b — inbox title guard (#482)", () => {
+  it("dois artigos inbox com URLs diferentes NÃO são deduplicados por título", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "(inbox)" },
+      { url: "https://b.com/2", title: "(inbox)" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    // Ambos devem ser mantidos — URLs diferentes, título compartilhado deve ser ignorado
+    assert.equal(result.kept.length, 2);
+  });
+
+  it("artigo inbox com URL idêntica a outro ainda é deduplicado (sub-pass 2a)", () => {
+    const articles = [
+      { url: "https://a.com/x", title: "(inbox)" },
+      { url: "https://a.com/x", title: "(inbox)" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+  });
+
+  it("artigo inbox vs artigo normal com URL diferente NÃO colidem por título", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "(inbox)" },
+      { url: "https://b.com/2", title: "OpenAI anuncia GPT-5" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 2);
+  });
+
+  it("case-insensitive: '(INBOX)' também é ignorado na comparação de título", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "(INBOX)" },
+      { url: "https://b.com/2", title: "(INBOX)" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 2);
+  });
+});
+
 describe("dedup Pass 1b — title similarity vs past editions (#231)", () => {
   it("remove artigo com título quase idêntico ao headline de edição anterior", () => {
     const pastTitles = ["OpenAI lança GPT-5 com foco em agentes autônomos"];
