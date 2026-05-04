@@ -568,6 +568,169 @@ describe("categorize() — UPDATE_PATTERNS e TUTORIAL extras (#318)", () => {
   });
 });
 
+describe("categorize() — UPDATE_PATTERNS aniversário e expansão incremental (#486)", () => {
+  it("'AI Max Turns 1' em domínio oficial → noticias (aniversário)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/ai-max-turns-1",
+        title: "AI Max Turns 1",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'3 years of Claude' em domínio oficial → noticias (aniversário)", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/3-years-of-claude",
+        title: "3 years of Claude",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'Gemini turns 2' em domínio oficial → noticias (aniversário)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/gemini-turns-2",
+        title: "Gemini turns 2",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'expansion to more countries' em domínio oficial → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/expansion-countries",
+        title: "ChatGPT expansion to more countries",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'expansion to new markets' em domínio oficial → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/new-markets",
+        title: "Claude expansion to new enterprise markets",
+      }),
+      "noticias",
+    );
+  });
+
+  it("lançamento real sem aniversário continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/gpt-5",
+        title: "Introducing GPT-5",
+      }),
+      "lancamento",
+    );
+  });
+});
+
+describe("categorize() — pesquisa em domínio oficial (#486)", () => {
+  it("'Toward a theory of mind' em openai.com → pesquisa", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/toward-a-theory-of-mind",
+        title: "Toward a theory of mind in language models",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("'Exploring chain-of-thought' em anthropic.com → pesquisa", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/exploring-chain-of-thought",
+        title: "Exploring chain-of-thought prompting",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("'A study on hallucination' em deepmind.com → pesquisa", () => {
+    assert.equal(
+      categorize({
+        url: "https://deepmind.com/research/study-hallucination",
+        title: "A study on hallucination in large language models",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("'Path to AGI' em openai.com/blog → pesquisa", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/path-to-agi",
+        title: "Path to AGI: milestones and reflections",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("anúncio real sem keyword research continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/blog/gpt-5-launch",
+        title: "Introducing GPT-5 with advanced reasoning",
+      }),
+      "lancamento",
+    );
+  });
+});
+
+describe("categorize() — blog.google tutorial via slug imperativo (#486)", () => {
+  it("blog.google/…/how-to-use-gemini → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/technology/how-to-use-gemini-for-work",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("blog.google/…/tips-for-using-ai → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/ai/tips-for-using-ai-at-work",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("blog.google/…/get-started-with-gemini → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/outreach-initiatives/get-started-with-ai-for-schools",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("blog.google/products/gemini/gemini-update → lancamento (sem slug imperativo, título sem trigger de isUpdate)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/gemini-2-0-flash-release",
+        title: "Gemini 2.0 Flash release",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("blog.google/products/gemini/introducing-gemini → lancamento real", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/introducing-gemini-ultra",
+        title: "Introducing Gemini Ultra",
+      }),
+      "lancamento",
+    );
+  });
+});
+
 describe("categorize() — bucket video (#359)", () => {
   it("youtube.com/watch → video", () => {
     assert.equal(

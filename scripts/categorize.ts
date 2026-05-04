@@ -282,12 +282,24 @@ const UPDATE_PATTERNS: RegExp[] = [
   /\bour\s+(commitment|approach|policy|stance|plans?)\s+to\b/i,
   // "Election safeguards", "safety update", "policy update"
   /\b(safety|security|election)\s+(safeguards?|update[sd]?|report)\b/i,
+  // Posts de aniversário: "AI Max Turns 1", "3 years of X" (#486)
+  /\b(turns?\s+\d+|\d+\s+(years?|anos?)\s+of\b)/i,
+  // Expansão incremental: "expansion to more X" (#486)
+  /\bexpansion\s+to\s+(more|new)\b/i,
 ];
 
 function isUpdate(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
   return UPDATE_PATTERNS.some((p) => p.test(hay));
 }
+
+/**
+ * Títulos de pesquisa publicados em domínio oficial de empresa.
+ * Ocorre quando um lab posta um paper no próprio blog (ex: openai.com/blog/toward-a-theory-of-mind).
+ * Reclassificar como pesquisa, não lançamento (#486).
+ */
+const RESEARCH_IN_LAUNCH_DOMAIN =
+  /\b(researching|toward\s+a|path\s+to(ward)?|exploring|a\s+study\s+on)\b/i;
 
 /**
  * Domínios que são predominantemente tutoriais / case studies, mesmo quando
@@ -298,6 +310,8 @@ const TUTORIAL_DOMAIN_EXTRA_PATTERNS: RegExp[] = [
   /^aws\.amazon\.com\/blogs?\/(machine-learning|ai|compute|big-data)\//,
   // Google Developers blog (distinto de blog.google que é anúncio)
   /^developers\.googleblog\.com\//,
+  // blog.google com slug imperativo (how-to, guide, tips etc.) — tutorial, não anúncio (#486)
+  /^blog\.google\/.*\b(adapt|how-to|get-started|tips|guide|learn|discover)\b/i,
 ];
 
 function isTutorialByDomainExtra(url: string): boolean {
@@ -470,6 +484,8 @@ export function categorize(article: Article): Category {
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";
     if (isUpdate(article)) return "noticias";
+    // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
+    if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
     return "lancamento";
   }
 
