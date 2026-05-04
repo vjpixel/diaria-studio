@@ -41,7 +41,7 @@ const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 // Tipos
 // ---------------------------------------------------------------------------
 
-interface FileEntry {
+export interface FileEntry {
   drive_file_id: string;
   drive_modifiedTime: string;
   last_pushed_mtime: number;
@@ -69,7 +69,7 @@ export const CONVERT_TO_DOC = new Set<string>([
 
 export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
-interface EditionCache {
+export interface EditionCache {
   day_folder_id: string;
   files: Record<string, FileEntry>;
   /** Cache de subpastas dentro do dia (#253). Map subpath → Drive folder ID.
@@ -79,7 +79,7 @@ interface EditionCache {
   subfolder_ids?: Record<string, string>;
 }
 
-interface DriveCache {
+export interface DriveCache {
   edicoes_folder_id?: string;
   editions: Record<string, EditionCache>;
 }
@@ -97,7 +97,7 @@ interface PulledEntry {
   overwrote_local: boolean;
 }
 
-interface SyncResult {
+export interface SyncResult {
   mode: string;
   stage: number;
   edition: string;
@@ -490,7 +490,7 @@ async function resolveDayFolder(
 // Push
 // ---------------------------------------------------------------------------
 
-async function pushFile(
+export async function pushFile(
   editionDir: string,
   filename: string,
   yymmdd: string,
@@ -637,7 +637,7 @@ async function pushFile(
 // Pull
 // ---------------------------------------------------------------------------
 
-async function pullFile(
+export async function pullFile(
   editionDir: string,
   filename: string,
   yymmdd: string,
