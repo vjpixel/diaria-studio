@@ -398,7 +398,7 @@ Logar `removed.length`. Daqui em diante o input do research-reviewer é `_intern
 
 ### 1p. Research-reviewer
 
-Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_dir, window_days }`. O agent aplica:
+Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_iso, anchor_iso, edition_dir, window_days }`. O agent aplica:
 1. **Datas (verificação + flag)**: roda `verify-dates.ts` pra confirmar `published_at` via fetch, corrige `article.date`, copia `date_unverified` direto do output do script (#226 — não recalcula).
 2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
 3. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).

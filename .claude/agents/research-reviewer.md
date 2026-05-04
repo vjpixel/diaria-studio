@@ -33,11 +33,14 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    ```bash
    npx tsx scripts/filter-date-window.ts \
      --articles {edition_dir}tmp-categorized-dated.json \
+     --anchor-date {anchor_iso} \
      --edition-date {edition_iso} \
      --window-days {window_days} \
      --out {edition_dir}tmp-window-output.json
    ```
    Ler `tmp-window-output.json`. Usar `kept` como o novo `categorized` daqui em diante. Logar `removed[]` para rastreabilidade.
+
+   **Anchor é `anchor_iso`** (data de execução, não publication date — #560). O orchestrator passa `anchor_iso` no payload junto com `edition_iso`; se receber só `edition_iso` (retrocompat de invocações antigas), omitir `--anchor-date` deixa o script defaultar pra today UTC, que é o comportamento certo.
 7. Limpar temporários:
    ```bash
    node -e "['tmp-dates-input.json','tmp-dates-output.json','tmp-categorized-dated.json','tmp-window-output.json'].forEach(f=>{try{require('fs').unlinkSync('{edition_dir}'+f)}catch{}})"
