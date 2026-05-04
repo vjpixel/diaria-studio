@@ -96,7 +96,7 @@ function savePublished(path: string, data: SocialPublished): void {
  * Extrai o texto de um post LinkedIn de uma seção `## dN` dentro de `# LinkedIn`.
  * Normaliza CRLF → LF (arquivo pode vir do Drive com Windows line endings).
  */
-function extractPostText(socialMd: string, destaque: string): string {
+export function extractPostText(socialMd: string, destaque: string): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
@@ -120,7 +120,7 @@ function extractPostText(socialMd: string, destaque: string): string {
  * Envia payload ao webhook Make.com com retry (até `maxAttempts` tentativas).
  * Retorna a resposta parseada ou lança em falha total.
  */
-async function postToMakeWebhook(
+export async function postToMakeWebhook(
   webhookUrl: string,
   payload: MakeWebhookPayload,
   maxAttempts = 2,

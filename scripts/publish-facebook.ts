@@ -74,7 +74,7 @@ function savePublished(path: string, data: SocialPublished): void {
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
 }
 
-function extractPostText(socialMd: string, platform: string, destaque: string): string {
+export function extractPostText(socialMd: string, platform: string, destaque: string): string {
   // Normalizar CRLF → LF (arquivo pode vir do Drive com Windows line endings)
   socialMd = socialMd.replace(/\r\n/g, '\n');
 
