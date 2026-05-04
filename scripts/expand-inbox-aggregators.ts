@@ -33,6 +33,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { CONFIG } from "./lib/config.ts";
+import { canonicalize } from "./lib/url-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,22 +73,6 @@ export interface ExpandOutput {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function canonicalize(url: string): string {
-  try {
-    const u = new URL(url);
-    for (const key of [...u.searchParams.keys()]) {
-      if (key.startsWith("utm_") || key === "ref" || key === "ref_src")
-        u.searchParams.delete(key);
-    }
-    u.hash = "";
-    if (u.pathname.length > 1 && u.pathname.endsWith("/"))
-      u.pathname = u.pathname.slice(0, -1);
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
 
 function isInboxArticle(article: Article): boolean {
   return (
