@@ -351,6 +351,12 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
 - **Validação pós-scorer (#104).** Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks: posição original → 1, primeiro promovido → próximo rank disponível, etc. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo. Razão: o spec do scorer é "sempre 6"; quando o LLM diverge, o orchestrator corrige automaticamente em vez de deixar o editor decidir entre menos candidatos.
 - **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
 - **Filtro de score mínimo (#351)**: após enriquecer com scores, remover de cada bucket artigos com `score < 40`, exceto `flag === 'editor_submitted'` (inbox) e artigos já em `highlights` ou `runners_up`. Logar `"scorer threshold filter: removidos N artigos com score < 40"`.
+- **Verificação de mínimos por seção (#488):** após o filtro de score, contar itens remanescentes em cada bucket e preparar lista de avisos para o gate:
+  - Se `lancamento.length < 3`: registrar `⚠️ Apenas {N} lançamento(s) — mínimo esperado: 3`
+  - Se `pesquisa.length < 3`: registrar `⚠️ Apenas {N} pesquisa(s) — mínimo esperado: 3`
+  - Se `pesquisa.length > 5`: truncar para top-5 por score antes de salvar o `01-categorized.json` e renderizar o MD.
+  - Se `noticias.length < 5`: registrar `⚠️ Apenas {N} notícia(s) — mínimo esperado: 5`
+  - Os avisos registrados são exibidos no GATE HUMANO (ver abaixo). Mínimos são avisos — não bloqueiam o gate.
 - **Strip do campo `verifier`**: antes de salvar, remover o campo `verifier` de cada artigo (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON).
 - Estrutura final de `_internal/01-categorized.json`:
   ```json
@@ -421,7 +427,14 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
        ```
      - Se arquivo não existir ou falhar o parse, exibir "N/A" para aquela métrica — nunca bloquear.
 
-  3. **Relatório de saúde das fontes:**
+  3. **Avisos de mínimos por seção (#488):** se houver avisos registrados na verificação de mínimos (ver acima), exibi-los antes do relatório de saúde. Exemplo:
+     ```
+     ⚠️ Apenas 2 lançamento(s) — mínimo esperado: 3
+     ⚠️ Apenas 4 notícia(s) — mínimo esperado: 5
+     ```
+     Se não houver avisos, omitir este bloco. Os avisos não bloqueiam o gate — são informativos para o editor decidir se quer buscar mais artigos antes de aprovar.
+
+  4. **Relatório de saúde das fontes:**
      - Um bullet `⚠️` por fonte com outcome não-ok *nesta execução* (ex: `⚠️ MIT Tech Review BR — timeout após 180s`).
      - Um bullet `🔴` por fonte com streak 3+, com os timestamps de cada falha: ex:
        `🔴 AI Breakfast — 3 timeouts seguidos: 2026-04-15T14:18Z, 2026-04-16T14:20Z, 2026-04-17T14:22Z — considere desativar em seed/sources.csv`.

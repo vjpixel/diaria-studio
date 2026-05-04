@@ -24,6 +24,17 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Processo
 
 1. Ler os 4 arquivos de contexto acima.
+1b. **Linha de cobertura** — primeira linha do draft:
+   - Ler `{edition_dir}/01-categorized.md` e extrair o número total de artigos considerados (linha "foram considerados N artigos").
+   - Calcular total selecionado: `highlights.length + categorized.lancamento.length + categorized.pesquisa.length + categorized.noticias.length`.
+   - Escrever como primeira linha do draft (antes de DESTAQUE 1):
+     ```
+     Para essa edição, foram considerados {N} artigos e selecionados {M}.
+
+     ---
+
+     ```
+   - Se não conseguir extrair o total do categorized.md, usar `???` como placeholder.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **Label editorial específico** para `[CATEGORIA]` no cabeçalho `DESTAQUE N | [CATEGORIA]`. Nunca usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`, ou criar um novo se nenhum se encaixar.
    - **3 opções de título** (cada ≤52 chars).
@@ -31,6 +42,21 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
+   - Escrever DESTAQUE 1 e DESTAQUE 2 seguindo as regras acima, depois executar o passo 2b antes de escrever DESTAQUE 3.
+2b. **Seção É IA?** — após DESTAQUE 2 e antes de DESTAQUE 3:
+   - Ler `{edition_dir}/01-eia.md` (ou `01-eai.md` — fallback legado).
+   - Extrair apenas a linha de crédito (ignorar o frontmatter `---` e a linha `É IA?`).
+   - Inserir no draft:
+     ```
+     ---
+
+     É IA?
+
+     {linha de crédito do 01-eia.md}
+
+     ---
+     ```
+   - Se `01-eia.md` não existir, omitir a seção É IA? e incluir aviso em `warnings`.
 3. Lançamentos, Pesquisas, Notícias: lista curta — **3 linhas por item na ordem `Título / URL / Descrição`** (#172). URL imediatamente abaixo do título facilita o gate humano. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, título/URL/descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
