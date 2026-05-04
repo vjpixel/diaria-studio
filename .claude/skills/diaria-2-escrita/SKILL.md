@@ -81,6 +81,29 @@ Dispatchar `social-linkedin` + `social-facebook` em paralelo. Pular steps de new
 
 Aguardar todos os Agents retornarem antes do passo seguinte.
 
+## Passo 2b — Merge social + push intermediário ao Drive (antes de Clarice/Humanize)
+
+Copiar draft da newsletter para raiz, mergear os tmp files de social em `03-social.md`, e fazer push para o editor poder revisar enquanto o processamento continua. Falha não bloqueia.
+
+**Importante:** este passo executa o merge social que antes ficava em Passo 4a — sem isso, o push intermediário só pegaria a newsletter (os tmp files de social ainda não estão merged). Passo 4a é reduzido a cleanup dos tmp files.
+
+```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
+
+node -e "
+  const fs=require('fs');
+  const dir='data/editions/$1/';
+  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
+  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
+  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
+"
+
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md,03-social.md
+```
+
+Se `$2 = newsletter`, pular o merge social (apenas cp + push de 02-reviewed.md).
+Se `$2 = social`, pular o cp da newsletter (apenas merge + push de 03-social.md).
+
 ## Passo 3 — Processar newsletter (pular se `$2 = social`)
 
 ### 3a. Lint + normalize
@@ -90,15 +113,7 @@ npx tsx scripts/lint-newsletter-md.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/normalize-newsletter.ts data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.md
 ```
 
-### 3b. Humanize
-
-```
-Skill("humanizador", "Leia data/editions/$1/_internal/02-draft.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
-```
-
-Falha **não bloqueia** — fallback usa o arquivo original.
-
-### 3c. Clarice (inline)
+### 3b. Clarice (inline)
 
 1. Ler `data/editions/$1/_internal/02-draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -114,6 +129,38 @@ Falha **não bloqueia** — fallback usa o arquivo original.
 5. Ler `_internal/02-clarice-report.json` para extrair contagens (`applied`, `skipped`).
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
 
+### 3c. Humanize
+
+```
+Agent({
+  description: "Humanizar newsletter $1",
+  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
+
+Arquivo: data/editions/$1/_internal/02-draft.md
+
+OBRIGATÓRIO — execute em ordem:
+
+ETAPA 1 — RASCUNHO:
+- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
+- Reescreva os trechos problemáticos
+- Salve com Write
+- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
+- Liste os resquícios (bullets curtos, seja crítico)
+
+ETAPA 2 — VERSÃO FINAL:
+- Reescreva os resquícios listados
+- Salve a versão final com Write
+- Escreva: '### Versão final salva.'
+
+ETAPA 3 — RESUMO:
+- Liste as principais mudanças
+
+Regras de preservação: sem markdown (nada de **, #, - ), preservar template da newsletter (seções, estrutura, links, listas de notícias), não alterar URLs."
+})
+```
+
+Falha **não bloqueia** — fallback usa o arquivo original.
+
 ### 3d. Validações finais
 
 ```bash
@@ -128,29 +175,18 @@ Copiar draft final para `data/editions/$1/02-reviewed.md`.
 
 ## Passo 4 — Processar social (pular se `$2 = newsletter`)
 
-### 4a. Merge tmp files em 03-social.md
+### 4a. Cleanup dos tmp files (merge já feito no Passo 2b)
 
 ```bash
 node -e "
   const fs=require('fs');
   const dir='data/editions/$1/';
-  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
-  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
-  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
-  fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
-  fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
+  if (fs.existsSync(dir+'_internal/03-linkedin.tmp.md')) fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
+  if (fs.existsSync(dir+'_internal/03-facebook.tmp.md')) fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
 "
 ```
 
-### 4b. Humanize
-
-```
-Skill("humanizador", "Leia data/editions/$1/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
-```
-
-Falha **não bloqueia**.
-
-### 4c. Clarice
+### 4b. Clarice
 
 1. Ler `data/editions/$1/03-social.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -165,6 +201,38 @@ Falha **não bloqueia**.
    ```
 5. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro**.
+
+### 4c. Humanize
+
+```
+Agent({
+  description: "Humanizar social $1",
+  prompt: "Você é um editor especialista em remover marcas de IA em português brasileiro (humanizador v1.4.1).
+
+Arquivo: data/editions/$1/03-social.md
+
+OBRIGATÓRIO — execute em ordem:
+
+ETAPA 1 — RASCUNHO:
+- Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
+- Reescreva os trechos problemáticos
+- Salve com Write
+- Escreva: '### Rascunho salvo. O que ainda soa de IA?'
+- Liste os resquícios (bullets curtos, seja crítico)
+
+ETAPA 2 — VERSÃO FINAL:
+- Reescreva os resquícios listados
+- Salve a versão final com Write
+- Escreva: '### Versão final salva.'
+
+ETAPA 3 — RESUMO:
+- Liste as principais mudanças
+
+Regras de preservação: preservar hashtags, emojis, estrutura de seções (# LinkedIn, # Facebook, ## d1, ## d2, ## d3), não alterar URLs."
+})
+```
+
+Falha **não bloqueia**.
 
 ## Passo 5 — Drive sync push (outputs)
 
