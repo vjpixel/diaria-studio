@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
   buildRunnerUpUrls,
   renderEaiBlock,
   renderSection,
+  computeTotalConsidered,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -517,5 +518,48 @@ describe("buildHighlightUrls — inclui bucket video (#359)", () => {
       video: [{ url: "https://www.youtube.com/watch?v=abc" }],
     });
     assert.equal(urls.size, 0);
+  });
+});
+
+describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
+  it("usa total_considered do JSON se presente", () => {
+    const data = { lancamento: [], pesquisa: [], noticias: [], total_considered: 42 };
+    assert.equal(computeTotalConsidered("/any/path/01-categorized.json", data), 42);
+  });
+
+  it("auto-descobre tmp-categorized.json quando campo ausente", () => {
+    const dir = mkdtempSync(tmpdir() + "/test-coverage-");
+    mkdirSync(dir + "/_internal", { recursive: true });
+    writeFileSync(
+      dir + "/_internal/tmp-categorized.json",
+      JSON.stringify({
+        lancamento: [{ url: "a" }, { url: "b" }],
+        pesquisa: [{ url: "c" }],
+        noticias: [{ url: "d" }, { url: "e" }, { url: "f" }],
+      }),
+    );
+    const data = { lancamento: [], pesquisa: [], noticias: [] };
+    const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
+    assert.equal(result, 6);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("retorna null quando nem campo nem tmp-categorized.json existem", () => {
+    const data = { lancamento: [], pesquisa: [], noticias: [] };
+    assert.equal(computeTotalConsidered("/nonexistent/path/01-categorized.json", data), null);
+  });
+
+  it("usa total_considered mesmo se tmp-categorized.json existe (campo tem prioridade)", () => {
+    const dir = mkdtempSync(tmpdir() + "/test-coverage-prio-");
+    mkdirSync(dir + "/_internal", { recursive: true });
+    writeFileSync(
+      dir + "/_internal/tmp-categorized.json",
+      JSON.stringify({ lancamento: [{ url: "x" }], pesquisa: [], noticias: [] }),
+    );
+    // Campo explícito tem prioridade — deve retornar 99, não 1
+    const data = { lancamento: [], pesquisa: [], noticias: [], total_considered: 99 };
+    const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
+    assert.equal(result, 99);
+    rmSync(dir, { recursive: true });
   });
 });

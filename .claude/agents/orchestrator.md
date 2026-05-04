@@ -777,6 +777,11 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 
 #### 4g. Gate único
 
+- **Sync push antes do gate (#507).** Montar lista de arquivos de publicação e — condicionalmente — `error.md`:
+  1. Lista base: `_internal/05-published.json,06-social-published.json`
+  2. Se `data/editions/{AAMMDD}/error.md` existir, append `,error.md` à lista.
+  3. Rodar `Bash("npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 4 --files {lista}")`. Anotar em `sync_results[4]`; ignorar falhas.
+  > O drive-sync já trata arquivos inexistentes como warning não-fatal — mas verificar a existência de `error.md` antes de incluir evita esse warning nas edições sem erros.
 - Ler `06-social-published.json` (já gerado por 5c).
 - **GATE HUMANO:** mostrar **uma só vez**:
 
@@ -843,6 +848,7 @@ Após o gate da Etapa 4 (publicação paralela) aprovado, orchestrator coleta si
    Se exit != 0 (duplicates ou inconsistências detectados), incluir no relatório do gate de Etapa 4 (`4g`) antes de seguir. Não bloqueia o pipeline, mas editor vê o problema antes de aprovar.
 
 1. **Coletar sinais**: rodar `Bash("npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/{AAMMDD}/")`. Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixed_issues[]`), e `data/run-log.jsonl` (chrome_disconnects). Grava `{edition_dir}/_internal/issues-draft.json`.
+   - **Se `data/editions/{AAMMDD}/error.md` existir (#507):** incluir o conteúdo do arquivo como contexto adicional ao disparar o `auto-reporter`. O arquivo documenta erros manuais registrados pelo editor durante a edição (ex: conteúdo factualmente incorreto detectado após publicação, falha de fonte não capturada no log). O auto-reporter deve mencionar que `error.md` existe e sugerir criação de issue se o conteúdo descrever um bug ou comportamento inesperado recorrente.
 
 2. **Avaliar output**: se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.
 

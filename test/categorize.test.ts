@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { categorize, isVideoUrl, type Article } from "../scripts/categorize.ts";
+import { categorize, isVideoUrl, isArxivRelevant, type Article } from "../scripts/categorize.ts";
 
 describe("categorize() — regras de domínio", () => {
   it("classifica anúncio oficial da OpenAI como lancamento", () => {
@@ -18,8 +18,9 @@ describe("categorize() — regras de domínio", () => {
     assert.equal(categorize(art), "lancamento");
   });
 
-  it("classifica paper arxiv como pesquisa", () => {
-    const art: Article = { url: "https://arxiv.org/abs/2501.12345" };
+  it("classifica paper arxiv de ML como pesquisa (#501: exige tema relevante)", () => {
+    // #501: arXiv precisa ter tema relevante (LLM/ML) para ser pesquisa.
+    const art: Article = { url: "https://arxiv.org/abs/2501.12345", title: "Scaling Laws for Large Language Models" };
     assert.equal(categorize(art), "pesquisa");
   });
 
@@ -332,9 +333,10 @@ describe("categorize() — patterns específicos (#77)", () => {
     );
   });
 
-  it("arxiv.org/pdf/ → pesquisa via pattern", () => {
+  it("arxiv.org/pdf/ com tema ML → pesquisa via pattern (#501)", () => {
+    // #501: arXiv via pattern também precisa de tema relevante para ser pesquisa.
     assert.equal(
-      categorize({ url: "https://arxiv.org/pdf/2501.12345.pdf" }),
+      categorize({ url: "https://arxiv.org/pdf/2501.12345.pdf", title: "Attention Is All You Need: Revisiting Neural Network Architectures" }),
       "pesquisa",
     );
   });
@@ -805,5 +807,70 @@ describe("isVideoUrl (#359)", () => {
 
   it("URL inválida → false (sem crash)", () => {
     assert.equal(isVideoUrl("not-a-url"), false);
+  });
+});
+
+describe("isArxivRelevant (#501) — filtro arXiv por tema", () => {
+  it("artigo não-arXiv sempre passa (retorna true)", () => {
+    assert.ok(isArxivRelevant({ url: "https://techcrunch.com/article", title: "Unrelated" }));
+  });
+
+  it("arXiv com 'language model' no título → relevante", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.00001", title: "Improving Language Model Alignment" }));
+  });
+
+  it("arXiv com 'LLM' → relevante", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.00002", title: "LLM-based Code Generation" }));
+  });
+
+  it("arXiv com 'transformer' → relevante", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.00003", title: "Efficient Transformer Architectures" }));
+  });
+
+  it("arXiv com 'diffusion' → relevante", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.00004", title: "Diffusion Models for Image Synthesis" }));
+  });
+
+  it("arXiv com 'natural language' no summary → relevante (summary conta)", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.00005", title: "A Study", summary: "We apply natural language processing techniques" }));
+  });
+
+  it("arXiv off-topic (física) → não relevante", () => {
+    assert.equal(isArxivRelevant({ url: "https://arxiv.org/abs/2501.99999", title: "Quantum Field Theory and Gravitational Waves", summary: "We compute scattering amplitudes in QFT." }), false);
+  });
+
+  it("arXiv off-topic (biologia — sem deep learning) → não relevante", () => {
+    assert.equal(isArxivRelevant({ url: "https://arxiv.org/abs/2501.88888", title: "E. coli Ribosome Structure Under Thermal Stress", summary: "We study ribosome dynamics at high temperature." }), false);
+  });
+
+  it("arXiv 'protein' com 'deep learning' no título → relevante (drug discovery)", () => {
+    assert.ok(isArxivRelevant({ url: "https://arxiv.org/abs/2501.77777", title: "Protein Structure Prediction via Deep Learning" }));
+  });
+
+  it("arXiv sem título nem summary → não relevante (conteúdo vazio não passa)", () => {
+    assert.equal(isArxivRelevant({ url: "https://arxiv.org/abs/2501.11111" }), false);
+  });
+});
+
+describe("categorize() — arXiv off-topic vai para noticias (#501)", () => {
+  it("arXiv paper de física → noticias (off-topic descartado de pesquisa)", () => {
+    assert.equal(
+      categorize({ url: "https://arxiv.org/abs/2501.99990", title: "Gravitational Wave Detection with LIGO", summary: "We present new methods for GW detection." }),
+      "noticias",
+    );
+  });
+
+  it("arXiv paper de ML → pesquisa (passa o filtro)", () => {
+    assert.equal(
+      categorize({ url: "https://arxiv.org/abs/2501.99991", title: "Scaling Laws for Language Models" }),
+      "pesquisa",
+    );
+  });
+
+  it("arXiv paper com 'deep learning' → pesquisa", () => {
+    assert.equal(
+      categorize({ url: "https://arxiv.org/abs/2501.99992", title: "Deep Learning for Climate Prediction" }),
+      "pesquisa",
+    );
   });
 });
