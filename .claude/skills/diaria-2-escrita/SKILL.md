@@ -242,34 +242,11 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stag
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
 
-## Passo 6 — Title-picker (newsletter, se não pulado)
+## Passo 6 — Gate humano unificado
 
-Após push, verificar títulos:
+**Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Opus) escolhe automaticamente como fallback no Passo 7.
 
-```bash
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight data/editions/$1/02-reviewed.md
-```
-
-Se lint retornar erro (mais de 1 título por destaque), disparar title-picker:
-
-```
-Agent({
-  subagent_type: "title-picker",
-  description: "Escolher título final por destaque",
-  prompt: "Leia data/editions/$1/02-reviewed.md e escolha 1 dos títulos por destaque, reescrevendo o arquivo. Preservar todo o resto."
-})
-```
-
-Erro do agent deve ser reportado ao editor antes de prosseguir — não há fallback automático.
-
-Após title-picker, re-rodar lint:
-```bash
-npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight data/editions/$1/02-reviewed.md
-```
-
-## Passo 7 — Gate humano unificado
-
-**Se `--no-gate`:** pular este passo. Emitir `[AUTO] Etapa 2 auto-aprovada` e finalizar.
+**Se `--no-gate`:** pular este passo. Ir direto pro Passo 7 (title-picker fallback se necessário) e finalizar com `[AUTO] Etapa 2 auto-aprovada`.
 
 **Caso contrário:** apresentar ao usuário (omitir seções não geradas se `$2` limitou o escopo):
 
@@ -277,6 +254,9 @@ npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight data/editions
 Etapa 2 — Escrita pronta.
 
 📁 Newsletter: data/editions/$1/02-reviewed.md
+   ⚠️  Cada destaque tem 3 opções de título — apague 2 antes de aprovar,
+       ou aprove direto pra deixar o title-picker (Opus) escolher.
+
 📁 Social: data/editions/$1/03-social.md
 📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/
 
@@ -292,7 +272,39 @@ Posts gerados:
 Aprovar (sim) / pedir retry / editar manualmente?
 ```
 
-Aguardar resposta. Se "sim", finalizar com sucesso. Se "retry", re-rodar Passo 2 em diante. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`.
+Aguardar resposta. Se "sim", **continuar para Passo 7 (title-picker fallback)**. Se "retry", re-rodar Passo 2 em diante. Se "editar", instruir o usuário a editar o arquivo e retornar `sim`.
+
+## Passo 7 — Title-picker fallback pós-aprovação (newsletter, se não pulado)
+
+**Roda APÓS aprovação do gate** — só se o editor não podou os títulos manualmente. Per `.claude/agents/title-picker.md` #159: este agent é fallback pra quando o editor confia na decisão automática.
+
+Se editor já editou diretamente no arquivo/Drive antes de aprovar, este passo é no-op (lint passa).
+
+```bash
+# Pull pós-aprovação (editor pode ter podado no Drive)
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+
+# Verificar titles-per-highlight
+npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+```
+
+Se lint retornar erro (>1 título por destaque), disparar title-picker:
+
+```
+Agent({
+  subagent_type: "title-picker",
+  description: "Escolher título final por destaque (fallback pós-gate)",
+  prompt: "Editor aprovou Etapa 2 sem podar manualmente os 3 títulos por destaque. Leia data/editions/$1/02-reviewed.md e escolha 1 dos títulos por destaque, reescrevendo o arquivo. Preservar todo o resto. Justificar escolhas em data/editions/$1/_internal/02-title-picks.json."
+})
+```
+
+Após title-picker, re-rodar lint + push final pro Drive:
+```bash
+npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+```
+
+Erro do agent reportado ao editor — sem fallback automático adicional.
 
 ## Outputs
 
