@@ -29,6 +29,9 @@ description: Detalhe dos Stages 0 (setup + dedup + checks) e 1 (pesquisa + É IA
 - Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
 - **Receber `test_mode` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, desabilitar Drive sync, copiar `_internal/01-categorized.json` → `_internal/01-approved.json` diretamente.
+- **Receber `with_publish` (opcional, default `false`, #568).** Só relevante quando `test_mode = true`. Controla se a Etapa 4 (publicação) roda no `/diaria-test`:
+  - `with_publish = false` (default): Stage 0c força `CHROME_MCP = false`, fazendo Etapa 4 pular com `status: "skipped"`. Comportamento histórico do `/diaria-test` — fluxo de publicação fica fora do teste.
+  - `with_publish = true`: Stage 0c roda o probe normal de Chrome MCP. Se sucesso, Etapa 4 dispatcha publish-newsletter / publish-facebook / publish-social com `schedule_day_offset = 10`. Editor é responsável por deletar manualmente os artefatos gerados (rascunho Beehiiv, posts agendados FB/LinkedIn).
 - **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal, copiar categorized → approved diretamente.
   - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
 - **Receber `schedule_day_offset` (opcional).** Se presente, usar como `day_offset` para todos os agendamentos sociais na Etapa 4. Usado pelo `/diaria-test` para agendar 10 dias à frente.
@@ -72,8 +75,9 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
   > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
 
   Se editor responder `n`, abortar. Se `y`, setar `DRIVE_SYNC = false` em sessão pra resto do pipeline.
-- **Pre-flight Claude in Chrome MCP (#143).** Se `test_mode = true`, setar `CHROME_MCP = false` diretamente (sem probe). Caso contrário, tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
-  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode`**, prosseguir silenciosamente.
+- **Pre-flight Claude in Chrome MCP (#143, #568).** Se `test_mode = true` E `with_publish !== true`, setar `CHROME_MCP = false` diretamente (sem probe). Caso contrário (incluindo `test_mode = true` com `with_publish = true`), tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
+  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode` SEM `with_publish`**, prosseguir silenciosamente.
+  - **Caso especial `test_mode = true` E `with_publish = true` E `CHROME_MCP = false` (#568):** warn LOUD — imprimir bloco visível no terminal (não silenciar) e logar `level: warn` com `agent: orchestrator`, `message: "with_publish=true mas Chrome MCP indisponível — Etapa 4 vai pular"`. Editor pediu publicação explícita; merece saber que não vai acontecer. Pipeline continua mas sem Etapa 4.
   - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Inicializar `_internal/cost.md`.** Se não existe, obter timestamp via Bash e gravar:
   ```markdown

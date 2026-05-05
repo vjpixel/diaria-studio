@@ -1,6 +1,6 @@
 ---
 name: diaria-test
-description: Roda a pipeline completa da Diar.ia sem gates humanos para benchmark de performance — auto-aprova tudo, agenda social 10 dias à frente, pula Drive sync. Uso — `/diaria-test [AAMMDD]`.
+description: Roda a pipeline completa da Diar.ia sem gates humanos para benchmark de performance — auto-aprova tudo, pula Drive sync. Por default pula Etapa 4 (publicação); `--with-publish` ativa também Etapa 4 com social agendado 10 dias à frente. Uso — `/diaria-test [AAMMDD] [--with-publish]`.
 ---
 
 # /diaria-test
@@ -11,31 +11,40 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 ## Argumentos
 
 - `<date>` (opcional) = data da edição no formato `AAMMDD` (ex: `260423`). Default: hoje.
+- `--with-publish` (opcional) = **opt-in pra rodar Etapa 4** (publicação) também no teste. Default: **off** (Etapa 4 pulada). Quando ativo:
+  - Newsletter cria rascunho no Beehiiv + envia email de teste (igual produção).
+  - Facebook agenda 10 dias à frente via Graph API.
+  - LinkedIn cria rascunho ou agenda 10 dias à frente via Chrome.
+  - **Pré-requisito: Chrome com extensão Claude in Chrome ativa e logado em LinkedIn/Beehiiv.** Se o probe do Chrome MCP falhar, a Etapa 4 ainda pula com warn loud (em vez do silent skip do default).
+  - Editor é responsável por **deletar manualmente** os rascunhos/scheduled gerados antes da data de publicação.
 
 ## O que muda em relação a `/diaria-edicao`
 
-| Aspecto | `/diaria-edicao` | `/diaria-test` |
-|---------|------------------|----------------|
-| Gates humanos | Pausa em cada stage | **Auto-approve** — não para nunca |
-| Social schedule | `day_offset` do config (0) | **`day_offset = 10`** — agenda 10 dias à frente |
-| Newsletter | Rascunho + email de teste | Rascunho + email de teste (igual) |
-| Drive sync | Push + pull normal | **Desabilitado** (sem poluir Drive com teste) |
-| Janela de publicação | Pergunta ao usuário | **Default automático** (seg/ter=4, qua-sex=3) |
-| Timing | Inferido de file mtimes | **`stage-timing.ts` roda no final** |
+| Aspecto | `/diaria-edicao` | `/diaria-test` (default) | `/diaria-test --with-publish` |
+|---------|------------------|--------------------------|-------------------------------|
+| Gates humanos | Pausa em cada stage | **Auto-approve** | **Auto-approve** |
+| Social schedule | `day_offset` do config (0) | n/a (Stage 4 pula) | **`day_offset = 10`** |
+| Newsletter | Rascunho + email de teste | n/a (Stage 4 pula) | Rascunho + email de teste |
+| LinkedIn (Chrome) | Rascunho + agenda | **Pulado** (`pending_manual`) | Rascunho + agenda 10 dias à frente |
+| Facebook (Graph API) | Agenda | **Pulado** | Agenda 10 dias à frente |
+| Drive sync | Push + pull normal | **Desabilitado** | **Desabilitado** |
+| Janela de publicação | Pergunta ao usuário | **Default automático** | **Default automático** |
+| Timing | Inferido de file mtimes | **`stage-timing.ts` roda no final** | **`stage-timing.ts` roda no final** |
 
 ## Processo
 
 ### 1. Setup
 
-1. Se `<date>` não foi passado, usar hoje (como AAMMDD):
+1. **Parsear argumentos.** Aceitos: `<date>` (positional, AAMMDD) e `--with-publish` (flag). Ambos opcionais, em qualquer ordem. Setar `with_publish = true` se `--with-publish` aparece em qualquer posição; senão `false`.
+2. Se `<date>` não foi passado, usar hoje (como AAMMDD):
    ```bash
    node -e "process.stdout.write(new Date().toISOString().slice(2,10).replace(/-/g,''))"
    ```
-2. Converter `<date>` (AAMMDD) para ISO e calcular `window_days` default (sem perguntar ao usuário):
+3. Converter `<date>` (AAMMDD) para ISO e calcular `window_days` default (sem perguntar ao usuário):
    ```bash
    node -e "const s='<date>';const d=new Date('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6));const day=d.getUTCDay();process.stdout.write(String(day===1||day===2?4:3))"
    ```
-3. Verificar pré-requisitos silenciosamente:
+4. Verificar pré-requisitos silenciosamente:
    - `context/sources.md` existe e >200 bytes
    - `context/editorial-rules.md` existe e >200 bytes
    - Se algum faltar, abortar com erro (não perguntar — é um teste).
@@ -49,7 +58,8 @@ Variáveis pra alimentar o playbook:
 - `edition_iso = 20${date.slice(0,2)}-${date.slice(2,4)}-${date.slice(4,6)}`
 - `window_days = {valor calculado}`
 - `test_mode = true` → auto-aprovar todos os gates, **desabilitar Drive sync** (pular blocos de push/pull), copiar `_internal/01-categorized.json` → `_internal/01-approved.json` direto sem edição humana
-- `schedule_day_offset = 10` → social posts agendados 10 dias à frente
+- `with_publish = true` se a flag `--with-publish` foi passada; senão `false` → controla se a Etapa 4 (publicação) roda. Quando `false` (default), o orchestrator força `CHROME_MCP = false` em Stage 0c, fazendo Etapa 4 pular com `status: "skipped"`. Quando `true`, o probe do Chrome roda normalmente — Etapa 4 dispatcha publish-newsletter/publish-facebook/publish-social com `schedule_day_offset = 10`.
+- `schedule_day_offset = 10` → social posts agendados 10 dias à frente (só relevante quando `with_publish = true`).
 
 **Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
 
@@ -62,8 +72,15 @@ Variáveis pra alimentar o playbook:
 2. Mostrar ao usuário:
    - Tabela de timing por stage
    - Total wall clock
-   - Lembrete: "Social posts agendados para {date+10}. Delete do Facebook/LinkedIn antes dessa data."
-   - Link para o rascunho no Beehiiv (de `05-published.json`)
+   - **Se `with_publish = true`:** lembrete reforçado (URLs derivadas de `platform.config.json` → `publishing.social.linkedin.scheduled_posts_url` etc; substitua na renderização):
+     ```
+     ⚠️  Conteúdo de teste foi publicado nas plataformas. Delete antes da data agendada:
+       • Beehiiv: rascunho criado — deletar em https://app.beehiiv.com/posts (URL específica em 05-published.json → draft_url)
+       • Facebook: 3 posts agendados para {date+10} — Meta Business Suite > Planejado
+       • LinkedIn: 3 rascunhos/agendados — {publishing.social.linkedin.scheduled_posts_url do config}
+     ```
+   - **Se `with_publish = false`:** "Etapa 4 pulada (default). Use `--with-publish` pra cobrir publicação."
+   - Link para o rascunho no Beehiiv (de `05-published.json`) — só se `with_publish = true` e Beehiiv rodou.
 
 ### 4. Stage final — Coleta de erros e auto-reporter (#519)
 
