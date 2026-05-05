@@ -38,53 +38,14 @@ const LAUNCH_KEYWORDS: RegExp[] = [
   /\bdisponível agora\b/i,
 ];
 
+import { companyToDomain } from "./official-domains.ts"; // #566
+
 /**
- * Mapeia keywords (case-insensitive, com word boundaries) pro domínio oficial
- * provável. Múltiplas keywords podem apontar pro mesmo domínio (ex: "Claude"
- * e "Anthropic" → anthropic.com).
- *
- * Mantido em sync com `LANCAMENTO_DOMAINS` em categorize.ts. Quando adicionar
- * empresa nova lá, adicionar aqui também.
+ * Mapa empresa → domínio oficial pra sugestão de fonte primária.
+ * Derivado de `scripts/lib/official-domains.ts` (fonte única de verdade).
+ * Para adicionar empresa nova: editar official-domains.ts, não aqui.
  */
-export const COMPANY_TO_DOMAIN: Array<{ keyword: RegExp; domain: string }> = [
-  { keyword: /\b(anthropic|claude)\b/i, domain: "anthropic.com" },
-  { keyword: /\b(openai|chatgpt|gpt-?[0-9]+(\.[0-9]+)?o?|sora)\b/i, domain: "openai.com" },
-  { keyword: /\b(deepmind|gemini)\b/i, domain: "deepmind.google" },
-  { keyword: /\b(google ai|gemma)\b/i, domain: "blog.google" },
-  { keyword: /\b(meta ai|llama)\b/i, domain: "ai.meta.com" },
-  { keyword: /\b(microsoft|copilot|phi-?[0-9]+)\b/i, domain: "blogs.microsoft.com" },
-  { keyword: /\b(mistral|mixtral|codestral)\b/i, domain: "mistral.ai" },
-  { keyword: /\bcohere\b/i, domain: "cohere.com" },
-  { keyword: /\b(hugging ?face|hf)\b/i, domain: "huggingface.co" },
-  { keyword: /\b(nvidia|cuda)\b/i, domain: "blogs.nvidia.com" },
-  { keyword: /\b(xai|grok)\b/i, domain: "x.ai" },
-  { keyword: /\b(deepseek)\b/i, domain: "deepseek.com" },
-  { keyword: /\b(qwen|alibaba)\b/i, domain: "qwenlm.github.io" },
-  { keyword: /\b(perplexity)\b/i, domain: "perplexity.ai" },
-  { keyword: /\b(cerebras)\b/i, domain: "cerebras.ai" },
-  { keyword: /\b(groq)\b/i, domain: "groq.com" },
-  { keyword: /\b(stability ai|stable diffusion)\b/i, domain: "stability.ai" },
-  { keyword: /\b(runway|runwayml)\b/i, domain: "runwayml.com" },
-  { keyword: /\b(replicate)\b/i, domain: "replicate.com" },
-  { keyword: /\b(adept)\b/i, domain: "adept.ai" },
-  { keyword: /\b(inflection)\b/i, domain: "inflection.ai" },
-  { keyword: /\b(scale ai)\b/i, domain: "scale.com" },
-  { keyword: /\b(together ai)\b/i, domain: "together.ai" },
-  { keyword: /\b(fireworks ai)\b/i, domain: "fireworks.ai" },
-  { keyword: /\b(character\.?ai)\b/i, domain: "character.ai" },
-  { keyword: /\b(ai21)\b/i, domain: "ai21.com" },
-  { keyword: /\b(reka ai)\b/i, domain: "reka.ai" },
-  { keyword: /\b(arcee ai)\b/i, domain: "arcee.ai" },
-  { keyword: /\b(liquid ai)\b/i, domain: "liquid.ai" },
-  { keyword: /\b(nomic)\b/i, domain: "nomic.ai" },
-  { keyword: /\b(poolside)\b/i, domain: "poolside.ai" },
-  { keyword: /\b(imbue)\b/i, domain: "imbue.com" },
-  { keyword: /\b(01\.ai|yi (large|model))\b/i, domain: "01.ai" },
-  { keyword: /\b(aleph alpha)\b/i, domain: "aleph-alpha.com" },
-  { keyword: /\bsambanova\b/i, domain: "sambanova.ai" },
-  { keyword: /\blmarena\b/i, domain: "lmarena.ai" },
-  { keyword: /\bapple (intelligence|ml|machine learning)\b/i, domain: "machinelearning.apple.com" },
-];
+export const COMPANY_TO_DOMAIN = companyToDomain();
 
 export interface LaunchCandidate {
   is_candidate: boolean;
