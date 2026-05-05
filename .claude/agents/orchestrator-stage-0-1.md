@@ -326,9 +326,24 @@ Em vez de N chamadas individuais, agregar todos os resultados (researchers + dis
 
 Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 
-### 1h. Injetar inbox_urls
+### 1h. Injetar inbox_urls (#593, #594)
 
-Injetar `inbox_urls` na lista agregada antes da verificação: cada URL vira um artigo sintético com `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted" }`. O script de verificação decide se é acessível; depois o categorizer verá que é `editor_submitted` e o priorizará.
+**Automatizado via script** — substitui o passo manual que era fonte de bug (#594 — passo skipado em 260505, 0 dos 26 envios entraram). Política #593: TODOS os URLs de submissões do editor (incluindo forwards de newsletter) entram no pool de pesquisa.
+
+```bash
+npx tsx scripts/inject-inbox-urls.ts \
+  --inbox-md data/inbox.md \
+  --pool data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --out data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --editor diariaeditor@gmail.com \
+  --validate-pool
+```
+
+Output stdout: `{ injected, already_in_pool, total_editor_urls, total_pool_size, editor_blocks, total_inbox_blocks }`. Logar como info no run-log.
+
+**`--validate-pool`** força saída com erro se algum URL extraído do inbox **não** estiver no pool após injeção. Esse é o sentinel anti-#594 — passo 1h não pode mais ser skipado silenciosamente.
+
+Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`. Categorizer prioriza `editor_submitted`. Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
 
 ### 1i. Link verification (script direto)
 
