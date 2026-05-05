@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   reconcilePost,
   verifyPublished,
+  inferIsPublished,
   type PostEntry,
   type GraphPostResponse,
   type SocialPublished,
@@ -160,5 +161,44 @@ describe("verifyPublished", () => {
     const { changes } = await verifyPublished(published, "TOKEN", "v18.0", fetchPost, now);
     assert.equal(fetchCalled, false);
     assert.equal(changes, 0);
+  });
+});
+
+describe("inferIsPublished (#600)", () => {
+  const fakeNow = Math.floor(new Date("2026-05-05T12:00:00Z").getTime() / 1000);
+
+  it("created_time presente + sem scheduled_publish_time → is_published=true", () => {
+    const r = inferIsPublished({ created_time: "2026-05-05T11:00:00Z" }, fakeNow);
+    assert.equal(r.is_published, true);
+  });
+
+  it("scheduled_publish_time no futuro → is_published=false", () => {
+    const r = inferIsPublished(
+      { created_time: "2026-05-05T11:00:00Z", scheduled_publish_time: fakeNow + 3600 },
+      fakeNow,
+    );
+    assert.equal(r.is_published, false);
+  });
+
+  it("scheduled_publish_time passou + created_time → is_published=true", () => {
+    const r = inferIsPublished(
+      { created_time: "2026-05-05T11:00:00Z", scheduled_publish_time: fakeNow - 60 },
+      fakeNow,
+    );
+    assert.equal(r.is_published, true);
+  });
+
+  it("error presente → não modifica (mantém undefined)", () => {
+    const r = inferIsPublished(
+      { error: { message: "(#100) Tried accessing nonexisting field (is_published)", code: 100 } },
+      fakeNow,
+    );
+    assert.equal(r.is_published, undefined);
+    assert.ok(r.error);
+  });
+
+  it("created_time ausente → não infere", () => {
+    const r = inferIsPublished({ scheduled_publish_time: fakeNow + 3600 }, fakeNow);
+    assert.equal(r.is_published, undefined);
   });
 });
