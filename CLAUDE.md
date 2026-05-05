@@ -91,6 +91,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Publicação manual requer refresh-dedup.** Sempre que uma edição for publicada manualmente no Beehiiv (sem `/diaria-4-publicar`), rodar `/diaria-refresh-dedup` imediatamente após para manter `context/past-editions.md` atualizado. Sem isso, a próxima edição pode repetir URLs já publicadas.
 
+- **Validar afirmações de subagent sobre estado externo via TS determinístico antes de relayar pro editor (#573).** Subagentes (especialmente Haiku) podem etiquetar mal estados ambíguos — ex: `status: "confirmed"` na Beehiiv API significa "agendado-na-fila" OU "já-enviado", indistinguíveis sem checar `publish_date` contra `now`. Sempre que o orchestrator (top-level) for relayar fato sobre Beehiiv/LinkedIn/Facebook ao editor, validar o timestamp/state via comparação determinística em TS (helpers em `scripts/lib/`) — não só ler o gloss do agent. Se o agent diz "X publicado", verificar `now > publish_date` antes de afirmar isso. Falha desse guard em 2026-05-05: orchestrator afirmou "3 edições publicadas" baseado em `status: confirmed`, mas uma estava 16h no futuro (agendamento, não publicação).
+
 ---
 
 ## Otimização de tokens

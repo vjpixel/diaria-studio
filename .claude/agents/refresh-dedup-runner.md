@@ -42,11 +42,10 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
    - `order_by = "newest_first"`
 2. Para **cada** post retornado, chamar `mcp__ed929847-...__get_post_content(post_id)` e juntar `html`/`markdown` ao objeto.
 3. Montar array JSON com os campos `{ id, title, web_url, published_at, html, markdown }` (themes é opcional).
-   **Importante (#326):** A Beehiiv API **não retorna `published_at`** em `list_posts`. Usar este fallback ao popular o campo `published_at` do objeto local:
-   ```ts
-   const published_at = post.published_at || post.scheduled_at || post.updated_at;
-   ```
-   Se todos forem nulos/undefined, logar erro loud e pular o post (não montar objeto com data inválida).
+   **Importante (#572, #573):** Usar `scripts/lib/beehiiv-timestamp.ts` → `extractPublishedAtIso(post, new Date())` para popular `published_at`. O helper:
+   - Tenta `published_at` (ISO), `scheduled_at` (ISO), `updated_at` (ISO), `publish_date` (Unix seconds — campo atual da Beehiiv API).
+   - Filtra agendamentos futuros (`publish_date > now`) retornando `null` — Beehiiv usa `status: "confirmed"` tanto pra agendados quanto enviados.
+   Se retornar `null` (sem `now`), todos os campos são inválidos: logar erro loud e pular o post.
 4. Gravar em `data/past-editions-raw-incoming.json`.
 5. Rodar: `Bash("npx tsx scripts/refresh-past-editions.ts data/past-editions-raw-incoming.json --resolve-tracking")` — **sem** `--merge`. O `--resolve-tracking` resolve URLs de tracking do Beehiiv (`https://diaria.beehiiv.com/c/...`) pra suas URLs originais via HEAD request, populando `links[]` em cada post (#234 — sem isso, dedup URL contra past editions fica cego). O script grava o raw canônico + o markdown.
 6. Apagar `data/past-editions-raw-incoming.json` (limpeza).
@@ -54,21 +53,16 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
 ## Passo 3b — Incremental
 
 1. Chamar `mcp__ed929847-...__list_posts` com `per_page = max(dedupEditionCount, 10)`, `status = "published"`, `order_by = "newest_first"`. Pegar a **primeira página**.
-2. Filtrar **client-side** só os posts cujo timestamp efetivo de publicação > `maxKnownDate`.
-   **A Beehiiv API NÃO retorna `published_at` em `list_posts` (#326).** Usar este fallback de campos:
-   ```ts
-   const effectivePublishedAt =
-     post.published_at ||   // futuro-proof, hoje sempre undefined
-     post.scheduled_at ||   // posts published têm scheduled_at = data de envio
-     post.updated_at;       // último recurso
-   ```
-   Se `effectivePublishedAt` for undefined para **todos** os posts, reportar erro loud em vez de skipar silenciosamente:
-   ```
-   ERRO: Beehiiv API retornou {N} posts mas nenhum tem timestamp parseável
-         (published_at, scheduled_at, updated_at). Schema mudou? Refresh abortado.
-   ```
-   Usar `new Date(effectivePublishedAt) > new Date(maxKnownDate)` para filtrar.
-   Ao montar objetos dos posts novos (passo 4a), popular `published_at` usando o mesmo fallback acima.
+2. Filtrar **client-side** em 2 estágios (#572, #573):
+   a. **Parsear timestamp** via `scripts/lib/beehiiv-timestamp.ts` → `extractPublishedDate(post, now)`. O helper aceita: `published_at`, `scheduled_at`, `updated_at` (todos ISO strings) e `publish_date` (Unix seconds — campo atual da API Beehiiv após mudança de schema #572). Passar `now = new Date()` filtra automaticamente posts agendados pro futuro (#573 — Beehiiv usa `status: "confirmed"` tanto pra agendados quanto pra enviados; sem o filtro, agendamentos vazariam pro dedup base).
+   b. Posts onde `extractPublishedDate(post, now)` retorna `null` são **descartados sem erro** quando o motivo é "futuro" (agendamento). Mas se `extractPublishedDate(post)` (sem `now`) também retornar `null`, é parsing failure — reportar **loud** e abortar:
+      ```
+      ERRO: Beehiiv API retornou {N} posts mas {M} têm timestamp não-parseável
+            (published_at, scheduled_at, updated_at, publish_date todos null/inválidos).
+            Schema mudou? Refresh abortado.
+      ```
+   c. **Filtrar contra maxKnownDate**: passar só posts onde `extractPublishedDate(post, now) > new Date(maxKnownDate)`.
+   d. Logar `info` com contagem: `"filtered: {agendados} scheduled, {recentes} novos, {antigos} já conhecidos"`.
 3. **Se vazio** (nenhuma edição nova desde o último refresh): não chamar `get_post_content`, mas **ainda assim regenerar o MD** a partir do raw existente — o `context/past-editions.md` é tracked pelo git e pode ter ficado stale (#161, #162) após `git pull` / checkout que reverteu. Rodar:
    ```bash
    Bash("npx tsx scripts/refresh-past-editions.ts --regen-md-only")
