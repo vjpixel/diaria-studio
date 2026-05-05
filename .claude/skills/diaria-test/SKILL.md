@@ -72,12 +72,12 @@ Variáveis pra alimentar o playbook:
 2. Mostrar ao usuário:
    - Tabela de timing por stage
    - Total wall clock
-   - **Se `with_publish = true`:** lembrete reforçado:
+   - **Se `with_publish = true`:** lembrete reforçado (URLs derivadas de `platform.config.json` → `publishing.social.linkedin.scheduled_posts_url` etc; substitua na renderização):
      ```
      ⚠️  Conteúdo de teste foi publicado nas plataformas. Delete antes da data agendada:
-       • Beehiiv: rascunho criado — deletar em https://app.beehiiv.com/posts (link no 05-published.json)
+       • Beehiiv: rascunho criado — deletar em https://app.beehiiv.com/posts (URL específica em 05-published.json → draft_url)
        • Facebook: 3 posts agendados para {date+10} — Meta Business Suite > Planejado
-       • LinkedIn: 3 rascunhos/agendados — https://www.linkedin.com/company/110742958/admin/scheduled-posts/
+       • LinkedIn: 3 rascunhos/agendados — {publishing.social.linkedin.scheduled_posts_url do config}
      ```
    - **Se `with_publish = false`:** "Etapa 4 pulada (default). Use `--with-publish` pra cobrir publicação."
    - Link para o rascunho no Beehiiv (de `05-published.json`) — só se `with_publish = true` e Beehiiv rodou.

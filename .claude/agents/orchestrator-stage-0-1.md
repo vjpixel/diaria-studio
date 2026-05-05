@@ -76,7 +76,8 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
 
   Se editor responder `n`, abortar. Se `y`, setar `DRIVE_SYNC = false` em sessão pra resto do pipeline.
 - **Pre-flight Claude in Chrome MCP (#143, #568).** Se `test_mode = true` E `with_publish !== true`, setar `CHROME_MCP = false` diretamente (sem probe). Caso contrário (incluindo `test_mode = true` com `with_publish = true`), tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
-  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode`**, prosseguir silenciosamente.
+  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode` SEM `with_publish`**, prosseguir silenciosamente.
+  - **Caso especial `test_mode = true` E `with_publish = true` E `CHROME_MCP = false` (#568):** warn LOUD — imprimir bloco visível no terminal (não silenciar) e logar `level: warn` com `agent: orchestrator`, `message: "with_publish=true mas Chrome MCP indisponível — Etapa 4 vai pular"`. Editor pediu publicação explícita; merece saber que não vai acontecer. Pipeline continua mas sem Etapa 4.
   - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Inicializar `_internal/cost.md`.** Se não existe, obter timestamp via Bash e gravar:
   ```markdown
