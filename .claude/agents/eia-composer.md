@@ -116,9 +116,18 @@ Estrutura:
 ```
 
 Regras da linha de crédito (sem prefixo "Foto:"):
-- **Uma frase curta e única** descrevendo a cena — nunca duas frases, nunca explicações enciclopédicas. Apenas identificar o sujeito e o local.
-- **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (pt ou en); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
+- **Uma frase curta e única em português brasileiro** descrevendo a cena — nunca duas frases, nunca explicações enciclopédicas. Apenas identificar o sujeito e o local. **Não copiar literalmente o `description.text` da API** — esse texto vem em inglês ou multilíngue e precisa ser traduzido + condensado para PT-BR.
+- **Dois links**: (1) apenas a palavra/termo que nomeia o sujeito → artigo na Wikipedia (preferir pt.wikipedia.org se existir; fallback en.wikipedia.org); (2) nome do fotógrafo → página de usuário no Wikimedia Commons.
 - Exemplo: `Pastor do [Rajastão](https://pt.wikipedia.org/wiki/Rajastão) guiando seu rebanho pelas planícies do noroeste da Índia — [Paramanu Sarkar](https://commons.wikimedia.org/wiki/User:Paramanu_Sarkar) / CC BY-SA 4.0.`
+
+**Tratamento de "Unknown" / autor desconhecido (#578)**:
+- Se `image.artist.text` é `"Unknown"`, `"Unknown author"`, vazio, ou contém apenas placeholder genérico → escrever `autor desconhecido` (em PT-BR, sem link).
+- Se `image.artist.text` tem nome real mas sem link de usuário Commons confiável → linkar pro endereço de origem da página da imagem no Wikimedia Commons (ex: `[John Doe](https://commons.wikimedia.org/wiki/File:Example.jpg)`).
+- **Nunca emitir o literal "Unknown" ou "UnknownUnknown" na newsletter** — esses tokens vêm direto da API sem tradução e quebram a leitura.
+
+**Validação final pré-write**:
+- Verificar que a linha de crédito **não contém** as substrings `"Unknown"`, `"UnknownUnknown"`, `"unknown author"` (case-insensitive em inglês). Se aparecer, regerar com PT-BR.
+- Verificar que a frase descritiva está em português (heurística: verbos terminando em "-ar"/"-er"/"-ir" gerúndio, presença de artigos "do/da/de", etc.). Se inglês passou, traduzir antes de escrever.
 
 ### 5. Escrever `{out_dir}/_internal/01-eia-meta.json` (#107 dep)
 
