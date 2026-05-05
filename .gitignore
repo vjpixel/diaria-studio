@@ -25,5 +25,8 @@ data/inbox-archive/
 data/inbox.md
 data/inbox-cursor.json
 data/archive/
+# Dados pessoais Clarice — exports Stripe (emails, pagamentos) e outputs scored
+data/clarice-subscribers/*.csv
+data/clarice-subscribers/*.md
 .DS_Store
 .tmp/
