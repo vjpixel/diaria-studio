@@ -529,11 +529,18 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} -
 ```
 Anotar resultado em `sync_results[1]`; falhas reais (não warning) abortam. Falhas warning podem prosseguir mas precisam ser mencionadas no gate.
 
-**Verificação anti-skip (#577)**: antes de apresentar o gate (passo 1x), confirmar que o cache registra push recente do `01-categorized.md`:
+**Verificação anti-skip (#577)**: antes de apresentar o gate (passo 1x), se `DRIVE_SYNC = true`, confirmar que o cache registra push recente do `01-categorized.md`:
 
 ```bash
 node -e "
-const cache = JSON.parse(require('fs').readFileSync('data/drive-cache.json', 'utf8'));
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('platform.config.json', 'utf8'));
+if (cfg.drive_sync === false) { console.log('drive_sync=false, skip anti-skip check'); process.exit(0); }
+if (!fs.existsSync('data/drive-cache.json')) {
+  console.error('FATAL: drive_sync ativo mas data/drive-cache.json não existe. Step 1w foi skipado.');
+  process.exit(1);
+}
+const cache = JSON.parse(fs.readFileSync('data/drive-cache.json', 'utf8'));
 const f = cache.editions['{AAMMDD}']?.files?.['01-categorized.md'];
 if (!f?.push_count) {
   console.error('FATAL: 01-categorized.md não foi pushed pra Drive. Step 1w foi skipado. Re-rodar push antes do gate.');
@@ -543,7 +550,7 @@ console.log('✓ 01-categorized.md pushed to Drive (push #' + f.push_count + ')'
 "
 ```
 
-Se falhar, **re-rodar o push** antes de prosseguir pra 1x. Não apresentar gate sem confirmar push.
+Se falhar, **re-rodar o push** antes de prosseguir pra 1x. Não apresentar gate sem confirmar push. Se `drive_sync = false` em `platform.config.json` (ex: rodando localmente sem Drive), check é skipado silenciosamente.
 
 ### 1x. GATE HUMANO
 
