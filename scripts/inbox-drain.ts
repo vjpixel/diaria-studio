@@ -52,6 +52,13 @@ interface DrainResult {
   most_recent_iso: string | null;
   skipped: boolean;
   reason?: string;
+  /** #667: número de threads que falharam ao carregar (Zod error, rede, etc.).
+   * 0 significa drain limpo. Positivo = drain parcial — algumas threads foram
+   * puladas. Útil pra detectar outage Gmail ou schema change sem sacrificar
+   * o drain inteiro. */
+  errors?: number;
+  /** Primeiras mensagens de erro (max 3, slice 200 chars cada). */
+  error_samples?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +241,23 @@ function saveCursor(cursor: InboxCursor): void {
 // ---------------------------------------------------------------------------
 
 export const EMPTY_DRAIN_WARN_THRESHOLD = 3;
+
+/**
+ * Constrói um DrainResult de falha de pesquisa (#665).
+ * Exportado para permitir testes unitários sem precisar de credenciais Gmail.
+ */
+export function buildSearchFailedResult(errorMsg: string): DrainResult {
+  return {
+    new_entries: 0,
+    urls: [],
+    topics: [],
+    most_recent_iso: null,
+    skipped: true,
+    reason: "search_failed",
+    errors: 1,
+    error_samples: [errorMsg.slice(0, 200)],
+  };
+}
 
 export function isLabelQuery(query: string): boolean {
   return /^\s*label:/i.test(query);
@@ -534,16 +558,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // #658 review C: try/catch simétrico com getThread — Zod fail-fast em
-  // shape inesperado da listagem não deve derrubar o drain inteiro.
+  // #665: searchThreads early return — falha de listagem é explicitamente
+  // sinalizada como skipped, não tratada como inbox vazio.
   let threads: GmailThread[] = [];
   try {
     threads = await searchThreads(query);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
-      `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Tratando como 0 threads.`,
+      `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
     );
+    console.log(JSON.stringify(buildSearchFailedResult(msg), null, 2));
+    return;
   }
 
   const lastDrain = cursor.last_drain_iso;
@@ -551,6 +577,9 @@ async function main(): Promise<void> {
   const resultUrls: DrainResult["urls"] = [];
   const resultTopics: DrainResult["topics"] = [];
   let mostRecentIso: string | null = null;
+  // #667: contagem de threads com erro (parciais) — exposta no DrainResult.
+  let threadErrors = 0;
+  const threadErrorSamples: string[] = [];
 
   for (const thread of threads) {
     let fullThread: GmailThread2;
@@ -560,7 +589,9 @@ async function main(): Promise<void> {
       // #649 review: incluindo ZodError quando shape da response sai do esperado
       // (ex: thread só com draft, conta com config não-padrão). Logar e seguir
       // pra não quebrar o drain inteiro por causa de uma thread atípica.
+      threadErrors += 1;
       const msg = err instanceof Error ? err.message : String(err);
+      if (threadErrorSamples.length < 3) threadErrorSamples.push(msg.slice(0, 200));
       console.error(
         `[inbox-drain] WARN: pulando thread ${thread.id} — ${msg.slice(0, 200)}`,
       );
@@ -678,6 +709,8 @@ async function main(): Promise<void> {
     most_recent_iso: mostRecentIso,
     skipped: false,
     ...(warnReason ? { reason: warnReason } : {}),
+    // #667: expor erros de thread pra visibilidade no orchestrator.
+    ...(threadErrors > 0 ? { errors: threadErrors, error_samples: threadErrorSamples } : {}),
   };
   console.log(JSON.stringify(result, null, 2));
 }

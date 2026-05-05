@@ -451,6 +451,39 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
   }
 }
 
+// ---------- Coverage line resolution (#666) ----------------------------
+
+/**
+ * Resolve a linha de cobertura da edição a partir das fontes disponíveis,
+ * em ordem de prioridade:
+ *
+ *  1. Se `cliInBasename === "01-approved.json"`, o input já é o approved —
+ *     usa `inputCoverage.line` diretamente sem re-ler o disco.
+ *  2. Senão, usa `siblingCoverage.line` (pré-carregada pelo caller a partir
+ *     do 01-approved.json adjacente ao cli.in).
+ *  3. Fallback: chama `fallback()` — computa a partir do inbox.md e do JSON
+ *     de categorized (caso pre-gate ou approved sem campo coverage).
+ *
+ * Retorna a linha sem "\n\n" trailing — caller decide a formatação.
+ *
+ * **Pura**: não lê o filesystem. Caller carrega os dados e injeta.
+ */
+export function resolveCoverageLine(opts: {
+  cliInBasename: string;
+  inputCoverage?: { line?: string };
+  siblingCoverage?: { line?: string } | null;
+  fallback: () => string;
+}): string {
+  // Acessa campos lazy (não desestrutura adiantado) pra o teste de "sibling não
+  // é consultado quando cliIn é approved.json" ser determinístico.
+  if (opts.cliInBasename === "01-approved.json") {
+    return opts.inputCoverage?.line ?? opts.fallback();
+  }
+
+  if (opts.siblingCoverage?.line) return opts.siblingCoverage.line;
+  return opts.fallback();
+}
+
 // ---------- Coverage metrics (#477) -------------------------------------
 
 /**
@@ -569,28 +602,21 @@ function main() {
     (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
   const totalConsidered = computeTotalConsidered(cli.in, data);
 
-  // #592: linha de cobertura no novo formato — X submissões do editor, Y artigos
-  // descobertos pela Diar.ia, Z selecionados. Usa "submissões" (#609).
-  // #658 review: pós-archive (step 1y do orchestrator), data/inbox.md fica
-  // vazio. Re-render daria 0 submissões silenciosamente. Quando 01-approved.json
-  // tem `coverage.line` populado pelo apply-gate-edits, usar como source of truth.
-  let coverageLine: string = "";
-  // #658 review D: se cli.in já É 01-approved.json, `data` foi parseado dele —
-  // reutiliza em vez de re-ler o mesmo arquivo do disco.
-  if (basename(cli.in) === "01-approved.json") {
-    const cov = (data as unknown as { coverage?: { line?: string } }).coverage;
-    if (cov?.line) coverageLine = cov.line + "\n\n";
-  } else {
+  // #592 / #666: linha de cobertura — resolvida em 3 steps pela função pura
+  // resolveCoverageLine. Carregamentos de arquivo acontecem aqui (caller),
+  // não dentro da função.
+  const cliInBasename = basename(cli.in);
+  let siblingCoverage: { line?: string } | null = null;
+  if (cliInBasename !== "01-approved.json") {
     const approvedPathForCoverage = resolve(dirname(cli.in), "01-approved.json");
     if (existsSync(approvedPathForCoverage)) {
       try {
-        const approved = JSON.parse(readFileSync(approvedPathForCoverage, "utf8")) as {
+        const parsed = JSON.parse(readFileSync(approvedPathForCoverage, "utf8")) as {
           coverage?: { line?: string };
         };
-        if (approved.coverage?.line) coverageLine = approved.coverage.line + "\n\n";
+        siblingCoverage = parsed.coverage ?? null;
       } catch (err) {
-        // #658 review E: warn explícito antes do fallback — editor percebe que
-        // approved.json está corrompido/malformado em vez de ver número errado.
+        // #658 review E: warn antes do fallback — editor percebe arquivo corrompido.
         const msg = err instanceof Error ? err.message : String(err);
         console.error(
           `[render-categorized-md] WARN: approved.json existe mas falhou parse (${msg.slice(0, 200)}). Caindo no fallback de inbox.md.`,
@@ -599,19 +625,23 @@ function main() {
     }
   }
 
-  if (!coverageLine) {
-    // Fallback: computa do inbox.md / categorized — caso pre-gate ou approved sem coverage.
-    const inboxMdPath = cli.inboxMd ?? resolve(ROOT, "data/inbox.md");
-    const platformConfigPath = resolve(ROOT, "platform.config.json");
-    const editorEmail = resolveEditorEmail(platformConfigPath);
-    const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
-    const diariaDiscovered = totalConsidered !== null
-      ? Math.max(0, totalConsidered - editorSubmissions)
-      : null;
-    coverageLine = diariaDiscovered !== null
-      ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected }) + "\n\n"
-      : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.\n\n`;
-  }
+  const coverageLine = resolveCoverageLine({
+    cliInBasename,
+    inputCoverage: (data as unknown as { coverage?: { line?: string } }).coverage,
+    siblingCoverage,
+    fallback: () => {
+      const inboxMdPath = cli.inboxMd ?? resolve(ROOT, "data/inbox.md");
+      const platformConfigPath = resolve(ROOT, "platform.config.json");
+      const editorEmail = resolveEditorEmail(platformConfigPath);
+      const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
+      const diariaDiscovered = totalConsidered !== null
+        ? Math.max(0, totalConsidered - editorSubmissions)
+        : null;
+      return diariaDiscovered !== null
+        ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected })
+        : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.`;
+    },
+  }) + "\n\n";
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
