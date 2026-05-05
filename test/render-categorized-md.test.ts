@@ -13,6 +13,7 @@ import {
   renderSection,
   computeTotalConsidered,
   extractEaiAnswer,
+  renderDestaquesFromApproved,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -642,5 +643,81 @@ eia_answer:
 ---
 `;
     assert.equal(extractEaiAnswer(md), null);
+  });
+});
+
+describe("renderDestaquesFromApproved (#585)", () => {
+  it("retorna null quando approved.json não existe", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "render-test-"));
+    const result = renderDestaquesFromApproved(
+      join(tmp, "01-approved.json"),
+      new Set(),
+      new Set(),
+    );
+    assert.equal(result, null);
+    rmSync(tmp, { recursive: true });
+  });
+
+  it("retorna null quando highlights[] vazio", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "render-test-"));
+    const path = join(tmp, "01-approved.json");
+    writeFileSync(path, JSON.stringify({ highlights: [] }));
+    const result = renderDestaquesFromApproved(path, new Set(), new Set());
+    assert.equal(result, null);
+    rmSync(tmp, { recursive: true });
+  });
+
+  it("renderiza 3 destaques nested (article shape)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "render-test-"));
+    const path = join(tmp, "01-approved.json");
+    const approved = {
+      highlights: [
+        { rank: 1, score: 92, url: "https://a/", article: { url: "https://a/", title: "Titulo A", date: "2026-05-05", score: 92 } },
+        { rank: 2, score: 82, url: "https://b/", article: { url: "https://b/", title: "Titulo B", date: "2026-05-05", score: 82 } },
+        { rank: 3, score: 80, url: "https://c/", article: { url: "https://c/", title: "Titulo C", date: "2026-05-05", score: 80 } },
+      ],
+    };
+    writeFileSync(path, JSON.stringify(approved));
+    const result = renderDestaquesFromApproved(
+      path,
+      new Set(["https://a/", "https://b/", "https://c/"]),
+      new Set(),
+    );
+    assert.ok(result);
+    assert.ok(result!.startsWith("## Destaques\n\n"));
+    assert.match(result!, /1\. \[92\] Titulo A/);
+    assert.match(result!, /2\. \[82\] Titulo B/);
+    assert.match(result!, /3\. \[80\] Titulo C/);
+    // Não deve ter o placeholder
+    assert.ok(!result!.includes("(mova 3 artigos para cá)"));
+    rmSync(tmp, { recursive: true });
+  });
+
+  it("retorna null quando JSON inválido", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "render-test-"));
+    const path = join(tmp, "01-approved.json");
+    writeFileSync(path, "{invalid");
+    const result = renderDestaquesFromApproved(path, new Set(), new Set());
+    assert.equal(result, null);
+    rmSync(tmp, { recursive: true });
+  });
+
+  it("aceita destaques flat shape (sem article wrapper)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "render-test-"));
+    const path = join(tmp, "01-approved.json");
+    const approved = {
+      highlights: [
+        { url: "https://x/", title: "Flat title", date: "2026-05-05", score: 50 } as unknown,
+      ],
+    };
+    writeFileSync(path, JSON.stringify(approved));
+    const result = renderDestaquesFromApproved(
+      path,
+      new Set(["https://x/"]),
+      new Set(),
+    );
+    assert.ok(result);
+    assert.match(result!, /Flat title/);
+    rmSync(tmp, { recursive: true });
   });
 });
