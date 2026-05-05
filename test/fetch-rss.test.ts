@@ -205,12 +205,28 @@ describe("filterByWindow", () => {
     assert.equal(filtered[0].title, "Sem data");
   });
 
-  it("#673: artigo sem data é mantido e logado (não descartado silenciosamente)", () => {
+  it("#673: artigo sem data é mantido para filter-date-window downstream", () => {
     const onlySemData: Article[] = [
       { url: "https://a.com/4", title: "Sem data", published_at: null, summary: "" },
     ];
     const filtered = filterByWindow(onlySemData, 3, now);
-    assert.equal(filtered.length, 1, "artigo sem data deve ser mantido para filter-date-window downstream");
+    assert.equal(filtered.length, 1, "artigo sem data deve ser mantido");
+  });
+
+  it("#685: filterByWindow não emite console.error (função pura sem side effects)", () => {
+    // Verificar que filterByWindow não tem log — log foi movido para fetchRss caller
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const undated: Article[] = [
+        { url: "https://a.com/x", title: "Sem data", published_at: null, summary: "" },
+      ];
+      filterByWindow(undated, 3, now);
+      assert.equal(errors.length, 0, "filterByWindow não deve emitir console.error");
+    } finally {
+      console.error = origError;
+    }
   });
 });
 
