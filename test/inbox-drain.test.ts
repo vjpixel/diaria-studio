@@ -13,11 +13,27 @@ import {
   shouldWarnEmptyDrains,
   stripLabelFromQuery,
   decideEmptyDrainAction,
+  dedupForwards,
   EMPTY_DRAIN_WARN_THRESHOLD,
   loadCursor,
   main as drainMain,
   type AltQueryResult,
 } from "../scripts/inbox-drain.ts";
+
+function makeMessage(subject: string, id = "msg"): {
+  id: string;
+  internalDate: string;
+  payload: { mimeType: string; headers: Array<{ name: string; value: string }> };
+} {
+  return {
+    id,
+    internalDate: "0",
+    payload: {
+      mimeType: "text/plain",
+      headers: [{ name: "Subject", value: subject }],
+    },
+  };
+}
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -346,6 +362,63 @@ describe("decideEmptyDrainAction (#274 + #286)", () => {
     if (r.kind === "warn") {
       assert.match(r.reason, /CustomLabel/);
     }
+  });
+});
+
+describe("dedupForwards (#656) — original preferido sobre Fwd: no mesmo thread", () => {
+  it("thread com original + Fwd: ingere só o original", () => {
+    const original = makeMessage("Anthropic launches X", "1");
+    const forward = makeMessage("Fwd: Anthropic launches X", "2");
+    const result = dedupForwards([original as any, forward as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
+  });
+
+  it("thread só com Fwd: (sem original) ingere o Fwd", () => {
+    const forward = makeMessage("Fwd: Some article", "1");
+    const result = dedupForwards([forward as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
+  });
+
+  it("thread só com 1 msg sem Fwd: (submissão direta) ingere normal", () => {
+    const direct = makeMessage("Olha esse link", "1");
+    const result = dedupForwards([direct as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
+  });
+
+  it("reconhece variante 'Fw:' (sem 'd')", () => {
+    const original = makeMessage("Subject X", "1");
+    const fw = makeMessage("Fw: Subject X", "2");
+    const result = dedupForwards([original as any, fw as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
+  });
+
+  it("é case-insensitive em FWD:", () => {
+    const original = makeMessage("Subject X", "1");
+    const fwd = makeMessage("FWD: Subject X", "2");
+    const result = dedupForwards([original as any, fwd as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
+  });
+
+  it("preserva 'Re:' (resposta, não forward)", () => {
+    const original = makeMessage("Subject X", "1");
+    const reply = makeMessage("Re: Subject X", "2");
+    const result = dedupForwards([original as any, reply as any]);
+    // Nenhum dos dois é forward — ambos preservados
+    assert.equal(result.length, 2);
+  });
+
+  it("thread com múltiplos forwards e um original ingere só o original", () => {
+    const original = makeMessage("Topic A", "1");
+    const fwd1 = makeMessage("Fwd: Topic A", "2");
+    const fwd2 = makeMessage("Fwd: Topic A", "3");
+    const result = dedupForwards([original as any, fwd1 as any, fwd2 as any]);
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as any).id, "1");
   });
 });
 
