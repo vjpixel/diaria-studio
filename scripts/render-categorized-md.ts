@@ -221,7 +221,9 @@ export function renderLine(
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
   if (article.new_in_pool) markers.push("🆕");
-  if (article.flag === "carry_over" && typeof article.carry_over_from === "string") {
+  // #658 review A: condição independe do flag — quando carry-over de inbox preserva
+  // flag editor_submitted (boost +8 do categorizer), o marker ainda precisa aparecer.
+  if (typeof article.carry_over_from === "string") {
     markers.push(`[carry-over de ${article.carry_over_from}]`);
   }
   if (article.launch_candidate && article.suggested_primary_domain) {
@@ -572,21 +574,29 @@ function main() {
   // #658 review: pós-archive (step 1y do orchestrator), data/inbox.md fica
   // vazio. Re-render daria 0 submissões silenciosamente. Quando 01-approved.json
   // tem `coverage.line` populado pelo apply-gate-edits, usar como source of truth.
-  const approvedPathForCoverage = resolve(dirname(cli.in), "01-approved.json");
-  let coverageLine: string;
-  if (existsSync(approvedPathForCoverage)) {
-    try {
-      const approved = JSON.parse(readFileSync(approvedPathForCoverage, "utf8")) as {
-        coverage?: { line?: string };
-      };
-      coverageLine = approved.coverage?.line
-        ? approved.coverage.line + "\n\n"
-        : ""; // será preenchido abaixo se ausente
-    } catch {
-      coverageLine = "";
-    }
+  let coverageLine: string = "";
+  // #658 review D: se cli.in já É 01-approved.json, `data` foi parseado dele —
+  // reutiliza em vez de re-ler o mesmo arquivo do disco.
+  if (basename(cli.in) === "01-approved.json") {
+    const cov = (data as unknown as { coverage?: { line?: string } }).coverage;
+    if (cov?.line) coverageLine = cov.line + "\n\n";
   } else {
-    coverageLine = "";
+    const approvedPathForCoverage = resolve(dirname(cli.in), "01-approved.json");
+    if (existsSync(approvedPathForCoverage)) {
+      try {
+        const approved = JSON.parse(readFileSync(approvedPathForCoverage, "utf8")) as {
+          coverage?: { line?: string };
+        };
+        if (approved.coverage?.line) coverageLine = approved.coverage.line + "\n\n";
+      } catch (err) {
+        // #658 review E: warn explícito antes do fallback — editor percebe que
+        // approved.json está corrompido/malformado em vez de ver número errado.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[render-categorized-md] WARN: approved.json existe mas falhou parse (${msg.slice(0, 200)}). Caindo no fallback de inbox.md.`,
+        );
+      }
+    }
   }
 
   if (!coverageLine) {

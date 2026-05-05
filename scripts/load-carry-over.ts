@@ -134,6 +134,27 @@ interface FilterOpts {
   scoreMin: number;
 }
 
+/**
+ * Anota artigos kept como carry-over (#658 review B): preserva
+ * `flag: "editor_submitted"` quando vinha do inbox da edição anterior — o
+ * categorizer dá boost +8 por editor_submitted; sobrescrever apaga essa origem.
+ * `carry_over_from` é setado em todos, e o renderer mostra o marker
+ * `[carry-over de AAMMDD]` independente do flag.
+ */
+export function annotateCarryOver(
+  articles: CategorizedArticle[],
+  prevAammdd: string,
+): PoolArticle[] {
+  return articles.map((a) => {
+    const wasEditorSubmitted = a.flag === "editor_submitted";
+    return {
+      ...a,
+      flag: wasEditorSubmitted ? "editor_submitted" : "carry_over",
+      carry_over_from: prevAammdd,
+    };
+  });
+}
+
 /** Aplica filtros editoriais. Exporta pra testar. */
 export function filterCarryOver(
   articles: CategorizedArticle[],
@@ -277,19 +298,7 @@ function main(): void {
     scoreMin,
   });
 
-  // Anotar carry_over no shape do pool. **Preservar flag editor_submitted**
-  // se o artigo veio originalmente do inbox (#658 review): categorizer dá
-  // boost +8 por editor_submitted; sobrescrever apaga essa origem.
-  const carryArticles: PoolArticle[] = kept.map((a) => {
-    const wasEditorSubmitted = a.flag === "editor_submitted";
-    return {
-      ...a,
-      // Se era editor_submitted, mantém — assim o boost +8 do categorizer
-      // continua valendo. carry_over_from é a marca complementar.
-      flag: wasEditorSubmitted ? "editor_submitted" : "carry_over",
-      carry_over_from: prev,
-    };
-  });
+  const carryArticles: PoolArticle[] = annotateCarryOver(kept, prev);
 
   const merged: PoolArticle[] = [...pool, ...carryArticles];
   writePoolAtomic(poolPathAbs, merged);

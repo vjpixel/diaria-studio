@@ -534,7 +534,17 @@ async function main(): Promise<void> {
     }
   }
 
-  const threads: GmailThread[] = await searchThreads(query);
+  // #658 review C: try/catch simétrico com getThread — Zod fail-fast em
+  // shape inesperado da listagem não deve derrubar o drain inteiro.
+  let threads: GmailThread[] = [];
+  try {
+    threads = await searchThreads(query);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Tratando como 0 threads.`,
+    );
+  }
 
   const lastDrain = cursor.last_drain_iso;
   const inboxEntries: string[] = [];

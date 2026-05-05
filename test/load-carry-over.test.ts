@@ -7,6 +7,7 @@ import {
   collectApprovedUrls,
   flattenCategorized,
   filterCarryOver,
+  annotateCarryOver,
 } from "../scripts/load-carry-over.ts";
 import { getPreviousEditionDate, listEditions } from "../scripts/lib/edition-utils.ts";
 
@@ -135,10 +136,7 @@ describe("filterCarryOver", () => {
     assert.equal(kept.length, 1);
   });
 
-  it("preserva flag editor_submitted através do filtro (#658 review)", () => {
-    // O filtro só decide kept/skipped — preservação do flag acontece no caller
-    // (main()). Mas o artigo no kept[] mantém a propriedade flag intacta pra
-    // o caller decidir.
+  it("kept[] mantém flag intacta — annotateCarryOver decide depois", () => {
     const { kept } = filterCarryOver(
       [
         {
@@ -152,6 +150,74 @@ describe("filterCarryOver", () => {
     );
     assert.equal(kept.length, 1);
     assert.equal(kept[0].flag, "editor_submitted");
+  });
+});
+
+describe("annotateCarryOver (#658 review B)", () => {
+  it("seta carry_over_from em todos os artigos", () => {
+    const out = annotateCarryOver(
+      [
+        { url: "https://a.com", score: 80, published_at: "2026-04-27" },
+        { url: "https://b.com", score: 75, published_at: "2026-04-26" },
+      ],
+      "260427",
+    );
+    assert.equal(out.length, 2);
+    assert.equal(out[0].carry_over_from, "260427");
+    assert.equal(out[1].carry_over_from, "260427");
+  });
+
+  it("preserva flag editor_submitted (categorizer dá boost +8)", () => {
+    const out = annotateCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 80,
+          published_at: "2026-04-27",
+          flag: "editor_submitted",
+        },
+      ],
+      "260427",
+    );
+    assert.equal(out[0].flag, "editor_submitted");
+    assert.equal(out[0].carry_over_from, "260427");
+  });
+
+  it("seta flag=carry_over para artigos sem flag de origem", () => {
+    const out = annotateCarryOver(
+      [{ url: "https://a.com", score: 80, published_at: "2026-04-27" }],
+      "260427",
+    );
+    assert.equal(out[0].flag, "carry_over");
+    assert.equal(out[0].carry_over_from, "260427");
+  });
+
+  it("não sobrescreve flag arbitrário desconhecido (preserva intacto)", () => {
+    // Defensivo: se o pipeline introduzir um flag novo, annotateCarryOver
+    // não deve apagá-lo silenciosamente.
+    const out = annotateCarryOver(
+      [{ url: "https://a.com", score: 80, published_at: "2026-04-27", flag: "editor_submitted" }],
+      "260427",
+    );
+    assert.equal(out[0].flag, "editor_submitted");
+  });
+
+  it("propaga campos extras (passthrough via spread)", () => {
+    const out = annotateCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 80,
+          published_at: "2026-04-27",
+          title: "Titulo X",
+          summary: "Resumo Y",
+          custom: "z",
+        } as Parameters<typeof annotateCarryOver>[0][number],
+      ],
+      "260427",
+    );
+    assert.equal(out[0].title, "Titulo X");
+    assert.equal((out[0] as Record<string, unknown>).custom, "z");
   });
 });
 
