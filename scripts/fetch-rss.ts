@@ -32,6 +32,9 @@ export interface FetchResult {
   feed_url: string;
   articles: Article[];
   error?: string;
+  /** #678: quantos artigos foram descartados pelo topicFilter (feed funcionou, mas sem match).
+   * Se > 0, o orchestrator NÃO deve fazer fallback para WebSearch — o feed está ok. */
+  filtered_by_topic?: number;
 }
 
 export interface FetchOptions {
@@ -189,7 +192,11 @@ export function parseFeed(xml: string): { articles: Article[]; kind: "rss" | "at
 export function filterByWindow(articles: Article[], days: number, now: Date = new Date()): Article[] {
   const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
   return articles.filter((a) => {
-    if (!a.published_at) return true;
+    if (!a.published_at) {
+      // #673: artigo sem data — mantido mas logado para visibilidade
+      console.error(`[fetch-rss] artigo sem published_at mantido (filter-date-window marcará date_unverified): ${a.url}`);
+      return true;
+    }
     const t = new Date(a.published_at).getTime();
     return !isNaN(t) && t >= cutoff;
   });
@@ -249,10 +256,18 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
     const xml = await res.text();
     const { articles } = parseFeed(xml);
     const byWindow = filterByWindow(articles, days, now);
-    const filtered = opts.topicFilter && opts.topicFilter.length > 0
-      ? filterByTopic(byWindow, opts.topicFilter)
-      : byWindow;
-    return { source: opts.sourceName, method: "rss", feed_url: opts.url, articles: filtered };
+    const hasTopicFilter = opts.topicFilter && opts.topicFilter.length > 0;
+    const filtered = hasTopicFilter ? filterByTopic(byWindow, opts.topicFilter!) : byWindow;
+    // #678: expõe quantos artigos foram descartados pelo topicFilter para que o
+    // orchestrator não faça fallback WebSearch desnecessário (feed ok, sem match hoje).
+    const filteredByTopic = hasTopicFilter ? byWindow.length - filtered.length : undefined;
+    return {
+      source: opts.sourceName,
+      method: "rss",
+      feed_url: opts.url,
+      articles: filtered,
+      ...(filteredByTopic !== undefined ? { filtered_by_topic: filteredByTopic } : {}),
+    };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
     return {

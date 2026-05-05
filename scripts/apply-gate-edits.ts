@@ -154,7 +154,9 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     // Formatos aceitos:
     //   `- [score] Título ... — URL [— YYYY-MM-DD]`  (bullets legados)
     //   `1. [score] Título ... — URL [— YYYY-MM-DD]` (numerado, novo padrão)
-    const urlMatch = line.match(/^(?:-|\d+\.)\s.*?—\s+(https?:\/\/\S+?)(?:\s+—|\s*$)/);
+    // #661: aceitar — (em-dash), -- (double-hyphen) e – (en-dash) —
+    // Google Drive pode autocorrigir o em-dash para double-hyphen ou en-dash.
+    const urlMatch = line.match(/^(?:-|\d+\.)\s.*?(?:—|--|–)\s+(https?:\/\/\S+?)(?:\s+(?:—|--|–)|\s*$)/);
     if (urlMatch) {
       // Strip pontuação trailing que editores mobile/autocomplete podem introduzir (#443)
       const rawUrl = urlMatch[1].replace(/[.,);:!?]+$/, "");

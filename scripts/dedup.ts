@@ -60,7 +60,7 @@ export function normalizeTitle(s: string): string {
 export function titleSimilarity(a: string, b: string): number {
   const na = normalizeTitle(a), nb = normalizeTitle(b);
   const maxLen = Math.max(na.length, nb.length);
-  if (maxLen === 0) return 1;
+  if (maxLen === 0) return 0; // #674: sem conteúdo normalizável, não há similaridade
   return 1 - levenshtein(na, nb) / maxLen;
 }
 
@@ -403,6 +403,15 @@ async function main() {
   const pastMd = readFileSync(pastEditionsPath, "utf8");
   const pastUrls = extractPastUrls(pastMd, window);
   const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
+
+  // #672: guard contra past-editions.md vazio (ex: Beehiiv offline em Stage 0d)
+  if (pastUrls.size === 0 && pastTitles.length === 0) {
+    console.error(
+      `WARN [dedup]: past-editions.md sem seções YYYY-MM-DD — histórico vazio. ` +
+      `Dedup contra edições anteriores não funcionou. Verificar se refresh-dedup-runner completou.`,
+    );
+  }
+
   const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? String(CONFIG.dedup.titleVsPastThreshold));
 
   const result = dedup(articles, pastUrls, titleThreshold, pastTitles, titleVsPastThreshold);

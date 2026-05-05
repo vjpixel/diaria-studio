@@ -167,8 +167,20 @@ interface CliFlags {
   now?: string;
 }
 
+/**
+ * Default dinâmico baseado no dia da semana (#675).
+ * Segunda: 96h (cobre até a sexta anterior); Terça: 72h; demais: 48h.
+ * Evita alarme falso toda segunda-feira quando a newsletter não publica no fim de semana.
+ */
+export function defaultMaxStalenessHours(now: Date = new Date()): number {
+  const dow = now.getUTCDay(); // 0=Dom, 1=Seg, 2=Ter
+  if (dow === 1) return 96;
+  if (dow === 2) return 72;
+  return 48;
+}
+
 export function parseArgs(argv: string[]): CliFlags | { error: string } {
-  let maxStalenessHours = 48;
+  let maxStalenessHours = defaultMaxStalenessHours();
   let rawPath = "data/past-editions-raw.json";
   let now: string | undefined;
   for (let i = 0; i < argv.length; i++) {

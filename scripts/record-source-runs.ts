@@ -70,10 +70,19 @@ function main(): void {
     process.exit(1);
   }
 
+  // #677: edition ausente → "unknown" (evita null no health JSON que quebra queries por edição)
+  if (!edition) {
+    console.error(
+      `WARN [record-source-runs]: --edition não passado — runs gravadas com edition="unknown". ` +
+      `O orchestrator Stage 1g deve sempre passar --edition {AAMMDD}.`,
+    );
+  }
+  const editionValue = edition ?? "unknown";
+
   // Propaga edition pra cada run se o campo não estiver setado individualmente.
   const normalized = runs.map((r) => ({
     ...r,
-    edition: r.edition ?? edition,
+    edition: r.edition ?? editionValue,
   }));
 
   const results: RunResult[] = recordRunsBatch(ROOT, normalized);

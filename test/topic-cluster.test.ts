@@ -58,8 +58,13 @@ describe("jaccard", () => {
     assert.equal(jaccard(a, b), 1 / 4);
   });
 
-  it("ambos vazios retorna 0", () => {
-    assert.equal(jaccard(new Set(), new Set()), 0);
+  it("#679: ambos vazios retorna 1 (sem tokens = semanticamente idênticos)", () => {
+    assert.equal(jaccard(new Set(), new Set()), 1);
+  });
+
+  it("#679: um vazio e um não-vazio retorna 0", () => {
+    assert.equal(jaccard(new Set(["foo"]), new Set()), 0);
+    assert.equal(jaccard(new Set(), new Set(["foo"])), 0);
   });
 });
 

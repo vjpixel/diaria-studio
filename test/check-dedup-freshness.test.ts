@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateFreshness, parseArgs } from "../scripts/check-dedup-freshness.ts";
+import { evaluateFreshness, parseArgs, defaultMaxStalenessHours } from "../scripts/check-dedup-freshness.ts";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 
 /** Roda o script CLI e captura {stdout, stderr, exitCode}.
@@ -147,13 +147,13 @@ describe("evaluateFreshness (#230)", () => {
 });
 
 describe("parseArgs", () => {
-  it("default: 48h, raw padrão, now undefined", () => {
+  it("default: threshold dinâmico (#675), raw padrão, now undefined", () => {
     const r = parseArgs([]);
-    assert.deepEqual(r, {
-      maxStalenessHours: 48,
-      rawPath: "data/past-editions-raw.json",
-      now: undefined,
-    });
+    if ("error" in r) throw new Error(r.error);
+    // defaultMaxStalenessHours() é day-of-week aware — verificar só que é um dos valores válidos
+    assert.ok([48, 72, 96].includes(r.maxStalenessHours), `threshold ${r.maxStalenessHours} deve ser 48, 72 ou 96`);
+    assert.equal(r.rawPath, "data/past-editions-raw.json");
+    assert.equal(r.now, undefined);
   });
 
   it("override de janela", () => {
@@ -292,5 +292,34 @@ describe("CLI: emite JSON em todos os exit codes (#240)", () => {
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.ok, false);
     assert.match(parsed.reason ?? "", /max-staleness-hours inválido/);
+  });
+});
+
+describe("defaultMaxStalenessHours (#675) — threshold dinâmico por dia da semana", () => {
+  it("segunda-feira: 96h (cobre fim de semana)", () => {
+    const monday = new Date("2026-05-04T09:00:00Z"); // 04/Mai/2026 = Segunda
+    assert.equal(defaultMaxStalenessHours(monday), 96);
+  });
+
+  it("terça-feira: 72h", () => {
+    const tuesday = new Date("2026-05-05T09:00:00Z"); // 05/Mai/2026 = Terça
+    assert.equal(defaultMaxStalenessHours(tuesday), 72);
+  });
+
+  it("quarta-feira: 48h (padrão)", () => {
+    const wednesday = new Date("2026-05-06T09:00:00Z");
+    assert.equal(defaultMaxStalenessHours(wednesday), 48);
+  });
+
+  it("sexta-feira: 48h (padrão)", () => {
+    const friday = new Date("2026-05-08T09:00:00Z");
+    assert.equal(defaultMaxStalenessHours(friday), 48);
+  });
+
+  it("segunda: edição de sexta anterior (64h) → ok=true (não dispara alarme)", () => {
+    const monday = new Date("2026-05-04T09:00:00Z");
+    const posts = [{ id: "a", published_at: "2026-05-01T17:00:00Z" }]; // Sexta 17h → 64h atrás
+    const r = evaluateFreshness(posts, monday.getTime(), defaultMaxStalenessHours(monday));
+    assert.equal(r.ok, true, "segunda com edição de sexta não deve disparar alarme falso");
   });
 });
