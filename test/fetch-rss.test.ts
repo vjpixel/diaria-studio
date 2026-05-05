@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseFeed, filterByWindow, filterByTopic, type Article } from "../scripts/fetch-rss.ts";
+import { parseFeed, filterByWindow, filterByTopic, fetchRss, type Article } from "../scripts/fetch-rss.ts";
 
 describe("parseFeed — RSS 2.0", () => {
   const rssSample = `<?xml version="1.0" encoding="UTF-8"?>
@@ -203,6 +203,42 @@ describe("filterByWindow", () => {
     const filtered = filterByWindow(articles, 0, now);
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].title, "Sem data");
+  });
+
+  it("#673: artigo sem data é mantido e logado (não descartado silenciosamente)", () => {
+    const onlySemData: Article[] = [
+      { url: "https://a.com/4", title: "Sem data", published_at: null, summary: "" },
+    ];
+    const filtered = filterByWindow(onlySemData, 3, now);
+    assert.equal(filtered.length, 1, "artigo sem data deve ser mantido para filter-date-window downstream");
+  });
+});
+
+describe("fetchRss filtered_by_topic (#678)", () => {
+  it("retorna filtered_by_topic=0 quando não há topicFilter", async () => {
+    const xml = `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>AI</title><link>https://x.com/1</link><pubDate>Mon, 25 Apr 2026 10:00:00 GMT</pubDate></item>
+    </channel></rss>`;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => xml } as unknown as Response);
+    try {
+      const r = await fetchRss({ url: "https://x.com/rss", sourceName: "Test", days: 30 });
+      assert.equal(r.filtered_by_topic, undefined, "sem topicFilter não deve emitir o campo");
+    } finally { globalThis.fetch = origFetch; }
+  });
+
+  it("#678: retorna filtered_by_topic=N quando topicFilter elimina artigos", async () => {
+    const xml = `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><link>https://x.com</link>
+      <item><title>Artigo sobre futebol</title><link>https://x.com/1</link><pubDate>Mon, 25 Apr 2026 10:00:00 GMT</pubDate></item>
+      <item><title>Artigo sobre IA</title><link>https://x.com/2</link><pubDate>Mon, 25 Apr 2026 10:00:00 GMT</pubDate></item>
+    </channel></rss>`;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => xml } as unknown as Response);
+    try {
+      const r = await fetchRss({ url: "https://x.com/rss", sourceName: "Test", days: 30, topicFilter: ["IA", "AI"] });
+      assert.equal(r.articles.length, 1, "só o artigo de IA deve passar");
+      assert.equal(r.filtered_by_topic, 1, "1 artigo filtrado pelo topicFilter");
+    } finally { globalThis.fetch = origFetch; }
   });
 });
 

@@ -94,6 +94,17 @@ describe("titleSimilarity", () => {
     );
     assert.ok(sim > 0.4 && sim < 0.95, `esperado entre 0.4 e 0.95, got ${sim}`);
   });
+
+  it("#674: dois títulos que normalizam para vazio retornam 0 (não 1)", () => {
+    // Títulos só de stopwords → string vazia após normalizeTitle → maxLen = 0
+    const sim = titleSimilarity("o a de para com", "o a de para com");
+    assert.equal(sim, 0, "dois títulos degenerados não devem ser tratados como duplicatas");
+  });
+
+  it("#674: título vazio vs não-vazio retorna baixo (não 1)", () => {
+    const sim = titleSimilarity("...", "OpenAI lança GPT-5");
+    assert.ok(sim < 0.5, `esperado < 0.5, got ${sim}`);
+  });
 });
 
 describe("extractPastUrls", () => {
@@ -140,6 +151,12 @@ Links usados:
     const urls = extractPastUrls(m, 1);
     assert.ok(urls.has("https://a.com/x"));
     assert.ok(urls.has("https://b.com/y"));
+  });
+
+  it("#672: past-editions.md só com header (sem seções) → Set vazio", () => {
+    const emptyMd = "# Últimas edições publicadas — para dedup\n\natualizado em: 2026-05-05\n";
+    const urls = extractPastUrls(emptyMd, 14);
+    assert.equal(urls.size, 0, "header-only MD deve retornar Set vazio (não crashar)");
   });
 });
 

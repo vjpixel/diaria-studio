@@ -37,7 +37,7 @@ import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripUrlTrailingPunct, URL_REGEX_RAW } from "./lib/url-utils.ts";
+import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -118,11 +118,20 @@ export function filterEditorBlocks(blocks: InboxBlock[], editorEmail: string): I
 
 /** Tracking-only URLs that aren't actual content (Beehiiv tracking, redirects, image CDNs). */
 const TRACKING_URL_PATTERNS: RegExp[] = [
-  /^https:\/\/link\.mail\.beehiiv\.com\//,
-  /^https:\/\/tracking\.tldrnewsletter\.com\//,
-  /^https:\/\/media\.beehiiv\.com\/cdn-cgi\//,
-  /^https:\/\/ref\.wisprflow\.ai\//,
-  /^https:\/\/superhuman\.com\/refer\//,
+  // Beehiiv infrastructure — não conteúdo (#659)
+  /^https?:\/\/link\.mail\.beehiiv\.com\//,
+  /^https?:\/\/magic\.beehiiv\.com\//,
+  /^https?:\/\/email\.beehiivstatus\.com\//,
+  /^https?:\/\/hp\.beehiiv\.com\//,
+  /^https?:\/\/media\.beehiiv\.com\/cdn-cgi\//,
+  // TLDR newsletter links (com e sem "tracking." prefix)
+  /^https?:\/\/(tracking\.)?tldrnewsletter\.com\//,
+  /^https?:\/\/link\.tldrnewsletter\.com\//,
+  // Email link trackers
+  /^https?:\/\/elink\d*\./,
+  // Personal referral / signature links
+  /^https?:\/\/ref\.wisprflow\.ai\//,
+  /^https?:\/\/superhuman\.com\/refer\//,
 ];
 
 export function isTrackingUrl(url: string): boolean {
@@ -142,9 +151,9 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
     const isForward = /^\s*(fwd|fw|res|enc):/i.test(block.subject);
     for (const url of block.urls) {
       if (isTrackingUrl(url)) continue;
-      // Canonicalize: dedup por URL exata após trim de query strings UTM
-      const canonical = url.split("?")[0].replace(/\/$/, "");
-      const key = canonical.toLowerCase();
+      // #660: usar canonicalize() de url-utils em vez de split("?")[0] —
+      // remove só tracking params (utm_*, ref), preserva query params legítimos.
+      const key = canonicalize(url).toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
 

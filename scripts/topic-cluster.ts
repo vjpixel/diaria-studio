@@ -133,7 +133,7 @@ export function tokenize(text: string): Set<string> {
 }
 
 export function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
+  if (a.size === 0 && b.size === 0) return 1; // #679: dois vazios = semanticamente idênticos
   let intersect = 0;
   for (const t of a) if (b.has(t)) intersect++;
   const unionSize = a.size + b.size - intersect;

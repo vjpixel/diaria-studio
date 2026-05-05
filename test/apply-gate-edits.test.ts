@@ -151,6 +151,34 @@ Texto qualquer com https://foo.com/x.
     assert.deepEqual(result.destaques, ["https://a.com/1"]);
     assert.deepEqual(result.lancamento, ["https://a.com/1"]);
   });
+
+  it("#661: aceita double-hyphen (--) como separador (Google Drive autocorrect)", () => {
+    const md = `## Lançamentos
+
+- [90] Título X -- https://x.com/1 -- 2026-04-24
+`;
+    const result = parseSections(md);
+    assert.deepEqual(result.lancamento, ["https://x.com/1"]);
+  });
+
+  it("#661: aceita en-dash (–) como separador", () => {
+    const md = `## Notícias
+
+- [70] Título Y – https://y.com/2 – 2026-04-24
+`;
+    const result = parseSections(md);
+    assert.deepEqual(result.noticias, ["https://y.com/2"]);
+  });
+
+  it("#661: mistura de em-dash e double-hyphen no mesmo arquivo", () => {
+    const md = `## Destaques
+
+- [90] A — https://a.com/1 — 2026-04-24
+- [85] B -- https://b.com/2 -- 2026-04-24
+`;
+    const result = parseSections(md);
+    assert.deepEqual(result.destaques, ["https://a.com/1", "https://b.com/2"]);
+  });
 });
 
 // Helper para criar artigo de teste

@@ -97,6 +97,54 @@ describe("isTrackingUrl", () => {
     assert.equal(isTrackingUrl("https://www.androidauthority.com/article"), false);
     assert.equal(isTrackingUrl("https://example.com/post"), false);
   });
+
+  it("#659: detecta magic.beehiiv.com (subscribe/unsubscribe links)", () => {
+    assert.ok(isTrackingUrl("https://magic.beehiiv.com/v1/abc123?redirect_to=x"));
+  });
+
+  it("#659: detecta email.beehiivstatus.com (tracking pixel)", () => {
+    assert.ok(isTrackingUrl("https://email.beehiivstatus.com/abc/hclick"));
+  });
+
+  it("#659: detecta hp.beehiiv.com (helper page)", () => {
+    assert.ok(isTrackingUrl("https://hp.beehiiv.com/abc-def"));
+  });
+
+  it("#659: detecta link.tldrnewsletter.com (sem 'tracking.' prefix)", () => {
+    assert.ok(isTrackingUrl("https://link.tldrnewsletter.com/CL0/x"));
+  });
+
+  it("#659: detecta elink email trackers", () => {
+    assert.ok(isTrackingUrl("https://elink725.ainews.recaply.co/ss/c/abc"));
+  });
+
+  it("#660: dedup usa canonicalize — UTM params não criam duplicata", () => {
+    const block = {
+      iso: "2026-05-05T10:00:00Z",
+      from: "vjpixel@gmail.com",
+      subject: "test",
+      urls: [
+        "https://example.com/article?utm_source=twitter",
+        "https://example.com/article?utm_medium=email",
+      ],
+    };
+    const articles = extractEditorUrls([block]);
+    assert.equal(articles.length, 1, "UTM variants devem colapsar para 1 artigo");
+  });
+
+  it("#660: dedup preserva query params legítimos como parte da identidade", () => {
+    const block = {
+      iso: "2026-05-05T10:00:00Z",
+      from: "vjpixel@gmail.com",
+      subject: "test",
+      urls: [
+        "https://example.com/post?id=1",
+        "https://example.com/post?id=2",
+      ],
+    };
+    const articles = extractEditorUrls([block]);
+    assert.equal(articles.length, 2, "IDs distintos devem gerar 2 artigos");
+  });
 });
 
 describe("extractEditorUrls", () => {
