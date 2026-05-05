@@ -100,6 +100,12 @@ node -e "
 5. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
    - **Verificar conteúdo do rascunho (#378):** Ler as primeiras 50 caracteres do texto visível no composer e comparar com as primeiras 50 caracteres do post que foi inserido. Se não bater (ex: conteúdo de edição anterior), **não** considerar como sucesso — fechar o rascunho incorreto com "Discard" e recomeçar com post novo. Registrar `status: "failed"`, `reason: "linkedin_stale_draft_detected"` se a segunda tentativa também falhar.
+   - **Validar URL do draft (#601):** depois de salvar, navegar pra suposta lista de drafts ou abrir a URL retornada. **A URL deve ser específica de post**, não dashboard genérico:
+     - ✅ Aceito: contém ID de post (`/posts/...`, `/feed/update/urn:li:share:...`, `urn:li:activity:...`, ou path com segmento numérico/hash do post)
+     - ❌ Rejeitado: termina em `/drafts/`, `/dashboard/`, `/page-posts/published/` (URLs de dashboard, não de post específico)
+     - Se URL não bate o pattern aceito → **não** registrar `status: "draft"`. Registrar `status: "failed"`, `reason: "linkedin_draft_url_invalid — got dashboard URL not specific draft"`. Sinaliza que o "Save as draft" não criou rascunho real ou Save não disparou.
+     - **Validação adicional**: navegar pra suposta lista de drafts da company page e procurar pelo texto do post recém-salvo (primeiros 30 chars). Se não encontrar → `status: "failed"`, `reason: "linkedin_draft_not_found_in_list"`. Confirma que o draft existe além do click otimista.
+     - **Política**: nunca retornar `status: "draft"` sem confirmação determinística. Per regra invariável CLAUDE.md #573 (validar afirmações de subagent sobre estado externo).
 6. **Fallback agendar** (se rascunho não disponível):
    - Calcular `scheduled_at` chamando o helper compartilhado (#270 — sempre usa `editionDate + day_offset`, nunca `today() + day_offset`).
 
