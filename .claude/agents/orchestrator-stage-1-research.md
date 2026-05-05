@@ -125,6 +125,21 @@ Output stdout: `{ injected, already_in_pool, total_editor_urls, total_pool_size,
 
 Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`. Categorizer prioriza `editor_submitted`. Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
 
+### 1h.5. Validar injeção (#625)
+
+Validador **externo** anti-skip — diferente de `--validate-pool` (interno/tautológico), este script roda após o step 1h e detecta o cenário onde o orchestrator skipou a chamada inteira:
+
+```bash
+npx tsx scripts/validate-stage-1-injection.ts \
+  --edition-dir data/editions/{AAMMDD} \
+  --inbox-md data/inbox.md \
+  --editor diariaeditor@gmail.com
+```
+
+Se exit 1: step 1h foi skipado ou falhou silenciosamente. Re-executar step 1h e repetir. Se exit 2: erro de leitura de arquivo. Verificar paths.
+
+Logar resultado como info no run-log. **Não prosseguir para 1i se exit 1.**
+
 ### 1i. Link verification (script direto)
 
 Gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tmp-urls-all.json` (array de strings) e rodar:
