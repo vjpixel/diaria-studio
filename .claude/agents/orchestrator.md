@@ -43,7 +43,8 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 
 O detalhamento completo de cada stage está nos arquivos abaixo. **Leia o sub-arquivo correspondente ao stage que vai executar antes de começar cada etapa.**
 
-- `@see .claude/agents/orchestrator-stage-0-1.md` — Stage 0 (setup + dedup + pre-flight checks) e Stage 1 (pesquisa + É IA?)
+- `@see .claude/agents/orchestrator-stage-0-preflight.md` — Stage 0 (setup, parâmetros, checks pré-edição, refreshes) (#634 split)
+- `@see .claude/agents/orchestrator-stage-1-research.md` — Stage 1 (pesquisa + É IA?) (#634 split)
 - `@see .claude/agents/orchestrator-stage-2.md` — Etapa 2 (escrita — newsletter + social em paralelo)
 - `@see .claude/agents/orchestrator-stage-3.md` — Etapa 3 (imagens — É IA? coleta + destaques)
 - `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (publicação paralela + auto-reporter)
