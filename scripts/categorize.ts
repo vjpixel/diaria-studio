@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
 
 export interface Article {
   url: string;
@@ -36,130 +37,12 @@ export interface Article {
 export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
 
 // ---------------------------------------------------------------------------
-// Domínios e padrões que indicam LANÇAMENTO (anúncio oficial)
+// Domínios e padrões que indicam LANÇAMENTO (anúncio oficial) — #566
+// Derivados de scripts/lib/official-domains.ts (fonte única de verdade).
+// Para adicionar empresa nova: editar official-domains.ts, não aqui.
 // ---------------------------------------------------------------------------
-
-/**
- * Hostnames (sem www.) cujo conteúdo é predominantemente oficial da empresa.
- * Manter em ordem alfabética por empresa para facilitar manutenção.
- */
-const LANCAMENTO_DOMAINS = new Set([
-  // Adept
-  "adept.ai",
-  // AI21 Labs
-  "ai21.com",
-  // Amazon / AWS
-  "aws.amazon.com",
-  // Apple
-  "developer.apple.com",
-  "machinelearning.apple.com",
-  // Character.AI
-  "character.ai",
-  // Cerebras
-  "cerebras.ai",
-  "cerebras.net",
-  // Cohere
-  "cohere.com",
-  // DeepMind / Google
-  "ai.google",
-  "deepmind.com",
-  "deepmind.google",
-  // Fireworks AI
-  "fireworks.ai",
-  // Groq
-  "groq.com",
-  // Hugging Face (blog oficial — /papers/ fica em pesquisa)
-  // tratado via LANCAMENTO_PATTERNS abaixo
-  // Inflection
-  "inflection.ai",
-  // Lmarena / Chatbot Arena
-  "lmarena.ai",
-  // Meta AI
-  "about.meta.com",
-  "ai.meta.com",
-  "engineering.fb.com",
-  "llama.meta.com",
-  "about.fb.com",
-  // Microsoft (blog e research)
-  "blogs.microsoft.com",
-  // Mistral
-  "mistral.ai",
-  // NVIDIA
-  "blogs.nvidia.com",
-  "developer.nvidia.com",
-  // OpenAI — removido: alto volume, usar LANCAMENTO_PATTERNS abaixo (#354)
-  // Perplexity (apenas /hub/ e research. — resto é agregador)
-  // tratado via LANCAMENTO_PATTERNS abaixo
-  // Replicate
-  "replicate.com",
-  // RunwayML
-  "runwayml.com",
-  // SambaNova
-  "sambanova.ai",
-  // Scale AI
-  "scale.com",
-  // Stability AI
-  "stability.ai",
-  // Together AI
-  "together.ai",
-  // xAI (Grok)
-  "x.ai",
-  // Poolside (#355)
-  "poolside.ai",
-  // 01.ai / Yi (#355)
-  "01.ai",
-  // Aleph Alpha (#355)
-  "aleph-alpha.com",
-  // Reka AI (#355)
-  "reka.ai",
-  // Arcee AI (#355)
-  "arcee.ai",
-  // Liquid AI (#355)
-  "liquid.ai",
-  // Nomic AI (#355)
-  "nomic.ai",
-  // Imbue (#355)
-  "imbue.com",
-]);
-
-/**
- * Padrões (regex contra hostname+pathname, sem www.) que indicam páginas
- * de anúncio/blog oficial em domínios que também hospedam outras coisas.
- */
-const LANCAMENTO_PATTERNS: RegExp[] = [
-  // Anthropic — blog e news (anthropic.com/* seria lancamento, exceto papers)
-  /^anthropic\.com\/(news|blog|claude|research)\//,
-  // AWS — apenas blog
-  /^aws\.amazon\.com\/blogs?\//,
-  // Apple — apenas ML blog e developer news
-  /^machinelearning\.apple\.com\//,
-  /^developer\.apple\.com\/news\//,
-  // Hugging Face — apenas blog/ (não papers/)
-  /^huggingface\.co\/blog\//,
-  // Microsoft — blog e research
-  /^techcommunity\.microsoft\.com\//,
-  /^microsoft\.com\/(en-[a-z]+\/)?(research|blog)\//,
-  // NVIDIA
-  /^developer\.nvidia\.com\/(blog|technical-blog)\//,
-  // Perplexity — apenas hub (anúncios de produto)
-  /^perplexity\.ai\/hub\//,
-  // Google Cloud blog
-  /^cloud\.google\.com\/blog\//,
-  // Google AI blog
-  /^blog\.research\.google\//,
-  // Meta AI research (pages, não the /research/ section que é paper)
-  /^ai\.meta\.com\/(blog|news)\//,
-  // Google blog — apenas anúncios de produto (blog.google tem posts de todo tipo) (#354)
-  /^blog\.google\/(products|technology|outreach-initiatives)\//,
-  // OpenAI — blog/index/news de produto (não research, compliance, principles) (#354)
-  /^openai\.com\/(blog|index|news)\/(?!our-principles|safety-report|transparency|fedram|fido)/,
-  // GitHub Pages como site oficial de projeto open-source — qualquer
-  // {project}.github.io conta como lançamento (ex: openmoss.github.io
-  // pra MOSS-Audio na 260429). Subdomain obrigatório (github.io bare
-  // redireciona pra github.com). Tutoriais hospedados em github.io são
-  // re-classificados antes via TUTORIAL_DOMAINS/PATTERNS (linhas 307-317).
-  /^[a-z0-9][a-z0-9-]*\.github\.io\//,
-];
+const LANCAMENTO_DOMAINS = lancamentoDomains();
+const LANCAMENTO_PATTERNS = lancamentoPatterns();
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam PESQUISA (papers, estudos, relatórios)
