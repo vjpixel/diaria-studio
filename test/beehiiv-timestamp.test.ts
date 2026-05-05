@@ -114,6 +114,23 @@ describe("extractPublishedDate (#572 + #573)", () => {
       );
       assert.equal(d, null);
     });
+
+    it("ISO passado + publish_date futuro: ISO ganha (precedência documentada)", () => {
+      // Cenário teórico documentado no JSDoc: na API Beehiiv atual (#572) só
+      // publish_date é populado, então essa combinação não acontece. Mas se
+      // a API restaurar ISOs e algum post tiver ambos, este teste documenta
+      // o comportamento atual: ISO ganha por precedência, ignora publish_date.
+      // Se esse cenário virar real, mudar lógica pra "qualquer campo futuro → null".
+      const d = extractPublishedDate(
+        {
+          published_at: "2026-05-04T08:00:00Z",  // passado
+          publish_date: 1778004000,              // 2026-05-05T18:00Z, futuro
+        },
+        NOW,
+      );
+      // Comportamento atual: retorna ISO passado (não null)
+      assert.equal(d?.toISOString(), "2026-05-04T08:00:00.000Z");
+    });
   });
 
   describe("missing fields", () => {

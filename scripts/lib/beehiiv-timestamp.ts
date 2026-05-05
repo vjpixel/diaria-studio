@@ -33,8 +33,20 @@ export interface BeehiivPostTimestamps {
  * (post agendado, não publicado — #573).
  *
  * @param post  Post da Beehiiv API com campos de timestamp.
- * @param now   Opcional. Se passado, filtra posts com timestamp > now (agendados).
- *              Sem `now`, retorna o timestamp parseado mesmo se futuro.
+ * @param now   **RECOMENDADO em produção.** `new Date()` filtra agendamentos
+ *              futuros — Beehiiv usa `status: "confirmed"` tanto pra agendados
+ *              quanto pra enviados, indistinguíveis sem este check (#573).
+ *              Sem `now`, retorna o timestamp parseado mesmo se futuro — só
+ *              omitir em testes (datas fixas), processamento de dados históricos,
+ *              ou quando o caller intencionalmente quer ver agendamentos.
+ *
+ * **Precedência de campos:** ISO fields (`published_at` → `scheduled_at` →
+ * `updated_at`) ganham sobre `publish_date` Unix. Hoje (#572) só `publish_date`
+ * é populado pela API; mas se a API restaurar ISOs no futuro eles serão canônicos.
+ * **Cenário teórico não-tratado:** se um post tiver ISO passado E `publish_date`
+ * futuro simultaneamente (não acontece na API atual), o helper retorna o ISO
+ * sem checar o Unix futuro. Adicionar lógica conservadora (qualquer campo futuro
+ * → null) se esse caso virar real.
  *
  * Não lança — caller decide o que fazer com `null` (loud fail recomendado).
  */

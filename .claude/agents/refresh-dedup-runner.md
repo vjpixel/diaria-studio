@@ -42,7 +42,7 @@ Nenhum input obrigatório. Você descobre o estado da base e age de acordo.
    - `order_by = "newest_first"`
 2. Para **cada** post retornado, chamar `mcp__ed929847-...__get_post_content(post_id)` e juntar `html`/`markdown` ao objeto.
 3. Montar array JSON com os campos `{ id, title, web_url, published_at, html, markdown }` (themes é opcional).
-   **Importante (#572, #573):** Usar `scripts/lib/beehiiv-timestamp.ts` → `extractPublishedAtIso(post, new Date())` para popular `published_at`. O helper:
+   **Importante (#572, #573):** Usar `scripts/lib/beehiiv-timestamp.ts` → `extractPublishedAtIso(post, new Date())` para popular `published_at`. (Bootstrap usa a variant `*Iso` porque o campo grava direto no JSON como string. Incremental usa a variant `extractPublishedDate` porque precisa de Date object pra comparar com `maxKnownDate`.) O helper:
    - Tenta `published_at` (ISO), `scheduled_at` (ISO), `updated_at` (ISO), `publish_date` (Unix seconds — campo atual da Beehiiv API).
    - Filtra agendamentos futuros (`publish_date > now`) retornando `null` — Beehiiv usa `status: "confirmed"` tanto pra agendados quanto enviados.
    Se retornar `null` (sem `now`), todos os campos são inválidos: logar erro loud e pular o post.
