@@ -135,6 +135,45 @@ export function domain(url: string): string {
 }
 
 /**
+ * Classifica um HTTP status code retornado por HEAD/GET (#696).
+ * Extraída de `verify()` para permitir teste unitário sem mockar undici.
+ *
+ * Retorna o verdict adequado ou `null` se o status não indica erro (< 400).
+ */
+export function classifyHttpStatus(
+  statusCode: number,
+  host: string,
+  method: "HEAD" | "GET",
+): Pick<VerifyResult, "verdict" | "note" | "access_uncertain"> | null {
+  if (statusCode < 400) return null;
+  // #696: 429 = rate limiting transient — tratar como anti_bot em qualquer domínio
+  if (statusCode === 429) {
+    return { verdict: "anti_bot", note: `${method} 429 (rate limited)`, access_uncertain: true };
+  }
+  // #320: 403 em publisher confiável = provável anti-bot
+  if (statusCode === 403 && TRUSTED_PUBLISHERS.has(host)) {
+    return { verdict: "anti_bot", note: `${method} 403 (trusted publisher)`, access_uncertain: true };
+  }
+  return { verdict: "blocked", note: `${method} ${statusCode}` };
+}
+
+/**
+ * Detecta soft 404 pelo conteúdo do elemento <title> (#695).
+ * Retorna o título capturado se indicar "não encontrado", null caso contrário.
+ * Limitar a detecção ao <title> evita falsos positivos em artigos que
+ * mencionam "404" no conteúdo (ex: "Como resolvi o erro 404 no nginx").
+ */
+export function detectSoft404Title(body: string): string | null {
+  const titleMatch = body.match(/<title[^>]*>([^<]{1,200})<\/title>/);
+  if (!titleMatch) return null;
+  const title = titleMatch[1].toLowerCase();
+  if (/\b(404|not found|not exist|página não encontrada|artigo não encontrado|conteúdo não encontrado|page not found|no such page)\b/.test(title)) {
+    return titleMatch[1].trim();
+  }
+  return null;
+}
+
+/**
  * Tenta extrair a URL da fonte primária de uma página agregadora.
  * Estratégia em ordem de confiança:
  *   1. <meta property="og:url"> apontando para domínio diferente
@@ -267,11 +306,8 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
   try {
     const head = await request(effectiveUrl, { method: "HEAD", signal: ctrl.signal });
     if (head.statusCode >= 400) {
-      // Distinguir anti-bot de verdadeiramente bloqueado (#320)
-      if ((head.statusCode === 403 || head.statusCode === 429) && TRUSTED_PUBLISHERS.has(host)) {
-        return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `HEAD ${head.statusCode} (trusted publisher)`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
-      }
-      return { verdict: "blocked", finalUrl: effectiveUrl, note: `HEAD ${head.statusCode}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
+      const r = classifyHttpStatus(head.statusCode, host, "HEAD");
+      if (r) return { ...r, finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
 
     const get = await request(effectiveUrl, {
@@ -280,10 +316,8 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
       headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
     });
     if (get.statusCode >= 400) {
-      if ((get.statusCode === 403 || get.statusCode === 429) && TRUSTED_PUBLISHERS.has(host)) {
-        return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `GET ${get.statusCode} (trusted publisher)`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
-      }
-      return { verdict: "blocked", finalUrl: effectiveUrl, note: `GET ${get.statusCode}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
+      const r = classifyHttpStatus(get.statusCode, host, "GET");
+      if (r) return { ...r, finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
 
     const body = (await get.body.text()).slice(0, 50_000).toLowerCase();
@@ -293,6 +327,11 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
     if (body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").length < 500) {
       if (browser) return { ...(await verifyWithBrowser(url, browser)), ...(resolvedFrom ? { resolvedFrom } : {}) };
       return { verdict: "uncertain", finalUrl: effectiveUrl, note: "body < 500 chars", ...(resolvedFrom ? { resolvedFrom } : {}) };
+    }
+    // #695: soft 404 via título — página retorna 200 mas <title> indica não encontrado
+    const soft404Title = detectSoft404Title(body);
+    if (soft404Title) {
+      return { verdict: "uncertain", finalUrl: effectiveUrl, note: `possível soft 404 (title: "${soft404Title}")`, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
     return { verdict: "accessible", finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
   } catch (e: unknown) {
