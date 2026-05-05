@@ -145,8 +145,12 @@ function extractTextBody(part: GmailMessagePart): string {
   return "";
 }
 
-export const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
-export const TRAILING_PUNCT = /[.,;:!?)]+$/;
+// #626: URL_REGEX e extractUrls foram movidos pra scripts/lib/url-utils.ts
+// pra centralizar lógica e arrumar bug de `)` em URLs Wikipedia balanceadas.
+// Re-exports mantidos pra compat retroativa com test/inbox-drain.test.ts.
+import { URL_REGEX_RAW, extractUrls } from "./lib/url-utils.ts";
+export { URL_REGEX_RAW as URL_REGEX, extractUrls };
+
 const EMAIL_SIGNATURE_MARKERS = [
   "enviado do meu iphone",
   "enviado do meu android",
@@ -167,13 +171,6 @@ function cleanBody(body: string): string {
     }
   }
   return cleaned.trim();
-}
-
-export function extractUrls(text: string): string[] {
-  const raw = text.match(URL_REGEX) ?? [];
-  return raw
-    .map((u) => u.replace(TRAILING_PUNCT, ""))
-    .filter((u) => u.length > 10);
 }
 
 function getHeader(msg: GmailMessage, name: string): string {

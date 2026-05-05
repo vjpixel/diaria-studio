@@ -309,6 +309,9 @@ export function renderSection(
   articles: Article[],
   highlightUrls: Set<string>,
   runnerUpUrls: Set<string>,
+  /** #579: numeração inicial pra seção. Default 1 (compat). Caller passa
+   *  cumulative offset pra criar referência única contínua entre seções. */
+  startNumber = 1,
 ): string {
   if (articles.length === 0) {
     return `## ${title}\n\n_(vazio)_\n`;
@@ -326,9 +329,10 @@ export function renderSection(
         const sb = typeof b.score === "number" ? b.score : -Infinity;
         return sb - sa;
       });
-  // Numeração por seção — facilita referência no gate humano (#322)
+  // Numeração contínua entre seções (#579) — startNumber + idx.
+  // Editor referencia "linha 7" sem precisar contar offset por seção.
   const lines = sorted.map((a, idx) =>
-    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), idx + 1),
+    renderLine(a, highlightUrls.has(a.url), runnerUpUrls.has(a.url), startNumber + idx),
   );
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }
@@ -599,18 +603,31 @@ function main() {
   const destaquesFromApproved = renderDestaquesFromApproved(approvedPath, highlightUrls, runnerUpUrls);
   const destaquesSection = destaquesFromApproved ?? `## Destaques\n\n_(mova 3 artigos para cá)_\n`;
 
+  // #579: numeração contínua entre seções — editor referencia "linha N" sem
+  // precisar contar offset por seção. Calcula offset acumulado conforme renderiza.
+  let cumOffset = 1;
+  const lancSec = renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls, cumOffset);
+  cumOffset += data.lancamento.length;
+  const pesqSec = renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls, cumOffset);
+  cumOffset += data.pesquisa.length;
+  const notSec = renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls, cumOffset);
+  cumOffset += data.noticias.length;
+  const tutSec = data.tutorial && data.tutorial.length > 0
+    ? renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls, cumOffset)
+    : null;
+  if (tutSec) cumOffset += data.tutorial!.length;
+  const vidSec = data.video && data.video.length > 0
+    ? renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls, cumOffset)
+    : null;
+
   const sections = [
     destaquesSection,
-    renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls),
-    renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls),
+    lancSec,
+    pesqSec,
     eaiBlock,
-    renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls),
-    ...(data.tutorial && data.tutorial.length > 0
-      ? [renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls)]
-      : []),
-    ...(data.video && data.video.length > 0
-      ? [renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls)]
-      : []),
+    notSec,
+    ...(tutSec ? [tutSec] : []),
+    ...(vidSec ? [vidSec] : []),
   ].join("\n");
 
   const footer = renderSourceHealth(cli.sourceHealth);

@@ -721,3 +721,30 @@ describe("renderDestaquesFromApproved (#585)", () => {
     rmSync(tmp, { recursive: true });
   });
 });
+
+describe("renderSection startNumber (#579)", () => {
+  it("default startNumber=1 mantém compat", () => {
+    const result = renderSection(
+      "TestSec",
+      [{ url: "https://a.com/x", title: "T", score: 80, date: "2026-05-05" }],
+      new Set(),
+      new Set(),
+    );
+    assert.match(result, /^## TestSec\n\n1\. /);
+  });
+
+  it("startNumber=5 inicia em 5", () => {
+    const result = renderSection(
+      "TestSec",
+      [
+        { url: "https://a.com/1", title: "T1", score: 80, date: "2026-05-05" },
+        { url: "https://a.com/2", title: "T2", score: 70, date: "2026-05-05" },
+      ],
+      new Set(),
+      new Set(),
+      5,
+    );
+    assert.match(result, /5\. \[80\] T1/);
+    assert.match(result, /6\. \[70\] T2/);
+  });
+});
