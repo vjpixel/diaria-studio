@@ -478,7 +478,7 @@ function main(): void {
   }
 
   // Apply hard filters
-  const now = new Date("2026-05-04T00:00:00Z");
+  const now = new Date();
   const kept: Scored[] = [];
   const excluded: Array<Merged & { reason: string }> = [];
   for (const m of merged.values()) {
