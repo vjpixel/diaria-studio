@@ -30,7 +30,8 @@ export interface ValidationResult {
   status: "ok" | "error";
 }
 
-const SECTION_LANCAMENTOS_RE = /^LAN[ÇC]AMENTOS\s*$/m;
+// Match tanto formato Stage 2 (LANÇAMENTOS solo) quanto Stage 1 (## Lançamentos com markdown header) — #587.
+const SECTION_LANCAMENTOS_RE = /^(?:##\s+)?lan[çc]amentos\s*$/im;
 const SECTION_BREAK_RE = /^---\s*$/m;
 const URL_RE = /https?:\/\/\S+/g;
 
@@ -57,8 +58,12 @@ export function extractLancamentoUrls(
       continue;
     }
     if (inSection) {
-      // Outro header de seção (ex: PESQUISAS) também encerra
-      if (/^[A-ZÇÃÕÁÉÍÓÚÊÔ ]+$/.test(line.trim()) && line.trim().length > 5) {
+      // Outro header de seção (ex: PESQUISAS, ## Pesquisas) também encerra.
+      // #587: aceita formato Stage 1 (`## Header`) além de Stage 2 (`HEADER` solo).
+      const trimmed = line.trim();
+      const isPlainCaps = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]+$/.test(trimmed) && trimmed.length > 5;
+      const isMdHeader = /^##\s+\S/.test(trimmed);
+      if (isPlainCaps || isMdHeader) {
         inSection = false;
         continue;
       }

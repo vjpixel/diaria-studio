@@ -130,3 +130,47 @@ describe("validateLancamentos", () => {
     assert.equal(r.status, "ok");
   });
 });
+
+import { extractLancamentoUrls as extractStage1, validateLancamentos as validateStage1 } from "../scripts/validate-lancamentos.ts";
+
+describe("validate-lancamentos compat com Stage 1 categorized.md format (#587)", () => {
+  it("extrai URLs de '## Lançamentos' (Stage 1 markdown header)", () => {
+    const md = `# Edição
+## Destaques
+_(mova 3 artigos para cá)_
+
+## Lançamentos
+
+1. [86] Buser lança app no ChatGPT — https://canaltech.com.br/foo — 2026-05-04
+
+## Pesquisas
+
+1. [70] Outro artigo — https://example.com/x — 2026-05-03
+`;
+    const urls = extractStage1(md);
+    assert.equal(urls.length, 1);
+    assert.ok(urls[0].url.includes("canaltech"));
+  });
+
+  it("validateLancamentos detecta canaltech como não-oficial em Stage 1", () => {
+    const md = `## Lançamentos
+
+1. [86] Buser lança app no ChatGPT — https://canaltech.com.br/foo — 2026-05-04
+`;
+    const result = validateStage1(md);
+    assert.equal(result.status, "error");
+    assert.equal(result.invalid_urls.length, 1);
+    assert.ok(result.invalid_urls[0].url.includes("canaltech"));
+  });
+
+  it("compat retroativa: ainda detecta formato Stage 2 (LANÇAMENTOS plain)", () => {
+    const md = `LANÇAMENTOS
+
+Buser app
+
+https://canaltech.com.br/foo
+`;
+    const result = validateStage1(md);
+    assert.equal(result.status, "error");
+  });
+});

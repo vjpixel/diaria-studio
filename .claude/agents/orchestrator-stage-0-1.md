@@ -493,6 +493,28 @@ O script produz o formato combinado (seção Destaques vazia no topo + seções 
 
 **Regra absoluta**: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de nova chamada deste script para manter o MD em sincronia. Se só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 
+### 1v-bis. Lint LANÇAMENTOS — bloqueia URLs não-oficiais antes do gate (#587)
+
+Antes de apresentar o gate, validar que items em `## Lançamentos` do MD têm URL oficial (per regra invariável #160). Sem este check, o editor podia mover artigos com URL não-oficial pra LANÇAMENTOS no gate, e o writer da Etapa 2 silenciosamente reclassificava pra OUTRAS NOTÍCIAS — quebrando o contrato de aprovação.
+
+```bash
+npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/01-categorized.md
+```
+
+Se exit code != 0, **incluir no gate output** as URLs problemáticas com sugestão pro editor:
+
+```
+⚠️  N URL(s) em LANÇAMENTOS não são oficiais (per regra #160):
+  - linha {L}: {url}
+
+Opções:
+  - Mover artigo pra NOTÍCIAS (não cumpre #160)
+  - Substituir URL por equivalente oficial (ex: openai.com/blog/X em vez de canaltech.com.br/X)
+  - Forçar aceitação no gate (override editorial pontual)
+```
+
+Editor decide no gate. Auto-aprovação (test_mode/--no-gates) bypassa o lint mas loga warn no run-log.
+
 ### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
 
 **Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
