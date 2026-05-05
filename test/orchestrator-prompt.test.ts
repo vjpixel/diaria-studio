@@ -69,8 +69,10 @@ function readOrchestratorFiles(): Record<string, string> {
 }
 
 function computeHash(contents: Record<string, string>): string {
+  // Normalize CRLF → LF before hashing for cross-platform consistency.
+  // Windows writes CRLF, Linux/CI uses LF — without normalization hashes differ.
   const combined = ORCHESTRATOR_FILES
-    .map((f) => `=== ${f} ===\n${contents[f]}`)
+    .map((f) => `=== ${f} ===\n${contents[f].replace(/\r\n/g, "\n")}`)
     .join("\n\n");
   return createHash("sha256").update(combined).digest("hex").slice(0, 16);
 }
