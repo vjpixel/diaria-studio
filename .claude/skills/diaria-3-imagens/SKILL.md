@@ -20,7 +20,7 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
 
 - `data/editions/$1/_internal/01-approved.json` deve existir (para É IA? buscar contexto da edição)
 - `GEMINI_API_KEY` configurada como variável de ambiente (para geração das imagens e É IA?)
-- Para as imagens de destaque: `data/editions/$1/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer)
+- Para as imagens de destaque: `data/editions/$1/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
 - (Opcional) `BEEHIIV_API_KEY` + `BEEHIIV_PUBLICATION_ID` para auto-fill de resultado do poll anterior no É IA?
 
 ## Parte 1 — É IA? (pular se `$2 = d1|d2|d3`)
@@ -72,7 +72,7 @@ Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer
 Puxar prompts do Drive (caso o editor tenha editado):
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 3 --files 02-d1-prompt.md,02-d2-prompt.md,02-d3-prompt.md
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
 
 Falha = warning, **nunca bloqueia**.
@@ -97,12 +97,12 @@ Pré-requisito: writer agent emitiu `destaque_url:` em frontmatter de cada promp
 
 Para cada destaque indicado (ou todos se sem argumento):
 
-1. Ler `data/editions/$1/02-d{N}-prompt.md`.
+1. Ler `data/editions/$1/_internal/02-d{N}-prompt.md`.
 2. Montar prompt estilo impasto Van Gogh + gravar `data/editions/$1/04-d{N}-sd-prompt.json`.
 3. Chamar:
    ```bash
    npx tsx scripts/image-generate.ts \
-     --prompt-file data/editions/$1/02-d{N}-prompt.md \
+     --prompt-file data/editions/$1/_internal/02-d{N}-prompt.md \
      --out data/editions/$1/04-d{N}.jpg \
      --sd-prompt-out data/editions/$1/04-d{N}-sd-prompt.json
    ```
@@ -112,7 +112,7 @@ Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Par
 Para d1, gerar também versão 2×1:
 ```bash
 npx tsx scripts/image-generate.ts \
-  --prompt-file data/editions/$1/02-d1-prompt.md \
+  --prompt-file data/editions/$1/_internal/02-d1-prompt.md \
   --out data/editions/$1/04-d1-2x1.jpg \
   --aspect 2x1 \
   --sd-prompt-out data/editions/$1/04-d1-sd-prompt.json
