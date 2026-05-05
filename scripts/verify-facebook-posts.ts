@@ -39,6 +39,10 @@ export interface SocialPublished {
 }
 
 export interface GraphPostResponse {
+  /**
+   * Inferido (não retornado pela API) — true se created_time presente E
+   * (sem scheduled_publish_time OU scheduled_publish_time já passou). #600
+   */
   is_published?: boolean;
   created_time?: string;
   permalink_url?: string;
@@ -55,12 +59,32 @@ export type FetchPostFn = (
 /**
  * Fetch default — chama Graph API real. Pode ser substituído em testes.
  */
+/**
+ * Infere `is_published` a partir de campos que a Graph API ainda retorna.
+ * Pure — testável sem network. (#600)
+ *
+ * Regra: post está publicado se created_time presente E NÃO está no futuro
+ * agendado (scheduled_publish_time ausente OU já passou).
+ */
+export function inferIsPublished(
+  data: GraphPostResponse,
+  nowUnix: number,
+): GraphPostResponse {
+  if (data.error || !data.created_time) return data;
+  const stillScheduled =
+    typeof data.scheduled_publish_time === "number" &&
+    data.scheduled_publish_time > nowUnix;
+  return { ...data, is_published: !stillScheduled };
+}
+
 export async function defaultFetchPost(
   postId: string,
   pageToken: string,
   apiVersion: string,
 ): Promise<GraphPostResponse> {
-  const fields = "is_published,created_time,permalink_url,scheduled_publish_time";
+  // #600: is_published foi deprecated em Graph API v18+ (retorna #100 error).
+  // Inferimos publicação por presença de created_time + scheduled_publish_time vencido.
+  const fields = "created_time,permalink_url,scheduled_publish_time";
   // Token via Authorization header (não query string) pra evitar leak em logs
   // de proxies/CDNs intermediários — security review da sessão 2026-04-24.
   const url = `https://graph.facebook.com/${apiVersion}/${postId}?fields=${fields}`;
@@ -68,7 +92,7 @@ export async function defaultFetchPost(
     headers: { Authorization: `OAuth ${pageToken}` },
   });
   const data = (await res.json()) as GraphPostResponse;
-  return data;
+  return inferIsPublished(data, Math.floor(Date.now() / 1000));
 }
 
 /**

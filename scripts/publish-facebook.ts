@@ -25,6 +25,7 @@
  * Output: appends em {edition-dir}/06-social-published.json
  */
 
+import "dotenv/config";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -387,23 +388,30 @@ async function main() {
   const doReschedule = !!args.reschedule;
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
 
-  // Load credentials — pre-flight check de token (#263)
-  let creds: { page_id: string; page_access_token: string; api_version: string };
+  // Load credentials — env vars com fallback para data/.fb-credentials.json (compat retroativa)
+  // Migração para .env: FACEBOOK_PAGE_ID, FACEBOOK_PAGE_ACCESS_TOKEN, FACEBOOK_API_VERSION
+  let fileCreds: { page_id?: string; page_access_token?: string; api_version?: string } = {};
   try {
-    creds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
+    fileCreds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
   } catch {
+    // Arquivo não existe — OK se env vars estão setadas
+  }
+  const page_id = process.env.FACEBOOK_PAGE_ID || fileCreds.page_id || "";
+  const page_access_token = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || fileCreds.page_access_token || "";
+  const api_version = process.env.FACEBOOK_API_VERSION || fileCreds.api_version || "v25.0";
+  if (!page_id) {
     console.error(
-      "ERRO: data/.fb-credentials.json não encontrado ou inválido.\n" +
-      "Criar via: cp data/.fb-credentials.json.example data/.fb-credentials.json\n" +
-      "Preencher page_id e page_access_token (gerar em https://developers.facebook.com/tools/explorer)."
+      "ERRO: FACEBOOK_PAGE_ID não está setado.\n" +
+      "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
+      "Encontrar Page ID em https://www.facebook.com/diaria.br → Sobre → ID da página."
     );
     process.exit(1);
   }
-  const { page_id, page_access_token, api_version } = creds;
   if (!page_access_token) {
     console.error(
-      "ERRO: page_access_token não está setado em data/.fb-credentials.json.\n" +
-      "Regenerar em https://developers.facebook.com/tools/explorer\n" +
+      "ERRO: FACEBOOK_PAGE_ACCESS_TOKEN não está setado.\n" +
+      "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
+      "Gerar em https://developers.facebook.com/tools/explorer\n" +
       "(selecionar app + Page Diar.ia → Generate Page Access Token long-lived)."
     );
     process.exit(1);
