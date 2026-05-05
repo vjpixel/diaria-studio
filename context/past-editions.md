@@ -1,9 +1,72 @@
 # Últimas edições publicadas — para dedup
 
 **atualizado em:** 2026-05-05
-**edições carregadas:** 8
+**edições carregadas:** 11
 
 Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
+
+---
+
+## 2026-05-05 — "Diar.ia 260505"
+URL: https://diar.ia.br/
+
+Links usados:
+- https://canaltech.com.br/apps/buser-lanca-app-no-chatgpt-para-pesquisa-de-viagens-rodoviarias/
+- https://winbuzzer.com/2026/05/02/mistral-medium-3-5-unified-flagship-chat-reasoning-code-xcxwbn/
+- https://blog.google/innovation-and-ai/technology/developers-tools/event-driven-webhooks/
+- https://codersera.com/blog/best-open-source-llm-2026-llama-4-qwen-3-5-deepseek-v4-gemma-4-mistral/
+- https://www.mofo.com/resources/insights/260501-european-digital-compliance-key-digital-regulation
+- https://codersera.com/blog/kimi-k2-6-complete-guide-2026/
+- https://exame.com/inteligencia-artificial/por-que-sam-altman-defende-dar-dinheiro-a-populacao-todos-os-meses-para-conter-o-estrago-da-ia/
+- https://canaltech.com.br/inteligencia-artificial/ia-substitui-medicos-teste-de-harvard-em-pronto-socorro-surpreende/
+- https://canaltech.com.br/apps/novo-selo-do-instagram-vai-marcar-perfis-que-usam-ia/
+- https://blog.google/innovation-and-ai/technology/ai/google-ai-updates-april-2026/
+- https://www.wbur.org/news/2026/05/04/massachusetts-doctors-diagnosis-artificial-intelligence
+- https://canaltech.com.br/apps/google-ai-studio-como-criar-suas-proprias-instrucoes-de-ia/
+- https://www.cnnbrasil.com.br/economia/negocios/pentagono-fecha-acordo-com-8-big-techs-apos-ter-deixado-de-lado-anthropic/
+- https://mittechreview.com.br/deepseek-v4-modelo-ia/
+- https://exame.com/inteligencia-artificial/nvidia-microsoft-e-uber-podem-estar-em-lista-das-empresas-afetadas-por-falha-em-ferramenta-de-ia/
+- https://importai.substack.com/p/import-ai-455-automating-ai-research
+
+---
+
+## 2026-05-04 — "Meta compra startup para construir robô humanoide"
+URL: https://diaria.beehiiv.com/p/meta-compra-startup-para-construir-rob-humanoide
+
+Links usados:
+- https://deepmind.google/blog/ai-co-clinician
+- https://openai.com/index/where-the-goblins-came-from
+- https://venturebeat.com/technology/xai-launches-grok-4-3-at-an-aggressively-low-price-and-a-new-fast-powerful-voice-cloning-suite
+- https://mittechreview.com.br/economia-bicos-treina-robos-humanoides
+- https://canaltech.com.br/inteligencia-artificial/crie-playlists-perfeitas-no-spotify-com-estes-prompts-do-claude
+- https://canaltech.com.br/inteligencia-artificial/prompts-claude-para-escrever-melhor-resumir-arquivos-organizar-ideias
+- https://alphasignalai.substack.com/p/how-kimi-k26-deploys-300-sub-agents
+- https://mittechreview.com.br/boom-robos-humanoides-ia
+- https://canaltech.com.br/inteligencia-artificial/mude-sua-rotina-de-trabalho-em-90-dias-com-estas-dicas-de-ia
+- https://canaltech.com.br/inteligencia-artificial/o-que-mudou-de-verdade-no-chatgpt-images-20
+- https://techcrunch.com/2026/05/01/meta-buys-robotics-startup-to-bolster-its-humanoid-ai-ambitions
+- https://www.anthropic.com/research/claude-personal-guidance
+- https://canaltech.com.br/apps/blablacar-leva-reservas-de-caronas-e-onibus-para-o-chatgpt
+
+---
+
+## 2026-04-30 — "Brasil emprega mais... em cargos que somem"
+URL: https://diaria.beehiiv.com/p/brasil-emprega-mais-em-cargos-que-somem
+
+Links usados:
+- https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-openai-models-codex-managed-agents/
+- https://blogs.nvidia.com/blog/nemotron-3-nano-omni-multimodal-ai-agents/
+- https://poolside.ai/blog/laguna-a-deeper-dive
+- https://arxiv.org/html/2604.24636v1
+- https://techcrunch.com/2026/04/28/google-expands-pentagons-access-to-its-ai-after-anthropics-refusal/
+- https://www.anthropic.com/news/google-broadcom-partnership-compute
+- https://www.cnnbrasil.com.br/economia/negocios/musk-presta-depoimento-em-processo-contra-ceo-da-openai/
+- https://www.cnnbrasil.com.br/economia/negocios/com-adesao-empresarial-citi-estima-mercado-de-ia-em-mais-de-us-4-trilhoes/
+- https://blog.google/products-and-platforms/platforms/google-pay/agent-payments-protocol-fido-alliance/
+- https://www.muvucapopular.com.br/2026/04/28/recorde-de-emprego-no-brasil-recorde-de-jovens-em-funcoes-que-estao-em-extincao/
+- https://techcrunch.com/2026/04/27/openai-could-be-making-a-phone-with-ai-agents-replacing-apps/
+- https://techcrunch.com/2026/04/27/deepminds-david-silver-just-raised-1-1b-to-build-an-ai-that-learns-without-human-data/
+- https://openai.com/index/our-agreement-with-the-department-of-war/
 
 ---
 
