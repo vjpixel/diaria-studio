@@ -53,9 +53,9 @@ interface DrainResult {
   skipped: boolean;
   reason?: string;
   /** #667: número de threads que falharam ao carregar (Zod error, rede, etc.).
-   * 0 significa drain limpo. Positivo = drain parcial — algumas threads foram
-   * puladas. Útil pra detectar outage Gmail ou schema change sem sacrificar
-   * o drain inteiro. */
+   * Ausente ou 0 indica drain sem erros parciais. Positivo = drain parcial —
+   * algumas threads foram puladas. Útil pra detectar outage Gmail ou schema
+   * change sem sacrificar o drain inteiro. */
   errors?: number;
   /** Primeiras mensagens de erro (max 3, slice 200 chars cada). */
   error_samples?: string[];
@@ -569,6 +569,9 @@ async function main(): Promise<void> {
       `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
     );
     console.log(JSON.stringify(buildSearchFailedResult(msg), null, 2));
+    // saveCursor NÃO é chamado intencionalmente (#668 review #2):
+    // drain não ocorreu, cursor deve permanecer inalterado pra próxima
+    // tentativa reprocessar os mesmos emails sem perder entradas.
     return;
   }
 
