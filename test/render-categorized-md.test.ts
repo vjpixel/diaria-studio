@@ -12,6 +12,7 @@ import {
   renderEaiBlock,
   renderSection,
   computeTotalConsidered,
+  extractEaiAnswer,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -611,5 +612,35 @@ describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
     const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
     assert.equal(result, 99);
     rmSync(dir, { recursive: true });
+  });
+});
+
+describe("extractEaiAnswer (#584)", () => {
+  it("extrai A/B do frontmatter", () => {
+    const md = `---
+eia_answer:
+  A: ia
+  B: real
+---
+
+É IA?
+
+Crédito.
+`;
+    const r = extractEaiAnswer(md);
+    assert.deepEqual(r, { A: "ia", B: "real" });
+  });
+
+  it("retorna null sem frontmatter", () => {
+    assert.equal(extractEaiAnswer("É IA?\nCrédito."), null);
+  });
+
+  it("retorna null se A ou B ausente", () => {
+    const md = `---
+eia_answer:
+  A: ia
+---
+`;
+    assert.equal(extractEaiAnswer(md), null);
   });
 });

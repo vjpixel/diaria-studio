@@ -488,9 +488,30 @@ export function renderEaiBlock(editionDir: string): string {
       break;
     }
     if (!creditLine) return `\n${separator}\n\n## É IA? ⏳ (ainda processando)\n\n${separator}\n`;
-    return `\n${separator}\n\n## É IA?\n\n${creditLine}\n\n${separator}\n`;
+
+    // #584: extrair gabarito do frontmatter `eia_answer` e mostrar pro editor
+    // (apenas em categorized.md / pre-publish — strippado depois pra não estragar
+    // o poll Trivia da newsletter)
+    const gabarito = extractEaiAnswer(content);
+    const gabaritoLine = gabarito ? `\n> Gabarito: **A = ${gabarito.A}**, **B = ${gabarito.B}**\n` : "";
+
+    return `\n${separator}\n\n## É IA?\n\n${creditLine}\n${gabaritoLine}\n${separator}\n`;
   }
   return `\n${separator}\n\n## É IA? ⏳ (ainda processando — será revisado quando disponível)\n\n${separator}\n`;
+}
+
+/**
+ * Extrai `eia_answer.A` e `eia_answer.B` do frontmatter de `01-eia.md` (#584).
+ * Retorna null se ausente ou malformado.
+ */
+export function extractEaiAnswer(eiaMd: string): { A: string; B: string } | null {
+  const fmMatch = eiaMd.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  const fm = fmMatch[1];
+  const aMatch = fm.match(/^\s*A:\s*(\w+)\s*$/m);
+  const bMatch = fm.match(/^\s*B:\s*(\w+)\s*$/m);
+  if (!aMatch || !bMatch) return null;
+  return { A: aMatch[1], B: bMatch[1] };
 }
 
 // ---------- Main ---------------------------------------------------------
