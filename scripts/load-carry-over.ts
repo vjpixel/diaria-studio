@@ -277,12 +277,19 @@ function main(): void {
     scoreMin,
   });
 
-  // Anotar carry_over no shape do pool
-  const carryArticles: PoolArticle[] = kept.map((a) => ({
-    ...a,
-    flag: "carry_over",
-    carry_over_from: prev,
-  }));
+  // Anotar carry_over no shape do pool. **Preservar flag editor_submitted**
+  // se o artigo veio originalmente do inbox (#658 review): categorizer dá
+  // boost +8 por editor_submitted; sobrescrever apaga essa origem.
+  const carryArticles: PoolArticle[] = kept.map((a) => {
+    const wasEditorSubmitted = a.flag === "editor_submitted";
+    return {
+      ...a,
+      // Se era editor_submitted, mantém — assim o boost +8 do categorizer
+      // continua valendo. carry_over_from é a marca complementar.
+      flag: wasEditorSubmitted ? "editor_submitted" : "carry_over",
+      carry_over_from: prev,
+    };
+  });
 
   const merged: PoolArticle[] = [...pool, ...carryArticles];
   writePoolAtomic(poolPathAbs, merged);

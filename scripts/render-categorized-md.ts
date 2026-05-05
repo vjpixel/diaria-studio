@@ -32,6 +32,10 @@ import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
 import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
 
+// #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
+// de outro diretório não quebra resolução de inbox.md / platform.config.json.
+const ROOT = resolve(import.meta.dirname, "..");
+
 interface Article {
   url: string;
   title?: string;
@@ -565,16 +569,39 @@ function main() {
 
   // #592: linha de cobertura no novo formato — X submissões do editor, Y artigos
   // descobertos pela Diar.ia, Z selecionados. Usa "submissões" (#609).
-  const inboxMdPath = cli.inboxMd ?? resolve("data/inbox.md");
-  const platformConfigPath = resolve("platform.config.json");
-  const editorEmail = resolveEditorEmail(platformConfigPath);
-  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
-  const diariaDiscovered = totalConsidered !== null
-    ? Math.max(0, totalConsidered - editorSubmissions)
-    : null;
-  const coverageLine = diariaDiscovered !== null
-    ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected }) + "\n\n"
-    : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.\n\n`;
+  // #658 review: pós-archive (step 1y do orchestrator), data/inbox.md fica
+  // vazio. Re-render daria 0 submissões silenciosamente. Quando 01-approved.json
+  // tem `coverage.line` populado pelo apply-gate-edits, usar como source of truth.
+  const approvedPathForCoverage = resolve(dirname(cli.in), "01-approved.json");
+  let coverageLine: string;
+  if (existsSync(approvedPathForCoverage)) {
+    try {
+      const approved = JSON.parse(readFileSync(approvedPathForCoverage, "utf8")) as {
+        coverage?: { line?: string };
+      };
+      coverageLine = approved.coverage?.line
+        ? approved.coverage.line + "\n\n"
+        : ""; // será preenchido abaixo se ausente
+    } catch {
+      coverageLine = "";
+    }
+  } else {
+    coverageLine = "";
+  }
+
+  if (!coverageLine) {
+    // Fallback: computa do inbox.md / categorized — caso pre-gate ou approved sem coverage.
+    const inboxMdPath = cli.inboxMd ?? resolve(ROOT, "data/inbox.md");
+    const platformConfigPath = resolve(ROOT, "platform.config.json");
+    const editorEmail = resolveEditorEmail(platformConfigPath);
+    const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
+    const diariaDiscovered = totalConsidered !== null
+      ? Math.max(0, totalConsidered - editorSubmissions)
+      : null;
+    coverageLine = diariaDiscovered !== null
+      ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected }) + "\n\n"
+      : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.\n\n`;
+  }
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =

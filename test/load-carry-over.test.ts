@@ -134,6 +134,25 @@ describe("filterCarryOver", () => {
     );
     assert.equal(kept.length, 1);
   });
+
+  it("preserva flag editor_submitted através do filtro (#658 review)", () => {
+    // O filtro só decide kept/skipped — preservação do flag acontece no caller
+    // (main()). Mas o artigo no kept[] mantém a propriedade flag intacta pra
+    // o caller decidir.
+    const { kept } = filterCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 80,
+          published_at: "2026-04-27",
+          flag: "editor_submitted",
+        },
+      ],
+      baseOpts,
+    );
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].flag, "editor_submitted");
+  });
 });
 
 describe("edition-utils", () => {

@@ -34,6 +34,10 @@ import {
   resolveEditorEmail,
 } from "./lib/inbox-stats.ts"; // #592, #609
 
+// #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
+// inbox-drain.ts e drive-sync.ts.
+const ROOT = resolve(import.meta.dirname, "..");
+
 interface Article {
   url: string;
   title?: string;
@@ -212,7 +216,7 @@ function main() {
   const mdPath = args["md"];
   const jsonPath = args["json"];
   const outPath = args["out"];
-  const inboxMdPath = args["inbox-md"] ?? resolve("data/inbox.md");
+  const inboxMdPath = args["inbox-md"] ?? resolve(ROOT, "data/inbox.md");
 
   if (!mdPath || !jsonPath || !outPath) {
     console.error(
@@ -300,7 +304,7 @@ function main() {
   };
 
   // #592 + #609: linha de cobertura — submissões / descobertos / selecionados
-  const platformConfigPath = resolve("platform.config.json");
+  const platformConfigPath = resolve(ROOT, "platform.config.json");
   const editorEmail = resolveEditorEmail(platformConfigPath);
   const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
   const totalConsidered = computeTotalConsidered(jsonPath, data);

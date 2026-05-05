@@ -69,7 +69,8 @@ async function gmailRequest<T>(path: string): Promise<T> {
 
 interface GmailThread {
   id: string;
-  snippet: string;
+  /** Snippet pode estar ausente em threads sem conteúdo visível (#649 review). */
+  snippet?: string;
 }
 
 async function searchThreads(query: string): Promise<GmailThread[]> {
@@ -545,8 +546,15 @@ async function main(): Promise<void> {
     let fullThread: GmailThread2;
     try {
       fullThread = await getThread(thread.id);
-    } catch {
-      continue; // pular threads com erro
+    } catch (err) {
+      // #649 review: incluindo ZodError quando shape da response sai do esperado
+      // (ex: thread só com draft, conta com config não-padrão). Logar e seguir
+      // pra não quebrar o drain inteiro por causa de uma thread atípica.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[inbox-drain] WARN: pulando thread ${thread.id} — ${msg.slice(0, 200)}`,
+      );
+      continue;
     }
 
     for (const msg of dedupForwards(fullThread.messages)) {
