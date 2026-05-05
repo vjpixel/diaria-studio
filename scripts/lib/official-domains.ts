@@ -77,9 +77,10 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     company: "Google (blog)",
     // blog.google/products|technology = produto; cloud.google.com/blog = dev blog;
-    // blog.research.google = pesquisa aplicada
+    // blog.research.google = pesquisa aplicada;
+    // innovation-and-ai = re-org Google blog post-2025 (anúncios Gemini, infra AI)
     path_patterns: [
-      /^blog\.google\/(products|technology|outreach-initiatives)\//,
+      /^blog\.google\/(products|technology|outreach-initiatives|innovation-and-ai)\//,
       /^cloud\.google\.com\/blog\//,
       /^blog\.research\.google\//,
     ],

@@ -86,6 +86,20 @@ describe("official-domains registry (#566)", () => {
       );
       assert.ok(!matches, "openai.com/our-principles NÃO deve ser lancamento");
     });
+
+    it("inclui pattern de blog.google/innovation-and-ai/ (#586)", () => {
+      const matches = patterns.some(
+        (p) => p.test("blog.google/innovation-and-ai/technology/developers-tools/event-driven-webhooks/"),
+      );
+      assert.ok(matches, "deve ter pattern pra blog.google/innovation-and-ai/");
+    });
+
+    it("inclui pattern de blog.google/products/ (regressão)", () => {
+      const matches = patterns.some(
+        (p) => p.test("blog.google/products/gemini/feature-x/"),
+      );
+      assert.ok(matches, "blog.google/products/ deve continuar sendo lancamento");
+    });
   });
 
   describe("companyToDomain()", () => {
