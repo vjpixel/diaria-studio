@@ -77,6 +77,22 @@ npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stag
 
 Falha = warning, **nunca bloqueia**.
 
+### 2a-bis. Match prompts → destaques atuais (#606)
+
+Editor pode ter reordenado destaques no gate da Etapa 2 (D1↔D3, etc.).
+Antes de gerar imagens, alinhar prompts à ordem atual do `02-reviewed.md`:
+
+```bash
+npx tsx scripts/match-prompts-to-destaques.ts --edition-dir data/editions/$1/
+```
+
+Se prompts já alinhados (ordem original respeitada) → no-op silencioso.
+Se reordenados → renomeia `_internal/02-d1-prompt.md` ↔ `_internal/02-d3-prompt.md` (ou rotação 3-cycle) pra match com `02-reviewed.md`.
+
+Output JSON: `{ ok, swaps[], reason }`. Logar como info no run-log.
+
+Pré-requisito: writer agent emitiu `destaque_url:` em frontmatter de cada prompt (writer.md step 6).
+
 ### 2b. Gerar imagens
 
 Para cada destaque indicado (ou todos se sem argumento):

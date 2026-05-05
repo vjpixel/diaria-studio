@@ -80,6 +80,20 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)
    - `_internal/02-d2-prompt.md` — destaque 2
    - `_internal/02-d3-prompt.md` — destaque 3
+
+   **Frontmatter obrigatório (#606):** cada prompt **deve** começar com frontmatter YAML identificando o destaque pela URL — assim Stage 3 detecta reorder pós-gate (editor reordenou destaques) e re-alinha prompts via `match-prompts-to-destaques.ts`:
+
+   ```yaml
+   ---
+   destaque_url: https://exame.com/...
+   position_at_write: 1
+   ---
+
+   Cena Van Gogh impasto, [...]
+   ```
+
+   `destaque_url` = URL canônica do artigo do destaque (mesmo URL que sai em `02-reviewed.md` e `01-approved.json`). `position_at_write` = posição do destaque (1/2/3) no momento que o writer rodou. Stage 3 compara com posição atual no `02-reviewed.md` e re-renomeia se preciso.
+
    Gravar cada um no diretório da edição. Arquivos separados do texto — o editor pode editar cada prompt individualmente antes da geração.
 7. Gravar o texto da edição em `out_path`.
 8. **Validar o comprimento dos destaques** rodando:
