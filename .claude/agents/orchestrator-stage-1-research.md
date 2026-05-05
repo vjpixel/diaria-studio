@@ -79,7 +79,7 @@ Preserva saúde da fonte em todos os casos: propagar `method` como campo extra n
 ### 1f. Dispatch de researchers e discovery
 
 - Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, passando: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
-- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
+- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). `inbox_topics` vem do output do step 1h.5 (`scripts/extract-inbox-topics.ts`). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
 
 ### 1g. Registrar saúde + log (batch, #40)
@@ -142,7 +142,15 @@ Output stdout: `{ injected, already_in_pool, total_editor_urls, total_pool_size,
 
 Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`. Categorizer prioriza `editor_submitted`. Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
 
-### 1h.5. Validar injeção (#625)
+### 1h.5. Extrair inbox_topics (#662)
+
+Entradas de texto-puro do editor (sem URL) viram queries de discovery. Armazenar output como `inbox_topics` para o passo 1f:
+```bash
+npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --editor diariaeditor@gmail.com --out data/editions/{AAMMDD}/_internal/inbox-topics.json
+```
+Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics extraídos"`.
+
+### 1h.6. Validar injeção (#625)
 
 Validador **externo** anti-skip — diferente de `--validate-pool` (interno/tautológico), este script roda após o step 1h e detecta o cenário onde o orchestrator skipou a chamada inteira:
 
@@ -434,11 +442,7 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
   ```
-- **Arquivar o inbox**: criar diretório se necessário, mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar `data/inbox.md` vazio com cabeçalho padrão. Garante que submissões do dia não voltem na próxima edição. (#680 — sem `mkdir -p`, o mv falha silenciosamente em checkout limpo)
-  ```bash
-  Bash("mkdir -p data/inbox-archive")
-  Bash("mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md")
-  ```
+- **Arquivar o inbox** (#680): `mkdir -p data/inbox-archive` seguido de `mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md`. Recriar `data/inbox.md` vazio. Sem o mkdir, falha em checkout limpo.
 - **Atualizar `_internal/cost.md`.** Append linha na tabela de Stage 1, recalcular `Total de chamadas`, gravar com `Write`:
   ```
   | 1 | {stage_start} | {now} | inbox_drainer:1, refresh_dedup:1, source_researcher:{N}, discovery:{M}, link_verifier:{chunks}, categorizer:1, research_reviewer:1, scorer:1 | {soma_haiku} | 1 |
