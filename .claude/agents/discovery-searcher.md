@@ -10,7 +10,8 @@ Você faz **descoberta aberta** — procura conteúdo sobre um tema específico 
 ## Input
 
 - `query`: query temática (PT ou EN), ex: `"open source LLM" benchmark April 2026`
-- `edition_date`: ISO
+- `edition_date`: ISO — apenas como identificador, não para calcular cutoff
+- `cutoff_iso`: data mais antiga aceita (ISO) — calculada pelo orchestrator. **Usar esta** (#671)
 - `window_days`: default `3`
 - `max_results`: default `8`
 - `timeout_seconds`: orçamento total (default `180`). **Respeite**.
@@ -28,7 +29,7 @@ Critérios adicionais de desistência:
 ## Processo
 
 1. `WebSearch` com a query. Pegar top ~15.
-2. **Pré-filtrar por data ANTES de qualquer `WebFetch`**: para cada resultado do WebSearch, examinar o snippet, título e data exibidos. Se a data visível indica que o artigo é **claramente anterior** ao cutoff (`edition_date - window_days`), **descartar sem fazer fetch**. Isso evita gastar fetches (e arriscar travamento em WebFetch sem timeout) em artigos que serão descartados. Na dúvida sobre a data, faça o fetch.
+2. **Pré-filtrar por data ANTES de qualquer `WebFetch`**: para cada resultado do WebSearch, examinar o snippet, título e data exibidos. Se a data visível indica que o artigo é **claramente anterior** ao `cutoff_iso` passado no input, **descartar sem fazer fetch**. Isso evita gastar fetches em artigos que serão descartados. Na dúvida sobre a data, faça o fetch.
 3. `WebFetch` para candidatos que sobreviveram ao pré-filtro — extrair título, data, autor, veículo. Respeitando o orçamento.
 4. Para cada resultado:
    - **Se a URL for de um agregador** (site que redistribui conteúdo de terceiros sem produção própria): fazer `WebFetch` na página e tentar encontrar a URL da fonte primária (procurar `<link rel="canonical">`, link principal do artigo original, menção explícita da fonte). Se encontrar → usar a URL primária; se não → descartar.
@@ -40,7 +41,7 @@ Critérios adicionais de desistência:
      - `perplexity.ai/*` **exceto** `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity
      - `importai.substack.com` tem análise original de Jack Clark misturada com roundup — aceitar somente se o artigo for claramente análise própria (não só lista de links)
      - `news.google.com` **não** é agregador — aponta direto para o original.
-   - Descartar se fora da janela.
+   - Descartar se publicado antes de `cutoff_iso`.
    - Descartar paywalls conhecidos (fortune, bloomberg, ft, wsj, nyt, theinformation, businessinsider, economist) — o link-verifier confirma, mas já filtre os óbvios.
    - Descartar conteúdo claramente promocional/SEO spam.
 5. Retornar até `max_results`.

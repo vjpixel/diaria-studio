@@ -279,7 +279,7 @@ Avisos são exibidos no GATE HUMANO. Mínimos são avisos — não bloqueiam o g
 Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON). Estrutura final de `_internal/01-categorized.json`:
 ```json
 {
-  "highlights": ["...top 3 com rank/score/reason/article..."],
+  "highlights": ["...top 6 com rank/score/reason/article (scorer retorna 6; editor seleciona 3 no gate)..."],
   "runners_up": ["...2-3 candidatos com score..."],
   "lancamento": ["...artigos com campo score, ordenados por score desc..."],
   "pesquisa": ["..."],
@@ -434,7 +434,11 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
   ```
-- **Arquivar o inbox**: mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar `data/inbox.md` vazio com cabeçalho padrão. Garante que submissões do dia não voltem na próxima edição.
+- **Arquivar o inbox**: criar diretório se necessário, mover `data/inbox.md` → `data/inbox-archive/{YYYY-MM-DD}.md` e recriar `data/inbox.md` vazio com cabeçalho padrão. Garante que submissões do dia não voltem na próxima edição. (#680 — sem `mkdir -p`, o mv falha silenciosamente em checkout limpo)
+  ```bash
+  Bash("mkdir -p data/inbox-archive")
+  Bash("mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md")
+  ```
 - **Atualizar `_internal/cost.md`.** Append linha na tabela de Stage 1, recalcular `Total de chamadas`, gravar com `Write`:
   ```
   | 1 | {stage_start} | {now} | inbox_drainer:1, refresh_dedup:1, source_researcher:{N}, discovery:{M}, link_verifier:{chunks}, categorizer:1, research_reviewer:1, scorer:1 | {soma_haiku} | 1 |

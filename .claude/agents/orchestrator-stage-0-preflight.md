@@ -5,8 +5,6 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
 
-> Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
-
 ---
 
 ## Stage 0 — Setup e checks pré-edição
