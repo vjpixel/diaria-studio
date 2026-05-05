@@ -32,6 +32,10 @@ import { resolve, extname, dirname } from "node:path";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import {
+  parseDriveFileMetadata,
+  parseDriveFileUploadResponse,
+} from "./lib/schemas/drive-api.ts"; // #649
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
@@ -189,7 +193,8 @@ async function driveList(q: string, fields = "files(id,name,mimeType,modifiedTim
 async function driveGetMetadata(fileId: string): Promise<{ id: string; name: string; modifiedTime: string; parents?: string[] }> {
   const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}?fields=id,name,modifiedTime,parents`);
   if (!res.ok) throw new Error(`Drive metadata error (${res.status}): ${await res.text()}`);
-  return res.json() as Promise<{ id: string; name: string; modifiedTime: string; parents?: string[] }>;
+  // #649 (#496): valida modifiedTime parseable antes de comparações de timestamp
+  return parseDriveFileMetadata(await res.json());
 }
 
 async function driveCreateFolder(name: string, parentId: string): Promise<string> {
@@ -279,8 +284,9 @@ async function driveUploadFile(
     }
   );
   if (!res.ok) throw new Error(`Drive upload error (${res.status}): ${await res.text()}`);
-  const json = (await res.json()) as { id: string; modifiedTime: string; mimeType?: string };
-  return { ...json, mimeType: json.mimeType ?? targetMimeType };
+  // #649 (#496): valida shape da response — id+modifiedTime parseable
+  const parsed = parseDriveFileUploadResponse(await res.json());
+  return { ...parsed, mimeType: parsed.mimeType ?? targetMimeType };
 }
 
 /**
@@ -327,8 +333,9 @@ async function driveUpdateFile(
     }
   );
   if (!res.ok) throw new Error(`Drive update error (${res.status}): ${await res.text()}`);
-  const json = (await res.json()) as { id: string; modifiedTime: string; mimeType?: string };
-  return { ...json, mimeType: json.mimeType ?? targetMimeType };
+  // #649 (#496): valida shape da response do PATCH
+  const parsed = parseDriveFileUploadResponse(await res.json());
+  return { ...parsed, mimeType: parsed.mimeType ?? targetMimeType };
 }
 
 async function driveDownloadFile(fileId: string): Promise<Buffer> {

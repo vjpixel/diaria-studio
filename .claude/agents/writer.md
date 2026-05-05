@@ -24,17 +24,17 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Processo
 
 1. Ler os 4 arquivos de contexto acima.
-1b. **Linha de cobertura** — primeira linha do draft:
-   - Ler `{edition_dir}/01-categorized.md` e extrair o número total de artigos considerados (linha "foram considerados N artigos").
-   - Calcular total selecionado: `highlights.length + categorized.lancamento.length + categorized.pesquisa.length + categorized.noticias.length`.
+1b. **Linha de cobertura** — primeira linha do draft (#592, #609):
+   - Ler `{edition_dir}/_internal/01-approved.json` e extrair `coverage.line` (campo string pronto pra colar — gerado pelo `apply-gate-edits.ts`).
    - Escrever como primeira linha do draft (antes de DESTAQUE 1):
      ```
-     Para essa edição, foram considerados {N} artigos e selecionados {M}.
+     {coverage.line}
 
      ---
 
      ```
-   - Se não conseguir extrair o total do categorized.md, usar `???` como placeholder.
+   - Formato esperado: `Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.`
+   - Se `coverage` ausente do approved.json (regen retroativa, edição antiga), fallback: ler totalSelected do approved e emitir formato com `???` no lugar de Y. **Não inventar** números.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **Label editorial específico** para `[CATEGORIA]` no cabeçalho `DESTAQUE N | [CATEGORIA]`. Nunca usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`, ou criar um novo se nenhum se encaixar.
    - **3 opções de título** (cada ≤52 chars).

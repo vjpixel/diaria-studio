@@ -167,6 +167,27 @@ export function buildUrlBucketMap(
   return { byUrl };
 }
 
+/**
+ * #592, #609: linha de cobertura é a primeira linha não-vazia do reviewed.md.
+ * Formato canônico:
+ *   "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia
+ *    encontrou outros Y artigos. Selecionamos os Z mais relevantes para as
+ *    pessoas que assinam a newsletter."
+ *
+ * Aceita variação com `???` no Y (fallback quando totalConsidered ausente).
+ */
+export const COVERAGE_LINE_RE =
+  /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss[õo]es e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos\. Selecionamos os \d+ mais relevantes/i;
+
+export function checkCoverageLine(md: string): { ok: boolean; firstLine: string } {
+  const lines = md.split("\n");
+  const firstNonEmpty = lines.find((l) => l.trim().length > 0) ?? "";
+  return {
+    ok: COVERAGE_LINE_RE.test(firstNonEmpty.trim()),
+    firstLine: firstNonEmpty.trim(),
+  };
+}
+
 export function lintNewsletter(
   md: string,
   approved: ApprovedJson,
@@ -446,10 +467,33 @@ function main(): void {
   const md = readFileSync(mdPath, "utf8");
   const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
   const result = lintNewsletter(md, approved);
+  // #592, #609: check separado da linha de cobertura — não polui lintNewsletter
+  // (que tem semântica focada em buckets), mas roda no mesmo CLI.
+  const coverage = checkCoverageLine(md);
+  if (!coverage.ok) {
+    result.errors.push({
+      section: "coverage_line",
+      expected_bucket: "noticias",
+      url: "",
+      line: 1,
+      found_in_bucket: "missing",
+      title: coverage.firstLine.slice(0, 80),
+    });
+    result.ok = false;
+  }
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
-    console.error(`\n❌ ${result.errors.length} erro(s) de seção:`);
-    for (const e of result.errors) {
+    const sectionErrors = result.errors.filter((e) => e.section !== "coverage_line");
+    const coverageErrors = result.errors.filter((e) => e.section === "coverage_line");
+    if (coverageErrors.length > 0) {
+      console.error(`\n❌ Linha de cobertura ausente ou em formato inválido (#592, #609).`);
+      console.error(
+        `  Esperado: "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter."`,
+      );
+      console.error(`  Encontrado (primeira linha): "${coverageErrors[0].title}"`);
+    }
+    if (sectionErrors.length > 0) console.error(`\n❌ ${sectionErrors.length} erro(s) de seção:`);
+    for (const e of sectionErrors) {
       const titleHint = e.title ? ` ("${e.title.slice(0, 60)}")` : "";
       console.error(
         `  ${e.section} (linha ${e.line}): ${e.url}${titleHint}\n    bucket no approved: ${e.found_in_bucket}, esperado: ${e.expected_bucket}`,

@@ -4,7 +4,13 @@ Formato exato do output da edição. Seguir rigorosamente.
 
 **Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único ilegível.
 
+**Linha de cobertura (#592, #609):** primeira linha do reviewed.md, formato literal copiado de `_internal/01-approved.json` campo `coverage.line`. Padrão esperado:
+
 ```
+Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.
+
+---
+
 DESTAQUE 1 | [CATEGORIA]
 
 [Opção de título 1 — máx. 52 chars]

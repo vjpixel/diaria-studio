@@ -29,6 +29,8 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readd
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
+import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
+import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
 
 interface Article {
   url: string;
@@ -91,6 +93,7 @@ function parseArgs(): {
   out: string;
   edition: string;
   sourceHealth?: string;
+  inboxMd?: string;
 } {
   const args = process.argv.slice(2);
   const flags: Record<string, string> = {};
@@ -109,7 +112,7 @@ function parseArgs(): {
   }
   if (!flags.in || !flags.out || !flags.edition) {
     console.error(
-      "Uso: render-categorized-md.ts --in <json> --out <md> --edition <YYMMDD> [--source-health <json>]"
+      "Uso: render-categorized-md.ts --in <json> --out <md> --edition <YYMMDD> [--source-health <json>] [--inbox-md <path>]"
     );
     process.exit(1);
   }
@@ -118,6 +121,7 @@ function parseArgs(): {
     out: flags.out,
     edition: flags.edition,
     sourceHealth: flags["source-health"],
+    inboxMd: flags["inbox-md"],
   };
 }
 
@@ -213,6 +217,9 @@ export function renderLine(
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
   if (article.new_in_pool) markers.push("🆕");
+  if (article.flag === "carry_over" && typeof article.carry_over_from === "string") {
+    markers.push(`[carry-over de ${article.carry_over_from}]`);
+  }
   if (article.launch_candidate && article.suggested_primary_domain) {
     // #487 — pista pra editor: provavelmente é lançamento, fonte oficial em outro domínio
     markers.push(`🚀→${article.suggested_primary_domain}`);
@@ -451,30 +458,8 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
  *  3. Fallback: retornar `null` (placeholder `???` no MD).
  */
 export function computeTotalConsidered(inputPath: string, data: CategorizedJson): number | null {
-  // 1. Campo explícito no JSON (mais preciso, injetado pelo orchestrator)
-  if (typeof data.total_considered === "number") return data.total_considered;
-
-  // 2. Auto-descoberta via tmp-categorized.json no mesmo _internal/
-  const tmpCategorizedPath = inputPath
-    .replace("01-categorized.json", "tmp-categorized.json")
-    .replace("01-approved.json", "tmp-categorized.json");
-
-  if (existsSync(tmpCategorizedPath)) {
-    try {
-      const tmpData: Record<string, unknown[]> = JSON.parse(readFileSync(tmpCategorizedPath, "utf8"));
-      const total =
-        (tmpData.lancamento?.length ?? 0) +
-        (tmpData.pesquisa?.length ?? 0) +
-        (tmpData.noticias?.length ?? 0) +
-        (tmpData.tutorial?.length ?? 0) +
-        (tmpData.video?.length ?? 0);
-      if (total > 0) return total;
-    } catch {
-      // Non-fatal — tmp-categorized.json may be malformed
-    }
-  }
-
-  return null;
+  // Re-exported wrapper para compat (#592 extraiu lógica pra scripts/lib/categorized-stats.ts).
+  return computeTotalConsideredLib(inputPath, data);
 }
 
 // ---------- É IA? block -------------------------------------------------
@@ -572,19 +557,27 @@ function main() {
   const highlightUrls = buildHighlightUrls(data);
   const runnerUpUrls = buildRunnerUpUrls(data);
 
-  // #477: métricas de cobertura — N considerados, M selecionados.
+  // #477, #592: métricas de cobertura — X submissões / Y descobertos / Z selecionados.
   const totalSelected =
     data.lancamento.length + data.pesquisa.length + data.noticias.length +
     (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
   const totalConsidered = computeTotalConsidered(cli.in, data);
-  const coverageLine = totalConsidered !== null
-    ? `> Para essa edição, foram considerados ${totalConsidered} artigos e selecionados ${totalSelected}.\n`
-    : `> Para essa edição, foram considerados ??? artigos e selecionados ${totalSelected}.\n`;
+
+  // #592: linha de cobertura no novo formato — X submissões do editor, Y artigos
+  // descobertos pela Diar.ia, Z selecionados. Usa "submissões" (#609).
+  const inboxMdPath = cli.inboxMd ?? resolve("data/inbox.md");
+  const platformConfigPath = resolve("platform.config.json");
+  const editorEmail = resolveEditorEmail(platformConfigPath);
+  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
+  const diariaDiscovered = totalConsidered !== null
+    ? Math.max(0, totalConsidered - editorSubmissions)
+    : null;
+  const coverageLine = diariaDiscovered !== null
+    ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected }) + "\n\n"
+    : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.\n\n`;
 
   const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
   const instructions =
-    coverageLine +
-    `>\n` +
     `> Candidatos recomendados pelo scorer:\n` +
     `>   - ⭐ — top do scorer (highlights[]).\n` +
     `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
@@ -621,7 +614,7 @@ function main() {
     : null;
 
   const sections = [
-    destaquesSection,
+    coverageLine + destaquesSection,
     lancSec,
     pesqSec,
     eaiBlock,

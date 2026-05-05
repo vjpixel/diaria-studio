@@ -23,6 +23,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, exi
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
+import { parseGmailThread, parseGmailThreadsList } from "./lib/schemas/gmail.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
@@ -73,8 +74,10 @@ interface GmailThread {
 
 async function searchThreads(query: string): Promise<GmailThread[]> {
   const params = new URLSearchParams({ q: query, maxResults: "50" });
-  const data = await gmailRequest<{ threads?: GmailThread[] }>(`threads?${params}`);
-  return data.threads ?? [];
+  const raw = await gmailRequest<unknown>(`threads?${params}`);
+  // #649: validar shape no boundary HTTP — fail-loud em vez de propagar undefined
+  const data = parseGmailThreadsList(raw);
+  return (data.threads ?? []) as GmailThread[];
 }
 
 interface GmailMessagePart {
@@ -96,7 +99,10 @@ interface GmailThread2 {
 }
 
 async function getThread(threadId: string): Promise<GmailThread2> {
-  return gmailRequest<GmailThread2>(`threads/${threadId}?format=full`);
+  const raw = await gmailRequest<unknown>(`threads/${threadId}?format=full`);
+  // #649: validar shape no boundary HTTP — garante payload.headers presente,
+  // evitando TypeError em getHeader() para mensagens com config não-padrão.
+  return parseGmailThread(raw) as unknown as GmailThread2;
 }
 
 interface GmailLabel {
