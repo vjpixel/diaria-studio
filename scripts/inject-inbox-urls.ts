@@ -24,14 +24,22 @@
  *
  * Output: stdout JSON com `{ injected, total_pool_size, urls[] }`
  *
- * Validator obrigatório: após injeção, --validate-pool checa se TODAS as URLs
- * extraídas estão presentes no pool. Se não, falha com erro acionável (sinal
- * de regressão na injeção).
+ * `--validate-pool`: sanity check do merge interno deste script. Confirma que
+ * o pool resultante contém todas as URLs extraídas. Como o merge é feito por
+ * este próprio script, falha apenas em bug interno (defensive guard).
+ *
+ * **Não pega o cenário original do #594** (orchestrator skipa a chamada do
+ * script inteira) — esse cenário é externo. Validador anti-skip externo é
+ * follow-up: lê tmp-urls-all.json após Stage 1 e compara contra inbox.md.
+ * Tracked em separate issue.
  */
 
 import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -202,8 +210,6 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-
-  const ROOT = process.cwd();
   const inboxMdAbs = resolve(ROOT, inboxMdPath);
 
   if (!existsSync(inboxMdAbs)) {
