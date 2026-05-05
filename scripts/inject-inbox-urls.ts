@@ -29,9 +29,8 @@
  * este próprio script, falha apenas em bug interno (defensive guard).
  *
  * **Não pega o cenário original do #594** (orchestrator skipa a chamada do
- * script inteira) — esse cenário é externo. Validador anti-skip externo é
- * follow-up: lê tmp-urls-all.json após Stage 1 e compara contra inbox.md.
- * Tracked em separate issue.
+ * script inteira) — esse cenário é externo. Validador anti-skip externo
+ * (follow-up #625): lê tmp-urls-all.json após Stage 1 e compara contra inbox.md.
  */
 
 import "dotenv/config";
@@ -235,12 +234,14 @@ async function main(): Promise<void> {
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(merged, null, 2) + "\n", "utf8");
 
-  // Validate-pool mode: confirma que tudo está lá
+  // Validate-pool mode: sanity check do merge interno (não anti-skip externo).
+  // Como o merge é feito acima, falha aqui só em bug do script.
+  // Anti-skip externo é tracked em #625.
   if (args["validate-pool"]) {
     const missing = validateInjection(injected, merged);
     if (missing.length > 0) {
       console.error(
-        `ERRO: ${missing.length} URLs do editor faltando no pool após injeção (passo 1h regressed):`
+        `ERRO: ${missing.length} URLs do editor faltando no pool após merge interno (bug do script, não skip externo — esse é tracked em #625):`
       );
       for (const u of missing.slice(0, 10)) console.error(`  - ${u}`);
       process.exit(1);
