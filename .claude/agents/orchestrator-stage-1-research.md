@@ -106,6 +106,21 @@ Em vez de N chamadas individuais, agregar todos os resultados (researchers + dis
 
 Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 
+### 1g-bis. Carry-over de candidatos não-selecionados (#655)
+
+Reaproveita artigos não-aprovados da edição anterior (`runners_up` + buckets) como candidatos da edição atual. Roda antes do inject-inbox e do dedup — carry-over passa por todos os filtros normalmente, então duplicatas com novas coletas são resolvidas naturalmente.
+
+```bash
+npx tsx scripts/load-carry-over.ts \
+  --edition-dir data/editions/{AAMMDD} \
+  --pool data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --window-start {window_start} \
+  --window-end {WINDOW_END} \
+  --score-min 60
+```
+
+Output stdout: `{ prev, candidates_total, kept, skipped, total_pool_size }`. Se `prev: null` (edição N=1, sem anterior), pool fica inalterado e o script exit 0 silenciosamente. Logar como info no run-log. Cada artigo carregado vira `{ ..., flag: "carry_over", carry_over_from: "{prev}" }` e aparece no `01-categorized.md` com marker `[carry-over de {AAMMDD}]`.
+
 ### 1h. Injetar inbox_urls (#593, #594)
 
 **Automatizado via script** — substitui o passo manual que era fonte de bug (#594 — passo skipado em 260505, 0 dos 26 envios entraram). Política #593: TODOS os URLs de submissões do editor (incluindo forwards de newsletter) entram no pool de pesquisa.

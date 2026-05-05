@@ -25,7 +25,18 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { canonicalize as canonicalize_ } from "./lib/url-utils.ts";
+import { computeTotalConsidered } from "./lib/categorized-stats.ts";
+import {
+  countEditorSubmissions,
+  formatCoverageLine,
+  resolveEditorEmail,
+} from "./lib/inbox-stats.ts"; // #592, #609
+
+// #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
+// inbox-drain.ts e drive-sync.ts.
+const ROOT = resolve(import.meta.dirname, "..");
 
 interface Article {
   url: string;
@@ -55,6 +66,17 @@ interface CategorizedJson {
   video?: Article[];
 }
 
+interface CoverageStats {
+  /** Submissões do editor (forwards/links diretos) — count of inbox blocks. */
+  editor_submitted: number;
+  /** Artigos descobertos pela Diar.ia (researchers + discovery). */
+  diaria_discovered: number;
+  /** Total selecionado para a edição (highlights + buckets aprovados). */
+  selected: number;
+  /** Linha de cobertura literal pronta pra colar em reviewed.md (writer.md Step 1b). */
+  line: string;
+}
+
 interface ApprovedJson {
   highlights: Highlight[];
   runners_up: unknown[];
@@ -63,6 +85,8 @@ interface ApprovedJson {
   noticias: Article[];
   tutorial: Article[]; // sempre array, nunca ausente (#328)
   video: Article[]; // sempre array, nunca ausente
+  /** #592 + #609: linha de cobertura ("X submissões / Y artigos / Z selecionados"). */
+  coverage?: CoverageStats;
 }
 
 type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
@@ -192,10 +216,11 @@ function main() {
   const mdPath = args["md"];
   const jsonPath = args["json"];
   const outPath = args["out"];
+  const inboxMdPath = args["inbox-md"] ?? resolve(ROOT, "data/inbox.md");
 
   if (!mdPath || !jsonPath || !outPath) {
     console.error(
-      "Uso: apply-gate-edits.ts --md <categorized.md> --json <categorized.json> --out <approved.json>",
+      "Uso: apply-gate-edits.ts --md <categorized.md> --json <categorized.json> --out <approved.json> [--inbox-md <path>]",
     );
     process.exit(1);
   }
@@ -277,6 +302,32 @@ function main() {
     tutorial: tutorialResolved, // sempre array — consumers não precisam de ?? [] (#328)
     video: videoResolved, // sempre array
   };
+
+  // #592 + #609: linha de cobertura — submissões / descobertos / selecionados
+  const platformConfigPath = resolve(ROOT, "platform.config.json");
+  const editorEmail = resolveEditorEmail(platformConfigPath);
+  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
+  const totalConsidered = computeTotalConsidered(jsonPath, data);
+  const totalSelected =
+    approved.highlights.length +
+    approved.lancamento.length +
+    approved.pesquisa.length +
+    approved.noticias.length +
+    approved.tutorial.length +
+    approved.video.length;
+  if (totalConsidered !== null) {
+    const diariaDiscovered = Math.max(0, totalConsidered - editorSubmissions);
+    approved.coverage = {
+      editor_submitted: editorSubmissions,
+      diaria_discovered: diariaDiscovered,
+      selected: totalSelected,
+      line: formatCoverageLine({
+        editorSubmissions,
+        diariaDiscovered,
+        selected: totalSelected,
+      }),
+    };
+  }
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 

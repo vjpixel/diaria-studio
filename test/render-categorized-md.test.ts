@@ -177,6 +177,29 @@ describe("renderLine", () => {
     assert.ok(!line.includes("⭐"));
   });
 
+  it("marcador [carry-over de XXX] aparece via campo carry_over_from independente do flag (#658 review A)", () => {
+    // Caso 1: carry-over de fonte qualquer (flag: carry_over)
+    const lineCarry = renderLine({
+      url: "https://a.com/x",
+      title: "T",
+      score: 75,
+      flag: "carry_over",
+      carry_over_from: "260427",
+    });
+    assert.ok(lineCarry.includes("[carry-over de 260427]"));
+
+    // Caso 2: carry-over de inbox (flag preserva editor_submitted, mas marker
+    // ainda deve aparecer — regressão original do review #2 issue A).
+    const lineFromInbox = renderLine({
+      url: "https://b.com/y",
+      title: "U",
+      score: 80,
+      flag: "editor_submitted",
+      carry_over_from: "260427",
+    });
+    assert.ok(lineFromInbox.includes("[carry-over de 260427]"));
+  });
+
   it("⭐ wins quando flags conflitam (defensivo)", () => {
     const line = renderLine(
       { url: "https://a.com/x", title: "T", score: 80 },

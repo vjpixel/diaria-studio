@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseSdPrompt } from "./lib/schemas/image-generate.ts"; // #649
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -78,13 +79,15 @@ function main() {
   // D1 é gerada em 1600×800 (2:1). Depois gera crop 1:1 (800×800).
   // D2/D3 são geradas em 1024×1024 (forçado explícito pra garantir proporção 1:1).
   const isD1 = destaque === "d1";
-  const sdPrompt: Record<string, unknown> = {
+  const sdPromptRaw: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
     ...(isD1
       ? { final_width: 1600, final_height: 800 }
       : { final_width: 1024, final_height: 1024 }),
   };
+  // #649: validar shape antes de gravar — fail-loud se positive curto, dims fora do range
+  const sdPrompt = parseSdPrompt(sdPromptRaw);
 
   // Gravar JSON de prompt
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
