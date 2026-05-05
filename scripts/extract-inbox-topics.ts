@@ -121,8 +121,10 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main().catch((e) => {
+  try {
+    main();
+  } catch (e) {
     console.error("[extract-inbox-topics] erro:", e);
     process.exit(1);
-  });
+  }
 }
