@@ -15,6 +15,8 @@
  * Falsos positivos são preferíveis a falsos negativos — o editor revisa.
  */
 
+import { companyToDomain } from "./official-domains.ts"; // #566
+
 const LAUNCH_KEYWORDS: RegExp[] = [
   // EN
   /\blaunche?s?\b/i,
@@ -37,8 +39,6 @@ const LAUNCH_KEYWORDS: RegExp[] = [
   /\bdisponibiliza(m|r|ndo)?\b/i,
   /\bdisponível agora\b/i,
 ];
-
-import { companyToDomain } from "./official-domains.ts"; // #566
 
 /**
  * Mapa empresa → domínio oficial pra sugestão de fonte primária.

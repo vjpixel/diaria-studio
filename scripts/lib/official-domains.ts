@@ -273,6 +273,8 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(imbue)\b/i,
   },
   {
+    // Adicionado em #566 — artigos de AI research do Samsung Research eram
+    // classificados como noticias mesmo vindo do domínio oficial da empresa.
     company: "Samsung Semiconductor (AI research)",
     domains: ["research.samsung.com"],
   },
@@ -312,14 +314,9 @@ export function companyToDomain(): Array<{ keyword: RegExp; domain: string }> {
   const out: Array<{ keyword: RegExp; domain: string }> = [];
   for (const src of OFFICIAL_SOURCES) {
     if (!src.detection_keywords) continue;
-    const domain =
-      src.primary_domain ??
-      src.domains?.[0] ??
-      (() => {
-        // Extrai hostname do primeiro path_pattern (ex: "anthropic.com" de /^anthropic\.com\/.../)
-        const m = src.path_patterns?.[0]?.source.match(/^\^([a-z0-9][a-z0-9.\-]+)\//);
-        return m?.[1] ?? "";
-      })();
+    // primary_domain > domains[0]. Entries com só path_patterns devem incluir
+    // primary_domain explicitamente — não há extração automática de hostname.
+    const domain = src.primary_domain ?? src.domains?.[0] ?? "";
     if (domain) {
       out.push({ keyword: src.detection_keywords, domain });
     }
