@@ -192,11 +192,7 @@ export function parseFeed(xml: string): { articles: Article[]; kind: "rss" | "at
 export function filterByWindow(articles: Article[], days: number, now: Date = new Date()): Article[] {
   const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
   return articles.filter((a) => {
-    if (!a.published_at) {
-      // #673: artigo sem data — mantido mas logado para visibilidade
-      console.error(`[fetch-rss] artigo sem published_at mantido (filter-date-window marcará date_unverified): ${a.url}`);
-      return true;
-    }
+    if (!a.published_at) return true; // mantido; caller loga a contagem (#685)
     const t = new Date(a.published_at).getTime();
     return !isNaN(t) && t >= cutoff;
   });
@@ -256,6 +252,11 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
     const xml = await res.text();
     const { articles } = parseFeed(xml);
     const byWindow = filterByWindow(articles, days, now);
+    // #685: logar artigos sem data no caller (não dentro da função pura filterByWindow)
+    const undatedCount = articles.filter((a) => !a.published_at).length;
+    if (undatedCount > 0) {
+      console.error(`[fetch-rss] ${undatedCount} artigo(s) sem published_at mantidos para revisão downstream: ${opts.sourceName}`);
+    }
     const hasTopicFilter = opts.topicFilter && opts.topicFilter.length > 0;
     const filtered = hasTopicFilter ? filterByTopic(byWindow, opts.topicFilter!) : byWindow;
     // #678: expõe quantos artigos foram descartados pelo topicFilter para que o

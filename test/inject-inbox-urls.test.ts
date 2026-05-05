@@ -145,6 +145,18 @@ describe("isTrackingUrl", () => {
     const articles = extractEditorUrls([block]);
     assert.equal(articles.length, 2, "IDs distintos devem gerar 2 artigos");
   });
+
+  it("#686: domínio legítimo com 'elink' mas sem dígitos não é filtrado", () => {
+    // Padrão antigo /elink\d*\./ filtraria elinkage.com pois \d* aceita zero dígitos.
+    // Novo padrão /elink\d+\./ requer pelo menos 1 dígito após "elink".
+    assert.equal(isTrackingUrl("https://elinkage.com/article"), false, "elinkage.com não deve ser filtrado");
+    assert.equal(isTrackingUrl("https://elink.io/redirect"), false, "elink.io sem dígitos não deve ser filtrado");
+  });
+
+  it("#686: subdomínio numérico elink\d+ ainda é filtrado", () => {
+    assert.ok(isTrackingUrl("https://elink725.ainews.recaply.co/ss/c/abc"), "elink725.* deve ser filtrado");
+    assert.ok(isTrackingUrl("https://elink42.tracking.com/x"), "elink42.* deve ser filtrado");
+  });
 });
 
 describe("extractEditorUrls", () => {

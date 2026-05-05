@@ -127,8 +127,9 @@ const TRACKING_URL_PATTERNS: RegExp[] = [
   // TLDR newsletter links (com e sem "tracking." prefix)
   /^https?:\/\/(tracking\.)?tldrnewsletter\.com\//,
   /^https?:\/\/link\.tldrnewsletter\.com\//,
-  // Email link trackers
-  /^https?:\/\/elink\d*\./,
+  // Email link trackers: subdomínio numérico (elink725.*, elink42.*) — #686.
+  // Requer dígitos após "elink" para não filtrar domínios legítimos (elinkage.com, elink.io).
+  /^https?:\/\/elink\d+\./,
   // Personal referral / signature links
   /^https?:\/\/ref\.wisprflow\.ai\//,
   /^https?:\/\/superhuman\.com\/refer\//,
