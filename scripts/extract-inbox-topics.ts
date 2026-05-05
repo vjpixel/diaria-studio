@@ -8,10 +8,11 @@
  * mesmo risco do #594 para topics: sem script automático, o orchestrator
  * dependia de lembrar de extrair manualmente — passível de ser skipado.
  *
- * Usa `parseInboxMd` + `filterEditorBlocks` de `inject-inbox-urls.ts` para
- * reusar a lógica de parsing. Entradas de texto-puro são identificadas pela
- * presença do campo `- **topic:**` no bloco (gravado pelo `inbox-drain.ts`
- * quando o corpo do e-mail não tem URLs).
+ * Entradas de texto-puro são identificadas pela presença do campo
+ * `- **topic:**` no bloco (gravado pelo `inbox-drain.ts` quando o corpo do
+ * e-mail não tem URLs). A extração itera diretamente pelos segmentos do
+ * markdown verificando o campo `**from:**` inline — sem depender de alinhamento
+ * por índice com `filterEditorBlocks` (#688).
  *
  * Uso:
  *   npx tsx scripts/extract-inbox-topics.ts \
@@ -30,7 +31,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -39,25 +39,30 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // ---------------------------------------------------------------------------
 
 /**
- * Extrai tópicos de texto-puro dos blocos do editor.
- * Um tópico é identificado pelo campo `- **topic:** ...` no bloco markdown
- * (gravado pelo inbox-drain quando o e-mail não contém URLs detectáveis).
+ * Extrai tópicos de texto-puro do inbox iterando diretamente pelos segmentos
+ * do markdown e verificando o campo `**from:**` inline (#688).
+ *
+ * Não usa alinhamento por índice com `filterEditorBlocks` — que falhava quando
+ * havia blocos de não-editores antes dos blocos do editor (ex: newsletters
+ * originais ingeridas pelo inbox-drain após #656).
  */
-export function extractTopicsFromBlocks(blocks: Array<{ iso: string; from: string; subject: string; urls: string[] }>, inboxText: string): string[] {
+export function extractTopicsFromInbox(inboxText: string, editorEmail: string): string[] {
   const topics: string[] = [];
   const seen = new Set<string>();
+  const lowerEditor = editorEmail.toLowerCase();
 
-  // Reconstituir o segmento original de cada bloco a partir do texto bruto do inbox.
-  // O parseInboxMd já faz o split; precisamos do texto original para pegar a linha **topic**.
   const segments = inboxText.split(/^## /m).slice(1);
 
-  for (let i = 0; i < blocks.length && i < segments.length; i++) {
-    const seg = segments[i];
+  for (const seg of segments) {
+    // Verificar se é bloco do editor antes de procurar topic
+    const fromMatch = seg.match(/^-\s*\*\*from:\*\*\s*(.+)$/m);
+    if (!fromMatch?.[1]?.toLowerCase().includes(lowerEditor)) continue;
+
     const topicMatch = seg.match(/^-\s*\*\*topic:\*\*\s*(.+)$/m);
     if (!topicMatch) continue;
 
     const topic = topicMatch[1].trim();
-    if (topic.length < 5) continue; // ignorar topics muito curtos
+    if (topic.length < 5) continue;
 
     const key = topic.toLowerCase();
     if (seen.has(key)) continue;
@@ -69,16 +74,12 @@ export function extractTopicsFromBlocks(blocks: Array<{ iso: string; from: strin
 }
 
 /**
- * Pipeline completa: lê inbox.md, filtra pelo editor, extrai topics.
+ * Pipeline completa: lê inbox.md e extrai topics do editor.
  */
 export function extractInboxTopics(inboxMdPath: string, editorEmail: string): string[] {
   if (!existsSync(inboxMdPath)) return [];
-
   const text = readFileSync(inboxMdPath, "utf8");
-  const allBlocks = parseInboxMd(text);
-  const editorBlocks = filterEditorBlocks(allBlocks, editorEmail);
-
-  return extractTopicsFromBlocks(editorBlocks, text);
+  return extractTopicsFromInbox(text, editorEmail);
 }
 
 // ---------------------------------------------------------------------------
