@@ -21,12 +21,12 @@ node -e "const s='$1';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-
 ```
 Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 
-1. **Janela = 4 dias corridos terminando em D+0** (#315).
-   Stage 1 roda em D+0 (dia antes da publicação). O endpoint superior da janela é D+0 (`$ISO − 1 dia`), não `$ISO`.
+1. **Janela = 4 dias corridos terminando hoje UTC** (#315, #576).
+   O endpoint superior é a data de execução (hoje UTC), independente de `$ISO`. Garante cobertura de conteúdo publicado no mesmo dia em que rodamos retroativamente.
    ```bash
-   node -e "const d=new Date('$ISO');d.setUTCDate(d.getUTCDate()-1);process.stdout.write(d.toISOString().slice(0,10))"
+   node -e "process.stdout.write(new Date().toISOString().slice(0,10))"
    ```
-   Armazenar como `WINDOW_END` (ex: `2026-04-28` quando `$ISO` = `2026-04-29`).
+   Armazenar como `WINDOW_END` (ex: `2026-05-05` quando rodamos em 2026-05-05, independente da edition_iso).
    `window_days = 4` (fixo, sem depender do dia da semana).
    ```bash
    node -e "const d=new Date('$WINDOW_END');d.setUTCDate(d.getUTCDate()-3);process.stdout.write(d.toISOString().slice(0,10))"
