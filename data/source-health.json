@@ -1,4 +1,949 @@
 {
-  "sources": {},
+  "sources": {
+    "Canaltech (IA)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 1684,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 50
+    },
+    "Exame": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 107,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 25
+    },
+    "MIT Technology Review Brasil (IA)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 989,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 5
+    },
+    "Tecnoblog (IA)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 1276,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "CNN": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 810,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 60
+    },
+    "Meta AI Blog": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 47000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Google": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 478,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "Cohere Blog": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 3500,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "DeepMind": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 23144,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 1
+    },
+    "Hugging Face Blog": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 33750,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Apple Machine Learning Research": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 82000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Microsoft": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 2133,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Mistral AI News": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 54000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Nvidia": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 24500,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "OpenAI": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 35000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Anthropic": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 35000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Perplexity": {
+      "attempts": 2,
+      "successes": 0,
+      "failures": 2,
+      "timeouts": 0,
+      "last_success_iso": null,
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 17000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Agent Pulse": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 45045,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "AI Breakfast": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 46000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "AlphaSignal": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 631,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 1
+    },
+    "The Deep View": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 1329,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "Data Machina": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 3421,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Import AI (Jack Clark)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 660,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 1
+    },
+    "The AI Pulse": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 71000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "TLDR AI": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 15847,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Ben's Bites": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 47400,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "The Rundown AI": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 1426,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "arXiv": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 68000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "Simon Willison's Weblog": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 718,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 3
+    },
+    "DeepLearning.ai The Batch": {
+      "attempts": 2,
+      "successes": 1,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": "2026-05-04T17:01:49.792Z",
+      "last_duration_ms": 32000,
+      "recent_outcomes": [
+        {
+          "outcome": "fail",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Latent Space": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 809,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 1
+    },
+    "Every Inc (Chain of Thought)": {
+      "attempts": 2,
+      "successes": 2,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 16890,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        },
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Google AI for Developers Blog": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 1726,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 20
+    },
+    "AWS Machine Learning Blog": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 959,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 5
+    },
+    "G1 Tecnologia (IA)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 57000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "StartSe (IA)": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 37000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Cyberman": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 15234,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Reuters": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 23000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Superhuman AI": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 38000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "The Neuron": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 28000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Recaply": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 12571,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "7min.ai": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 2800,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Evolving AI": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 28000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Perplexity Research": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 17000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "Anthropic Cookbook": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 47000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "HuggingFace Learn": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 23000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "discovery:lancamento-ia-brasil": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 137000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 5
+    },
+    "discovery:regulacao-ia-brasil": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 159000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 5
+    },
+    "discovery:empresas-brasileiras-ia": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 183000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 4
+    },
+    "discovery:ia-educacao-brasil": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 106000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 0
+    },
+    "discovery:ai-agent-benchmark": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 130000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 3
+    },
+    "discovery:open-source-llm": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 187000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 5
+    },
+    "discovery:ai-safety-policy": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 150000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    },
+    "discovery:multimodal-ai": {
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "timeouts": 0,
+      "last_success_iso": "2026-05-04T17:01:49.792Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 176000,
+      "recent_outcomes": [
+        {
+          "outcome": "ok",
+          "timestamp": "2026-05-04T17:01:49.792Z"
+        }
+      ],
+      "total_articles": 2
+    }
+  },
   "notes": "Mapa { sourceName: { attempts, successes, failures, timeouts, last_success_iso, last_failure_iso, last_duration_ms, recent_outcomes: ['ok'|'fail'|'timeout'...] (últimos 10) } }. Atualizado pelo orchestrator ao final do Stage 1."
 }
