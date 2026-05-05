@@ -8,30 +8,36 @@
 - URL: https://canaltech.com.br/inteligencia-artificial/
 - Site query: `site:canaltech.com.br/inteligencia-artificial`
 - RSS: https://canaltech.com.br/rss/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### Exame
 - URL: https://exame.com/inteligencia-artificial/
 - Site query: `site:exame.com/inteligencia-artificial`
 - RSS: https://exame.com/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### G1 Tecnologia (IA)
 - URL: https://g1.globo.com/tecnologia/inteligencia-artificial/
 - Site query: `site:g1.globo.com/tecnologia/inteligencia-artificial`
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### MIT Technology Review Brasil (IA)
 - URL: https://mittechreview.com.br/category/inteligencia-artificial/
 - Site query: `site:mittechreview.com.br/category/inteligencia-artificial`
 - RSS: https://mittechreview.com.br/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### Tecnoblog (IA)
 - URL: https://tecnoblog.net/topico/inteligencia-artificial/
 - Site query: `site:tecnoblog.net/topico/inteligencia-artificial`
 - RSS: https://tecnoblog.net/tema/inteligencia-artificial/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### CNN
 - URL: https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/
 - Site query: `site:cnnbrasil.com.br/tudo-sobre/inteligencia-artificial`
 - RSS: https://www.cnnbrasil.com.br/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### StartSe (IA)
 - URL: https://www.startse.com/noticias/ia/
