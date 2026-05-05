@@ -119,6 +119,27 @@ export interface SyncResult {
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const MAX_RETRIES = 3;
 
+/**
+ * Tolerância em segundos pra ignorar conflicts falso-positivos causados pela
+ * auto-conversão Google Doc após push (#605). Auto-conversion bumpa o
+ * `modifiedTime` ~1-2s mesmo sem edit humano — sem tolerância, todo push
+ * subsequente vira CONFLICT falso.
+ *
+ * Override via platform.config.json `drive_sync_conflict_tolerance_seconds`.
+ * Default 10s — pega auto-conversion (~1-2s) com folga, ainda detecta edits
+ * reais do editor (segundos a minutos depois).
+ */
+const CONFLICT_TOLERANCE_SECONDS = (() => {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    const val = cfg.drive_sync_conflict_tolerance_seconds;
+    if (typeof val === "number" && val >= 0) return val;
+  } catch {
+    /* fallthrough to default */
+  }
+  return 10;
+})();
+
 /** Pure: decide se um status code merece retry. Exportado pra tests. */
 export function isRetryableStatus(status: number): boolean {
   return RETRYABLE_STATUS.has(status);
@@ -529,14 +550,25 @@ export async function pushFile(
     : dayFolderId;
 
   // #496: verificar se Drive foi modificado externamente após último push
+  // #605: tolerância pra auto-conversão Google Doc (bumpa modifiedTime ~1-2s
+  //       sem edit humano). Default 10s; override em platform.config.json
+  //       (drive_sync_conflict_tolerance_seconds).
   if (fileCache?.drive_file_id && fileCache?.drive_modifiedTime) {
     const meta = await driveGetMetadata(fileCache.drive_file_id);
-    if (meta.modifiedTime > fileCache.drive_modifiedTime) {
+    const cachedMs = new Date(fileCache.drive_modifiedTime).getTime();
+    const driveMs = new Date(meta.modifiedTime).getTime();
+    const diffSec = (driveMs - cachedMs) / 1000;
+    const toleranceSec = CONFLICT_TOLERANCE_SECONDS;
+    if (diffSec > toleranceSec) {
       result.warnings.push({
         file: filename,
         error_message: `CONFLICT: ${filename} foi modificado no Drive (${meta.modifiedTime}) após o último push (${fileCache.drive_modifiedTime}). Push abortado — fazer pull primeiro para não sobrescrever edições do editor.`,
       });
       return; // não sobrescrever
+    }
+    if (diffSec > 0) {
+      // Dentro da tolerância — auto-conversion noise. Atualiza cache silenciosamente.
+      fileCache.drive_modifiedTime = meta.modifiedTime;
     }
   }
 
