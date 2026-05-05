@@ -37,6 +37,7 @@ import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripUrlTrailingPunct, URL_REGEX_RAW } from "./lib/url-utils.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -62,11 +63,8 @@ export interface InboxBlock {
 }
 
 // ---------------------------------------------------------------------------
-// URL extraction (pure)
+// URL extraction (pure) — usa helpers compartilhados de scripts/lib/url-utils.ts (#626)
 // ---------------------------------------------------------------------------
-
-const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
-const TRAILING_PUNCT = /[.,;:!?)]+$/;
 
 /** Extrai blocos do markdown do inbox archive (ou inbox.md). */
 export function parseInboxMd(text: string): InboxBlock[] {
@@ -97,9 +95,10 @@ export function parseInboxMd(text: string): InboxBlock[] {
     }
 
     // Extrair URLs de qualquer linha do bloco (incluindo bullets e raw preview)
-    const urlMatches = seg.match(URL_REGEX) ?? [];
+    // #626: usa stripUrlTrailingPunct que preserva `)` em URLs Wikipedia balanceadas
+    const urlMatches = seg.match(URL_REGEX_RAW) ?? [];
     for (const u of urlMatches) {
-      const cleaned = u.replace(TRAILING_PUNCT, "");
+      const cleaned = stripUrlTrailingPunct(u);
       if (cleaned.length > 10) urls.push(cleaned);
     }
 

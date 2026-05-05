@@ -137,3 +137,73 @@ describe("urlsMatch", () => {
     assert.ok(!urlsMatch("https://example.com/a", "https://example.com/b"));
   });
 });
+
+import { stripUrlTrailingPunct, extractUrls as extractUrlsFromText, URL_REGEX_RAW } from "../scripts/lib/url-utils.ts";
+
+describe("stripUrlTrailingPunct (#626)", () => {
+  it("preserva ')' em URL Wikipedia balanceada", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://en.wikipedia.org/wiki/Foo_(bar)"),
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+    );
+  });
+
+  it("preserva multiple parens balanceados", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/a(b)c(d)"),
+      "https://x.com/a(b)c(d)",
+    );
+  });
+
+  it("strip ')' não-balanceado vindo de prose", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/y)"),
+      "https://x.com/y",
+    );
+  });
+
+  it("strip ponto final sentence", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/y."),
+      "https://x.com/y",
+    );
+  });
+
+  it("strip vírgula + ponto", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/y,."),
+      "https://x.com/y",
+    );
+  });
+
+  it("preserva ')' balanceado mesmo com prose punctuation atrás", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://en.wikipedia.org/wiki/H%C3%A4feli_DH-5_(military),"),
+      "https://en.wikipedia.org/wiki/H%C3%A4feli_DH-5_(military)",
+    );
+  });
+
+  it("URL sem pontuação fica inalterada", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/y"),
+      "https://x.com/y",
+    );
+  });
+});
+
+describe("extractUrls (#626)", () => {
+  it("extrai múltiplas URLs preservando parens balanceados", () => {
+    const text = "Veja https://en.wikipedia.org/wiki/Foo_(bar) e https://x.com/y.";
+    assert.deepEqual(
+      extractUrlsFromText(text),
+      ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://x.com/y"],
+    );
+  });
+
+  it("descarta URLs muito curtas (< 11 chars)", () => {
+    assert.deepEqual(
+      extractUrlsFromText("http://x"),
+      [],
+    );
+  });
+});
