@@ -224,6 +224,42 @@ export function renderLine(
 }
 
 /**
+ * Renderiza a seção Destaques a partir de `01-approved.json` (#585).
+ *
+ * Quando o editor aprova o gate, `apply-gate-edits.ts` extrai os destaques
+ * selecionados pra `_internal/01-approved.json`. Re-renders subsequentes do
+ * MD devem ler esse arquivo em vez de emitir o placeholder
+ * "_(mova 3 artigos para cá)_" — que apagava a curadoria do editor toda vez
+ * que o renderer rodava após apply-gate-edits.
+ *
+ * Retorna null se approved.json não existe ou está vazio (caller usa fallback).
+ */
+export function renderDestaquesFromApproved(
+  approvedPath: string,
+  highlightUrls: Set<string>,
+  runnerUpUrls: Set<string>,
+): string | null {
+  if (!existsSync(approvedPath)) return null;
+  let approved: { highlights?: Array<{ url?: string; article?: Article }> };
+  try {
+    approved = JSON.parse(readFileSync(approvedPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const highlights = approved.highlights ?? [];
+  if (highlights.length === 0) return null;
+
+  // Reutiliza renderLine — extrai article ou usa flat shape compatível.
+  const lines = highlights.map((h, idx) => {
+    const art: Article = (h.article ?? (h as unknown as Article)) as Article;
+    if (!art.url && h.url) art.url = h.url;
+    return renderLine(art, highlightUrls.has(art.url), runnerUpUrls.has(art.url), idx + 1);
+  });
+
+  return `## Destaques\n\n${lines.join("\n")}\n`;
+}
+
+/**
  * Coleta URLs dos candidatos a destaque. Suporta dois formatos no top-level
  * `highlights[]` (#229):
  *   - `{ url, ... }` (flat, formato pré-#229)
@@ -557,8 +593,14 @@ function main() {
   const editionDir = cli.out ? dirname(resolve(cli.out)) : process.cwd();
   const eaiBlock = renderEaiBlock(editionDir);
 
+  // #585: Quando 01-approved.json existe (gate aprovado), renderiza destaques
+  // a partir dele em vez do placeholder. Evita re-renders apagarem a curadoria.
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const destaquesFromApproved = renderDestaquesFromApproved(approvedPath, highlightUrls, runnerUpUrls);
+  const destaquesSection = destaquesFromApproved ?? `## Destaques\n\n_(mova 3 artigos para cá)_\n`;
+
   const sections = [
-    `## Destaques\n\n_(mova 3 artigos para cá)_\n`,
+    destaquesSection,
     renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls),
     renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls),
     eaiBlock,
