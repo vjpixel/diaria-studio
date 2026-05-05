@@ -177,6 +177,20 @@ function getHeader(msg: GmailMessage, name: string): string {
   return msg.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
+/**
+ * Dedup forwards within a thread (#656). Quando o editor encaminha uma
+ * newsletter pra inbox editorial, o Gmail agrupa o original + Fwd no mesmo
+ * thread. Ingerir os dois duplica os links no pool de submissões. Se o thread
+ * tem ao menos uma mensagem com subject não-Fwd: (o original), preferir essas;
+ * caso contrário (thread degenerate só com Fwd:), retornar todas.
+ */
+export function dedupForwards(messages: GmailMessage[]): GmailMessage[] {
+  const isForwardSubject = (m: GmailMessage) =>
+    /^\s*(Fwd:|Fw:)/i.test(getHeader(m, "Subject"));
+  const hasNonForward = messages.some((m) => !isForwardSubject(m));
+  return hasNonForward ? messages.filter((m) => !isForwardSubject(m)) : messages;
+}
+
 // ---------------------------------------------------------------------------
 // Inbox cache
 // ---------------------------------------------------------------------------
@@ -529,7 +543,7 @@ async function main(): Promise<void> {
       continue; // pular threads com erro
     }
 
-    for (const msg of fullThread.messages) {
+    for (const msg of dedupForwards(fullThread.messages)) {
       const dateMs = parseInt(msg.internalDate, 10);
       const iso = new Date(dateMs).toISOString();
 
