@@ -192,14 +192,21 @@ describe("annotateCarryOver (#658 review B)", () => {
     assert.equal(out[0].carry_over_from, "260427");
   });
 
-  it("não sobrescreve flag arbitrário desconhecido (preserva intacto)", () => {
-    // Defensivo: se o pipeline introduzir um flag novo, annotateCarryOver
-    // não deve apagá-lo silenciosamente.
+  it("preserva flag arbitrário desconhecido (defensivo contra flags futuras)", () => {
+    // #658 review N3: se o pipeline introduzir flag novo (ex: primary_source
+    // de #487), annotateCarryOver não deve apagá-lo silenciosamente. A
+    // implementação usa `a.flag ?? "carry_over"` em vez de allowlist explícita.
     const out = annotateCarryOver(
-      [{ url: "https://a.com", score: 80, published_at: "2026-04-27", flag: "editor_submitted" }],
+      [
+        { url: "https://a.com", score: 80, published_at: "2026-04-27", flag: "primary_source" },
+        { url: "https://b.com", score: 75, published_at: "2026-04-26", flag: "some_future_flag" },
+      ],
       "260427",
     );
-    assert.equal(out[0].flag, "editor_submitted");
+    assert.equal(out[0].flag, "primary_source");
+    assert.equal(out[0].carry_over_from, "260427");
+    assert.equal(out[1].flag, "some_future_flag");
+    assert.equal(out[1].carry_over_from, "260427");
   });
 
   it("propaga campos extras (passthrough via spread)", () => {

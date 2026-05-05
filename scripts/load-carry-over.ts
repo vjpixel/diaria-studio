@@ -135,24 +135,23 @@ interface FilterOpts {
 }
 
 /**
- * Anota artigos kept como carry-over (#658 review B): preserva
- * `flag: "editor_submitted"` quando vinha do inbox da edição anterior — o
- * categorizer dá boost +8 por editor_submitted; sobrescrever apaga essa origem.
- * `carry_over_from` é setado em todos, e o renderer mostra o marker
- * `[carry-over de AAMMDD]` independente do flag.
+ * Anota artigos kept como carry-over (#658 review B + N3):
+ *  - Preserva qualquer `flag` já setado pelo pipeline (defensivo — futuras flags
+ *    como `primary_source` (#487) ou novas não precisam ser mantidas
+ *    explicitamente em uma allowlist)
+ *  - Default `flag: "carry_over"` quando o artigo não tinha flag prévio
+ *  - Sempre seta `carry_over_from: prevAammdd` (renderer usa esse campo, não
+ *    o flag, para o marker `[carry-over de AAMMDD]`)
  */
 export function annotateCarryOver(
   articles: CategorizedArticle[],
   prevAammdd: string,
 ): PoolArticle[] {
-  return articles.map((a) => {
-    const wasEditorSubmitted = a.flag === "editor_submitted";
-    return {
-      ...a,
-      flag: wasEditorSubmitted ? "editor_submitted" : "carry_over",
-      carry_over_from: prevAammdd,
-    };
-  });
+  return articles.map((a) => ({
+    ...a,
+    flag: a.flag ?? "carry_over",
+    carry_over_from: prevAammdd,
+  }));
 }
 
 /** Aplica filtros editoriais. Exporta pra testar. */
