@@ -11,7 +11,7 @@ Você faz **descoberta aberta** — procura conteúdo sobre um tema específico 
 
 - `query`: query temática (PT ou EN), ex: `"open source LLM" benchmark April 2026`
 - `edition_date`: ISO — apenas como identificador, não para calcular cutoff
-- `cutoff_iso`: data mais antiga aceita (ISO) — calculada pelo orchestrator. **Usar esta** (#671)
+- `cutoff_iso`: data mais antiga aceita (ISO) — calculada pelo orchestrator. **Usar esta** (#671). Se não recebida, calcular como `edition_date - window_days` como fallback (#687).
 - `window_days`: default `3`
 - `max_results`: default `8`
 - `timeout_seconds`: orçamento total (default `180`). **Respeite**.

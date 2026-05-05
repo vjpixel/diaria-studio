@@ -12,7 +12,7 @@ Você pesquisa **uma única fonte** cadastrada do Diar.ia e retorna candidatos e
 - `nome`: nome da fonte (ex: "MIT Technology Review")
 - `site_query`: `site:dominio.com` (ex: `site:technologyreview.com`)
 - `edition_date`: data da edição (ISO, ex: `2026-04-18`) — apenas como identificador, não para calcular cutoff
-- `cutoff_iso`: data mais antiga aceita (ISO, ex: `2026-04-15`) — calculada pelo orchestrator como `anchor_iso - window_days`. **Usar esta, não `edition_date - window_days`** (#671)
+- `cutoff_iso`: data mais antiga aceita (ISO, ex: `2026-04-15`) — calculada pelo orchestrator como `anchor_iso - window_days`. **Usar esta** (#671). Se não recebida (retrocompat), calcular como `edition_date - window_days` como fallback (#687).
 - `window_days`: janela em dias para trás (default `3`)
 - `timeout_seconds`: orçamento total de tempo (default `180`). **Respeite**.
 
