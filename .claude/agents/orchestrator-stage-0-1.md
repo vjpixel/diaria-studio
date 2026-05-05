@@ -493,7 +493,9 @@ O script produz o formato combinado (seção Destaques vazia no topo + seções 
 
 **Regra absoluta**: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de nova chamada deste script para manter o MD em sincronia. Se só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 
-### 1w. Sync push do MD para o Drive (antes do gate)
+### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
+
+**Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
 
 Se `data/editions/{AAMMDD}/01-eia.md` existir (É IA? já completou em background):
 ```bash
@@ -503,7 +505,23 @@ Se `01-eia.md` ainda não existir (É IA? ainda processando):
 ```bash
 npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md
 ```
-Anotar resultado em `sync_results[1]`; ignorar falhas (warn, nunca bloqueia).
+Anotar resultado em `sync_results[1]`; falhas reais (não warning) abortam. Falhas warning podem prosseguir mas precisam ser mencionadas no gate.
+
+**Verificação anti-skip (#577)**: antes de apresentar o gate (passo 1x), confirmar que o cache registra push recente do `01-categorized.md`:
+
+```bash
+node -e "
+const cache = JSON.parse(require('fs').readFileSync('data/drive-cache.json', 'utf8'));
+const f = cache.editions['{AAMMDD}']?.files?.['01-categorized.md'];
+if (!f?.push_count) {
+  console.error('FATAL: 01-categorized.md não foi pushed pra Drive. Step 1w foi skipado. Re-rodar push antes do gate.');
+  process.exit(1);
+}
+console.log('✓ 01-categorized.md pushed to Drive (push #' + f.push_count + ')');
+"
+```
+
+Se falhar, **re-rodar o push** antes de prosseguir pra 1x. Não apresentar gate sem confirmar push.
 
 ### 1x. GATE HUMANO
 
