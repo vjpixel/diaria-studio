@@ -83,18 +83,9 @@ describe("detectSoft404Title (#695) — soft 404 via título", () => {
     assert.ok(detectSoft404Title(body));
   });
 
-  it("artigo legítimo com '404' no conteúdo → null (não falso positivo)", () => {
-    // Artigo sobre erros HTTP tem "404" no body mas não no title
-    const body = `<html><head><title>Como resolver o erro 404 no nginx</title></head><body>${"x".repeat(1000)}</body></html>`;
-    // "404" está no título mas como parte de texto técnico ("erro 404") — deve detectar?
-    // Checking: the regex requires \b404\b, which matches. This IS a soft 404 title pattern.
-    // That's actually a false positive — let's verify what the regex does here.
-    const result = detectSoft404Title(body);
-    // "como resolver o erro 404 no nginx" matches \b404\b — this IS detected.
-    // This is expected behavior based on our implementation.
-    // A content article titled "Como resolver o erro 404 no nginx" WOULD be marked uncertain.
-    // That's an acceptable false positive — the article is still kept (verdict: uncertain).
-    assert.ok(true); // just documenting behavior
+  it("artigo técnico sem padrão de 404 no título → null", () => {
+    const body = `<html><head><title>Como configurar rotas no nginx corretamente</title></head><body>${"x".repeat(1000)}</body></html>`;
+    assert.equal(detectSoft404Title(body), null);
   });
 
   it("artigo normal → null", () => {
