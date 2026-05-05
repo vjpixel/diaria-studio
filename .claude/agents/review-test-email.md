@@ -97,7 +97,38 @@ Verificar cada item e registrar como `ok` ou `issue`:
    - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"email:link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
    - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"email:link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
 
-Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
+8. **Consistencia intra-destaque de versao (#603).** Para cada destaque (D1, D2, D3) extrair menções de versao via regex `/\bV\d+(\.\d+)?\b|\bv\d+(\.\d+)?\b|\bversão \d+/g` no titulo + parágrafos. Se múltiplas menções no MESMO destaque divergem (ex: "V4" no titulo, "V5" no parágrafo 2), classificar:
+   - **Cross-reference com `data/intentional-errors.jsonl`**: se entry com `edition: "{AAMMDD}"`, `error_type: "version_inconsistency"`, e `destaque` matching → classificar como `info` (erro intencional do concurso mensal — feature, não bug):
+     `"info:intentional_error_confirmed: D{N} {tipo} — feature do concurso mensal (catalogado em intentional-errors.jsonl)"`
+   - **Não catalogado** → classificar como `blocker`:
+     `"email:version_inconsistency: D{N} titulo='{V_titulo}' parágrafo {idx}='{V_para}' — verificar com editor antes de publicar (não está em intentional-errors.jsonl)"`
+
+9. **Comparacao semantica vs source MD (#603).** Para cada destaque, lançamento, pesquisa, notícia: extrair título e primeira frase do parágrafo do email; buscar trecho equivalente em `{edition_dir}/02-reviewed.md`. Divergências em **nomes próprios, números, datas, versões** = blocker (após cross-reference com intentional-errors.jsonl como em check 8). Diferenças de pontuação/espaçamento = ignorar.
+
+   Se source MD foi modificado APÓS o test email (timestamp), pular este check — editor pode estar iterando.
+
+   Output:
+   `"email:semantic_drift: D{N} email='{trecho_email}' source='{trecho_source}' — divergência em '{tipo}' (nomes/números/versões/datas)"`
+
+Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
+
+### 3a. Cross-reference com intentional-errors.jsonl
+
+Antes de classificar checks 8 e 9 como blocker, ler `data/intentional-errors.jsonl` (JSONL — uma entrada por linha). Para cada inconsistência detectada:
+
+```ts
+const intentional = readJSONL("data/intentional-errors.jsonl");
+const matching = intentional.find(e =>
+  e.edition === editionDate &&
+  e.is_feature === true &&
+  e.error_type === detectedType &&  // "version_inconsistency", "name_mismatch", etc.
+  e.destaque === detectedDestaque
+);
+if (matching) → classificar como `info:intentional_error_confirmed` (não bloqueador)
+else → classificar como `blocker` com nota "verificar com editor antes de publicar"
+```
+
+Toda edição da Diar.ia inclui 1 erro intencional para o concurso mensal (assinantes que acharem ganham livro). Detectar é correto; bloquear erro intencional é incorreto.
 
 ### 4. Retornar
 
