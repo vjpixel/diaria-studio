@@ -5,6 +5,7 @@ import {
   buildUrlBucketMap,
   lintNewsletter,
   countTitlesPerHighlight,
+  checkEaiSection,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("extractUrlsBySection", () => {
@@ -401,5 +402,30 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     ].join("\n");
     const r = countTitlesPerHighlight(md);
     assert.equal(r.destaques[0].title_count, 1);
+  });
+});
+
+describe("checkEaiSection (#588)", () => {
+  it("aceita 'É IA?' como linha solo (formato writer)", () => {
+    const md = "DESTAQUE 1\n...\n\n---\n\nÉ IA?\n\nCrédito.\n\n---\n\nDESTAQUE 3";
+    assert.equal(checkEaiSection(md).ok, true);
+  });
+
+  it("aceita '## É IA?' (formato categorized embedded #371)", () => {
+    const md = "DESTAQUE 1\n...\n\n## É IA?\n\nCrédito.\n\nDESTAQUE 3";
+    assert.equal(checkEaiSection(md).ok, true);
+  });
+
+  it("falha quando seção ausente", () => {
+    const md = "DESTAQUE 1\n...\n\nDESTAQUE 2\n...\n\nDESTAQUE 3\n...";
+    const result = checkEaiSection(md);
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /É IA\?/);
+    assert.match(result.error!, /writer\.md step 2b/);
+  });
+
+  it("normaliza CRLF", () => {
+    const md = "DESTAQUE 1\r\n\r\n## É IA?\r\nCrédito.\r\n";
+    assert.equal(checkEaiSection(md).ok, true);
   });
 });

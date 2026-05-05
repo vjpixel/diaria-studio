@@ -353,6 +353,34 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
   return { ok: errors.length === 0, destaques, errors };
 }
 
+/**
+ * Verifica que a seção É IA? está presente no MD da newsletter (#588).
+ *
+ * Writer agent (Sonnet) tem instrução explícita pra emitir bloco É IA? entre
+ * D2 e D3 (ver writer.md step 2b). Mas tem ignorado silenciosamente.
+ * Este check determinístico bloqueia o gate quando a seção falta.
+ *
+ * Aceita as 2 formas de marcação:
+ *   - "É IA?" como linha solo (formato cru do writer)
+ *   - "## É IA?" (formato categorized embedded #371)
+ */
+export function checkEaiSection(md: string): { ok: boolean; error?: string } {
+  // Normalizar CRLF
+  const normalized = md.replace(/\r\n/g, "\n");
+  const hasEia =
+    /^É IA\?\s*$/m.test(normalized) ||
+    /^##\s+É IA\?\s*$/m.test(normalized);
+  if (!hasEia) {
+    return {
+      ok: false,
+      error:
+        "Seção É IA? ausente. Writer deveria inserir entre DESTAQUE 2 e DESTAQUE 3 (writer.md step 2b). " +
+        "Inserir bloco lendo de 01-eia.md ou 01-categorized.md.",
+    };
+  }
+  return { ok: true };
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
@@ -376,6 +404,27 @@ function main(): void {
     if (!result.ok) {
       console.error(`\n❌ ${result.errors.length} erro(s):`);
       for (const e of result.errors) console.error(`  ${e}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check eai-section (#588) — verifica presença da seção É IA?
+  if (args.check === "eai-section") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check eai-section --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkEaiSection(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.error}`);
       process.exit(1);
     }
     return;
