@@ -1,9 +1,77 @@
 # Últimas edições publicadas — para dedup
 
-**atualizado em:** 2026-04-28
-**edições carregadas:** 5
+**atualizado em:** 2026-05-05
+**edições carregadas:** 8
 
 Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
+
+---
+
+## 2026-04-30 — "Brasil emprega mais, em cargos que somem"
+
+
+Links usados:
+- https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-openai-models-codex-managed-agents/
+- https://blogs.nvidia.com/blog/nemotron-3-nano-omni-multimodal-ai-agents/
+- https://poolside.ai/blog/laguna-a-deeper-dive
+- https://arxiv.org/html/2604.24636v1
+- https://techcrunch.com/2026/04/28/google-expands-pentagons-access-to-its-ai-after-anthropics-refusal/
+- https://www.anthropic.com/news/google-broadcom-partnership-compute
+- https://www.cnnbrasil.com.br/economia/negocios/musk-presta-depoimento-em-processo-contra-ceo-da-openai/
+- https://www.cnnbrasil.com.br/economia/negocios/com-adesao-empresarial-citi-estima-mercado-de-ia-em-mais-de-us-4-trilhoes/
+- https://blog.google/products-and-platforms/platforms/google-pay/agent-payments-protocol-fido-alliance/
+- https://www.muvucapopular.com.br/2026/04/28/recorde-de-emprego-no-brasil-recorde-de-jovens-em-funcoes-que-estao-em-extincao/
+- https://techcrunch.com/2026/04/27/openai-could-be-making-a-phone-with-ai-agents-replacing-apps/
+- https://techcrunch.com/2026/04/27/deepminds-david-silver-just-raised-1-1b-to-build-an-ai-that-learns-without-human-data/
+- https://openai.com/index/our-agreement-with-the-department-of-war/
+
+---
+
+## 2026-04-29 — "Anthropic conecta Claude a Adobe e Blender"
+
+
+Links usados:
+- https://openmoss.github.io/MOSS-Audio/
+- https://arxiv.org/abs/2604.01520
+- https://arxiv.org/abs/2604.01461
+- https://www.anthropic.com/news/election-safeguards-update
+- https://www.infomoney.com.br/business/deepseek-aposta-na-huawei-e-reforca-busca-por-soberania-chinesa/
+- https://www.bbc.com/portuguese/articles/c2027xxzlnlo
+- https://venturebeat.com/ai/open-source-xiaomi-mimo-v2-5-and-v2-5-pro-are-among-the-most-efficient-and-affordable-at-agentic-claw-tasks
+- https://tech.yahoo.com/ai/gemini/articles/tried-gemini-perplexity-copilot-month-123011179.html
+- https://www.anthropic.com/news/claude-for-creative-work
+- https://www.brasil247.com/midia/tse-julga-caso-decisivo-sobre-uso-criminoso-de-ia-nas-eleicoes-presidenciais
+- https://openai.com/index/open-source-codex-orchestration-symphony/
+- https://www.lennysnewsletter.com/p/gpt-55-just-did-what-no-other-model
+
+---
+
+## 2026-04-28 — "Meta perde Manus por ordem de Pequim"
+
+
+Links usados:
+- https://fonts.gstatic.com/s/worksans/v19/QGY_z_wNahGAdqQ43RhVcIgYT2Xz5u32K0nXBi8Jpo3ZKyHaQQ.woff2
+- https://fonts.gstatic.com/s/worksans/v19/QGY9z_wNahGAdqQ43Rh_ebrnlwyYfEPxPoGU3ms5pIfYCSXCQNBf.woff2
+- https://fonts.gstatic.com/s/worksans/v19/QGY_z_wNahGAdqQ43RhVcIgYT2Xz5u32K67QBi8Jpo3ZKyHaQQ.woff2
+- https://fonts.gstatic.com/s/worksans/v19/QGY9z_wNahGAdqQ43Rh_ebrnlwyYfEPxPoGUOWw5pIfYCSXCQNBf.woff2
+- https://fonts.gstatic.com/s/poppins/v22/pxiByp8kv8JHgFVrLGT9Z1xlFd2JQEk.woff2
+- https://fonts.gstatic.com/s/poppins/v22/pxiDyp8kv8JHgFVrJJLmg1hVF9eOYktMqg.woff2
+- https://fonts.gstatic.com/s/librefranklin/v18/jizOREVItHgc8qDIbSTKq4XkRg8T88bjFuXOnduhLsWkANDJTedX18mE.woff2
+- https://fonts.gstatic.com/s/librefranklin/v18/jizBREVItHgc8qDIbSTKq4XkRiUa6zUTjnTLgNs.woff2
+- https://fonts.gstatic.com/s/librefranklin/v18/jizOREVItHgc8qDIbSTKq4XkRg8T88bjFuXOnduhycKkANDJTedX18mE.woff2
+- https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_fjbvMwCp504jAa1ZL7W0Q5nw.woff2
+- https://fonts.gstatic.com/s/inter/v18/UcCM3FwrK3iLTcvneQg7Ca725JhhKnNqk4j1ebLhAm8SrXTc2dxRipWFsevceSGM.woff2
+- https://www.forte.jor.br/2026/04/27/china-manda-desfazer-aquisicao-de-startup-de-ia-pela-meta-e-eleva-pressao-sobre-investimentos-estrangeiros-em-tecnologia/
+- https://www.cnnbrasil.com.br/economia/negocios/openai-rompe-exclusividade-de-tecnologia-com-a-microsoft/
+- https://www.cnnbrasil.com.br/economia/negocios/com-ia-jj-preve-reducao-no-tempo-inicial-de-desenvolvimento-de-remedios/
+- https://www.cnnbrasil.com.br/tecnologia/material-inspirado-no-cerebro-pode-cortar-o-consumo-de-energia-da-ia-em-70/
+- https://www.socialhub.pro/blog/pl-2338-23-ia-regulamentacao-atualizacao-2026/
+- https://tiinside.com.br/27/04/2026/loja-fisica-de-ia-estreia-na-paulista-para-aproximar-tecnologia-do-uso-real-nas-empresas
+- https://www.cnnbrasil.com.br/tecnologia/na-era-da-ia-pontos-fortes-da-apple-podem-se-tornar-fragilidades/
+- https://www.poniaktimes.com/ai-agent-frameworks-2026/
+- https://tiinside.com.br/24/04/2026/ia-alem-do-hype-e-o-desafio-de-aplicar-a-tecnologia-em-operacoes-fisicas-e-legadas
+- https://omaranhense.com/brasil-diante-do-dilema-cripto-regulacao-privacidade-e-o-impacto-da-inteligencia-artificial/
+- https://email.beehiivstatus.com/{{omnivery_honeypot_hash}}/hclick
 
 ---
 
@@ -97,6 +165,18 @@ Links usados:
 
 
 Links usados:
+- https://api-docs.deepseek.com/news/news260424
+- https://siliconangle.com/2026/04/22/google-launches-ai-research-agents-powered-gemini-3-1-pro/
+- https://arxiv.org/abs/2604.21276
+- https://www.bbc.com/news/articles/c4gx1n0dl9no
+- https://techcrunch.com/2026/04/23/openai-chatgpt-gpt-5-5-ai-model-superapp/
+- https://arstechnica.com/ai/2026/04/anthropic-tested-removing-claude-code-from-the-pro-plan/
+- https://www.euronews.com/next/2026/04/24/chinas-deepseek-releases-new-ai-model-v4-heres-everything-to-know-as-the-ai-race-speeds-up
+- https://openai.com/index/introducing-gpt-5-5/
+- https://www.anthropic.com/features/project-deal
+- https://www.euronews.com/next/2026/04/22/hackers-breach-anthropics-too-dangerous-to-release-mythos-ai-model-report
+- https://simonwillison.net/2026/Apr/24/deepseek-v4/
+- https://fdr.com.br/2026/04/23/alerta-no-brasil-ia-ja-reduz-emprego-entre-jovens-e-acende-sinal-vermelho/
 
 ---
 
