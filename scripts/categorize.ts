@@ -402,11 +402,17 @@ export function categorize(article: Article): Category {
     // ao tema da Diar.ia antes de classificar como pesquisa. Papers sem match
     // vão para "noticias" — o scorer vai penalizá-los por falta de contexto de IA
     // e eles dificilmente chegam ao gate editorial.
-    if (!isArxivRelevant(article)) return "noticias";
+    if (!isArxivRelevant(article)) {
+      console.error(`[categorize] arXiv off-topic → noticias: ${article.url}`); // #699
+      return "noticias";
+    }
     return "pesquisa";
   }
   if (PESQUISA_PATTERNS.some((p) => p.test(full))) {
-    if (!isArxivRelevant(article)) return "noticias";
+    if (!isArxivRelevant(article)) {
+      console.error(`[categorize] arXiv off-topic → noticias: ${article.url}`); // #699
+      return "noticias";
+    }
     return "pesquisa";
   }
 
@@ -447,22 +453,10 @@ export function categorize(article: Article): Category {
 }
 
 // ---------------------------------------------------------------------------
-// CLI
+// Batch — exportada para testes (#697)
 // ---------------------------------------------------------------------------
 
-function main(): void {
-  const args = process.argv.slice(2);
-  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
-
-  if (!values["articles"]) {
-    exitWithError("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
-  }
-
-  const articlesPath = values["articles"];
-  const outPath = values["out"] ?? null;
-
-  const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
-
+export function categorizeArticles(articles: Article[]): Record<Category, Article[]> {
   const result: Record<Category, Article[]> = {
     lancamento: [],
     pesquisa: [],
@@ -484,8 +478,31 @@ function main(): void {
 
   // Limite de 2 vídeos por edição — manter os primeiros (maior relevância por ordem de entrada).
   if (result.video.length > 2) {
+    const discarded = result.video.slice(2).map((v) => v.url).join(", ");
+    console.error(`[categorize] ${result.video.length} vídeos → truncando para 2. Descartados: ${discarded}`); // #697
     result.video = result.video.slice(0, 2);
   }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+function main(): void {
+  const args = process.argv.slice(2);
+  const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
+
+  if (!values["articles"]) {
+    exitWithError("Usage: categorize.ts --articles <articles.json> [--out <out.json>]");
+  }
+
+  const articlesPath = values["articles"];
+  const outPath = values["out"] ?? null;
+
+  const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
+  const result = categorizeArticles(articles);
 
   const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length} video:${result.video.length}`;
 

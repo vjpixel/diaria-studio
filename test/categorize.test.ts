@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { categorize, isVideoUrl, isArxivRelevant, type Article } from "../scripts/categorize.ts";
+import { categorize, isVideoUrl, isArxivRelevant, categorizeArticles, type Article } from "../scripts/categorize.ts";
 
 describe("categorize() — regras de domínio", () => {
   it("classifica anúncio oficial da OpenAI como lancamento", () => {
@@ -1008,5 +1008,73 @@ describe("categorize() -- edge cases: dominios ambiguos (#534)", () => {
   it("title inbox em dominio lancamento -> nao crasha, avalia URL normalmente", () => {
     const result = categorize({ url: "https://anthropic.com/news/new-model", title: "(inbox)" });
     assert.equal(result, "lancamento");
+  });
+});
+
+describe("categorize() — arXiv off-topic log (#699)", () => {
+  it("arXiv off-topic emite console.error com URL", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = categorize({ url: "https://arxiv.org/abs/2501.99999", title: "Thermodynamics of Black Holes" });
+      assert.equal(result, "noticias", "arXiv off-topic deve ir para noticias");
+      assert.ok(errors.length > 0, "deve emitir console.error");
+      assert.ok(errors[0].includes("arXiv off-topic"), `mensagem deve conter 'arXiv off-topic', got: ${errors[0]}`);
+      assert.ok(errors[0].includes("arxiv.org/abs/2501.99999"), "mensagem deve conter a URL");
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it("arXiv relevante (IA) NÃO emite console.error", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      categorize({ url: "https://arxiv.org/abs/2501.12345", title: "Scaling Laws for Large Language Models" });
+      assert.equal(errors.length, 0, "arXiv relevante não deve emitir console.error");
+    } finally {
+      console.error = origError;
+    }
+  });
+});
+
+describe("categorizeArticles() — vídeos truncados com log (#697)", () => {
+  const makeVideo = (n: number): Article => ({
+    url: `https://youtube.com/watch?v=video${n}`,
+    title: `Vídeo ${n}`,
+  });
+
+  it("≤2 vídeos: sem truncação, sem log", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = categorizeArticles([makeVideo(1), makeVideo(2)]);
+      assert.equal(result.video.length, 2);
+      assert.ok(!errors.some((e) => e.includes("truncando")), "não deve logar truncação");
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  it(">2 vídeos: trunca para 2 e emite console.error com URLs descartadas", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => errors.push(String(args[0]));
+    try {
+      const result = categorizeArticles([makeVideo(1), makeVideo(2), makeVideo(3), makeVideo(4)]);
+      assert.equal(result.video.length, 2, "deve manter só 2 vídeos");
+      assert.equal(result.video[0].url, "https://youtube.com/watch?v=video1", "ordem preservada");
+      assert.equal(result.video[1].url, "https://youtube.com/watch?v=video2");
+      const log = errors.find((e) => e.includes("truncando"));
+      assert.ok(log, "deve emitir log de truncação");
+      assert.ok(log?.includes("4 vídeos"), `log deve mencionar contagem, got: ${log}`);
+      assert.ok(log?.includes("video3"), "log deve incluir URL do descartado");
+      assert.ok(log?.includes("video4"), "log deve incluir URL do descartado");
+    } finally {
+      console.error = origError;
+    }
   });
 });
