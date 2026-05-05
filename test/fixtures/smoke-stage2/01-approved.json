@@ -1,0 +1,78 @@
+{
+  "highlights": [
+    {
+      "rank": 1,
+      "score": 92,
+      "bucket": "noticias",
+      "url": "https://techcrunch.com/2026/04/23/anthropic-funding/",
+      "article": {
+        "url": "https://techcrunch.com/2026/04/23/anthropic-funding/",
+        "title": "Anthropic levanta rodada série E de US$ 2 bi",
+        "date": "2026-04-23",
+        "score": 92
+      }
+    },
+    {
+      "rank": 2,
+      "score": 85,
+      "bucket": "noticias",
+      "url": "https://openai.com/index/gpt-5-launch/",
+      "article": {
+        "url": "https://openai.com/index/gpt-5-launch/",
+        "title": "OpenAI anuncia lançamento do GPT-5",
+        "date": "2026-04-23",
+        "score": 85
+      }
+    },
+    {
+      "rank": 3,
+      "score": 78,
+      "bucket": "noticias",
+      "url": "https://blog.google/technology/ai/gemini-update/",
+      "article": {
+        "url": "https://blog.google/technology/ai/gemini-update/",
+        "title": "Google atualiza Gemini com novos recursos",
+        "date": "2026-04-23",
+        "score": 78
+      }
+    }
+  ],
+  "lancamento": [
+    {
+      "url": "https://anthropic.com/news/claude-model-card/",
+      "title": "Anthropic publica model card do Claude",
+      "date": "2026-04-23",
+      "score": 70
+    }
+  ],
+  "pesquisa": [
+    {
+      "url": "https://arxiv.org/abs/2404.01234",
+      "title": "Scaling Laws for Neural Language Models — follow-up",
+      "date": "2026-04-22",
+      "score": 65
+    }
+  ],
+  "noticias": [
+    {
+      "url": "https://techcrunch.com/2026/04/23/anthropic-funding/",
+      "title": "Anthropic levanta rodada série E de US$ 2 bi",
+      "date": "2026-04-23",
+      "score": 92
+    },
+    {
+      "url": "https://openai.com/index/gpt-5-launch/",
+      "title": "OpenAI anuncia lançamento do GPT-5",
+      "date": "2026-04-23",
+      "score": 85
+    },
+    {
+      "url": "https://blog.google/technology/ai/gemini-update/",
+      "title": "Google atualiza Gemini com novos recursos",
+      "date": "2026-04-23",
+      "score": 78
+    }
+  ],
+  "tutorial": [],
+  "video": []
+}
