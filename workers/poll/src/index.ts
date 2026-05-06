@@ -321,6 +321,24 @@ function votePageHtml(message: string, success: boolean): string {
 </html>`;
 }
 
+// ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
+
+async function handleImage(path: string, env: Env): Promise<Response> {
+  const key = decodeURIComponent(path.slice("/img/".length));
+  if (!key) return new Response("not found", { status: 404 });
+
+  const value = await env.POLL.get(key, "arrayBuffer");
+  if (!value) return new Response("not found", { status: 404 });
+
+  // Imagens do É IA? são sempre JPEG
+  return new Response(value, {
+    headers: {
+      "Content-Type": "image/jpeg",
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export default {
@@ -336,7 +354,8 @@ export default {
     if (path === "/stats" && request.method === "GET") return handleStats(url, env);
     if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(env);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
+    if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/admin/correct"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/admin/correct", "/img/{key}"] }, 404, env);
   },
 };

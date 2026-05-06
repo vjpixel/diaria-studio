@@ -26,6 +26,7 @@
   },
   "poll": {
     "worker_url": "https://diar-ia-poll.diaria.workers.dev",
+    "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },
   "drive_sync": true,
