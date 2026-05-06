@@ -16,7 +16,7 @@
  */
 
 import 'dotenv/config';
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,9 +59,11 @@ function main() {
   const outDir = args["out-dir"];
   const destaque = args["destaque"]; // d1, d2, d3
 
+  const force = !!args["force"];
+
   if (!editorialPath || !outDir || !destaque) {
     console.error(
-      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3>"
+      "Uso: image-generate.ts --editorial <prompt.md> --out-dir <dir/> --destaque <d1|d2|d3> [--force]"
     );
     process.exit(1);
   }
@@ -96,6 +98,16 @@ function main() {
     ? `${normalizedOutDir}04-${destaque}.jpg`  // D1 usa nomes próprios (2x1, 1x1) gerados abaixo
     : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
+
+  // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar)
+  const checkExistPath = isD1
+    ? `${normalizedOutDir}04-${destaque}-2x1.jpg`
+    : outJpgPath;
+  if (existsSync(checkExistPath) && !force) {
+    console.error(`Imagem ${checkExistPath} já existe — use --force pra regenerar.`);
+    process.stdout.write(checkExistPath + "\n");
+    process.exit(0);
+  }
 
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2), "utf8");
   console.error(`Prompt gravado em ${sdPromptPath}`);

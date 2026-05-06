@@ -46,11 +46,22 @@ describe("image-generate schemas (#649 Tier B)", () => {
     it("rejeita dimensão zero ou negativa", () => {
       assert.throws(
         () => parseSdPrompt({ ...valid, final_width: 0 }),
-        /too_small|too small|positive|invalid/i,
+        /too_small|too small|positive|invalid|256/i,
       );
       assert.throws(
         () => parseSdPrompt({ ...valid, final_height: -100 }),
-        /too_small|too small|positive|invalid/i,
+        /too_small|too small|positive|invalid|256/i,
+      );
+    });
+
+    it("#706: rejeita dimensão < 256 (positive() não é suficiente — 1px passava antes)", () => {
+      assert.throws(
+        () => parseSdPrompt({ ...valid, final_width: 1 }),
+        /256|too_small/i,
+      );
+      assert.throws(
+        () => parseSdPrompt({ ...valid, final_height: 100 }),
+        /256|too_small/i,
       );
     });
 

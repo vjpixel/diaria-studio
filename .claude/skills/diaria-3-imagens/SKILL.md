@@ -95,33 +95,27 @@ Pré-requisito: writer agent emitiu `destaque_url:` em frontmatter de cada promp
 
 ### 2b. Gerar imagens
 
-Para cada destaque indicado (ou todos se sem argumento):
+Para cada destaque indicado (ou todos se sem argumento), chamar **uma vez** por destaque:
 
-1. Ler `data/editions/$1/_internal/02-d{N}-prompt.md`.
-2. Montar prompt estilo impasto Van Gogh + gravar `data/editions/$1/04-d{N}-sd-prompt.json`.
-3. Chamar:
-   ```bash
-   npx tsx scripts/image-generate.ts \
-     --prompt-file data/editions/$1/_internal/02-d{N}-prompt.md \
-     --out data/editions/$1/04-d{N}.jpg \
-     --sd-prompt-out data/editions/$1/04-d{N}-sd-prompt.json
-   ```
-
-Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Para ComfyUI, setar `image_generator: "comfyui"` em `platform.config.json`.
-
-Para d1, gerar também versão 2×1:
 ```bash
 npx tsx scripts/image-generate.ts \
-  --prompt-file data/editions/$1/_internal/02-d1-prompt.md \
-  --out data/editions/$1/04-d1-2x1.jpg \
-  --aspect 2x1 \
-  --sd-prompt-out data/editions/$1/04-d1-sd-prompt.json
+  --editorial data/editions/$1/_internal/02-d{N}-prompt.md \
+  --out-dir data/editions/$1/ \
+  --destaque d{N}
 ```
+
+Substituir `d{N}` por `d1`, `d2`, `d3`. **D1 gera automaticamente 2 arquivos** (`04-d1-2x1.jpg` 1600×800 + `04-d1-1x1.jpg` 800×800 via center-crop) numa única chamada — sem segunda chamada separada. D2/D3 geram `04-d2-1x1.jpg` e `04-d3-1x1.jpg` (1024×1024).
+
+O script também grava `04-d{N}-sd-prompt.json` com o prompt exato usado na geração.
+
+Se a imagem já existir e não quiser regenerar, script sai com exit 0. Para forçar regeneração usar `--force`.
+
+Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Para ComfyUI, setar `image_generator: "comfyui"` em `platform.config.json`.
 
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.

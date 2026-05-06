@@ -510,6 +510,28 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     assert.ok(!credit.includes("[Anonymous]"));
     assert.match(credit, /\[CC0\]\(https:\/\/creativecommons\.org\/publicdomain\/zero\/1\.0\)/);
   });
+
+  it("#706: artist.text='Unknown' vira 'autor desconhecido', não 'Unknown'", () => {
+    // Wikimedia frequentemente retorna "Unknown" para domínio público antigo.
+    // Newsletter não deve publicar "Unknown" como nome de autor.
+    const image = { description: { text: "Historic photograph." }, artist: { text: "Unknown" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Unknown"), `credit não deve conter 'Unknown': ${credit}`);
+    assert.match(credit, /autor desconhecido/);
+  });
+
+  it("#706: artist.text='Unknown author' também vira 'autor desconhecido'", () => {
+    const image = { description: { text: "Historic photograph." }, artist: { text: "Unknown author" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Unknown"), `credit não deve conter 'Unknown': ${credit}`);
+    assert.match(credit, /autor desconhecido/);
+  });
+
+  it("#706: artist ausente vira 'autor desconhecido' (não 'Wikimedia Commons')", () => {
+    const image = { description: { text: "Imagem sem autor." } };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /autor desconhecido/);
+  });
 });
 
 describe("tokenizeImageTitle (#284)", () => {
