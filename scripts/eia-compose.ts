@@ -515,14 +515,34 @@ export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> 
 /**
  * Traduz texto EN para pt-BR via Gemini Flash (#480).
  * Mantém nomes próprios, científicos e siglas em inglês.
- * Retorna null se GEMINI_API_KEY ausente ou em falha (fallback silencioso).
+ *
+ * Modelo lido de `platform.config.json > gemini.translate_model` com fallback
+ * `gemini-flash-latest` (alias rolling do Google, evita regressão silenciosa
+ * quando um modelo pinned é descontinuado — #718).
+ *
+ * Retorna null se GEMINI_API_KEY ausente ou em falha. Em caso de falha,
+ * loga o motivo concreto (HTTP status + body excerpt) em stderr — antes era
+ * fallback silencioso, mascarando regressões em produção.
  */
 async function translateToPtBR(text: string): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    process.stderr.write('[eia-compose] translate: GEMINI_API_KEY ausente — fallback EN\n');
+    return null;
+  }
+  let model = 'gemini-flash-latest';
+  try {
+    const cfgPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'platform.config.json');
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    if (typeof cfg?.gemini?.translate_model === 'string' && cfg.gemini.translate_model.length > 0) {
+      model = cfg.gemini.translate_model;
+    }
+  } catch {
+    // mantém default
+  }
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -534,15 +554,30 @@ async function translateToPtBR(text: string): Promise<string | null> {
 ${text}`
             }]
           }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 200 }
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 500,
+            // thinkingBudget=0 desativa "thinking tokens" — em Gemini 2.5+,
+            // o modo thinking consome maxOutputTokens antes do output, fazendo
+            // a resposta sair vazia/truncada. Tradução curta não precisa.
+            thinkingConfig: { thinkingBudget: 0 },
+          }
         }),
         signal: AbortSignal.timeout(CONFIG.timeouts.gemini),
       }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      process.stderr.write(
+        `[eia-compose] translate: Gemini ${model} retornou HTTP ${res.status} — fallback EN. body: ${body.slice(0, 200)}\n`,
+      );
+      return null;
+    }
     const data = await res.json() as GeminiGenerateResponse;
     return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`[eia-compose] translate: Gemini ${model} falhou — ${msg} — fallback EN\n`);
     return null;
   }
 }
