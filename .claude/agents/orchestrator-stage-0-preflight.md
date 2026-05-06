@@ -226,6 +226,51 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 ```
 A flag injeta `informational: true` em `details` — `collect-edition-signals.ts` filtra por essa flag estruturada em vez do tag textual `(informativo)` no message (que era frágil).
 
+### 0n. Detecção de falhas de CI via Gmail (#740)
+
+Fechar o loop de observabilidade: o GitHub envia notificações de CI falhou para o email do owner do repositório. Checar o inbox antes de iniciar a edição evita rodar o pipeline sobre código quebrado.
+
+**Sempre roda, silencioso se sem falhas.** Usar Gmail MCP (`mcp__claude_ai_Gmail__search_threads`) para buscar:
+
+```
+from:notifications@github.com subject:("failed" OR "CI") newer_than:2d
+```
+
+Se não encontrar resultados: prosseguir silenciosamente.
+
+Se encontrar threads:
+1. Para cada thread, ler o conteúdo via `mcp__claude_ai_Gmail__get_thread` (messageFormat: `"FULL_CONTENT"`).
+2. Extrair os campos:
+   - `workflow`: nome do workflow (do subject, ex: "CI - feat(X): …")
+   - `branch`: nome do branch (do subject ou corpo do email)
+   - `run_url`: URL do run de CI (link "View workflow run" no corpo)
+   - `failed_at`: timestamp do email
+   - `summary`: motivo sumário (ex: "All jobs have failed", job name que falhou)
+3. Persistir no arquivo append-only `data/ci-failures.jsonl` — uma entrada JSON por linha:
+   ```json
+   {"workflow":"CI","branch":"feat/x","run_url":"https://github.com/vjpixel/diaria-studio/actions/runs/…","failed_at":"2026-05-06T01:06:00Z","summary":"CI / test — Failed in 1 minute and 3 seconds"}
+   ```
+   Dedup por `run_url` — não adicionar se run_url já existir no arquivo.
+4. Logar via `scripts/log-event.ts` (flag `--informational` pra não virar issue):
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn \
+     --informational \
+     --message "CI failures detectados: N falha(s) recentes" \
+     --details '{"count":N,"branches":["feat/x"]}'
+   ```
+5. Exibir no terminal:
+   ```
+   ⚠️ CI failures detectados nas últimas 48h:
+     • [feat/x] CI — All jobs have failed — 2026-05-06 01:06 BRT
+       🔗 https://github.com/vjpixel/diaria-studio/actions/runs/…
+
+   Esses failures podem indicar regressões no código atual.
+   Continuar mesmo assim? [y/n] (default: y)
+   ```
+   Se editor responder `n`: abortar a edição.
+
+Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (não bloqueia — CI check é informativo). Logar `info "0n skipped: Gmail MCP unavailable"`.
+
 ### 0m. Auto-reporter — preparado pra rodar no final
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").
