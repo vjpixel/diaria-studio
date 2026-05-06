@@ -138,6 +138,52 @@ export function lintSocialMd(md: string): LintResult {
 }
 
 // ---------------------------------------------------------------------------
+// Temporal reference check (#747) — shared with lint-newsletter-md.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * Detecta referências temporais relativas banidas no MD de social (#747).
+ * Mesma lógica de lint-newsletter-md.ts — edições publicam D+1.
+ */
+export interface RelativeTimeMatch {
+  word: string;
+  context: string;
+  line: number;
+}
+
+export interface RelativeTimeResult {
+  ok: boolean;
+  matches: RelativeTimeMatch[];
+}
+
+// Nota: \b não funciona com caracteres Unicode (ã, ê, etc.) — usamos
+// lookahead/lookbehind em vez de \b para cobrir amanhã, mês, etc.
+const RELATIVE_TIME_RE =
+  /(?<!\w)(hoje|ontem|amanhã|agora mesmo|esta semana|na semana passada|na próxima semana|este mês|mês passado|recentemente|há pouco|acabou de|nesta (?:segunda|terça|quarta|quinta|sexta|sábado|domingo))(?!\w)/gi;
+
+export function lintRelativeTime(md: string): RelativeTimeResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: RelativeTimeMatch[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    RELATIVE_TIME_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = RELATIVE_TIME_RE.exec(line)) !== null) {
+      matches.push({
+        word: m[1],
+        context: line
+          .slice(Math.max(0, m.index - 20), m.index + m[1].length + 20)
+          .trim(),
+        line: i + 1,
+      });
+    }
+  }
+
+  return { ok: matches.length === 0, matches };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 

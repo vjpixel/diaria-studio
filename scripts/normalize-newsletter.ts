@@ -29,8 +29,8 @@
  * Output JSON em stderr: { highlight_headers_split, section_items_split, warnings[] }.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 
@@ -462,6 +462,27 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
+/**
+ * Extrai `eia_answer` do frontmatter YAML de um arquivo markdown (#744).
+ * Retorna a string YAML bruta do bloco (sem as delimitações `---`) ou null
+ * se não houver frontmatter ou se `eia_answer` não estiver presente.
+ *
+ * Suporta tanto forma escalar ("eia_answer: ia") quanto mapeamento multi-linha
+ * ("eia_answer:\n  A: real\n  B: ia"). Devolve o bloco YAML completo do
+ * frontmatter (entre os `---`) para ser re-emitido como-está no cabeçalho do
+ * output, preservando a estrutura exata que o eia-composer gravou.
+ */
+export function extractEiaFrontmatter(eiaPath: string): string | null {
+  if (!existsSync(eiaPath)) return null;
+  const content = readFileSync(eiaPath, "utf8");
+  // Frontmatter: bloco entre o primeiro `---` e o segundo `---`
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return null;
+  const block = fm[1];
+  if (!/eia_answer/i.test(block)) return null;
+  return block;
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
@@ -473,7 +494,30 @@ function main(): void {
   const outPath = resolve(ROOT, args.out);
   const text = readFileSync(inPath, "utf8");
   const result = normalizeNewsletter(text);
-  writeFileSync(outPath, result.text, "utf8");
+
+  // #744: propagar eia_answer do 01-eia.md para o output
+  // Inferir edition_dir a partir do path de --in (assume que está em
+  // data/editions/{AAMMDD}/_internal/ ou data/editions/{AAMMDD}/).
+  let outputText = result.text;
+  const eiaPath = join(resolve(ROOT, args.in), "..", "..", "01-eia.md");
+  const eiaPathAlt = join(resolve(ROOT, args.in), "..", "01-eia.md");
+  const resolvedEiaPath = existsSync(eiaPath)
+    ? eiaPath
+    : existsSync(eiaPathAlt)
+    ? eiaPathAlt
+    : null;
+  if (resolvedEiaPath) {
+    const fmBlock = extractEiaFrontmatter(resolvedEiaPath);
+    if (fmBlock) {
+      // Só prepend se o output ainda não tem frontmatter com eia_answer
+      const alreadyHas = /^---[\s\S]*?eia_answer[\s\S]*?---/.test(outputText);
+      if (!alreadyHas) {
+        outputText = `---\n${fmBlock}\n---\n\n${outputText}`;
+      }
+    }
+  }
+
+  writeFileSync(outPath, outputText, "utf8");
   console.error(JSON.stringify(result.report, null, 2));
 }
 

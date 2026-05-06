@@ -25,7 +25,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
 import { parseInlineLink } from "./lib/inline-link.ts"; // #599
@@ -240,6 +240,222 @@ export function lintNewsletter(
   }
 
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
+ * Verifica que `02-reviewed.md` tem `eia_answer` no frontmatter quando
+ * `01-eia.md` existe na mesma edition_dir (#744).
+ *
+ * @param mdPath  Path absoluto para o `02-reviewed.md` (ou equivalente).
+ * @param editionDir  Path do diretório da edição (ex: `data/editions/260506`).
+ *                    Se omitido, inferido a partir de mdPath.
+ */
+export interface EiaAnswerCheckResult {
+  ok: boolean;
+  label?: string;
+}
+
+export function checkEiaAnswer(
+  mdPath: string,
+  editionDir?: string,
+): EiaAnswerCheckResult {
+  const dir = editionDir ?? dirname(mdPath);
+  const eiaPath = join(dir, "01-eia.md");
+  if (!existsSync(eiaPath)) {
+    // 01-eia.md não existe — check não aplicável
+    return { ok: true };
+  }
+  // 01-eia.md existe: verificar que o md tem eia_answer no frontmatter
+  if (!existsSync(mdPath)) {
+    return {
+      ok: false,
+      label: "eia_answer_missing: 01-eia.md exists but 02-reviewed.md not found",
+    };
+  }
+  const md = readFileSync(mdPath, "utf8");
+  const hasFm = /^---[\s\S]*?eia_answer[\s\S]*?---/.test(md);
+  if (!hasFm) {
+    return {
+      ok: false,
+      label:
+        "eia_answer_missing: 01-eia.md exists but 02-reviewed.md has no eia_answer frontmatter",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Verifica que o número declarado na intro ("Selecionamos os N mais relevantes")
+ * bate com a contagem real de URLs editoriais no body (#743).
+ *
+ * URLs contadas:
+ *   - 1 URL por bloco DESTAQUE (a URL canônica, não as opções de título)
+ *   - 1 URL por item em LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS
+ *   - É IA? é excluído (créditos de imagem)
+ *
+ * Retorna `{ ok, claimed, actual }`.
+ * Se não conseguir parsear o número da intro, retorna `{ ok: true }` (não bloqueia).
+ */
+export interface IntroCountResult {
+  ok: boolean;
+  claimed?: number;
+  actual?: number;
+}
+
+export function lintIntroCount(md: string): IntroCountResult {
+  const normalized = md.replace(/\r\n/g, "\n");
+
+  // Extrair número declarado na intro
+  const introMatch = normalized.match(
+    /Selecionamos os (\d+) mais relevantes/i,
+  );
+  if (!introMatch) return { ok: true }; // forma singular ou ausente — não verificar
+  const claimed = parseInt(introMatch[1], 10);
+
+  // Contar URLs editoriais no body
+  // Separar blocos por `---`. Processar linha a linha.
+  let actual = 0;
+  const lines = normalized.split("\n");
+  let inHighlight = false;
+  let highlightUrlSeen = false;
+  let inSection = false;
+  let inEai = false;
+  let sectionItemState: "expect_title" | "expect_url" | "body" = "expect_title";
+
+  // Helper: linha é URL canônica (bare ou inline link)
+  const isUrl = (s: string) =>
+    /^\s*(?:\[https?:\/\/\S+\]\(https?:\/\/\S+\)|https?:\/\/\S+)\s*$/.test(s);
+  const isInlineLink = (s: string) => /^\[.+\]\(https?:\/\/.+\)\s*$/.test(s);
+
+  for (const raw of lines) {
+    const t = raw.trim();
+
+    if (t === "---") {
+      inHighlight = false;
+      highlightUrlSeen = false;
+      inSection = false;
+      inEai = false;
+      sectionItemState = "expect_title";
+      continue;
+    }
+
+    // É IA? — excluir desta seção inteira
+    if (/^(##\s+)?É IA\?\s*$/i.test(t)) {
+      inEai = true;
+      inHighlight = false;
+      inSection = false;
+      continue;
+    }
+    if (inEai) continue;
+
+    // Header de destaque
+    if (/^DESTAQUE\s+\d+\s*\|/.test(t)) {
+      inHighlight = true;
+      highlightUrlSeen = false;
+      inSection = false;
+      sectionItemState = "expect_title";
+      continue;
+    }
+
+    // Header de seção secundária
+    if (/^(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)\s*$/.test(t)) {
+      inSection = true;
+      inHighlight = false;
+      sectionItemState = "expect_title";
+      continue;
+    }
+
+    // Linha em branco
+    if (t === "") {
+      if (inSection && sectionItemState === "body") {
+        sectionItemState = "expect_title";
+      }
+      continue;
+    }
+
+    // Dentro de destaque: contar 1 URL por bloco (a primeira URL encontrada)
+    if (inHighlight && !highlightUrlSeen) {
+      if (isUrl(t) || isInlineLink(t)) {
+        actual++;
+        highlightUrlSeen = true;
+      }
+      continue;
+    }
+
+    // Dentro de seção secundária
+    if (inSection) {
+      // #599 — formato inline `[Título](url)`: título e URL na mesma linha.
+      // Contar direto e avançar para body sem transição via expect_url.
+      if (sectionItemState === "expect_title" && isInlineLink(t)) {
+        actual++;
+        sectionItemState = "body";
+        continue;
+      }
+      if (sectionItemState === "expect_title" && !isUrl(t)) {
+        sectionItemState = "expect_url";
+        continue;
+      }
+      if (sectionItemState === "expect_url" && isUrl(t)) {
+        actual++;
+        sectionItemState = "body";
+        continue;
+      }
+      if (sectionItemState === "expect_url" && !isUrl(t)) {
+        // Edge: URL não veio após o título — reset pra próximo item
+        sectionItemState = "expect_title";
+      }
+    }
+  }
+
+  return { ok: claimed === actual, claimed, actual };
+}
+
+/**
+ * Detecta referências temporais relativas banidas no MD da newsletter (#747).
+ *
+ * Edições publicam D+1: "hoje" / "ontem" / "esta semana" são ambíguos no
+ * momento da leitura.
+ *
+ * Retorna array de matches com contexto (trecho da linha).
+ */
+export interface RelativeTimeMatch {
+  word: string;
+  context: string;
+  line: number;
+}
+
+export interface RelativeTimeResult {
+  ok: boolean;
+  matches: RelativeTimeMatch[];
+}
+
+// Nota: \b não funciona com caracteres Unicode (ã, ê, etc.) — usamos
+// lookahead/lookbehind em vez de \b para cobrir amanhã, mês, etc.
+const RELATIVE_TIME_RE =
+  /(?<!\w)(hoje|ontem|amanhã|agora mesmo|esta semana|na semana passada|na próxima semana|este mês|mês passado|recentemente|há pouco|acabou de|nesta (?:segunda|terça|quarta|quinta|sexta|sábado|domingo))(?!\w)/gi;
+
+export function lintRelativeTime(md: string): RelativeTimeResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const matches: RelativeTimeMatch[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let m: RegExpExecArray | null;
+    // Reset lastIndex (g flag) between lines
+    RELATIVE_TIME_RE.lastIndex = 0;
+    while ((m = RELATIVE_TIME_RE.exec(line)) !== null) {
+      matches.push({
+        word: m[1],
+        context: line.slice(Math.max(0, m.index - 20), m.index + m[1].length + 20).trim(),
+        line: i + 1,
+      });
+    }
+  }
+
+  return {
+    ok: matches.length === 0,
+    matches,
+  };
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -656,13 +872,89 @@ function main(): void {
     return;
   }
 
+  // Modo --check eia-answer (#744) — verifica que 02-reviewed.md tem eia_answer
+  // quando 01-eia.md existe na edition_dir
+  if (args.check === "eia-answer") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    const editionDir = args["edition-dir"]
+      ? resolve(ROOT, args["edition-dir"])
+      : undefined;
+    const result = checkEiaAnswer(mdPath, editionDir);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.label}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check intro-count (#743) — verifica que intro bate com contagem real
+  if (args.check === "intro-count") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check intro-count --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = lintIntroCount(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ intro-count: intro afirma ${result.claimed} mas contagem real é ${result.actual}`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check relative-time (#747) — detecta referências temporais relativas
+  if (args.check === "relative-time") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check relative-time --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = lintRelativeTime(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} referência(s) temporal(is) relativa(s) detectada(s):`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  linha ${m.line}: relative_time: '${m.word}' encontrado — edição publica D+1, use data absoluta\n    contexto: "...${m.context}..."`,
+        );
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
         "  ou: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check title-length --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check why-matters-format --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +
+        "  ou: lint-newsletter-md.ts --check intro-count --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>",
     );
     process.exit(2);
   }

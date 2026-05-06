@@ -13,12 +13,15 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 
 ### 2a. Writer + social em paralelo
 
-**Limites por bucket (#358) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
+**Limites por bucket (#358, #742) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
 - Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
 - Destaques: preservar todos (sempre ≤3).
 - Lançamentos: top-5 por score (se houver mais de 5, truncar nos 5 de maior score).
+  - **Validar lançamentos ANTES do cap (#742):** rodar `validate-lancamentos.ts` na lista de lançamentos do approved JSON para identificar URLs não-oficiais. Remover lançamentos rejeitados ANTES de calcular `lançamentos_final`. Isso garante que slots liberados por lançamentos inválidos sejam compensados em Outras Notícias.
 - Pesquisas: top-3 por score (se houver mais de 3, truncar nos 3 de maior score).
 - Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
+  - `lançamentos_final` deve ser contado **após** o passo de validação acima (lançamentos inválidos já removidos).
+  - Se validação de lançamentos removeu N itens, os N slots liberados são preenchidos a partir do pool de `noticias` (top por score, respeitando o cap resultante).
 - Passar o `categorized` truncado ao writer no campo `categorized` (não salvar em disco — só memória do orchestrator).
 
 **Em uma única mensagem**, disparar os 3 agents simultaneamente:
@@ -82,6 +85,12 @@ Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+
+- **Sincronizar contagem da intro (#743):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total). Corrigir automaticamente:
+  ```bash
+  npx tsx scripts/sync-intro-count.ts --md data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Se o script retornar `changed: true`, logar `warn` no run-log com os valores antes/depois. Não bloquear — correção é cirúrgica e não altera o restante do texto.
 
 - **Validar LANÇAMENTOS oficiais (#160):**
   ```bash

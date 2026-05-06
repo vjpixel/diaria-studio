@@ -5,6 +5,7 @@ import {
   lintLinkedinCTAs,
   lintFacebookCTAs,
   lintSocialMd,
+  lintRelativeTime,
 } from "../scripts/lint-social-md.ts";
 
 const validMd = `# LinkedIn
@@ -133,5 +134,28 @@ describe("lintSocialMd integration", () => {
     const result = lintSocialMd(md);
     assert.equal(result.ok, false);
     assert.ok(result.errors.some((e) => e.platform === "facebook"));
+  });
+});
+
+describe("lintRelativeTime (social, #747)", () => {
+  it("ok sem referências temporais relativas", () => {
+    const md = "# LinkedIn\n\nPost sem problemas, publicado em 2026-05-06.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("detecta 'hoje' em post social", () => {
+    const md = "# LinkedIn\n\nHoje a OpenAI lançou o GPT-6.\n\nassine em diar.ia.br";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
+
+  it("detecta 'esta semana' com número da linha correto", () => {
+    const md = "# LinkedIn\n\nEsta semana a regulação avançou no Brasil.\n\n# Facebook";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].line, 3);
   });
 });
