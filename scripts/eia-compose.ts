@@ -594,10 +594,11 @@ export function extractCommonsUserUrl(artistRaw: string | undefined): string | n
 }
 
 function extractArtistName(artistText: string | undefined): string {
-  if (!artistText) return "autor desconhecido";
+  // Campo ausente → creditar a instituição (comportamento anterior preservado)
+  if (!artistText) return "Wikimedia Commons";
   const stripped = stripHtml(artistText).replace(/^by\s+/i, "").trim();
   // Wikimedia frequentemente retorna "Unknown" ou "Unknown author" para domínio
-  // público antigo sem atribuição — tratar como ausente em vez de publicar "Unknown".
+  // público antigo sem atribuição — tratar como desconhecido em vez de publicar "Unknown".
   if (!stripped || /^unknown(\s+author)?$/i.test(stripped)) return "autor desconhecido";
   return stripped;
 }
