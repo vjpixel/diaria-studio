@@ -192,13 +192,13 @@ Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
 
 ### 3d. Validações finais
 
-`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice e o pré-Humanize, isolando o que a Clarice mudou (sem ruído do humanizador):
+`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice e o output final (`02-draft.md` após Clarice + humanizador), mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer — incluindo o que o humanizador reverteu da Clarice:
 
 ```bash
 npx tsx scripts/validate-lancamentos.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/clarice-diff.ts \
   data/editions/$1/_internal/02-draft.pre-clarice.md \
-  data/editions/$1/_internal/02-draft.pre-humanize.md \
+  data/editions/$1/_internal/02-draft.md \
   data/editions/$1/_internal/02-clarice-diff.md
 ```
 
