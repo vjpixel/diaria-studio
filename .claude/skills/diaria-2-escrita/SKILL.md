@@ -126,6 +126,10 @@ npx tsx scripts/normalize-newsletter.ts \
 
 ### 3b. Clarice (inline)
 
+**⚠️ Fail-fast obrigatório (#738):** Se qualquer `<system-reminder>` do runtime indicar que o MCP Clarice ficou offline, ou se a chamada `mcp__clarice__correct_text` retornar erro de disconnect/unavailable, **parar imediatamente** e reportar ao editor:
+> `BLOQUEADO: MCP Clarice indisponível. Reconecte (verifique CLARICE_API_KEY e reinicie o MCP local) e responda "retry" para continuar, ou "skip" para pular Clarice nesta edição.`
+Nunca aguardar passivamente. O MCP pode cair mid-session sem aviso do usuário — o `<system-reminder>` é o sinal de detecção. Tratar como mensagem de erro de alta prioridade.
+
 Snapshot pré-Clarice para o diff posterior (3d) e rollback se algo falhar:
 
 ```bash
