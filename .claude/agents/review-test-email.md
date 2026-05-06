@@ -106,20 +106,57 @@ Verificar cada item e registrar como `ok` ou `issue`:
    - Se um link aponta para o destino errado (ex: link do D1 com URL do D2): `"email:link_wrong: Link em '{contexto}' aponta para '{url_encontrada}' mas deveria ser '{url_esperada}'"`
    - Se um link esta quebrado (href vazio, `#`, ou `javascript:`): `"email:link_broken: Link em '{contexto}' tem href invalido: '{href}'"`
 
-8. **Consistencia intra-destaque de versao (#603).** Para cada destaque (D1, D2, D3) extrair menções de versao via regex `/\bV\d+(\.\d+)?\b|\bv\d+(\.\d+)?\b|\bversão \d+/g` no titulo + parágrafos. Se múltiplas menções no MESMO destaque divergem (ex: "V4" no titulo, "V5" no parágrafo 2), classificar:
-   - **Cross-reference com `data/intentional-errors.jsonl`**: se entry com `edition: "{AAMMDD}"`, `error_type: "version_inconsistency"`, e `destaque` matching → classificar como `info` (erro intencional do concurso mensal — feature, não bug):
-     `"info:intentional_error_confirmed: D{N} {tipo} — feature do concurso mensal (catalogado em intentional-errors.jsonl)"`
-   - **Não catalogado** → classificar como `blocker`:
-     `"email:version_inconsistency: D{N} titulo='{V_titulo}' parágrafo {idx}='{V_para}' — verificar com editor antes de publicar (não está em intentional-errors.jsonl)"`
+8-9. **Consistência intra-destaque de versão + comparação semântica vs source MD (#603, #630).**
+   **Determinístico via CLI (substitui instrução textual — #603 nível 2).** Em vez de inferir
+   manualmente, invocar o lint script que já faz: extração de versões (regex), detecção de
+   inconsistência intra-destaque, drift de números/datas email-vs-source, e cross-reference
+   com `data/intentional-errors.jsonl`.
 
-9. **Comparacao semantica vs source MD (#603).** Para cada destaque, lançamento, pesquisa, notícia: extrair título e primeira frase do parágrafo do email; buscar trecho equivalente em `{edition_dir}/02-reviewed.md`. Divergências em **nomes próprios, números, datas, versões** = blocker (após cross-reference com intentional-errors.jsonl como em check 8). Diferenças de pontuação/espaçamento = ignorar.
+   Procedimento:
 
-   Se source MD foi modificado APÓS o test email (timestamp), pular este check — editor pode estar iterando.
+   ```bash
+   # 1. Salvar conteúdo bruto do email (do MCP) em arquivo temp
+   echo "$EMAIL_CONTENT" > /tmp/test-email-{AAMMDD}.txt
 
-   Output:
-   `"email:semantic_drift: D{N} email='{trecho_email}' source='{trecho_source}' — divergência em '{tipo}' (nomes/números/versões/datas)"`
+   # 2. Rodar lint determinístico
+   npx tsx scripts/lint-test-email.ts \
+     --email-file /tmp/test-email-{AAMMDD}.txt \
+     --source-md {edition_dir}/02-reviewed.md \
+     --edition {AAMMDD} \
+     --out /tmp/lint-result-{AAMMDD}.json
+   # Exit 0 = sem blockers; exit 1 = pelo menos 1 blocker; exit 2 = erro de uso
+   ```
 
-Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
+   3. Ler `/tmp/lint-result-{AAMMDD}.json` — formato:
+      ```json
+      {
+        "issues": [
+          { "type": "blocker"|"warning"|"info",
+            "category": "version_inconsistency"|"semantic_drift"|"intentional_error_confirmed",
+            "destaque": "DESTAQUE 2",
+            "detail": "...",
+            "source_md_value": "..." }
+        ],
+        "summary": { "blockers": N, "warnings": M, "infos": K }
+      }
+      ```
+
+   4. Mapear cada `issues[]` do CLI pra string compatível com o output do agent:
+      - `type:blocker` + `category:version_inconsistency` → `"email:version_inconsistency: {destaque} {detail} — source: {source_md_value}"`
+      - `type:warning` + `category:semantic_drift` → `"email:semantic_drift: {destaque} {detail}"`
+      - `type:info` + `category:intentional_error_confirmed` → `"info:intentional_error_confirmed: {destaque} {detail}"`
+
+   Se `summary.blockers > 0` ou `summary.warnings > 0` ou `summary.infos > 0`, anexar todas as
+   strings mapeadas ao `issues[]` final do agent.
+
+   **Vantagem do CLI:** determinístico, testável, não depende do modelo seguir prompt (#588,
+   #602 — agentes ignoram instruções textuais ocasionalmente). O agent só precisa invocar o
+   script — não precisa rodar regex ou comparar entidades por conta.
+
+   **Fallback:** se o CLI falhar (exit 2 / arquivo não criado / erro inesperado), seguir com
+   os checks 1-7 normais e logar warning `"lint_cli_failed: {detalhe}"` no `issues[]`.
+
+Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
 ### 3a. Cross-reference com intentional-errors.jsonl
 
