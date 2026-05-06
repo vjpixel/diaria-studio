@@ -15,6 +15,10 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 
 ### 4a. Pré-requisitos + sync
 
+**⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente** e reportar:
+> `BLOQUEADO: MCP {servidor} indisponível. Verifique extensão Chrome + login. Responda "retry" para continuar ou "abort" para encerrar Etapa 4.`
+Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio.
+
 - Logar início:
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 publish parallel started'
