@@ -74,6 +74,8 @@ export interface EIA {
   imageB: string;
   /** Linha "Resultado da última edição: X%..." auto-injetada por eia-compose (#107). */
   prevResultLine?: string;
+  /** Código da edição (AAMMDD), usado nos botões de votação (#465). */
+  edition: string;
 }
 
 interface NewsletterContent {
@@ -260,12 +262,13 @@ function subBlockToItem(block: string[]): SectionItem | null {
 }
 
 export function fallbackEIA(editionDir: string): EIA {
+  const edition = editionDir.match(/(\d{6})[/\\]?$/)?.[1] ?? "";
   const newA = resolve(editionDir, "01-eia-A.jpg");
   const newB = resolve(editionDir, "01-eia-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
-    return { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg" };
+    return { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition };
   }
-  return { credit: "", imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg" };
+  return { credit: "", imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg", edition };
 }
 
 export function parseEIA(text: string, editionDir: string): EIA {
@@ -292,14 +295,17 @@ export function parseEIA(text: string, editionDir: string): EIA {
   }
   const credit = creditLines.join("\n").trim();
 
+  // Extrai código da edição (AAMMDD) do caminho do diretório (#465).
+  const edition = editionDir.match(/(\d{6})[/\\]?$/)?.[1] ?? "";
+
   // #192: novo padrão é 01-eia-A.jpg / 01-eia-B.jpg (random).
   // Fallback: edições antigas têm 01-eia-real.jpg / 01-eia-ia.jpg (real sempre primeiro).
   const newA = resolve(editionDir, "01-eia-A.jpg");
   const newB = resolve(editionDir, "01-eia-B.jpg");
   if (existsSync(newA) && existsSync(newB)) {
-    return { credit, prevResultLine, imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg" };
+    return { credit, prevResultLine, imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition };
   }
-  return { credit, prevResultLine, imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg" };
+  return { credit, prevResultLine, imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg", edition };
 }
 
 function extractContent(editionDir: string): NewsletterContent {
@@ -351,6 +357,7 @@ const TEAL = "#00A0A0";
 const TEXT_COLOR = "#1A1A1A";
 const FONT_HEADING = "'Poppins', Helvetica, sans-serif";
 const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
 
 function esc(s: string): string {
   return s
@@ -496,6 +503,28 @@ function renderEIA(eia: EIA): string {
   // #192: alt text usa A/B em vez de "Foto real"/"Foto gerada por IA" pra não
   // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
   // `01-eia.md` (frontmatter, leitura humana) e `_internal/01-eia-meta.json`.
+
+  // #465: botões de votação via merge tag do Beehiiv.
+  // {{ subscriber.email }} é substituído pelo Beehiiv no envio — NÃO aplicar esc() na URL completa.
+  const voteButtonsRow = eia.edition
+    ? `      <tr><td align="center" style="${cellStyle};padding:16px 2px;">
+        <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
+          <tr>
+            <td style="padding:0 8px;">
+              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&edition=${esc(eia.edition)}&choice=A"
+                 style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
+                 target="_blank" rel="noopener noreferrer">Votar A</a>
+            </td>
+            <td style="padding:0 8px;">
+              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&edition=${esc(eia.edition)}&choice=B"
+                 style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
+                 target="_blank" rel="noopener noreferrer">Votar B</a>
+            </td>
+          </tr>
+        </table>
+      </td></tr>`
+    : "";
+
   return `<!-- É IA? -->
 <tr><td>
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
@@ -505,6 +534,7 @@ function renderEIA(eia: EIA): string {
       ${renderCategoryLabel("🖼️", "É IA?")}
       ${renderImageNoCaption(eia.imageA, "Imagem A")}
       ${renderImageNoCaption(eia.imageB, "Imagem B")}
+${voteButtonsRow}
       <tr><td align="left" style="${cellStyle}">
         <p style="${paragraphStyle}">${creditHtml}</p>
       </td></tr>

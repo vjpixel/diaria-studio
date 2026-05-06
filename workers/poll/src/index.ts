@@ -69,9 +69,10 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const email = url.searchParams.get("email")?.toLowerCase().trim();
   const edition = url.searchParams.get("edition");
   const choice = url.searchParams.get("choice")?.toUpperCase();
+  // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
   const sig = url.searchParams.get("sig");
 
-  if (!email || !edition || !choice || !sig) {
+  if (!email || !edition || !choice) {
     return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
@@ -83,12 +84,15 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     });
   }
 
-  // Verificar HMAC
-  const valid = await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
-  if (!valid) {
-    return new Response(votePageHtml("Link inválido ou expirado.", false), {
-      status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+  // Se sig presente, verificar HMAC (backward compat com URLs assinadas via Kit).
+  // Se sig ausente, confiar no email injetado pelo Beehiiv via merge tag.
+  if (sig !== null) {
+    const valid = await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
+    if (!valid) {
+      return new Response(votePageHtml("Link inválido ou expirado.", false), {
+        status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
+      });
+    }
   }
 
   // Verificar se já votou
