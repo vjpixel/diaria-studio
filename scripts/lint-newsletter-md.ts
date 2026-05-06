@@ -384,6 +384,13 @@ export function lintIntroCount(md: string): IntroCountResult {
 
     // Dentro de seção secundária
     if (inSection) {
+      // #599 — formato inline `[Título](url)`: título e URL na mesma linha.
+      // Contar direto e avançar para body sem transição via expect_url.
+      if (sectionItemState === "expect_title" && isInlineLink(t)) {
+        actual++;
+        sectionItemState = "body";
+        continue;
+      }
       if (sectionItemState === "expect_title" && !isUrl(t)) {
         sectionItemState = "expect_url";
         continue;

@@ -902,6 +902,41 @@ describe("lintIntroCount (#743)", () => {
     assert.equal(r.ok, true);
     assert.equal(r.claimed, undefined);
   });
+
+  it("#599: conta itens de seção no formato inline [Título](url)", () => {
+    const md = [
+      "Selecionamos os 4 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "[Título D1](https://example.com/d1)",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "",
+      "[Item inline](https://example.com/l1)",
+      "Descrição do item.",
+      "",
+      "---",
+      "",
+      "PESQUISAS",
+      "",
+      "[Paper inline](https://example.com/p1)",
+      "Resumo.",
+      "",
+      "---",
+      "",
+      "OUTRAS NOTÍCIAS",
+      "",
+      "[Notícia inline](https://example.com/n1)",
+      "Desc.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    assert.equal(r.actual, 4, `actual=${r.actual} claimed=${r.claimed}`);
+    assert.equal(r.ok, true);
+  });
 });
 
 describe("lintRelativeTime (#747)", () => {
