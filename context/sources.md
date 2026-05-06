@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 44 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 45 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -187,6 +187,11 @@
 - Site query: `site:arxiv.org`
 - RSS: https://rss.arxiv.org/rss/cs.AI
 - Topic filter: AI,artificial intelligence,language model,LLM,large language,agent,agentic,GPT,Claude,Gemini,Llama,deep learning,neural network,transformer,alignment,safety,benchmark,reasoning,multimodal,generative,fine-tuning,RAG,retrieval,foundation model,reinforcement learning
+
+### Perplexity Research
+- URL: https://research.perplexity.ai/
+- Site query: `site:research.perplexity.ai`
+- RSS: https://research.perplexity.ai/sitemap.xml
 
 ## Tutoriais
 
