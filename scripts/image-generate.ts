@@ -99,14 +99,17 @@ function main() {
     : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
-  // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar)
+  // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar).
+  // D1: exige AMBOS 2x1 e 1x1 — se só 2x1 existe (crash antes do crop), não pula.
+  const d1Path2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
+  const d1Path1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const checkExistPath = isD1
-    ? `${normalizedOutDir}04-${destaque}-2x1.jpg`
-    : outJpgPath;
-  if (existsSync(checkExistPath) && !force) {
+    ? (existsSync(d1Path2x1) && existsSync(d1Path1x1) ? d1Path2x1 : null)
+    : (existsSync(outJpgPath) ? outJpgPath : null);
+  if (checkExistPath && !force) {
     console.error(`Imagem ${checkExistPath} já existe — use --force pra regenerar.`);
-    process.stdout.write(checkExistPath + "\n");
-    if (isD1) process.stdout.write(`${normalizedOutDir}04-${destaque}-1x1.jpg\n`);
+    process.stdout.write((isD1 ? d1Path2x1 : outJpgPath) + "\n");
+    if (isD1) process.stdout.write(d1Path1x1 + "\n");
     process.exit(0);
   }
 

@@ -18,7 +18,7 @@
  *   npx tsx scripts/refresh-past-editions.ts --regen-md-only           # só regen MD do raw
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -449,8 +449,13 @@ async function main() {
     }
   }
 
-  writeFileSync(RAW_PATH, JSON.stringify(truncated, null, 2), "utf8");
-  writeFileSync(MD_PATH, renderMarkdown(truncated), "utf8");
+  const rawTmp = RAW_PATH + ".tmp";
+  writeFileSync(rawTmp, JSON.stringify(truncated, null, 2), "utf8");
+  renameSync(rawTmp, RAW_PATH);
+
+  const mdTmp = MD_PATH + ".tmp";
+  writeFileSync(mdTmp, renderMarkdown(truncated), "utf8");
+  renameSync(mdTmp, MD_PATH);
 
   console.log(
     `Wrote ${truncated.length} editions (dedupEditionCount=${dedupEditionCount}) → ${MD_PATH}`
