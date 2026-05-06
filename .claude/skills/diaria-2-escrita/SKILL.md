@@ -289,6 +289,17 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stag
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
 
+Após o push, limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário):
+
+```bash
+for f in \
+  data/editions/$1/_internal/02-draft.pre-clarice.md \
+  data/editions/$1/_internal/02-draft.pre-humanize.md \
+  data/editions/$1/_internal/03-social.pre-humanize.md; do
+  [ -f "$f" ] && rm "$f"
+done
+```
+
 ## Passo 6 — Gate humano unificado
 
 **Importante (#589, #159):** title-picker é **fallback pós-gate**, não pre-gate. Editor revisa newsletter com **3 opções de título por destaque** e poda manualmente o que quer manter. Se aprovar sem podar, title-picker (Opus) escolhe automaticamente como fallback no Passo 7.

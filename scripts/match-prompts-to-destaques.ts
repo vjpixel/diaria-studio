@@ -105,7 +105,8 @@ export function computeSwaps(
         reason:
           `frontmatter destaque_url ausente em 02-${cur}-prompt.md — não dá pra ` +
           `detectar reorder de destaques. Editar o prompt e adicionar ` +
-          `'destaque_url: <url-do-destaque>' no frontmatter, ou regenerar Stage 2.`,
+          `'destaque_url: <url-do-destaque>' no frontmatter, ou regenerar Stage 2. ` +
+          `Stage 3 vai falhar com exit 1 até esse fix ser aplicado.`,
       };
     }
   }
@@ -128,7 +129,8 @@ export function computeSwaps(
         reason:
           `URL de 02-${cur}-prompt.md (${promptUrls[cur]}) não está em ` +
           `02-reviewed.md — destaque foi removido no gate? Regenerar Stage 2 ou ` +
-          `corrigir o prompt manualmente.`,
+          `corrigir o prompt manualmente. ` +
+          `Stage 3 vai falhar com exit 1 até esse fix ser aplicado.`,
       };
     }
   }
