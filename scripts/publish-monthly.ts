@@ -261,7 +261,7 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
   <tr><td>${imgHtml}</td></tr>
   <tr><td align="center" style="padding:12px 0 0;">
     <a href="${voteUrl}"
-       style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;background-color:${TEAL};border-radius:50px;padding:12px 32px;text-decoration:none;letter-spacing:0.02em;">Esta é IA — Votar ${label}</a>
+       style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;background-color:${TEAL};border-radius:50px;padding:12px 32px;text-decoration:none;letter-spacing:0.02em;">Votar: esta é IA</a>
   </td></tr>
 </table>`;
   }
