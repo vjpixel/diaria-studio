@@ -6,7 +6,7 @@ Anteriormente os mesmos detalhes viviam duplicados em `.claude/skills/diaria-1-p
 
 ## Quando rodar
 
-Antes de apresentar o gate humano de Stage 1, depois que `01-categorized.md`, `01-categorized.json`, `01-eia.md` e `04-d1-1x1.jpg` foram gerados (ou intencionalmente skipados). Detecta regressões conhecidas:
+Antes de apresentar o gate humano de Stage 1, depois que `01-categorized.md`, `01-categorized.json` e `01-eia.md` foram gerados (ou intencionalmente skipados). `04-d1-1x1.jpg` é output de Stage 3 e não está no escopo deste validator. Detecta regressões conhecidas:
 
 - **#577** Drive sync push pulado silenciosamente.
 - **#578** EIA format quebrado (UnknownUnknown, EN no lugar de PT-BR, sem hyperlinks).
