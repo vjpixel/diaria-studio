@@ -23,14 +23,12 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 **Passo fix-0 — Detectar modificação do source (#725 bug #8):**
 
 ```bash
-# Timestamp do último paste (gravado como test_email_sent_at em 05-published.json)
-LAST_PASTE=$(node -e "const j=JSON.parse(require('fs').readFileSync('{edition_dir}/05-published.json','utf8'));process.stdout.write(j.test_email_sent_at??'1970-01-01T00:00:00.000Z')")
-
-# Comparar mtime de 02-reviewed.md com LAST_PASTE
 node -e "
-  const mtime=require('fs').statSync('{edition_dir}/02-reviewed.md').mtimeMs;
-  const paste=new Date('$LAST_PASTE').getTime();
-  process.exit(mtime>paste?1:0);
+  const fs=require('fs');
+  const pub=JSON.parse(fs.readFileSync('{edition_dir}/05-published.json','utf8'));
+  const lastPaste=new Date(pub.test_email_sent_at??'1970-01-01').getTime();
+  const mtime=fs.statSync('{edition_dir}/02-reviewed.md').mtimeMs;
+  process.exit(mtime>lastPaste?1:0);
 "
 ```
 
