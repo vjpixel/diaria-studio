@@ -485,7 +485,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const campaignName = `Diar.ia Mensal ${yymm} — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+  const ts = new Date().toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo" }).slice(0, 16);
+  const campaignName = `Diar.ia Mensal ${yymm} — ${ts}`;
 
   if (dryRun) {
     process.stdout.write(
