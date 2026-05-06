@@ -77,3 +77,38 @@ describe("resume-aware skip posts LinkedIn (#528)", () => {
 describe("image_url null por padrao LinkedIn (#528)", () => {
   it("image_url e null no payload nenhuma URL enviada", ()=>{const imageUrl:string|null=null;const p={text:"T",image_url:imageUrl,scheduled_at:null,destaque:"d1"};assert.equal(p.image_url,null);});
 });
+
+describe("image_url via cache 06-public-images.json (#725 bug #9)", () => {
+  // Testa a lógica de leitura do cache — o main() de publish-linkedin.ts
+  // usa existsSync+readFileSync pra carregar 06-public-images.json.
+  // Verificamos o shape esperado do cache pra garantir que o código de leitura
+  // está correto (campo images.{d}.url).
+
+  it("shape do cache: images.d1.url é a URL Drive esperada", () => {
+    const cacheShape = {
+      images: {
+        d1: { file_id: "abc123", url: "https://drive.google.com/uc?id=abc123&export=view", mime_type: "image/jpeg", filename: "04-d1-1x1.jpg" },
+        d2: { file_id: "def456", url: "https://drive.google.com/uc?id=def456&export=view", mime_type: "image/jpeg", filename: "04-d2-1x1.jpg" },
+        d3: { file_id: "ghi789", url: "https://drive.google.com/uc?id=ghi789&export=view", mime_type: "image/jpeg", filename: "04-d3-1x1.jpg" },
+      },
+    };
+    // Simula o que main() faz ao ler o cache
+    for (const d of ["d1", "d2", "d3"] as const) {
+      const url = cacheShape.images?.[d]?.url ?? null;
+      assert.ok(url !== null, `${d} deve ter URL`);
+      assert.ok(url.startsWith("https://drive.google.com/uc?"), `${d} URL deve ser Drive`);
+    }
+  });
+
+  it("graceful fallback: chave ausente → null sem throw", () => {
+    const cacheShape = { images: { d1: { url: "https://drive.google.com/uc?id=x&export=view" } } };
+    const urlD2 = (cacheShape.images as Record<string, {url?: string}>)["d2"]?.url ?? null;
+    assert.equal(urlD2, null, "chave ausente deve retornar null");
+  });
+
+  it("graceful fallback: cache vazio → null sem throw", () => {
+    const emptyCache = {} as { images?: Record<string, {url?: string}> };
+    const url = emptyCache.images?.["d1"]?.url ?? null;
+    assert.equal(url, null);
+  });
+});

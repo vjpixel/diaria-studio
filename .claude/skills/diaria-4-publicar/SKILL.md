@@ -47,6 +47,18 @@ Aguardar resposta antes de prosseguir. Só dispatchar os agents/scripts que o ed
 
 ## O que faz
 
+### Etapa 4a.0 — Pre-upload de imagens sociais pro Drive (#725)
+
+**Executar antes do dispatch paralelo** — LinkedIn precisa de URL pública pra `image_url` no payload Make.com. O upload é rápido (~2s por imagem, 3 imagens) e popula o cache `{edition_dir}/06-public-images.json`.
+
+```bash
+npx tsx scripts/upload-images-public.ts \
+  --edition-dir data/editions/{AAMMDD}/ \
+  --mode social
+```
+
+Resume-aware: re-execuções pularão imagens já no cache. Falha = **warning**, nunca bloqueia — `publish-linkedin.ts` faz graceful fallback pra `null` se o cache não existir (comportamento anterior: post sem imagem).
+
 ### Etapa 4a — Publicação paralela (#38)
 
 **3 dispatches em uma única mensagem** (ver `.claude/agents/orchestrator.md` § Etapa 4):

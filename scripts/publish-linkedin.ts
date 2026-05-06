@@ -303,9 +303,33 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // image_url é null — Make.com workflow decide a estratégia (upload direto, R2, etc).
-    // Quando hosting público estiver disponível, passar a URL aqui.
-    const imageUrl: string | null = null;
+    // #725 bug #9: carregar URL pública da imagem do cache gerado por
+    // upload-images-public.ts (rodado em Etapa 4a.0 antes do dispatch).
+    // Cache: {edition_dir}/06-public-images.json, chave "d1"/"d2"/"d3".
+    // Graceful fallback: null se cache ausente ou Drive não configurado —
+    // comportamento anterior (post sem imagem) como safety net.
+    let imageUrl: string | null = null;
+    {
+      const imgCachePath = resolve(editionDir, "06-public-images.json");
+      if (existsSync(imgCachePath)) {
+        try {
+          const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
+            images?: Record<string, { url?: string }>;
+          };
+          const url = imgCache.images?.[d]?.url ?? null;
+          if (url) {
+            imageUrl = url;
+            console.log(`linkedin/${d}: imagem Drive → ${url}`);
+          } else {
+            console.warn(`linkedin/${d}: chave '${d}' ausente em 06-public-images.json — post sem imagem`);
+          }
+        } catch (e) {
+          console.warn(`linkedin/${d}: 06-public-images.json inválido — ${(e as Error).message}`);
+        }
+      } else {
+        console.warn(`linkedin/${d}: 06-public-images.json não existe — rodar upload-images-public.ts antes. Post sem imagem.`);
+      }
+    }
 
     // Calcular scheduled_at
     let scheduledAt: string | null = null;
