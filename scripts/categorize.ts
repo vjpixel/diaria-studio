@@ -26,15 +26,9 @@ import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
 import { AI_RELEVANT_TERMS, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
+import type { Article } from "./lib/types/article.ts"; // #650
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
-
-export interface Article {
-  url: string;
-  title?: string;
-  summary?: string;
-  type_hint?: string;
-  [key: string]: unknown;
-}
+export type { Article };
 
 export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
 

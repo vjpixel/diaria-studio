@@ -36,26 +36,10 @@ import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
 const ROOT = resolve(import.meta.dirname, "..");
 
-interface Article {
-  url: string;
-  title?: string;
-  date?: string;
-  /** Algumas pipelines gravam `published_at` em vez de `date`. */
-  published_at?: string;
-  score?: number;
-  editor_submitted?: boolean;
-  discovered_source?: boolean;
-  date_unverified?: boolean;
-  /** #487 — notícia que provavelmente cobre um lançamento e merece busca por
-   *  fonte primária oficial. Setado por `enrich-primary-source.ts`. */
-  launch_candidate?: boolean;
-  suggested_primary_domain?: string;
-  /** Marcador inline de destaque (formato legado do scorer). */
-  highlight?: boolean;
-  /** Rank 1..6 do scorer (formato inline). */
-  rank?: number;
-  [key: string]: unknown;
-}
+// #650 Tier C: Article unificado em scripts/lib/types/article.ts.
+// render-categorized-md.ts usa o tipo canônico — antes tinha shape duplicado
+// que divergia em pequenos detalhes (rank, score, highlight, launch_candidate).
+import type { Article } from "./lib/types/article.ts";
 
 interface Highlight {
   /** URL flat (formato legado pré-#229). */

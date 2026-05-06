@@ -38,19 +38,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── Tipos ─────────────────────────────────────────────────────────────
 
-interface PostEntry {
-  platform: string;
-  destaque: string;
-  url: string | null;
-  status: "draft" | "scheduled" | "failed";
-  scheduled_at: string | null;
-  reason?: string;
-  make_request_id?: string;
-}
-
-interface SocialPublished {
-  posts: PostEntry[];
-}
+// #650 Tier C: PostEntry/SocialPublished vêm de lib/social-published-store.ts.
+// `make_request_id` entra via escape hatch `[key: string]: unknown`.
+import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 
 interface MakeWebhookPayload {
   text: string;

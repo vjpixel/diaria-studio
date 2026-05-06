@@ -22,21 +22,10 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export interface PostEntry {
-  platform: string;
-  destaque: string;
-  url: string | null;
-  status: "draft" | "scheduled" | "failed" | "published";
-  scheduled_at: string | null;
-  published_at?: string;
-  reason?: string;
-  failure_reason?: string;
-  fb_post_id?: string;
-}
-
-export interface SocialPublished {
-  posts: PostEntry[];
-}
+// #650 Tier C: PostEntry/SocialPublished agora vêm de scripts/lib/social-published-store.ts
+// Re-exports mantidos pra compat com callers (#650 backward compat).
+import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+export type { PostEntry, SocialPublished };
 
 export interface GraphPostResponse {
   /**
@@ -148,12 +137,14 @@ export async function verifyPublished(
   let changes = 0;
 
   for (const entry of published.posts) {
-    if (entry.platform !== "facebook" || entry.status !== "scheduled" || !entry.fb_post_id) {
+    // fb_post_id vem do escape hatch [key: string]: unknown — narrowing manual.
+    const fbPostId = entry.fb_post_id;
+    if (entry.platform !== "facebook" || entry.status !== "scheduled" || typeof fbPostId !== "string" || !fbPostId) {
       updatedPosts.push(entry);
       continue;
     }
     try {
-      const graph = await fetchPost(entry.fb_post_id, pageToken, apiVersion);
+      const graph = await fetchPost(fbPostId, pageToken, apiVersion);
       const next = reconcilePost(entry, graph, now);
       if (next.status !== entry.status) changes++;
       updatedPosts.push(next);

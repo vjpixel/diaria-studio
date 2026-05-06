@@ -29,13 +29,24 @@ function releaseLock(lockPath: string): void {
   try { unlinkSync(lockPath); } catch { /* ignore */ }
 }
 
+/**
+ * Entrada canônica de post social na pipeline (#650 Tier C).
+ *
+ * Status union inclui `"published"` pra cobrir verify-facebook-posts (que
+ * promove status quando descobre que post agendado já foi enviado pelo
+ * Facebook). Campos platform-específicos (`fb_post_id`, `make_request_id`,
+ * `published_at`, `failure_reason`) entram via escape hatch
+ * `[key: string]: unknown` — caller pode usar Pick<> ou cast pra subset.
+ */
 export interface PostEntry {
   platform: string;
   destaque: string;
   url: string | null;
-  status: "draft" | "scheduled" | "failed";
+  status: "draft" | "scheduled" | "failed" | "published";
   scheduled_at: string | null;
   reason?: string;
+  /** Campos platform-specific (fb_post_id, make_request_id, published_at,
+   *  failure_reason, etc.) entram via escape hatch. */
   [key: string]: unknown;
 }
 
