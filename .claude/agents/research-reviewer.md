@@ -12,7 +12,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 - `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias`, `tutorial`, `video` — saída do categorizer.
 - `edition_date`: data da edição no formato `AAMMDD` (ex: `260423`). Para Date math, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}`.
 - `edition_iso`: data da edição no formato ISO (ex: `2026-04-23`).
-- `anchor_iso`: data de execução no formato ISO (ex: `2026-04-22`) — **obrigatório**. Passado pelo orchestrator. Se ausente, logar warn e usar `edition_iso` derivada como fallback (nunca silently defaultar para UTC today).
+- `anchor_iso`: data de execução no formato ISO (ex: `2026-04-22`) — **obrigatório**. Passado pelo orchestrator. Se ausente, logar warn e usar `edition_iso - 1 dia` como fallback (anchor = today = publication date - 1 dia; nunca usar `edition_iso` diretamente nem defaultar para UTC today).
 - `edition_dir`: diretório da edição (ex: `data/editions/260421/`).
 - `window_days`: janela de publicação em dias (default: `3`).
 
@@ -42,7 +42,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    ```
    Ler `tmp-window-output.json`. Usar `kept` como o novo `categorized` daqui em diante. Logar `removed[]` para rastreabilidade.
 
-   **Anchor é `anchor_iso`** (data de execução, não publication date — #560). Sempre incluir `--anchor-date {anchor_iso}` — é obrigatório. Se `anchor_iso` não foi recebido no payload, logar warn e usar a data derivada de `edition_iso` como fallback; nunca omitir `--anchor-date` e deixar o script defaultar para UTC today.
+   **Anchor é `anchor_iso`** (data de execução, não publication date — #560). Sempre incluir `--anchor-date {anchor_iso}` — é obrigatório. Se `anchor_iso` não foi recebido no payload, logar warn e usar `edition_iso - 1 dia` como fallback (anchor = hoje = data de publicação menos 1 dia); nunca omitir `--anchor-date` e deixar o script defaultar para UTC today.
 7. Limpar temporários:
    ```bash
    node -e "['tmp-dates-input.json','tmp-dates-output.json','tmp-categorized-dated.json','tmp-window-output.json'].forEach(f=>{try{require('fs').unlinkSync('{edition_dir}'+f)}catch{}})"
