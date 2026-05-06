@@ -442,6 +442,13 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
   ```
+- **Escrever sentinel de conclusão do Stage 1:**
+  ```bash
+  npx tsx scripts/pipeline-sentinel.ts write \
+    --edition {AAMMDD} --step 1 \
+    --outputs "01-categorized.md,_internal/01-approved.json"
+  ```
+  Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'sentinel_write_failed'`). **Não bloquear** a aprovação do gate.
 - **Arquivar o inbox** (#680): `mkdir -p data/inbox-archive` seguido de `mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md`. Recriar `data/inbox.md` vazio. Sem o mkdir, falha em checkout limpo.
 - **Atualizar `_internal/cost.md`.** Append linha na tabela de Stage 1, recalcular `Total de chamadas`, gravar com `Write`:
   ```

@@ -9,6 +9,21 @@ description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orche
 
 ## Etapa 3 — Imagens
 
+### Pré-condição: sentinel Stage 2
+
+<!-- outputs must match the `write` call at the end of orchestrator-stage-2.md §Escrever sentinel de conclusão do Stage 2 -->
+```bash
+npx tsx scripts/pipeline-sentinel.ts assert \
+  --edition {AAMMDD} --step 2 \
+  --outputs "02-reviewed.md,03-social.md"
+```
+
+Exit code handling:
+- `0` → continuar.
+- `1` → **FATAL:** "Etapa 2 não completou (sentinel ausente). Re-rodar `/diaria-2-escrita {AAMMDD}` antes de continuar." Parar.
+- `2` → **FATAL:** "Outputs do Stage 2 ausentes. Re-rodar Etapa 2." Parar.
+- `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message "stage2_sentinel_missing_legacy"`), continuar.
+
 **MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Clarice, Beehiiv, Gmail, Chrome, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759).
 
 ### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371)
@@ -60,6 +75,13 @@ O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? j
   ```
   Anotar em `sync_results[3]`; ignorar falhas.
 - **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **Escrever sentinel de conclusão do Stage 3 (após aprovação do gate):**
+  ```bash
+  npx tsx scripts/pipeline-sentinel.ts write \
+    --edition {AAMMDD} --step 3 \
+    --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+  ```
+  Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 - **Atualizar `_internal/cost.md`.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
   ```
   | 3b | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
