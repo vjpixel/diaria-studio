@@ -465,6 +465,8 @@ export function isUnresolvableInboxArticle(article: Article): boolean {
   const titleIsPlaceholder =
     !title ||
     title === "(inbox)" ||
+    title === "(no title)" ||
+    title === "(sem título)" ||
     /^\(inbox/i.test(title) ||
     /^\[inbox\]/i.test(title);
   const summaryTooShort = summary.length < 30;
