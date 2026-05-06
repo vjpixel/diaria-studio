@@ -211,6 +211,53 @@ export function signalsFromRunLog(
 // Signal 4: Claude in Chrome MCP unavailable (never connected this session)
 // ===========================================================================
 
+/**
+ * Threshold de severity baseado em max duração de disconnect (#766).
+ * - < 60s ou sem max_duration_ms calculado: low (provavelmente flapping aceitável)
+ * - 60s ≤ d < 5min: medium
+ * - ≥ 5min OU disconnect sem reconnect (still down): high
+ */
+export function severityFromDuration(
+  maxDurationMs: number | null,
+  hasUnpaired: boolean,
+): Severity {
+  if (hasUnpaired) return "high";
+  if (maxDurationMs === null) return "low";
+  if (maxDurationMs >= 5 * 60 * 1000) return "high";
+  if (maxDurationMs >= 60 * 1000) return "medium";
+  return "low";
+}
+
+/**
+ * Pure helper: dado um array de eventos `mcp_disconnect:` / `mcp_reconnect:`
+ * em ordem cronológica, pareia disconnects com reconnects subsequentes do
+ * mesmo server e retorna durações + flag de unpaired.
+ *
+ * `events` deve estar em ordem ASC por timestamp (caller responsável).
+ */
+export function pairDisconnectReconnect(
+  events: Array<{ kind: "disconnect" | "reconnect"; server: string; timestamp: string }>,
+): { durations: Array<{ server: string; ms: number }>; hasUnpaired: boolean } {
+  const opens = new Map<string, string>(); // server → ts of last unmatched disconnect
+  const durations: Array<{ server: string; ms: number }> = [];
+  for (const ev of events) {
+    if (ev.kind === "disconnect") {
+      // Se já há um disconnect aberto pra esse server sem reconnect, mantemos o
+      // primeiro (subsequente é flap dentro do disconnect inicial).
+      if (!opens.has(ev.server)) opens.set(ev.server, ev.timestamp);
+    } else {
+      const open = opens.get(ev.server);
+      if (open) {
+        const ms = new Date(ev.timestamp).getTime() - new Date(open).getTime();
+        if (Number.isFinite(ms) && ms >= 0) durations.push({ server: ev.server, ms });
+        opens.delete(ev.server);
+      }
+      // reconnect sem disconnect aberto = ignorado (recobertura ambígua, drop)
+    }
+  }
+  return { durations, hasUnpaired: opens.size > 0 };
+}
+
 export function signalsFromMcpUnavailable(
   lines: string[],
   edition: string | null,
@@ -218,6 +265,9 @@ export function signalsFromMcpUnavailable(
   let count = 0;
   const firstAt: string[] = [];
   const servers = new Set<string>();
+  // #766: coletar eventos disconnect+reconnect (ambos níveis) pra pair-and-measure.
+  const events: Array<{ kind: "disconnect" | "reconnect"; server: string; timestamp: string }> = [];
+
   for (const line of lines) {
     if (!line.trim()) continue;
     let parsed: LogEntry;
@@ -227,8 +277,21 @@ export function signalsFromMcpUnavailable(
       continue;
     }
     if (edition && parsed.edition && parsed.edition !== edition) continue;
-    if (parsed.level !== "error" && parsed.level !== "warn") continue;
+
     const msg = (parsed.message ?? "").toLowerCase();
+
+    // #766: capturar mcp_reconnect: (info-level) pra pair com disconnect.
+    // Reconnects sozinhos não geram signal — só viram pareados.
+    if (msg.startsWith("mcp_reconnect:") && typeof parsed.timestamp === "string") {
+      const serverName = (parsed.message ?? "").slice("mcp_reconnect:".length).trim();
+      if (serverName) {
+        events.push({ kind: "reconnect", server: serverName, timestamp: parsed.timestamp });
+      }
+      continue;
+    }
+
+    if (parsed.level !== "error" && parsed.level !== "warn") continue;
+
     const matched =
       msg.includes("claude-in-chrome mcp unavailable") ||
       msg.includes("claude_in_chrome_mcp_unavailable") ||
@@ -248,9 +311,17 @@ export function signalsFromMcpUnavailable(
         firstAt.push(parsed.timestamp);
       }
       // Extract server name from structured "mcp_disconnect: {server}" format (#759)
+      // #766: APENAS o formato estruturado vai pro pareamento. Legacy logs
+      // ("claude-in-chrome MCP unavailable" e variantes) caem no fallback de
+      // severity=medium pra preservar comportamento prévio.
       if (msg.startsWith("mcp_disconnect:")) {
-        const serverName = (parsed.message ?? "").slice("mcp_disconnect:".length).trim();
-        if (serverName) servers.add(serverName);
+        const extracted = (parsed.message ?? "").slice("mcp_disconnect:".length).trim();
+        if (extracted) {
+          servers.add(extracted);
+          if (typeof parsed.timestamp === "string") {
+            events.push({ kind: "disconnect", server: extracted, timestamp: parsed.timestamp });
+          }
+        }
       } else if (msg.includes("chrome") || msg.includes("claude-in-chrome")) {
         servers.add("claude-in-chrome");
       }
@@ -258,6 +329,28 @@ export function signalsFromMcpUnavailable(
   }
 
   if (count === 0) return [];
+
+  // #766: pareia disconnects/reconnects e calcula severity baseada em duração.
+  // Ordenar eventos por timestamp ASC (run-log já costuma estar em ordem mas
+  // não é garantido — backfill ou re-merge pode bagunçar).
+  events.sort((a, b) =>
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+  );
+  const { durations, hasUnpaired } = pairDisconnectReconnect(events);
+  const durationsMs = durations.map((d) => d.ms);
+  const maxDurationMs = durationsMs.length > 0 ? Math.max(...durationsMs) : null;
+
+  // #766: severity calculation. Quando há events tracked, usa novo threshold.
+  // Sem events (count > 0 mas timestamps ausentes/legados) preserva
+  // comportamento prévio: medium. Garante backwards-compat com logs antigos.
+  let severity: Severity;
+  if (events.length === 0) {
+    severity = "medium";
+  } else {
+    severity = severityFromDuration(maxDurationMs, hasUnpaired);
+    // Flapping (max < 60s e todos pareados) → drop signal.
+    if (severity === "low" && !hasUnpaired) return [];
+  }
 
   // Use a generic title when non-Chrome MCPs are involved (#759)
   const hasChromeOnly = servers.size === 0 || (servers.size === 1 && servers.has("claude-in-chrome"));
@@ -269,12 +362,18 @@ export function signalsFromMcpUnavailable(
   return [
     {
       kind: "mcp_unavailable",
-      severity: "medium",
+      severity,
       title,
       details: {
         count,
         servers: Array.from(servers),
         first_occurrences: firstAt,
+        // #766: durações entre disconnect e reconnect (ms). Vazio = nenhum par
+        // completo. `unpaired_disconnects: true` indica que server ficou down
+        // até o fim da edição (sem reconnect logado).
+        durations_ms: durationsMs,
+        max_duration_ms: maxDurationMs,
+        unpaired_disconnects: hasUnpaired,
       },
       suggested_action:
         hasChromeOnly

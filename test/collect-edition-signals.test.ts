@@ -12,6 +12,8 @@ import {
   normalizeMessageKey,
   collectSignals,
   writeDraft,
+  pairDisconnectReconnect,
+  severityFromDuration,
 } from "../scripts/collect-edition-signals.ts";
 
 describe("signalsFromSourceHealth", () => {
@@ -301,8 +303,14 @@ describe("signalsFromMcpUnavailable", () => {
   });
 
   it("mcp_disconnect: chrome-only ainda usa título específico Claude in Chrome", () => {
+    // #766: precisa de timestamp pra signal não cair no filtro de flapping (low severity)
     const lines = [
-      mkLine({ edition: "260505", level: "warn", message: "mcp_disconnect: claude-in-chrome" }),
+      mkLine({
+        edition: "260505",
+        level: "warn",
+        timestamp: "2026-05-05T10:00:00Z",
+        message: "mcp_disconnect: claude-in-chrome",
+      }),
     ];
     const signals = signalsFromMcpUnavailable(lines, "260505");
     assert.equal(signals.length, 1);
@@ -328,9 +336,18 @@ describe("signalsFromMcpUnavailable", () => {
   });
 
   it("filtra edições diferentes", () => {
+    // #766: timestamps necessários pra signal sobreviver ao filtro de flapping
     const lines = [
-      mkLine({ edition: "260424", level: "warn", message: "claude-in-chrome MCP unavailable" }),
-      mkLine({ edition: "260426", level: "warn", message: "claude-in-chrome MCP unavailable" }),
+      mkLine({
+        edition: "260424", level: "warn",
+        timestamp: "2026-04-24T10:00:00Z",
+        message: "claude-in-chrome MCP unavailable",
+      }),
+      mkLine({
+        edition: "260426", level: "warn",
+        timestamp: "2026-04-26T10:00:00Z",
+        message: "claude-in-chrome MCP unavailable",
+      }),
     ];
     const signals = signalsFromMcpUnavailable(lines, "260426");
     assert.equal(signals[0].details.count, 1);
@@ -348,6 +365,223 @@ describe("signalsFromMcpUnavailable", () => {
   it("zero ocorrências não gera sinal", () => {
     const signals = signalsFromMcpUnavailable([], "260426");
     assert.equal(signals.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #766 — duration tracking + severity threshold
+// ---------------------------------------------------------------------------
+
+describe("severityFromDuration (#766)", () => {
+  it("max < 60s e sem unpaired → low (será filtrado)", () => {
+    assert.equal(severityFromDuration(30000, false), "low");
+    assert.equal(severityFromDuration(59000, false), "low");
+    assert.equal(severityFromDuration(0, false), "low");
+  });
+
+  it("60s ≤ max < 5min → medium", () => {
+    assert.equal(severityFromDuration(60000, false), "medium");
+    assert.equal(severityFromDuration(120000, false), "medium");
+    assert.equal(severityFromDuration(299999, false), "medium");
+  });
+
+  it("≥ 5min → high", () => {
+    assert.equal(severityFromDuration(300000, false), "high");
+    assert.equal(severityFromDuration(600000, false), "high");
+    assert.equal(severityFromDuration(60 * 60 * 1000, false), "high");
+  });
+
+  it("hasUnpaired=true → high (server ainda down)", () => {
+    assert.equal(severityFromDuration(null, true), "high");
+    assert.equal(severityFromDuration(30000, true), "high"); // overrides
+    assert.equal(severityFromDuration(120000, true), "high");
+  });
+
+  it("max=null sem unpaired → low (sem dado pra escalar)", () => {
+    assert.equal(severityFromDuration(null, false), "low");
+  });
+});
+
+describe("pairDisconnectReconnect (#766)", () => {
+  it("pareia disconnect + reconnect mesmo server → 1 duração", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:05:00Z" },
+    ]);
+    assert.equal(result.durations.length, 1);
+    assert.equal(result.durations[0].server, "clarice");
+    assert.equal(result.durations[0].ms, 5 * 60 * 1000);
+    assert.equal(result.hasUnpaired, false);
+  });
+
+  it("disconnect sem reconnect → hasUnpaired=true", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+    ]);
+    assert.equal(result.durations.length, 0);
+    assert.equal(result.hasUnpaired, true);
+  });
+
+  it("múltiplos servers — pareados independentemente", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+      { kind: "disconnect", server: "beehiiv", timestamp: "2026-05-06T10:01:00Z" },
+      { kind: "reconnect", server: "beehiiv", timestamp: "2026-05-06T10:02:00Z" },
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:05:00Z" },
+    ]);
+    assert.equal(result.durations.length, 2);
+    const byServer = Object.fromEntries(result.durations.map((d) => [d.server, d.ms]));
+    assert.equal(byServer.clarice, 5 * 60 * 1000);
+    assert.equal(byServer.beehiiv, 60 * 1000);
+    assert.equal(result.hasUnpaired, false);
+  });
+
+  it("disconnect duplo (sem reconnect entre eles) — só primeiro pareia, segundo absorvido", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:01:00Z" },
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:05:00Z" },
+    ]);
+    assert.equal(result.durations.length, 1);
+    // duração é do primeiro disconnect (10:00) ao reconnect (10:05) = 5min
+    assert.equal(result.durations[0].ms, 5 * 60 * 1000);
+    assert.equal(result.hasUnpaired, false);
+  });
+
+  it("reconnect sem disconnect prévio → ignorado", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+    ]);
+    assert.equal(result.durations.length, 0);
+    assert.equal(result.hasUnpaired, false);
+  });
+
+  it("flapping: disconnect-reconnect repetidos rápido → durações curtas individuais", () => {
+    const result = pairDisconnectReconnect([
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:00:00Z" },
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:00:30Z" },
+      { kind: "disconnect", server: "clarice", timestamp: "2026-05-06T10:01:00Z" },
+      { kind: "reconnect", server: "clarice", timestamp: "2026-05-06T10:01:30Z" },
+    ]);
+    assert.equal(result.durations.length, 2);
+    assert.deepEqual(result.durations.map((d) => d.ms), [30000, 30000]);
+  });
+});
+
+describe("signalsFromMcpUnavailable — duration & severity (#766)", () => {
+  const mkLine = (obj: Record<string, unknown>) => JSON.stringify(obj);
+
+  it("flap < 60s pareado → drop signal", () => {
+    const lines = [
+      mkLine({
+        edition: "260506", level: "warn",
+        timestamp: "2026-05-06T10:00:00Z",
+        message: "mcp_disconnect: clarice",
+      }),
+      mkLine({
+        edition: "260506", level: "info",
+        timestamp: "2026-05-06T10:00:30Z",
+        message: "mcp_reconnect: clarice",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260506");
+    assert.equal(signals.length, 0, "flapping aceitável — drop signal");
+  });
+
+  it("disconnect 5min → severity high + max_duration_ms preenchido", () => {
+    const lines = [
+      mkLine({
+        edition: "260506", level: "warn",
+        timestamp: "2026-05-06T10:00:00Z",
+        message: "mcp_disconnect: clarice",
+      }),
+      mkLine({
+        edition: "260506", level: "info",
+        timestamp: "2026-05-06T10:05:00Z",
+        message: "mcp_reconnect: clarice",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260506");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].severity, "high");
+    assert.equal(signals[0].details.max_duration_ms, 5 * 60 * 1000);
+    assert.deepEqual(signals[0].details.durations_ms, [5 * 60 * 1000]);
+    assert.equal(signals[0].details.unpaired_disconnects, false);
+  });
+
+  it("disconnect 2min → severity medium", () => {
+    const lines = [
+      mkLine({
+        edition: "260506", level: "warn",
+        timestamp: "2026-05-06T10:00:00Z",
+        message: "mcp_disconnect: beehiiv",
+      }),
+      mkLine({
+        edition: "260506", level: "info",
+        timestamp: "2026-05-06T10:02:00Z",
+        message: "mcp_reconnect: beehiiv",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260506");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].severity, "medium");
+    assert.equal(signals[0].details.max_duration_ms, 2 * 60 * 1000);
+  });
+
+  it("disconnect sem reconnect → severity high + unpaired_disconnects=true", () => {
+    const lines = [
+      mkLine({
+        edition: "260506", level: "warn",
+        timestamp: "2026-05-06T10:00:00Z",
+        message: "mcp_disconnect: clarice",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260506");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].severity, "high");
+    assert.equal(signals[0].details.unpaired_disconnects, true);
+    assert.equal(signals[0].details.max_duration_ms, null);
+    assert.deepEqual(signals[0].details.durations_ms, []);
+  });
+
+  it("compat com formato legado (claude-in-chrome MCP unavailable) — preserva severity medium", () => {
+    // Logs antigos não têm "mcp_disconnect:" estruturado → fallback pra
+    // severity=medium do comportamento prévio. Sem dados de duração → durations
+    // ficam vazias e unpaired_disconnects=false (não tem evento estruturado).
+    const lines = [
+      mkLine({
+        edition: "260426", level: "warn",
+        timestamp: "2026-04-26T10:00:00Z",
+        message: "claude-in-chrome MCP unavailable, retrying",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260426");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].severity, "medium");
+    assert.deepEqual(signals[0].details.durations_ms, []);
+    assert.equal(signals[0].details.max_duration_ms, null);
+    assert.equal(signals[0].details.unpaired_disconnects, false);
+  });
+
+  it("eventos fora de ordem cronológica são ordenados antes do pareamento", () => {
+    // disconnect 10:05, reconnect 10:00 (impossível mas pode acontecer com backfill)
+    const lines = [
+      mkLine({
+        edition: "260506", level: "warn",
+        timestamp: "2026-05-06T10:05:00Z",
+        message: "mcp_disconnect: clarice",
+      }),
+      mkLine({
+        edition: "260506", level: "info",
+        timestamp: "2026-05-06T10:00:00Z",
+        message: "mcp_reconnect: clarice",
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260506");
+    // após sort: reconnect 10:00 primeiro (sem disconnect prévio → drop),
+    // disconnect 10:05 sem reconnect subsequente → unpaired
+    assert.equal(signals[0].severity, "high");
+    assert.equal(signals[0].details.unpaired_disconnects, true);
   });
 });
 
