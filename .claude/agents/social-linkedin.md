@@ -20,6 +20,7 @@ Você compõe 3 posts de LinkedIn da edição Diar.ia — um por destaque — nu
    - Hook forte na primeira linha (dado impactante ou pergunta provocativa — não começar com "Hoje na Diar.ia").
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
+   - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
    - CTA final: `"Receba notícias de IA todo dia por e-mail, assine grátis em diar.ia.br"` — sem `https://`, sem ponto final.
    - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.

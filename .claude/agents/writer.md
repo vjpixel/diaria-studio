@@ -41,6 +41,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
+   - **Nunca usar referências temporais relativas (#747).** Edições publicam D+1 ou depois — "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" envelhecem antes do leitor abrir. Use datas absolutas ("em 5 de maio", "em 2026-05") ou framing neutro ("a OpenAI anunciou", "o modelo foi lançado"). Exceção: referências relativas a outros fatos internos ao texto ("dois anos antes do GPT-4").
    - Escrever DESTAQUE 1 e DESTAQUE 2 seguindo as regras acima, depois executar o passo 2b antes de escrever DESTAQUE 3.
 2b. **Seção É IA?** — após DESTAQUE 2 e antes de DESTAQUE 3:
    - Ler `{edition_dir}/01-categorized.md` e extrair a linha de crédito da seção `## É IA?` (primeira linha não-vazia após o cabeçalho `## É IA?`, ignorando separadores `---`).
