@@ -13,9 +13,9 @@
   "newsletter_monthly": "brevo",
   "brevo_monthly": {
     "api_key_env": "BREVO_CLARICE_API_KEY",
-    "list_id": null,
-    "sender_email": null,
-    "sender_name": "Clarice × Diar.ia",
+    "list_id": 7,
+    "sender_email": "ti@clarice.ai",
+    "sender_name": "Clarice.ai",
     "test_email": "vjpixel@gmail.com"
   },
   "inbox": {
