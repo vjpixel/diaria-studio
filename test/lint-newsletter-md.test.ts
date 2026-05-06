@@ -51,6 +51,25 @@ describe("extractUrlsBySection", () => {
     const r = extractUrlsBySection(md);
     assert.equal(Object.keys(r).length, 0);
   });
+
+  it("#599: extrai URL de inline link `[título](URL)` em seções secundárias", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "[GPT-5 lançado](https://openai.com/gpt5)",
+      "Descrição.",
+      "",
+      "---",
+      "PESQUISAS",
+      "[Novo paper](https://arxiv.org/abs/1234.5678)",
+      "Descrição.",
+    ].join("\n");
+    const r = extractUrlsBySection(md);
+    // URL extraída de dentro do inline link
+    assert.equal(r["LANÇAMENTOS"]?.length, 1);
+    assert.equal(r["LANÇAMENTOS"][0].url, "https://openai.com/gpt5");
+    assert.equal(r["PESQUISAS"]?.length, 1);
+    assert.equal(r["PESQUISAS"][0].url, "https://arxiv.org/abs/1234.5678");
+  });
 });
 
 describe("buildUrlBucketMap", () => {
@@ -382,6 +401,63 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     assert.equal(r.destaques[0].titles[0], "Título único");
   });
 
+  it("#599: formato inline `[título](URL)` é contado como título", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Título único embedado](https://example.com/x)",
+      "",
+      "Corpo do destaque.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "[Título D2](https://b.com/y)",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "[Título D3](https://c.com/z)",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.destaques.length, 3);
+    assert.equal(r.destaques[0].title_count, 1);
+    assert.equal(r.destaques[0].titles[0], "Título único embedado");
+  });
+
+  it("#599: formato inline com 3 opções pré-gate é detectado como needs_pruning", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Opção 1 do título](https://example.com/x)",
+      "",
+      "[Opção 2 do título](https://example.com/x)",
+      "",
+      "[Opção 3 do título](https://example.com/x)",
+      "",
+      "Corpo do destaque.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "[Título único](https://b.com/y)",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "[Título único](https://c.com/z)",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.destaques[0].title_count, 3);
+    assert.equal(r.destaques[0].status, "needs_pruning");
+  });
+
   it("para em section break --- quando não há URL no bloco", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",
@@ -474,6 +550,62 @@ describe("checkTitleLengths (#701)", () => {
     assert.equal(r.errors[0].title, longTitle);
     assert.equal(r.errors[0].length, longTitle.length);
     assert.equal(r.errors[0].max, 52);
+  });
+
+  it("#599: formato inline `[título](URL)` mede só o texto, não o markdown", () => {
+    // URL longa faria a linha inteira passar de 52 chars, mas o título é curto
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Título curto](https://example.com/path/with/very/long/segments/that/would/break/length-check)",
+      "",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "[Título OK](https://b.com)",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "[Outro OK](https://c.com)",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, true, `esperado ok mas: ${JSON.stringify(r.errors)}`);
+  });
+
+  it("#599: formato inline com título DENTRO de `[]` excedendo 52 chars falha", () => {
+    const longTitle = "Título extremamente longo dentro do markdown link que excede facilmente 52 chars";
+    assert.ok(longTitle.length > 52);
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      `[${longTitle}](https://example.com/x)`,
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "[Título OK](https://b.com)",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "[Outro OK](https://c.com)",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].title, longTitle);
+    assert.equal(r.errors[0].length, longTitle.length);
   });
 
   it("conta múltiplas opções de título (3 por destaque) — todas validadas", () => {

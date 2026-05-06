@@ -123,6 +123,49 @@ describe("parseListItems (#172)", () => {
   });
 });
 
+describe("parseListItems (#599 — inline link)", () => {
+  it("extrai title+url de `[Título](URL)` na primeira linha do bloco", () => {
+    const text = [
+      "[GPT-5 lançado](https://openai.com/gpt5)",
+      "OpenAI anuncia modelo mais avançado.",
+      "",
+      "[DeepSeek v4 disponível](https://deepseek.com/v4)",
+      "Open-source com benchmark superior.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].title, "GPT-5 lançado");
+    assert.equal(items[0].url, "https://openai.com/gpt5");
+    assert.equal(items[0].description, "OpenAI anuncia modelo mais avançado.");
+    assert.equal(items[1].title, "DeepSeek v4 disponível");
+    assert.equal(items[1].url, "https://deepseek.com/v4");
+  });
+
+  it("bloco de inline link sem descrição retorna description vazio", () => {
+    const text = "[Título](https://example.com)";
+    const items = parseListItems(text);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].title, "Título");
+    assert.equal(items[0].url, "https://example.com");
+    assert.equal(items[0].description, "");
+  });
+
+  it("mistura de formato inline e legacy no mesmo texto", () => {
+    const text = [
+      "[Item novo](https://a.com)",
+      "Descrição inline.",
+      "",
+      "Item legacy",
+      "https://b.com",
+      "Descrição legacy.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].url, "https://a.com");
+    assert.equal(items[1].url, "https://b.com");
+  });
+});
+
 describe("parseSections (#172)", () => {
   it("parseia múltiplas seções com formato novo", () => {
     const md = [

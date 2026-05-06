@@ -28,6 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
+import { parseInlineLink } from "./lib/inline-link.ts"; // #599
 
 interface ApprovedArticle {
   url: string;
@@ -332,6 +333,15 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
         j++;
         continue;
       }
+      // #599 — formato inline `[título](URL)`: extrai título do link.
+      // No formato inline, o título inteiro pode passar de 60 chars (limite
+      // do looksLikeTitleOption); precisa tratar antes do filtro legacy.
+      const inline = parseInlineLink(t);
+      if (inline) {
+        titles.push(inline.title);
+        j++;
+        continue;
+      }
       // URL é o terminator canônico (URL imediatamente após títulos por #172)
       if (URL_LINE_RE.test(t)) break;
       // "Por que isso importa:" termina o título block (legacy URL-no-fim)
@@ -425,6 +435,21 @@ export function checkTitleLengths(md: string): TitleLengthReport {
     while (j < lines.length) {
       const t = lines[j].trim();
       if (t === "") { j++; continue; }
+      // #599 — formato inline: extrai título do link e mede só o texto.
+      const inline = parseInlineLink(t);
+      if (inline) {
+        if (inline.title.length > MAX_TITLE_LENGTH) {
+          errors.push({
+            destaque: destaqueNum,
+            category,
+            title: inline.title,
+            length: inline.title.length,
+            max: MAX_TITLE_LENGTH,
+          });
+        }
+        j++;
+        continue;
+      }
       if (URL_LINE_RE.test(t)) break;
       if (HIGHLIGHT_HEADER_RE.test(t)) break;
       if (SECTION_BREAK_LINE_RE.test(t)) break;
@@ -435,7 +460,7 @@ export function checkTitleLengths(md: string): TitleLengthReport {
         j++;
         continue;
       }
-      // Candidato a título — valida largura
+      // Candidato a título legacy (sem inline link) — valida linha inteira
       if (t.length > MAX_TITLE_LENGTH) {
         errors.push({
           destaque: destaqueNum,

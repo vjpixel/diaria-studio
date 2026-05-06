@@ -32,6 +32,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -256,6 +257,10 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
   let ctx: "highlight" | "section" | null = null;
   let highlightUrlSeen = false;
   let highlightHeader: string | null = null;
+  // #599: rastreia se já apareceu ao menos 1 inline link no bloco de destaque
+  // atual. Quando true e chega linha não-inline-link não-blank, transiciona
+  // pra body (não mais título). Não usa lookup no array (frágil ante blanks).
+  let highlightInlineLinkSeen = false;
   let sectionExpectTitle = false;
   let sectionExpectUrl = false;
 
@@ -281,6 +286,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (t === "---") {
       emitHighlightUrlMissingWarning();
       ctx = null; highlightUrlSeen = false; highlightHeader = null;
+      highlightInlineLinkSeen = false;
       sectionExpectTitle = false; sectionExpectUrl = false;
       out.push(t); continue;
     }
@@ -289,6 +295,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (isHighlightHeader(t)) {
       emitHighlightUrlMissingWarning();
       ctx = "highlight"; highlightUrlSeen = false; highlightHeader = t;
+      highlightInlineLinkSeen = false;
       out.push(t); continue;
     }
 
@@ -296,7 +303,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (isSectionHeader(t)) {
       emitHighlightUrlMissingWarning();
       ctx = "section"; sectionExpectTitle = true; sectionExpectUrl = false;
-      highlightHeader = null;
+      highlightHeader = null; highlightInlineLinkSeen = false;
       out.push(t); continue;
     }
 
@@ -311,8 +318,23 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
       if (isUrl(t)) {
         highlightUrlSeen = true;
         out.push(t); // URL do destaque: sem trailing space
+      } else if (isInlineLinkLine(t)) {
+        // #599 — formato inline `[título](URL)`. Trailing spaces pra separação
+        // visual no Drive preview. Flipa highlightInlineLinkSeen pra que
+        // qualquer linha não-link que venha depois (mesmo após blank) seja
+        // reconhecida como body.
+        highlightInlineLinkSeen = true;
+        out.push(t + "  ");
       } else {
-        out.push(t + "  "); // opção de título
+        // Linha não-blank, não-URL, não-inline-link dentro de bloco DESTAQUE.
+        // Se já vimos um inline link → body começou; transição. Caso contrário,
+        // trata como opção de título legacy (formato antigo sem inline link).
+        if (highlightInlineLinkSeen) {
+          highlightUrlSeen = true;
+          out.push(t); // body — sem trailing
+          continue;
+        }
+        out.push(t + "  "); // opção de título legacy (sem inline link)
       }
       continue;
     }

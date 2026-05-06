@@ -26,6 +26,7 @@
 
 import fs from 'fs';
 import { looksLikeTitleOption } from './lib/title-heuristic.ts';
+import { parseInlineLink, isInlineLinkLine } from './lib/inline-link.ts';
 
 // ── Shared types & parsing (also used by render-newsletter-html.ts) ───
 
@@ -60,7 +61,12 @@ export function parseDestaques(raw: string): Destaque[] {
     // Title = first non-empty line after header.
     const titleIdx = lines.findIndex(l => l.trim().length > 0);
     if (titleIdx === -1) continue;
-    const title = lines[titleIdx].trim();
+    const titleRaw = lines[titleIdx].trim();
+
+    // #599 — inline-link format: `[título](URL)` na linha do título.
+    // Se bater, extrai title+url do próprio link e pula busca de URL solo.
+    const titleInlineLink = parseInlineLink(titleRaw);
+    const title = titleInlineLink?.title ?? titleRaw;
 
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
@@ -77,15 +83,36 @@ export function parseDestaques(raw: string): Destaque[] {
       .map((l, i) => /^https?:\/\//.test(l.trim()) ? i : -1)
       .filter(i => i !== -1);
 
-    // Novo formato (#172, expandido em #245): URL imediatamente após o bloco
-    // de título(s). Pode ter blank lines entre elementos (double-newline) ou
-    // não (single-newline). Heurística (#259): looksLikeTitleOption aceita
-    // títulos curtos terminados em `?`, `!`, `...` ou palavras; rejeita
-    // linhas longas ou terminadas em ponto único (= parágrafo do body).
-    // Sem isso, a primeira URL "inline" no body do legacy seria escolhida
-    // como canônica (B1 regression).
+    // #599 — formato inline: URL embedded no título via `[título](URL)`.
+    // Quando título é inline link, body começa logo após o bloco de títulos
+    // (sem linha solo de URL).
     let newFormatUrlIdx: number | undefined;
-    {
+    let inlineFormatTitleEndIdx: number | undefined; // último índice do bloco de títulos inline
+    let inlineUrl: string | undefined;
+    if (titleInlineLink) {
+      inlineUrl = titleInlineLink.url;
+      // Encontrar fim do bloco de títulos inline (3 opções pré-gate ou 1 pós-gate).
+      // Avança até primeira linha que não é blank nem inline-link nem comentário.
+      let k = titleIdx + 1;
+      while (k < lines.length) {
+        const t = lines[k].trim();
+        if (t === '') { k++; continue; }
+        if (isInlineLinkLine(t)) { k++; continue; }
+        break;
+      }
+      // k-1 pode ser uma blank line (formato #245 tem blank entre elementos),
+      // mas bodyStart = urlIdx+1 = k-1+1 = k = primeira linha não-link não-blank.
+      // URL é extraída de inlineUrl diretamente (não de lines[urlIdx]), então
+      // apontar pra blank não causa problema na extração.
+      inlineFormatTitleEndIdx = k - 1;
+    } else {
+      // Novo formato (#172, expandido em #245): URL imediatamente após o bloco
+      // de título(s). Pode ter blank lines entre elementos (double-newline) ou
+      // não (single-newline). Heurística (#259): looksLikeTitleOption aceita
+      // títulos curtos terminados em `?`, `!`, `...` ou palavras; rejeita
+      // linhas longas ou terminadas em ponto único (= parágrafo do body).
+      // Sem isso, a primeira URL "inline" no body do legacy seria escolhida
+      // como canônica (B1 regression).
       let k = titleIdx + 1;
       let stoppedAtUrl = false;
       while (k < lines.length) {
@@ -106,7 +133,13 @@ export function parseDestaques(raw: string): Destaque[] {
 
     let urlIdx: number;
     let isNewFormat: boolean;
-    if (newFormatUrlIdx !== undefined) {
+    let isInlineFormat = false;
+    if (inlineUrl !== undefined && inlineFormatTitleEndIdx !== undefined) {
+      // #599 — inline-link format
+      urlIdx = inlineFormatTitleEndIdx;
+      isNewFormat = true;
+      isInlineFormat = true;
+    } else if (newFormatUrlIdx !== undefined) {
       urlIdx = newFormatUrlIdx;
       isNewFormat = true;
     } else if (legacyUrlIdx !== undefined) {
@@ -117,7 +150,7 @@ export function parseDestaques(raw: string): Destaque[] {
       isNewFormat = false;
     }
 
-    // Body começa após a URL (novo formato) OU após o título (legacy).
+    // Body começa após a URL (novo formato) / após o último título (inline) / após título (legacy).
     const bodyStart = isNewFormat ? urlIdx + 1 : titleIdx + 1;
 
     // Body end: até "Por que isso importa:" (se existe) OU até a URL legacy
@@ -137,7 +170,9 @@ export function parseDestaques(raw: string): Destaque[] {
     const whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
     const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
 
-    const url = urlIdx !== -1 ? lines[urlIdx].trim() : '';
+    const url = isInlineFormat
+      ? inlineUrl!
+      : (urlIdx !== -1 ? lines[urlIdx].trim() : '');
 
     destaques.push({ n, category, title, body, why, url });
   }

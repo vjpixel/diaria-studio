@@ -220,6 +220,118 @@ describe("parseDestaques (#172)", () => {
     assert.equal(destaques[0].url, "https://canonical.example.com/source");
     assert.ok(destaques[0].body.includes("URL inline"));
   });
+
+  it("#599: formato inline link `[título](URL)` (post-gate, 1 título)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Título único embedado](https://example.com/x)",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 1);
+    assert.equal(destaques[0].title, "Título único embedado");
+    assert.equal(destaques[0].url, "https://example.com/x");
+    assert.equal(destaques[0].body, "Corpo do destaque.");
+    assert.equal(destaques[0].why, "Impacto.");
+  });
+
+  it("#599: formato inline link com 3 opções pré-gate", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Opção 1 do título](https://example.com/x)",
+      "",
+      "[Opção 2 alternativa](https://example.com/x)",
+      "",
+      "[Opção 3 mais curta](https://example.com/x)",
+      "",
+      "Corpo do destaque com várias frases.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto editorial.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 1);
+    // Parser usa primeira opção como title
+    assert.equal(destaques[0].title, "Opção 1 do título");
+    assert.equal(destaques[0].url, "https://example.com/x");
+    // Body NÃO inclui as outras opções de título
+    assert.ok(destaques[0].body.includes("Corpo do destaque"));
+    assert.ok(!destaques[0].body.includes("Opção 2"));
+    assert.ok(!destaques[0].body.includes("Opção 3"));
+  });
+
+  it("#599: 3 destaques em formato inline link", () => {
+    const md = [
+      "DESTAQUE 1 | LANÇAMENTO",
+      "",
+      "[Título D1](https://a.com/x)",
+      "",
+      "Corpo D1.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto D1.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "[Título D2](https://b.com/y)",
+      "",
+      "Corpo D2.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto D2.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "[Título D3](https://c.com/z)",
+      "",
+      "Corpo D3.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto D3.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques.length, 3);
+    assert.equal(destaques[0].url, "https://a.com/x");
+    assert.equal(destaques[1].url, "https://b.com/y");
+    assert.equal(destaques[2].url, "https://c.com/z");
+    assert.equal(destaques[0].body, "Corpo D1.");
+    assert.equal(destaques[1].body, "Corpo D2.");
+    assert.equal(destaques[2].body, "Corpo D3.");
+  });
+
+  it("#599: formato legacy (URL solo) ainda funciona — backward compat", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título legacy",
+      "",
+      "https://example.com/legacy",
+      "",
+      "Corpo legacy.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+    ].join("\n");
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].title, "Título legacy");
+    assert.equal(destaques[0].url, "https://example.com/legacy");
+  });
 });
 
 describe("buildSubtitle", () => {
