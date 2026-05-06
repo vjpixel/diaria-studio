@@ -73,7 +73,7 @@
     "social": {
       "mode": "draft_or_schedule",
       "linkedin": {
-        "make_webhook_url": "",
+        "make_webhook_url": "https://hook.us2.make.com/2alvu89nbn9uo5tpvnjnhpbu22uf1sb6",
         "company_page_id": "110742958",
         "company_page_name": "Diar.ia",
         "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/",
