@@ -15,6 +15,7 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 
 ### Pré-condição: sentinel Stage 1
 
+<!-- outputs must match the `write` call at the end of orchestrator-stage-1-research.md §gate approval -->
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 1 \

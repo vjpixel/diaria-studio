@@ -11,6 +11,7 @@ description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orche
 
 ### Pré-condição: sentinel Stage 2
 
+<!-- outputs must match the `write` call at the end of orchestrator-stage-2.md §Escrever sentinel de conclusão do Stage 2 -->
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 2 \

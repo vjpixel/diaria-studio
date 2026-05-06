@@ -84,16 +84,20 @@ switch (subcmd) {
       process.exit(0);
     }
     if (result.reason === "sentinel_missing") {
-      // Check legacy case: --outputs passed and all files exist on disk
       if (args.outputs) {
         const files = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
-        const allPresent = files.every((f) => existsSync(resolve(editionDir, f)));
-        if (allPresent) {
+        const missingFiles = files.filter((f) => !existsSync(resolve(editionDir, f)));
+        if (missingFiles.length === 0) {
           console.warn(
             `[warn] sentinel step ${step} ausente mas outputs encontrados em disco (legado) — logar e continuar`,
           );
           process.exit(3);
         }
+        // Some outputs missing — list them for actionable diagnosis
+        console.error(
+          `[error] sentinel step ${step} ausente e outputs faltando: ${missingFiles.join(", ")}`,
+        );
+        process.exit(1);
       }
       console.error(`[error] sentinel step ${step} ausente em ${editionDir}`);
       process.exit(1);
