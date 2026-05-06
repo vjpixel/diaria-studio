@@ -215,13 +215,119 @@ Aprovar? sim / regenerar-d1 / regenerar-eia
 
 ---
 
-## Etapa 4 — Publicação
+## Etapa 4 — Publicação Brevo
+
+**Resume check:** `_internal/05-published.json` existe com `status: "test_sent"` → pular para o gate.
+
+### 4a. Drive sync pull
+
+Pull do `draft.md` antes de converter (editor pode ter editado no Drive após Etapa 2):
+
+```bash
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$1/ --stage 4 --files draft.md
+```
+
+Warning se falhar, nunca bloqueia.
+
+### 4b. Verificar pré-requisitos do Brevo
+
+Antes de rodar o script, verificar se `brevo_monthly.list_id` e `brevo_monthly.sender_email` estão preenchidos:
+
+```bash
+node -e "
+  const c = JSON.parse(require('fs').readFileSync('platform.config.json','utf8')).brevo_monthly;
+  const missing = [];
+  if (!c.list_id) missing.push('list_id');
+  if (!c.sender_email) missing.push('sender_email');
+  if (missing.length) {
+    console.error('ERRO: campos não configurados em platform.config.json → brevo_monthly:', missing.join(', '));
+    console.error('Completar checklist de #653 antes de prosseguir.');
+    process.exit(1);
+  }
+  console.log('ok');
+"
+```
+
+Se falhar com `ERRO: campos não configurados`, apresentar ao editor:
 
 ```
-⚠️ Publicação automática Beehiiv não implementada (issue #188 — follow-up).
-Para publicar: copiar `data/monthly/{YYMM}/draft.md` manualmente para o
-editor Beehiiv como rascunho. Revisar e enviar.
+⛔ Publicação Brevo bloqueada: {campos} não configurados em platform.config.json.
+
+Para desbloquear, complete a configuração da conta Brevo (#653):
+  1. Criar lista de contatos no painel Brevo → copiar o ID numérico
+  2. Verificar o email remetente no painel Brevo
+  3. Preencher em platform.config.json → brevo_monthly: { list_id: <ID>, sender_email: "<email>" }
+  4. Garantir que BREVO_CLARICE_API_KEY está definido no .env
+
+Alternativa manual: abrir https://app.brevo.com e criar a campanha manualmente colando draft.md.
 ```
+
+Encerrar Etapa 4 (não é bloqueio de pipeline — editor pode publicar manualmente).
+
+### 4c. Criar campanha e enviar email de teste
+
+```bash
+npx tsx scripts/publish-monthly.ts --yymm $1 --send-test
+```
+
+O script:
+- Converte `draft.md` para HTML de email
+- Usa o subject de `_internal/02-chosen-subject.txt` (se existir) ou a opção 1 do ASSUNTO
+- Cria campanha Brevo como rascunho
+- Envia email de teste para `platform.config.json → brevo_monthly.test_email`
+- Salva `_internal/05-published.json`
+
+Se o script falhar com erro de API:
+- Verificar que `BREVO_CLARICE_API_KEY` está definido e é válido
+- Se `list_id` ou `sender_email` ainda nulos: ver mensagem de bloqueio acima
+- Se erro HTTP 4xx da API Brevo: exibir mensagem completa ao editor e encerrar (não retry)
+
+### 4d. Revisar email de teste
+
+Disparar `review-test-email` via `Agent`:
+
+```
+Agent({
+  subagent_type: "review-test-email",
+  prompt: "
+    test_email: {brevo_monthly.test_email de platform.config.json}
+    edition_title: {subject de _internal/05-published.json}
+    edition_dir: data/monthly/$1/
+    attempt: 1
+    platform: brevo
+  "
+})
+```
+
+O agente busca o email de teste via Gmail MCP (from:brevo.com) e verifica a estrutura mensal.
+
+Se `review-test-email` retornar `issues` não-vazias, exibir ao editor junto com o gate.
+
+### Gate Etapa 4 (pulado com `--no-gate`)
+
+Ler `_internal/05-published.json` e apresentar:
+
+```
+📧 Campanha Brevo criada e email de teste enviado.
+
+Assunto: {subject}
+Preview: {preview_text}
+Dashboard: {brevo_dashboard_url}
+Teste enviado para: {test_email}
+
+{se issues do review-test-email → listar aqui}
+
+Próximos passos manuais (Etapa Clarice):
+  1. Abrir o dashboard Brevo acima
+  2. Preencher as seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL (marcadas com borda tracejada)
+  3. Adicionar imagem D1 (data/monthly/$1/04-d1-2x1.jpg) no topo da campanha
+  4. Revisar e enviar para a lista de contatos da Clarice
+
+Aprovado? sim / retry (regenerar campanha)
+```
+
+- `retry` → re-rodar 4c com nova campanha (o script sempre cria uma campanha nova; a anterior fica como rascunho no Brevo e pode ser deletada manualmente)
+- `sim` → encerrar pipeline mensal
 
 ---
 
@@ -235,8 +341,10 @@ Todos em `data/monthly/{YYMM}/`:
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
 - `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
+- `_internal/05-published.json` — campanha Brevo criada (Etapa 4)
 
 ## Notas
 
 - **Apenas manual** — sem agendamento automático.
-- **Publicação Beehiiv** é follow-up (#188) — não bloqueia o uso do digest.
+- **Publicação final é responsabilidade da Clarice** — o pipeline cria o rascunho, eles preenchem as seções de divulgação e enviam para a lista deles.
+- **Brevo list_id e sender_email** precisam estar configurados em `platform.config.json → brevo_monthly` (#653). Se nulos, Etapa 4 exibe instruções e encerra sem bloquear.
