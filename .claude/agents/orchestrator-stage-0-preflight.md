@@ -107,9 +107,19 @@ Disparar o subagente `refresh-dedup-runner` via `Agent`. O subagente:
 
 **Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
+### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6)
+
+Os passos **0e** (merge-local-pending), **0f** (sync-eia-used), **0g** (check-dedup-freshness) e **0h** (build-link-ctr) são todos independentes entre si — alguns dependem do output do `refresh-dedup` (passo 0d) e outros de nada — mas **nenhum depende dos outros 3**. Dispatch them como uma batelada paralela: **uma única mensagem com 4 Bash calls** (não 4 mensagens sequenciais).
+
+Top-level Claude pode disparar múltiplas chamadas Bash em paralelo na mesma mensagem — usar isso aqui corta ~1-2min do Stage 0 sem mudar nada de comportamento. Cada um dos 4 passos abaixo retorna independentemente; processar resultados conforme retornam.
+
+`update-audience` (passo **0i**) **DEPENDE** do output de `build-link-ctr` (data/link-ctr-table.csv). Mantém-se sequencial após 0h.
+
+---
+
 ### 0e. Merge de edições locais pending-publish (#325)
 
-Sempre roda, após refresh. Para evitar que URLs de edições aprovadas localmente mas ainda não publicadas no Beehiiv vazem pra edição atual:
+Para evitar que URLs de edições aprovadas localmente mas ainda não publicadas no Beehiiv vazem pra edição atual:
 ```bash
 npx tsx scripts/merge-local-pending.ts \
   --current {AAMMDD} \
@@ -131,7 +141,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 
 ### 0f. Sync É IA? usado (#369)
 
-Sempre roda, após merge-local-pending:
+Roda em paralelo com 0e/0g/0h (per nota da seção 0e–0h acima). Independente dos outros — só lê `data/editions/*/_internal/01-eia-meta.json`:
 ```bash
 npx tsx scripts/sync-eia-used.ts --editions-dir data/editions/
 ```
@@ -139,7 +149,7 @@ Retorna JSON `{ scanned, added, already_present, skipped_no_meta }`. Se `added >
 
 ### 0g. Pre-flight de freshness do dedup (#230)
 
-Sempre roda, após refresh:
+Roda em paralelo com 0e/0f/0h (per nota da seção 0e–0h acima):
 ```bash
 npx tsx scripts/check-dedup-freshness.ts
 ```
@@ -154,7 +164,7 @@ Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`)
 
 ### 0h. Link CTR refresh
 
-Sempre roda:
+Roda em paralelo com 0e/0f/0g (per nota da seção 0e–0h acima):
 ```bash
 npx tsx scripts/build-link-ctr.ts
 ```
@@ -162,7 +172,7 @@ Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições public
 
 ### 0i. Audience profile refresh
 
-Sempre roda, após Link CTR:
+Sequencial — **depende de 0h** (consome `data/link-ctr-table.csv`). Aguardar 0h completar antes de disparar:
 ```bash
 npx tsx scripts/update-audience.ts
 ```
