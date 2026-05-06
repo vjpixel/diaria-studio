@@ -13,6 +13,7 @@ import {
   GOOGLE_DOC_MIME,
   pushFile,
   pullFile,
+  loadConflictToleranceSeconds,
   type DriveCache,
   type SyncResult,
 } from "../scripts/drive-sync.ts";
@@ -611,5 +612,161 @@ describe("pullFile — cache merge e atualizacao apos download", () => {
     assert.equal(dlCalled, false, "nao deve usar alt=media");
     assert.equal(result.pulled.length, 1);
     assert.equal(readFileSync(join(tmpDir, "02-reviewed.md"), "utf8"), exported);
+  });
+});
+
+// -- CONFLICT_TOLERANCE_SECONDS (#605, #629) ---------------------------------
+
+describe("loadConflictToleranceSeconds (#629)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-tolerance-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("default 10s quando config nao existe", () => {
+    const missingPath = join(tmpDir, "missing.json");
+    assert.equal(loadConflictToleranceSeconds(missingPath), 10);
+  });
+
+  it("default 10s quando config nao tem o campo", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ newsletter: "beehiiv" }), "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 10);
+  });
+
+  it("override aceita valor numerico nao-negativo", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ drive_sync_conflict_tolerance_seconds: 30 }), "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 30);
+  });
+
+  it("override aceita zero (sem tolerancia)", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ drive_sync_conflict_tolerance_seconds: 0 }), "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 0);
+  });
+
+  it("default 10s quando valor e negativo (rejeitado)", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ drive_sync_conflict_tolerance_seconds: -5 }), "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 10);
+  });
+
+  it("default 10s quando valor nao e numero", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, JSON.stringify({ drive_sync_conflict_tolerance_seconds: "30" }), "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 10);
+  });
+
+  it("default 10s quando JSON e invalido", () => {
+    const cfgPath = join(tmpDir, "platform.config.json");
+    writeFileSync(cfgPath, "{ broken json", "utf8");
+    assert.equal(loadConflictToleranceSeconds(cfgPath), 10);
+  });
+});
+
+describe("pushFile — CONFLICT_TOLERANCE_SECONDS auto-conversion noise (#605, #629)", () => {
+  const YYMMDD = "260501";
+  const DAY_FOLDER_ID = "day-folder-id";
+  const FILE_ID = "drive-file-id-tol";
+  const LAST_PUSH_TIME = "2026-05-01T10:00:00.000Z";
+  let originalFetch: typeof globalThis.fetch;
+  let credsExistedBefore: boolean;
+  let prevCredsContent: string | null;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    credsExistedBefore = existsSync(CREDS_PATH);
+    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-tol-push-"));
+    writeFileSync(join(tmpDir, "02-reviewed.md"), "# Test", "utf8");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    try {
+      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
+      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
+    } catch (e) { console.error("[afterEach tolerance pushFile]", e); }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("diff > tolerance (10s default + 1s = 11s mais novo) — emite CONFLICT", async () => {
+    // Drive +11s — alem da tolerancia default de 10s — edit humano real.
+    const driveJustOverTolerance = "2026-05-01T10:00:11.000Z";
+    const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
+      drive_file_id: FILE_ID, drive_modifiedTime: LAST_PUSH_TIME, last_pushed_mtime: 0, push_count: 1 } });
+    const result = makeSyncResult();
+    let uploadCalled = false;
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const s = String(url);
+      if (s.includes("/files/" + FILE_ID) && !s.includes("upload"))
+        return makeDriveResponse({ id: FILE_ID, name: "02-reviewed.md", modifiedTime: driveJustOverTolerance });
+      if (s.includes("/upload/")) { uploadCalled = true; return makeDriveResponse({ id: FILE_ID, modifiedTime: driveJustOverTolerance, mimeType: "text/markdown" }); }
+      return makeDriveResponse({ files: [] });
+    };
+    await pushFile(tmpDir, "02-reviewed.md", YYMMDD, DAY_FOLDER_ID, cache, result);
+    assert.equal(result.warnings.length, 1, "deve emitir CONFLICT — diff alem da tolerancia");
+    assert.ok(result.warnings[0].error_message.includes("CONFLICT"));
+    assert.equal(uploadCalled, false, "nao deve fazer upload em CONFLICT");
+  });
+
+  it("diff <= tolerance (auto-conversion +2s) — sem CONFLICT, cache atualizado silenciosamente", async () => {
+    // Drive +2s — auto-conversion noise. Nao e edit humano. Pipeline deve continuar.
+    const driveAfterAutoConversion = "2026-05-01T10:00:02.000Z";
+    const newPushTime = "2026-05-01T10:30:00.000Z";
+    const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
+      drive_file_id: FILE_ID, drive_modifiedTime: LAST_PUSH_TIME, last_pushed_mtime: 0, push_count: 1 } });
+    const result = makeSyncResult();
+    let uploadCalled = false;
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const s = String(url);
+      if (s.includes("/files/" + FILE_ID) && !s.includes("upload"))
+        return makeDriveResponse({ id: FILE_ID, name: "02-reviewed.md", modifiedTime: driveAfterAutoConversion });
+      if (s.includes("/upload/")) { uploadCalled = true; return makeDriveResponse({ id: FILE_ID, modifiedTime: newPushTime, mimeType: "text/markdown" }); }
+      return makeDriveResponse({ files: [] });
+    };
+    await pushFile(tmpDir, "02-reviewed.md", YYMMDD, DAY_FOLDER_ID, cache, result);
+    assert.equal(
+      result.warnings.filter((w) => w.error_message.includes("CONFLICT")).length,
+      0,
+      "nao deve emitir CONFLICT dentro da tolerancia",
+    );
+    assert.equal(uploadCalled, true, "deve fazer upload — diff dentro da tolerancia");
+    // Push sucedeu — cache e atualizado com newPushTime (post-upload), nao driveAfterAutoConversion.
+    // O importante e que o push aconteceu em vez de abortar.
+    assert.equal(cache.editions[YYMMDD].files["02-reviewed.md"].drive_modifiedTime, newPushTime);
+  });
+
+  it("diff exatamente igual a tolerance (boundary 10s) — sem CONFLICT (>, nao >=)", async () => {
+    // Drive +10s (exatamente o default). Lógica usa `diff > tolerance`, entao 10 nao dispara.
+    const driveAtTolerance = "2026-05-01T10:00:10.000Z";
+    const newPushTime = "2026-05-01T10:30:00.000Z";
+    const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
+      drive_file_id: FILE_ID, drive_modifiedTime: LAST_PUSH_TIME, last_pushed_mtime: 0, push_count: 1 } });
+    const result = makeSyncResult();
+    let uploadCalled = false;
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const s = String(url);
+      if (s.includes("/files/" + FILE_ID) && !s.includes("upload"))
+        return makeDriveResponse({ id: FILE_ID, name: "02-reviewed.md", modifiedTime: driveAtTolerance });
+      if (s.includes("/upload/")) { uploadCalled = true; return makeDriveResponse({ id: FILE_ID, modifiedTime: newPushTime, mimeType: "text/markdown" }); }
+      return makeDriveResponse({ files: [] });
+    };
+    await pushFile(tmpDir, "02-reviewed.md", YYMMDD, DAY_FOLDER_ID, cache, result);
+    assert.equal(
+      result.warnings.filter((w) => w.error_message.includes("CONFLICT")).length,
+      0,
+      "boundary: diff == tolerance nao deve disparar CONFLICT",
+    );
+    assert.equal(uploadCalled, true);
   });
 });
