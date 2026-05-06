@@ -18,6 +18,7 @@ import { isAggregator } from "./lib/aggregators";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 export { canonicalize };
 
@@ -419,6 +420,17 @@ async function main() {
   console.error(
     `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold})`
   );
+
+  const removed = result.removed.length;
+  const kept = result.kept.length;
+  logEvent({
+    edition: null,
+    stage: 1,
+    agent: "dedup.ts",
+    level: "info",
+    message: `dedup: ${removed} artigos removidos por similaridade, ${kept} mantidos`,
+    details: { removed, kept },
+  });
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {
