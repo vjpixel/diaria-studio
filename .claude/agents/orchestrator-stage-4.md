@@ -84,6 +84,22 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 
 **Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (4d).
 
+**Merge LinkedIn temp file (#758):** Após `publish-social` retornar, verificar se `_internal/06-linkedin.tmp.json` existe. Se existir, fundir com `06-social-published.json`:
+```bash
+node --input-type=module << 'EOF'
+import { appendSocialPosts } from "./scripts/lib/social-published-store.ts";
+import { readFileSync, existsSync } from "node:fs";
+const tmp = "data/editions/{AAMMDD}/_internal/06-linkedin.tmp.json";
+const out = "data/editions/{AAMMDD}/06-social-published.json";
+if (existsSync(tmp)) {
+  const { posts } = JSON.parse(readFileSync(tmp, "utf8"));
+  appendSocialPosts(out, posts);
+  console.log(`Merged ${posts.length} LinkedIn post(s) from tmp file`);
+}
+EOF
+```
+Se o arquivo não existir (agent escreveu direto no arquivo principal via store), prosseguir normalmente.
+
 ### 4d. Retry chrome_disconnected (independente por agent)
 
 Tanto `publish-newsletter` quanto `publish-social` usam o mesmo padrão de retry exponencial — cada um conta sozinho (falha de um não afeta o contador do outro).
