@@ -10,6 +10,14 @@
     "publicationId": "pub_b9534d43-9bc1-47cc-bddc-b98d8fa0ddf5",
     "dedupEditionCount": 14
   },
+  "newsletter_monthly": "brevo",
+  "brevo_monthly": {
+    "api_key_env": "BREVO_CLARICE_API_KEY",
+    "list_id": null,
+    "sender_email": null,
+    "sender_name": "Clarice × Diar.ia",
+    "test_email": "vjpixel@gmail.com"
+  },
   "inbox": {
     "address": "diariaeditor@gmail.com",
     "gmailQuery": "label:Diaria.Editor",
