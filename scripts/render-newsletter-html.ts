@@ -511,12 +511,12 @@ function renderEIA(eia: EIA): string {
         <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
           <tr>
             <td style="padding:0 8px;">
-              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&edition=${esc(eia.edition)}&choice=A"
+              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&amp;edition=${esc(eia.edition)}&amp;choice=A"
                  style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
                  target="_blank" rel="noopener noreferrer">Votar A</a>
             </td>
             <td style="padding:0 8px;">
-              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&edition=${esc(eia.edition)}&choice=B"
+              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&amp;edition=${esc(eia.edition)}&amp;choice=B"
                  style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
                  target="_blank" rel="noopener noreferrer">Votar B</a>
             </td>
