@@ -37,6 +37,7 @@ import {
   parseDriveFileUploadResponse,
 } from "./lib/schemas/drive-api.ts"; // #649
 import { logEvent } from "./lib/run-log.ts"; // #612
+import type { DriveCache, FileEntry, EditionCache } from "./lib/schemas/drive-cache.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
@@ -44,51 +45,8 @@ const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 
 // ---------------------------------------------------------------------------
-// Tipos
+// Tipos locais (não existem em drive-cache.ts)
 // ---------------------------------------------------------------------------
-
-export interface FileEntry {
-  drive_file_id: string;
-  drive_modifiedTime: string;
-  last_pushed_mtime: number;
-  push_count: number;
-  /** mimeType do arquivo no Drive (#89). Se 'application/vnd.google-apps.document',
-   * o arquivo foi convertido pra Doc nativo no push — pull precisa usar /export
-   * com mimeType 'text/markdown' pra recuperar. */
-  drive_mimeType?: string;
-}
-
-/**
- * Whitelist de arquivos MD que viram Google Docs nativos no push (#89).
- * Editor edita no Docs (UI rica, colaborativa), pull converte de volta pra MD.
- *
- * Demais arquivos MD continuam como texto plano no Drive (MD download = MD).
- */
-export const CONVERT_TO_DOC = new Set<string>([
-  "01-categorized.md",
-  "02-reviewed.md",
-  "03-social.md",
-  "01-eia.md",
-  "prioritized.md",
-  "draft.md",
-]);
-
-export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
-
-export interface EditionCache {
-  day_folder_id: string;
-  files: Record<string, FileEntry>;
-  /** Cache de subpastas dentro do dia (#253). Map subpath → Drive folder ID.
-   * Ex: `{"_internal": "abc123..."}`. Permite que arquivos com `/` no
-   * filename (ex: `_internal/02-clarice-diff.md`) sejam organizados em
-   * subpastas reais no Drive em vez de virarem parte do nome do arquivo. */
-  subfolder_ids?: Record<string, string>;
-}
-
-export interface DriveCache {
-  edicoes_folder_id?: string;
-  editions: Record<string, EditionCache>;
-}
 
 interface UploadedEntry {
   file: string;
@@ -114,6 +72,26 @@ export interface SyncResult {
   skipped?: boolean;
   skip_reason?: string;
 }
+
+// Re-export types imported from schema so test imports remain unchanged
+export type { DriveCache, FileEntry, EditionCache };
+
+/**
+ * Whitelist de arquivos MD que viram Google Docs nativos no push (#89).
+ * Editor edita no Docs (UI rica, colaborativa), pull converte de volta pra MD.
+ *
+ * Demais arquivos MD continuam como texto plano no Drive (MD download = MD).
+ */
+export const CONVERT_TO_DOC = new Set<string>([
+  "01-categorized.md",
+  "02-reviewed.md",
+  "03-social.md",
+  "01-eia.md",
+  "prioritized.md",
+  "draft.md",
+]);
+
+export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
 // ---------------------------------------------------------------------------
 // Retry com backoff exponencial — Drive API sob carga rejeita com 429/5xx

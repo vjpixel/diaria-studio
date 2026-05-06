@@ -33,38 +33,11 @@ import {
   formatCoverageLine,
   resolveEditorEmail,
 } from "./lib/inbox-stats.ts"; // #592, #609
+import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
 // inbox-drain.ts e drive-sync.ts.
 const ROOT = resolve(import.meta.dirname, "..");
-
-interface Article {
-  url: string;
-  title?: string;
-  score?: number;
-  category?: string;
-  [key: string]: unknown;
-}
-
-interface Highlight {
-  rank: number;
-  score?: number;
-  bucket: string;
-  reason?: string;
-  url: string;
-  article: Article | null;
-  [key: string]: unknown;
-}
-
-interface CategorizedJson {
-  highlights?: Highlight[];
-  runners_up?: unknown[];
-  lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
-  tutorial?: Article[];
-  video?: Article[];
-}
 
 interface CoverageStats {
   /** Submissões do editor (forwards/links diretos) — count of inbox blocks. */
@@ -75,18 +48,6 @@ interface CoverageStats {
   selected: number;
   /** Linha de cobertura literal pronta pra colar em reviewed.md (writer.md Step 1b). */
   line: string;
-}
-
-interface ApprovedJson {
-  highlights: Highlight[];
-  runners_up: unknown[];
-  lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
-  tutorial: Article[]; // sempre array, nunca ausente (#328)
-  video: Article[]; // sempre array, nunca ausente
-  /** #592 + #609: linha de cobertura ("X submissões / Y artigos / Z selecionados"). */
-  coverage?: CoverageStats;
 }
 
 type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
@@ -194,7 +155,7 @@ export function canonicalizeUrl(url: string): string {
  */
 export function resolveDestaques(
   sections: Record<BucketName, string[]>,
-  originalHighlights: Array<{ rank: number; url?: string; article?: { url?: string } | null }>,
+  originalHighlights: Array<{ rank?: number; url?: string; article?: { url?: string } | null }>,
 ): string[] {
   let destaquesUrls = [...sections.destaques];
 
@@ -207,7 +168,7 @@ export function resolveDestaques(
       ...sections.tutorial,
       ...sections.video,
     ]);
-    const scorerRanked = [...originalHighlights].sort((a, b) => a.rank - b.rank);
+    const scorerRanked = [...originalHighlights].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
     for (const h of scorerRanked) {
       if (destaquesUrls.length >= 3) break;
       const url = h.url ?? (h.article as { url?: string } | null)?.url;
@@ -353,8 +314,8 @@ function main() {
     approved.lancamento.length +
     approved.pesquisa.length +
     approved.noticias.length +
-    approved.tutorial.length +
-    approved.video.length;
+    (approved.tutorial?.length ?? 0) +
+    (approved.video?.length ?? 0);
   if (totalConsidered !== null) {
     const diariaDiscovered = Math.max(0, totalConsidered - editorSubmissions);
     approved.coverage = {
@@ -372,7 +333,7 @@ function main() {
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
   const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length} V=${originalBuckets.video.length}`;
-  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial.length} V=${approved.video.length}`;
+  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial?.length ?? 0} V=${approved.video?.length ?? 0}`;
   console.error(
     `[apply-gate-edits] original ${origTotals} → approved ${approvedTotals} — destaques: ${approved.highlights.length}`,
   );
@@ -383,7 +344,7 @@ function main() {
       lancamento: approved.lancamento.length,
       pesquisa: approved.pesquisa.length,
       noticias: approved.noticias.length,
-      tutorial: approved.tutorial.length,
+      tutorial: approved.tutorial?.length ?? 0,
     }) + "\n",
   );
 }
