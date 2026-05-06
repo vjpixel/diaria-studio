@@ -86,7 +86,7 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 
 **Merge LinkedIn temp file (#758):** Após `publish-social` retornar, verificar se `_internal/06-linkedin.tmp.json` existe. Se existir, fundir com `06-social-published.json`:
 ```bash
-node --input-type=module << 'EOF'
+npx tsx --input-type=module << 'EOF'
 import { appendSocialPosts } from "./scripts/lib/social-published-store.ts";
 import { readFileSync, existsSync } from "node:fs";
 const tmp = "data/editions/{AAMMDD}/_internal/06-linkedin.tmp.json";
