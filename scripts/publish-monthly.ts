@@ -154,7 +154,17 @@ function renderDestaque(chunk: string): string {
     }
   }
 
-  const label = `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`;
+  // Categorias editoriais válidas (mesmo vocabulário do diário Diar.ia).
+  // Temas organizacionais do mensal (nomes de empresa, país etc.) não são exibidos.
+  const VALID_CATEGORIES = new Set([
+    "PESQUISA", "LANÇAMENTO", "MERCADO", "CONCEITO", "FERRAMENTA",
+    "PRODUTO", "TENDÊNCIA", "INDÚSTRIA", "CULTURA", "BRASIL",
+    "OPINIÃO", "DADOS", "REGULAÇÃO",
+  ]);
+  const temaUpper = tema.toUpperCase().trim();
+  const label = VALID_CATEGORIES.has(temaUpper)
+    ? `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`
+    : "";
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;">${renderInline(title)}</h2>`
     : "";
