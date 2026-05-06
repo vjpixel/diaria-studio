@@ -74,7 +74,8 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       args.schedule = true;
     } else if (argv[i] === "--skip-existing") {
       args["skip-existing"] = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
+    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+      // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
       i++;
     }
@@ -109,8 +110,9 @@ export function extractPostText(socialMd: string, destaque: string): string {
   if (!platMatch) throw new Error("Seção 'LinkedIn' não encontrada em 03-social.md");
 
   // Extrair subseção ## dN
+  // #725 bug #3: `\d+\b` em vez de `\d` — evita `## d10` bater como `## d1`+`0`
   const dRe = new RegExp(
-    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d|\\n# |$)`,
+    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
     "i",
   );
   const dMatch = platMatch[1].match(dRe);
@@ -175,7 +177,10 @@ async function main(): Promise<void> {
   }
   const editionDir = resolve(ROOT, editionDirRaw);
   const doSchedule = !!args.schedule;
-  const skipExisting = args["skip-existing"] !== false; // default true
+  if (args["skip-existing"]) {
+    console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
+  }
+  const skipExisting = args["no-skip-existing"] !== true; // default true (#725 bug #2)
   const dayOffsetOverride = args["day-offset"]
     ? parseInt(args["day-offset"] as string, 10)
     : undefined;

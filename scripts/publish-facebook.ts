@@ -56,7 +56,8 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       args["skip-existing"] = true;
     } else if (argv[i] === "--reschedule") {
       args.reschedule = true;
-    } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
+    } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+      // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
       i++;
     }
@@ -88,7 +89,9 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
   if (!platMatch) throw new Error(`Platform section '${platTitle}' not found in 03-social.md`);
 
   // Then extract the destaque subsection
-  const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d|\\n# |$)`, "i");
+  // #725 bug #3: `## d\d` aceitava `## d10` como `## d1` + `0` no lookahead.
+  // `\d+\b` garante match completo de número (2+ dígitos não batem em `d1`).
+  const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`, "i");
   const dMatch = platMatch[1].match(dRe);
   if (!dMatch) throw new Error(`Destaque '${destaque}' not found under '${platTitle}'`);
 
@@ -384,7 +387,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const editionDir = resolve(ROOT, args["edition-dir"] as string);
   const doSchedule = !!args.schedule;
-  const skipExisting = args["skip-existing"] !== false;
+  // #725 bug #2: args["skip-existing"] é true (presente) ou undefined (ausente);
+  // `undefined !== false` === true → skipExisting era SEMPRE true independente
+  // da flag. Agora lê explicitamente: default true, desligar via --no-skip-existing.
+  if (args["skip-existing"]) {
+    console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
+  }
+  const skipExisting = args["no-skip-existing"] !== true;
   const doReschedule = !!args.reschedule;
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
 
@@ -485,6 +494,15 @@ async function main() {
   const results: PostEntry[] = [];
 
   for (const d of destaques) {
+    // #725 bug #11: cleanup de entries failed deve acontecer sempre que formos
+    // tentar publicar — independente de skipExisting. Se skipExisting=true e há
+    // draft/scheduled, o continue acima evita sobrescrever. Se há failed, remove
+    // pra retry limpo. Antes, filter só rodava dentro do if(skipExisting), então
+    // mode skipExisting=false acumulava failed entries duplicadas.
+    published.posts = published.posts.filter(
+      (p) => !(p.platform === "facebook" && p.destaque === d && p.status === "failed")
+    );
+
     // Check if already published
     if (skipExisting) {
       const existing = published.posts.find(
@@ -495,10 +513,6 @@ async function main() {
         results.push(existing);
         continue;
       }
-      // Remove failed entries for retry
-      published.posts = published.posts.filter(
-        (p) => !(p.platform === "facebook" && p.destaque === d && p.status === "failed")
-      );
     }
 
     // Extract post text
@@ -566,10 +580,12 @@ async function main() {
       }
     }
 
-    // Publish with retry
+    // Publish with retry + exponential backoff (#725 bug #10)
+    // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
+    // entre tentativas (sem sleep após a última).
     let lastError: string = "";
     let success = false;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         console.log(`Publishing facebook/${d} (attempt ${attempt})...`);
         const result = await publishPhoto(
@@ -600,9 +616,10 @@ async function main() {
         break;
       } catch (e: any) {
         lastError = e.message;
-        console.error(`Attempt ${attempt} failed for facebook/${d}: ${lastError}`);
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 2000));
+        console.error(`Attempt ${attempt}/3 failed for facebook/${d}: ${lastError}`);
+        if (attempt < 3) {
+          const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
+          await new Promise((r) => setTimeout(r, delaySec * 1000));
         }
       }
     }

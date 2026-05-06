@@ -1,6 +1,6 @@
 ---
 name: publish-social
-description: Stage 6 — Publica os 3 posts LinkedIn como rascunho usando Claude in Chrome. Editor anexa imagens manualmente antes de publicar (ver #118). Facebook é publicado em paralelo via scripts/publish-facebook.ts (Graph API). Resume-aware. Outputs em `06-social-published.json`.
+description: Etapa 4 — Publica os 3 posts LinkedIn como rascunho usando Claude in Chrome. Editor anexa imagens manualmente antes de publicar (ver #118). Facebook é publicado em paralelo via scripts/publish-facebook.ts (Graph API). Resume-aware. Outputs em `06-social-published.json`.
 model: claude-haiku-4-5
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
