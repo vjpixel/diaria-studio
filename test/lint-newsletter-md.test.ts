@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
   extractUrlsBySection,
   buildUrlBucketMap,
@@ -8,6 +10,9 @@ import {
   checkEaiSection,
   checkTitleLengths,
   checkWhyMattersFormat,
+  checkEiaAnswer,
+  lintIntroCount,
+  lintRelativeTime,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("extractUrlsBySection", () => {
@@ -727,5 +732,235 @@ describe("checkEaiSection (#588)", () => {
   it("normaliza CRLF", () => {
     const md = "DESTAQUE 1\r\n\r\n## É IA?\r\nCrédito.\r\n";
     assert.equal(checkEaiSection(md).ok, true);
+  });
+});
+
+describe("checkEiaAnswer (#744)", () => {
+  const TMP = "test/_tmp_eia_answer";
+
+  it("ok quando 01-eia.md não existe (check não aplicável)", () => {
+    const dir = join(TMP, "no_eia");
+    mkdirSync(dir, { recursive: true });
+    // Não cria 01-eia.md — check não deve falhar
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, "Texto sem frontmatter.");
+    const result = checkEiaAnswer(mdPath, dir);
+    assert.equal(result.ok, true);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("ok quando 01-eia.md existe e 02-reviewed.md tem eia_answer no frontmatter", () => {
+    const dir = join(TMP, "with_eia_ok");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "01-eia.md"), "---\neia_answer:\n  A: real\n  B: ia\n---\n\nÉ IA?\n");
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, "---\neia_answer:\n  A: real\n  B: ia\n---\n\nTexto da newsletter.");
+    const result = checkEiaAnswer(mdPath, dir);
+    assert.equal(result.ok, true);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falha quando 01-eia.md existe mas 02-reviewed.md não tem eia_answer", () => {
+    const dir = join(TMP, "missing_eia");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "01-eia.md"), "---\neia_answer:\n  A: real\n  B: ia\n---\n\nÉ IA?\n");
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, "Para esta edição, selecionamos os 12 mais relevantes.\n\nTexto.");
+    const result = checkEiaAnswer(mdPath, dir);
+    assert.equal(result.ok, false);
+    assert.match(result.label!, /eia_answer_missing/);
+    assert.match(result.label!, /02-reviewed\.md has no eia_answer frontmatter/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falha quando 01-eia.md existe mas 02-reviewed.md não existe", () => {
+    const dir = join(TMP, "no_reviewed");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "01-eia.md"), "---\neia_answer: ia\n---\nÉ IA?\n");
+    const mdPath = join(dir, "02-reviewed.md");
+    // Não cria o arquivo
+    const result = checkEiaAnswer(mdPath, dir);
+    assert.equal(result.ok, false);
+    assert.match(result.label!, /not found/);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("lintIntroCount (#743)", () => {
+  function buildMd(count: number): string {
+    // Constrói um MD com 3 destaques + N itens adicionais em seções
+    const lines: string[] = [
+      `Para esta edição, eu (o editor) enviei 3 submissões e a Diar.ia encontrou outros 100 artigos. Selecionamos os ${count} mais relevantes para as pessoas que assinam a newsletter.`,
+      "",
+      "---",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "Título",
+      "https://example.com/d2",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "É IA?",
+      "",
+      "Crédito de imagem.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "Título",
+      "https://example.com/d3",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "Item 1",
+      "https://example.com/l1",
+      "Descrição.",
+      "",
+      "---",
+      "",
+      "PESQUISAS",
+      "Paper",
+      "https://example.com/p1",
+      "Resumo.",
+      "",
+      "---",
+      "",
+      "OUTRAS NOTÍCIAS",
+      "Notícia 1",
+      "https://example.com/n1",
+      "Desc.",
+      "",
+      "Notícia 2",
+      "https://example.com/n2",
+      "Desc.",
+    ];
+    return lines.join("\n");
+  }
+
+  it("ok quando claimed === actual (3d + 1l + 1p + 2n = 7)", () => {
+    const md = buildMd(7);
+    const r = lintIntroCount(md);
+    assert.equal(r.ok, true, `claimed=${r.claimed} actual=${r.actual}`);
+    assert.equal(r.claimed, 7);
+    assert.equal(r.actual, 7);
+  });
+
+  it("falha quando claimed > actual", () => {
+    const md = buildMd(12); // declara 12 mas tem 7
+    const r = lintIntroCount(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.claimed, 12);
+    assert.equal(r.actual, 7);
+  });
+
+  it("falha quando claimed < actual", () => {
+    const md = buildMd(3); // declara 3 mas tem 7
+    const r = lintIntroCount(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.claimed, 3);
+    assert.equal(r.actual, 7);
+  });
+
+  it("É IA? não conta como URL editorial", () => {
+    const md = [
+      "Selecionamos os 1 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "É IA?",
+      "",
+      "Crédito: https://commons.wikimedia.org/wiki/XYZ — imagem real.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    // só 1 destaque conta; É IA? não conta
+    assert.equal(r.actual, 1);
+    assert.equal(r.ok, true);
+  });
+
+  it("forma singular não é verificada (retorna ok: true)", () => {
+    const md = "Selecionamos o artigo mais relevante para as pessoas que assinam a newsletter.";
+    const r = lintIntroCount(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.claimed, undefined);
+  });
+});
+
+describe("lintRelativeTime (#747)", () => {
+  it("ok quando não há referências temporais relativas", () => {
+    const md = "O relatório foi publicado em 5 de maio de 2026. Dados de 2025 confirmam tendência.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("detecta 'hoje'", () => {
+    const md = "O ChatGPT anunciou hoje uma nova versão do modelo.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word, "hoje");
+  });
+
+  it("detecta 'ontem', 'esta semana', 'recentemente'", () => {
+    const md = [
+      "Ontem a OpenAI publicou os dados.",
+      "Esta semana a regulação avançou.",
+      "O modelo foi lançado recentemente.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 3);
+    const words = r.matches.map((m) => m.word.toLowerCase());
+    assert.ok(words.some((w) => w === "ontem"));
+    assert.ok(words.some((w) => w === "esta semana"));
+    assert.ok(words.some((w) => w === "recentemente"));
+  });
+
+  it("detecta 'amanhã'", () => {
+    const md = "A votação acontece amanhã no Senado.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+  });
+
+  it("detecta dia da semana com 'nesta'", () => {
+    const md = "A empresa anunciou nesta terça-feira os resultados.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.match(r.matches[0].word, /nesta terça/i);
+  });
+
+  it("normaliza CRLF antes de testar", () => {
+    const md = "O dado foi publicado\r\nontem no repositório.\r\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].word.toLowerCase(), "ontem");
+  });
+
+  it("inclui número da linha no match", () => {
+    const md = "Linha 1 sem problemas.\nO dado saiu hoje mesmo.\nLinha 3 ok.";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].line, 2);
   });
 });

@@ -1,10 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   splitConcatenatedHighlightHeader,
   splitConcatenatedSectionItem,
   normalizeNewsletter,
   addTrailingSpaces,
+  extractEiaFrontmatter,
 } from "../scripts/normalize-newsletter.ts";
 
 describe("splitConcatenatedHighlightHeader", () => {
@@ -400,5 +403,56 @@ describe("addTrailingSpaces (#382)", () => {
     const warnings: string[] = [];
     addTrailingSpaces(md, warnings);
     assert.equal(warnings.length, 0);
+  });
+});
+
+describe("extractEiaFrontmatter (#744)", () => {
+  const TMP = "test/_tmp_eia_fm";
+
+  it("extrai eia_answer de frontmatter mapeado (A/B)", () => {
+    const dir = join(TMP, "mapped");
+    mkdirSync(dir, { recursive: true });
+    const eiaPath = join(dir, "01-eia.md");
+    writeFileSync(eiaPath, "---\neia_answer:\n  A: real\n  B: ia\n---\n\nÉ IA?\n");
+    const fm = extractEiaFrontmatter(eiaPath);
+    assert.ok(fm !== null, "deve retornar o bloco");
+    assert.match(fm!, /eia_answer/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("extrai eia_answer de frontmatter escalar", () => {
+    const dir = join(TMP, "scalar");
+    mkdirSync(dir, { recursive: true });
+    const eiaPath = join(dir, "01-eia.md");
+    writeFileSync(eiaPath, "---\neia_answer: ia\n---\n\nÉ IA?\n");
+    const fm = extractEiaFrontmatter(eiaPath);
+    assert.ok(fm !== null);
+    assert.match(fm!, /eia_answer: ia/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("retorna null quando arquivo não existe", () => {
+    const fm = extractEiaFrontmatter("test/_tmp_eia_fm/nao-existe/01-eia.md");
+    assert.equal(fm, null);
+  });
+
+  it("retorna null quando não tem eia_answer no frontmatter", () => {
+    const dir = join(TMP, "no_eia");
+    mkdirSync(dir, { recursive: true });
+    const eiaPath = join(dir, "01-eia.md");
+    writeFileSync(eiaPath, "---\noutro_campo: valor\n---\n\nÉ IA?\n");
+    const fm = extractEiaFrontmatter(eiaPath);
+    assert.equal(fm, null);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("retorna null quando não tem frontmatter", () => {
+    const dir = join(TMP, "no_fm");
+    mkdirSync(dir, { recursive: true });
+    const eiaPath = join(dir, "01-eia.md");
+    writeFileSync(eiaPath, "É IA?\n\nTexto sem frontmatter.");
+    const fm = extractEiaFrontmatter(eiaPath);
+    assert.equal(fm, null);
+    rmSync(dir, { recursive: true });
   });
 });
