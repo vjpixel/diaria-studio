@@ -8,7 +8,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 ## 1. Links
 
-- **Sem paywall.** Nunca incluir link atrás de paywall. Paywalls comuns: Fortune, Bloomberg, Financial Times, Wall Street Journal, NYT, The Information, Business Insider. Se a história só tiver paywall, substituir por fonte gratuita equivalente.
+- **Sem paywall.** Nunca incluir link atrás de paywall. Paywalls comuns: Fortune, Bloomberg, Financial Times, Wall Street Journal, NYT, The Information, Business Insider. Se a história só tiver paywall, substituir por fonte gratuita equivalente. Validação: `npx tsx scripts/validate-domains.ts <md>` (exit ≠0 se houver paywall ou agregador).
 - **Sem agregadores.** Nunca usar links de agregadores: `crescendo.ai`, `techstartups.com`, `perplexity.ai/search`, `news.google.com`, `flipboard.com`. Sempre usar URLs diretas de artigos originais.
 - **Sem repetição.** Antes de incluir qualquer link, verificar `context/past-editions.md` (últimas 5 edições) — se o link ou **tema** já foi coberto, não incluir.
 - **URL limpa.** Nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS, usar apenas a URL — sem título, sem texto adicional antes/depois.
@@ -29,10 +29,10 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 ## 3. Destaques
 
 - Máximo **3 destaques** por edição.
-- Título: **máximo 52 caracteres** (incluindo espaços).
+- Título: **máximo 52 caracteres** (incluindo espaços). Validação: `npx tsx scripts/lint-newsletter-md.ts --check title-length --md <md>`.
 - Sempre propor **3 opções de título** por destaque (todas ≤52 chars).
 - **"Por que isso importa:"** sempre em **linha separada**, nunca continuando o parágrafo.
-- O parágrafo de "Por que isso importa" vai **direto ao impacto** — nunca começa com "Para [audiência]," ou endereça o leitor explicitamente. Errado: "Para profissionais de tecnologia, o dado muda...". Certo: "O dado muda...".
+- O parágrafo de "Por que isso importa" vai **direto ao impacto** — nunca começa com "Para [audiência]," ou endereça o leitor explicitamente. Errado: "Para profissionais de tecnologia, o dado muda...". Certo: "O dado muda...". Validação: `npx tsx scripts/lint-newsletter-md.ts --check why-matters-format --md <md>`.
 - Conteúdo: 4 parágrafos + 1 parágrafo de "Por que isso importa".
 
 ## 4. Categorias válidas

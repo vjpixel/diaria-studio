@@ -244,37 +244,59 @@ function looksLikeUrl(line: string): boolean {
  *
  * Não afetadas: URL do destaque, corpo/descrição, cabeçalhos, separadores `---`.
  * Idempotente: aplica trimEnd() antes de adicionar `  `.
+ *
+ * #691: caller pode passar `warnings` array opcional pra coletar warnings
+ * estruturais (ex: destaque sem URL — todas as linhas até `---` viram
+ * "título" e ganham trailing spaces, quebrando o corpo).
  */
-export function addTrailingSpaces(text: string): string {
+export function addTrailingSpaces(text: string, warnings?: string[]): string {
   const lines = text.split("\n");
   const out: string[] = [];
 
   let ctx: "highlight" | "section" | null = null;
   let highlightUrlSeen = false;
+  let highlightHeader: string | null = null;
   let sectionExpectTitle = false;
   let sectionExpectUrl = false;
 
-  const isUrl = (s: string) => /^\s*\[?https?:\/\//.test(s);
+  // #691: estrito — linha INTEIRA é uma URL (nada de texto adicional). Match
+  // bare `https://...` OU markdown `[https://...](https://...)`. Antes era
+  // `/^\s*\[?https?:\/\//` (qualquer prefixo) e linhas tipo
+  // "https://foo.com diz que X" eram tratadas como URL line.
+  const isUrl = (s: string) => /^\s*(?:\[https?:\/\/\S+\]\(https?:\/\/\S+\)|https?:\/\/\S+)\s*$/.test(s);
+
+  const emitHighlightUrlMissingWarning = () => {
+    if (warnings && ctx === "highlight" && !highlightUrlSeen && highlightHeader) {
+      warnings.push(
+        `destaque "${highlightHeader}" terminou sem URL — trailing spaces aplicados ` +
+          `em todas as linhas; corpo pode renderizar com line-breaks indesejados`,
+      );
+    }
+  };
 
   for (const raw of lines) {
     const t = raw.trimEnd();
 
     // Reset em separadores
     if (t === "---") {
-      ctx = null; highlightUrlSeen = false;
+      emitHighlightUrlMissingWarning();
+      ctx = null; highlightUrlSeen = false; highlightHeader = null;
       sectionExpectTitle = false; sectionExpectUrl = false;
       out.push(t); continue;
     }
 
     // Header de destaque
     if (isHighlightHeader(t)) {
-      ctx = "highlight"; highlightUrlSeen = false;
+      emitHighlightUrlMissingWarning();
+      ctx = "highlight"; highlightUrlSeen = false; highlightHeader = t;
       out.push(t); continue;
     }
 
     // Header de seção secundária
     if (isSectionHeader(t)) {
+      emitHighlightUrlMissingWarning();
       ctx = "section"; sectionExpectTitle = true; sectionExpectUrl = false;
+      highlightHeader = null;
       out.push(t); continue;
     }
 
@@ -313,6 +335,9 @@ export function addTrailingSpaces(text: string): string {
 
     out.push(t);
   }
+
+  // EOF — destaque sem URL no fim do arquivo também emite warning
+  emitHighlightUrlMissingWarning();
 
   return out.join("\n");
 }
@@ -395,7 +420,7 @@ export function normalizeNewsletter(text: string): {
     out.push(line);
   }
 
-  const withTrailingSpaces = addTrailingSpaces(out.join("\n"));
+  const withTrailingSpaces = addTrailingSpaces(out.join("\n"), report.warnings);
   const { text: normalized, count: emdashes } = removeEmdashes(withTrailingSpaces);
   report.emdashes_removed = emdashes;
   if (emdashes > 0) {

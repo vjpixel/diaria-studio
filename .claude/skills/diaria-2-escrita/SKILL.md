@@ -109,11 +109,28 @@ Se `$2 = social`, pular o cp da newsletter (apenas merge + push de 03-social.md)
 ### 3a. Lint + normalize
 
 ```bash
-npx tsx scripts/lint-newsletter-md.ts data/editions/$1/_internal/02-draft.md
-npx tsx scripts/normalize-newsletter.ts data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.md
+npx tsx scripts/lint-newsletter-md.ts \
+  --md data/editions/$1/_internal/02-draft.md \
+  --approved data/editions/$1/_internal/01-approved.json
+npx tsx scripts/lint-newsletter-md.ts \
+  --check title-length \
+  --md data/editions/$1/_internal/02-draft.md
+npx tsx scripts/lint-newsletter-md.ts \
+  --check why-matters-format \
+  --md data/editions/$1/_internal/02-draft.md
+npx tsx scripts/validate-domains.ts data/editions/$1/_internal/02-draft.md
+npx tsx scripts/normalize-newsletter.ts \
+  --in data/editions/$1/_internal/02-draft.md \
+  --out data/editions/$1/_internal/02-draft.md
 ```
 
 ### 3b. Clarice (inline)
+
+Snapshot pré-Clarice para o diff posterior (3d) e rollback se algo falhar:
+
+```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.pre-clarice.md
+```
 
 1. Ler `data/editions/$1/_internal/02-draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
@@ -130,6 +147,12 @@ npx tsx scripts/normalize-newsletter.ts data/editions/$1/_internal/02-draft.md d
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro** — não silenciar.
 
 ### 3c. Humanize
+
+Snapshot pré-Humanize antes de dispatchar o agent — usado para rollback se o agent falhar OU se o draft pós-humanize ficar corrompido (perda de seção, perda de URL, etc.):
+
+```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.pre-humanize.md
+```
 
 ```
 Agent({
@@ -159,19 +182,31 @@ Regras de preservação: sem markdown (nada de **, #, - ), preservar template da
 })
 ```
 
-Falha **não bloqueia** — fallback usa o arquivo original.
+Se o Agent retornar erro OU se uma checagem rápida pós-humanize indicar corrupção (`02-draft.md` vazio, sem seção É IA?, sem alguma das URLs originais), restaurar o snapshot:
+
+```bash
+cp data/editions/$1/_internal/02-draft.pre-humanize.md data/editions/$1/_internal/02-draft.md
+```
+
+Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
 
 ### 3d. Validações finais
+
+`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice e o output final (`02-draft.md` após Clarice + humanizador), mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer — incluindo o que o humanizador reverteu da Clarice:
 
 ```bash
 npx tsx scripts/validate-lancamentos.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/clarice-diff.ts \
-  --original data/editions/$1/_internal/02-draft.md \
-  --corrected data/editions/$1/_internal/02-draft.md \
-  --out data/editions/$1/_internal/02-clarice-diff.md
+  data/editions/$1/_internal/02-draft.pre-clarice.md \
+  data/editions/$1/_internal/02-draft.md \
+  data/editions/$1/_internal/02-clarice-diff.md
 ```
 
-Copiar draft final para `data/editions/$1/02-reviewed.md`.
+Copiar draft final para a versão que o editor revisa:
+
+```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
+```
 
 ## Passo 4 — Processar social (pular se `$2 = newsletter`)
 
@@ -204,6 +239,12 @@ node -e "
 
 ### 4c. Humanize
 
+Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se as seções `# LinkedIn` / `# Facebook` / `## d1`-`d3` desaparecerem:
+
+```bash
+cp data/editions/$1/03-social.md data/editions/$1/_internal/03-social.pre-humanize.md
+```
+
 ```
 Agent({
   description: "Humanizar social $1",
@@ -232,6 +273,12 @@ Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Li
 })
 ```
 
+Se o Agent retornar erro OU se a integridade dos cabeçalhos quebrar, restaurar o snapshot:
+
+```bash
+cp data/editions/$1/_internal/03-social.pre-humanize.md data/editions/$1/03-social.md
+```
+
 Falha **não bloqueia**.
 
 ## Passo 5 — Drive sync push (outputs)
@@ -241,6 +288,17 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stag
 ```
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
+
+Após o push, limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário):
+
+```bash
+for f in \
+  data/editions/$1/_internal/02-draft.pre-clarice.md \
+  data/editions/$1/_internal/02-draft.pre-humanize.md \
+  data/editions/$1/_internal/03-social.pre-humanize.md; do
+  [ -f "$f" ] && rm "$f"
+done
+```
 
 ## Passo 6 — Gate humano unificado
 

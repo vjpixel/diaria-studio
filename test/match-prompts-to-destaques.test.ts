@@ -77,60 +77,75 @@ Cena Van Gogh impasto.
 });
 
 describe("computeSwaps (#606)", () => {
-  it("já alinhado → 0 swaps", () => {
-    const swaps = computeSwaps(
+  it("já alinhado → ok=true, 0 swaps", () => {
+    const r = computeSwaps(
       { d1: "https://a", d2: "https://b", d3: "https://c" },
       ["https://a", "https://b", "https://c"],
     );
-    assert.deepEqual(swaps, []);
+    assert.equal(r.ok, true);
+    assert.ok(r.ok && r.swaps.length === 0);
+    assert.match(r.ok ? r.reason : "", /alinhados/);
   });
 
   it("d1↔d3 reordenado → swaps via tmp", () => {
-    const swaps = computeSwaps(
+    const r = computeSwaps(
       { d1: "https://pentagono", d2: "https://deepseek", d3: "https://lovable" },
       ["https://lovable", "https://deepseek", "https://pentagono"],
     );
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
     // 6 swaps: 3 pra .swap-tmp + 3 pro destino final
-    assert.equal(swaps.length, 6);
-    // Step 1: tudo pra .swap-tmp
-    assert.ok(swaps.slice(0, 3).every((s) => s.to.includes(".swap-tmp")));
-    // Step 2: do tmp pro final
-    assert.ok(swaps.slice(3, 6).every((s) => s.from.includes(".swap-tmp")));
-    // d1 (pentagono) deve virar d3
-    const d1Final = swaps.find((s) => s.from === "02-d1-prompt.swap-tmp.md");
+    assert.equal(r.swaps.length, 6);
+    assert.ok(r.swaps.slice(0, 3).every((s) => s.to.includes(".swap-tmp")));
+    assert.ok(r.swaps.slice(3, 6).every((s) => s.from.includes(".swap-tmp")));
+    const d1Final = r.swaps.find((s) => s.from === "02-d1-prompt.swap-tmp.md");
     assert.equal(d1Final?.to, "02-d3-prompt.md");
-    // d3 (lovable) deve virar d1
-    const d3Final = swaps.find((s) => s.from === "02-d3-prompt.swap-tmp.md");
+    const d3Final = r.swaps.find((s) => s.from === "02-d3-prompt.swap-tmp.md");
     assert.equal(d3Final?.to, "02-d1-prompt.md");
   });
 
-  it("URL ausente do reviewed → não swap (degenerado)", () => {
-    const swaps = computeSwaps(
+  it("#691: URL ausente do reviewed → fail-closed (ok=false), NÃO no-op", () => {
+    const r = computeSwaps(
       { d1: "https://a", d2: "https://b", d3: "https://orphan" },
       ["https://a", "https://b", "https://c"],
     );
-    assert.deepEqual(swaps, []);
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.reason, /orphan/);
+    assert.match(r.ok ? "" : r.reason, /02-reviewed\.md/);
   });
 
-  it("prompt sem URL → não swap", () => {
-    const swaps = computeSwaps(
+  it("#691: prompt sem destaque_url no frontmatter → fail-closed", () => {
+    const r = computeSwaps(
       { d1: null, d2: "https://b", d3: "https://c" },
       ["https://a", "https://b", "https://c"],
     );
-    assert.deepEqual(swaps, []);
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.reason, /02-d1-prompt\.md/);
+    assert.match(r.ok ? "" : r.reason, /destaque_url/);
+  });
+
+  it("#691: prompt d3 sem URL → fail-closed (mensagem identifica d3)", () => {
+    const r = computeSwaps(
+      { d1: "https://a", d2: "https://b", d3: null },
+      ["https://a", "https://b", "https://c"],
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.ok ? "" : r.reason, /02-d3-prompt\.md/);
   });
 
   it("3-cycle (rotação) gera swaps via tmp corretamente", () => {
-    const swaps = computeSwaps(
+    const r = computeSwaps(
       { d1: "https://a", d2: "https://b", d3: "https://c" },
       ["https://b", "https://c", "https://a"], // a→3, b→1, c→2
     );
-    assert.equal(swaps.length, 6);
-    const d1Final = swaps.find((s) => s.from === "02-d1-prompt.swap-tmp.md");
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    assert.equal(r.swaps.length, 6);
+    const d1Final = r.swaps.find((s) => s.from === "02-d1-prompt.swap-tmp.md");
     assert.equal(d1Final?.to, "02-d3-prompt.md");
-    const d2Final = swaps.find((s) => s.from === "02-d2-prompt.swap-tmp.md");
+    const d2Final = r.swaps.find((s) => s.from === "02-d2-prompt.swap-tmp.md");
     assert.equal(d2Final?.to, "02-d1-prompt.md");
-    const d3Final = swaps.find((s) => s.from === "02-d3-prompt.swap-tmp.md");
+    const d3Final = r.swaps.find((s) => s.from === "02-d3-prompt.swap-tmp.md");
     assert.equal(d3Final?.to, "02-d2-prompt.md");
   });
 });

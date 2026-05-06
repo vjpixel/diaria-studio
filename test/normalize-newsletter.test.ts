@@ -273,4 +273,73 @@ describe("addTrailingSpaces (#382)", () => {
     assert.ok(lines[7].endsWith("  "), "url 2");
     assert.ok(!lines[8].endsWith("  "), "descrição 2");
   });
+
+  it("#691: linha 'https://x.com diz que Y' NÃO é tratada como URL line (isUrl estrito)", () => {
+    // Antes: regex /^\s*\[?https?:\/\// classificava qualquer linha começando
+    // com URL como URL — quebrava state machine quando LLM emitia URL inline
+    // no body de um item.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título escolhido",
+      "https://example.com/destaque",
+      "",
+      "https://outra.com explica o impacto da decisão.",
+      "",
+      "---",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    // URL real do destaque sem trailing
+    assert.ok(!lines[2].endsWith("  "), "URL pura não tem trailing");
+    // Linha "https://outra.com explica..." é body — não deve ganhar trailing
+    // (não é URL line pura nem opção de título — body de destaque pós-URL).
+    assert.equal(
+      lines[4],
+      "https://outra.com explica o impacto da decisão.",
+      "linha com URL+texto fica intocada",
+    );
+  });
+
+  it("#691: destaque sem URL emite warning (todas linhas viram títulos)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título A",
+      "Título B",
+      "Parágrafo body sem URL nenhuma.",
+      "",
+      "---",
+    ].join("\n");
+    const warnings: string[] = [];
+    addTrailingSpaces(md, warnings);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /sem URL/);
+    assert.match(warnings[0], /DESTAQUE 1/);
+  });
+
+  it("#691: warning também emitido no EOF se destaque sem URL termina o arquivo", () => {
+    const md = [
+      "DESTAQUE 3 | MERCADO",
+      "Único título",
+      "Body sem URL.",
+    ].join("\n");
+    const warnings: string[] = [];
+    addTrailingSpaces(md, warnings);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /DESTAQUE 3/);
+  });
+
+  it("#691: destaque com URL não emite warning", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://x.com/y",
+      "",
+      "Body OK.",
+      "",
+      "---",
+    ].join("\n");
+    const warnings: string[] = [];
+    addTrailingSpaces(md, warnings);
+    assert.equal(warnings.length, 0);
+  });
 });

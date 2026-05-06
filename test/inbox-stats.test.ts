@@ -99,6 +99,48 @@ describe("formatCoverageLine (#592, #609)", () => {
     assert.match(line, /Selecionamos os 12 mais relevantes/);
     assert.match(line, /pessoas que assinam a newsletter\.$/);
   });
+
+  it("#701: pluraliza singular para 1 submissão", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 1,
+      diariaDiscovered: 186,
+      selected: 12,
+    });
+    assert.match(line, /enviei 1 submissão /);
+    assert.doesNotMatch(line, /1 submissões/);
+  });
+
+  it("#701: pluraliza singular para 1 artigo", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 5,
+      diariaDiscovered: 1,
+      selected: 12,
+    });
+    assert.match(line, /encontrou outros 1 artigo\./);
+    assert.doesNotMatch(line, /1 artigos\./);
+  });
+
+  it("#701: pluraliza singular para 1 selecionado", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 5,
+      diariaDiscovered: 100,
+      selected: 1,
+    });
+    assert.match(line, /Selecionamos o artigo mais relevante /);
+    assert.doesNotMatch(line, /Selecionamos os 1 /);
+  });
+
+  it("#701: tudo singular ao mesmo tempo", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 1,
+      diariaDiscovered: 1,
+      selected: 1,
+    });
+    assert.match(
+      line,
+      /enviei 1 submissão e a Diar\.ia encontrou outros 1 artigo\. Selecionamos o artigo mais relevante /,
+    );
+  });
 });
 
 describe("resolveEditorEmail (#592)", () => {
@@ -167,6 +209,16 @@ DESTAQUE 1 | NOTÍCIA
 
   it("ignora linhas em branco antes da primeira linha", () => {
     const md = `\n\n\nPara esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 100 artigos. Selecionamos os 8 mais relevantes para as pessoas que assinam a newsletter.\n`;
+    assert.equal(checkCoverageLine(md).ok, true);
+  });
+
+  it("#701: aceita forma singular pluralizada", () => {
+    const md = `Para esta edição, eu (o editor) enviei 1 submissão e a Diar.ia encontrou outros 1 artigo. Selecionamos o artigo mais relevante para as pessoas que assinam a newsletter.`;
+    assert.equal(checkCoverageLine(md).ok, true);
+  });
+
+  it("#701: aceita 1 submissão + N artigos plural", () => {
+    const md = `Para esta edição, eu (o editor) enviei 1 submissão e a Diar.ia encontrou outros 186 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.`;
     assert.equal(checkCoverageLine(md).ok, true);
   });
 });
