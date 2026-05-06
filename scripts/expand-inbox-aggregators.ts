@@ -138,8 +138,9 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
 
     const links: string[] = [];
     // Captura apenas URLs http(s) — pure fragment links (#section) são excluídas pelo regex.
-    const re = /href="(https?:\/\/[^"]+)"/gi;
+    const re = /href=["'](https?:\/\/[^"']+)["']/gi;
     let m: RegExpExecArray | null;
+    const seen = new Set<string>();
 
     while ((m = re.exec(html)) !== null) {
       const href = m[1];
@@ -157,12 +158,15 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
       if (SOCIAL_DOMAINS.has(hrefHost)) continue;
       if (TRACKER_DOMAINS.has(hrefHost)) continue;
 
-      links.push(canonicalize(href));
-      if (links.length >= CONFIG.inboxAggregator.maxPrimaryLinks) break;
+      const canonical = canonicalize(href);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      links.push(canonical);
+      if (seen.size >= CONFIG.inboxAggregator.maxPrimaryLinks) break;
     }
 
-    // Deduplicate preserving order
-    return [...new Set(links)];
+    // Already deduplicated
+    return links;
   } catch {
     return [];
   }
