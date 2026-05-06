@@ -38,6 +38,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
+import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -210,7 +211,7 @@ async function main(): Promise<void> {
   const inboxMdPath = args["inbox-md"] as string;
   const poolPath = args["pool"] as string | undefined;
   const outPath = args["out"] as string;
-  const editorEmail = (args["editor"] as string) || process.env.EDITOR_EMAIL || "diariaeditor@gmail.com";
+  const editorEmail = (args["editor"] as string) || process.env.EDITOR_EMAIL || resolveEditorEmail(resolve(ROOT, "platform.config.json"));
 
   if (!inboxMdPath || !outPath) {
     console.error(

@@ -74,6 +74,14 @@ describe("filterEditorBlocks", () => {
     const blocks = parseInboxMd(sampleInbox);
     assert.equal(filterEditorBlocks(blocks, "noone@example.com").length, 0);
   });
+
+  it("#711: filtrar com diariaeditor@gmail.com retorna 0 blocos (inbox tem vjpixel@)", () => {
+    // Regressão: bug causou 0 injeções em 260506 porque playbook passava
+    // --editor diariaeditor@gmail.com mas os forwards chegam From: vjpixel@gmail.com.
+    const blocks = parseInboxMd(sampleInbox);
+    assert.equal(filterEditorBlocks(blocks, "diariaeditor@gmail.com").length, 0);
+    assert.equal(filterEditorBlocks(blocks, "vjpixel@gmail.com").length, 2);
+  });
 });
 
 describe("isTrackingUrl", () => {

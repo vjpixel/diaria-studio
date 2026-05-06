@@ -30,8 +30,9 @@ import {
   filterEditorBlocks,
   extractEditorUrls,
 } from "./inject-inbox-urls.ts";
+import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 
-const DEFAULT_EDITOR = process.env.EDITOR_EMAIL ?? "diariaeditor@gmail.com";
+const DEFAULT_EDITOR = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve("platform.config.json"));
 
 export interface ValidationResult {
   status: "ok" | "missing";

@@ -132,7 +132,6 @@ npx tsx scripts/inject-inbox-urls.ts \
   --inbox-md data/inbox.md \
   --pool data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
   --out data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
-  --editor diariaeditor@gmail.com \
   --validate-pool
 ```
 
@@ -146,7 +145,7 @@ Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", f
 
 Entradas de texto-puro do editor (sem URL) viram queries de discovery. Armazenar output como `inbox_topics` para o passo 1f:
 ```bash
-npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --editor diariaeditor@gmail.com --out data/editions/{AAMMDD}/_internal/inbox-topics.json
+npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --out data/editions/{AAMMDD}/_internal/inbox-topics.json
 ```
 Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics extraídos"`.
 
@@ -157,8 +156,7 @@ Validador **externo** anti-skip — diferente de `--validate-pool` (interno/taut
 ```bash
 npx tsx scripts/validate-stage-1-injection.ts \
   --edition-dir data/editions/{AAMMDD} \
-  --inbox-md data/inbox.md \
-  --editor diariaeditor@gmail.com
+  --inbox-md data/inbox.md
 ```
 
 Se exit 1: step 1h foi skipado ou falhou silenciosamente. Re-executar step 1h e repetir. Se exit 2: erro de leitura de arquivo. Verificar paths.

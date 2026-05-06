@@ -21,7 +21,8 @@
   "inbox": {
     "address": "diariaeditor@gmail.com",
     "gmailQuery": "label:Diaria.Editor",
-    "enabled": true
+    "enabled": true,
+    "editor_personal_email": "vjpixel@gmail.com"
   },
   "drive_sync": true,
   "logging": {

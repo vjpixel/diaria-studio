@@ -31,6 +31,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -101,7 +102,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const inboxMd = args["inbox-md"] ?? "data/inbox.md";
-  const editor = args["editor"] ?? process.env.EDITOR_EMAIL ?? "diariaeditor@gmail.com";
+  const editor = args["editor"] ?? process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(ROOT, "platform.config.json"));
   const outPath = args["out"];
 
   const inboxAbs = resolve(ROOT, inboxMd);
