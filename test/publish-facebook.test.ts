@@ -62,6 +62,23 @@ describe("resume-aware skip posts ja publicados (#527)", () => {
   it("nao pula outra plataforma", () => { const p=[{platform:"linkedin",destaque:"d1",status:"scheduled"}]; const e=p.find((x)=>x.platform==="facebook"&&x.destaque==="d1"&&(x.status==="draft"||x.status==="scheduled")); assert.equal(e,undefined); });
 });
 
+describe("extractPostText regex d\\d+ boundary (#725 bug #3)", () => {
+  it("d3 nao vaza em lookahead quando texto contém ## d10 (falso positivo antigo)", () => {
+    // Antes: regex `## d\d` no lookahead parava em `## d10` como se fosse `## d1`+`0`
+    const md = "# Facebook\n\n## d1\nTexto d1.\n\n## d2\nTexto d2.\n\n## d3\nTexto d3 exclusivo.\n\n## d10\nTexto d10 separado.";
+    const t = extractPostText(md, "facebook", "d3");
+    assert.ok(t.includes("Texto d3 exclusivo."));
+    assert.ok(!t.includes("Texto d10 separado."));
+  });
+
+  it("d1 extraído corretamente quando existe d10 no mesmo arquivo", () => {
+    const md = "# Facebook\n\n## d1\nSó d1.\n\n## d10\nSó d10.";
+    const t = extractPostText(md, "facebook", "d1");
+    assert.ok(t.includes("Só d1."));
+    assert.ok(!t.includes("Só d10."));
+  });
+});
+
 describe("Graph API mock publishPhoto id (#527)", () => {
   it("parseia id do response", () => { const r={id:"123_456"} as {id:string;post_id?:string}; assert.equal(r.post_id??r.id,"123_456"); });
   it("prefere post_id sobre id", () => { const r={id:"123",post_id:"123_456"}; assert.equal(r.post_id??r.id,"123_456"); });

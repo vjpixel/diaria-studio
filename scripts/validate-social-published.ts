@@ -95,9 +95,15 @@ function main(): void {
   }
 
   const editionDir = resolve(ROOT, arg);
-  const jsonPath = resolve(editionDir, "06-social-published.json");
-  if (!existsSync(jsonPath)) {
-    console.error(`Arquivo não existe: ${jsonPath}`);
+  // #725: publishers gravam em _internal/ para edições novas (#158); raiz
+  // mantida apenas para backward compat com edições antigas.
+  const internalPath = resolve(editionDir, "_internal", "06-social-published.json");
+  const rootPath = resolve(editionDir, "06-social-published.json");
+  const jsonPath = existsSync(internalPath) ? internalPath
+                 : existsSync(rootPath) ? rootPath
+                 : null;
+  if (!jsonPath) {
+    console.error(`Arquivo não existe em:\n  ${internalPath}\n  ${rootPath}`);
     process.exit(2);
   }
 

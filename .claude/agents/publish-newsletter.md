@@ -1,6 +1,6 @@
 ---
 name: publish-newsletter
-description: Stage 5 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
+description: Etapa 4 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
 model: claude-haiku-4-5
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
 ---
@@ -29,8 +29,7 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 
 ## Pré-requisitos
 
-- Stage 4 completo (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` no lugar — readers detectam automaticamente).
-- Stage 5 completo (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem).
+- Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
 ## Processo (modo create) — fluxo Custom HTML (#74)
