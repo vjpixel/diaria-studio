@@ -52,7 +52,25 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
    - `window_days = {valor confirmado no Passo 1}`
    - `stop_after_stage = 1` (parar após o gate do Stage 1)
 
-   O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eia-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → GATE.
+   O playbook executa: refresh de `past-editions.md` → inbox drain → paralelismo (source-researcher × N + discovery-searcher × M + eia-composer background) → `scripts/verify-accessibility.ts` → `scripts/enrich-inbox-articles.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `scripts/topic-cluster.ts` → `scripts/filter-date-window.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` → drive push → **pre-gate validator** → GATE.
+
+## Passo 3 — Pre-gate validator (#581)
+
+Antes de apresentar o gate humano, rodar a bateria de assertions determinísticas pra detectar regressões conhecidas (#577 drive skip, #578 EIA format, #579 numeração, #580 off-topic):
+
+```bash
+npx tsx scripts/validate-stage-1-output.ts \
+  --edition $1 \
+  --edition-dir data/editions/$1/
+```
+
+Exit codes:
+- **0**: tudo OK — apresentar gate normal.
+- **1**: warnings — apresentar gate **com banner de warnings** no topo. Ler o JSON de stdout, extrair `assertions[].message` para cada `status: "warn"`, e mostrar no relatório do gate antes do conteúdo. Editor decide se aprova ou pede retry.
+- **2**: blockers — **não apresentar gate**. Mostrar `assertions[].message` dos `status: "blocker"` e oferecer retry: `Retry / abortar?`.
+- **3**: erro de uso (args inválidos, edition-dir não existe). Reportar e abortar.
+
+Falha do validator (exit code não-mapeado, crash, etc.) → logar warn e prosseguir com gate normal — nunca bloquear edição por falha do próprio validator.
 
 ## Output
 

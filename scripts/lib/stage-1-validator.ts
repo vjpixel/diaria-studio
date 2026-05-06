@@ -18,6 +18,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { isArticleAIRelevant } from "./ai-relevance.ts";
 import type { Article } from "./types/article.ts";
+import { readDriveCache, getPushCount } from "../check-drive-push.ts";
 
 export type AssertionStatus = "ok" | "warn" | "blocker";
 
@@ -200,6 +201,159 @@ export function validateEiaFormat(eiaMd: string | null): AssertionResult {
 }
 
 /**
+ * Pure: confirma que arquivos gate-facing foram pushed pro Drive.
+ * Lê `data/drive-cache.json` (ou path passado), checa se a entry de
+ * `{edition}.files[file]` tem `push_count > 0` para cada arquivo requerido.
+ *
+ * Bug coberto (#577): `01-categorized.md` ficou apenas local porque a pasta
+ * Drive da edição não existia — push falhou silenciosamente.
+ *
+ * Quando `drive_sync = false` em platform.config.json, esse check deve ser
+ * skipado pelo caller (passar `cachePath = null`).
+ */
+export function validateDriveSyncConfirmed(
+  cachePath: string | null,
+  edition: string,
+  requiredFiles: string[] = ["01-categorized.md"],
+): AssertionResult {
+  if (cachePath === null) {
+    return {
+      name: "drive_sync_confirmed",
+      status: "ok",
+      message: "Drive sync desabilitado (DRIVE_SYNC=false) — skip.",
+    };
+  }
+  const cache = readDriveCache(cachePath);
+  if (cache === null) {
+    return {
+      name: "drive_sync_confirmed",
+      status: "warn",
+      message: `drive-cache.json ausente ou com schema inesperado em ${cachePath}. Não foi possível confirmar push pro Drive.`,
+      details: { cache_path: cachePath },
+    };
+  }
+  const missing: string[] = [];
+  for (const file of requiredFiles) {
+    const count = getPushCount(cache, edition, file);
+    if (count === null) missing.push(file);
+  }
+  if (missing.length > 0) {
+    return {
+      name: "drive_sync_confirmed",
+      status: "warn",
+      message: `Arquivos sem push confirmado pro Drive: ${missing.join(", ")}. Re-rodar drive-sync.ts antes do gate (#577).`,
+      details: { missing, edition, cache_path: cachePath },
+    };
+  }
+  return {
+    name: "drive_sync_confirmed",
+    status: "ok",
+    message: `Push pro Drive confirmado para ${requiredFiles.length} arquivo(s).`,
+    details: { files: requiredFiles, edition },
+  };
+}
+
+/**
+ * Pure: extrai todos os números de lista numerada (`^\d+\. `) do MD e
+ * verifica se a sequência é monotonicamente crescente cross-section.
+ *
+ * Bug coberto (#579): numeração reiniciava por seção (Lançamentos 1-3,
+ * Pesquisas 1-3, Notícias 1-N), causando ambiguidade quando o editor
+ * referenciava "item 2" no gate.
+ *
+ * Falsos positivos esperados: zero. Se #635 já normaliza pra global, o
+ * check é guard-rail contra regressão.
+ */
+export function validateSequentialNumbering(
+  categorizedMd: string,
+): AssertionResult {
+  // Match início-de-linha + número + ponto + espaço (ex: "12. ").
+  // Apenas dentro de seções (ignora corpo livre).
+  const numbers: number[] = [];
+  for (const line of categorizedMd.split("\n")) {
+    const m = /^(\d+)\.\s/.exec(line);
+    if (m) numbers.push(parseInt(m[1], 10));
+  }
+  if (numbers.length === 0) {
+    return {
+      name: "sequential_numbering",
+      status: "ok",
+      message: "Sem itens numerados no categorized.md — skip.",
+    };
+  }
+  // Validação: precisa começar em 1 e ser estritamente crescente em +1.
+  const issues: Array<{ index: number; expected: number; got: number }> = [];
+  for (let i = 0; i < numbers.length; i++) {
+    const expected = i + 1;
+    if (numbers[i] !== expected) {
+      issues.push({ index: i, expected, got: numbers[i] });
+    }
+  }
+  if (issues.length > 0) {
+    const first = issues[0];
+    return {
+      name: "sequential_numbering",
+      status: "warn",
+      message: `Numeração não-sequencial detectada (#579): item #${first.index + 1} é ${first.got} (esperado ${first.expected}). Total ${issues.length} divergência(s).`,
+      details: { issues: issues.slice(0, 10), total_items: numbers.length },
+    };
+  }
+  return {
+    name: "sequential_numbering",
+    status: "ok",
+    message: `Numeração sequencial OK (1..${numbers.length}).`,
+    details: { total_items: numbers.length },
+  };
+}
+
+/**
+ * Pure: confirma mínimos por seção. Originalmente em orchestrator spec 1t
+ * (#488); centralizado aqui pra rodar como assertion deterministica antes
+ * do gate.
+ *
+ * Defaults: lancamento ≥ 3, pesquisa ≥ 3, noticias ≥ 5. Override via opts.
+ */
+export interface SectionMinimumsOptions {
+  minLancamento?: number;
+  minPesquisa?: number;
+  minNoticias?: number;
+}
+
+export function validateSectionMinimums(
+  categorized: Record<string, unknown>,
+  opts: SectionMinimumsOptions = {},
+): AssertionResult {
+  const minL = opts.minLancamento ?? 3;
+  const minP = opts.minPesquisa ?? 3;
+  const minN = opts.minNoticias ?? 5;
+
+  const counts = {
+    lancamento: ((categorized.lancamento as Article[] | undefined) ?? []).length,
+    pesquisa: ((categorized.pesquisa as Article[] | undefined) ?? []).length,
+    noticias: ((categorized.noticias as Article[] | undefined) ?? []).length,
+  };
+  const shortfalls: string[] = [];
+  if (counts.lancamento < minL) shortfalls.push(`lancamento ${counts.lancamento}/${minL}`);
+  if (counts.pesquisa < minP) shortfalls.push(`pesquisa ${counts.pesquisa}/${minP}`);
+  if (counts.noticias < minN) shortfalls.push(`noticias ${counts.noticias}/${minN}`);
+
+  if (shortfalls.length > 0) {
+    return {
+      name: "section_minimums",
+      status: "warn",
+      message: `Mínimos por seção abaixo do alvo (#488): ${shortfalls.join(", ")}.`,
+      details: { counts, minimums: { minL, minP, minN } },
+    };
+  }
+  return {
+    name: "section_minimums",
+    status: "ok",
+    message: `Mínimos por seção atendidos: lançamentos ${counts.lancamento}, pesquisas ${counts.pesquisa}, notícias ${counts.noticias}.`,
+    details: { counts },
+  };
+}
+
+/**
  * Roda toda a bateria de assertions e agrega counts.
  *
  * `editionDir` deve ser o caminho absoluto pra `data/editions/{AAMMDD}/`.
@@ -207,6 +361,13 @@ export function validateEiaFormat(eiaMd: string | null): AssertionResult {
 export interface RunStage1ValidationOptions {
   /** Override threshold de IA-relevance ratio. */
   aiRelevanceThreshold?: number;
+  /** Override mínimos por seção (default 3/3/5). */
+  sectionMinimums?: SectionMinimumsOptions;
+  /** Path do drive-cache.json. Passe `null` quando `drive_sync = false`
+   *  (skip silencioso da assertion). Default: `data/drive-cache.json` em ROOT. */
+  driveCachePath?: string | null;
+  /** Arquivos cujo push pro Drive deve ser confirmado. Default: o gate-facing. */
+  driveSyncRequiredFiles?: string[];
 }
 
 export function runStage1Validation(
@@ -231,6 +392,9 @@ export function runStage1Validation(
             threshold: opts.aiRelevanceThreshold,
           }),
         );
+        assertions.push(
+          validateSectionMinimums(categorized, opts.sectionMinimums ?? {}),
+        );
       } catch (err) {
         assertions.push({
           name: "ai_relevance_ratio",
@@ -243,6 +407,27 @@ export function runStage1Validation(
     const eiaPath = join(editionDir, "01-eia.md");
     const eiaMd = existsSync(eiaPath) ? readFileSync(eiaPath, "utf8") : null;
     assertions.push(validateEiaFormat(eiaMd));
+
+    const categorizedMdPath = join(editionDir, "01-categorized.md");
+    if (existsSync(categorizedMdPath)) {
+      const md = readFileSync(categorizedMdPath, "utf8");
+      assertions.push(validateSequentialNumbering(md));
+    }
+
+    // Drive sync — caller passa `driveCachePath: null` quando drive_sync=false.
+    // Se a opção for omitida, default = `data/drive-cache.json` em ROOT relativo
+    // ao editionDir (sobe 2 níveis: editions/{AAMMDD} → data → drive-cache.json).
+    const driveCachePath =
+      opts.driveCachePath !== undefined
+        ? opts.driveCachePath
+        : resolve(editionDir, "..", "..", "drive-cache.json");
+    assertions.push(
+      validateDriveSyncConfirmed(
+        driveCachePath,
+        edition,
+        opts.driveSyncRequiredFiles ?? ["01-categorized.md"],
+      ),
+    );
   }
 
   const blocking_count = assertions.filter((a) => a.status === "blocker").length;
