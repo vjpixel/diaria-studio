@@ -163,7 +163,7 @@ function renderDestaque(chunk: string): string {
   ]);
   const temaUpper = tema.toUpperCase().trim();
   const label = VALID_CATEGORIES.has(temaUpper)
-    ? `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`
+    ? `<p style="margin:0 0 4px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`
     : "";
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;">${renderInline(title)}</h2>`
@@ -189,7 +189,7 @@ function renderClarice(chunk: string): string {
   return [
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed #bbb;border-radius:4px;background:#fafaf4;">`,
     `<tr><td style="padding:20px 24px;">`,
-    `<p style="margin:0 0 8px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">${headerLine}</p>`,
+    `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">${headerLine}</p>`,
     `<p style="margin:0;color:#999;font-style:italic;">${renderInline(content)}</p>`,
     `</td></tr></table>`,
   ].join("");
@@ -200,7 +200,7 @@ function renderOutrasNoticias(chunk: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#00A0A0;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
+  const header = `<p style="margin:0 0 24px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#00A0A0;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -283,7 +283,7 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
     <!-- Cabeçalho -->
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 20px;">
       <tr>
-        <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
+        <td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
       </tr>
       <tr>
         <td style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:bold;color:#1a1a1a;padding:4px 0 0;">Qual das imagens foi gerada por IA?</td>
