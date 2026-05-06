@@ -390,6 +390,9 @@ async function main() {
   // #725 bug #2: args["skip-existing"] é true (presente) ou undefined (ausente);
   // `undefined !== false` === true → skipExisting era SEMPRE true independente
   // da flag. Agora lê explicitamente: default true, desligar via --no-skip-existing.
+  if (args["skip-existing"]) {
+    console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
+  }
   const skipExisting = args["no-skip-existing"] !== true;
   const doReschedule = !!args.reschedule;
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
@@ -578,7 +581,8 @@ async function main() {
     }
 
     // Publish with retry + exponential backoff (#725 bug #10)
-    // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com 1s/2s/4s.
+    // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
+    // entre tentativas (sem sleep após a última).
     let lastError: string = "";
     let success = false;
     for (let attempt = 1; attempt <= 3; attempt++) {

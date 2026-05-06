@@ -177,6 +177,9 @@ async function main(): Promise<void> {
   }
   const editionDir = resolve(ROOT, editionDirRaw);
   const doSchedule = !!args.schedule;
+  if (args["skip-existing"]) {
+    console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
+  }
   const skipExisting = args["no-skip-existing"] !== true; // default true (#725 bug #2)
   const dayOffsetOverride = args["day-offset"]
     ? parseInt(args["day-offset"] as string, 10)

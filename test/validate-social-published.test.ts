@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { validateLinkedinUniqueness } from "../scripts/validate-social-published.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Tests do validador anti-data-loss do publish-social (#266).
@@ -111,27 +119,36 @@ describe("validateLinkedinUniqueness (#266)", () => {
     assert.equal(r.linkedin_count, 0);
   });
 
-  it("#725 bug #1: CLI path lookup (unidade) — verifica que existe fallback pra _internal/", () => {
-    // O bug crítico era: validate-social-published.ts resolvia sempre para
-    // <edition_dir>/06-social-published.json (root), mas publishers gravam em
-    // <edition_dir>/_internal/06-social-published.json. Script saía com exit 2
-    // ("Arquivo não existe") e o validator de data loss nunca rodava.
-    // Este teste verifica a lógica de validação diretamente — o fix de path
-    // está no main() que agora faz fallback para _internal/.
-    // Testar apenas validateLinkedinUniqueness (sem arquivo de disco) — o teste
-    // do path em si seria de integração (mkdtemp).
-    const duplicateData = {
-      posts: [
-        { platform: "linkedin", destaque: "d1", url: "https://dup.com/1", status: "draft" as const },
-        { platform: "linkedin", destaque: "d2", url: "https://dup.com/1", status: "draft" as const },
-        { platform: "linkedin", destaque: "d3", url: "https://dup.com/3", status: "draft" as const },
-      ],
-    };
-    const r = validateLinkedinUniqueness(duplicateData);
-    // Validator detecta data loss — o que só é possível se chegou a rodar
-    assert.equal(r.ok, false);
-    assert.equal(r.duplicates.length, 1);
-    assert.equal(r.duplicates[0].destaques.length, 2);
+  it("#725 bug #1 (integração): CLI encontra arquivo em _internal/ e detecta duplicates", () => {
+    // Bug: script resolvia para <edition_dir>/06-social-published.json (root),
+    // mas publishers gravam em <edition_dir>/_internal/. Exit 2 silenciava o
+    // validator de data loss. Fix: fallback _internal/ → root.
+    const dir = mkdtempSync(join(tmpdir(), "diaria-validate-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const posts = {
+        posts: [
+          { platform: "linkedin", destaque: "d1", url: "https://dup.com/1", status: "draft" },
+          { platform: "linkedin", destaque: "d2", url: "https://dup.com/1", status: "draft" }, // duplicate
+          { platform: "linkedin", destaque: "d3", url: "https://dup.com/3", status: "draft" },
+        ],
+      };
+      // Gravar em _internal/ (caminho novo, edições recentes)
+      writeFileSync(join(dir, "_internal", "06-social-published.json"), JSON.stringify(posts));
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", resolve(ROOT, "scripts/validate-social-published.ts"), dir],
+        { encoding: "utf8", cwd: ROOT },
+      );
+      // Exit 1 = duplicates detectados (validator rodou corretamente)
+      // Exit 2 = arquivo não encontrado (bug antigo)
+      assert.equal(result.status, 1, `esperado exit 1 (duplicates), got ${result.status}. stderr: ${result.stderr}`);
+      const json = JSON.parse(result.stdout.trim());
+      assert.equal(json.ok, false);
+      assert.equal(json.duplicates.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("reason cita #266 pra discoverabilidade", () => {
