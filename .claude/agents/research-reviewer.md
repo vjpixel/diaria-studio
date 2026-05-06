@@ -24,8 +24,9 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 2. Gravar em `{edition_dir}tmp-dates-input.json`.
 3. Rodar:
    ```bash
-   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json
+   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json --bodies-dir {edition_dir}_internal/link-verify-bodies
    ```
+   `--bodies-dir` (#717 hipótese 1) lê bodies já fetched por `verify-accessibility.ts` no passo 1i — evita re-fetch de URLs já vistas no mesmo pipeline. stderr inclui `[body-cache: H/T hit (P%)]` ao final pra rastreabilidade.
 4. Ler `tmp-dates-output.json`. Para cada entry, o script já populou `date_unverified` (#226 — não recalcule). Aplique mecanicamente:
    - Substituir `article.date` por `verified_date` se `changed: true && fetch_failed: false` (data confirmada via fetch).
    - Manter `article.date` original se `changed: false` ou `fetch_failed: true`.

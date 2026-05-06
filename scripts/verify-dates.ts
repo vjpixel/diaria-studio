@@ -15,11 +15,18 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { loadCachedBody } from "./lib/url-body-cache.ts";
 
 // User-Agent de browser real — muitos sites (openai.com, exame.com, etc)
 // bloqueiam user-agents que identificam bots. Mantemos um header plausível.
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// #717 hypothesis #1: cache dir intra-edição. Set via CLI --bodies-dir.
+// Quando set, lê body cached antes de fetch — verify-accessibility já leu.
+let BODIES_CACHE_DIR: string | null = null;
+let CACHE_HITS = 0;
+let CACHE_MISSES = 0;
 
 interface ArticleInput {
   url: string;
@@ -61,31 +68,49 @@ async function extractPublishedDate(
   url: string,
   timeoutMs = 10000
 ): Promise<{ date: string | null; note: string }> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // #717 hypothesis #1: tenta body cached antes de fetch — verify-accessibility
+  // já leu o mesmo URL no mesmo pipeline.
+  const cached = loadCachedBody(BODIES_CACHE_DIR, url);
+  let body: string;
+  if (cached !== null) {
+    CACHE_HITS++;
+    body = cached;
+  } else {
+    if (BODIES_CACHE_DIR !== null) CACHE_MISSES++;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      // Usamos `fetch` (undici global) em vez de `undici.request` para seguir
+      // redirects automaticamente (303/301/302 são comuns em nature.com etc).
+      const res = await fetch(url, {
+        method: "GET",
+        signal: ctrl.signal,
+        redirect: "follow",
+        headers: {
+          "user-agent": BROWSER_UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+        },
+      });
+
+      if (res.status >= 400) {
+        return { date: null, note: `HTTP ${res.status}` };
+      }
+
+      body = await res.text();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { date: null, note: msg };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   try {
-    // Usamos `fetch` (undici global) em vez de `undici.request` para seguir
-    // redirects automaticamente (303/301/302 são comuns em nature.com etc).
-    const res = await fetch(url, {
-      method: "GET",
-      signal: ctrl.signal,
-      redirect: "follow",
-      headers: {
-        "user-agent": BROWSER_UA,
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "none",
-      },
-    });
-
-    if (res.status >= 400) {
-      return { date: null, note: `HTTP ${res.status}` };
-    }
-
-    const body = await res.text();
 
     // 1. JSON-LD datePublished (maior confiança — estruturado e intencionalmente exposto)
     for (const match of body.matchAll(
@@ -209,10 +234,9 @@ async function extractPublishedDate(
 
     return { date: null, note: "no-date-found" };
   } catch (e: unknown) {
+    // Captura erros do parse/regex (raro). Erros de fetch/timeout já tratados acima.
     const msg = e instanceof Error ? e.message : String(e);
     return { date: null, note: msg };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -245,9 +269,21 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
 }
 
 async function main() {
-  const inputArg = process.argv[2];
+  // CLI shape preservada: positional <articles.json> [out.json], + flag opcional
+  // --bodies-dir <path> (#717 hypothesis #1).
+  const positional: string[] = [];
+  for (let i = 2; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === "--bodies-dir" && i + 1 < process.argv.length) {
+      BODIES_CACHE_DIR = process.argv[i + 1];
+      i++;
+    } else {
+      positional.push(a);
+    }
+  }
+  const inputArg = positional[0];
   if (!inputArg) {
-    console.error("Uso: verify-dates.ts <articles.json> [out.json]");
+    console.error("Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>]");
     console.error("  articles.json: array de { url, date }");
     process.exit(1);
   }
@@ -264,11 +300,17 @@ async function main() {
 
   const changed = results.filter((r) => r.changed).length;
   const failed = results.filter((r) => r.fetch_failed).length;
+  let cacheLine = "";
+  if (BODIES_CACHE_DIR !== null) {
+    const total = CACHE_HITS + CACHE_MISSES;
+    const hitPct = total > 0 ? Math.round((CACHE_HITS / total) * 100) : 0;
+    cacheLine = ` [body-cache: ${CACHE_HITS}/${total} hit (${hitPct}%)]`;
+  }
   console.error(
-    `verify-dates: ${results.length} artigos — ${changed} datas corrigidas, ${failed} fetches falhos`
+    `verify-dates: ${results.length} artigos — ${changed} datas corrigidas, ${failed} fetches falhos${cacheLine}`
   );
 
-  const outArg = process.argv[3];
+  const outArg = positional[1];
   if (outArg) {
     writeFileSync(outArg, JSON.stringify(results, null, 2), "utf8");
     console.error(`Wrote ${results.length} results to ${outArg}`);

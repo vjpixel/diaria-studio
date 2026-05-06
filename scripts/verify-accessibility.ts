@@ -4,6 +4,11 @@ import puppeteer, { type Browser } from "puppeteer";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize, extractHost } from "./lib/url-utils.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { saveCachedBody } from "./lib/url-body-cache.ts";
+
+// #717 hypothesis #1: cache dir intra-edição pra evitar fetch duplicado
+// entre verify-accessibility e verify-dates. Set via CLI --bodies-dir.
+let BODIES_CACHE_DIR: string | null = null;
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -322,7 +327,11 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
       if (r) return { ...r, finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
 
-    const body = (await get.body.text()).slice(0, 50_000).toLowerCase();
+    // #717 hypothesis #1: persistir body raw pra verify-dates não re-fetchar.
+    // Lê raw primeiro, depois deriva versão truncada/lowercase pros checks.
+    const rawBody = await get.body.text();
+    saveCachedBody(BODIES_CACHE_DIR, effectiveUrl, rawBody);
+    const body = rawBody.slice(0, 50_000).toLowerCase();
     for (const marker of PAYWALL_MARKERS) {
       if (body.includes(marker)) return { verdict: "paywall", finalUrl: effectiveUrl, note: `marker: ${marker}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
@@ -391,9 +400,21 @@ async function verifyWithBrowser(
 }
 
 async function main() {
-  const input = process.argv[2];
+  // CLI shape preservada: positional <urls.json> [out.json], + flag opcional
+  // --bodies-dir <path> (#717 hypothesis #1).
+  const positional: string[] = [];
+  for (let i = 2; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === "--bodies-dir" && i + 1 < process.argv.length) {
+      BODIES_CACHE_DIR = process.argv[i + 1];
+      i++;
+    } else {
+      positional.push(a);
+    }
+  }
+  const input = positional[0];
   if (!input) {
-    console.error("Usage: verify-accessibility.ts <urls.json | url1,url2,...>");
+    console.error("Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>]");
     process.exit(1);
   }
 
@@ -444,7 +465,7 @@ async function main() {
     details: { paywall, blocked, aggregator, ok, total },
   });
 
-  const out = process.argv[3];
+  const out = positional[1];
   if (out) {
     writeFileSync(out, JSON.stringify(results, null, 2), "utf8");
     console.log(`Wrote ${results.length} results to ${out}`);
