@@ -48,7 +48,8 @@ export function readDriveCache(cachePath: string): DriveCache | null {
   if (!existsSync(cachePath)) return null;
   try {
     const raw = JSON.parse(readFileSync(cachePath, "utf8"));
-    // Validação mínima: deve ser objeto com campo editions
+    // Validação mínima: deve ser objeto JSON (não array, não null)
+    // Não valida presença de `editions` aqui — main() decide o que fazer se ausente
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     return raw as DriveCache;
   } catch {
