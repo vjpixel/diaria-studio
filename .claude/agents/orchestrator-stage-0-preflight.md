@@ -122,7 +122,12 @@ O script:
 2. Extrai todas as URLs dessas edições e injeta em `context/past-editions.md` com flag `pending_publish: true`.
 3. Se encontrar edições pending há > 2 dias, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
 
-Se o script não existir ainda (`ENOENT`): pular silenciosamente e logar warn.
+Se o script não existir ainda (`ENOENT`) ou falhar com exit != 0 (#693): pular, mas **logar warn** explicitamente:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn \
+  --informational \
+  --message "merge-local-pending falhou ou não existe — URLs de edições pendentes podem não ter sido bloqueadas no dedup"
+```
 
 ### 0f. Sync É IA? usado (#369)
 

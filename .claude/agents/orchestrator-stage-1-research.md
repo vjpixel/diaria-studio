@@ -86,7 +86,7 @@ Preserva saúde da fonte em todos os casos: propagar `method` como campo extra n
 
 Em vez de N chamadas individuais, agregar todos os resultados (researchers + discovery) num único array. Convenção de `source`:
 - **Researchers cadastrados**: nome exato da fonte em `context/sources.md` (ex: `"MIT Technology Review"`).
-- **Discovery searchers**: formato `discovery:{topic_slug}` (ex: `"discovery:ai-regulation-brazil"`).
+- **Discovery searchers**: formato `discovery:{topic_slug}` (ex: `"discovery:ai-regulation-brazil"`). **Garantir unicidade** (#692): se dois inbox_topics diferentes produzem o mesmo slug, suas health stats conflam no mesmo arquivo `data/sources/discovery-{slug}.jsonl`. Para inbox_topics, usar `discovery:{slugify(query)}-{sha1(query).slice(0,6)}` como source name — o hash curto garante que queries distintas geram slugs distintos.
 - **Inbox URLs**: não passam por este batch — são injetadas diretamente na lista agregada sem virar "runs".
 
 ```json
@@ -349,28 +349,17 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} -
 ```
 Anotar resultado em `sync_results[1]`; falhas reais (não warning) abortam. Falhas warning podem prosseguir mas precisam ser mencionadas no gate.
 
-**Verificação anti-skip (#577)**: antes de apresentar o gate (passo 1x), se `DRIVE_SYNC = true`, confirmar que o cache registra push recente do `01-categorized.md`:
+**Verificação anti-skip (#577, #694)**: antes de apresentar o gate (passo 1x), se `DRIVE_SYNC = true`, confirmar que o cache registra push recente do `01-categorized.md`:
 
 ```bash
-node -e "
-const fs = require('fs');
-const cfg = JSON.parse(fs.readFileSync('platform.config.json', 'utf8'));
-if (cfg.drive_sync === false) { console.log('drive_sync=false, skip anti-skip check'); process.exit(0); }
-if (!fs.existsSync('data/drive-cache.json')) {
-  console.error('FATAL: drive_sync ativo mas data/drive-cache.json não existe. Step 1w foi skipado.');
-  process.exit(1);
-}
-const cache = JSON.parse(fs.readFileSync('data/drive-cache.json', 'utf8'));
-const f = cache.editions['{AAMMDD}']?.files?.['01-categorized.md'];
-if (!f?.push_count) {
-  console.error('FATAL: 01-categorized.md não foi pushed pra Drive. Step 1w foi skipado. Re-rodar push antes do gate.');
-  process.exit(1);
-}
-console.log('✓ 01-categorized.md pushed to Drive (push #' + f.push_count + ')');
-"
+npx tsx scripts/check-drive-push.ts --edition {AAMMDD} --file 01-categorized.md
 ```
 
-Se falhar, **re-rodar o push** antes de prosseguir pra 1x. Não apresentar gate sem confirmar push. Se `drive_sync = false` em `platform.config.json` (ex: rodando localmente sem Drive), check é skipado silenciosamente.
+- Exit 0: pushed ok (ou drive_sync=false) — prosseguir
+- Exit 1: não pushed (step 1w skipado) — **re-rodar o push** antes do gate
+- Exit 2: schema inesperado no cache — logar warn e prosseguir (evita falso FATAL em refactors do drive-sync)
+
+Se `drive_sync = false` em `platform.config.json`, o script exita 0 silenciosamente.
 
 ### 1x. GATE HUMANO
 
