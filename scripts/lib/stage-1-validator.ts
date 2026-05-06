@@ -18,7 +18,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { isArticleAIRelevant } from "./ai-relevance.ts";
 import type { Article } from "./types/article.ts";
-import { readDriveCache, getPushCount } from "../check-drive-push.ts";
+import { readDriveCache, getPushCount } from "./drive-cache.ts";
 
 export type AssertionStatus = "ok" | "warn" | "blocker";
 

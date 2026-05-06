@@ -376,6 +376,24 @@ npx tsx scripts/check-drive-push.ts --edition {AAMMDD} --file 01-categorized.md
 
 Se `drive_sync = false` em `platform.config.json`, o script exita 0 silenciosamente.
 
+### 1w-bis. Pre-gate validator (#581, #828)
+
+Antes de apresentar o gate humano, rodar a bateria de assertions determinísticas pra detectar regressões conhecidas (#577 drive skip, #578 EIA format, #579 numeração, #580 off-topic):
+
+```bash
+npx tsx scripts/validate-stage-1-output.ts \
+  --edition {AAMMDD} \
+  --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit codes:
+- **0**: tudo OK — apresentar gate normal.
+- **1**: warnings — apresentar gate **com banner de warnings** no topo. Ler o JSON de stdout, extrair `assertions[].message` para cada `status: "warn"`, e mostrar no relatório do gate antes do conteúdo. Editor decide se aprova ou pede retry.
+- **2**: blockers — **não apresentar gate**. Mostrar `assertions[].message` dos `status: "blocker"` e oferecer retry: `Retry / abortar?`.
+- **3**: erro de uso (args inválidos, edition-dir não existe). Reportar e abortar.
+
+Falha do validator (exit code não-mapeado, crash, etc.) → logar warn e prosseguir com gate normal — nunca bloquear edição por falha do próprio validator. Espelha o passo equivalente em `.claude/skills/diaria-1-pesquisa/SKILL.md`; pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill isolado tem (#828).
+
 ### 1x. GATE HUMANO
 
 Apresentar ao usuário:
