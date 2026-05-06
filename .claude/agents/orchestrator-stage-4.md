@@ -207,6 +207,19 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
   | 4 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
   ```
 
+### 4h. Fechar poll É IA? (#465)
+
+Após o editor aprovar o gate da Etapa 4 (publicação confirmada), registrar a resposta correta no Worker de votação:
+
+```bash
+# Closes the É IA? poll by registering the correct answer to the Worker
+# This enables retroactive score updates and % display in next edition
+npx tsx scripts/close-poll.ts --edition {AAMMDD}
+```
+
+- `POLL_SECRET` deve estar em `.env`. Se não estiver definido, o script emite warn e encerra graciosamente — não bloqueia o pipeline.
+- Logar resultado: se exit 0, `"poll fechado para edição {AAMMDD}"`. Se exit != 0, `warn: "close-poll falhou (POLL_SECRET ausente ou erro de rede) — fechar manualmente via /admin/correct"`.
+
 ---
 
 ## Etapa 4b — Auto-reporter (#57 / #79)

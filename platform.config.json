@@ -24,6 +24,10 @@
     "enabled": true,
     "editor_personal_email": "vjpixel@gmail.com"
   },
+  "poll": {
+    "worker_url": "https://diar-ia-poll.diaria.workers.dev",
+    "enabled": true
+  },
   "drive_sync": true,
   "logging": {
     "path": "data/run-log.jsonl"
