@@ -306,7 +306,7 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;">
-      Ver ranking: <a href="${workerUrl}/leaderboard" style="color:${TEAL};text-decoration:underline;">diar-ia-poll.diaria.workers.dev/leaderboard</a>
+      <a href="${workerUrl}/leaderboard" style="color:${TEAL};text-decoration:underline;">Ver ranking</a>
     </p>
 
   </td></tr>
