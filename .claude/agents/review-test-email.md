@@ -209,7 +209,7 @@ Checar os seguintes itens no conteúdo do email:
 
 4. **OUTRAS NOTÍCIAS presentes.** Deve haver referência a "Outras Notícias" no email. Se ausente: `"email:section_missing: seção 'Outras Notícias' não encontrada"`.
 
-5. **ENCERRAMENTO presente.** Deve haver um parágrafo final de encerramento. Se ausente: `"email:section_missing: seção de encerramento não encontrada"`.
+5. **Encerramento presente.** Verificar se há um parágrafo final de fechamento com chamada para interação (ex: contém "Responda este e-mail", "Leio cada um", "compartilhe", "colega" ou equivalente). O parágrafo de encerramento **não** usa o cabeçalho "ENCERRAMENTO" no HTML — é renderizado como parágrafo simples. Se completamente ausente: `"email:section_missing: parágrafo de encerramento não encontrado — verificar se seção ENCERRAMENTO do draft.md tem conteúdo"`.
 
 6. **Links funcionais.** Extrair alguns hrefs do email e verificar que não estão vazios, `#` ou `javascript:`. Se encontrar links inválidos: `"email:link_broken: link em '{contexto}' tem href inválido: '{href}'"`.
 

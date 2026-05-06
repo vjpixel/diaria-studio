@@ -417,14 +417,16 @@ async function main(): Promise<void> {
     }
   }
 
-  const apiKey = process.env[brevo.api_key_env];
-  if (!apiKey && !dryRun) {
+  const apiKeyRaw = process.env[brevo.api_key_env];
+  if (!apiKeyRaw && !dryRun) {
     process.stderr.write(
       `ERRO: ${brevo.api_key_env} não está definido no ambiente.\n` +
       `Adicione ao .env: ${brevo.api_key_env}=<chave>\n`
     );
     process.exit(1);
   }
+  // After this point we're either dry-run (apiKey unused) or apiKeyRaw is non-empty.
+  const apiKey = apiKeyRaw ?? "";
 
   // Load draft
   const monthlyDir = resolve(ROOT, `data/monthly/${yymm}`);
@@ -460,7 +462,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const campaignName = `Diar.ia Mensal ${yymm}`;
+  const campaignName = `Diar.ia Mensal ${yymm} — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
 
   if (dryRun) {
     process.stdout.write(
@@ -476,7 +478,7 @@ async function main(): Promise<void> {
   }
 
   // Create campaign
-  const campaign = await brevoPost(apiKey, "/emailCampaigns", {
+  const campaignResp = await brevoPost(apiKey, "/emailCampaigns", {
     name: campaignName,
     subject,
     previewText,
@@ -486,9 +488,14 @@ async function main(): Promise<void> {
     },
     recipients: { listIds: [brevo.list_id] },
     htmlContent: html,
-  }) as { id: number };
+  }) as Record<string, unknown>;
 
-  const campaignId = campaign.id;
+  if (typeof campaignResp.id !== "number") {
+    throw new Error(
+      `Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`
+    );
+  }
+  const campaignId = campaignResp.id;
   const dashboardUrl = `https://app.brevo.com/campaign/email/${campaignId}/edit`;
 
   process.stdout.write(
