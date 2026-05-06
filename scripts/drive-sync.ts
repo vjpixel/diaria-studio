@@ -132,17 +132,23 @@ const MAX_RETRIES = 3;
  * Override via platform.config.json `drive_sync_conflict_tolerance_seconds`.
  * Default 10s — pega auto-conversion (~1-2s) com folga, ainda detecta edits
  * reais do editor (segundos a minutos depois).
+ *
+ * Exportado pra tests (#629) — recebe configPath pra permitir override em testes.
  */
-const CONFLICT_TOLERANCE_SECONDS = (() => {
+export function loadConflictToleranceSeconds(configPath: string): number {
   try {
-    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
     const val = cfg.drive_sync_conflict_tolerance_seconds;
     if (typeof val === "number" && val >= 0) return val;
   } catch {
     /* fallthrough to default */
   }
   return 10;
-})();
+}
+
+const CONFLICT_TOLERANCE_SECONDS = loadConflictToleranceSeconds(
+  resolve(ROOT, "platform.config.json"),
+);
 
 /** Pure: decide se um status code merece retry. Exportado pra tests. */
 export function isRetryableStatus(status: number): boolean {
