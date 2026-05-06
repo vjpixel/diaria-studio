@@ -45,6 +45,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
   --details '{"server":"{server_name}","kind":"mcp_reconnect"}'
 ```
 Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio. Os logs persistem em `data/run-log.jsonl` para auditoria pelo `collect-edition-signals.ts` (#759).
+**Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
 
 - Logar início:
   ```bash

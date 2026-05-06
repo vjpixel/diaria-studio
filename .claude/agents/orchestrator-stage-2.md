@@ -10,6 +10,7 @@ description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do
 ## Etapa 2 — Escrita
 
 **MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Clarice, Beehiiv, Gmail, Chrome, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759).
+**Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
 
 Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.json` — nenhum depende do outro. O gate ao final é unificado.
 

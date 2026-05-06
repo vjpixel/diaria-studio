@@ -65,6 +65,8 @@ Isso alimenta `/diaria-log` para o usuário depurar depois sem precisar reler o 
 
 ### Formato de relatório ao usuário
 
+**Timestamps (#716):** Timestamps apresentados ao editor devem usar fuso horário BRT (America/Sao_Paulo, UTC-3). Formatar como `HH:MM (BRT)` em mensagens ao editor. ISO UTC é aceitável em logs/JSON internos.
+
 Ao final de cada etapa, apresente:
 
 ```
