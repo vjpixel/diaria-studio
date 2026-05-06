@@ -13,6 +13,20 @@ description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do
 
 Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.json` — nenhum depende do outro. O gate ao final é unificado.
 
+### Pré-condição: sentinel Stage 1
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts assert \
+  --edition {AAMMDD} --step 1 \
+  --outputs "01-categorized.md,_internal/01-approved.json"
+```
+
+Exit code handling:
+- `0` → continuar.
+- `1` → **FATAL:** "Etapa 1 não completou (sentinel ausente). Re-rodar `/diaria-1-pesquisa {AAMMDD}` antes de continuar." Parar.
+- `2` → **FATAL:** "Outputs do Stage 1 ausentes. Re-rodar Etapa 1." Parar.
+- `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "stage1_sentinel_missing_legacy"`), continuar.
+
 ### 2a. Writer + social em paralelo
 
 **Limites por bucket (#358, #742) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
@@ -168,6 +182,14 @@ Falha não bloqueia (fallback usa o arquivo original).
     > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
 
     Se exit 0, prosseguir pra Etapa 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
+
+  - **Escrever sentinel de conclusão do Stage 2:**
+    ```bash
+    npx tsx scripts/pipeline-sentinel.ts write \
+      --edition {AAMMDD} --step 2 \
+      --outputs "02-reviewed.md,03-social.md"
+    ```
+    Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 
   - **Atualizar `_internal/cost.md`.** Append linha na tabela da Etapa 2, recalcular `Total de chamadas`, gravar:
     ```

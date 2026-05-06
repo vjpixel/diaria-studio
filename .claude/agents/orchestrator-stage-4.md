@@ -13,6 +13,20 @@ description: Detalhe da Etapa 4 (publicação paralela — newsletter + social) 
 
 Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincronizado fica pra PR 2 (#38).
 
+### Pré-condição: sentinel Stage 3
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts assert \
+  --edition {AAMMDD} --step 3 \
+  --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+```
+
+Exit code handling:
+- `0` → continuar.
+- `1` → **FATAL:** "Etapa 3 não completou (sentinel ausente). Re-rodar `/diaria-3-imagens {AAMMDD}` antes de continuar." Parar.
+- `2` → **FATAL:** "Outputs do Stage 3 ausentes. Re-rodar Etapa 3." Parar.
+- `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message "stage3_sentinel_missing_legacy"`), continuar.
+
 ### 4a. Pré-requisitos + sync
 
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
