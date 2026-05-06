@@ -40,6 +40,51 @@ import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 
+// ---------------------------------------------------------------------------
+// Tracker decoders (#719)
+// ---------------------------------------------------------------------------
+
+const TRACKER_DECODERS: Array<{
+  pattern: RegExp;
+  decode: (url: string) => string | null;
+}> = [
+  {
+    // 7min.ai tracker: base64 after /c/ contains segments separated by |
+    // Third segment (index 2) is the destination URL
+    pattern: /^https:\/\/track\.newsletter\.7min\.ai\/c\//,
+    decode: (url: string) => {
+      const m = url.match(/\/c\/([A-Za-z0-9+/=]+)/);
+      if (!m) return null;
+      try {
+        const decoded = Buffer.from(m[1], "base64").toString("utf8");
+        const parts = decoded.split("|");
+        const dest = parts.find((p) => p.startsWith("http"));
+        return dest ? new URL(dest).toString() : null;
+      } catch {
+        return null;
+      }
+    },
+  },
+];
+
+/**
+ * If the URL is a known tracker, attempt to decode it to the real destination.
+ * Returns `{ url, decoded: true }` on success, `{ url: original, decoded: false }` on failure.
+ */
+export function decodeTrackerUrl(url: string): { url: string; decoded: boolean } {
+  for (const decoder of TRACKER_DECODERS) {
+    if (decoder.pattern.test(url)) {
+      const result = decoder.decode(url);
+      if (result) {
+        return { url: result, decoded: true };
+      }
+      // Decoder matched but failed — keep original (graceful)
+      return { url, decoded: false };
+    }
+  }
+  return { url, decoded: false };
+}
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------------------------------------------------------------------
@@ -151,15 +196,23 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
 
   for (const block of blocks) {
     const isForward = /^\s*(fwd|fw|res|enc):/i.test(block.subject);
-    for (const url of block.urls) {
-      if (isTrackingUrl(url)) continue;
+    for (const rawUrl of block.urls) {
+      // #719: attempt tracker decode BEFORE filtering — decoded URL is the real content.
+      const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
+      if (trackerDecoded) {
+        console.error(`[inject-inbox-urls] tracker decoded: ${rawUrl} → ${url}`);
+      } else if (isTrackingUrl(rawUrl)) {
+        // Not decodable and matches tracking pattern — skip.
+        continue;
+      }
+
       // #660: usar canonicalize() de url-utils em vez de split("?")[0] —
       // remove só tracking params (utm_*, ref), preserva query params legítimos.
       const key = canonicalize(url).toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
 
-      articles.push({
+      const article: SyntheticInboxArticle = {
         url,
         source: "inbox",
         title: "(inbox)",
@@ -167,7 +220,11 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
         submitted_at: block.iso,
         submitted_subject: block.subject,
         submitted_via: isForward ? "forward" : "direct",
-      });
+      };
+      if (trackerDecoded) {
+        (article as Record<string, unknown>)["tracker_decoded"] = true;
+      }
+      articles.push(article);
     }
   }
 

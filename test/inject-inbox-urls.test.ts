@@ -6,6 +6,7 @@ import {
   extractEditorUrls,
   validateInjection,
   isTrackingUrl,
+  decodeTrackerUrl,
 } from "../scripts/inject-inbox-urls.ts";
 
 const sampleInbox = `# Inbox Editorial — Diar.ia
@@ -235,5 +236,61 @@ describe("validateInjection (#594 sentinel)", () => {
     const missing = validateInjection(injected, pool);
     assert.equal(missing.length, 1);
     assert.equal(missing[0], "https://b.com/y");
+  });
+});
+
+describe("decodeTrackerUrl (#719 — 7min.ai tracker decoder)", () => {
+  // Build a real-looking 7min.ai base64 payload: segments separated by |
+  // Third segment (index 2) is the destination URL.
+  function make7minUrl(dest: string): string {
+    const payload = `seg0|seg1|${dest}|seg3`;
+    const b64 = Buffer.from(payload, "utf8").toString("base64");
+    return `https://track.newsletter.7min.ai/c/${b64}`;
+  }
+
+  it("extrai URL de destino de tracker 7min.ai válido", () => {
+    const dest = "https://example.com/real-article";
+    const trackerUrl = make7minUrl(dest);
+    const result = decodeTrackerUrl(trackerUrl);
+    assert.equal(result.decoded, true);
+    assert.equal(result.url, dest);
+  });
+
+  it("retorna decoded=false com URL original quando base64 é inválido", () => {
+    const badUrl = "https://track.newsletter.7min.ai/c/!!!notbase64!!!";
+    const result = decodeTrackerUrl(badUrl);
+    assert.equal(result.decoded, false);
+    assert.equal(result.url, badUrl);
+  });
+
+  it("retorna decoded=false quando não há segmento com 'http' no payload", () => {
+    const payload = "seg0|seg1|seg2|seg3"; // nenhum começa com http
+    const b64 = Buffer.from(payload, "utf8").toString("base64");
+    const trackerUrl = `https://track.newsletter.7min.ai/c/${b64}`;
+    const result = decodeTrackerUrl(trackerUrl);
+    assert.equal(result.decoded, false);
+    assert.equal(result.url, trackerUrl);
+  });
+
+  it("não toca URLs que não são trackers conhecidos", () => {
+    const url = "https://example.com/article";
+    const result = decodeTrackerUrl(url);
+    assert.equal(result.decoded, false);
+    assert.equal(result.url, url);
+  });
+
+  it("extractEditorUrls decodifica URL de tracker e seta tracker_decoded=true", () => {
+    const dest = "https://example.com/real-article-from-tracker";
+    const trackerUrl = make7minUrl(dest);
+    const block = {
+      iso: "2026-05-05T10:00:00Z",
+      from: "editor@example.com",
+      subject: "Fwd: 7min newsletter",
+      urls: [trackerUrl],
+    };
+    const articles = extractEditorUrls([block]);
+    assert.equal(articles.length, 1, "deve produzir 1 artigo a partir do tracker");
+    assert.equal(articles[0].url, dest, "URL deve ser a destino decodificado");
+    assert.equal((articles[0] as Record<string, unknown>)["tracker_decoded"], true);
   });
 });

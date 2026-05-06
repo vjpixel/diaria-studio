@@ -456,6 +456,29 @@ export function categorize(article: Article): Category {
 // Batch — exportada para testes (#697)
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns true if an editor_submitted article is unresolvable — enrich failed
+ * and there's no usable content. These are dropped before categorization to
+ * avoid empty/placeholder articles reaching the writer (#722).
+ *
+ * Drop conditions (ALL must match):
+ *   1. flag === 'editor_submitted'
+ *   2. title is still '(inbox)' or empty (enrich failed)
+ *   3. summary is empty or very short (< 30 chars)
+ */
+export function isUnresolvableInboxArticle(article: Article): boolean {
+  if (article.flag !== "editor_submitted") return false;
+  const title = (article.title ?? "").trim();
+  const summary = (article.summary ?? "").trim();
+  const titleIsPlaceholder =
+    !title ||
+    title === "(inbox)" ||
+    /^\(inbox/i.test(title) ||
+    /^\[inbox\]/i.test(title);
+  const summaryTooShort = summary.length < 30;
+  return titleIsPlaceholder && summaryTooShort;
+}
+
 export function categorizeArticles(articles: Article[]): Record<Category, Article[]> {
   const result: Record<Category, Article[]> = {
     lancamento: [],
@@ -470,6 +493,12 @@ export function categorizeArticles(articles: Article[]): Record<Category, Articl
     // (hostAndPath(undefined) → TypeError). Filtrar antes de processar.
     if (!article.url || typeof article.url !== "string") {
       console.warn(`[categorize] artigo ignorado: url inválida (${JSON.stringify(article.url)})`);
+      continue;
+    }
+    // #722: artigos editor_submitted com título placeholder e summary vazio são
+    // falhas de enrich — não há conteúdo para o writer usar. Descartar silenciosamente.
+    if (isUnresolvableInboxArticle(article)) {
+      console.error(`[inject-inbox-urls] dropping unresolvable inbox article: ${article.url}`);
       continue;
     }
     const cat = categorize(article);

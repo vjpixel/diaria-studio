@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { categorize, isVideoUrl, isArxivRelevant, categorizeArticles, type Article } from "../scripts/categorize.ts";
+import { categorize, isVideoUrl, isArxivRelevant, categorizeArticles, isUnresolvableInboxArticle, type Article } from "../scripts/categorize.ts";
 
 describe("categorize() — regras de domínio", () => {
   it("classifica anúncio oficial da OpenAI como lancamento", () => {
@@ -1076,5 +1076,110 @@ describe("categorizeArticles() — vídeos truncados com log (#697)", () => {
     } finally {
       console.error = origError;
     }
+  });
+});
+
+describe("isUnresolvableInboxArticle (#722 — drop unresolvable inbox articles)", () => {
+  it("identifica artigo editor_submitted com título placeholder e summary vazio como irresolvível", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "(inbox)",
+        summary: "",
+        flag: "editor_submitted",
+      }),
+      true,
+    );
+  });
+
+  it("identifica artigo com summary null como irresolvível", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "(inbox)",
+        summary: null,
+        flag: "editor_submitted",
+      }),
+      true,
+    );
+  });
+
+  it("identifica artigo com título vazio e summary curto como irresolvível", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "",
+        summary: "curto",
+        flag: "editor_submitted",
+      }),
+      true,
+    );
+  });
+
+  it("NÃO descarta artigo com título real mesmo sem summary longo", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "Título real curado pelo editor",
+        summary: "",
+        flag: "editor_submitted",
+      }),
+      false,
+    );
+  });
+
+  it("NÃO descarta artigo com summary suficiente (>=30 chars)", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "(inbox)",
+        summary: "Este é um resumo suficientemente longo para passar.",
+        flag: "editor_submitted",
+      }),
+      false,
+    );
+  });
+
+  it("NÃO descarta artigo que não é editor_submitted", () => {
+    assert.equal(
+      isUnresolvableInboxArticle({
+        url: "https://example.com/x",
+        title: "(inbox)",
+        summary: "",
+      }),
+      false,
+    );
+  });
+
+  it("categorizeArticles descarta artigo editor_submitted com placeholder + summary vazio", () => {
+    const articles: Article[] = [
+      {
+        url: "https://example.com/real-article",
+        title: "Artigo real sobre IA",
+        summary: "Este artigo tem conteúdo real e vai para o pipeline.",
+      },
+      {
+        url: "https://example.com/unresolvable",
+        title: "(inbox)",
+        summary: "",
+        flag: "editor_submitted",
+      },
+    ];
+    const result = categorizeArticles(articles);
+    const allArticles = [
+      ...result.lancamento,
+      ...result.noticias,
+      ...result.pesquisa,
+      ...result.tutorial,
+      ...result.video,
+    ];
+    assert.ok(
+      allArticles.every((a) => a.url !== "https://example.com/unresolvable"),
+      "artigo irresolvível não deve aparecer em nenhuma categoria",
+    );
+    assert.ok(
+      allArticles.some((a) => a.url === "https://example.com/real-article"),
+      "artigo real deve permanecer no pool",
+    );
   });
 });

@@ -35,6 +35,7 @@ export const AGGREGATOR_HOSTS = new Set<string>([
   "archive.thedeepview.com",
   "recaply.co",
   "7min.ai",
+  "track.newsletter.7min.ai",
   "evolvingai.io",
   "datamachina.com",
   "cyberman.ai",
