@@ -68,6 +68,7 @@ const AGGREGATOR_DOMAINS = new Set([
   "alltop.com",
   "feedly.com",
   "inoreader.com",
+  "perplexity.ai",
 ]);
 
 // Domínios de redes sociais — ignorados na busca por fonte primária.
@@ -283,7 +284,7 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
   const isPrimarySource = PRIMARY_SOURCE_PREFIXES.some((prefix) => urlWithoutProtocol.startsWith(prefix));
 
   if (!isPrimarySource) {
-    if (host === "perplexity.ai" || AGGREGATOR_DOMAINS.has(host)) {
+    if (AGGREGATOR_DOMAINS.has(host)) {
       // Attempt to resolve to the primary source (first call only — no infinite recursion).
       if (!isRetry) {
         const primary = await resolveAggregator(effectiveUrl, host, timeoutMs);

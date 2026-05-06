@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -152,7 +153,9 @@ export function loadHealth(healthPath: string): HealthFile {
 
 export function saveHealth(healthPath: string, health: HealthFile): void {
   mkdirSync(dirname(healthPath), { recursive: true });
-  writeFileSync(healthPath, JSON.stringify(health, null, 2) + "\n", "utf8");
+  const tmp = `${healthPath}.tmp`;
+  writeFileSync(tmp, JSON.stringify(health, null, 2) + "\n", "utf8");
+  renameSync(tmp, healthPath);
 }
 
 export function appendSourceLog(
