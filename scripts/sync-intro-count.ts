@@ -62,7 +62,7 @@ function main(): void {
   const actualStr = String(check.actual);
 
   const patternRe = new RegExp(
-    `((?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\s+os?\s+)${claimedStr}\b`,
+    `((?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\\s+os?\\s+)${claimedStr}\\b`,
     "i",
   );
   if (!patternRe.test(md)) {
