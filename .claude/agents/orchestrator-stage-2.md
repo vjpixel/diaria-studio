@@ -118,14 +118,15 @@ Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
 
 ### 2c. Processar social
 
-Após os social agents retornarem, fazer merge em `03-social.md` via Bash:
+Após os social agents retornarem, fazer merge em `03-social.md` via Bash. Remover todos os comentários HTML (`<!-- ... -->`) do conteúdo mesclado — são apenas para debug interno e não devem aparecer no arquivo publicável:
 
 ```bash
 node -e "
   const fs=require('fs');
   const dir='{edition_dir}';
-  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
-  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
+  const stripHtmlComments=s=>s.replace(/<!--[\s\S]*?-->/g,'').replace(/\n{3,}/g,'\n\n');
+  const li=stripHtmlComments(fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim());
+  const fb=stripHtmlComments(fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim());
   fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
   fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
   fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
