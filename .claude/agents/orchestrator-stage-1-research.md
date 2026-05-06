@@ -77,10 +77,18 @@ Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinís
 
 Preserva saúde da fonte em todos os casos: propagar `method` como campo extra no `RunRecord`.
 
+### 1e.5. Extrair inbox_topics (#662)
+
+Entradas de texto-puro do editor (sem URL) viram queries de discovery. Armazenar output como `inbox_topics` para o passo 1f:
+```bash
+npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --out data/editions/{AAMMDD}/_internal/inbox-topics.json
+```
+Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics extraídos"`.
+
 ### 1f. Dispatch de researchers e discovery
 
 - Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **apenas pras fontes que não têm RSS ou que tiveram fallback**, passando: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
-- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). `inbox_topics` vem do output do step 1h.5 (`scripts/extract-inbox-topics.ts`). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
+- Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). `inbox_topics` vem do output do step 1e.5 (`scripts/extract-inbox-topics.ts`). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
 
 ### 1g. Registrar saúde + log (batch, #40)
@@ -142,14 +150,6 @@ Output stdout: `{ injected, already_in_pool, total_editor_urls, total_pool_size,
 
 Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`. Categorizer prioriza `editor_submitted`. Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
 
-### 1h.5. Extrair inbox_topics (#662)
-
-Entradas de texto-puro do editor (sem URL) viram queries de discovery. Armazenar output como `inbox_topics` para o passo 1f:
-```bash
-npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --out data/editions/{AAMMDD}/_internal/inbox-topics.json
-```
-Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics extraídos"`.
-
 ### 1h.6. Validar injeção (#625)
 
 Validador **externo** anti-skip — diferente de `--validate-pool` (interno/tautológico), este script roda após o step 1h e detecta o cenário onde o orchestrator skipou a chamada inteira:
@@ -176,7 +176,7 @@ Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, ve
 - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`) que **não** sejam de inbox.
 - **Manter com flag** artigos com verdict `anti_bot` (#320): adicionar `"access_uncertain": true`. Incluir no relatório do gate: `"⚠️ N artigo(s) marcados anti_bot — accessible no browser mas bloqueados por crawler. Revisar antes de aprovar."` com a lista de domínios.
 - **Marcar** artigos com verdict `uncertain` adicionando `"date_unverified": true`. Esses artigos continuam no pipeline mas serão sinalizados com `⚠️` no gate para revisão manual.
-- **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar `url` para `finalUrl` e adicionar `resolved_from` ao artigo para rastreabilidade. Isso inclui URLs de shorteners que foram resolvidos pro destino real (#317).
+- **Substituir URL** dos artigos com `resolvedFrom` presente: atualizar `url` para `finalUrl` e adicionar `resolvedFrom` ao artigo para rastreabilidade. Isso inclui URLs de shorteners que foram resolvidos pro destino real (#317).
 
 ### 1j. Expandir links de agregadores do inbox (#483)
 
@@ -247,7 +247,7 @@ npx tsx scripts/filter-date-window.ts \
   --window-days {window_days} \
   --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
 ```
-Logar `removed.length`. Daqui em diante o input do research-reviewer é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial } }`) — extrair `kept` e usar como `categorized`.
+Logar `removed.length`. Daqui em diante o input do research-reviewer é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial, video } }`) — extrair `kept` e usar como `categorized`.
 
 ### 1p. Research-reviewer
 
@@ -438,6 +438,11 @@ Apresentar ao usuário:
     --edition {AAMMDD} \
     --source-health data/source-health.json
   ```
+  Re-validar LANÇAMENTOS após edições do gate (#787) — o editor pode ter movido URLs não-oficiais para LANÇAMENTOS durante a revisão:
+  ```bash
+  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/01-categorized.md
+  ```
+  Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais em LANÇAMENTOS após edição no gate. Corrigir antes de continuar."` — mas **não bloquear automaticamente**.
   Push do MD atualizado de volta para o Drive:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
