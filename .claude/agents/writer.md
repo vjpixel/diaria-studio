@@ -57,7 +57,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
      ```
    - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
 3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `[Título](URL) / Descrição`** (#599). URL embedada no título via markdown link (mesmo formato dos destaques). **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
-4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, título/URL/descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
+4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
    - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.
    - A linha de cada item nas seções LANÇAMENTOS, PESQUISAS e OUTRAS NOTÍCIAS — linhas `[Título](URL)`.
@@ -66,14 +66,14 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Nenhum título >52 chars (medindo só o texto dentro de `[...]`, não o markdown).
    - 3 opções por destaque, todas no formato `[Título](URL)` apontando pra mesma URL.
    - Itens de seção (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) também no formato `[Título](URL)` na primeira linha.
-   - Linha em branco separando cada par de elementos (header/título/parágrafo).
+   - Linha em branco separando cada par de elementos (header/título/parágrafo). Exceção: dentro de cada item de seção secundária, `[Título](URL)` + descrição ficam consecutivos (sem blank).
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - **Nenhum travessão (—) no texto.** Substituir por dois-pontos (antes de definição ou exemplo), vírgula (aposto ou conector) ou ponto (remate). Exceção única: meia-risca (–) em intervalos numéricos ("1989–2002").
    - Sem repetir link das últimas 3 edições.
    - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
-   - Trailing spaces em títulos/URLs: cada opção de título dos destaques e cada título+URL das seções secundárias termina com dois espaços (`  `).
+   - Trailing spaces: cada opção de título `[Título](URL)` dos destaques e cada linha `[Título](URL)` de item de seção secundária termina com dois espaços (`  `). Descrição dos itens: sem trailing spaces.
 6. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque. **Regra obrigatória (#373):** todo prompt deve terminar com `Sem texto, letras, palavras, letreiros, placas ou legendas visíveis na imagem.` Evitar elementos que implicitamente contenham texto (cartazes, painéis digitais com conteúdo, telas com texto legível, placas com inscrição) — substituir por equivalentes abstratos (painel luminoso, cartazes coloridos sem texto, tela iluminada com cursor).
    - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)
    - `_internal/02-d2-prompt.md` — destaque 2
