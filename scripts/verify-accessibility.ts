@@ -3,6 +3,7 @@ import { request } from "undici";
 import puppeteer, { type Browser } from "puppeteer";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize, extractHost } from "./lib/url-utils.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -428,6 +429,20 @@ async function main() {
       await browser?.close().catch(() => {});
     }
   }
+
+  const paywall = results.filter((r) => r.verdict === "paywall").length;
+  const blocked = results.filter((r) => r.verdict === "blocked" || r.verdict === "anti_bot").length;
+  const aggregator = results.filter((r) => r.verdict === "aggregator").length;
+  const ok = results.filter((r) => r.verdict === "accessible" || r.verdict === "video").length;
+  const total = results.length;
+  logEvent({
+    edition: null,
+    stage: 1,
+    agent: "verify-accessibility.ts",
+    level: "info",
+    message: `verify: ${paywall} paywall, ${blocked} blocked, ${aggregator} aggregator, ${ok} ok`,
+    details: { paywall, blocked, aggregator, ok, total },
+  });
 
   const out = process.argv[3];
   if (out) {
