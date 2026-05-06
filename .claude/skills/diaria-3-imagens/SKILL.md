@@ -9,8 +9,10 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
 
 ## Argumentos
 
-- `$1` = data da edição (`AAMMDD`, ex: `260423`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação:
-  > "Você não passou a data da edição. Qual edição você quer processar? hoje ({AAMMDD_hoje}) / ontem ({AAMMDD_ontem}) / outra (informe AAMMDD)"
+- `$1` = data da edição (`AAMMDD`, ex: `260423`). Se não passar, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 3` e parsear `candidates[]` do JSON de saída (#583):
+  - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.
+  - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 2 aprovado e Stage 3 incompleto. Rode /diaria-2-escrita primeiro ou passe AAMMDD explicitamente.`
+  - **Se `candidates.length >= 2`**: perguntar ao editor qual: `Múltiplas edições em curso: {lista}. Qual processar?`
 - `$2` (opcional) = sub-comando:
   - Sem argumento → roda É IA? + todas as imagens de destaque (d1, d2, d3)
   - `eia` → roda só o É IA? (útil para regenerar sem refazer imagens)
