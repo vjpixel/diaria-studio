@@ -10,7 +10,7 @@ export const CONFIG = {
     fetch: 8_000,
     /** Google Drive API calls */
     drive: 30_000,
-    /** Gemini API (translation via gemini-2.0-flash) */
+    /** Gemini API (translation via gemini.translate_model em platform.config.json) */
     gemini: 10_000,
     /** Wikimedia API (eia-compose: lang-link lookup) */
     wikimedia: 5_000,

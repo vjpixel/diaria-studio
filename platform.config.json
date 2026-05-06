@@ -34,7 +34,8 @@
     "quality": "low"
   },
   "gemini": {
-    "model": "gemini-3.1-flash-image-preview"
+    "model": "gemini-3.1-flash-image-preview",
+    "translate_model": "gemini-flash-latest"
   },
   "cloudflare": {
     "model": "@cf/black-forest-labs/flux-1-schnell",
