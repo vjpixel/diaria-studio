@@ -74,7 +74,7 @@ async function gmailRequest<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-interface GmailThread {
+export interface GmailThread {
   id: string;
   /** Snippet pode estar ausente em threads sem conteúdo visível (#649 review). */
   snippet?: string;
@@ -88,20 +88,20 @@ async function searchThreads(query: string): Promise<GmailThread[]> {
   return (data.threads ?? []) as GmailThread[];
 }
 
-interface GmailMessagePart {
+export interface GmailMessagePart {
   mimeType: string;
   body?: { data?: string };
   parts?: GmailMessagePart[];
   headers?: Array<{ name: string; value: string }>;
 }
 
-interface GmailMessage {
+export interface GmailMessage {
   id: string;
   internalDate: string; // epoch ms as string
   payload: GmailMessagePart & { headers: Array<{ name: string; value: string }> };
 }
 
-interface GmailThread2 {
+export interface GmailThread2 {
   id: string;
   messages: GmailMessage[];
 }
@@ -379,6 +379,96 @@ export function decideEmptyDrainAction(
   };
 }
 
+/**
+ * Resultado da iteração de threads. Acumula entradas markdown, URLs/topics
+ * coletados, ISO mais recente, e contagem de erros parciais (#667).
+ */
+export interface IterateThreadsResult {
+  inboxEntries: string[];
+  resultUrls: DrainResult["urls"];
+  resultTopics: DrainResult["topics"];
+  mostRecentIso: string | null;
+  threadErrors: number;
+  threadErrorSamples: string[];
+}
+
+/**
+ * Loop de threads → entradas (#669). Extraído de `main()` pra ser testável
+ * sem credenciais Gmail. `fetchThread` é injetado pra permitir stubs em test.
+ *
+ * Cada thread que falha em `fetchThread` é contada em `threadErrors` (#667)
+ * e o sample da mensagem (truncado em 200 chars) entra em `threadErrorSamples`
+ * (até 3 amostras). Threads bem-sucedidas têm suas mensagens dedup'd e
+ * filtradas por `lastDrain` (cursor) antes de virarem entradas markdown.
+ */
+export async function iterateThreads(
+  threads: GmailThread[],
+  fetchThread: (id: string) => Promise<GmailThread2>,
+  lastDrain: string | null,
+): Promise<IterateThreadsResult> {
+  const inboxEntries: string[] = [];
+  const resultUrls: DrainResult["urls"] = [];
+  const resultTopics: DrainResult["topics"] = [];
+  let mostRecentIso: string | null = null;
+  let threadErrors = 0;
+  const threadErrorSamples: string[] = [];
+
+  for (const thread of threads) {
+    let fullThread: GmailThread2;
+    try {
+      fullThread = await fetchThread(thread.id);
+    } catch (err) {
+      // #649 review: incluindo ZodError quando shape da response sai do esperado
+      // (ex: thread só com draft, conta com config não-padrão). Logar e seguir
+      // pra não quebrar o drain inteiro por causa de uma thread atípica.
+      threadErrors += 1;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (threadErrorSamples.length < 3) threadErrorSamples.push(msg.slice(0, 200));
+      console.error(
+        `[inbox-drain] WARN: pulando thread ${thread.id} — ${msg.slice(0, 200)}`,
+      );
+      continue;
+    }
+
+    for (const msg of dedupForwards(fullThread.messages)) {
+      const dateMs = parseInt(msg.internalDate, 10);
+      const iso = new Date(dateMs).toISOString();
+
+      // Filtrar client-side: só e-mails mais recentes que o cursor
+      if (lastDrain && iso <= lastDrain) continue;
+
+      const from = getHeader(msg, "From");
+      const subject = getHeader(msg, "Subject") || "(sem assunto)";
+      const body = cleanBody(extractTextBody(msg.payload));
+      const urls = extractUrls(body);
+      const rawPreview = body.slice(0, 300).replace(/\n+/g, " ");
+
+      if (!mostRecentIso || iso > mostRecentIso) mostRecentIso = iso;
+
+      // Montar entrada markdown
+      const lines: string[] = [`## ${iso}`, `- **from:** ${from}`, `- **subject:** ${subject}`];
+
+      if (urls.length > 0) {
+        lines.push("- **urls:**");
+        for (const u of urls) lines.push(`  - ${u}`);
+        for (const u of urls) resultUrls.push({ url: u, from, subject });
+      } else if (body.length > 20) {
+        const topic = body.slice(0, 200).trim();
+        lines.push(`- **topic:** ${topic}`);
+        resultTopics.push({ text: topic, from, subject });
+      } else {
+        // E-mail sem conteúdo útil — pular
+        continue;
+      }
+
+      lines.push(`- **raw:** > ${rawPreview}`, "");
+      inboxEntries.push(lines.join("\n"));
+    }
+  }
+
+  return { inboxEntries, resultUrls, resultTopics, mostRecentIso, threadErrors, threadErrorSamples };
+}
+
 // ---------------------------------------------------------------------------
 // Run log — registra exceções para /diaria-log ver (stderr é invisível)
 // ---------------------------------------------------------------------------
@@ -576,66 +666,14 @@ async function main(): Promise<void> {
   }
 
   const lastDrain = cursor.last_drain_iso;
-  const inboxEntries: string[] = [];
-  const resultUrls: DrainResult["urls"] = [];
-  const resultTopics: DrainResult["topics"] = [];
-  let mostRecentIso: string | null = null;
-  // #667: contagem de threads com erro (parciais) — exposta no DrainResult.
-  let threadErrors = 0;
-  const threadErrorSamples: string[] = [];
-
-  for (const thread of threads) {
-    let fullThread: GmailThread2;
-    try {
-      fullThread = await getThread(thread.id);
-    } catch (err) {
-      // #649 review: incluindo ZodError quando shape da response sai do esperado
-      // (ex: thread só com draft, conta com config não-padrão). Logar e seguir
-      // pra não quebrar o drain inteiro por causa de uma thread atípica.
-      threadErrors += 1;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (threadErrorSamples.length < 3) threadErrorSamples.push(msg.slice(0, 200));
-      console.error(
-        `[inbox-drain] WARN: pulando thread ${thread.id} — ${msg.slice(0, 200)}`,
-      );
-      continue;
-    }
-
-    for (const msg of dedupForwards(fullThread.messages)) {
-      const dateMs = parseInt(msg.internalDate, 10);
-      const iso = new Date(dateMs).toISOString();
-
-      // Filtrar client-side: só e-mails mais recentes que o cursor
-      if (lastDrain && iso <= lastDrain) continue;
-
-      const from = getHeader(msg, "From");
-      const subject = getHeader(msg, "Subject") || "(sem assunto)";
-      const body = cleanBody(extractTextBody(msg.payload));
-      const urls = extractUrls(body);
-      const rawPreview = body.slice(0, 300).replace(/\n+/g, " ");
-
-      if (!mostRecentIso || iso > mostRecentIso) mostRecentIso = iso;
-
-      // Montar entrada markdown
-      const lines: string[] = [`## ${iso}`, `- **from:** ${from}`, `- **subject:** ${subject}`];
-
-      if (urls.length > 0) {
-        lines.push("- **urls:**");
-        for (const u of urls) lines.push(`  - ${u}`);
-        for (const u of urls) resultUrls.push({ url: u, from, subject });
-      } else if (body.length > 20) {
-        const topic = body.slice(0, 200).trim();
-        lines.push(`- **topic:** ${topic}`);
-        resultTopics.push({ text: topic, from, subject });
-      } else {
-        // E-mail sem conteúdo útil — pular
-        continue;
-      }
-
-      lines.push(`- **raw:** > ${rawPreview}`, "");
-      inboxEntries.push(lines.join("\n"));
-    }
-  }
+  const {
+    inboxEntries,
+    resultUrls,
+    resultTopics,
+    mostRecentIso,
+    threadErrors,
+    threadErrorSamples,
+  } = await iterateThreads(threads, getThread, lastDrain);
 
   let updatedCursor: InboxCursor;
   let warnReason: string | undefined;
