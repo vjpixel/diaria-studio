@@ -23,21 +23,33 @@
 
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { runStage1Validation } from "./lib/stage-1-validator.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+function readDriveSyncFlag(): boolean {
+  const cfgPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(cfgPath)) return true;
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { drive_sync?: boolean };
+    return cfg.drive_sync !== false;
+  } catch {
+    return true;
+  }
+}
+
 function main(): void {
-  const { values } = parseCliArgs(process.argv.slice(2));
+  const { values, flags } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
   const editionDirArg = values["edition-dir"];
   const thresholdArg = values["ai-relevance-threshold"];
+  const noDriveSync = flags.has("no-drive-sync");
 
   if (!edition || !editionDirArg) {
     console.error(
-      "Uso: validate-stage-1-output.ts --edition <AAMMDD> --edition-dir <path> [--ai-relevance-threshold 0.7]",
+      "Uso: validate-stage-1-output.ts --edition <AAMMDD> --edition-dir <path> [--ai-relevance-threshold 0.7] [--no-drive-sync]",
     );
     process.exit(3);
   }
@@ -54,8 +66,13 @@ function main(): void {
     process.exit(3);
   }
 
+  // Auto-detect drive_sync flag from platform.config.json se --no-drive-sync não foi passado.
+  const driveCachePath =
+    noDriveSync || !readDriveSyncFlag() ? null : resolve(ROOT, "data/drive-cache.json");
+
   const result = runStage1Validation(edition, editionDir, {
     aiRelevanceThreshold: threshold,
+    driveCachePath,
   });
 
   console.log(JSON.stringify(result, null, 2));
