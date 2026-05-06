@@ -31,7 +31,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CI_FAILURES_PATH = resolve(ROOT, "data", "ci-failures.jsonl");
+const DEFAULT_CI_FAILURES_PATH = resolve(ROOT, "data", "ci-failures.jsonl");
 
 interface CiFailure {
   workflow: string;
@@ -52,11 +52,11 @@ function parseArgs(argv: string[]): Partial<Record<string, string>> {
   return out;
 }
 
-function loadRunUrls(): Set<string> {
-  if (!existsSync(CI_FAILURES_PATH)) return new Set();
+function loadRunUrls(path: string): Set<string> {
+  if (!existsSync(path)) return new Set();
   try {
     return new Set(
-      readFileSync(CI_FAILURES_PATH, "utf8")
+      readFileSync(path, "utf8")
         .split("\n")
         .filter(Boolean)
         .map((line) => {
@@ -75,17 +75,20 @@ function loadRunUrls(): Set<string> {
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  const { workflow, branch, "run-url": runUrl, summary, "failed-at": failedAt } = args;
+  const { workflow, branch, "run-url": runUrl, summary, "failed-at": failedAt, out } = args;
 
   if (!workflow || !branch || !runUrl || !summary || !failedAt) {
     console.error(
       "Uso: append-ci-failure.ts --workflow <name> --branch <branch> " +
-        "--run-url <url> --summary <text> --failed-at <iso>",
+        "--run-url <url> --summary <text> --failed-at <iso> [--out <path>]",
     );
     process.exit(2);
   }
 
-  const existing = loadRunUrls();
+  // --out permite override do path para testes herméticos
+  const outPath = out ? resolve(out) : DEFAULT_CI_FAILURES_PATH;
+
+  const existing = loadRunUrls(outPath);
   if (existing.has(runUrl)) {
     process.stdout.write(JSON.stringify({ added: false, reason: "duplicate" }) + "\n");
     return;
@@ -100,10 +103,10 @@ function main(): void {
   };
 
   try {
-    appendFileSync(CI_FAILURES_PATH, JSON.stringify(entry) + "\n", "utf8");
-    process.stdout.write(JSON.stringify({ added: true, path: CI_FAILURES_PATH }) + "\n");
+    appendFileSync(outPath, JSON.stringify(entry) + "\n", "utf8");
+    process.stdout.write(JSON.stringify({ added: true, path: outPath }) + "\n");
   } catch (e) {
-    console.error(`Erro ao gravar ${CI_FAILURES_PATH}: ${(e as Error).message}`);
+    console.error(`Erro ao gravar ${outPath}: ${(e as Error).message}`);
     process.exit(1);
   }
 }

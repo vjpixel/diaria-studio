@@ -233,7 +233,7 @@ Fechar o loop de observabilidade: o GitHub envia notificações de CI falhou par
 **Sempre roda, silencioso se sem falhas.** Usar Gmail MCP (`mcp__claude_ai_Gmail__search_threads`) para buscar:
 
 ```
-from:notifications@github.com subject:("failed" OR "CI") label:Diaria.Editor newer_than:2d
+from:notifications@github.com subject:("failed" OR "CI") newer_than:2d
 ```
 
 Se não encontrar resultados: prosseguir silenciosamente.
