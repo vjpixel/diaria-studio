@@ -16,6 +16,11 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
+import {
+  parseArxivId,
+  arxivIdSentinelDate,
+  isClearlyBeforeCutoff,
+} from "./lib/arxiv-id.ts";
 
 // User-Agent de browser real — muitos sites (openai.com, exame.com, etc)
 // bloqueiam user-agents que identificam bots. Mantemos um header plausível.
@@ -27,6 +32,13 @@ const BROWSER_UA =
 let BODIES_CACHE_DIR: string | null = null;
 let CACHE_HITS = 0;
 let CACHE_MISSES = 0;
+
+// #717 hypothesis #4: arxiv pre-filter. Set via CLI --cutoff-iso.
+// Quando set, papers arxiv cujo YYMM-do-ID é claramente anterior ao cutoff
+// recebem data sintética (sentinel YYYY-MM-15) sem fetch. filter-date-window
+// downstream remove naturalmente. Saves ~3min/edição com arxiv ativo.
+let ARXIV_CUTOFF_ISO: string | null = null;
+let ARXIV_PRESKIP_COUNT = 0;
 
 interface ArticleInput {
   url: string;
@@ -241,6 +253,27 @@ async function extractPublishedDate(
 }
 
 export async function verifyDate(article: ArticleInput): Promise<DateVerifyResult> {
+  // #717 hypothesis #4: arxiv pre-skip. Quando o URL é arxiv e o YYMM do ID
+  // é claramente anterior ao cutoff (1+ mês de margem), retorna data sintética
+  // sem fetch. filter-date-window remove naturalmente.
+  if (ARXIV_CUTOFF_ISO !== null) {
+    const arxiv = parseArxivId(article.url);
+    if (arxiv !== null && isClearlyBeforeCutoff(arxiv, ARXIV_CUTOFF_ISO)) {
+      ARXIV_PRESKIP_COUNT++;
+      const sentinel = arxivIdSentinelDate(arxiv);
+      const originalNorm = normalizeDate(article.date);
+      return {
+        url: article.url,
+        original_date: article.date,
+        verified_date: sentinel,
+        changed: originalNorm !== sentinel,
+        fetch_failed: false,
+        date_unverified: false,
+        note: `arxiv pre-skip: id ${arxiv.id} → ${sentinel} (cutoff ${ARXIV_CUTOFF_ISO}, sem fetch)`,
+      };
+    }
+  }
+
   const { date, note } = await extractPublishedDate(article.url);
   const originalNorm = normalizeDate(article.date);
 
@@ -269,13 +302,16 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
 }
 
 async function main() {
-  // CLI shape preservada: positional <articles.json> [out.json], + flag opcional
-  // --bodies-dir <path> (#717 hypothesis #1).
+  // CLI shape preservada: positional <articles.json> [out.json], + flags opcionais
+  // --bodies-dir <path> (#717 hyp 1) e --cutoff-iso <YYYY-MM-DD> (#717 hyp 4).
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === "--bodies-dir" && i + 1 < process.argv.length) {
       BODIES_CACHE_DIR = process.argv[i + 1];
+      i++;
+    } else if (a === "--cutoff-iso" && i + 1 < process.argv.length) {
+      ARXIV_CUTOFF_ISO = process.argv[i + 1];
       i++;
     } else {
       positional.push(a);
@@ -283,7 +319,9 @@ async function main() {
   }
   const inputArg = positional[0];
   if (!inputArg) {
-    console.error("Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>]");
+    console.error(
+      "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD]",
+    );
     console.error("  articles.json: array de { url, date }");
     process.exit(1);
   }
@@ -306,8 +344,12 @@ async function main() {
     const hitPct = total > 0 ? Math.round((CACHE_HITS / total) * 100) : 0;
     cacheLine = ` [body-cache: ${CACHE_HITS}/${total} hit (${hitPct}%)]`;
   }
+  let arxivLine = "";
+  if (ARXIV_CUTOFF_ISO !== null) {
+    arxivLine = ` [arxiv-pre-skip: ${ARXIV_PRESKIP_COUNT} (cutoff ${ARXIV_CUTOFF_ISO})]`;
+  }
   console.error(
-    `verify-dates: ${results.length} artigos — ${changed} datas corrigidas, ${failed} fetches falhos${cacheLine}`
+    `verify-dates: ${results.length} artigos — ${changed} datas corrigidas, ${failed} fetches falhos${cacheLine}${arxivLine}`
   );
 
   const outArg = positional[1];

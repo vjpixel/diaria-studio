@@ -22,11 +22,13 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 
 1. Achatar todos os artigos dos 5 buckets (`lancamento`, `pesquisa`, `noticias`, `tutorial`, `video`). Extrair `{ url, date }` de cada um.
 2. Gravar em `{edition_dir}tmp-dates-input.json`.
-3. Rodar:
+3. Rodar (derivar `cutoff_iso = anchor_iso - window_days`):
    ```bash
-   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json --bodies-dir {edition_dir}_internal/link-verify-bodies
+   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json --bodies-dir {edition_dir}_internal/link-verify-bodies --cutoff-iso {cutoff_iso}
    ```
-   `--bodies-dir` (#717 hipótese 1) lê bodies já fetched por `verify-accessibility.ts` no passo 1i — evita re-fetch de URLs já vistas no mesmo pipeline. stderr inclui `[body-cache: H/T hit (P%)]` ao final pra rastreabilidade.
+   - `--bodies-dir` (#717 hipótese 1) lê bodies já fetched por `verify-accessibility.ts` no passo 1i — evita re-fetch de URLs já vistas no mesmo pipeline. stderr inclui `[body-cache: H/T hit (P%)]`.
+   - `--cutoff-iso` (#717 hipótese 4) ativa pré-skip de papers arxiv claramente fora da janela: papers cujo `YYMM` do ID é ≥2 meses anterior ao cutoff recebem data sentinel `YYYY-MM-15` sem fetch. `filter-date-window` os remove naturalmente. stderr inclui `[arxiv-pre-skip: N (cutoff DATE)]`. Saves ~3min/edição quando arxiv está ativo.
+   - Se `anchor_iso` não foi passado (retrocompat de invocações antigas), omitir `--cutoff-iso` — desabilita o pre-skip mas não quebra nada (todos os arxivs são fetched normalmente).
 4. Ler `tmp-dates-output.json`. Para cada entry, o script já populou `date_unverified` (#226 — não recalcule). Aplique mecanicamente:
    - Substituir `article.date` por `verified_date` se `changed: true && fetch_failed: false` (data confirmada via fetch).
    - Manter `article.date` original se `changed: false` ou `fetch_failed: true`.
