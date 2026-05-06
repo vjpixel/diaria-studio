@@ -259,14 +259,15 @@ function runStage3Smoke(): { passed: number; failed: string[] } {
   passed++;
 
   // computeSwaps deve detectar que d1↔d3 precisa trocar
-  const swaps = computeSwaps(
+  const result = computeSwaps(
     { d1: promptUrls.d1, d2: promptUrls.d2, d3: promptUrls.d3 },
     reviewedUrls,
   );
 
   // d2 is unchanged (GPT-5 ↔ GPT-5), d1 and d3 swapped
-  const hasSwap = swaps.length > 0;
-  if (!hasSwap) {
+  if (!result.ok) {
+    failed.push(`stage3:compute-swaps: expected ok=true but got ok=false (${result.reason})`);
+  } else if (result.swaps.length === 0) {
     failed.push(`stage3:compute-swaps: expected swaps but got 0 (d1=${promptUrls.d1} vs reviewed[0]=${reviewedUrls[0]})`);
   } else {
     passed++;

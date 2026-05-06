@@ -175,9 +175,12 @@ export function buildUrlBucketMap(
  *    pessoas que assinam a newsletter."
  *
  * Aceita variação com `???` no Y (fallback quando totalConsidered ausente).
+ *
+ * #701: aceita também forma singular ("1 submissão", "1 artigo",
+ * "Selecionamos o artigo mais relevante") — concordância numérica.
  */
 export const COVERAGE_LINE_RE =
-  /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss[õo]es e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos\. Selecionamos os \d+ mais relevantes/i;
+  /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss(?:ão|ões) e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos?\. (?:Selecionamos o artigo mais relevante|Selecionamos os \d+ mais relevantes)/i;
 
 export function checkCoverageLine(md: string): { ok: boolean; firstLine: string } {
   const lines = md.split("\n");
@@ -375,6 +378,132 @@ export function countTitlesPerHighlight(md: string): TitleCheckReport {
 }
 
 /**
+ * Verifica que cada título de destaque cabe em ≤52 caracteres (#701).
+ *
+ * `editorial-rules.md` exige "Título: máximo 52 caracteres" — antes desse
+ * check só self-validation do writer LLM pegava. `--check titles-per-highlight`
+ * conta quantos, este conta a largura.
+ *
+ * Não reusa `countTitlesPerHighlight` porque essa função usa `looksLikeTitleOption`
+ * que rejeita linhas >60 chars (= body) — exatamente os candidatos que
+ * precisamos pegar aqui (título mal-formado pelo writer LLM com 60+ chars).
+ *
+ * Parser próprio mais permissivo: após cada DESTAQUE header, coleta toda
+ * linha não-vazia, não-URL, que não termine com ponto único (= body óbvio),
+ * até a primeira URL ou próximo header. Não impõe limite superior — quanto
+ * maior o título errado, mais importante é pegar.
+ */
+export interface TitleLengthError {
+  destaque: number;
+  category: string;
+  title: string;
+  length: number;
+  max: number;
+}
+
+export interface TitleLengthReport {
+  ok: boolean;
+  errors: TitleLengthError[];
+}
+
+const MAX_TITLE_LENGTH = 52;
+
+export function checkTitleLengths(md: string): TitleLengthReport {
+  const lines = md.split("\n");
+  const errors: TitleLengthError[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const m = lines[i].match(HIGHLIGHT_HEADER_RE);
+    if (!m) {
+      i++;
+      continue;
+    }
+    const destaqueNum = parseInt(m[1], 10);
+    const category = m[2].trim();
+    let j = i + 1;
+    while (j < lines.length) {
+      const t = lines[j].trim();
+      if (t === "") { j++; continue; }
+      if (URL_LINE_RE.test(t)) break;
+      if (HIGHLIGHT_HEADER_RE.test(t)) break;
+      if (SECTION_BREAK_LINE_RE.test(t)) break;
+      if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
+      if (WHY_MATTERS_LINE_RE.test(t)) break;
+      // Body óbvio: termina em ponto único (não ellipsis). Pula sem flag.
+      if (/\.\s*$/.test(t) && !/\.{3,}\s*$/.test(t)) {
+        j++;
+        continue;
+      }
+      // Candidato a título — valida largura
+      if (t.length > MAX_TITLE_LENGTH) {
+        errors.push({
+          destaque: destaqueNum,
+          category,
+          title: t,
+          length: t.length,
+          max: MAX_TITLE_LENGTH,
+        });
+      }
+      j++;
+    }
+    i = j;
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Verifica formato do parágrafo "Por que isso importa:" (#701, editorial-rules:35).
+ *
+ * Regra: "O parágrafo de 'Por que isso importa' vai direto ao impacto —
+ * nunca começa com 'Para [audiência],' ou endereça o leitor explicitamente."
+ *
+ * Detecta tanto formato inline ("Por que isso importa: Para X,...") quanto
+ * em linha separada (próxima linha não-vazia começando com "Para X,").
+ */
+export interface WhyMattersError {
+  line: number;
+  text: string;
+}
+
+export interface WhyMattersReport {
+  ok: boolean;
+  errors: WhyMattersError[];
+}
+
+const WHY_MATTERS_BAD_START_RE = /^Para\s+[a-záéíóúâêôãõç]/i;
+
+export function checkWhyMattersFormat(md: string): WhyMattersReport {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const errors: WhyMattersError[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^Por que isso importa:\s*(.*)$/i);
+    if (!m) continue;
+    const inlineRest = m[1].trim();
+    if (inlineRest) {
+      // Forma inline: "Por que isso importa: Para X,..."
+      if (WHY_MATTERS_BAD_START_RE.test(inlineRest)) {
+        errors.push({ line: i + 1, text: inlineRest.slice(0, 80) });
+      }
+      continue;
+    }
+    // Forma multi-linha: próxima linha não-vazia
+    for (let j = i + 1; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (t === "") continue;
+      if (WHY_MATTERS_BAD_START_RE.test(t)) {
+        errors.push({ line: j + 1, text: t.slice(0, 80) });
+      }
+      break;
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
  * Verifica que a seção É IA? está presente no MD da newsletter (#588).
  *
  * Writer agent (Sonnet) tem instrução explícita pra emitir bloco É IA? entre
@@ -430,6 +559,57 @@ function main(): void {
     return;
   }
 
+  // Modo --check title-length (#701) — verifica que títulos cabem em ≤52 chars
+  if (args.check === "title-length") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check title-length --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkTitleLengths(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.errors.length} título(s) excedem ${MAX_TITLE_LENGTH} chars:`);
+      for (const e of result.errors) {
+        console.error(`  DESTAQUE ${e.destaque} (${e.category}): ${e.length} chars — "${e.title}"`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check why-matters-format (#701) — bloqueia "Para [audiência]," opener
+  if (args.check === "why-matters-format") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check why-matters-format --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkWhyMattersFormat(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} parágrafo(s) "Por que isso importa" começam com ` +
+          `"Para [audiência]," (editorial-rules:35):`,
+      );
+      for (const e of result.errors) {
+        console.error(`  linha ${e.line}: "${e.text}"`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check eai-section (#588) — verifica presença da seção É IA?
   if (args.check === "eai-section") {
     if (!args.md) {
@@ -454,7 +634,10 @@ function main(): void {
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
-        "  ou: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-length --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check why-matters-format --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>",
     );
     process.exit(2);
   }

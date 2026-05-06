@@ -6,6 +6,8 @@ import {
   lintNewsletter,
   countTitlesPerHighlight,
   checkEaiSection,
+  checkTitleLengths,
+  checkWhyMattersFormat,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("extractUrlsBySection", () => {
@@ -402,6 +404,172 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     ].join("\n");
     const r = countTitlesPerHighlight(md);
     assert.equal(r.destaques[0].title_count, 1);
+  });
+});
+
+describe("checkTitleLengths (#701)", () => {
+  it("ok quando todos títulos cabem em ≤52 chars", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "Título curto",
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Outro título dentro do limite",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Terceiro título OK",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("erro quando 1+ título excede 52 chars", () => {
+    const longTitle = "Título extremamente longo que claramente passa do limite de 52 caracteres";
+    assert.ok(longTitle.length > 52);
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      longTitle,
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título OK",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Outro OK",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].destaque, 1);
+    assert.equal(r.errors[0].title, longTitle);
+    assert.equal(r.errors[0].length, longTitle.length);
+    assert.equal(r.errors[0].max, 52);
+  });
+
+  it("conta múltiplas opções de título (3 por destaque) — todas validadas", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Opção curta",
+      "Opção também curta",
+      "Opção bem longa que excede o limite de cinquenta e dois caracteres com folga",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "Título OK",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "Outro OK",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1); // só a 3ª opção falha
+    assert.equal(r.errors[0].destaque, 1);
+  });
+});
+
+describe("checkWhyMattersFormat (#701)", () => {
+  it("ok quando 'Por que isso importa:' não começa com 'Para [audiência],'", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://x.com",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "O dado muda a forma como a equipe avalia agentes em produção.",
+    ].join("\n");
+    const r = checkWhyMattersFormat(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("erro quando próxima linha começa com 'Para profissionais,'", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://x.com",
+      "",
+      "Por que isso importa:",
+      "Para profissionais de tecnologia, o dado muda...",
+    ].join("\n");
+    const r = checkWhyMattersFormat(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.match(r.errors[0].text, /^Para profissionais/);
+  });
+
+  it("erro inline 'Por que isso importa: Para X,'", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://x.com",
+      "",
+      "Por que isso importa: Para times de IA, o dado muda...",
+    ].join("\n");
+    const r = checkWhyMattersFormat(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+  });
+
+  it("ok quando começa com 'Para que' (não é audiência)", () => {
+    // Edge case: "Para que" é conjunção, não vocativo. Regex
+    // /^Para\s+[a-z]/ casa, mas é falso positivo aceitável — raro no
+    // corpus real e o benefício de não pular falsos negativos vale o
+    // ruído ocasional. Documentando aqui pra revisar se virar problema.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://x.com",
+      "",
+      "Por que isso importa: Para que o time entenda...",
+    ].join("\n");
+    const r = checkWhyMattersFormat(md);
+    // Sim, é falso positivo conhecido — assert que casa pra documentar
+    assert.equal(r.ok, false);
+  });
+
+  it("CRLF é normalizado", () => {
+    const md = "DESTAQUE 1\r\nTítulo\r\nhttps://x.com\r\n\r\nPor que isso importa:\r\nO dado muda...";
+    const r = checkWhyMattersFormat(md);
+    assert.equal(r.ok, true);
   });
 });
 

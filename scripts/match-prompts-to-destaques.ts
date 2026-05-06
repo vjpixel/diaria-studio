@@ -24,7 +24,7 @@
  * Output JSON: { ok, swaps: [{from, to}], reason }
  */
 
-import { readFileSync, writeFileSync, existsSync, renameSync, statSync } from "node:fs";
+import { readFileSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +69,10 @@ export function extractPromptUrl(promptMd: string): string | null {
   return bodyUrl ? bodyUrl[1] : null;
 }
 
+export type SwapsResult =
+  | { ok: true; swaps: Array<{ from: string; to: string }>; reason: string }
+  | { ok: false; reason: string };
+
 /**
  * Calcula swaps necessários pra alinhar prompts à ordem dos destaques.
  *
@@ -77,29 +81,61 @@ export function extractPromptUrl(promptMd: string): string | null {
  * Retorna lista de renomeações (paths originais → paths finais), garantida
  * de ser executável sequencialmente sem conflitos (usa intermediário .tmp
  * quando ciclo).
+ *
+ * Fail-closed quando informação insuficiente (#691):
+ *
+ * - Se prompt sem `destaque_url:` no frontmatter (`promptUrls.dN === null`),
+ *   retorna `ok: false` — Stage 3 deve bloquear em vez de gerar imagens
+ *   no destaque errado silenciosamente.
+ * - Se URL do prompt não existe no reviewed.md, mesmo comportamento.
+ *
+ * Antes desse fix, ambos os casos retornavam `[]` (no-op) e Stage 3
+ * passava como se "prompts já alinhados", quando na verdade não dá pra
+ * verificar.
  */
 export function computeSwaps(
   promptUrls: { d1: string | null; d2: string | null; d3: string | null },
   reviewedUrls: string[],
-): Array<{ from: string; to: string }> {
+): SwapsResult {
+  // Frontmatter ausente em algum prompt → fail-closed: não dá pra detectar reorder
+  for (const cur of ["d1", "d2", "d3"] as const) {
+    if (promptUrls[cur] === null) {
+      return {
+        ok: false,
+        reason:
+          `frontmatter destaque_url ausente em 02-${cur}-prompt.md — não dá pra ` +
+          `detectar reorder de destaques. Editar o prompt e adicionar ` +
+          `'destaque_url: <url-do-destaque>' no frontmatter, ou regenerar Stage 2.`,
+      };
+    }
+  }
+
   // Mapping: posição atual no prompt (1/2/3) → posição desejada no reviewed
   const desiredFor = new Map<string, number>(); // url → position (1-indexed)
   reviewedUrls.forEach((url, idx) => desiredFor.set(url, idx + 1));
 
   const currentByPrompt: Record<string, number | null> = {
-    d1: promptUrls.d1 ? desiredFor.get(promptUrls.d1) ?? null : null,
-    d2: promptUrls.d2 ? desiredFor.get(promptUrls.d2) ?? null : null,
-    d3: promptUrls.d3 ? desiredFor.get(promptUrls.d3) ?? null : null,
+    d1: desiredFor.get(promptUrls.d1!) ?? null,
+    d2: desiredFor.get(promptUrls.d2!) ?? null,
+    d3: desiredFor.get(promptUrls.d3!) ?? null,
   };
 
-  // Caso degenerado: alguma URL ausente do reviewed → sem swap (mantém ordem)
-  if (currentByPrompt.d1 === null || currentByPrompt.d2 === null || currentByPrompt.d3 === null) {
-    return [];
+  // URL do prompt ausente do reviewed → fail-closed também
+  for (const cur of ["d1", "d2", "d3"] as const) {
+    if (currentByPrompt[cur] === null) {
+      return {
+        ok: false,
+        reason:
+          `URL de 02-${cur}-prompt.md (${promptUrls[cur]}) não está em ` +
+          `02-reviewed.md — destaque foi removido no gate? Regenerar Stage 2 ou ` +
+          `corrigir o prompt manualmente.`,
+      };
+    }
   }
 
   // Já alinhado?
   if (currentByPrompt.d1 === 1 && currentByPrompt.d2 === 2 && currentByPrompt.d3 === 3) {
-    return [];
+    return { ok: true, swaps: [], reason: "prompts já alinhados" };
   }
 
   // Renomeio via temp pra evitar colisão (caso mais comum: d1↔d3 ou rotação 3-cycle)
@@ -122,7 +158,7 @@ export function computeSwaps(
     });
   }
 
-  return swaps;
+  return { ok: true, swaps, reason: "renomeados pra alinhar com reviewed" };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,20 +216,27 @@ function main(): void {
     }
   }
 
-  const swaps = computeSwaps(promptUrls, reviewedUrls);
+  const result = computeSwaps(promptUrls, reviewedUrls);
 
-  if (swaps.length === 0) {
-    console.log(JSON.stringify({ ok: true, swaps: [], reason: "prompts já alinhados ou sem frontmatter" }));
+  if (!result.ok) {
+    // Fail-closed: Stage 3 deve bloquear quando match-prompts não tem informação
+    // suficiente pra detectar reorder (frontmatter ausente, URL não bate).
+    console.log(JSON.stringify({ ok: false, reason: result.reason }));
+    process.exit(1);
+  }
+
+  if (result.swaps.length === 0) {
+    console.log(JSON.stringify({ ok: true, swaps: [], reason: result.reason }));
     return;
   }
 
   if (dryRun) {
-    console.log(JSON.stringify({ ok: true, swaps, reason: "dry-run — sem renomear" }, null, 2));
+    console.log(JSON.stringify({ ok: true, swaps: result.swaps, reason: "dry-run — sem renomear" }, null, 2));
     return;
   }
 
   // Executar swaps em ordem (todos pra .swap-tmp primeiro, depois pra desejados)
-  for (const s of swaps) {
+  for (const s of result.swaps) {
     const fromPath = resolve(internalDir, s.from);
     const toPath = resolve(internalDir, s.to);
     if (existsSync(fromPath)) {
@@ -201,7 +244,7 @@ function main(): void {
     }
   }
 
-  console.log(JSON.stringify({ ok: true, swaps, reason: "renomeados pra alinhar com reviewed" }, null, 2));
+  console.log(JSON.stringify({ ok: true, swaps: result.swaps, reason: result.reason }, null, 2));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
