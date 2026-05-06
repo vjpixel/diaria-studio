@@ -25,9 +25,11 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
 - Para as imagens de destaque: `data/editions/$1/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
 - (Opcional) `BEEHIIV_API_KEY` + `BEEHIIV_PUBLICATION_ID` para auto-fill de resultado do poll anterior no É IA?
 
-## Parte 1 — É IA? (pular se `$2 = d1|d2|d3`)
+## Parte 1 — É IA? (rodar APENAS se `$2 = eia`; #371, #748)
 
-> **Nota (#371):** a aprovação do É IA? acontece no gate integrado da Etapa 1, onde o bloco É IA? é embutido em `01-categorized.md` entre as seções Pesquisas e Notícias. Este skill usa o sub-comando `eai` principalmente para **regeneração** — quando o editor quer refazer o É IA? sem reprocessar as imagens de destaque.
+A aprovação do É IA? acontece no **gate integrado da Etapa 1**, onde o bloco É IA? é embutido em `01-categorized.md` entre as seções Pesquisas e Notícias. Este skill só processa a Parte 1 quando o editor invoca explicitamente com `$2 = eia` para **regeneração** — quando quer refazer o É IA? após Etapa 1 já aprovada (ex: imagem A/B insatisfatória, POTD ruim).
+
+**Em invocação default (sem `$2`) ou com `$2 = d1|d2|d3`: pular toda a Parte 1.** Não re-apresenta gate nem re-dispara `eia-composer` — o resultado já foi aprovado na Etapa 1.
 
 ### 1a. Coletar resultado do background dispatch
 
