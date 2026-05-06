@@ -154,7 +154,7 @@ function renderDestaque(chunk: string): string {
     }
   }
 
-  const label = `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#888;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">DESTAQUE ${escHtml(num)} | ${escHtml(tema)}</p>`;
+  const label = `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">DESTAQUE ${escHtml(num)} | ${escHtml(tema)}</p>`;
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;">${renderInline(title)}</h2>`
     : "";
@@ -165,7 +165,7 @@ function renderDestaque(chunk: string): string {
     )
     .join("\n");
   const conductorHtml = conductorText
-    ? `<p style="margin:20px 0 0 0;font-style:italic;color:#444;border-left:3px solid #ddd;padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
+    ? `<p style="margin:20px 0 0 0;font-style:italic;color:#444;border-left:3px solid #d0e8e8;padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
     : "";
 
   return label + titleHtml + mainHtml + conductorHtml;
@@ -190,7 +190,7 @@ function renderOutrasNoticias(chunk: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
+  const header = `<p style="margin:0 0 24px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#00A0A0;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -247,36 +247,60 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
   const content = lines.slice(1).join("\n").trim();
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
   const edition = eiaEditionFromYymm(yymm);
-  const imgStyle = "display:block;width:100%;max-width:560px;height:auto;margin:0 auto 8px;border-radius:4px;";
-  const placeholderStyle = "display:block;width:100%;max-width:560px;height:200px;margin:0 auto 8px;background:#f0f0f0;border:2px dashed #ccc;border-radius:4px;text-align:center;line-height:200px;color:#999;font-family:Arial,sans-serif;font-size:14px;";
-  const imagesHtml = (imageUrlA && imageUrlB) ? `
-<p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#888;font-family:Arial,Helvetica,sans-serif;">A</p>
-<img src="${escHtml(imageUrlA)}" alt="Imagem A" style="${imgStyle}" />
-<p style="margin:8px 0 4px 0;font-size:12px;font-weight:bold;color:#888;font-family:Arial,Helvetica,sans-serif;">B</p>
-<img src="${escHtml(imageUrlB)}" alt="Imagem B" style="${imgStyle}" />
-` : `
-<div style="${placeholderStyle}">Imagem A — adicionar no editor Brevo</div>
-<div style="${placeholderStyle}">Imagem B — adicionar no editor Brevo</div>
-`;
-  // Brevo merge tag para email do assinante (substituído no envio).
-  // &amp; necessário em href para HTML válido em email clients estritos.
-  const voteButtons = `
-<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:16px 0;">
-  <tr>
-    <td align="center">
-      <a href="${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A"
-         style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#00A0A0;border:2px solid #00A0A0;border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;margin:0 8px;">Votar A</a>
-      <a href="${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B"
-         style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#00A0A0;border:2px solid #00A0A0;border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;margin:0 8px;">Votar B</a>
-    </td>
-  </tr>
+  const TEAL = "#00A0A0";
+  const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A`;
+  const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B`;
+
+  // Renderiza um bloco imagem + botão de votação (sem label separado — botão já identifica A/B)
+  function imageBlock(label: string, imgUrl: string | undefined, voteUrl: string): string {
+    const imgHtml = imgUrl
+      ? `<img src="${escHtml(imgUrl)}" alt="Imagem ${label}" style="display:block;width:100%;height:auto;border-radius:6px;" />`
+      : `<div style="width:100%;height:180px;background:#f0f0f0;border:2px dashed #ccc;border-radius:6px;text-align:center;line-height:180px;color:#bbb;font-family:Arial,sans-serif;font-size:13px;">Imagem ${label}</div>`;
+    return `
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 12px;">
+  <tr><td>${imgHtml}</td></tr>
+  <tr><td align="center" style="padding:12px 0 0;">
+    <a href="${voteUrl}"
+       style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;background-color:${TEAL};border-radius:50px;padding:12px 32px;text-decoration:none;letter-spacing:0.02em;">Esta é IA — Votar ${label}</a>
+  </td></tr>
 </table>`;
-  return [
-    `<p style="margin:0 0 8px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">É IA? — Destaque do Mês</p>`,
-    imagesHtml,
-    `<p style="margin:0 0 16px 0;font-style:italic;color:#444;">${renderInline(content)}</p>`,
-    voteButtons,
-  ].join("\n");
+  }
+
+  return `
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#f0fafa;border-radius:10px;margin:0;">
+  <tr><td style="padding:24px 28px 20px;">
+
+    <!-- Cabeçalho -->
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 20px;">
+      <tr>
+        <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA? — Destaque do Mês</td>
+      </tr>
+      <tr>
+        <td style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:bold;color:#1a1a1a;padding:4px 0 0;">Qual das imagens foi gerada por IA?</td>
+      </tr>
+    </table>
+
+    <!-- Imagem A -->
+    ${imageBlock("A", imageUrlA, voteUrlA)}
+
+    <!-- Separador -->
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:4px 0 16px;">
+      <tr><td><hr style="border:none;border-top:1px solid #d0e8e8;margin:0;" /></td></tr>
+    </table>
+
+    <!-- Imagem B -->
+    ${imageBlock("B", imageUrlB, voteUrlB)}
+
+    <!-- Crédito -->
+    <p style="margin:12px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:13px;font-style:italic;color:#666;">${renderInline(content)}</p>
+
+    <!-- Leaderboard -->
+    <p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;">
+      Ver ranking: <a href="${workerUrl}/leaderboard" style="color:${TEAL};text-decoration:underline;">diar-ia-poll.diaria.workers.dev/leaderboard</a>
+    </p>
+
+  </td></tr>
+</table>`;
 }
 
 /** Parses the header chunk (before first ---) to extract subject, preview, intro. */
@@ -413,6 +437,66 @@ function draftToEmail(
 }
 
 // ─── Brevo API ─────────────────────────────────────────────────────────────
+
+/**
+ * Lê o ai_side do É IA? mensal e pré-registra o gabarito no Worker.
+ * Isso permite que o leitor veja o resultado imediatamente ao votar,
+ * sem esperar até a próxima edição.
+ *
+ * Tenta ler de (em ordem):
+ *   1. data/monthly/{YYMM}/_internal/01-eia-meta.json — campo ai_side
+ *   2. data/monthly/{YYMM}/01-eia.md — frontmatter eia_answer
+ */
+async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<void> {
+  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  const secret = process.env.POLL_SECRET;
+  if (!secret) {
+    process.stderr.write("warn: POLL_SECRET não definido — gabarito É IA? não pré-registrado\n");
+    return;
+  }
+
+  // Tentar ler ai_side de 01-eia-meta.json
+  let aiSide: string | null = null;
+  const metaPath = resolve(monthlyDir, "_internal", "01-eia-meta.json");
+  if (existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+      aiSide = meta.ai_side ?? null;
+    } catch { /* ignorar */ }
+  }
+
+  // Fallback: parsear frontmatter de 01-eia.md
+  if (!aiSide) {
+    const eiaPath = resolve(monthlyDir, "01-eia.md");
+    if (existsSync(eiaPath)) {
+      const text = readFileSync(eiaPath, "utf8");
+      const m = text.match(/^---[\s\S]*?eia_answer:\s*([AB])/m);
+      if (m) aiSide = m[1];
+    }
+  }
+
+  if (!aiSide || !["A", "B"].includes(aiSide)) {
+    process.stderr.write("warn: ai_side não encontrado — gabarito É IA? não pré-registrado (leitor verá resultado na próxima edição)\n");
+    return;
+  }
+
+  // Calcular HMAC admin (mesmo algoritmo de close-poll.ts)
+  const { createHmac } = await import("node:crypto");
+  const sig = createHmac("sha256", secret).update(`${edition}:${aiSide}`).digest("hex");
+  const url = `${workerUrl}/admin/correct?edition=${edition}&answer=${aiSide}&sig=${sig}`;
+
+  try {
+    const res = await fetch(url, { method: "POST" });
+    const data = await res.json() as { ok?: boolean; updated_votes?: number };
+    if (res.ok && data.ok) {
+      process.stdout.write(`Gabarito registrado: É IA? edição ${edition} = ${aiSide} (${data.updated_votes ?? 0} votos retroativos)\n`);
+    } else {
+      process.stderr.write(`warn: falha ao registrar gabarito: ${JSON.stringify(data)}\n`);
+    }
+  } catch (e) {
+    process.stderr.write(`warn: erro ao registrar gabarito É IA? — ${(e as Error).message}\n`);
+  }
+}
 
 /**
  * Faz upload de uma imagem para o KV do Worker de poll via Cloudflare API.
@@ -600,6 +684,10 @@ async function main(): Promise<void> {
       }
     }
     if (!eiaImageUrlA) process.stderr.write("warn: imagens É IA? não encontradas — seção sem imagens\n");
+
+    // Pré-registrar gabarito no Worker para resultado imediato ao votar
+    const eiaEdition = eiaEditionFromYymm(yymm);
+    await registerEiaAnswer(monthlyDir, eiaEdition);
   }
 
   // Convert draft to email
