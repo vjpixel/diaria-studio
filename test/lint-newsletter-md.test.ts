@@ -51,6 +51,25 @@ describe("extractUrlsBySection", () => {
     const r = extractUrlsBySection(md);
     assert.equal(Object.keys(r).length, 0);
   });
+
+  it("#599: extrai URL de inline link `[título](URL)` em seções secundárias", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "[GPT-5 lançado](https://openai.com/gpt5)",
+      "Descrição.",
+      "",
+      "---",
+      "PESQUISAS",
+      "[Novo paper](https://arxiv.org/abs/1234.5678)",
+      "Descrição.",
+    ].join("\n");
+    const r = extractUrlsBySection(md);
+    // URL extraída de dentro do inline link
+    assert.equal(r["LANÇAMENTOS"]?.length, 1);
+    assert.equal(r["LANÇAMENTOS"][0].url, "https://openai.com/gpt5");
+    assert.equal(r["PESQUISAS"]?.length, 1);
+    assert.equal(r["PESQUISAS"][0].url, "https://arxiv.org/abs/1234.5678");
+  });
 });
 
 describe("buildUrlBucketMap", () => {

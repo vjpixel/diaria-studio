@@ -28,7 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
-import { parseInlineLink, isInlineLinkLine } from "./lib/inline-link.ts"; // #599
+import { parseInlineLink } from "./lib/inline-link.ts"; // #599
 
 interface ApprovedArticle {
   url: string;

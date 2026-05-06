@@ -100,7 +100,11 @@ export function parseDestaques(raw: string): Destaque[] {
         if (isInlineLinkLine(t)) { k++; continue; }
         break;
       }
-      inlineFormatTitleEndIdx = k - 1; // última linha do bloco de títulos
+      // k-1 pode ser uma blank line (formato #245 tem blank entre elementos),
+      // mas bodyStart = urlIdx+1 = k-1+1 = k = primeira linha não-link não-blank.
+      // URL é extraída de inlineUrl diretamente (não de lines[urlIdx]), então
+      // apontar pra blank não causa problema na extração.
+      inlineFormatTitleEndIdx = k - 1;
     } else {
       // Novo formato (#172, expandido em #245): URL imediatamente após o bloco
       // de título(s). Pode ter blank lines entre elementos (double-newline) ou

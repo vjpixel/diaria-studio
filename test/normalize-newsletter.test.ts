@@ -328,7 +328,7 @@ describe("addTrailingSpaces (#382)", () => {
     assert.match(warnings[0], /DESTAQUE 3/);
   });
 
-  it("#599: inline links em destaques recebem trailing spaces; body não", () => {
+  it("#599: inline links em destaques recebem trailing spaces; body não (sem blanks)", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",
       "[Opção 1 do título](https://example.com/x)",
@@ -344,6 +344,34 @@ describe("addTrailingSpaces (#382)", () => {
     assert.ok(lines[3].endsWith("  "), "opção 3 deve ter trailing");
     assert.ok(!lines[4].endsWith("  "), "body 1 não deve ter trailing");
     assert.ok(!lines[5].endsWith("  "), "body 2 não deve ter trailing");
+  });
+
+  it("#599: body após blank line pós-inline-link NÃO recebe trailing (regressão bug #1 review)", () => {
+    // Formato #245: blank lines entre todos os elementos. Bug original:
+    // lookup no array out[out.length-1] falhava quando blank entrava no array,
+    // fazendo body ganhar "  ". Fix: state variable highlightInlineLinkSeen.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Opção 1 do título](https://example.com/x)",
+      "",
+      "[Opção 2 do título](https://example.com/x)",
+      "",
+      "[Opção 3 do título](https://example.com/x)",
+      "",
+      "Parágrafo do corpo que deve aparecer sem trailing.",
+      "",
+      "Segundo parágrafo do corpo.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    // Títulos (inline links) têm trailing
+    assert.ok(lines[2].endsWith("  "), "opção 1 deve ter trailing");
+    assert.ok(lines[4].endsWith("  "), "opção 2 deve ter trailing");
+    assert.ok(lines[6].endsWith("  "), "opção 3 deve ter trailing");
+    // Body NÃO tem trailing — mesmo com blank lines entre eles
+    assert.ok(!lines[8].endsWith("  "), "corpo 1 não deve ter trailing");
+    assert.ok(!lines[10].endsWith("  "), "corpo 2 não deve ter trailing");
   });
 
   it("#599: inline link em seção secundária recebe trailing; descrição não", () => {

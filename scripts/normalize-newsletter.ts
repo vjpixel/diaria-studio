@@ -257,6 +257,10 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
   let ctx: "highlight" | "section" | null = null;
   let highlightUrlSeen = false;
   let highlightHeader: string | null = null;
+  // #599: rastreia se já apareceu ao menos 1 inline link no bloco de destaque
+  // atual. Quando true e chega linha não-inline-link não-blank, transiciona
+  // pra body (não mais título). Não usa lookup no array (frágil ante blanks).
+  let highlightInlineLinkSeen = false;
   let sectionExpectTitle = false;
   let sectionExpectUrl = false;
 
@@ -282,6 +286,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (t === "---") {
       emitHighlightUrlMissingWarning();
       ctx = null; highlightUrlSeen = false; highlightHeader = null;
+      highlightInlineLinkSeen = false;
       sectionExpectTitle = false; sectionExpectUrl = false;
       out.push(t); continue;
     }
@@ -290,6 +295,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (isHighlightHeader(t)) {
       emitHighlightUrlMissingWarning();
       ctx = "highlight"; highlightUrlSeen = false; highlightHeader = t;
+      highlightInlineLinkSeen = false;
       out.push(t); continue;
     }
 
@@ -297,7 +303,7 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
     if (isSectionHeader(t)) {
       emitHighlightUrlMissingWarning();
       ctx = "section"; sectionExpectTitle = true; sectionExpectUrl = false;
-      highlightHeader = null;
+      highlightHeader = null; highlightInlineLinkSeen = false;
       out.push(t); continue;
     }
 
@@ -313,16 +319,17 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
         highlightUrlSeen = true;
         out.push(t); // URL do destaque: sem trailing space
       } else if (isInlineLinkLine(t)) {
-        // #599 — formato inline `[título](URL)`. Mantém URL embedada no
-        // título e trailing spaces para separação visual no Drive preview.
-        // Não flipa highlightUrlSeen — pode haver mais opções de título
-        // antes do gate ser aprovado (3 opções pré-pruning).
+        // #599 — formato inline `[título](URL)`. Trailing spaces pra separação
+        // visual no Drive preview. Flipa highlightInlineLinkSeen pra que
+        // qualquer linha não-link que venha depois (mesmo após blank) seja
+        // reconhecida como body.
+        highlightInlineLinkSeen = true;
         out.push(t + "  ");
       } else {
-        // Linha não-blank, não-URL, não-inline-link DENTRO de bloco DESTAQUE:
-        // se já vimos pelo menos 1 inline link, isso indica fim do bloco de
-        // títulos (body começou). Transição out de title block.
-        if (out.length > 0 && /^\[[^\]]+\]\(https?:\/\/[^)]+\)\s\s$/.test(out[out.length - 1])) {
+        // Linha não-blank, não-URL, não-inline-link dentro de bloco DESTAQUE.
+        // Se já vimos um inline link → body começou; transição. Caso contrário,
+        // trata como opção de título legacy (formato antigo sem inline link).
+        if (highlightInlineLinkSeen) {
           highlightUrlSeen = true;
           out.push(t); // body — sem trailing
           continue;
