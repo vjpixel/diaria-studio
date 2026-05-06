@@ -170,7 +170,7 @@ export function buildScoreIndexes(allScored: ScoredEntry[]): {
 // Bypass checks (#721)
 // ---------------------------------------------------------------------------
 
-const PLACEHOLDER_TITLE_RE = /^\(inbox\)$/i;
+const PLACEHOLDER_TITLE_RE = /^\((inbox|no title|sem título)\)$/i;
 const SIGNUP_META_RE = /buttondown|subscribe|newsletter|sign.?up/i;
 
 /**
