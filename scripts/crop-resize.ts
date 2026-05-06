@@ -10,7 +10,7 @@
  * Defaults: 800x450 (16:9). Output is always JPEG at quality 90.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import sharp from "sharp";
 
 const args = process.argv.slice(2);
@@ -35,12 +35,20 @@ if (!inputPath || !outputPath) {
   process.exit(2);
 }
 
-const buf = readFileSync(inputPath);
+if (!existsSync(inputPath)) {
+  console.error(`crop-resize: input não existe: ${inputPath}`);
+  process.exit(2);
+}
 
-const result = await sharp(buf)
-  .resize(width, height, { fit: "cover", position: "centre" })
-  .jpeg({ quality: 90 })
-  .toBuffer();
-
-writeFileSync(outputPath, result);
-console.log(outputPath);
+try {
+  const buf = readFileSync(inputPath);
+  const result = await sharp(buf)
+    .resize(width, height, { fit: "cover", position: "centre" })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+  writeFileSync(outputPath, result);
+  console.log(outputPath);
+} catch (e: unknown) {
+  console.error(`crop-resize: sharp falhou: ${(e as Error).message ?? e}`);
+  process.exit(3);
+}

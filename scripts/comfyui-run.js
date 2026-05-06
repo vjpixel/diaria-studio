@@ -51,6 +51,23 @@ const workflow = { prompt: nodes };
 (async () => {
   const t0 = Date.now();
 
+  // Validar que o checkpoint está disponível antes de submeter (evita timeout
+  // obscuro de 300s — ComfyUI aceita o workflow mas falha em execução se o
+  // modelo não existir localmente, e o polling nunca detecta "completed").
+  try {
+    const objInfo = await fetch(`${host}/object_info/CheckpointLoaderSimple`).then(r => r.json());
+    const available = objInfo?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] ?? [];
+    if (Array.isArray(available) && available.length > 0 && !available.includes(checkpoint)) {
+      console.error(`Checkpoint "${checkpoint}" não está disponível no ComfyUI.`);
+      console.error(`Disponíveis: ${available.join(', ')}`);
+      console.error(`Ajustar platform.config.json > comfyui.checkpoint ou baixar o modelo.`);
+      process.exit(2);
+    }
+  } catch {
+    // Se /object_info falhar (ComfyUI offline, versão sem endpoint), continuar
+    // — o erro real surgirá no submit ou polling com mensagem adequada.
+  }
+
   // Submit
   const submitRes = await fetch(`${host}/prompt`, {
     method: 'POST',
@@ -74,7 +91,14 @@ const workflow = { prompt: nodes };
     if (!histRes.ok) continue;
     const hist = await histRes.json();
     const entry = hist[prompt_id];
-    if (!entry || !entry.status || !entry.status.completed) continue;
+    if (!entry || !entry.status) continue;
+    // Detectar node_errors antes de aguardar completed (que nunca vem se workflow errou)
+    const nodeErrors = entry.status?.exec_info?.node_errors;
+    if (nodeErrors && Object.keys(nodeErrors).length > 0) {
+      console.error('ComfyUI node_errors:', JSON.stringify(nodeErrors, null, 2));
+      process.exit(1);
+    }
+    if (!entry.status.completed) continue;
     const imgs = Object.values(entry.outputs || {}).flatMap(o => o.images || []);
     if (imgs.length) { filename = imgs[0].filename; break; }
   }

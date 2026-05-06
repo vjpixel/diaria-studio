@@ -25,8 +25,8 @@ export const SdPromptSchema = z.object({
    * Dimensões finais da imagem. Diar.ia usa 1600×800 (D1 wide 2:1) ou
    * 1024×1024 (D2/D3 nativo Gemini). Outros valores indicam config errada.
    */
-  final_width: z.number().int().positive().max(4096),
-  final_height: z.number().int().positive().max(4096),
+  final_width: z.number().int().min(256, "min 256px").max(4096),
+  final_height: z.number().int().min(256, "min 256px").max(4096),
 }).passthrough();
 
 export type SdPrompt = z.infer<typeof SdPromptSchema>;

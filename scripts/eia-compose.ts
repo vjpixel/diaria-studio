@@ -268,12 +268,20 @@ export function firstSentence(text: string): string {
   return text.trim();
 }
 
-async function fetchPotd(iso: string): Promise<WikimediaImage | null> {
+async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaImage | null> {
   const [yyyy, mm, dd] = iso.split("-");
   const url = `https://api.wikimedia.org/feed/v1/wikipedia/en/featured/${yyyy}/${mm}/${dd}`;
   const res = await fetch(url, {
     headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
   });
+  // 429 com retry/backoff: não iterar pro dia anterior (seria desperdiçar tentativas
+  // se Wikimedia está rate-limitando o IP — todas as chamadas imediatas também batem).
+  if (res.status === 429 && retryOnRateLimit > 0) {
+    const retryAfter = parseInt(res.headers.get("retry-after") ?? "2", 10);
+    const delaySec = Number.isFinite(retryAfter) ? retryAfter : Math.pow(2, 4 - retryOnRateLimit);
+    await new Promise((r) => setTimeout(r, delaySec * 1000));
+    return fetchPotd(iso, retryOnRateLimit - 1);
+  }
   if (!res.ok) return null;
   const data = (await res.json()) as WikimediaResponse;
   return data.image ?? null;
@@ -586,10 +594,12 @@ export function extractCommonsUserUrl(artistRaw: string | undefined): string | n
 }
 
 function extractArtistName(artistText: string | undefined): string {
-  if (!artistText) return "Wikimedia Commons";
-  const stripped = stripHtml(artistText);
-  // Tira "by " no início se houver
-  return stripped.replace(/^by\s+/i, "").trim() || "Wikimedia Commons";
+  if (!artistText) return "autor desconhecido";
+  const stripped = stripHtml(artistText).replace(/^by\s+/i, "").trim();
+  // Wikimedia frequentemente retorna "Unknown" ou "Unknown author" para domínio
+  // público antigo sem atribuição — tratar como ausente em vez de publicar "Unknown".
+  if (!stripped || /^unknown(\s+author)?$/i.test(stripped)) return "autor desconhecido";
+  return stripped;
 }
 
 /**
