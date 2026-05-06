@@ -25,6 +25,8 @@ import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
+import { AI_RELEVANT_TERMS, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
+export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 
 export interface Article {
   url: string;
@@ -76,26 +78,22 @@ const PESQUISA_DOMAINS = new Set([
 
 /**
  * Termos relevantes para o tema da Diar.ia (IA, ML, NLP).
- * Artigos arXiv sem nenhum desses termos no título/resumo são off-topic
- * (ex: física, biologia computacional, econometria) e descartados antes
- * de entrar no pipeline de curadoria.
+ * Re-export de `scripts/lib/ai-relevance.ts` (#642) — `ARXIV_RELEVANT_TERMS`
+ * mantido como alias deprecated pra compat com callers existentes.
  *
- * O filtro é permissivo (basta 1 match) pra minimizar falsos negativos —
- * prefere-se manter um paper de borda do que perder um paper relevante.
+ * @deprecated Use `AI_RELEVANT_TERMS` de `scripts/lib/ai-relevance.ts`.
  */
-export const ARXIV_RELEVANT_TERMS =
-  /\b(language\s+model\w*|llm\b|transformer\w*|diffusion\b|neural\s+network\w*|deep\s+learn\w*|reinforcement\s+learn\w*|computer\s+vision\b|natural\s+language\b|multimodal\b|foundation\s+model\w*|generative\b|bert\b|gpt\b|attention\s+mechanism\w*|fine[-_ ]?tun\w*|instruction\b|alignment\b|benchmark\w*|reasoning\b|chain[-.]of[-.]thought\b|rag\b|retrieval\b|embedding\w*|agent\b|chatbot\w*|text.to.image\b|speech\s+recognition\b|sentiment\b|named\s+entit\w*|question\s+answer\w*|text\s+generation\b|image\s+generation\b|video\s+generation\b|code\s+generation\b|protein\b|genomic\b|drug\s+discovery\b)/i;
+export const ARXIV_RELEVANT_TERMS = AI_RELEVANT_TERMS;
 
 /**
- * Retorna `true` se o artigo deve passar pelo pipeline editorial.
+ * Retorna `true` se o artigo arXiv deve passar pelo pipeline editorial.
  * Para artigos não-arXiv, sempre retorna `true` (sem filtro).
- * Para artigos arXiv, exige ao menos 1 match de `ARXIV_RELEVANT_TERMS`
- * no título ou resumo (#501).
+ * Para artigos arXiv, exige ao menos 1 match de `AI_RELEVANT_TERMS`
+ * no título ou resumo (#501, #642).
  */
 export function isArxivRelevant(article: Article): boolean {
   if (!article.url?.includes("arxiv.org")) return true; // não é arXiv → passa
-  const text = `${article.title ?? ""} ${article.summary ?? ""}`;
-  return ARXIV_RELEVANT_TERMS.test(text);
+  return isArticleAIRelevant(article);
 }
 
 const PESQUISA_PATTERNS: RegExp[] = [
