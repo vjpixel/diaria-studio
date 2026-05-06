@@ -31,7 +31,7 @@ Exit code handling:
 
 O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
 
-- **Se o Agent do eia-composer ainda não completou:** aguardar. Quando completar, seguir.
+- **Se o Agent do eia-composer ainda não completou:** aguardar até 10 minutos a partir de `eia_dispatch_ts`. Se expirar sem conclusão, reportar: `"⚠️ eia-composer não completou em 10min. Opções: (r) retry — re-disparar eia-composer agora; (s) skip — pular É IA? e continuar com imagens de destaque (será necessário adicionar É IA? manualmente antes do Stage 4)."` Em retry: re-disparar com os mesmos parâmetros e aguardar mais 10min. Em skip: logar warn (`mcp_disconnect` não se aplica — usar `eia_composer_timeout`), definir `eia_available = false`, continuar para 3b.
 - **Se o Agent já completou (ou `01-eia.md` já existe por resume):** continuar.
 - Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros). Após retry bem-sucedido, re-renderizar `01-categorized.md` para incluir o bloco atualizado (se o gate da Etapa 1 ainda não foi aprovado) ou informar o editor que o arquivo foi atualizado localmente.
 - **Sync push das imagens do É IA? para o Drive:**
@@ -55,7 +55,7 @@ O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? j
   ```
 - **Sync pull antes de começar** — prompts de imagem derivam dos destaques escritos na Etapa 2:
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 02-d1-prompt.md,02-d2-prompt.md,02-d3-prompt.md
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   ```
 - Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível:
   ```bash
