@@ -15,9 +15,21 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 
 ### 4a. Pré-requisitos + sync
 
-**⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente** e reportar:
+**⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
+  --level warn --message "mcp_disconnect: {server_name}" \
+  --details '{"server":"{server_name}","kind":"mcp_disconnect"}'
+```
+E reportar:
 > `BLOQUEADO: MCP {servidor} indisponível. Verifique extensão Chrome + login. Responda "retry" para continuar ou "abort" para encerrar Etapa 4.`
-Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio.
+Ao reconectar (MCP voltar a responder), logar:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
+  --level info --message "mcp_reconnect: {server_name}" \
+  --details '{"server":"{server_name}","kind":"mcp_reconnect"}'
+```
+Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio. Os logs persistem em `data/run-log.jsonl` para auditoria pelo `collect-edition-signals.ts` (#759).
 
 - Logar início:
   ```bash

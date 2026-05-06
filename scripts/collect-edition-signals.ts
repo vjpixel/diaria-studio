@@ -217,6 +217,7 @@ export function signalsFromMcpUnavailable(
 ): Signal[] {
   let count = 0;
   const firstAt: string[] = [];
+  const servers = new Set<string>();
   for (const line of lines) {
     if (!line.trim()) continue;
     let parsed: LogEntry;
@@ -228,15 +229,17 @@ export function signalsFromMcpUnavailable(
     if (edition && parsed.edition && parsed.edition !== edition) continue;
     if (parsed.level !== "error" && parsed.level !== "warn") continue;
     const msg = (parsed.message ?? "").toLowerCase();
-    if (
+    const matched =
       msg.includes("claude-in-chrome mcp unavailable") ||
       msg.includes("claude_in_chrome_mcp_unavailable") ||
+      // New structured format from orchestrator (#759): "mcp_disconnect: {server}"
+      msg.startsWith("mcp_disconnect:") ||
       // Catch-all genérico, restrito a contexto claude/chrome pra evitar
       // false-positive em outros MCPs (Beehiiv, Clarice, etc) que possam
       // logar a mesma string sem o prefixo específico.
       (msg.includes("mcp unavailable") &&
-        (msg.includes("claude") || msg.includes("chrome")))
-    ) {
+        (msg.includes("claude") || msg.includes("chrome")));
+    if (matched) {
       count++;
       if (
         typeof parsed.timestamp === "string" &&
@@ -244,22 +247,39 @@ export function signalsFromMcpUnavailable(
       ) {
         firstAt.push(parsed.timestamp);
       }
+      // Extract server name from structured "mcp_disconnect: {server}" format (#759)
+      if (msg.startsWith("mcp_disconnect:")) {
+        const serverName = (parsed.message ?? "").slice("mcp_disconnect:".length).trim();
+        if (serverName) servers.add(serverName);
+      } else if (msg.includes("chrome") || msg.includes("claude-in-chrome")) {
+        servers.add("claude-in-chrome");
+      }
     }
   }
 
   if (count === 0) return [];
 
+  // Use a generic title when non-Chrome MCPs are involved (#759)
+  const hasChromeOnly = servers.size === 0 || (servers.size === 1 && servers.has("claude-in-chrome"));
+  const serverList = servers.size > 0 ? Array.from(servers).join(", ") : "claude-in-chrome";
+  const title = hasChromeOnly
+    ? `Claude in Chrome MCP indisponível na edição (${count} ocorrência${count > 1 ? "s" : ""})`
+    : `MCP indisponível na edição: ${serverList} (${count} ocorrência${count > 1 ? "s" : ""})`;
+
   return [
     {
       kind: "mcp_unavailable",
       severity: "medium",
-      title: `Claude in Chrome MCP indisponível na edição (${count} ocorrência${count > 1 ? "s" : ""})`,
+      title,
       details: {
         count,
+        servers: Array.from(servers),
         first_occurrences: firstAt,
       },
       suggested_action:
-        "Verificar se a extensão Claude in Chrome está instalada, ativa e logada antes da próxima edição. Stage 5 (Beehiiv) e LinkedIn do Stage 6 dependem desse MCP — pré-flight automático sendo discutido em #143.",
+        hasChromeOnly
+          ? "Verificar se a extensão Claude in Chrome está instalada, ativa e logada antes da próxima edição. Stage 5 (Beehiiv) e LinkedIn do Stage 6 dependem desse MCP — pré-flight automático sendo discutido em #143."
+          : `MCP(s) ${serverList} ficaram offline durante a edição. Verificar conectividade e configuração antes da próxima rodada.`,
       related_issue: "#143",
     },
   ];
@@ -285,6 +305,10 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   /chrome desconectado/i,
   /claude-in-chrome mcp unavailable/i,
   /claude_in_chrome_mcp_unavailable/i,
+  // #759 — structured MCP disconnect/reconnect events logged by orchestrators.
+  // Already captured by signalsFromMcpUnavailable — skip to avoid duplication.
+  /^mcp_disconnect:/i,
+  /^mcp_reconnect:/i,
   // #556, #559 — by-design no /diaria-test: warns que mencionam test_mode
   // não merecem virar issue (são comportamento esperado em modo teste).
   /test_mode/i,

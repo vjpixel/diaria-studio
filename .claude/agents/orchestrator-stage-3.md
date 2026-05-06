@@ -9,6 +9,8 @@ description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orche
 
 ## Etapa 3 — Imagens
 
+**MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Clarice, Beehiiv, Gmail, Chrome, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759).
+
 ### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371)
 
 O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
