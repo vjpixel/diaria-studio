@@ -37,8 +37,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Se `coverage` ausente do approved.json (regen retroativa, edição antiga), fallback: ler totalSelected do approved e emitir formato com `???` no lugar de Y. **Não inventar** números.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **Label editorial específico** para `[CATEGORIA]` no cabeçalho `DESTAQUE N | [CATEGORIA]`. Nunca usar o genérico `NOTÍCIA` — escolher um que descreva o ângulo real: `PESQUISA`, `LANÇAMENTO`, `MERCADO`, `CONCEITO`, `FERRAMENTA`, `PRODUTO`, `TENDÊNCIA`, `INDÚSTRIA`, `CULTURA`, `BRASIL`, `OPINIÃO`, `DADOS`, `REGULAÇÃO`, ou criar um novo se nenhum se encaixar.
-   - **3 opções de título** (cada ≤52 chars).
-   - **URL imediatamente abaixo das 3 opções de título** (#172) — antes dos parágrafos do corpo. Link canônico da fonte primária.
+   - **3 opções de título com URL embedada** (#599): cada opção como markdown link `[Título — máx 52 chars](URL)`. Todas as 3 opções apontam pra **mesma URL canônica** da fonte primária — são variantes do mesmo título do mesmo artigo. Editor poda 2 no gate de Etapa 2, sobra 1 título-com-link clicável. Comprimento ≤52 chars conta só o texto dentro de `[...]`, não o markdown.
    - Corpo breve (2-4 parágrafos curtos).
    - "Por que isso importa:" **em linha separada**. O parágrafo vai direto ao impacto — nunca começa com "Para [audiência]," (ex: "Para profissionais de..."). Certo: "O dado muda o critério...".
    - **Evitar "IA" e "inteligência artificial"** no corpo dos destaques sempre que possível — o contexto já está dado pelo veículo. Use o sujeito concreto: o modelo, a empresa, a ferramenta, o paper. Reserve "IA" para títulos ou quando a distinção for essencial.
@@ -57,18 +56,17 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
      ---
      ```
    - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
-3. Lançamentos, Pesquisas, Notícias: lista curta — **3 linhas por item na ordem `Título / URL / Descrição`** (#172). URL imediatamente abaixo do título facilita o gate humano. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
+3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `[Título](URL) / Descrição`** (#599). URL embedada no título via markdown link (mesmo formato dos destaques). **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, título/URL/descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
-   - Cada uma das 3 opções de título dos destaques (D1/D2/D3).
-   - A linha de título de cada item nas seções LANÇAMENTOS, PESQUISAS e OUTRAS NOTÍCIAS.
-   - A linha de URL de cada item nas seções acima.
+   - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.
+   - A linha de cada item nas seções LANÇAMENTOS, PESQUISAS e OUTRAS NOTÍCIAS — linhas `[Título](URL)`.
    A linha de descrição (última de cada item) **não** precisa de trailing spaces.
 5. Checklist pré-saída (todos devem passar):
-   - Nenhum título >52 chars.
-   - 3 opções por destaque.
-   - URL na linha imediatamente após o último título (antes do corpo) — separada por blank line.
-   - Linha em branco separando cada par de elementos (header/título/URL/parágrafo).
+   - Nenhum título >52 chars (medindo só o texto dentro de `[...]`, não o markdown).
+   - 3 opções por destaque, todas no formato `[Título](URL)` apontando pra mesma URL.
+   - Itens de seção (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) também no formato `[Título](URL)` na primeira linha.
+   - Linha em branco separando cada par de elementos (header/título/parágrafo).
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).

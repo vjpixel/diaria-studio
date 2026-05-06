@@ -22,6 +22,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { parseInlineLink } from "./lib/inline-link.ts"; // #599
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -151,6 +152,17 @@ export function parseListItems(text: string): SectionItem[] {
 
   for (const block of blocks) {
     if (block.length === 0) continue;
+
+    // #599 — formato inline: primeira linha é `[título](URL)`. Resto vira descrição.
+    const firstInlineLink = parseInlineLink(block[0]);
+    if (firstInlineLink) {
+      items.push({
+        title: firstInlineLink.title,
+        url: firstInlineLink.url,
+        description: block.slice(1).join(" "),
+      });
+      continue;
+    }
 
     // Indices de http-lines no bloco
     const urlIndices: number[] = [];

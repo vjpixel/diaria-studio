@@ -4,6 +4,8 @@ Formato exato do output da edição. Seguir rigorosamente.
 
 **Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único ilegível.
 
+**Formato URL (#599 — atualizado):** URL fica **embedada no próprio título via markdown link** `[Título](URL)` em vez de linha solo separada. Aplica-se tanto a destaques (cada uma das 3 opções) quanto a seções secundárias (cada item). Vantagem: menos ruído visual, título vira CTA clicável, mobile-friendly. Parsers aceitam ambos os formatos (legacy URL solo + inline) durante a transição.
+
 **Linha de cobertura (#592, #609):** primeira linha do reviewed.md, formato literal copiado de `_internal/01-approved.json` campo `coverage.line`. Padrão esperado:
 
 ```
@@ -13,13 +15,11 @@ Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou out
 
 DESTAQUE 1 | [CATEGORIA]
 
-[Opção de título 1 — máx. 52 chars]
+[Opção de título 1 — máx. 52 chars](URL)
 
-[Opção de título 2 — máx. 52 chars]
+[Opção de título 2 — máx. 52 chars](URL)
 
-[Opção de título 3 — máx. 52 chars]
-
-[URL — sem paywall, dentro da janela, não usado nas últimas 3 edições]
+[Opção de título 3 — máx. 52 chars](URL)
 
 [Parágrafo 1 — abre a história]
 
@@ -49,15 +49,11 @@ DESTAQUE 3 | [CATEGORIA]
 
 LANÇAMENTOS
 
-[Título do item]
-
-[URL limpa]
+[Título do item](URL)
 
 [Frase descritiva em 1 linha]
 
-[Título do próximo item]
-
-[URL limpa]
+[Título do próximo item](URL)
 
 [Frase descritiva]
 
@@ -77,14 +73,12 @@ OUTRAS NOTÍCIAS
 
 VÍDEOS (opcional — omitir se bucket vazio)
 
-[Título do Vídeo] — [Canal]
-
-[URL do vídeo]
+[Título do Vídeo] — [Canal](URL)
 
 [Frase descritiva em 1 linha]
 ```
 
-A URL fica imediatamente abaixo do bloco de título(s) — facilita o gate humano (copiar/abrir/reordenar mais rápido). A ordem visual no email final (Beehiiv) é independente: o renderer rearranja como título → descrição → CTA.
+URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2, sobrando 1 título-com-URL. Todas as 3 opções pré-gate apontam pra **mesma URL canônica** (são variantes do mesmo título do mesmo artigo).
 
 ## Regras de preenchimento
 

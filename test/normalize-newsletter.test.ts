@@ -328,6 +328,37 @@ describe("addTrailingSpaces (#382)", () => {
     assert.match(warnings[0], /DESTAQUE 3/);
   });
 
+  it("#599: inline links em destaques recebem trailing spaces; body não", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "[Opção 1 do título](https://example.com/x)",
+      "[Opção 2 do título](https://example.com/x)",
+      "[Opção 3 do título](https://example.com/x)",
+      "Parágrafo do corpo, primeiro.",
+      "Outro parágrafo do body.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[1].endsWith("  "), "opção 1 deve ter trailing");
+    assert.ok(lines[2].endsWith("  "), "opção 2 deve ter trailing");
+    assert.ok(lines[3].endsWith("  "), "opção 3 deve ter trailing");
+    assert.ok(!lines[4].endsWith("  "), "body 1 não deve ter trailing");
+    assert.ok(!lines[5].endsWith("  "), "body 2 não deve ter trailing");
+  });
+
+  it("#599: inline link em seção secundária recebe trailing; descrição não", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "",
+      "[Título do item](https://example.com/x)",
+      "Descrição em 1 linha.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[2].endsWith("  "), "inline link de item deve ter trailing");
+    assert.ok(!lines[3].endsWith("  "), "descrição não deve ter trailing");
+  });
+
   it("#691: destaque com URL não emite warning", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",

@@ -32,6 +32,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -311,8 +312,22 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
       if (isUrl(t)) {
         highlightUrlSeen = true;
         out.push(t); // URL do destaque: sem trailing space
+      } else if (isInlineLinkLine(t)) {
+        // #599 — formato inline `[título](URL)`. Mantém URL embedada no
+        // título e trailing spaces para separação visual no Drive preview.
+        // Não flipa highlightUrlSeen — pode haver mais opções de título
+        // antes do gate ser aprovado (3 opções pré-pruning).
+        out.push(t + "  ");
       } else {
-        out.push(t + "  "); // opção de título
+        // Linha não-blank, não-URL, não-inline-link DENTRO de bloco DESTAQUE:
+        // se já vimos pelo menos 1 inline link, isso indica fim do bloco de
+        // títulos (body começou). Transição out de title block.
+        if (out.length > 0 && /^\[[^\]]+\]\(https?:\/\/[^)]+\)\s\s$/.test(out[out.length - 1])) {
+          highlightUrlSeen = true;
+          out.push(t); // body — sem trailing
+          continue;
+        }
+        out.push(t + "  "); // opção de título legacy (sem inline link)
       }
       continue;
     }
