@@ -45,7 +45,7 @@ Escolha **uma** das opções:
 MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
 ```
 
-### Opção B — `platform.config.json`
+### Opção B — `platform.config.json` (NÃO recomendado)
 
 ```json
 "publishing": {
@@ -57,6 +57,8 @@ MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
 }
 ```
 
+> ⚠️ **Não use em repositório público.** A URL do webhook Make.com é secret-equivalente — qualquer um com a URL pode disparar publicações no LinkedIn. `platform.config.json` é versionado, então o segredo iria pro git history. Prefira sempre a Opção A (`.env`, gitignored). Mantenha `make_webhook_url: ""` no config versionado.
+>
 > A variável de ambiente tem precedência sobre o config.
 
 ---
