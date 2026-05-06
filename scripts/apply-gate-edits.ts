@@ -183,6 +183,45 @@ export function canonicalizeUrl(url: string): string {
   return canonicalize_(url);
 }
 
+/**
+ * Resolve a lista final de URLs para a seção Destaques (#663).
+ *
+ * Se o editor não preencheu os 3 destaques, completa com candidatos do scorer
+ * por rank — mas **apenas** URLs que ainda existem em algum bucket do MD.
+ * Artigos que o editor removeu dos buckets não podem voltar como destaques.
+ *
+ * Retorna array de 0–3 URLs na ordem editorial.
+ */
+export function resolveDestaques(
+  sections: Record<BucketName, string[]>,
+  originalHighlights: Array<{ rank: number; url?: string; article?: { url?: string } | null }>,
+): string[] {
+  let destaquesUrls = [...sections.destaques];
+
+  if (destaquesUrls.length < 3) {
+    // #663: só aceitar URLs que ainda estão em algum bucket do MD
+    const mdBucketUrls = new Set([
+      ...sections.lancamento,
+      ...sections.pesquisa,
+      ...sections.noticias,
+      ...sections.tutorial,
+      ...sections.video,
+    ]);
+    const scorerRanked = [...originalHighlights].sort((a, b) => a.rank - b.rank);
+    for (const h of scorerRanked) {
+      if (destaquesUrls.length >= 3) break;
+      const url = h.url ?? (h.article as { url?: string } | null)?.url;
+      if (url && !destaquesUrls.includes(url) && mdBucketUrls.has(url)) {
+        destaquesUrls.push(url);
+      }
+    }
+  } else if (destaquesUrls.length > 3) {
+    destaquesUrls = destaquesUrls.slice(0, 3);
+  }
+
+  return destaquesUrls;
+}
+
 function findArticle(
   url: string,
   pools: Article[][],
@@ -242,24 +281,23 @@ function main() {
   const allPools = [data.lancamento, data.pesquisa, data.noticias, data.tutorial ?? [], data.video ?? []];
 
   // ---- Destaques ---------------------------------------------------------
-  let destaquesUrls = [...sections.destaques];
-  if (destaquesUrls.length < 3) {
-    // Completa com candidatos do scorer por rank.
-    // JSON pode ter URL flat (h.url) OU nested (h.article.url) — suporta ambos (#323).
-    const scorerRanked = [...originalHighlights].sort((a, b) => a.rank - b.rank);
-    for (const h of scorerRanked) {
-      if (destaquesUrls.length >= 3) break;
-      const url = h.url ?? (h.article as { url?: string } | null)?.url;
-      if (url && !destaquesUrls.includes(url)) destaquesUrls.push(url);
+  const destaquesUrls = resolveDestaques(sections, originalHighlights);
+
+  if (sections.destaques.length > 3) {
+    console.error(
+      `[apply-gate-edits] ${sections.destaques.length} destaques no MD — mantendo só os 3 primeiros por posição.`,
+    );
+  } else if (sections.destaques.length < 3) {
+    const filled = destaquesUrls.length - sections.destaques.length;
+    if (destaquesUrls.length === 0) {
+      console.error(
+        `[apply-gate-edits] WARN: Destaques vazio e todos os candidatos do scorer foram removidos dos buckets — aprovado com 0 destaques.`,
+      );
+    } else if (filled > 0) {
+      console.error(
+        `[apply-gate-edits] Destaques incompletos (${sections.destaques.length}) — completando com ${filled} candidato(s) do scorer presentes nos buckets.`,
+      );
     }
-    console.error(
-      `[apply-gate-edits] Destaques incompletos (${sections.destaques.length}) — completando com ${destaquesUrls.length - sections.destaques.length} candidato(s) do scorer.`,
-    );
-  } else if (destaquesUrls.length > 3) {
-    console.error(
-      `[apply-gate-edits] ${destaquesUrls.length} destaques no MD — mantendo só os 3 primeiros por posição.`,
-    );
-    destaquesUrls = destaquesUrls.slice(0, 3);
   }
 
   const highlights: Highlight[] = [];

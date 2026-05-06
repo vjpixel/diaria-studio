@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSections, mergeWithNewJson, canonicalizeUrl } from "../scripts/apply-gate-edits.ts";
+import { parseSections, mergeWithNewJson, canonicalizeUrl, resolveDestaques } from "../scripts/apply-gate-edits.ts";
 
 describe("parseSections", () => {
   it("extrai URLs de todas as 4 seções", () => {
@@ -310,5 +310,74 @@ describe("parseSections — strip pontuação trailing na URL (#443)", () => {
     const md = `## Destaques\n\n1. [90] Título — https://example.com/article — 2026-05-01\n\n## Lançamentos\n\n## Pesquisas\n\n## Notícias\n`;
     const result = parseSections(md);
     assert.ok(result.destaques.includes("https://example.com/article"));
+  });
+});
+
+describe("resolveDestaques (#663) — fallback respeita intenção do editor", () => {
+  const highlights = [
+    { rank: 1, url: "https://a.com/1" },
+    { rank: 2, url: "https://b.com/2" },
+    { rank: 3, url: "https://c.com/3" },
+  ];
+
+  const makeSection = (destaques: string[], noticias: string[]) => ({
+    destaques,
+    lancamento: [],
+    pesquisa: [],
+    noticias,
+    tutorial: [],
+    video: [],
+  });
+
+  it("editor selecionou 3 destaques → usa exatamente os 3 do editor", () => {
+    const s = makeSection(
+      ["https://a.com/1", "https://b.com/2", "https://c.com/3"],
+      ["https://a.com/1", "https://b.com/2", "https://c.com/3"],
+    );
+    const result = resolveDestaques(s, highlights);
+    assert.deepEqual(result, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+  });
+
+  it("editor selecionou 0 destaques + scorer rank 1 está nos buckets → completa com rank 1", () => {
+    const s = makeSection([], ["https://a.com/1", "https://b.com/2"]);
+    const result = resolveDestaques(s, highlights);
+    assert.ok(result.includes("https://a.com/1"), "rank 1 deve estar nos destaques");
+  });
+
+  it("#663: editor removeu artigo X dos buckets → X NÃO volta como fallback", () => {
+    // a.com/1 é rank 1 do scorer, mas editor o removeu dos buckets
+    const s = makeSection([], ["https://b.com/2", "https://c.com/3"]); // sem a.com/1
+    const result = resolveDestaques(s, highlights);
+    assert.ok(!result.includes("https://a.com/1"), "artigo removido não deve voltar como fallback");
+    assert.ok(result.includes("https://b.com/2"), "rank 2 (ainda no bucket) deve ser usado");
+  });
+
+  it("#663: editor removeu TODOS os candidatos do scorer → retorna 0 destaques", () => {
+    // Editor limpou todos os buckets
+    const s = makeSection([], []); // buckets vazios
+    const result = resolveDestaques(s, highlights);
+    assert.equal(result.length, 0, "0 destaques quando editor removeu tudo");
+  });
+
+  it("editor colocou 1 destaque manualmente + scorer completa com buckets", () => {
+    const s = makeSection(
+      ["https://d.com/custom"], // escolha manual não está nos highlights do scorer
+      ["https://a.com/1", "https://b.com/2", "https://d.com/custom"],
+    );
+    const result = resolveDestaques(s, highlights);
+    assert.equal(result[0], "https://d.com/custom", "escolha manual do editor é D1");
+    assert.equal(result.length, 3, "completado para 3");
+    assert.ok(result.includes("https://a.com/1"));
+    assert.ok(result.includes("https://b.com/2"));
+  });
+
+  it("mais de 3 destaques → mantém só os 3 primeiros", () => {
+    const s = makeSection(
+      ["https://a.com/1", "https://b.com/2", "https://c.com/3", "https://d.com/4"],
+      [],
+    );
+    const result = resolveDestaques(s, highlights);
+    assert.equal(result.length, 3);
+    assert.equal(result[0], "https://a.com/1");
   });
 });
