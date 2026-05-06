@@ -20,6 +20,8 @@
  */
 
 import { config as dotenvConfig } from "dotenv";
+// override: true necessário pois shell pode ter CLOUDFLARE_ACCOUNT_ID=<placeholder> setado,
+// e dotenv sem override não sobrescreve vars já existentes no processo.
 dotenvConfig({ override: true });
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -422,8 +424,12 @@ function draftToEmail(
 async function uploadImageToWorkerKV(filePath: string): Promise<string> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
-  const kvNamespaceId = "72784da4ae39444481eb422ebac357c6"; // namespace POLL do Worker
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+
+  // Lê namespace ID de platform.config.json para evitar hardcode
+  const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
+  if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
 
   if (!accountId || !token) {
     throw new Error("CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos no .env");
@@ -570,7 +576,7 @@ async function main(): Promise<void> {
     ? readFileSync(chosenSubjectPath, "utf8").trim()
     : null;
 
-  // Upload É IA? images to Brevo file manager (needed to host images in email)
+  // Upload É IA? images to Cloudflare KV (Brevo não expõe API de upload de arquivos)
   let eiaImageUrlA: string | undefined;
   let eiaImageUrlB: string | undefined;
   if (!dryRun) {
