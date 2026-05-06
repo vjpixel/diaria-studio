@@ -205,6 +205,24 @@ export function renderLine(
   if (article.discovered_source) markers.push("(descoberta)");
   if (article.date_unverified) markers.push("⚠️");
   if (article.new_in_pool) markers.push("🆕");
+  // #778: marker visual quando verify-accessibility falhou pra URL editor_submitted.
+  // Editor mandou o link de propósito — mostramos no gate com o motivo do bloqueio
+  // em vez de dropar silenciosamente. Só aplica a editor_submitted; outros artigos
+  // com verdict != accessible são removidos antes (per orchestrator spec 1i).
+  if (article.editor_submitted && article.verify_verdict && article.verify_verdict !== "accessible") {
+    const verdictMarkers: Record<string, string> = {
+      paywall: "🔒",
+      anti_bot: "🚫",
+      blocked: "❌",
+      error: "⏱️",
+      uncertain: "❓",
+      video: "📺",
+      aggregator: "🔁",
+    };
+    const icon = verdictMarkers[article.verify_verdict] ?? "⚠️";
+    const note = article.verify_note ? `: ${article.verify_note}` : "";
+    markers.push(`${icon} (não checado: ${article.verify_verdict}${note})`);
+  }
   // #658 review A: condição independe do flag — quando carry-over de inbox preserva
   // flag editor_submitted (boost +8 do categorizer), o marker ainda precisa aparecer.
   if (typeof article.carry_over_from === "string") {

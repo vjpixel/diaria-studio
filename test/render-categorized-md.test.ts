@@ -268,6 +268,78 @@ describe("renderLine", () => {
     const line = renderLine({ url: "https://a.com/x" });
     assert.ok(line.includes("(sem título)"));
   });
+
+  // #778: marker visual para editor_submitted que falhou verify-accessibility
+  it("marker 🔒 (paywall) em editor_submitted com verdict paywall", () => {
+    const line = renderLine({
+      url: "https://nytimes.com/x",
+      title: "Algo no NYT",
+      editor_submitted: true,
+      verify_verdict: "paywall",
+      verify_note: "known-paywall domain",
+    });
+    assert.ok(line.includes("[inbox]"));
+    assert.ok(line.includes("🔒"));
+    assert.ok(line.includes("(não checado: paywall"));
+    assert.ok(line.includes("known-paywall domain"));
+  });
+
+  it("marker 🚫 (anti_bot) em editor_submitted com verdict anti_bot", () => {
+    const line = renderLine({
+      url: "https://anthropic.com/x",
+      title: "Anthropic post",
+      editor_submitted: true,
+      verify_verdict: "anti_bot",
+    });
+    assert.ok(line.includes("🚫"));
+    assert.ok(line.includes("(não checado: anti_bot)"));
+  });
+
+  it("marker ❌ (blocked) em editor_submitted com verdict blocked", () => {
+    const line = renderLine({
+      url: "https://example.com/dead",
+      title: "Link morto",
+      editor_submitted: true,
+      verify_verdict: "blocked",
+    });
+    assert.ok(line.includes("❌"));
+  });
+
+  it("sem marker de verdict quando verify_verdict é accessible", () => {
+    const line = renderLine({
+      url: "https://example.com/ok",
+      title: "OK",
+      editor_submitted: true,
+      verify_verdict: "accessible",
+    });
+    assert.ok(line.includes("[inbox]"));
+    assert.ok(!line.includes("🔒"));
+    assert.ok(!line.includes("(não checado"));
+  });
+
+  it("sem marker de verdict quando artigo NÃO é editor_submitted", () => {
+    // Artigos não editor_submitted com verdict != accessible são removidos
+    // antes (per orchestrator spec 1i); o renderer não emite marker pra eles.
+    const line = renderLine({
+      url: "https://example.com/x",
+      title: "T",
+      editor_submitted: false,
+      verify_verdict: "paywall",
+    });
+    assert.ok(!line.includes("🔒"));
+    assert.ok(!line.includes("(não checado"));
+  });
+
+  it("verdict desconhecido cai no fallback ⚠️", () => {
+    const line = renderLine({
+      url: "https://example.com/x",
+      title: "T",
+      editor_submitted: true,
+      verify_verdict: "weird_new_verdict" as never,
+    });
+    assert.ok(line.includes("⚠️"));
+    assert.ok(line.includes("(não checado: weird_new_verdict)"));
+  });
 });
 
 describe("buildHighlightUrls", () => {

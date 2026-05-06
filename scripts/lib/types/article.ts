@@ -60,6 +60,22 @@ export interface Article {
   /** Domínio sugerido pra buscar a fonte primária do lançamento. */
   suggested_primary_domain?: string;
 
+  // ---- Acessibilidade (#778) -----------------------------------------------
+  /** Veredito de `verify-accessibility.ts` (link-verify-all.json). Para artigos
+   *  editor_submitted, mantemos no artigo mesmo quando != "accessible" pra
+   *  marcar visualmente no gate (#778) em vez de dropar silenciosamente. */
+  verify_verdict?:
+    | "accessible"
+    | "paywall"
+    | "anti_bot"
+    | "blocked"
+    | "uncertain"
+    | "video"
+    | "aggregator"
+    | "error";
+  /** Nota textual do verify (motivo do verdict, ex: "HTTP 403", "soft 404"). */
+  verify_note?: string;
+
   /** Escape hatch — campos não mapeados (debugging, hooks experimentais). */
   [key: string]: unknown;
 }
