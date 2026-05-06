@@ -56,7 +56,7 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 
 ## Passo 3 — Pre-gate validator (#581)
 
-Antes de apresentar o gate humano, rodar a bateria de assertions determinísticas pra detectar regressões conhecidas (#577 drive skip, #578 EIA format, #579 numeração, #580 off-topic):
+Antes de apresentar o gate humano, rodar:
 
 ```bash
 npx tsx scripts/validate-stage-1-output.ts \
@@ -64,13 +64,7 @@ npx tsx scripts/validate-stage-1-output.ts \
   --edition-dir data/editions/$1/
 ```
 
-Exit codes:
-- **0**: tudo OK — apresentar gate normal.
-- **1**: warnings — apresentar gate **com banner de warnings** no topo. Ler o JSON de stdout, extrair `assertions[].message` para cada `status: "warn"`, e mostrar no relatório do gate antes do conteúdo. Editor decide se aprova ou pede retry.
-- **2**: blockers — **não apresentar gate**. Mostrar `assertions[].message` dos `status: "blocker"` e oferecer retry: `Retry / abortar?`.
-- **3**: erro de uso (args inválidos, edition-dir não existe). Reportar e abortar.
-
-Falha do validator (exit code não-mapeado, crash, etc.) → logar warn e prosseguir com gate normal — nunca bloquear edição por falha do próprio validator.
+Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832).
 
 ## Output
 
