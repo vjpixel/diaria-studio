@@ -18,9 +18,10 @@ O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? j
 - Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros). Após retry bem-sucedido, re-renderizar `01-categorized.md` para incluir o bloco atualizado (se o gate da Etapa 1 ainda não foi aprovado) ou informar o editor que o arquivo foi atualizado localmente.
 - **Sync push das imagens do É IA? para o Drive:**
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg
   ```
   Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
+  **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo já em `01-categorized.md` (#371) e `eia_answer` propagado pra `02-reviewed.md` frontmatter (#744).
 - **Sem gate separado (#371).** O editor já aprovou (ou verá) o É IA? no gate integrado da Etapa 1. Se o eia-composer completou com sucesso, prosseguir diretamente para 3b. Se `rejections[]` no output do composer não estiver vazio, informar: `"É IA?: pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` — contexto para o editor, sem bloquear o pipeline.
 - **Opção de retry do É IA?:** se o editor precisar regenerar o É IA? isoladamente (ex: imagem insatisfatória), usar `/diaria-3-imagens {AAMMDD} eia` — o sub-skill tem gate próprio de aprovação para esse caso.
 - **Atualizar `_internal/cost.md`.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:

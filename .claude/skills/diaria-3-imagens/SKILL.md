@@ -115,8 +115,10 @@ Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Par
 ### 2c. Drive sync push
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia.md,01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
 ```
+
+> **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito A/B) já está embutido em `01-categorized.md` via `render-categorized-md.ts` (#371) e `eia_answer` é propagado pra `02-reviewed.md` frontmatter via `normalize-newsletter.ts` (#744). Arquivo permanece local pra scripts consumirem.
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
 
