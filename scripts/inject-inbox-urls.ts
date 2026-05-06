@@ -34,11 +34,12 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
 // Tracker decoders (#719)
@@ -248,28 +249,12 @@ export function validateInjection(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const cur = argv[i];
-    if (cur === "--validate-pool") {
-      args["validate-pool"] = true;
-    } else if (cur.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      args[cur.slice(2)] = argv[i + 1];
-      i++;
-    } else if (cur.startsWith("--")) {
-      args[cur.slice(2)] = true;
-    }
-  }
-  return args;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const inboxMdPath = args["inbox-md"] as string;
-  const poolPath = args["pool"] as string | undefined;
-  const outPath = args["out"] as string;
-  const editorEmail = (args["editor"] as string) || process.env.EDITOR_EMAIL || resolveEditorEmail(resolve(ROOT, "platform.config.json"));
+  const { values, flags } = parseCliArgs(process.argv.slice(2));
+  const inboxMdPath = values["inbox-md"];
+  const poolPath = values["pool"];
+  const outPath = values["out"];
+  const editorEmail = values["editor"] || process.env.EDITOR_EMAIL || resolveEditorEmail(resolve(ROOT, "platform.config.json"));
 
   if (!inboxMdPath || !outPath) {
     console.error(
@@ -300,12 +285,17 @@ async function main(): Promise<void> {
   const newInjected = injected.filter((a) => !poolUrls.has(a.url));
   const merged = [...pool, ...newInjected];
 
-  writeFileSync(resolve(ROOT, outPath), JSON.stringify(merged, null, 2) + "\n", "utf8");
+  // Atomic write (#628): write to .tmp + rename, evita leitor pegar JSON parcial
+  // se o write crashar mid-flight. Padrão usado em drive-sync.ts, publish-facebook.ts.
+  const targetPath = resolve(ROOT, outPath);
+  const tmpPath = targetPath + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  renameSync(tmpPath, targetPath);
 
   // Validate-pool mode: sanity check do merge interno (não anti-skip externo).
   // Como o merge é feito acima, falha aqui só em bug do script.
   // Anti-skip externo é tracked em #625.
-  if (args["validate-pool"]) {
+  if (flags.has("validate-pool")) {
     const missing = validateInjection(injected, merged);
     if (missing.length > 0) {
       console.error(
