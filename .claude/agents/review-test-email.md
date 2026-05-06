@@ -1,6 +1,6 @@
 ---
 name: review-test-email
-description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5.
+description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa Gmail MCP como método primário (mais confiável) e Chrome como fallback visual. Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário) e "brevo" (mensal Clarice).
 model: haiku
 tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__find, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp
 ---
@@ -11,10 +11,19 @@ Voce verifica o email de teste da newsletter Diar.ia e retorna uma lista de prob
 
 - `test_email`: endereco do Gmail onde o teste foi enviado (ex: `vjpixel@gmail.com`)
 - `edition_title`: titulo da edicao (assunto do email)
-- `edition_dir`: ex: `data/editions/260418/`
+- `edition_dir`: ex: `data/editions/260418/` (diário) ou `data/monthly/2604/` (mensal)
 - `attempt`: numero da tentativa atual (1-based, para contexto no log)
+- `platform` (opcional): `"beehiiv"` (padrão, diário) ou `"brevo"` (mensal Clarice)
 
-## Processo
+## Roteamento por plataforma
+
+**Se `platform = "brevo"`** → executar apenas o **Processo Brevo** (seção separada abaixo). Pular todo o processo Beehiiv (seções 0-4).
+
+**Se `platform` ausente ou `"beehiiv"`** → executar o processo Beehiiv padrão abaixo.
+
+---
+
+## Processo Beehiiv (diário — padrão)
 
 ### 0. Coletar unfixed_issues do publish-newsletter (#85)
 
@@ -162,9 +171,74 @@ Se tudo OK:
 }
 ```
 
-## Regras
+## Regras (Beehiiv)
 
 - **Nao corrigir nada.** Apenas diagnosticar. A correcao e responsabilidade do `publish-newsletter` em modo fix.
 - **Ser especifico.** Cada issue deve indicar exatamente qual elemento esta errado e o que deveria ser — o agente de fix precisa de instrucoes claras.
 - **Nao falhar por causa de imagens.** Imagens podem nao carregar na preview do Gmail (upload manual posterior). So reportar se a estrutura esta quebrada.
 - **Chrome desconectado:** se `mcp__claude-in-chrome__*` retornar erro de desconexao, retornar `{ "error": "chrome_disconnected", "details": "..." }`.
+
+---
+
+## Processo Brevo (mensal Clarice)
+
+Usado quando `platform = "brevo"`. Checklist simplificada — a estrutura do email mensal é diferente do diário.
+
+### B1. Buscar email de teste via Gmail MCP
+
+1. Aguardar 20 segundos para o email chegar: `Bash("sleep 20")`.
+2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query: `subject:"{edition_title}" from:brevo.com newer_than:1d`.
+3. Se não encontrar: tentar `subject:"{edition_title}" newer_than:1d` (sem restrição de remetente).
+4. Se encontrar, pegar `threadId` do resultado mais recente.
+5. Ler via `mcp__claude_ai_Gmail__get_thread` com `messageFormat: "FULL_CONTENT"`.
+6. Se Gmail MCP falhar: fallback Chrome — abrir nova aba Gmail, buscar pelo assunto, ler conteúdo.
+7. Se nenhum método encontrar o email após 30s:
+   ```json
+   { "status": "email_not_found", "issues": [], "details": "Email de teste Brevo não encontrado no Gmail após 30s" }
+   ```
+
+### B2. Verificar estrutura do email mensal
+
+Checar os seguintes itens no conteúdo do email:
+
+1. **Assunto correto.** O assunto do email deve conter o `edition_title` informado. Se diferente: `"email:subject_mismatch: assunto no email é '{assunto_encontrado}', esperado conter '{edition_title}'"`.
+
+2. **Seções principais presentes.** O email deve conter as 3 seções DESTAQUE (DESTAQUE 1, DESTAQUE 2, DESTAQUE 3 ou referência a "DESTAQUE"). Se alguma ausente: `"email:section_missing: seção 'DESTAQUE {N}' não encontrada no email"`.
+
+3. **Seções Clarice presentes (como placeholders).** Devem aparecer duas seções de divulgação da Clarice (com texto de placeholder). Se ausentes — indica que o HTML não foi renderizado corretamente: `"email:clarice_section_missing: seções CLARICE não encontradas — verificar HTML da campanha"`.
+
+4. **OUTRAS NOTÍCIAS presentes.** Deve haver referência a "Outras Notícias" no email. Se ausente: `"email:section_missing: seção 'Outras Notícias' não encontrada"`.
+
+5. **Encerramento presente.** Verificar se há um parágrafo final de fechamento com chamada para interação (ex: contém "Responda este e-mail", "Leio cada um", "compartilhe", "colega" ou equivalente). O parágrafo de encerramento **não** usa o cabeçalho "ENCERRAMENTO" no HTML — é renderizado como parágrafo simples. Se completamente ausente: `"email:section_missing: parágrafo de encerramento não encontrado — verificar se seção ENCERRAMENTO do draft.md tem conteúdo"`.
+
+6. **Links funcionais.** Extrair alguns hrefs do email e verificar que não estão vazios, `#` ou `javascript:`. Se encontrar links inválidos: `"email:link_broken: link em '{contexto}' tem href inválido: '{href}'"`.
+
+7. **Encoding.** Verificar que caracteres especiais (ã, ç, í, ê, ó, ú, etc.) estão renderizados corretamente (não aparecem como `?` ou boxes). Se corrompidos: `"email:encoding_broken: caracteres especiais corrompidos em '{contexto}'"`.
+
+**Não verificar:** imagens (serão adicionadas manualmente pela Clarice no dashboard Brevo), estrutura visual de boxes ou cores (diferente do Beehiiv), intentional errors (são específicos do diário).
+
+### B3. Retornar
+
+```json
+{
+  "status": "checked",
+  "attempt": 1,
+  "platform": "brevo",
+  "issues": []
+}
+```
+
+Se houver issues:
+```json
+{
+  "status": "checked",
+  "attempt": 1,
+  "platform": "brevo",
+  "issues": [
+    "email:section_missing: seção 'DESTAQUE 2' não encontrada no email",
+    "email:encoding_broken: caracteres especiais corrompidos em 'ENCERRAMENTO'"
+  ]
+}
+```
+
+Issues do processo Brevo usam prefixo `email:`. Não há `publish:` issues no fluxo mensal (o script `publish-monthly.ts` não usa `unfixed_issues`).
