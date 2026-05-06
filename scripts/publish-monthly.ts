@@ -19,10 +19,12 @@
  *   - data/monthly/{YYMM}/draft.md existente (Etapa 2)
  */
 
-import "dotenv/config";
+import { config as dotenvConfig } from "dotenv";
+dotenvConfig({ override: true });
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import https from "node:https";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -226,13 +228,52 @@ function renderOutrasNoticias(chunk: string): string {
   return header + itemsHtml;
 }
 
-/** Renders the É IA? section. */
-function renderEia(chunk: string): string {
+/**
+ * Deriva o código de edição AAMMDD do É IA? mensal = último dia do mês.
+ * Ex: "2604" → "260430" (30 de abril de 2026).
+ */
+function eiaEditionFromYymm(yymm: string): string {
+  const yr = 2000 + parseInt(yymm.slice(0, 2), 10);
+  const mo = parseInt(yymm.slice(2, 4), 10);
+  const lastDay = new Date(Date.UTC(yr, mo, 0)).getUTCDate();
+  return `${String(yr).slice(2)}${String(mo).padStart(2, "0")}${String(lastDay).padStart(2, "0")}`;
+}
+
+/** Renders the É IA? section with images and voting buttons (#465). */
+function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
+  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  const edition = eiaEditionFromYymm(yymm);
+  const imgStyle = "display:block;width:100%;max-width:560px;height:auto;margin:0 auto 8px;border-radius:4px;";
+  const placeholderStyle = "display:block;width:100%;max-width:560px;height:200px;margin:0 auto 8px;background:#f0f0f0;border:2px dashed #ccc;border-radius:4px;text-align:center;line-height:200px;color:#999;font-family:Arial,sans-serif;font-size:14px;";
+  const imagesHtml = (imageUrlA && imageUrlB) ? `
+<p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;color:#888;font-family:Arial,Helvetica,sans-serif;">A</p>
+<img src="${escHtml(imageUrlA)}" alt="Imagem A" style="${imgStyle}" />
+<p style="margin:8px 0 4px 0;font-size:12px;font-weight:bold;color:#888;font-family:Arial,Helvetica,sans-serif;">B</p>
+<img src="${escHtml(imageUrlB)}" alt="Imagem B" style="${imgStyle}" />
+` : `
+<div style="${placeholderStyle}">Imagem A — adicionar no editor Brevo</div>
+<div style="${placeholderStyle}">Imagem B — adicionar no editor Brevo</div>
+`;
+  // Brevo merge tag para email do assinante (substituído no envio).
+  // &amp; necessário em href para HTML válido em email clients estritos.
+  const voteButtons = `
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:16px 0;">
+  <tr>
+    <td align="center">
+      <a href="${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A"
+         style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#00A0A0;border:2px solid #00A0A0;border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;margin:0 8px;">Votar A</a>
+      <a href="${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B"
+         style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#00A0A0;border:2px solid #00A0A0;border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;margin:0 8px;">Votar B</a>
+    </td>
+  </tr>
+</table>`;
   return [
     `<p style="margin:0 0 8px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">É IA? — Destaque do Mês</p>`,
+    imagesHtml,
     `<p style="margin:0 0 16px 0;font-style:italic;color:#444;">${renderInline(content)}</p>`,
+    voteButtons,
   ].join("\n");
 }
 
@@ -305,7 +346,10 @@ function wrapEmail(subject: string, bodyParts: string[]): string {
 /** Converts draft.md content + optional chosen subject to { subject, previewText, html }. */
 function draftToEmail(
   draft: string,
-  chosenSubject: string | null
+  chosenSubject: string | null,
+  yymm: string,
+  eiaImageUrlA?: string,
+  eiaImageUrlB?: string,
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = text.split(/\n---\n/);
@@ -345,7 +389,7 @@ function draftToEmail(
     }
 
     if (firstLine === "É IA?") {
-      bodyParts.push(renderEia(chunk));
+      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB));
       continue;
     }
 
@@ -367,6 +411,58 @@ function draftToEmail(
 }
 
 // ─── Brevo API ─────────────────────────────────────────────────────────────
+
+/**
+ * Faz upload de uma imagem para o KV do Worker de poll via Cloudflare API.
+ * Retorna a URL pública servida pelo Worker em /img/{key}.
+ *
+ * O Brevo não expõe endpoint de upload via API REST — usamos o KV do Worker
+ * como CDN de imagens para o digest mensal.
+ */
+async function uploadImageToWorkerKV(filePath: string): Promise<string> {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
+  const kvNamespaceId = "72784da4ae39444481eb422ebac357c6"; // namespace POLL do Worker
+  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+
+  if (!accountId || !token) {
+    throw new Error("CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos no .env");
+  }
+
+  const buf = readFileSync(filePath);
+  const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
+  // Chave única por edição + filename para não colidir entre meses
+  const key = `img-monthly-${filename}`;
+
+  // Usar https nativo para evitar problemas com chunked encoding do fetch global
+  await new Promise<void>((resolve, reject) => {
+    const req = https.request({
+      hostname: "api.cloudflare.com",
+      path: `/client/v4/accounts/${accountId}/storage/kv/namespaces/${kvNamespaceId}/values/${encodeURIComponent(key)}`,
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": buf.length,
+      },
+    }, (res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => body += chunk.toString());
+      res.on("end", () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          reject(new Error(`KV upload ${filename} falhou (${res.statusCode}): ${body}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(buf);
+    req.end();
+  });
+
+  return `${workerUrl}/img/${encodeURIComponent(key)}`;
+}
 
 async function brevoPost(
   apiKey: string,
@@ -474,8 +570,34 @@ async function main(): Promise<void> {
     ? readFileSync(chosenSubjectPath, "utf8").trim()
     : null;
 
+  // Upload É IA? images to Brevo file manager (needed to host images in email)
+  let eiaImageUrlA: string | undefined;
+  let eiaImageUrlB: string | undefined;
+  if (!dryRun) {
+    const eiaNames = [
+      ["01-eia-A.jpg", "01-eia-B.jpg"],
+      ["01-eai-A.jpg", "01-eai-B.jpg"], // legacy naming
+    ];
+    for (const [nameA, nameB] of eiaNames) {
+      const pathA = resolve(monthlyDir, nameA);
+      const pathB = resolve(monthlyDir, nameB);
+      if (existsSync(pathA) && existsSync(pathB)) {
+        try {
+          process.stdout.write(`Uploading É IA? images to Cloudflare KV...\n`);
+          eiaImageUrlA = await uploadImageToWorkerKV(pathA);
+          eiaImageUrlB = await uploadImageToWorkerKV(pathB);
+          process.stdout.write(`Imagens enviadas:\n  A: ${eiaImageUrlA}\n  B: ${eiaImageUrlB}\n`);
+        } catch (e) {
+          process.stderr.write(`warn: upload de imagens É IA? falhou — ${(e as Error).message}\n`);
+        }
+        break;
+      }
+    }
+    if (!eiaImageUrlA) process.stderr.write("warn: imagens É IA? não encontradas — seção sem imagens\n");
+  }
+
   // Convert draft to email
-  const { subject, previewText, html } = draftToEmail(draft, chosenSubject);
+  const { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB);
 
   if (!subject) {
     process.stderr.write(
