@@ -254,6 +254,79 @@ describe("signalsFromMcpUnavailable", () => {
     assert.equal(signals.length, 0);
   });
 
+  // --- #759: new structured mcp_disconnect: format ---
+
+  it("captura 'mcp_disconnect: clarice' do formato estruturado (#759)", () => {
+    const lines = [
+      mkLine({
+        timestamp: "2026-05-05T10:00:00Z",
+        edition: "260505",
+        stage: 2,
+        agent: "orchestrator",
+        level: "warn",
+        message: "mcp_disconnect: clarice",
+        details: { server: "clarice", kind: "mcp_disconnect" },
+      }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260505");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "mcp_unavailable");
+    assert.ok(
+      signals[0].title.includes("clarice"),
+      `title should mention clarice: ${signals[0].title}`,
+    );
+    assert.deepEqual(signals[0].details.servers, ["clarice"]);
+  });
+
+  it("captura 'mcp_disconnect: beehiiv' e usa título genérico (#759)", () => {
+    const lines = [
+      mkLine({ edition: "260505", level: "warn", message: "mcp_disconnect: beehiiv" }),
+      mkLine({ edition: "260505", level: "warn", message: "mcp_disconnect: beehiiv" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260505");
+    assert.equal(signals.length, 1);
+    assert.ok(
+      signals[0].title.includes("MCP indisponível na edição"),
+      `generic title expected: ${signals[0].title}`,
+    );
+    assert.equal(signals[0].details.count, 2);
+  });
+
+  it("mcp_reconnect não gera sinal — apenas info-level reconnect (#759)", () => {
+    const lines = [
+      mkLine({ edition: "260505", level: "info", message: "mcp_reconnect: clarice" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260505");
+    assert.equal(signals.length, 0);
+  });
+
+  it("mcp_disconnect: chrome-only ainda usa título específico Claude in Chrome", () => {
+    const lines = [
+      mkLine({ edition: "260505", level: "warn", message: "mcp_disconnect: claude-in-chrome" }),
+    ];
+    const signals = signalsFromMcpUnavailable(lines, "260505");
+    assert.equal(signals.length, 1);
+    assert.ok(
+      signals[0].title.includes("Claude in Chrome"),
+      `should use Chrome-specific title: ${signals[0].title}`,
+    );
+  });
+
+  it("mcp_disconnect não duplica em signalsFromTestWarnings (#759)", () => {
+    // mcp_disconnect: events should be filtered by TEST_WARNING_SKIP_PATTERNS
+    // so they don't appear as test_warning signals (already covered by mcp_unavailable)
+    const lines = [
+      mkLine({
+        edition: "260505",
+        agent: "orchestrator",
+        level: "warn",
+        message: "mcp_disconnect: clarice",
+      }),
+    ];
+    const signals = signalsFromTestWarnings(lines, "260505");
+    assert.equal(signals.length, 0);
+  });
+
   it("filtra edições diferentes", () => {
     const lines = [
       mkLine({ edition: "260424", level: "warn", message: "claude-in-chrome MCP unavailable" }),

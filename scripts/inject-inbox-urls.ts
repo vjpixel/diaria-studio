@@ -99,6 +99,7 @@ export interface SyntheticInboxArticle {
   submitted_at?: string;
   submitted_subject?: string;
   submitted_via?: string;
+  tracker_decoded?: boolean; // #719: set when URL was decoded from a tracker
 }
 
 export interface InboxBlock {
@@ -222,7 +223,7 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
         submitted_via: isForward ? "forward" : "direct",
       };
       if (trackerDecoded) {
-        (article as Record<string, unknown>)["tracker_decoded"] = true;
+        article.tracker_decoded = true;
       }
       articles.push(article);
     }

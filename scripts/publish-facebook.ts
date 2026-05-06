@@ -26,26 +26,13 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
+import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-interface PostEntry {
-  platform: string;
-  destaque: string;
-  url: string | null;
-  status: "draft" | "scheduled" | "failed";
-  scheduled_at: string | null;
-  reason?: string;
-  fb_post_id?: string;
-}
-
-interface SocialPublished {
-  posts: PostEntry[];
-}
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const args: Record<string, string | boolean> = {};
@@ -70,12 +57,6 @@ function loadPublished(path: string): SocialPublished {
     return JSON.parse(readFileSync(path, "utf8"));
   }
   return { posts: [] };
-}
-
-function savePublished(path: string, data: SocialPublished): void {
-  const tmpPath = path + ".tmp";
-  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n");
-  renameSync(tmpPath, path);
 }
 
 export function extractPostText(socialMd: string, platform: string, destaque: string): string {
@@ -316,7 +297,7 @@ async function rescheduleFacebookPosts(opts: {
       if (!existing.fb_post_id) {
         throw new Error(`fb_post_id ausente — não dá pra deletar`);
       }
-      await deleteFacebookPost(opts.pageToken, opts.apiVersion, existing.fb_post_id);
+      await deleteFacebookPost(opts.pageToken, opts.apiVersion, existing.fb_post_id as string);
     } catch (e: any) {
       console.error(`Failed to delete facebook/${d}: ${e.message}`);
       failed += 1;
@@ -345,25 +326,12 @@ async function rescheduleFacebookPosts(opts: {
         scheduled_at: expectedAt,
         fb_post_id: postId,
       };
-      // Replace existing entry in published.posts
-      const idx = published.posts.findIndex(
-        (p) => p.platform === "facebook" && p.destaque === d && p.fb_post_id === existing.fb_post_id,
-      );
-      if (idx >= 0) {
-        published.posts[idx] = newEntry;
-      } else {
-        published.posts.push(newEntry);
-      }
-      savePublished(opts.publishedPath, published);
+      appendSocialPosts(opts.publishedPath, [newEntry]);
       rescheduled += 1;
       results.push(newEntry);
       console.log(`OK facebook/${d} — rescheduled to ${expectedAt} — ${postUrl}`);
     } catch (e: any) {
       console.error(`Re-publish failed for facebook/${d}: ${e.message}`);
-      // Mark old entry as deleted/lost
-      const idx = published.posts.findIndex(
-        (p) => p.platform === "facebook" && p.destaque === d && p.fb_post_id === existing.fb_post_id,
-      );
       const lostEntry: PostEntry = {
         platform: "facebook",
         destaque: d,
@@ -372,9 +340,7 @@ async function rescheduleFacebookPosts(opts: {
         scheduled_at: null,
         reason: `delete_succeeded_but_repost_failed: ${e.message}`,
       };
-      if (idx >= 0) published.posts[idx] = lostEntry;
-      else published.posts.push(lostEntry);
-      savePublished(opts.publishedPath, published);
+      appendSocialPosts(opts.publishedPath, [lostEntry]);
       failed += 1;
       results.push(lostEntry);
     }
@@ -456,8 +422,6 @@ async function main() {
     mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
     publishedPath = internalPath;
   }
-  const published = loadPublished(publishedPath);
-
   // Reschedule mode (#123): align existing scheduled posts to canonical time.
   if (doReschedule) {
     const result = await rescheduleFacebookPosts({
@@ -494,16 +458,11 @@ async function main() {
   const results: PostEntry[] = [];
 
   for (const d of destaques) {
-    // #725 bug #11: cleanup de entries failed deve acontecer sempre que formos
-    // tentar publicar — independente de skipExisting. Se skipExisting=true e há
-    // draft/scheduled, o continue acima evita sobrescrever. Se há failed, remove
-    // pra retry limpo. Antes, filter só rodava dentro do if(skipExisting), então
-    // mode skipExisting=false acumulava failed entries duplicadas.
-    published.posts = published.posts.filter(
-      (p) => !(p.platform === "facebook" && p.destaque === d && p.status === "failed")
-    );
+    // Re-read published state from disk on each iteration (#758): LinkedIn agent
+    // may be writing concurrently; always read the latest state under lock.
+    const published = loadPublished(publishedPath);
 
-    // Check if already published
+    // Check if already published (skip-existing: ignore failed entries, retry them)
     if (skipExisting) {
       const existing = published.posts.find(
         (p) => p.platform === "facebook" && p.destaque === d && (p.status === "draft" || p.status === "scheduled")
@@ -529,8 +488,7 @@ async function main() {
         scheduled_at: null,
         reason: e.message,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       continue;
     }
@@ -548,8 +506,7 @@ async function main() {
         scheduled_at: null,
         reason: `${imageFile} not found`,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       continue;
     }
@@ -573,8 +530,7 @@ async function main() {
           scheduled_at: scheduledAt,
           reason: `scheduled_time_invalid: ${msg}`,
         };
-        published.posts.push(entry);
-        savePublished(publishedPath, published);
+        appendSocialPosts(publishedPath, [entry]);
         results.push(entry);
         continue;
       }
@@ -608,8 +564,7 @@ async function main() {
           fb_post_id: postId,
         };
 
-        published.posts.push(entry);
-        savePublished(publishedPath, published);
+        appendSocialPosts(publishedPath, [entry]);
         results.push(entry);
         console.log(`OK facebook/${d} — ${entry.status} — ${postUrl}`);
         success = true;
@@ -633,8 +588,7 @@ async function main() {
         scheduled_at: null,
         reason: lastError,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
     }
   }

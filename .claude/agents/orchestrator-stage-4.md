@@ -15,9 +15,21 @@ Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincron
 
 ### 4a. Pré-requisitos + sync
 
-**⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente** e reportar:
+**⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
+  --level warn --message "mcp_disconnect: {server_name}" \
+  --details '{"server":"{server_name}","kind":"mcp_disconnect"}'
+```
+E reportar:
 > `BLOQUEADO: MCP {servidor} indisponível. Verifique extensão Chrome + login. Responda "retry" para continuar ou "abort" para encerrar Etapa 4.`
-Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio.
+Ao reconectar (MCP voltar a responder), logar:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
+  --level info --message "mcp_reconnect: {server_name}" \
+  --details '{"server":"{server_name}","kind":"mcp_reconnect"}'
+```
+Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter, social), beehiiv (API) e gmail (review-test-email). Disconnect de qualquer um exige ação explícita do editor — não tente "contornar" em silêncio. Os logs persistem em `data/run-log.jsonl` para auditoria pelo `collect-edition-signals.ts` (#759).
 
 - Logar início:
   ```bash
@@ -71,6 +83,22 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 **Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
 
 **Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (4d).
+
+**Merge LinkedIn temp file (#758):** Após `publish-social` retornar, verificar se `_internal/06-linkedin.tmp.json` existe. Se existir, fundir com `06-social-published.json`:
+```bash
+npx tsx --input-type=module << 'EOF'
+import { appendSocialPosts } from "./scripts/lib/social-published-store.ts";
+import { readFileSync, existsSync } from "node:fs";
+const tmp = "data/editions/{AAMMDD}/_internal/06-linkedin.tmp.json";
+const out = "data/editions/{AAMMDD}/06-social-published.json";
+if (existsSync(tmp)) {
+  const { posts } = JSON.parse(readFileSync(tmp, "utf8"));
+  appendSocialPosts(out, posts);
+  console.log(`Merged ${posts.length} LinkedIn post(s) from tmp file`);
+}
+EOF
+```
+Se o arquivo não existir (agent escreveu direto no arquivo principal via store), prosseguir normalmente.
 
 ### 4d. Retry chrome_disconnected (independente por agent)
 
