@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../scripts/refresh-past-editions.ts";
+import { renderMarkdown, extractLinks } from "../scripts/refresh-past-editions.ts";
 import { execFileSync } from "node:child_process";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import {
@@ -160,5 +160,47 @@ describe("--regen-md-only flag (#162)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("extractLinks", () => {
+  function captureWarn<T>(fn: () => T): { result: T; warnings: string[] } {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg: unknown) => warnings.push(String(msg));
+    try {
+      return { result: fn(), warnings };
+    } finally {
+      console.warn = original;
+    }
+  }
+
+  it("retorna URLs válidas e não emite warn", () => {
+    const { result, warnings } = captureWarn(() =>
+      extractLinks("Veja https://example.com/post1 e https://other.com/x"),
+    );
+    assert.deepEqual([...result].sort(), [
+      "https://example.com/post1",
+      "https://other.com/x",
+    ]);
+    assert.equal(warnings.length, 0);
+  });
+
+  it("descarta URLs malformadas e emite warn com a contagem (#814)", () => {
+    // `http://[invalid` → `new URL()` lança; o regex inicial captura `http://[invalid`
+    // até o fim da linha, então temos 1 URL malformada.
+    const content = "Bom: https://example.com/ok\nRuim: http://[invalid\n";
+    const { result, warnings } = captureWarn(() => extractLinks(content));
+    assert.deepEqual(result, ["https://example.com/ok"]);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /\[extractLinks\] descartou 1 URL\(s\) malformada\(s\)/);
+  });
+
+  it("filtra URLs do beehiiv silenciosamente (sem warn)", () => {
+    const content =
+      "Real: https://example.com/x\nTracking: https://diaria.beehiiv.com/c/abc\nSubdomain: https://foo.beehiiv.com/p/y";
+    const { result, warnings } = captureWarn(() => extractLinks(content));
+    assert.deepEqual(result, ["https://example.com/x"]);
+    assert.equal(warnings.length, 0);
   });
 });

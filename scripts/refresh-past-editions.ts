@@ -55,9 +55,10 @@ function loadConfig(): { dedupEditionCount: number } {
   }
 }
 
-function extractLinks(content: string): string[] {
+export function extractLinks(content: string): string[] {
   const urls = new Set<string>();
   const re = /https?:\/\/[^\s<>"')\]]+/gi;
+  let dropped = 0;
   for (const m of content.matchAll(re)) {
     const url = m[0].replace(/[.,);]+$/, "");
     try {
@@ -66,8 +67,11 @@ function extractLinks(content: string): string[] {
       if (host.endsWith("beehiiv.com")) continue;
       urls.add(url);
     } catch {
-      // ignore
+      dropped++;
     }
+  }
+  if (dropped > 0) {
+    console.warn(`[extractLinks] descartou ${dropped} URL(s) malformada(s)`);
   }
   return [...urls];
 }
