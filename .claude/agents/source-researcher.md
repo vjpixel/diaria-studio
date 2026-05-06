@@ -40,7 +40,7 @@ O campo `timeout_seconds` do input é mantido por compatibilidade mas **não é 
 4. Para cada resultado que sobreviveu ao pré-filtro e parecer relevante a IA, `WebFetch` para extrair título, data real de publicação, e autor. **Hard limit: máximo 5 `WebFetch` no total** — quando `fetch_count` atingir 5, pare mesmo que haja mais resultados na lista.
 5. Para cada resultado:
    - **Se a URL for de um agregador** (site que redistribui conteúdo de terceiros sem produção própria): fazer `WebFetch` na página e tentar extrair a URL da fonte primária (procurar `<link rel="canonical">`, link principal do artigo original, ou menção explícita da fonte). Se encontrar → usar a URL primária em vez da do agregador. Se não encontrar → descartar.
-     Domínios tratados como agregadores/roundups (lista explícita — NÃO retornar URL destes domínios, só fontes primárias extraídas):
+     Lista canônica de domínios agregadores em **`scripts/lib/aggregator-blocklist.ts`** (single source of truth, #717 hipótese 5). Quando atualizar a lista lá, atualizar também as menções abaixo. Resumo:
      - Agregadores clássicos: `crescendo.ai`, `flipboard.com`, `techstartups.com`
      - Newsletters de roundup AI (curadoria/resumo de notícias alheias): `therundown.ai`, `tldr.tech/ai`, `bensbites.co`, `theneurondaily.com`, `superhuman.ai`, `theaipulse.beehiiv.com`, `agentpulse.beehiiv.com`, `aibreakfast.beehiiv.com`, `alphasignal.ai`, `archive.thedeepview.com`, `recaply.co`, `7min.ai`, `evolvingai.io`, `datamachina.com`, `cyberman.ai`
      - Republishers BR (reescrevem press releases sem análise própria): `docmanagement.com.br`
@@ -48,6 +48,8 @@ O campo `timeout_seconds` do input é mantido por compatibilidade mas **não é 
      - `perplexity.ai/*` **exceto** `/hub/` e `research.perplexity.ai`, que são fontes primárias da própria Perplexity
      - `importai.substack.com` tem análise original de Jack Clark misturada com roundup — aceitar somente se o artigo for claramente análise própria (não só lista de links)
      - `news.google.com` **não** é agregador — aponta direto para o original.
+
+     Orchestrator agora roda `scripts/check-source-blocklist.ts` antes de dispatchar este agent (orchestrator-stage-1-research.md step 1f) — fontes na blocklist nem chegam aqui. Esta seção persiste como defense-in-depth pra URLs que escapam do filtro determinístico (ex: descobertas via `discovery-searcher` com queries abertas).
    - Descartar se publicado antes de `cutoff_iso` (janela `[cutoff_iso, hoje]`). Não usar `edition_date - window_days` — para edições agendadas no futuro isso daria janela errada (#671).
    - Descartar se sem relação com IA/AI.
    - Descartar se URL não seja do domínio da fonte e não for um artigo original identificável.
