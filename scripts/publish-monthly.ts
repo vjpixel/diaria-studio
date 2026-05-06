@@ -154,7 +154,7 @@ function renderDestaque(chunk: string): string {
     }
   }
 
-  const label = "";
+  const label = `<p style="margin:0 0 4px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`;
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;">${renderInline(title)}</h2>`
     : "";
