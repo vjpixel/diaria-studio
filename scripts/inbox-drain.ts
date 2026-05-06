@@ -19,11 +19,12 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { parseGmailThread, parseGmailThreadsList } from "./lib/schemas/gmail.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
@@ -470,75 +471,42 @@ export async function iterateThreads(
 }
 
 // ---------------------------------------------------------------------------
-// Run log — registra exceções para /diaria-log ver (stderr é invisível)
+// Run log — wrappers em volta de scripts/lib/run-log.ts (#612).
+// Mantidos como helpers locais pra preservar a API de chamada (logDrainError(err))
+// — caller passa só o error, helper preenche stage/agent.
 // ---------------------------------------------------------------------------
 
-function getRunLogPath(): string {
-  const cfgPath = resolve(ROOT, "platform.config.json");
-  if (!existsSync(cfgPath)) return resolve(ROOT, "data/run-log.jsonl");
-  try {
-    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-    return resolve(ROOT, cfg?.logging?.path ?? "data/run-log.jsonl");
-  } catch {
-    return resolve(ROOT, "data/run-log.jsonl");
-  }
-}
-
 function logDrainError(err: Error): void {
-  try {
-    const event = {
-      timestamp: new Date().toISOString(),
-      edition: null,
-      stage: 1,
-      agent: "inbox-drainer",
-      level: "error",
-      message: err.message,
-      details: { stack: err.stack ?? null },
-    };
-    const logPath = getRunLogPath();
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
-  } catch {
-    // swallow — logging must never mask the original error
-  }
+  logEvent({
+    edition: null,
+    stage: 1,
+    agent: "inbox-drainer",
+    level: "error",
+    message: err.message,
+    details: { stack: err.stack ?? null },
+  }, ROOT);
 }
 
 function logDrainInfo(message: string, details?: Record<string, unknown>): void {
-  try {
-    const event = {
-      timestamp: new Date().toISOString(),
-      edition: null,
-      stage: 1,
-      agent: "inbox-drainer",
-      level: "info",
-      message,
-      details: details ?? null,
-    };
-    const logPath = getRunLogPath();
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
-  } catch {
-    // swallow
-  }
+  logEvent({
+    edition: null,
+    stage: 1,
+    agent: "inbox-drainer",
+    level: "info",
+    message,
+    details: details ?? null,
+  }, ROOT);
 }
 
 function logDrainWarn(message: string, details?: Record<string, unknown>): void {
-  try {
-    const event = {
-      timestamp: new Date().toISOString(),
-      edition: null,
-      stage: 1,
-      agent: "inbox-drainer",
-      level: "warn",
-      message,
-      details: details ?? null,
-    };
-    const logPath = getRunLogPath();
-    mkdirSync(dirname(logPath), { recursive: true });
-    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
-  } catch {
-    // swallow
-  }
+  logEvent({
+    edition: null,
+    stage: 1,
+    agent: "inbox-drainer",
+    level: "warn",
+    message,
+    details: details ?? null,
+  }, ROOT);
 }
 
 // ---------------------------------------------------------------------------

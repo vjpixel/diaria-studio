@@ -27,8 +27,8 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, appendFileSync } from "node:fs";
-import { resolve, extname, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
+import { resolve, extname } from "node:path";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
@@ -36,6 +36,7 @@ import {
   parseDriveFileMetadata,
   parseDriveFileUploadResponse,
 } from "./lib/schemas/drive-api.ts"; // #649
+import { logEvent } from "./lib/run-log.ts"; // #612
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
@@ -847,36 +848,21 @@ async function main(): Promise<void> {
 }
 
 function logSyncWarnings(result: SyncResult): void {
-  try {
-    const cfgPath = resolve(ROOT, "platform.config.json");
-    let logPath = resolve(ROOT, "data/run-log.jsonl");
-    if (existsSync(cfgPath)) {
-      try {
-        const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { logging?: { path?: string } };
-        if (cfg?.logging?.path) logPath = resolve(ROOT, cfg.logging.path);
-      } catch {
-        // ignore — fallback ao default
-      }
-    }
-    mkdirSync(dirname(logPath), { recursive: true });
-    const event = {
-      timestamp: new Date().toISOString(),
-      edition: result.edition,
-      stage: result.stage,
-      agent: "drive-sync",
-      level: "warn",
-      message: `${result.warnings.length} sync warning(s) em ${result.mode} (Stage ${result.stage})`,
-      details: {
-        mode: result.mode,
-        warnings: result.warnings,
-        uploaded_count: result.uploaded.length,
-        pulled_count: result.pulled.length,
-      },
-    };
-    appendFileSync(logPath, JSON.stringify(event) + "\n", "utf8");
-  } catch {
-    // logging nunca pode mascarar o erro original
-  }
+  // #612: delega pra scripts/lib/run-log.ts. logEvent já encapsula resolve do
+  // path (config + fallback) e swallow de exceções.
+  logEvent({
+    edition: result.edition,
+    stage: result.stage,
+    agent: "drive-sync",
+    level: "warn",
+    message: `${result.warnings.length} sync warning(s) em ${result.mode} (Stage ${result.stage})`,
+    details: {
+      mode: result.mode,
+      warnings: result.warnings,
+      uploaded_count: result.uploaded.length,
+      pulled_count: result.pulled.length,
+    },
+  }, ROOT);
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
