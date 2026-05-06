@@ -498,7 +498,7 @@ export function categorizeArticles(articles: Article[]): Record<Category, Articl
     // #722: artigos editor_submitted com título placeholder e summary vazio são
     // falhas de enrich — não há conteúdo para o writer usar. Descartar silenciosamente.
     if (isUnresolvableInboxArticle(article)) {
-      console.error(`[inject-inbox-urls] dropping unresolvable inbox article: ${article.url}`);
+      console.error(`[categorize] dropping unresolvable inbox article: ${article.url}`);
       continue;
     }
     const cat = categorize(article);
