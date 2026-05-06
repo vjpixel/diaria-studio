@@ -55,19 +55,20 @@ function main(): void {
     return;
   }
 
-  // Substituição cirúrgica: apenas o número na frase da intro
+  // Substituição cirúrgica: apenas o número na frase da intro.
+  // Cobre variações pós-humanizador/Clarice (#804): Selecionamos, Escolhemos,
+  // Reunimos, Destacamos, Separamos, Trouxemos — mesmas alternativas do lintIntroCount.
   const claimedStr = String(check.claimed);
   const actualStr = String(check.actual);
 
-  // Pattern: "Selecionamos os N mais relevantes" — substitui só a 1ª ocorrência
   const patternRe = new RegExp(
-    `(Selecionamos os )${claimedStr}( mais relevantes)`,
+    `((?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\\s+os?\\s+)${claimedStr}\\b`,
     "i",
   );
   if (!patternRe.test(md)) {
-    // Fallback: substituição mais genérica (não deve ocorrer dado que lintIntroCount encontrou)
+    // Padrão não encontrado após expansão — avisa mas não bloqueia
     console.error(
-      `warn: não consegui localizar o padrão exato para substituição — arquivo não modificado.`,
+      `warn: sync-intro-count: padrão não encontrado — verificar manualmente se a intro tem o número correto.`,
     );
     console.log(
       JSON.stringify({ changed: false, claimed_before: check.claimed, actual: check.actual, path: mdPath }),
@@ -75,7 +76,7 @@ function main(): void {
     return;
   }
 
-  const fixed = md.replace(patternRe, `$1${actualStr}$2`);
+  const fixed = md.replace(patternRe, `$1${actualStr}`);
   writeFileSync(mdPath, fixed, "utf8");
 
   console.error(

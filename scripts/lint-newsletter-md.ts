@@ -305,11 +305,18 @@ export interface IntroCountResult {
 export function lintIntroCount(md: string): IntroCountResult {
   const normalized = md.replace(/\r\n/g, "\n");
 
-  // Extrair número declarado na intro
+  // Extrair número declarado na intro.
+  // Cobre frase canônica + variações pós-humanizador/Clarice (#804):
+  //   "Selecionamos os N mais relevantes"
+  //   "Escolhemos os N mais relevantes"
+  //   "Reunimos os N mais relevantes"
+  //   "Destacamos os N mais relevantes"
+  //   "Separamos os N mais relevantes"
+  //   "Trouxemos os N mais relevantes"
   const introMatch = normalized.match(
-    /Selecionamos os (\d+) mais relevantes/i,
+    /(?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\s+os?\s+(\d+)/i,
   );
-  if (!introMatch) return { ok: true }; // forma singular ou ausente — não verificar
+  if (!introMatch) return { ok: true }; // forma singular, ausente ou frase não reconhecida — não verificar
   const claimed = parseInt(introMatch[1], 10);
 
   // Contar URLs editoriais no body
@@ -634,6 +641,15 @@ export interface TitleLengthReport {
 
 const MAX_TITLE_LENGTH = 52;
 
+/**
+ * Conta grafemas (caracteres visíveis) em vez de code units UTF-16.
+ * Evita falsos positivos em títulos com emojis de bandeira (ex: 🇧🇷 = 1
+ * grafema mas 4 code units). Usa Intl.Segmenter (Node 16+). (#801)
+ */
+function graphemeLength(str: string): number {
+  return [...new Intl.Segmenter().segment(str)].length;
+}
+
 export function checkTitleLengths(md: string): TitleLengthReport {
   const lines = md.split("\n");
   const errors: TitleLengthError[] = [];
@@ -654,12 +670,13 @@ export function checkTitleLengths(md: string): TitleLengthReport {
       // #599 — formato inline: extrai título do link e mede só o texto.
       const inline = parseInlineLink(t);
       if (inline) {
-        if (inline.title.length > MAX_TITLE_LENGTH) {
+        const gLen = graphemeLength(inline.title);
+        if (gLen > MAX_TITLE_LENGTH) {
           errors.push({
             destaque: destaqueNum,
             category,
             title: inline.title,
-            length: inline.title.length,
+            length: gLen,
             max: MAX_TITLE_LENGTH,
           });
         }
@@ -677,12 +694,13 @@ export function checkTitleLengths(md: string): TitleLengthReport {
         continue;
       }
       // Candidato a título legacy (sem inline link) — valida linha inteira
-      if (t.length > MAX_TITLE_LENGTH) {
+      const gLen = graphemeLength(t);
+      if (gLen > MAX_TITLE_LENGTH) {
         errors.push({
           destaque: destaqueNum,
           category,
           title: t,
-          length: t.length,
+          length: gLen,
           max: MAX_TITLE_LENGTH,
         });
       }
