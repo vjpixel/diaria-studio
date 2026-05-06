@@ -18,12 +18,38 @@ Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template c
 
 **Modo `create`** (default): cria o rascunho do zero usando HTML pré-renderizado, salva e envia teste. Fluxo completo descrito abaixo.
 
-**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Abre o rascunho existente, corrige cada issue, salva e reenvia o email de teste. Pular etapas 1–5 e ir direto para:
+**Modo `fix`**: recebe `draft_url` + `issues[]` do reviewer. Verifica se o source MD mudou desde o último paste; se sim, re-renderiza e substitui o HTML completo; se não, aplica patches incrementais.
+
+**Passo fix-0 — Detectar modificação do source (#725 bug #8):**
+
+```bash
+node -e "
+  const fs=require('fs');
+  const pub=JSON.parse(fs.readFileSync('{edition_dir}/05-published.json','utf8'));
+  const lastPaste=new Date(pub.test_email_sent_at??'1970-01-01').getTime();
+  const mtime=fs.statSync('{edition_dir}/02-reviewed.md').mtimeMs;
+  process.exit(mtime>lastPaste?1:0);
+"
+```
+
+- **Exit 1** (mtime > last_paste) → source editado após o último paste → **re-renderizar + re-paste completo** (Passo fix-1).
+- **Exit 0** → sem modificação → **patches incrementais** (Passo fix-2).
+
+**Passo fix-1 — Re-render completo (source mudou):**
+
+Repetir os passos 1.1–5.2 do modo create na íntegra (extract-destaques, upload-images-public newsletter, render-newsletter-html, substitute-image-urls, colar HTML no bloco Custom HTML do draft existente `draft_url`). Navegar para `draft_url` em vez de criar novo post. Após o re-paste, ir para Passo fix-3.
+
+**Passo fix-2 — Patches incrementais (source não mudou):**
+
 1. Navegar para `draft_url`.
 2. Para cada issue em `issues[]`, interpretar a descrição e aplicar a correção no editor Beehiiv.
-3. Salvar o rascunho.
-4. Reenviar email de teste (mesmo fluxo do passo 7 no modo create).
-5. Gravar `05-published.json` atualizado (incrementar `fix_attempts`).
+3. Ir para Passo fix-3.
+
+**Passo fix-3 — Salvar e reenviar:**
+
+1. Salvar o rascunho.
+2. Reenviar email de teste (mesmo fluxo do passo 7 no modo create).
+3. Gravar `05-published.json` atualizado — incrementar `fix_attempts`, **atualizar `test_email_sent_at`** com o novo timestamp (necessário pra próxima iteração detectar corretamente mudanças subsequentes).
 
 Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixable_issues[]` no output.
 
