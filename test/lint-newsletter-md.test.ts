@@ -640,6 +640,85 @@ describe("checkTitleLengths (#701)", () => {
     assert.equal(r.errors.length, 1); // só a 3ª opção falha
     assert.equal(r.errors[0].destaque, 1);
   });
+
+  it("#801: título com emoji de bandeira 🇧🇷 não gera falso positivo (grapheme ≠ UTF-16 length)", () => {
+    // "Brasil lidera ranking de IA 🇧🇷" = 31 grafemas mas 🇧🇷 = 4 code units
+    // Com .length: 33 code units mas ainda abaixo de 52 — ok
+    // Caso mais crítico: título de exatamente 52 grafemas com 🇧🇷 embutido
+    // seria 54+ code units mas deve passar no check de grafemas.
+    // Aqui: 48 grafemas + 🇧🇷 (1 grafema) = 49 grafemas total → ok (≤52)
+    const titleWith49Graphemes = "OpenAI e Microsoft anunciam parceria no Brasil 🇧🇷";
+    // Verificação: grapheme count < 52
+    const graphemeCount = [...new Intl.Segmenter().segment(titleWith49Graphemes)].length;
+    assert.ok(graphemeCount <= 52, `grafemas: ${graphemeCount}`);
+    // Mas .length pode ser > graphemeCount por causa do emoji de bandeira
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      titleWith49Graphemes,
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título OK",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Outro OK",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, true, `falso positivo: ${JSON.stringify(r.errors)}`);
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("#801: reported length usa grafemas, não code units", () => {
+    // Título com 53 grafemas (excede limite) incluindo emoji de bandeira:
+    // precisa checar que r.errors[0].length retorna 53 (grafemas), não > 53 (code units)
+    const titleOver52Graphemes = "OpenAI e Microsoft anunciam grande parceria no Brasil 🇧🇷";
+    const graphemeCount = [...new Intl.Segmenter().segment(titleOver52Graphemes)].length;
+    assert.ok(graphemeCount > 52, `esperado >52 grafemas, got ${graphemeCount}`);
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      titleOver52Graphemes,
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "",
+      "Título OK",
+      "",
+      "https://example.com/2",
+      "",
+      "Corpo.",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "",
+      "Outro OK",
+      "",
+      "https://example.com/3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    // length reportado deve ser o número de grafemas, não code units
+    assert.equal(r.errors[0].length, graphemeCount);
+  });
 });
 
 describe("checkWhyMattersFormat (#701)", () => {
@@ -901,6 +980,84 @@ describe("lintIntroCount (#743)", () => {
     const r = lintIntroCount(md);
     assert.equal(r.ok, true);
     assert.equal(r.claimed, undefined);
+  });
+
+  it("#804: reconhece 'Escolhemos os N' (pós-humanizador) e detecta divergência", () => {
+    // Phrasing alternativa introduzida por humanizador/Clarice
+    const md = [
+      "Escolhemos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "Título",
+      "https://example.com/d2",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "Título",
+      "https://example.com/d3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    // claimed = 12, actual = 3 destaques = 3
+    assert.equal(r.claimed, 12);
+    assert.equal(r.actual, 3);
+    assert.equal(r.ok, false);
+  });
+
+  it("#804: reconhece 'Reunimos os N' e valida corretamente", () => {
+    const md = [
+      "Reunimos os 3 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 2 | PESQUISA",
+      "Título",
+      "https://example.com/d2",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "DESTAQUE 3 | MERCADO",
+      "Título",
+      "https://example.com/d3",
+      "",
+      "Corpo.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    assert.equal(r.claimed, 3);
+    assert.equal(r.actual, 3);
+    assert.equal(r.ok, true);
+  });
+
+  it("#804: reconhece 'Separamos os N', 'Destacamos os N', 'Trouxemos os N'", () => {
+    // Cada uma das alternativas deve fazer lintIntroCount extrair o número
+    for (const verb of ["Separamos", "Destacamos", "Trouxemos"]) {
+      const md = `${verb} os 5 mais relevantes para as pessoas que assinam a newsletter.`;
+      const r = lintIntroCount(md);
+      // Sem body, actual = 0 → not ok, but claimed must be parsed
+      assert.equal(r.claimed, 5, `${verb}: claimed deveria ser 5`);
+    }
   });
 
   it("#599: conta itens de seção no formato inline [Título](url)", () => {
