@@ -180,8 +180,10 @@ Gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tm
 npx tsx scripts/verify-accessibility.ts \
   data/editions/{AAMMDD}/_internal/tmp-urls-all.json \
   data/editions/{AAMMDD}/_internal/link-verify-all.json \
-  --bodies-dir data/editions/{AAMMDD}/_internal/link-verify-bodies
+  --bodies-dir data/editions/{AAMMDD}/_internal/link-verify-bodies \
+  --cache data/link-verify-cache.json
 ```
+A flag `--cache` (#717 hipótese 2) ativa o cache cross-edição de verdicts. URLs já verificadas como `accessible`/`blocked`/`paywall` em qualquer edição passada (TTL default 7 dias) skipam HEAD+GET inteiro. Cache persistido em `data/link-verify-cache.json` (gitignored). Hit ratio típico esperado >50% após 1-2 semanas de runs. Override TTL com `--cache-ttl-days N`.
 A flag `--bodies-dir` (#717 hipótese 1) persiste o body raw de cada GET bem-sucedido no path indicado. `verify-dates.ts` (rodado pelo research-reviewer no passo 1p) lê desse cache antes de fetchar — elimina ~3-4min de fetch duplicado em edições com 300+ URLs.
 Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
 - **Anotar (#778)**: para todos os artigos, adicionar `verify_verdict` e (quando presente) `verify_note` no artigo a partir do match por URL no `link-verify-all.json`. Isso permite que `render-categorized-md.ts` marque visualmente artigos editor-submitted que falharam acessibilidade (per #778) em vez de eles sumirem do gate.

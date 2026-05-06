@@ -5,10 +5,28 @@ import { CONFIG } from "./lib/config.ts";
 import { canonicalize, extractHost } from "./lib/url-utils.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { saveCachedBody } from "./lib/url-body-cache.ts";
+import {
+  loadCache as loadVerifyCache,
+  saveCache as saveVerifyCache,
+  getCached as getVerifyCached,
+  setCached as setVerifyCached,
+  isCacheableVerdict,
+  DEFAULT_TTL_MS,
+  type CacheEntry,
+} from "./lib/url-verify-cache.ts";
 
 // #717 hypothesis #1: cache dir intra-edição pra evitar fetch duplicado
 // entre verify-accessibility e verify-dates. Set via CLI --bodies-dir.
 let BODIES_CACHE_DIR: string | null = null;
+
+// #717 hypothesis #2: cross-edition cache de verdicts. Set via CLI --cache.
+// Quando set, URLs com verdict cacheado dentro do TTL (default 7d) skipam
+// HEAD+GET inteiro. Cache persistido em data/link-verify-cache.json.
+let VERIFY_CACHE: Map<string, CacheEntry> | null = null;
+let VERIFY_CACHE_PATH: string | null = null;
+let VERIFY_CACHE_TTL_MS: number = DEFAULT_TTL_MS;
+let VERIFY_CACHE_HITS = 0;
+let VERIFY_CACHE_MISSES = 0;
 
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
@@ -267,6 +285,22 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
   let host = domain(effectiveUrl);
   let resolvedFrom: string | undefined;
 
+  // #717 hypothesis #2: cross-edition cache lookup ANTES de qualquer fetch.
+  // Cache key = canonical URL. Hit → short-circuit com verdict cacheado.
+  // Skipa video/shortener/aggregator/paywall/HEAD/GET — todos os caminhos.
+  if (VERIFY_CACHE !== null && !isRetry) {
+    const cached = getVerifyCached(VERIFY_CACHE, effectiveUrl, VERIFY_CACHE_TTL_MS);
+    if (cached !== null) {
+      VERIFY_CACHE_HITS++;
+      return {
+        verdict: cached.verdict,
+        finalUrl: cached.finalUrl ?? effectiveUrl,
+        ...(cached.note ? { note: cached.note } : {}),
+      };
+    }
+    VERIFY_CACHE_MISSES++;
+  }
+
   // ---- Vídeos: YouTube e Vimeo recebem verdict `video` (#359) ----------------
   // Verificado ANTES de shorteners/aggregators para evitar que URLs de vídeo
   // sejam tratadas como redes sociais bloqueadas ou agregadores.
@@ -400,13 +434,24 @@ async function verifyWithBrowser(
 }
 
 async function main() {
-  // CLI shape preservada: positional <urls.json> [out.json], + flag opcional
-  // --bodies-dir <path> (#717 hypothesis #1).
+  // CLI shape preservada: positional <urls.json> [out.json], + flags opcionais
+  // --bodies-dir <path>             (#717 hyp 1) — intra-edição body cache
+  // --cache <path>                  (#717 hyp 2) — cross-edition verdict cache
+  // --cache-ttl-days <N>            (#717 hyp 2) — TTL override (default 7)
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === "--bodies-dir" && i + 1 < process.argv.length) {
       BODIES_CACHE_DIR = process.argv[i + 1];
+      i++;
+    } else if (a === "--cache" && i + 1 < process.argv.length) {
+      VERIFY_CACHE_PATH = process.argv[i + 1];
+      i++;
+    } else if (a === "--cache-ttl-days" && i + 1 < process.argv.length) {
+      const days = Number(process.argv[i + 1]);
+      if (Number.isFinite(days) && days > 0) {
+        VERIFY_CACHE_TTL_MS = days * 24 * 60 * 60 * 1000;
+      }
       i++;
     } else {
       positional.push(a);
@@ -414,8 +459,16 @@ async function main() {
   }
   const input = positional[0];
   if (!input) {
-    console.error("Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>]");
+    console.error(
+      "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N]",
+    );
     process.exit(1);
+  }
+
+  // Carregar cache cross-edição se path foi passado.
+  if (VERIFY_CACHE_PATH !== null) {
+    VERIFY_CACHE = loadVerifyCache(VERIFY_CACHE_PATH, VERIFY_CACHE_TTL_MS);
+    console.error(`[verify] cache carregado: ${VERIFY_CACHE.size} entries (${VERIFY_CACHE_PATH})`);
   }
 
   let urls: string[];
@@ -449,6 +502,29 @@ async function main() {
     } finally {
       await browser?.close().catch(() => {});
     }
+  }
+
+  // #717 hypothesis #2: persistir verdicts cacheáveis no cross-edition cache.
+  // Aplica a TODOS os results (incluindo browser-fallback ones) — verdict
+  // estável conforme isCacheableVerdict.
+  if (VERIFY_CACHE !== null && VERIFY_CACHE_PATH !== null) {
+    let added = 0;
+    for (const r of results) {
+      if (!isCacheableVerdict(r.verdict)) continue;
+      const key = canonicalize(r.url);
+      setVerifyCached(VERIFY_CACHE, key, {
+        verdict: r.verdict,
+        finalUrl: r.finalUrl,
+        ...(r.note ? { note: r.note } : {}),
+      });
+      added++;
+    }
+    saveVerifyCache(VERIFY_CACHE_PATH, VERIFY_CACHE);
+    const cacheTotal = VERIFY_CACHE_HITS + VERIFY_CACHE_MISSES;
+    const hitPct = cacheTotal > 0 ? Math.round((VERIFY_CACHE_HITS / cacheTotal) * 100) : 0;
+    console.error(
+      `[verify] cross-edition cache: ${VERIFY_CACHE_HITS}/${cacheTotal} hit (${hitPct}%), +${added} novos entries persistidos`,
+    );
   }
 
   const paywall = results.filter((r) => r.verdict === "paywall").length;

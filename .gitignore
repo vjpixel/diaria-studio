@@ -16,6 +16,7 @@ data/monthly/**
 !data/monthly/*/raw-destaques.json
 data/*-raw.json
 data/drive-cache.json
+data/link-verify-cache.json
 data/.credentials.json
 data/.fb-credentials.json
 data/run-log.jsonl
