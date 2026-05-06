@@ -126,7 +126,7 @@ async function main(): Promise<void> {
 
       const error = url.searchParams.get("error");
       if (error) {
-        res.writeHead(400, { "Content-Type": "text/html" });
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<h2>❌ Erro: ${error}</h2><p>Feche esta janela e tente novamente.</p>`);
         server.close();
         reject(new Error(`OAuth error: ${error}`));
@@ -135,16 +135,16 @@ async function main(): Promise<void> {
 
       const authCode = url.searchParams.get("code");
       if (!authCode) {
-        res.writeHead(400, { "Content-Type": "text/html" });
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<h2>❌ Código não encontrado</h2>`);
         server.close();
         reject(new Error("No code in callback"));
         return;
       }
 
-      res.writeHead(200, { "Content-Type": "text/html" });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`
-        <html><body style="font-family:sans-serif;max-width:500px;margin:50px auto;text-align:center">
+        <html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;max-width:500px;margin:50px auto;text-align:center">
           <h2>✅ Autorização concluída!</h2>
           <p>Pode fechar esta janela e voltar ao terminal.</p>
         </body></html>
