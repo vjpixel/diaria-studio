@@ -25,7 +25,7 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
 - **Sync pull antes de começar** (todos os arquivos consumidos por newsletter + social):
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eia.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 4 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
   ```
   Editor pode ter refinado texto/imagens ou ajustado posts no Drive. (Edições antigas pré-#192 usam `01-eia-real.jpg`/`01-eia-ia.jpg`.)
 - **Staleness check (#120) — APÓS o pull:**

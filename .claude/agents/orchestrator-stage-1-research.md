@@ -349,8 +349,10 @@ Editor decide no gate. Auto-aprovação (test_mode/--no-gates) bypassa o lint ma
 
 Se `data/editions/{AAMMDD}/01-eia.md` existir (É IA? já completou em background):
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md,01-eia.md,01-eia-A.jpg,01-eia-B.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md,01-eia-A.jpg,01-eia-B.jpg
 ```
+**Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito) já está embutido em `01-categorized.md` (#371). Arquivo permanece local pra scripts (`render-categorized-md`, `normalize-newsletter`, `lint`, `eia-compose`, `publish-monthly`).
+
 Se `01-eia.md` ainda não existir (É IA? ainda processando):
 ```bash
 npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md
