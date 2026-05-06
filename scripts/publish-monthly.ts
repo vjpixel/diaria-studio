@@ -185,22 +185,42 @@ function renderClarice(chunk: string): string {
 function renderOutrasNoticias(chunk: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
-  const items = content.split(/\n\n+/).filter((i) => i.trim());
 
   const header = `<p style="margin:0 0 24px 0;font-size:11px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
 
-  const itemsHtml = items
-    .map((item) => {
-      const itemLines = item.trim().split("\n");
-      const titleLine = renderInline(itemLines[0].trim());
-      const desc = itemLines.slice(1).join(" ").trim();
-      return (
-        `<p style="margin:0 0 4px 0;font-weight:bold;">${titleLine}</p>` +
-        (desc
-          ? `<p style="margin:0 0 20px 0;color:#444;">${renderInline(desc)}</p>`
-          : `<div style="margin-bottom:20px;"></div>`)
-      );
-    })
+  // Items: [título](url) + blank line + descrição (separados por blank entre itens).
+  // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
+  // ficaria sem título e renderizaria como negrito indevidamente.
+  // Fix: agrupar por linha de inline link (nova entrada = [título](url)).
+  const TITLE_RE = /^\[.+\]\(https?:\/\/[^)]+\)/;
+  const nonBlankLines = content.split("\n").map((l) => l.trim()).filter((l) => l);
+
+  const parsed: Array<{ title: string; desc: string }> = [];
+  let currentTitle: string | null = null;
+  const descBuf: string[] = [];
+
+  for (const line of nonBlankLines) {
+    if (TITLE_RE.test(line)) {
+      if (currentTitle !== null) {
+        parsed.push({ title: currentTitle, desc: descBuf.join(" ").trim() });
+        descBuf.length = 0;
+      }
+      currentTitle = line;
+    } else {
+      descBuf.push(line);
+    }
+  }
+  if (currentTitle !== null) {
+    parsed.push({ title: currentTitle, desc: descBuf.join(" ").trim() });
+  }
+
+  const itemsHtml = parsed
+    .map(({ title, desc }) =>
+      `<p style="margin:0 0 4px 0;font-weight:bold;">${renderInline(title)}</p>` +
+      (desc
+        ? `<p style="margin:0 0 20px 0;color:#444;">${renderInline(desc)}</p>`
+        : `<div style="margin-bottom:20px;"></div>`)
+    )
     .join("\n");
 
   return header + itemsHtml;
