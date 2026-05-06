@@ -265,10 +265,20 @@ Disparar `scorer` (Opus) passando `categorized` (saída do research-reviewer) e 
 
 Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover** os top de `runners_up[]` (ordenados por score desc) para `highlights[]` até completar 6. Re-numerar os ranks. Logar warning explícito (`level: warn`, `agent: orchestrator`, `message: "scorer produziu apenas N highlights; promovi M runners_up para chegar a 6"`). Se mesmo após a promoção `highlights.length < 6` (pool insuficiente), seguir com o que houver — é caso legítimo.
 
-### 1s. Enriquecer buckets + filtro de score mínimo
+### 1s. Enriquecer buckets + filtro de score mínimo (#351, #720, #721)
 
-- **Enriquecer buckets com scores**: para cada artigo em `lancamento`, `pesquisa`, `noticias`, buscar o `score` correspondente em `all_scored` (join por `url`) e injetar como campo `score`. Ordenar cada bucket por `score` desc.
-- **Filtro de score mínimo (#351)**: após enriquecer com scores, remover de cada bucket artigos com `score < 40`, exceto `flag === 'editor_submitted'` (inbox) e artigos já em `highlights` ou `runners_up`. Logar `"scorer threshold filter: removidos N artigos com score < 40"`.
+Rodar via script determinístico:
+```bash
+npx tsx scripts/finalize-stage1.ts \
+  --scored data/editions/{AAMMDD}/_internal/tmp-scored.json \
+  --categorized data/editions/{AAMMDD}/_internal/tmp-clustered.json \
+  --out data/editions/{AAMMDD}/_internal/tmp-finalized.json \
+  --edition {AAMMDD}
+```
+
+O script: join por URL exata (#720 — sem canonicalizar); recovery por título se mismatch (`score_recovered: true`); loga warn + run-log por cada mismatch; remove `score < 40` exceto highlights/runners_up e `flag === 'editor_submitted'` válidos; bypass endurece (#721): título não-placeholder, `length >= 15`, sem `/buttondown|subscribe|newsletter|sign.?up/i` — falha → `editor_submitted_placeholder: true`; ordena por score desc.
+
+Daqui em diante usar `_internal/tmp-finalized.json` como os buckets enriquecidos.
 
 ### 1t. Verificação de mínimos por seção (#488)
 

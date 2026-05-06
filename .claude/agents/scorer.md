@@ -65,4 +65,5 @@ JSON:
 - Sempre **6 destaques**, escolhidos por mérito (sem cota mínima por bucket).
 - Incluir o campo `"bucket"` em cada entrada de `highlights[]` — facilita o orchestrator gerar o MD.
 - `all_scored` deve conter **todos** os artigos do input (nenhum pode ficar sem score). É a base para o orchestrator ordenar os buckets por score.
+- **URLs são opacas (#720).** Nunca corrija, complete, normalize ou reescreva URLs entre input e output. Copie EXATAMENTE como vieram no input — mesmo que pareçam truncadas, com slug errado ou com traço sobrante. O orchestrator faz join por igualdade de URL string; qualquer mutação quebra o pipeline downstream silenciosamente.
 - **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Receber `out_path` como parâmetro (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`) e usar `Write` para gravar o JSON completo. Verificar com `Bash("node -e \"try{JSON.parse(require('fs').readFileSync('{out_path}','utf8'));console.log('ok')}catch(e){process.stderr.write(e.message);process.exit(1)}\"")`  antes de retornar. Se a gravação falhar, reportar erro explícito — nunca retornar só como texto sem gravar o arquivo.
