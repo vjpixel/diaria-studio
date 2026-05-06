@@ -9,8 +9,10 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 
 ## Input
 
-- `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias` — saída do categorizer.
+- `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias`, `tutorial`, `video` — saída do categorizer.
 - `edition_date`: data da edição no formato `AAMMDD` (ex: `260423`). Para Date math, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}`.
+- `edition_iso`: data da edição no formato ISO (ex: `2026-04-23`).
+- `anchor_iso`: data de execução no formato ISO (ex: `2026-04-22`) — **obrigatório**. Passado pelo orchestrator. Se ausente, logar warn e usar `edition_iso` derivada como fallback (nunca silently defaultar para UTC today).
 - `edition_dir`: diretório da edição (ex: `data/editions/260421/`).
 - `window_days`: janela de publicação em dias (default: `3`).
 
@@ -18,7 +20,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 
 ### Filtro 1 — Datas
 
-1. Achatar todos os artigos dos 3 buckets. Extrair `{ url, date }` de cada um.
+1. Achatar todos os artigos dos 5 buckets (`lancamento`, `pesquisa`, `noticias`, `tutorial`, `video`). Extrair `{ url, date }` de cada um.
 2. Gravar em `{edition_dir}tmp-dates-input.json`.
 3. Rodar:
    ```bash
@@ -40,7 +42,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
    ```
    Ler `tmp-window-output.json`. Usar `kept` como o novo `categorized` daqui em diante. Logar `removed[]` para rastreabilidade.
 
-   **Anchor é `anchor_iso`** (data de execução, não publication date — #560). O orchestrator passa `anchor_iso` no payload junto com `edition_iso`; se receber só `edition_iso` (retrocompat de invocações antigas), omitir `--anchor-date` deixa o script defaultar pra today UTC, que é o comportamento certo.
+   **Anchor é `anchor_iso`** (data de execução, não publication date — #560). Sempre incluir `--anchor-date {anchor_iso}` — é obrigatório. Se `anchor_iso` não foi recebido no payload, logar warn e usar a data derivada de `edition_iso` como fallback; nunca omitir `--anchor-date` e deixar o script defaultar para UTC today.
 7. Limpar temporários:
    ```bash
    node -e "['tmp-dates-input.json','tmp-dates-output.json','tmp-categorized-dated.json','tmp-window-output.json'].forEach(f=>{try{require('fs').unlinkSync('{edition_dir}'+f)}catch{}})"
@@ -49,7 +51,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 ### Filtro 2 — Cobertura recente de temas
 
 7. Ler `context/past-editions.md`. Extrair apenas as edições dos últimos **7 dias** em relação a `edition_date` (filtrar por data de cabeçalho das seções).
-8. Para cada artigo restante nos 3 buckets, avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
+8. Para cada artigo restante nos 5 buckets (`lancamento`, `pesquisa`, `noticias`, `tutorial`, `video`), avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
    - Comparar o `title` (e `summary` se disponível) do artigo com os títulos e resumos das edições recentes.
    - Critério conservador: remover **só** quando o overlap temático for claro e direto (mesma notícia, mesmo produto, mesmo anúncio). Artigos que aprofundam, contradizem ou atualizam um tema coberto devem ser **mantidos**.
    - Exemplos de remoção: "OpenAI lança GPT-5" quando Diar.ia já cobriu "OpenAI anuncia GPT-5" 3 dias atrás. Exemplo de manutenção: "Críticas ao lançamento do GPT-5" é atualização relevante, não repetição.
@@ -63,7 +65,9 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
   "categorized": {
     "lancamento": [...artigos restantes com datas corrigidas...],
     "pesquisa": [...],
-    "noticias": [...]
+    "noticias": [...],
+    "tutorial": [...],
+    "video": [...]
   },
   "stats": {
     "total_input": 42,
