@@ -34,7 +34,7 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 | 0 | Setup + dedup | `refresh-dedup-runner` + scripts de check (dedup-freshness, link-ctr, audience, fb-verify) | `context/past-editions.md` atualizado |
 | 1 | Pesquisa | N× `source-researcher` + M× `discovery-searcher` + `eia-composer` (em paralelo, É IA? em background) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
 | 2 | Escrita | `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, todos a partir de `_internal/01-approved.json` → merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
-| 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
+| 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
 | 4 | Publicação | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Chrome → LinkedIn × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
 
 ---

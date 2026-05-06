@@ -96,6 +96,13 @@ node -e "
 1. Abrir composer (URL inicial do playbook).
 2. Detectar login: se aparecer formulário de login, registrar `status: "failed"` com `reason: "linkedin_login_expired"` e prosseguir para o próximo (não abortar a iteração inteira).
 3. **Trocar autor pra página Diar.ia** seguindo o Passo 3 do playbook (`context/publishers/linkedin.md`). Retry até 3×. Se falhar, registrar `status: "failed"` com `reason: "linkedin_page_not_found"` (#504, #506) — esse erro **se aplica a todos os destaques restantes** desta sessão, então marcar cada destaque restante (todos com `destaque_num` maior que o atual) como `failed` / `linkedin_page_not_found` sem retry novo. Sair do loop e ir direto pro output JSON.
+
+   **⛔ INVARIANTE DE CONTEXTO (#755 — fail-fast obrigatório):** Antes de clicar "Post", "Schedule" ou "Save as draft", **confirmar visualmente** que o autor selecionado é "Diar.ia" (a página da empresa), não o nome pessoal do editor (ex: "vjpixel"). Ler o texto do seletor de autor no composer. Se:
+   - O seletor mostrar o nome pessoal do editor, OR
+   - Não for possível identificar o autor com certeza, OR
+   - O seletor de autor não estiver visível,
+   
+   → **Abortar imediatamente** sem clicar Post/Schedule/Save. Registrar `status: "failed"`, `reason: "linkedin_page_selector_failed — post abortado para evitar publicação em perfil pessoal"`. Este erro se aplica a todos os destaques restantes. **Nunca publicar quando não consegue confirmar a página Diar.ia** — publicar no perfil pessoal causa dano reputacional e requer cleanup manual (#755).
 4. Colar o texto do post **exatamente como está** — sem appendar URL de imagem ou qualquer marcação extra. O texto do destaque já contém o link do artigo + hashtags do template.
 5. **Tentar rascunho primeiro** (seguir seção "Modo rascunho" do playbook).
    - Se conseguir: capturar URL/draft ID, `status = "draft"`, `scheduled_at = null`.
