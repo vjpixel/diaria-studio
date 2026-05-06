@@ -527,10 +527,12 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     assert.match(credit, /autor desconhecido/);
   });
 
-  it("#706: artist ausente vira 'autor desconhecido' (não 'Wikimedia Commons')", () => {
+  it("#706: artist ausente → 'Wikimedia Commons' (creditar instituição)", () => {
+    // Campo ausente é semanticamente diferente de "Unknown" explícito —
+    // creditar a instituição Wikimedia Commons, não "autor desconhecido".
     const image = { description: { text: "Imagem sem autor." } };
     const credit = buildCreditLine(image);
-    assert.match(credit, /autor desconhecido/);
+    assert.match(credit, /Wikimedia Commons/);
   });
 });
 

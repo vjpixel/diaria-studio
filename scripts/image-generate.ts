@@ -106,6 +106,7 @@ function main() {
   if (existsSync(checkExistPath) && !force) {
     console.error(`Imagem ${checkExistPath} já existe — use --force pra regenerar.`);
     process.stdout.write(checkExistPath + "\n");
+    if (isD1) process.stdout.write(`${normalizedOutDir}04-${destaque}-1x1.jpg\n`);
     process.exit(0);
   }
 
