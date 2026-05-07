@@ -36,8 +36,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
   --level warn --message "mcp_disconnect: {server_name}" \
   --details '{"server":"{server_name}","kind":"mcp_disconnect"}'
 ```
-E reportar:
-> `BLOQUEADO: MCP {servidor} indisponível. Verifique extensão Chrome + login. Responda "retry" para continuar ou "abort" para encerrar Etapa 4.`
+E renderizar halt banner pra alertar o editor (#737):
+```bash
+npx tsx scripts/render-halt-banner.ts \
+  --stage "4 — Publicação" \
+  --reason "mcp__{server_name} desconectado (verifique extensão Chrome + login)" \
+  --action "responda 'retry' para continuar ou 'abort' para encerrar Etapa 4"
+```
 Ao reconectar (MCP voltar a responder), logar:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \

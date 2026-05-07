@@ -9,6 +9,9 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
 
 ## Stage 0 — Setup e checks pré-edição
 
+**MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Beehiiv, Gmail, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759). **Sempre acompanhar** com halt banner pra alertar o editor: `npx tsx scripts/render-halt-banner.ts --stage "0 — Preflight" --reason "mcp__{server} desconectado" --action "reconecte e responda 'retry', ou 'abort' para abortar"` (#737).
+**Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
+
 ### 0a. Parâmetros de entrada
 
 - `edition_date` recebido no formato `AAMMDD` (ex: `260423`). Usar como diretório: `data/editions/{edition_date}/`.
