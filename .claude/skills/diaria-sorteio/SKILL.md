@@ -26,13 +26,19 @@ Se Stage 0 já processou todas as pendentes, esta skill exit 0 silenciosa (sumá
 
 ## Modo list (default) — processar pendentes
 
-### Passo 1: descobrir thread mais recente já processada
+### Passo 1: descobrir cutoff (primeira edição do mês corrente)
 
-Ler `data/contest-entries.jsonl` e pegar o `confirmed_at` mais recente. Se vazio, usar 30 dias atrás como cutoff.
+Cutoff é a **data de publicação da primeira edição do mês corrente** (BRT). Idempotência via `findByThreadId` cobre reprocessamento.
 
 ```bash
+# Cutoff em formato YYYY/MM/DD pra Gmail query
+npx tsx -e "import('./scripts/lib/edition-utils.ts').then(m => { const e = m.firstEditionOfCurrentMonth(); console.log(e ? m.aammddToGmailDate(e) : new Date().toISOString().slice(0,7).replace('-','/') + '/01'); })"
+
+# Listar entries existentes do mês corrente (referência)
 npx tsx scripts/sorteio-process.ts list 2>/dev/null | head -50
 ```
+
+Por que janela do mês todo: respostas dos leitores chegam ao longo do mês após cada edição. Cutoff fixo no primeiro dia da primeira edição garante que threads não escapem.
 
 ### Passo 2: drenar Gmail
 

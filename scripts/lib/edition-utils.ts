@@ -49,3 +49,44 @@ export function getPreviousEditionDate(
   const prev = editions.find((e) => e < currentAammdd);
   return prev ?? null;
 }
+
+/**
+ * Retorna AAMMDD da primeira edição publicada no mês corrente (BRT),
+ * ou null se não houver nenhuma. Usado pelo cutoff do drain Gmail no
+ * sorteio (#852 follow-up): pegar todas threads do mês todo, deixando
+ * findByThreadId ser a defesa de idempotência.
+ *
+ * Mês corrente é determinado pelo `now` em BRT (UTC-3) — não UTC.
+ * Antes da virada de mês, evita pegar edições do mês anterior.
+ */
+export function firstEditionOfCurrentMonth(
+  now: Date = new Date(),
+  editionsDir: string = EDITIONS_DIR,
+): string | null {
+  // Convert UTC → BRT (UTC-3). Edge case: no início do mês UTC, BRT ainda
+  // pode estar no mês anterior por ~3h. Usar BRT é consistente com regra
+  // editorial #716 (timestamps editor-facing em BRT).
+  const brtNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yy = String(brtNow.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(brtNow.getUTCMonth() + 1).padStart(2, "0");
+  const monthPrefix = `${yy}${mm}`;
+  const editions = listEditions(editionsDir);
+  // Filtra edições do mês corrente, pega a menor (mais antiga).
+  const ofMonth = editions.filter((e) => e.startsWith(monthPrefix)).sort();
+  return ofMonth[0] ?? null;
+}
+
+/**
+ * Converte AAMMDD pra string Gmail-query no formato YYYY/MM/DD.
+ *
+ *   "260504" → "2026/05/04"
+ */
+export function aammddToGmailDate(aammdd: string): string {
+  if (!AAMMDD_RE.test(aammdd)) {
+    throw new Error(`aammddToGmailDate: AAMMDD inválido: ${aammdd}`);
+  }
+  const yyyy = `20${aammdd.slice(0, 2)}`;
+  const mm = aammdd.slice(2, 4);
+  const dd = aammdd.slice(4, 6);
+  return `${yyyy}/${mm}/${dd}`;
+}

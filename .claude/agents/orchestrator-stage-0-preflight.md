@@ -302,7 +302,15 @@ Drena respostas pendentes do concurso "ache o erro, ganhe um número" antes de S
 
 #### Etapa 1 — Buscar threads pendentes via Gmail MCP
 
-Cutoff = `confirmed_at` mais recente em `data/contest-entries.jsonl` (via `npx tsx scripts/sorteio-process.ts list`); se vazio, 30 dias atrás.
+Cutoff = data de publicação da **primeira edição do mês corrente** (BRT). Use o helper:
+
+```bash
+npx tsx -e "import('./scripts/lib/edition-utils.ts').then(m => { const e = m.firstEditionOfCurrentMonth(); console.log(e ? m.aammddToGmailDate(e) : ''); })"
+```
+
+Output formato `YYYY/MM/DD`. Se nenhuma edição publicada no mês corrente ainda, fallback pra primeiro dia do mês (`YYYY/MM/01`). Idempotência via `findByThreadId` em `data/contest-entries.jsonl` cobre threads já processadas — não precisa cutoff incremental.
+
+Por que essa janela: respostas de leitores ao sorteio do mês N+1 chegam ao longo do mês N (após cada edição publicada). Cutoff fixo no início do mês garante que threads não escapem por race entre processamento e publicação. Idempotência via thread_id evita reprocessar.
 
 Usar `mcp__claude_ai_Gmail__search_threads` com query `"diaria@mail.beehiiv.com" -from:vjpixel after:{cutoff_yyyy_mm_dd}`. Limit 20 threads. Se Gmail retornar erro: skip silencioso (logar warn).
 
