@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { CONFIG } from "./lib/config.ts";
 import { runMain } from "./lib/exit-handler.ts";
+import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 
 interface WikimediaImage {
   title?: string;
@@ -939,6 +940,14 @@ async function main(): Promise<void> {
   const metaPath = resolve(internalDir, "01-eia-meta.json");
   writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n");
 
+  // #927: gabarito também gravado em sidecar JSON dedicado. Drive strippa
+  // YAML frontmatter no round-trip Markdown → Doc → Markdown, então
+  // gabarito fica num arquivo que sobrevive (binário, em _internal/).
+  const aMapping: "real" | "ia" = sides.realSide === "A" ? "real" : "ia";
+  const bMapping: "real" | "ia" = sides.realSide === "B" ? "real" : "ia";
+  writeEiaAnswerSidecar(outDir, edition, { A: aMapping, B: bMapping });
+  const answerPath = eiaAnswerSidecarPath(outDir);
+
   // Output JSON pra orchestrator
   console.log(
     JSON.stringify({
@@ -946,6 +955,7 @@ async function main(): Promise<void> {
       out_real: realPath,
       out_ia: iaPath,
       out_meta: metaPath,
+      out_answer: answerPath,
       ai_side: sides.aiSide,
       image_title: image.title ?? "",
       image_credit: credit,

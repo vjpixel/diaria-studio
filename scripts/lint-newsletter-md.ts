@@ -35,6 +35,7 @@ import {
 } from "./lib/apply-stage2-caps.ts"; // #907
 import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
+import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
 
 interface ApprovedArticle {
   url: string;
@@ -550,6 +551,12 @@ export function checkEiaAnswer(
     // 01-eia.md não existe — check não aplicável
     return { ok: true };
   }
+  // #927: gabarito também pode estar no sidecar JSON. Sidecar sobrevive
+  // Drive round-trip (frontmatter não), então sidecar válido = ok mesmo
+  // que frontmatter tenha sido strippado.
+  if (readEiaAnswerSidecar(dir)) {
+    return { ok: true };
+  }
   // 01-eia.md existe: verificar que o md tem eia_answer no frontmatter
   if (!existsSync(mdPath)) {
     return {
@@ -563,7 +570,7 @@ export function checkEiaAnswer(
     return {
       ok: false,
       label:
-        "eia_answer_missing: 01-eia.md exists but 02-reviewed.md has no eia_answer frontmatter",
+        "eia_answer_missing: 01-eia.md exists but neither 01-eia-answer.json sidecar nor 02-reviewed.md frontmatter has eia_answer",
     };
   }
   return { ok: true };

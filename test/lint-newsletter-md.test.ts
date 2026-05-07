@@ -924,7 +924,8 @@ describe("checkEiaAnswer (#744)", () => {
     const result = checkEiaAnswer(mdPath, dir);
     assert.equal(result.ok, false);
     assert.match(result.label!, /eia_answer_missing/);
-    assert.match(result.label!, /02-reviewed\.md has no eia_answer frontmatter/);
+    // #927: label agora menciona sidecar JSON também; check só o prefixo + frontmatter
+    assert.match(result.label!, /neither 01-eia-answer\.json sidecar nor 02-reviewed\.md frontmatter/);
     rmSync(dir, { recursive: true });
   });
 
@@ -937,6 +938,22 @@ describe("checkEiaAnswer (#744)", () => {
     const result = checkEiaAnswer(mdPath, dir);
     assert.equal(result.ok, false);
     assert.match(result.label!, /not found/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("#927: ok quando sidecar JSON existe mesmo sem frontmatter no md (Drive round-trip)", () => {
+    const dir = join(TMP, "sidecar_only");
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "01-eia.md"), "É IA?\n\nFoto: Linha de crédito\n");
+    writeFileSync(
+      join(dir, "_internal/01-eia-answer.json"),
+      JSON.stringify({ edition: "260507", answer: { A: "real", B: "ia" }, ai_side: "B" }),
+    );
+    const mdPath = join(dir, "02-reviewed.md");
+    // 02-reviewed.md sem frontmatter (simula Drive strip)
+    writeFileSync(mdPath, "Texto da newsletter sem frontmatter.");
+    const result = checkEiaAnswer(mdPath, dir);
+    assert.equal(result.ok, true, "sidecar válido = check passa");
     rmSync(dir, { recursive: true });
   });
 });

@@ -8,7 +8,9 @@ import {
   normalizeNewsletter,
   addTrailingSpaces,
   extractEiaFrontmatter,
+  resolveEiaFrontmatterBlock,
 } from "../scripts/normalize-newsletter.ts";
+import { writeEiaAnswerSidecar } from "../scripts/lib/eia-answer.ts";
 
 describe("splitConcatenatedHighlightHeader", () => {
   it("quebra header + 3 títulos colados", () => {
@@ -453,6 +455,55 @@ describe("extractEiaFrontmatter (#744)", () => {
     writeFileSync(eiaPath, "É IA?\n\nTexto sem frontmatter.");
     const fm = extractEiaFrontmatter(eiaPath);
     assert.equal(fm, null);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("resolveEiaFrontmatterBlock (#927)", () => {
+  const TMP = "test/_tmp_eia_resolve";
+
+  it("usa sidecar quando disponível", () => {
+    const dir = join(TMP, "sidecar");
+    mkdirSync(dir, { recursive: true });
+    writeEiaAnswerSidecar(dir, "260507", { A: "ia", B: "real" });
+    const block = resolveEiaFrontmatterBlock(dir);
+    assert.ok(block);
+    assert.match(block!, /eia_answer:/);
+    assert.match(block!, /A: ia/);
+    assert.match(block!, /B: real/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("Drive round-trip: 01-eia.md sem frontmatter, sidecar resgata gabarito", () => {
+    const dir = join(TMP, "drive_strip");
+    mkdirSync(dir, { recursive: true });
+    // Frontmatter strippado
+    writeFileSync(join(dir, "01-eia.md"), "É IA?\n\nFoto: Linha de crédito");
+    writeEiaAnswerSidecar(dir, "260507", { A: "real", B: "ia" });
+    const block = resolveEiaFrontmatterBlock(dir);
+    assert.ok(block);
+    assert.match(block!, /A: real/);
+    assert.match(block!, /B: ia/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falls back pra frontmatter quando sidecar ausente", () => {
+    const dir = join(TMP, "fm_only");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "01-eia.md"),
+      "---\neia_answer:\n  A: real\n  B: ia\n---\n\nÉ IA?\n",
+    );
+    const block = resolveEiaFrontmatterBlock(dir);
+    assert.ok(block);
+    assert.match(block!, /eia_answer/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("retorna null quando nada disponível", () => {
+    const dir = join(TMP, "empty");
+    mkdirSync(dir, { recursive: true });
+    assert.equal(resolveEiaFrontmatterBlock(dir), null);
     rmSync(dir, { recursive: true });
   });
 });
