@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { visualWidth, padRightVisual, renderGateBanner } from "../scripts/lib/gate-banner.ts";
+import {
+  visualWidth,
+  padRightVisual,
+  renderGateBanner,
+  renderHaltBanner,
+} from "../scripts/lib/gate-banner.ts";
 
 describe("visualWidth (#751 — emoji-aware terminal width)", () => {
   it("string ASCII simples", () => {
@@ -106,5 +111,89 @@ describe("renderGateBanner (#751 — banner with emoji-aware alignment)", () => 
     assert.ok(banner.includes("Meu título"), "título deve estar no banner");
     assert.ok(banner.includes("linha 1"), "linha 1 deve estar no banner");
     assert.ok(banner.includes("linha 2"), "linha 2 deve estar no banner");
+  });
+});
+
+describe("renderHaltBanner (#737 — pipeline parou)", () => {
+  it("inclui título 'PIPELINE PAROU' com emoji 🛑 dos dois lados", () => {
+    const banner = renderHaltBanner({
+      stage: "1 — Pesquisa",
+      reason: "mcp__clarice desconectado",
+      action: "reconecte e responda 'retry'",
+    });
+    assert.ok(banner.includes("PIPELINE PAROU"));
+    assert.ok(banner.includes("🛑"));
+    // Two emoji on the title line
+    const titleLine = banner.split("\n").find((l) => l.includes("PIPELINE PAROU"))!;
+    const emojiMatches = titleLine.match(/🛑/g) ?? [];
+    assert.equal(emojiMatches.length, 2, "deve ter 2 emoji 🛑 no título");
+  });
+
+  it("inclui campos STAGE, MOTIVO e AÇÃO em linhas separadas", () => {
+    const banner = renderHaltBanner({
+      stage: "2b — Clarice",
+      reason: "mcp_clarice off",
+      action: "reconecte",
+    });
+    assert.ok(banner.includes("STAGE:  2b — Clarice"));
+    assert.ok(banner.includes("MOTIVO: mcp_clarice off"));
+    assert.ok(banner.includes("AÇÃO:   reconecte"));
+  });
+
+  it("alinhamento visual correto com emoji + acentos", () => {
+    const banner = renderHaltBanner({
+      stage: "4 — Publicação",
+      reason: "Beehiiv 5xx persistente",
+      action: "aguardar e re-rodar /diaria-4-publicar",
+    });
+    const lines = banner.split("\n");
+    const widths = lines.map((l) => visualWidth(l));
+    const allSame = widths.every((w) => w === widths[0]);
+    assert.ok(allSame, `Larguras inconsistentes: ${widths.join(", ")}`);
+  });
+
+  it("largura padrão é 60 cells", () => {
+    const banner = renderHaltBanner({
+      stage: "X",
+      reason: "Y",
+      action: "Z",
+    });
+    const firstLine = banner.split("\n")[0];
+    assert.equal(visualWidth(firstLine), 60);
+  });
+
+  it("largura customizada respeitada", () => {
+    const banner = renderHaltBanner({
+      stage: "X",
+      reason: "Y",
+      action: "Z",
+      width: 80,
+    });
+    const firstLine = banner.split("\n")[0];
+    assert.equal(visualWidth(firstLine), 80);
+  });
+
+  it("output é distinguível de renderGateBanner (texto diferente)", () => {
+    const halt = renderHaltBanner({ stage: "1", reason: "r", action: "a" });
+    const gate = renderGateBanner("🟡 GATE 1", ["aprovar?"]);
+    assert.ok(!halt.includes("GATE"), "halt não deve mencionar GATE");
+    assert.ok(halt.includes("PAROU"), "halt deve dizer PAROU");
+    assert.ok(!gate.includes("PAROU"), "gate não deve dizer PAROU");
+  });
+
+  it("conteúdo extenso não trunca — texto cabe na largura padrão (60)", () => {
+    // Validação de safety: se um motivo for longo demais, melhor expandir
+    // o width (caller passa width maior) do que truncar silenciosamente.
+    const banner = renderHaltBanner({
+      stage: "2b — Clarice review (Stage longo)",
+      reason: "Mensagem de motivo bem longa que pode passar do limite default",
+      action: "Texto de ação também longo com detalhes",
+      width: 100,
+    });
+    const lines = banner.split("\n");
+    const widths = lines.map((l) => visualWidth(l));
+    const allSame = widths.every((w) => w === widths[0]);
+    assert.ok(allSame, `largura inconsistente em banner extenso: ${widths.join(",")}`);
+    assert.equal(widths[0], 100);
   });
 });
