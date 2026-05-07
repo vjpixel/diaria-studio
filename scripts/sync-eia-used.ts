@@ -157,7 +157,9 @@ function main() {
     added: toAdd.length,
     already_present: alreadyPresent,
     skipped_no_meta: skipped,
-    dry_run: dryRun || undefined,
+    // #865: sempre boolean explícito — antes `dryRun || undefined` omitia
+    // o campo quando false, criando shape variável no JSON output.
+    dry_run: dryRun,
   };
 
   if (dryRun && toAdd.length > 0) {

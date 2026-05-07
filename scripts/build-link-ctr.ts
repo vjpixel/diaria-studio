@@ -1180,6 +1180,7 @@ function main() {
   const cutoff = Date.now() - MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
   let tooRecent = 0;
   let alreadyProcessed = 0;
+  let noPublishDate = 0;
 
   for (const post of posts) {
     if (post.status !== 'confirmed') { skipped++; continue; }
@@ -1190,9 +1191,15 @@ function main() {
       continue;
     }
 
-    const date = post.publish_date
-      ? new Date(post.publish_date * 1000).toISOString().slice(0, 10)
-      : '';
+    // #864: posts confirmed mas sem publish_date (raro mas possível) eram
+    // contados em alreadyProcessed via comparação de string `'' <= lastDate`
+    // — counter inflado e label enganoso. Tratar como categoria distinta.
+    if (!post.publish_date) {
+      noPublishDate++;
+      continue;
+    }
+
+    const date = new Date(post.publish_date * 1000).toISOString().slice(0, 10);
 
     // Incremental: skip posts already in the CSV
     if (!isBootstrap && date <= lastDate) {
@@ -1254,6 +1261,9 @@ function main() {
   if (!isBootstrap) console.log(`  Posts already in CSV: ${alreadyProcessed}`);
   console.log(`  Posts skipped (draft/no HTML): ${skipped}`);
   console.log(`  Posts skipped (< ${MIN_AGE_DAYS} days old): ${tooRecent}`);
+  if (noPublishDate > 0) {
+    console.log(`  Posts skipped (no publish_date): ${noPublishDate}`);
+  }
   console.log(`  New links added: ${newRows.length}`);
   console.log(`  Total link rows: ${totalRows}`);
   console.log(`  Output: ${OUT_CSV}`);
