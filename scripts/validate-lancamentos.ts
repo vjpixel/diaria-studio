@@ -33,6 +33,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 export interface ValidationResult {
   lancamento_count: number;
@@ -160,18 +161,6 @@ export function validateLancamentosFromApproved(
   return { removed, original_count, final_count: kept };
 }
 
-function parseFlagArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
-
 function mainApproved(args: Record<string, string>, ROOT: string): void {
   const approvedPath = resolve(ROOT, args.approved);
   if (!existsSync(approvedPath)) {
@@ -207,7 +196,9 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const flagArgs = parseFlagArgs(process.argv.slice(2));
+  // #926: usar parser compartilhado. Adiciona suporte a --md/--in (#902) sem
+  // quebrar compatibilidade com posicional `<md-path>`.
+  const { values: flagArgs, positional } = parseCliArgs(process.argv.slice(2));
 
   // Modo approved-json (#876)
   if (flagArgs.approved) {
@@ -215,11 +206,14 @@ function main(): void {
     return;
   }
 
-  // #902: aceitar `--in <path>` além de positional pra alinhar com outros validators do projeto.
-  const arg = flagArgs.in || process.argv[2];
-  if (!arg || arg.startsWith("--")) {
+  // #902: aceita --md ou --in como alias para o posicional. Posicional ainda
+  // funciona para retrocompatibilidade.
+  const arg = flagArgs["md"] ?? flagArgs["in"] ?? positional[0];
+  if (!arg) {
     console.error(
-      "Uso: validate-lancamentos.ts [--in <path> | <md-path>]\n" +
+      "Uso: validate-lancamentos.ts <md-path>\n" +
+        "  ou: validate-lancamentos.ts --md <md-path>\n" +
+        "  ou: validate-lancamentos.ts --in <md-path>\n" +
         "  ou: validate-lancamentos.ts --approved <01-approved.json> [--write-removed <path>]",
     );
     process.exit(2);

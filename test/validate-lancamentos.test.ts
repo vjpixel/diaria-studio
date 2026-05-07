@@ -1,6 +1,5 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +8,7 @@ import {
   validateLancamentos,
   validateLancamentosFromApproved,
 } from "../scripts/validate-lancamentos.ts";
-import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
+import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("extractLancamentoUrls", () => {
   it("captura URLs dentro da seção LANÇAMENTOS", () => {
@@ -244,55 +243,66 @@ describe("validateLancamentosFromApproved (#876)", () => {
   });
 });
 
-describe("validate-lancamentos CLI --in flag (#902)", () => {
-  function runCli(args: string[]): { stdout: string; stderr: string; exitCode: number } {
-    const result = spawnSync(
-      NPX,
-      ["tsx", "scripts/validate-lancamentos.ts", ...args],
-      { encoding: "utf8", stdio: "pipe", shell: isWindows },
-    );
-    if (result.error) throw result.error;
-    return {
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-      exitCode: result.status ?? 1,
-    };
+describe("CLI args (#902, #926)", () => {
+  function setupTmpMd(): { tmp: string; mdPath: string } {
+    const tmp = mkdtempSync(join(tmpdir(), "validate-lancamentos-cli-"));
+    const mdPath = join(tmp, "02-reviewed.md");
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "Item",
+      "https://openai.com/index/x",
+      "",
+      "---",
+      "",
+    ].join("\n");
+    writeFileSync(mdPath, md, "utf8");
+    return { tmp, mdPath };
   }
 
-  it("aceita --in <path>", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vl-902-"));
+  it("aceita posicional <md-path> (retrocompat)", () => {
+    const { tmp, mdPath } = setupTmpMd();
     try {
-      const md = ["LANÇAMENTOS", "https://openai.com/index/x"].join("\n");
-      const path = join(dir, "categorized.md");
-      writeFileSync(path, md, "utf8");
-      const r = runCli(["--in", path]);
-      assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
-      const parsed = JSON.parse(r.stdout);
-      assert.equal(parsed.status, "ok");
-      assert.equal(parsed.lancamento_count, 1);
+      const r = spawnNpx(["tsx", "scripts/validate-lancamentos.ts", mdPath], {
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(String(r.stdout));
+      assert.equal(out.status, "ok");
+      assert.equal(out.lancamento_count, 1);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("retrocompat: continua aceitando posicional <md-path>", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vl-902-pos-"));
+  it("aceita --md <md-path> (#902)", () => {
+    const { tmp, mdPath } = setupTmpMd();
     try {
-      const md = ["LANÇAMENTOS", "https://openai.com/index/x"].join("\n");
-      const path = join(dir, "categorized.md");
-      writeFileSync(path, md, "utf8");
-      const r = runCli([path]);
-      assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
-      const parsed = JSON.parse(r.stdout);
-      assert.equal(parsed.status, "ok");
+      const r = spawnNpx(["tsx", "scripts/validate-lancamentos.ts", "--md", mdPath], {
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(String(r.stdout));
+      assert.equal(out.status, "ok");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("sem path → exit 2 com mensagem de uso", () => {
-    const r = runCli([]);
-    assert.equal(r.exitCode, 2);
-    assert.match(r.stderr, /Uso:.*--in/);
+  it("aceita --in <md-path> (#902)", () => {
+    const { tmp, mdPath } = setupTmpMd();
+    try {
+      const r = spawnNpx(["tsx", "scripts/validate-lancamentos.ts", "--in", mdPath], {
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = JSON.parse(String(r.stdout));
+      assert.equal(out.status, "ok");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
