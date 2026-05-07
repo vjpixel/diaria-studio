@@ -385,3 +385,95 @@ describe("capArticles (#891)", () => {
     assert.deepEqual(arts, original);
   });
 });
+
+describe("fetchRss + cap integração (#891 / #945)", () => {
+  /**
+   * Constrói RSS XML com N items, ordenados por data crescente.
+   * Item N tem pubDate "2026-05-07T{N}:00:00Z" — N=49 é o mais recente.
+   */
+  function buildRssXml(itemCount: number, baseDate = "2026-05-07"): string {
+    const items = Array.from({ length: itemCount }, (_, i) => {
+      const hh = String(i % 24).padStart(2, "0");
+      return `<item>
+        <link>https://example.com/${i}</link>
+        <title>Article ${i}</title>
+        <pubDate>${baseDate}T${hh}:00:00Z</pubDate>
+        <description>Summary for ${i}</description>
+      </item>`;
+    }).join("");
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>Test Feed</title>
+  <link>https://example.com</link>
+  <description>Test</description>
+  ${items}
+</channel></rss>`;
+  }
+
+  function stubFetch(xml: string): () => void {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(xml, {
+      status: 200,
+      headers: { "Content-Type": "application/rss+xml" },
+    })) as typeof globalThis.fetch;
+    return () => { globalThis.fetch = orig; };
+  }
+
+  it("FetchResult inclui truncated_by_cap quando feed > cap (regressão arXiv 229)", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const TOTAL = 50;
+    const restore = stubFetch(buildRssXml(TOTAL));
+    try {
+      const result = await fetchRss({
+        url: "http://example.com/feed",
+        sourceName: "test-large",
+        days: 365, // janela grande pra todos passarem por filterByWindow
+        now: new Date("2026-05-08T00:00:00Z"),
+      });
+      assert.equal(result.articles.length, MAX_ARTICLES_PER_SOURCE, "cap aplica");
+      assert.equal(result.truncated_by_cap, TOTAL - MAX_ARTICLES_PER_SOURCE, "items cortados = total - cap");
+      // Articles ordenados por published_at desc — primeiro deve ter hour máxima (23).
+      // Asserta o invariante real (pubDate desc), não proxy via URL.
+      assert.match(result.articles[0].published_at ?? "", /T23:00:00/, "primeiro article = hour 23 (mais recente)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("FetchResult NÃO inclui truncated_by_cap quando feed <= cap", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const TOTAL = 20;
+    const restore = stubFetch(buildRssXml(TOTAL));
+    try {
+      const result = await fetchRss({
+        url: "http://example.com/feed",
+        sourceName: "test-small",
+        days: 365,
+        now: new Date("2026-05-08T00:00:00Z"),
+      });
+      assert.equal(result.articles.length, TOTAL);
+      assert.equal(result.truncated_by_cap, undefined, "campo ausente quando cap não aplica");
+    } finally {
+      restore();
+    }
+  });
+
+  it("FetchResult tem articles=[] e error preserva quando HTTP falha — cap não aplica", async () => {
+    const { fetchRss } = await import("../scripts/fetch-rss.ts");
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("", {
+      status: 500,
+    })) as typeof globalThis.fetch;
+    try {
+      const result = await fetchRss({
+        url: "http://example.com/feed",
+        sourceName: "test-fail",
+      });
+      assert.equal(result.articles.length, 0);
+      assert.equal(result.truncated_by_cap, undefined);
+      assert.match(result.error ?? "", /HTTP 500/);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});
