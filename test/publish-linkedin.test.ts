@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { extractPostText, postToMakeWebhook, postToWorkerQueue } from "../scripts/publish-linkedin.ts";
+import { extractPostText, postToMakeWebhook, postToWorkerQueue, sanitizeFallbackReason } from "../scripts/publish-linkedin.ts";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
 const CRLF = LF.replace(/\n/g, "\r\n");
@@ -131,6 +131,201 @@ describe("resume-aware skip posts LinkedIn (#528)", () => {
   it("pula draft", ()=>{const p=[{platform:"linkedin",destaque:"d2",status:"draft"}];const e=p.find((x)=>x.platform==="linkedin"&&x.destaque==="d2"&&(x.status==="draft"||x.status==="scheduled"));assert.ok(e!==undefined);assert.equal(e.status,"draft");});
   it("nao pula failed retry", ()=>{const p=[{platform:"linkedin",destaque:"d3",status:"failed"}];const e=p.find((x)=>x.platform==="linkedin"&&x.destaque==="d3"&&(x.status==="draft"||x.status==="scheduled"));assert.equal(e,undefined);});
   it("nao pula outra plataforma facebook nao afeta linkedin", ()=>{const p=[{platform:"facebook",destaque:"d1",status:"scheduled"}];const e=p.find((x)=>x.platform==="linkedin"&&x.destaque==="d1"&&(x.status==="draft"||x.status==="scheduled"));assert.equal(e,undefined);});
+});
+
+describe("Worker → Make fallback (#887)", () => {
+  // Testa o caminho de fallback: postToWorkerQueue lança após retries → caller
+  // (main em publish-linkedin.ts) deve cair em postToMakeWebhook + marcar
+  // entry com fallback_used=true e fallback_reason. Como main() não é exportado,
+  // simulamos a sequência de chamadas que o try/catch interno faz.
+  const workerUrl = "https://diaria-linkedin-cron.diaria.workers.dev";
+  const makeUrl = "https://hook.eu2.make.com/test";
+  const token = "test-token-abc";
+  const payload = {
+    text: "Post agendado",
+    image_url: "https://drive.google.com/uc?id=x",
+    scheduled_at: "2026-05-08T09:00:00-03:00",
+    destaque: "d1",
+  };
+  let saved: typeof globalThis.fetch;
+  beforeEach(() => {
+    saved = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = saved;
+  });
+
+  it("Worker lança apos 2 retries → fallback chama Make → entry com fallback_used=true", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = async (u: string | URL | Request, _o?: RequestInit) => {
+      const url = u.toString();
+      calls.push(url);
+      if (url.startsWith(workerUrl)) {
+        return new Response("KV down", { status: 503 });
+      }
+      if (url.startsWith(makeUrl)) {
+        return new Response(JSON.stringify({ accepted: true, request_id: "make-fallback-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+
+    // Sequência que main() executa no try/catch interno (com sanitização e status=draft)
+    let entry: Record<string, unknown> | null = null;
+    try {
+      const _r = await postToWorkerQueue(workerUrl, token, payload, 2);
+      entry = { fallback_used: false, raw: _r };
+    } catch (workerError) {
+      const wmsg = (workerError as Error).message;
+      const response = await postToMakeWebhook(makeUrl, payload, 2);
+      entry = {
+        platform: "linkedin",
+        destaque: "d1",
+        url: null,
+        status: "draft", // Make postou imediato — sempre draft no fallback
+        scheduled_at: payload.scheduled_at,
+        make_request_id: response.request_id,
+        fallback_used: true,
+        fallback_reason: sanitizeFallbackReason(wmsg),
+      };
+    }
+
+    assert.ok(entry, "entry deve ter sido criada");
+    assert.equal(entry.fallback_used, true, "fallback_used deve ser true");
+    assert.match(String(entry.fallback_reason), /HTTP 503/, "reason deve conter o status code Worker");
+    assert.equal(entry.make_request_id, "make-fallback-1", "deve ter request_id do Make fallback");
+    assert.equal(entry.status, "draft", "fallback Make posta imediato → status sempre draft");
+    // 2 tentativas Worker (503) + 1 tentativa Make (200) = 3 fetches
+    assert.equal(calls.filter((u) => u.startsWith(workerUrl)).length, 2);
+    assert.equal(calls.filter((u) => u.startsWith(makeUrl)).length, 1);
+  });
+
+  it("Worker timeout (AbortError) → fallback Make 200 → entry status=draft + fallback_used", async () => {
+    // Reproduz o cenário onde o Worker timeout (AbortSignal.timeout(...) dispara
+    // AbortError) e o fallback pra Make é bem-sucedido. Worker tem maxAttempts=2 default
+    // → AbortError nas duas tentativas → catch interno chama Make.
+    const calls: { url: string; method: string }[] = [];
+    globalThis.fetch = async (u: string | URL | Request, o?: RequestInit) => {
+      const url = u.toString();
+      calls.push({ url, method: o?.method ?? "GET" });
+      if (url.startsWith(workerUrl)) {
+        // Simular AbortError lançado pelo AbortSignal.timeout(...)
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      if (url.startsWith(makeUrl)) {
+        return new Response(JSON.stringify({ accepted: true, request_id: "make-after-timeout" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+
+    let entry: Record<string, unknown> | null = null;
+    try {
+      await postToWorkerQueue(workerUrl, token, payload, 2);
+      entry = { fallback_used: false };
+    } catch (workerError) {
+      const wmsg = (workerError as Error).message;
+      const response = await postToMakeWebhook(makeUrl, payload, 2);
+      entry = {
+        platform: "linkedin",
+        destaque: "d1",
+        url: null,
+        status: "draft",
+        scheduled_at: payload.scheduled_at,
+        make_request_id: response.request_id,
+        fallback_used: true,
+        fallback_reason: sanitizeFallbackReason(wmsg),
+      };
+    }
+
+    assert.ok(entry, "entry deve ter sido criada");
+    assert.equal(entry.fallback_used, true);
+    assert.equal(entry.status, "draft");
+    assert.equal(entry.make_request_id, "make-after-timeout");
+    // 2 tentativas Worker timeout + 1 tentativa Make sucesso = 3 fetches
+    assert.equal(calls.filter((c) => c.url.startsWith(workerUrl)).length, 2);
+    assert.equal(calls.filter((c) => c.url.startsWith(makeUrl)).length, 1);
+    // fallback_reason deve estar limpo (sem stack trace / paths)
+    assert.ok(String(entry.fallback_reason).length <= 150, "reason deve estar truncado");
+  });
+
+  it("Worker lança E Make tambem lança → entry com status=failed (no fallback de fallback)", async () => {
+    globalThis.fetch = async (u: string | URL | Request, _o?: RequestInit) => {
+      const url = u.toString();
+      if (url.startsWith(workerUrl)) return new Response("KV down", { status: 503 });
+      if (url.startsWith(makeUrl)) return new Response("Make down", { status: 502 });
+      return new Response("unexpected", { status: 500 });
+    };
+
+    // Sequência que main() executa: outer try captura quando Make tambem falha
+    let entry: Record<string, unknown> | null = null;
+    try {
+      try {
+        await postToWorkerQueue(workerUrl, token, payload, 2);
+      } catch (workerError) {
+        const wmsg = (workerError as Error).message;
+        // Fallback tenta Make — também falha — deixa a exception propagar
+        const _resp = await postToMakeWebhook(makeUrl, payload, 2);
+        // não chega aqui
+        void _resp;
+        void wmsg;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      entry = {
+        platform: "linkedin",
+        destaque: "d1",
+        url: null,
+        status: "failed",
+        scheduled_at: payload.scheduled_at,
+        reason: msg,
+      };
+    }
+
+    assert.ok(entry, "entry deve ter sido criada");
+    assert.equal(entry.status, "failed", "status deve ser failed quando Make tambem falha");
+    assert.match(String(entry.reason), /Make webhook HTTP 502/, "reason deve apontar erro Make");
+    // Sem fallback_used quando o fallback de fallback nao se aplica
+    assert.equal(entry.fallback_used, undefined);
+  });
+});
+
+describe("sanitizeFallbackReason (#892)", () => {
+  it("extrai HTTP status + primeira linha curta", () => {
+    const r = sanitizeFallbackReason("Worker queue HTTP 503: KV down");
+    assert.match(r, /HTTP 503/);
+    assert.ok(r.length <= 150);
+  });
+
+  it("trunca stack trace multilinhas para primeira linha apenas", () => {
+    const long =
+      "Worker queue HTTP 500: Internal Error\n  at /Users/x/secret/path/worker.ts:42\n  at /more/internal/paths/x.ts:99";
+    const r = sanitizeFallbackReason(long);
+    assert.ok(!r.includes("/Users/x/secret"), "não deve vazar paths internos");
+    assert.ok(!r.includes("\n"), "não deve ter newlines");
+    assert.match(r, /HTTP 500/);
+  });
+
+  it("sem HTTP status: usa só primeira linha truncada em 100 chars", () => {
+    const long = "AbortError: The operation was aborted due to timeout after 30000ms exceeding the limit set on the request handler config";
+    const r = sanitizeFallbackReason(long);
+    assert.ok(!r.match(/HTTP \d{3}/), "sem HTTP status, não deve fabricar");
+    assert.ok(r.length <= 100, `length=${r.length}`);
+  });
+
+  it("respeita cap total mesmo com mensagens HTTP muito longas", () => {
+    const long = "Worker queue HTTP 502: " + "x".repeat(500);
+    const r = sanitizeFallbackReason(long);
+    // "HTTP 502" (8) + ": " (2) + até 100 chars = max ~110 chars
+    assert.ok(r.length <= 120, `expected <=120, got ${r.length}`);
+    assert.match(r, /HTTP 502/);
+  });
 });
 
 describe("image_url null por padrao LinkedIn (#528)", () => {
