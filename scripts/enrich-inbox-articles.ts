@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { request } from "undici";
+import { loadCachedBody } from "./lib/url-body-cache.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +53,12 @@ export interface EnrichOutcome {
   title_updated: boolean;
   summary_updated: boolean;
   reason?: string;
+  cache_hit?: boolean;
+}
+
+export interface EnrichStats {
+  cache_hits: number;
+  cache_misses: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -232,14 +239,21 @@ export interface EnrichOptions {
 /**
  * Pure-ish: takes a list of articles and a fetcher (so tests can mock).
  * Returns mutated articles + per-URL outcomes.
+ *
+ * `bodiesDir` (#717 hyp 7): when set, the worker reads the HTML from the
+ * intra-edição body cache populated by `verify-accessibility.ts` before
+ * falling back to the network fetcher. The same URL was already fetched in
+ * step 1i, so the cache hit eliminates a duplicate GET. Disabled when null.
  */
 export async function enrichArticles(
   articles: InboxArticle[],
   fetcher: (url: string) => Promise<string | null>,
-  opts: { concurrency?: number } = {},
-): Promise<{ articles: InboxArticle[]; outcomes: EnrichOutcome[] }> {
+  opts: { concurrency?: number; bodiesDir?: string | null } = {},
+): Promise<{ articles: InboxArticle[]; outcomes: EnrichOutcome[]; stats: EnrichStats }> {
   const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
+  const bodiesDir = opts.bodiesDir ?? null;
   const outcomes: EnrichOutcome[] = [];
+  const stats: EnrichStats = { cache_hits: 0, cache_misses: 0 };
   const out = articles.map((a) => ({ ...a }));
 
   const targets = out
@@ -250,7 +264,21 @@ export async function enrichArticles(
   async function worker(): Promise<void> {
     while (cursor < targets.length) {
       const job = targets[cursor++];
-      const html = await fetcher(job.article.url);
+      let html: string | null = null;
+      let cacheHit = false;
+      if (bodiesDir !== null) {
+        const cached = loadCachedBody(bodiesDir, job.article.url);
+        if (cached !== null) {
+          html = cached;
+          cacheHit = true;
+          stats.cache_hits++;
+        } else {
+          stats.cache_misses++;
+        }
+      }
+      if (html === null) {
+        html = await fetcher(job.article.url);
+      }
       if (!html) {
         outcomes.push({
           url: job.article.url,
@@ -269,6 +297,7 @@ export async function enrichArticles(
           title_updated: false,
           summary_updated: false,
           reason: "no_metadata_found",
+          ...(cacheHit ? { cache_hit: true } : {}),
         });
         continue;
       }
@@ -279,6 +308,7 @@ export async function enrichArticles(
         enriched: merged.titleUpdated || merged.summaryUpdated,
         title_updated: merged.titleUpdated,
         summary_updated: merged.summaryUpdated,
+        ...(cacheHit ? { cache_hit: true } : {}),
       });
     }
   }
@@ -286,7 +316,7 @@ export async function enrichArticles(
   const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
   await Promise.all(workers);
 
-  return { articles: out, outcomes };
+  return { articles: out, outcomes, stats };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +328,7 @@ interface CliFlags {
   timeoutMs: number;
   concurrency: number;
   userAgent: string;
+  bodiesDir: string | null;
 }
 
 function parseArgs(argv: string[]): CliFlags {
@@ -311,7 +342,7 @@ function parseArgs(argv: string[]): CliFlags {
   }
   if (!flags.in) {
     console.error(
-      "Usage: enrich-inbox-articles.ts --in <articles.json> [--timeout-ms N] [--concurrency N] [--user-agent S]",
+      "Usage: enrich-inbox-articles.ts --in <articles.json> [--timeout-ms N] [--concurrency N] [--user-agent S] [--bodies-dir <path>]",
     );
     process.exit(1);
   }
@@ -320,6 +351,7 @@ function parseArgs(argv: string[]): CliFlags {
     timeoutMs: Number(flags["timeout-ms"] ?? DEFAULT_TIMEOUT_MS),
     concurrency: Number(flags.concurrency ?? DEFAULT_CONCURRENCY),
     userAgent: flags["user-agent"] ?? DEFAULT_USER_AGENT,
+    bodiesDir: flags["bodies-dir"] ?? null,
   };
 }
 
@@ -347,16 +379,25 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const { articles: enriched, outcomes } = await enrichArticles(
+  const { articles: enriched, outcomes, stats } = await enrichArticles(
     articles,
     (url) => fetchHtml(url, cli.timeoutMs, cli.userAgent),
-    { concurrency: cli.concurrency },
+    { concurrency: cli.concurrency, bodiesDir: cli.bodiesDir },
   );
 
   writeFileSync(path, JSON.stringify(writeBack(enriched), null, 2), "utf8");
 
   const enrichedCount = outcomes.filter((o) => o.enriched).length;
   const failed = outcomes.filter((o) => !o.enriched).length;
+
+  if (cli.bodiesDir !== null) {
+    const total = stats.cache_hits + stats.cache_misses;
+    const hitPct = total > 0 ? Math.round((stats.cache_hits / total) * 100) : 0;
+    console.error(
+      `[enrich] body-cache: ${stats.cache_hits}/${total} hit (${hitPct}%) — fetches evitados`,
+    );
+  }
+
   process.stdout.write(
     JSON.stringify(
       {
@@ -364,6 +405,8 @@ async function main(): Promise<void> {
         considered: outcomes.length,
         enriched: enrichedCount,
         failed,
+        cache_hits: stats.cache_hits,
+        cache_misses: stats.cache_misses,
         outcomes,
       },
       null,
