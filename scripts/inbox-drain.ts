@@ -294,90 +294,31 @@ export function shouldWarnEmptyDrains(cursor: InboxCursor): boolean {
 }
 
 /**
- * Strip do prefixo `label:NomeDoLabel` da query do Gmail (#274). Usado quando
- * detectamos múltiplos drains consecutivos vazios pra rodar uma checagem
- * alternativa sem o filtro de label — distingue inbox genuinamente vazio
- * (editor não mandou nada) de label quebrado (e-mails chegando mas sem label
- * aplicada).
- */
-export function stripLabelFromQuery(query: string): string {
-  return query.replace(/(^|\s)label:[^\s]+/gi, "").trim();
-}
-
-/**
- * Resultado da query alternativa (sem `label:`) usada pra distinguir inbox
- * genuinamente vazio de label quebrada (#274). A flag `failed` separa "alt
- * query rodou e voltou 0" (silent reset OK) de "alt query lançou exceção"
- * (não dá pra distinguir, deve cair no warn padrão — #286).
- */
-export interface AltQueryResult {
-  /** True se a alt query foi tentada (gmailQuery usa `label:`). False = não-aplicável. */
-  ran: boolean;
-  /** Threads retornadas pela alt query. Só significativo se `ran && !failed`. */
-  thread_count: number;
-  /** True se a alt query lançou exceção. Distingue "0 threads achadas" (decidiu) de "não dá pra decidir". */
-  failed: boolean;
-  /** Mensagem de erro da exceção (se failed). Incorporado no warn consolidado (#304). */
-  failReason?: string;
-}
-
-/**
- * Decisão pura sobre o que fazer quando o drain volta vazio (#274 + #286).
- * Extraída de `main()` pra ser testável sem mockar Gmail. Recebe o cursor
- * pós-incremento, a query original, e o resultado da alt query (já rodada
- * pelo caller). Retorna a ação a tomar.
+ * Decisão pura sobre o que fazer quando o drain volta vazio.
  *
- * Branches:
- * - **none** — abaixo do threshold, ainda não warna.
- * - **label_broken** — alt query achou threads sem o filtro `label:` →
- *   label não está sendo aplicada pelos novos e-mails. Escala pra error.
- * - **silent_reset** — alt query confirmou 0 threads na janela → inbox
- *   genuinamente vazio. Reset silencioso, sem warn.
- * - **warn** — alt query falhou (não dá pra decidir) OU query custom sem
- *   `label:` (sem como diferenciar). Warn padrão pro editor investigar.
+ * Histórico (#274/#286/#304/#900): havia heurística "label_broken" que rodava
+ * uma alt query sem `label:` pra detectar filtro Gmail quebrado. Removida em
+ * #900 — a alt query gerava falso positivo quando vjpixel@ recebia outros
+ * emails legítimos que NÃO precisam passar por diariaeditor@ (newsletters
+ * pessoais subscritas direto, GitHub, system mails). Esses sempre vão estar
+ * presentes em vjpixel@ sem o label, fazendo a heurística reportar
+ * `label_broken` constante. Editor descobre filtro quebrado por outras vias
+ * (ausência prolongada de submissões + revisar Gmail UI direto).
+ *
+ * Branches simplificados:
+ * - **none** — abaixo do threshold, sem ação.
+ * - **silent_reset** — acima do threshold, reset silencioso. Inbox vazio é
+ *   estado válido (editor pode passar dias sem submissões).
  */
 export type EmptyDrainAction =
   | { kind: "none" }
-  | { kind: "label_broken"; thread_count: number }
-  | { kind: "silent_reset" }
-  | { kind: "warn"; reason: string };
+  | { kind: "silent_reset" };
 
-export function decideEmptyDrainAction(
-  cursor: InboxCursor,
-  gmailQuery: string,
-  altQuery: AltQueryResult,
-): EmptyDrainAction {
+export function decideEmptyDrainAction(cursor: InboxCursor): EmptyDrainAction {
   if (!shouldWarnEmptyDrains(cursor)) {
     return { kind: "none" };
   }
-  const consecutive = cursor.consecutive_empty_drains ?? 0;
-  const labelName = extractLabelName(gmailQuery) || gmailQuery;
-
-  // Alt query rodou com sucesso E achou threads → label quebrada.
-  if (altQuery.ran && !altQuery.failed && altQuery.thread_count > 0) {
-    return { kind: "label_broken", thread_count: altQuery.thread_count };
-  }
-
-  // Alt query rodou com sucesso E achou 0 threads → inbox genuinamente vazio.
-  if (altQuery.ran && !altQuery.failed && altQuery.thread_count === 0) {
-    return { kind: "silent_reset" };
-  }
-
-  // #286 fix: alt query falhou — não dá pra distinguir vazio de label quebrada.
-  // Warn consolidado aqui (sem double-log no catch do caller — #304).
-  if (altQuery.ran && altQuery.failed) {
-    const failDetail = altQuery.failReason ? ` (erro: ${altQuery.failReason})` : "";
-    return {
-      kind: "warn",
-      reason: `inbox vazio em ${consecutive} drains consecutivos; alt query (sem label '${labelName}') falhou${failDetail} — não dá pra distinguir inbox vazio de label quebrada. Verifique acesso ao Gmail (docs/gmail-inbox-setup.md) e tente de novo.`,
-    };
-  }
-
-  // Query custom sem `label:` → não tem como rodar alt query. Mantém warn padrão.
-  return {
-    kind: "warn",
-    reason: `inbox vazio em ${consecutive} drains consecutivos com query custom '${gmailQuery}' — verificar se filtro está correto.`,
-  };
+  return { kind: "silent_reset" };
 }
 
 /**
@@ -653,56 +594,21 @@ async function main(): Promise<void> {
     });
   } else {
     updatedCursor = incrementEmptyDrain(cursor);
-    // #274: rodar alt query (sem `label:`) na janela pra distinguir inbox
-    // genuinamente vazio de label quebrada. #286: separar failure de "0
-    // threads achadas" — failure cai pro warn padrão (não silent reset).
-    const altQueryResult: AltQueryResult = {
-      ran: false,
-      thread_count: 0,
-      failed: false,
-    };
-    if (shouldWarnEmptyDrains(updatedCursor) && isLabelQuery(gmailQuery)) {
-      altQueryResult.ran = true;
-      const altQueryStr =
-        `${stripLabelFromQuery(gmailQuery)} after:${afterDate}`.trim();
-      try {
-        const altThreads = await searchThreads(altQueryStr);
-        altQueryResult.thread_count = altThreads.length;
-      } catch (err) {
-        altQueryResult.failed = true;
-        // Não logar aqui — decideEmptyDrainAction emite o warn consolidado (#304)
-        altQueryResult.failReason = (err as Error).message;
-      }
-    }
-
-    const action = decideEmptyDrainAction(
-      updatedCursor,
-      gmailQuery,
-      altQueryResult,
-    );
+    // #900: removida alt query / heurística label_broken. Inbox vazio é estado
+    // válido — editor pode passar dias sem submissões. Filtro quebrado é
+    // detectado por outras vias (Gmail UI, ausência prolongada).
+    const action = decideEmptyDrainAction(updatedCursor);
 
     switch (action.kind) {
-      case "label_broken":
-        warnReason = `label_broken: ${action.thread_count} thread(s) na janela após:${afterDate} sem label '${extractLabelName(gmailQuery)}' aplicada. Verifique o filtro do Gmail (docs/gmail-inbox-setup.md).`;
-        console.error(`❌ ${warnReason}`);
-        logDrainError(new Error(warnReason));
-        break;
       case "silent_reset":
         updatedCursor = resetEmptyDrain(updatedCursor);
-        logDrainInfo(  // INFO — não é problema, é confirmação que inbox está vazio (#287)
-          `auto-reset: inbox genuinamente vazio (alt query também 0 threads). Silenciando warnings até voltar a aparecer e-mail.`,
+        logDrainInfo(
+          `auto-reset: inbox vazio em ${cursor.consecutive_empty_drains ?? 0} drains consecutivos. Estado válido — editor pode estar sem submissões.`,
           {
             previous_consecutive_empty_drains:
               cursor.consecutive_empty_drains ?? 0,
           },
         );
-        break;
-      case "warn":
-        warnReason = action.reason;
-        console.error(`⚠️  ${warnReason}`);
-        logDrainWarn(warnReason, {
-          consecutive_empty_drains: updatedCursor.consecutive_empty_drains,
-        });
         break;
       case "none":
         // abaixo do threshold — sem ação
