@@ -20,6 +20,7 @@ import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 export { canonicalize };
 
@@ -565,19 +566,9 @@ export function dedup(
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      args[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return args;
-}
-
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  // #926: usar parser compartilhado em vez de reinventar.
+  const args = parseCliArgs(process.argv.slice(2)).values;
 
   const articlesPath = args["articles"];
   const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";

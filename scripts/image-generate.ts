@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSdPrompt } from "./lib/schemas/image-generate.ts"; // #649
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -30,30 +31,6 @@ const STYLE_SUFFIX =
 
 const NEGATIVE_PROMPT =
   "photorealistic, photography, pixel art, blurry, text, watermark, signature, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting, letters, words, writing, signs, labels, captions, banners, posters, billboards, readable text, typography, font, digits, numbers on screen";
-
-/**
- * Parser que suporta boolean flags (#924). Quando `--force` é o último arg
- * (ou seguido por outro `--<flag>`), trata como boolean true. Antes, parser
- * exigia value pra cada flag, então `--force` no fim era silenciosamente
- * ignorado e a regen pulada com mensagem confusa "use --force".
- */
-export function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const args: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        args[key] = next;
-        i++;
-      } else {
-        args[key] = true;
-      }
-    }
-  }
-  return args;
-}
 
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
@@ -67,16 +44,16 @@ function buildPositivePrompt(editorialText: string): string {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
-  // String args podem ser `true` se passados sem value (mal-uso) — coerce
-  // pra undefined nesse caso pra manter validação consistente.
-  const asStr = (v: string | boolean | undefined): string | undefined =>
-    typeof v === "string" ? v : undefined;
-  const editorialPath = asStr(args["editorial"]);
-  const outDir = asStr(args["out-dir"]);
-  const destaque = asStr(args["destaque"]); // d1, d2, d3
+  // #926: usar parser compartilhado. Fix de #924 sai de graça —
+  // `--force` no fim do argv agora é registrado em flags (Set), não values.
+  const parsed = parseCliArgs(process.argv.slice(2));
+  const args = parsed.values;
+  const editorialPath = args["editorial"];
+  const outDir = args["out-dir"];
+  const destaque = args["destaque"]; // d1, d2, d3
 
-  const force = !!args["force"];
+  // #924: aceitar `--force` em qualquer posição (último arg, no meio, etc).
+  const force = parsed.flags.has("force") || !!args["force"];
 
   if (!editorialPath || !outDir || !destaque) {
     console.error(

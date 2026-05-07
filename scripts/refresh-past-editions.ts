@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -374,10 +375,13 @@ export function renderMarkdown(posts: Post[]): string {
 }
 
 async function main() {
+  // #926: parser compartilhado.
+  const { flags, positional } = parseCliArgs(process.argv.slice(2));
+
   // Modo regen-md-only (#162): regenera o MD a partir do raw existente.
   // Sem input file. Útil quando git resetou o tracked MD mas o raw
   // (gitignored) está atualizado.
-  if (process.argv.includes("--regen-md-only")) {
+  if (flags.has("regen-md-only")) {
     if (!existsSync(RAW_PATH)) {
       console.error(
         "past-editions-raw.json não existe — rode bootstrap (refresh-dedup-runner em modo full) antes",
@@ -392,7 +396,7 @@ async function main() {
     return;
   }
 
-  const inputPath = process.argv[2];
+  const inputPath = positional[0];
   if (!inputPath) {
     console.error(
       "Usage: refresh-past-editions.ts <input.json> [--merge] [--resolve-tracking] | --regen-md-only",
@@ -400,8 +404,8 @@ async function main() {
     process.exit(1);
   }
 
-  const isMerge = process.argv.includes("--merge");
-  const resolveTracking = process.argv.includes("--resolve-tracking");
+  const isMerge = flags.has("merge");
+  const resolveTracking = flags.has("resolve-tracking");
   const { dedupEditionCount } = loadConfig();
 
   const incoming = readJson<Post[]>(inputPath);
