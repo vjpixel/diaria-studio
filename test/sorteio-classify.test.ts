@@ -17,6 +17,7 @@ import {
   classifyGabarito,
   recommend,
   classify,
+  isValidRawThread,
   type RawThread,
 } from "../scripts/sorteio-classify.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
@@ -237,5 +238,78 @@ describe("classify — pipeline completo (#929)", () => {
     assert.equal(result.length, 2);
     assert.equal(result[0].recommendation, "APPROVE");
     assert.equal(result[1].recommendation, "REVIEW"); // sem edição identificável
+  });
+});
+
+describe("isValidRawThread — defense-in-depth guard (#949)", () => {
+  const baseValid: RawThread = {
+    thread_id: "valid",
+    sender_email: "leitor@example.com",
+    sender_name: "Leitor Real",
+    subject: "Re: Diar.ia 260505",
+    body: "Encontrei o erro: V4 no título mas V5 no corpo, edição 260505",
+    received_iso: "2026-05-06T10:00:00Z",
+  };
+
+  it("aceita thread válida (leitor real com body substantivo)", () => {
+    assert.equal(isValidRawThread(baseValid), true);
+  });
+
+  it("rejeita newsletter original do bot (sender = diaria@mail.beehiiv.com)", () => {
+    const fromBot: RawThread = { ...baseValid, sender_email: "diaria@mail.beehiiv.com" };
+    assert.equal(isValidRawThread(fromBot), false);
+  });
+
+  it("rejeita body vazio", () => {
+    const empty: RawThread = { ...baseValid, body: "" };
+    assert.equal(isValidRawThread(empty), false);
+  });
+
+  it("rejeita body whitespace-only", () => {
+    const ws: RawThread = { ...baseValid, body: "   \n\n\t  " };
+    assert.equal(isValidRawThread(ws), false);
+  });
+
+  it("rejeita body trivial (< 20 chars)", () => {
+    const trivial: RawThread = { ...baseValid, body: "ok obrigado" };
+    assert.equal(isValidRawThread(trivial), false);
+  });
+
+  it("aceita body exatamente 20 chars (limite inclusivo)", () => {
+    const at20: RawThread = { ...baseValid, body: "x".repeat(20) };
+    assert.equal(isValidRawThread(at20), true);
+  });
+});
+
+describe("classify — guard rejeita threads inválidas (#949)", () => {
+  const intentional: IntentionalError[] = [];
+  const valid: RawThread = {
+    thread_id: "v",
+    sender_email: "leitor@example.com",
+    sender_name: "Leitor",
+    subject: "Re",
+    body: "Encontrei um erro real na edição 260505 sobre versões",
+    received_iso: "2026-05-06T10:00:00Z",
+  };
+  const fromBot: RawThread = { ...valid, thread_id: "bot", sender_email: "diaria@mail.beehiiv.com" };
+  const emptyBody: RawThread = { ...valid, thread_id: "empty", body: "" };
+
+  it("filtra thread do bot newsletter antes de classificar", () => {
+    const result = classify([valid, fromBot], new Set(), intentional);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].thread_id, "v");
+  });
+
+  it("filtra thread com body vazio", () => {
+    const result = classify([valid, emptyBody], new Set(), intentional);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].thread_id, "v");
+  });
+
+  it("guard NÃO conflita com idempotência (already_processed pega primeiro)", () => {
+    // valid.thread_id está em alreadyProcessed → pula no primeiro check
+    // antes de chegar no isValidRawThread
+    const result = classify([valid], new Set(["v"]), intentional);
+    assert.equal(result.length, 0);
   });
 });

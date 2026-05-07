@@ -194,6 +194,24 @@ export function recommend(
  * Threads com `thread_id` já em entries do mês corrente (ou qualquer mês)
  * são silenciosamente filtradas — idempotência via `findByThreadId`.
  */
+/**
+ * Defense-in-depth (#949): rejeita threads inválidas antes do classify.
+ *
+ * Casos rejeitados:
+ *   1. `sender_email === diaria@mail.beehiiv.com` — newsletter original sem
+ *      reply de leitor (orchestrator deveria filtrar antes, mas guard previne
+ *      regressão silenciosa se prompt for refatorado).
+ *   2. `body` ausente, vazio ou trivial (< 20 chars) — sem conteúdo pra
+ *      analisar, classifier não tem como inferir error_type ou edition.
+ *
+ * Não throw — só retorna false; caller acumula em `skipped_invalid`.
+ */
+export function isValidRawThread(t: RawThread): boolean {
+  if (t.sender_email === "diaria@mail.beehiiv.com") return false;
+  if (!t.body || t.body.trim().length < 20) return false;
+  return true;
+}
+
 export function classify(
   threads: RawThread[],
   alreadyProcessed: Set<string>,
@@ -202,6 +220,7 @@ export function classify(
   const candidates: ClassifiedCandidate[] = [];
   for (const t of threads) {
     if (alreadyProcessed.has(t.thread_id)) continue;
+    if (!isValidRawThread(t)) continue;
     const editionGuessed = guessEditionFromBody(t.body);
     const errorTypeGuess = guessErrorType(t.body);
     const gabarito = classifyGabarito(
@@ -273,11 +292,15 @@ function main(): number {
   const intentional = loadIntentionalErrors(INTENTIONAL_PATH);
 
   const candidates = classify(threads, alreadyProcessed, intentional);
+  const skippedInvalid = threads.filter(
+    (t) => !alreadyProcessed.has(t.thread_id) && !isValidRawThread(t),
+  ).length;
 
   const result = {
     generated_at: new Date().toISOString(),
     total_input: threads.length,
     already_processed: threads.filter((t) => alreadyProcessed.has(t.thread_id)).length,
+    skipped_invalid: skippedInvalid,
     candidates,
   };
 
