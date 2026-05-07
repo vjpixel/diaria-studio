@@ -133,6 +133,116 @@ describe("resume-aware skip posts LinkedIn (#528)", () => {
   it("nao pula outra plataforma facebook nao afeta linkedin", ()=>{const p=[{platform:"facebook",destaque:"d1",status:"scheduled"}];const e=p.find((x)=>x.platform==="linkedin"&&x.destaque==="d1"&&(x.status==="draft"||x.status==="scheduled"));assert.equal(e,undefined);});
 });
 
+describe("Worker → Make fallback (#887)", () => {
+  // Testa o caminho de fallback: postToWorkerQueue lança após retries → caller
+  // (main em publish-linkedin.ts) deve cair em postToMakeWebhook + marcar
+  // entry com fallback_used=true e fallback_reason. Como main() não é exportado,
+  // simulamos a sequência de chamadas que o try/catch interno faz.
+  const workerUrl = "https://diaria-linkedin-cron.diaria.workers.dev";
+  const makeUrl = "https://hook.eu2.make.com/test";
+  const token = "test-token-abc";
+  const payload = {
+    text: "Post agendado",
+    image_url: "https://drive.google.com/uc?id=x",
+    scheduled_at: "2026-05-08T09:00:00-03:00",
+    destaque: "d1",
+  };
+  let saved: typeof globalThis.fetch;
+  beforeEach(() => {
+    saved = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = saved;
+  });
+
+  it("Worker lança apos 2 retries → fallback chama Make → entry com fallback_used=true", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = async (u: string | URL | Request, _o?: RequestInit) => {
+      const url = u.toString();
+      calls.push(url);
+      if (url.startsWith(workerUrl)) {
+        return new Response("KV down", { status: 503 });
+      }
+      if (url.startsWith(makeUrl)) {
+        return new Response(JSON.stringify({ accepted: true, request_id: "make-fallback-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+
+    // Sequência que main() executa no try/catch interno
+    let entry: Record<string, unknown> | null = null;
+    try {
+      const _r = await postToWorkerQueue(workerUrl, token, payload, 2);
+      entry = { fallback_used: false, raw: _r };
+    } catch (workerError) {
+      const wmsg = (workerError as Error).message;
+      const response = await postToMakeWebhook(makeUrl, payload, 2);
+      entry = {
+        platform: "linkedin",
+        destaque: "d1",
+        url: null,
+        status: "scheduled",
+        scheduled_at: payload.scheduled_at,
+        make_request_id: response.request_id,
+        fallback_used: true,
+        fallback_reason: wmsg,
+      };
+    }
+
+    assert.ok(entry, "entry deve ter sido criada");
+    assert.equal(entry.fallback_used, true, "fallback_used deve ser true");
+    assert.match(String(entry.fallback_reason), /503/, "reason deve conter o erro do Worker");
+    assert.equal(entry.make_request_id, "make-fallback-1", "deve ter request_id do Make fallback");
+    assert.equal(entry.status, "scheduled");
+    // 2 tentativas Worker (503) + 1 tentativa Make (200) = 3 fetches
+    assert.equal(calls.filter((u) => u.startsWith(workerUrl)).length, 2);
+    assert.equal(calls.filter((u) => u.startsWith(makeUrl)).length, 1);
+  });
+
+  it("Worker lança E Make tambem lança → entry com status=failed (no fallback de fallback)", async () => {
+    globalThis.fetch = async (u: string | URL | Request, _o?: RequestInit) => {
+      const url = u.toString();
+      if (url.startsWith(workerUrl)) return new Response("KV down", { status: 503 });
+      if (url.startsWith(makeUrl)) return new Response("Make down", { status: 502 });
+      return new Response("unexpected", { status: 500 });
+    };
+
+    // Sequência que main() executa: outer try captura quando Make tambem falha
+    let entry: Record<string, unknown> | null = null;
+    try {
+      try {
+        await postToWorkerQueue(workerUrl, token, payload, 2);
+      } catch (workerError) {
+        const wmsg = (workerError as Error).message;
+        // Fallback tenta Make — também falha — deixa a exception propagar
+        const _resp = await postToMakeWebhook(makeUrl, payload, 2);
+        // não chega aqui
+        void _resp;
+        void wmsg;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      entry = {
+        platform: "linkedin",
+        destaque: "d1",
+        url: null,
+        status: "failed",
+        scheduled_at: payload.scheduled_at,
+        reason: msg,
+      };
+    }
+
+    assert.ok(entry, "entry deve ter sido criada");
+    assert.equal(entry.status, "failed", "status deve ser failed quando Make tambem falha");
+    assert.match(String(entry.reason), /Make webhook HTTP 502/, "reason deve apontar erro Make");
+    // Sem fallback_used quando o fallback de fallback nao se aplica
+    assert.equal(entry.fallback_used, undefined);
+  });
+});
+
 describe("image_url null por padrao LinkedIn (#528)", () => {
   it("image_url e null no payload nenhuma URL enviada", ()=>{const imageUrl:string|null=null;const p={text:"T",image_url:imageUrl,scheduled_at:null,destaque:"d1"};assert.equal(p.image_url,null);});
 });

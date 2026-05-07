@@ -103,6 +103,8 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 
 **Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
 
+**LinkedIn route — Worker queue + fallback Make (#887):** `publish-social` (que delega pra `publish-linkedin.ts`) prefere o Cloudflare Worker `diaria-linkedin-cron` quando `cloudflare_worker_url` + `DIARIA_LINKEDIN_CRON_TOKEN` estão configurados E `scheduled_at` é futuro. Worker enfileira em KV e dispara o webhook Make no horário agendado. **Se o Worker falhar todos os retries** (503, KV down, deploy quebrado), o script cai automaticamente em `postToMakeWebhook` — Make posta **imediatamente** (ignora `scheduled_at`). Entry resultante traz `fallback_used: true` + `fallback_reason: "{worker error}"` para auditoria. Política: post real > post falhado. Editor revê no gate (4g) e no run-log; se o agendamento era crítico, deletar o post no LinkedIn e re-rodar quando o Worker voltar.
+
 **Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (4d).
 
 **Merge LinkedIn temp file (#758):** Após `publish-social` retornar, verificar se `_internal/06-linkedin.tmp.json` existe. Se existir, fundir com `06-social-published.json`:

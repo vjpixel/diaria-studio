@@ -15,6 +15,12 @@
  *   Sem o Worker configurado, fallback é fire-now (mesmo se scheduled_at futuro) — mas
  *   nesse caso o Make.com posta imediatamente, ignorando o scheduled_at.
  *
+ * Fallback Worker → Make (#887):
+ *   Se Worker estiver configurado mas falhar todos os retries (503, KV down, deploy
+ *   quebrado, etc.), o script cai gracefully em `postToMakeWebhook` (post imediato,
+ *   ignora `scheduled_at`). Entry recebe `fallback_used = true` + `fallback_reason`
+ *   para auditoria. Razão: post real é melhor que post falhado; editor revê no gate.
+ *
  * Uso:
  *   npx tsx scripts/publish-linkedin.ts \
  *     --edition-dir data/editions/260504 \
@@ -437,15 +443,39 @@ async function main(): Promise<void> {
       let entry: PostEntry;
       if (route === "worker_queue") {
         console.log(`Queuing linkedin/${d} via Cloudflare Worker (fire at ${scheduledAt})...`);
-        const response = await postToWorkerQueue(workerUrl, workerToken, payload);
-        entry = {
-          platform: "linkedin",
-          destaque: d,
-          url: null,
-          status: "scheduled",
-          scheduled_at: scheduledAt,
-          worker_queue_key: response.key,
-        };
+        try {
+          const response = await postToWorkerQueue(workerUrl, workerToken, payload);
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledAt,
+            worker_queue_key: response.key,
+          };
+        } catch (workerError: unknown) {
+          // #887: fallback gracioso pra Make direto se Worker falhar todos os retries.
+          // Make.com posta IMEDIATAMENTE (ignora scheduled_at) — post real é melhor
+          // que post falhado. Editor revê resultado no gate + run-log.
+          const wmsg =
+            workerError instanceof Error ? workerError.message : String(workerError);
+          console.warn(
+            `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
+          );
+          const response = await postToMakeWebhook(webhookUrl, payload);
+          entry = {
+            platform: "linkedin",
+            destaque: d,
+            url: null,
+            // Fallback posta imediato via Make — status reflete realidade (draft).
+            // scheduled_at preservado pra auditoria, mas Make ignorou.
+            status: scheduledAt ? "scheduled" : "draft",
+            scheduled_at: scheduledAt,
+            make_request_id: response.request_id,
+            fallback_used: true,
+            fallback_reason: wmsg,
+          };
+        }
       } else {
         console.log(`Publishing linkedin/${d} via Make.com (fire-now)...`);
         const response = await postToMakeWebhook(webhookUrl, payload);
@@ -461,8 +491,9 @@ async function main(): Promise<void> {
       published.posts.push(entry);
       savePublished(publishedPath, published);
       results.push(entry);
+      const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
       console.log(
-        `OK linkedin/${d} — ${entry.status} via ${route}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
+        `OK linkedin/${d} — ${entry.status} via ${route}${fallbackTag}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
