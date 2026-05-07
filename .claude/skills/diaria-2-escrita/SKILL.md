@@ -33,10 +33,24 @@ Os blocos Bash/Agent abaixo usam placeholders. **O Claude executando este skill 
 ## Resume
 
 Se `data/editions/$1/02-reviewed.md` já existir **e** `$2` não foi passado ou `$2 = newsletter`:
-- Sem `--no-gate`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate.
-- Com `--no-gate`: assumir que está OK, pular regeneração.
 
-Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento).
+**Mid-Clarice resume (#874).** Se `_internal/02-pre-clarice.md` existir AND `_internal/02-clarice-suggestions.json` existir AND `02-reviewed.md` existir, é um sinal de que Clarice chegou a rodar pelo menos parcialmente. Re-aplicar Clarice em cima de `02-humanized.md` (que pode estar mid-state) ou em cima de `02-reviewed.md` (que pode já ter sugestões parcialmente aplicadas) corrompe o texto via double-application. Perguntar explicitamente:
+
+```
+Etapa 2 foi interrompida durante/depois da Clarice. Como continuar?
+
+(1) Usar `02-reviewed.md` atual sem re-Clarice  [default]
+(2) Re-aplicar Clarice em cima de `_internal/02-pre-clarice.md` (snapshot limpo)
+(3) Regenerar tudo do zero (writer → humanize → Clarice)
+```
+
+- Default (1): pular regeneração e ir direto ao gate.
+- Opção (2): copiar `_internal/02-pre-clarice.md` → `_internal/02-draft.md` (restaurar estado pré-Clarice limpo) e retomar do Passo 3b (Clarice). **Nunca** re-aplicar Clarice em cima do estado humanizado-pós-Clarice-parcial.
+- Opção (3): apagar outputs e rodar Passo 1 em diante.
+
+**Sem snapshot pré-Clarice** (resume "antigo" de antes do #874): preservar comportamento original. Sem `--no-gate`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate. Com `--no-gate`: assumir que está OK, pular regeneração.
+
+Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — sem o gancho mid-Clarice (social não tem snapshot pré-Clarice; double-apply em social é menos danoso porque seções são curtas).
 
 ## Passo 1 — Drive sync pull (input)
 
@@ -133,9 +147,10 @@ npx tsx scripts/normalize-newsletter.ts \
 > `BLOQUEADO: MCP Clarice indisponível. Reconecte (verifique CLARICE_API_KEY e reinicie o MCP local) e responda "retry" para continuar, ou "skip" para pular Clarice nesta edição.`
 Nunca aguardar passivamente. O MCP pode cair mid-session sem aviso do usuário — o `<system-reminder>` é o sinal de detecção. Tratar como mensagem de erro de alta prioridade.
 
-Snapshot pré-Clarice para o diff posterior (3d) e rollback se algo falhar:
+Snapshot pré-Clarice para o diff posterior (3d), rollback se algo falhar, e resume mid-Clarice (#874). Mantemos dois nomes: `02-pre-clarice.md` é o canonical (#874 — sinal pra resume), `02-draft.pre-clarice.md` é alias legado pra clarice-diff:
 
 ```bash
+cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-pre-clarice.md
 cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.pre-clarice.md
 ```
 
@@ -208,6 +223,16 @@ npx tsx scripts/clarice-diff.ts \
   data/editions/$1/_internal/02-draft.md \
   data/editions/$1/_internal/02-clarice-diff.md
 ```
+
+**Estabilidade de URLs em LANÇAMENTOS pós-Clarice (#873).** Clarice/humanizador podem "limpar" URLs (remover utm, normalizar path, trailing slash), o que quebra a regra "LANÇAMENTOS só com link oficial" (#160). Comparar pré-Clarice vs final:
+
+```bash
+npx tsx scripts/verify-clarice-url-stability.ts \
+  --pre data/editions/$1/_internal/02-pre-clarice.md \
+  --post data/editions/$1/_internal/02-draft.md
+```
+
+Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
 
 Copiar draft final para a versão que o editor revisa:
 
@@ -296,7 +321,7 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stag
 
 Anotar warnings pra mencionar no gate. Falha não bloqueia.
 
-Após o push, limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário):
+Após o push, limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`):
 
 ```bash
 for f in \
@@ -371,6 +396,12 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stag
 
 Erro do agent reportado ao editor — sem fallback automático adicional.
 
+**Cleanup do snapshot pré-Clarice (#874).** Após o gate fechar (com ou sem title-picker), o snapshot `_internal/02-pre-clarice.md` pode ser removido — não há mais resume mid-Clarice possível pra essa edição:
+
+```bash
+[ -f data/editions/$1/_internal/02-pre-clarice.md ] && rm data/editions/$1/_internal/02-pre-clarice.md
+```
+
 ## Outputs
 
 - `data/editions/$1/02-reviewed.md` — newsletter final
@@ -378,6 +409,9 @@ Erro do agent reportado ao editor — sem fallback automático adicional.
 - `data/editions/$1/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
 - `data/editions/$1/_internal/02-clarice-report.json` — relatório de sugestões newsletter
 - `data/editions/$1/_internal/03-clarice-report.json` — relatório de sugestões social
+
+**Outputs intermediários (mid-stage, removidos no fim):**
+- `data/editions/$1/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido após o gate fechar.
 
 ## Notas
 

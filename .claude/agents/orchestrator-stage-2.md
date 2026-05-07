@@ -111,18 +111,31 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   O script aplica a fallback chain `(02-humanized.md → 02-normalized.md → 02-draft.md)`, valida que o arquivo escolhido existe, e grava o nome relativo em `data/editions/{AAMMDD}/_internal/02-clarice-input.txt`. Se nenhum existir, exit 1 (FATAL).
 
+  **Snapshot pré-Clarice (#874).** Antes de aplicar Clarice, copiar o `CLARICE_INPUT` resolvido para `_internal/02-pre-clarice.md`. Esse snapshot é (a) source-of-truth pra resume mid-Clarice (ver SKILL diaria-2-escrita), (b) input pro check de estabilidade de URLs (#873) abaixo:
+  ```bash
+  CLARICE_INPUT=$(cat data/editions/{AAMMDD}/_internal/02-clarice-input.txt)
+  cp "data/editions/{AAMMDD}/_internal/$CLARICE_INPUT" data/editions/{AAMMDD}/_internal/02-pre-clarice.md
+  ```
+
   1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
-  2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
+  2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido). Salvar a resposta crua em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
-  4. Gerar diff legível lendo o **mesmo** filename do passo 1:
+  4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash
-     CLARICE_INPUT=$(cat data/editions/{AAMMDD}/_internal/02-clarice-input.txt)
      npx tsx scripts/clarice-diff.ts \
-       "data/editions/{AAMMDD}/_internal/$CLARICE_INPUT" \
+       data/editions/{AAMMDD}/_internal/02-pre-clarice.md \
        data/editions/{AAMMDD}/02-reviewed.md \
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+
+- **Verificar estabilidade de URLs em LANÇAMENTOS (#873).** Clarice pode "limpar" URLs (remover query params, normalizar paths, adicionar trailing slash) — isso quebra a regra "LANÇAMENTOS só com link oficial" (#160) silenciosamente, porque a URL pós-Clarice pode não bater mais com a whitelist. Comparar URLs pré/pós-Clarice **antes** de `validate-lancamentos.ts`:
+  ```bash
+  npx tsx scripts/verify-clarice-url-stability.ts \
+    --pre data/editions/{AAMMDD}/_internal/02-pre-clarice.md \
+    --post data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Exit 0 = todas URLs em LANÇAMENTOS estáveis (warnings em outras seções são informativos, não bloqueiam). Exit 1 = Clarice mexeu em URL de lançamento — incluir o output no prompt do gate humano com diff `antes/depois` pra editor decidir: aceitar a versão pós-Clarice (pode quebrar #160) ou restaurar manualmente em `02-reviewed.md`. Não auto-restaurar — preserva agência editorial.
 
 - **Sincronizar contagem da intro (#743, #876):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total) e a narrativa pode mencionar "X lançamentos" com X antigo. Corrigir automaticamente, passando o resumo de lançamentos removidos escrito em §2a:
   ```bash
