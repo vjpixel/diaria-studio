@@ -131,12 +131,83 @@ export function appendEntry(path: string, entry: ContestEntry): void {
 
 /**
  * Formata o texto de resposta automática enviado ao leitor confirmado.
- * Mês exibido em PT-BR (ex: "junho de 2026"). Mantido simples — editor
- * revisa o draft antes de enviar.
+ * Mês exibido em PT-BR (ex: "junho de 2026"). Data da edição vem como
+ * frase relativa ("de ontem", "de anteontem") quando aplicável, fallback
+ * pra "de DD de mês" pra deltas maiores que 2 dias (NUNCA AAMMDD em texto
+ * pra leitor). Mantido simples — editor revisa o draft antes de enviar.
  */
 export function formatReplyText(entry: ContestEntry): string {
   const monthName = drawMonthLabel(entry.draw_month);
-  return `Olá, ${entry.reader_name.split(" ")[0]}!\n\nObrigado por encontrar o erro da edição de ${entry.edition}. Seu número para o sorteio de ${monthName} é ${entry.number}.\n\nO sorteio acontece no fim do mês — boa sorte!\n\n— Diar.ia`;
+  const editionPhrase = relativeEditionPhrase(entry.edition, entry.confirmed_at);
+  return `Olá, ${entry.reader_name.split(" ")[0]}!\n\nObrigado por encontrar o erro da edição ${editionPhrase}. Seu número é ${entry.number} — sorteio no início de ${monthName}. Boa sorte!\n\n— Diar.ia`;
+}
+
+/**
+ * Converte AAMMDD + confirmed_at ISO em frase relativa em PT-BR.
+ * Comparação em BRT (UTC-3) — referência editorial.
+ *   delta=0 → "de hoje"
+ *   delta=1 → "de ontem"
+ *   delta=2 → "de anteontem"
+ *   delta≥3 → "de 7 de maio" (formato humano, NUNCA AAMMDD em texto pra leitor)
+ *
+ * Pura — sem dependência em Intl ou TZ libraries.
+ */
+export function relativeEditionPhrase(
+  editionAAMMDD: string,
+  confirmedAtIso: string,
+): string {
+  const fallback = `de ${humanEditionDate(editionAAMMDD)}`;
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(editionAAMMDD);
+  if (!m) return fallback;
+  const editionDayUtc = Date.UTC(
+    2000 + parseInt(m[1], 10),
+    parseInt(m[2], 10) - 1,
+    parseInt(m[3], 10),
+  );
+  const confirmedMs = Date.parse(confirmedAtIso);
+  if (Number.isNaN(confirmedMs)) return fallback;
+  // Shift confirmed timestamp pra BRT (UTC-3) e pegar só a data calendar.
+  const confirmedBrt = new Date(confirmedMs - 3 * 60 * 60 * 1000);
+  const confirmedDayUtc = Date.UTC(
+    confirmedBrt.getUTCFullYear(),
+    confirmedBrt.getUTCMonth(),
+    confirmedBrt.getUTCDate(),
+  );
+  const deltaDays = Math.floor(
+    (confirmedDayUtc - editionDayUtc) / (24 * 60 * 60 * 1000),
+  );
+  if (deltaDays === 0) return "de hoje";
+  if (deltaDays === 1) return "de ontem";
+  if (deltaDays === 2) return "de anteontem";
+  return fallback;
+}
+
+/**
+ * "260507" → "7 de maio" (humano-readable).
+ * Usado em comunicações com leitores quando data relativa não cabe
+ * (delta ≥ 3 dias). NUNCA usar AAMMDD direto em texto pra assinante.
+ */
+export function humanEditionDate(editionAAMMDD: string): string {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(editionAAMMDD);
+  if (!m) return editionAAMMDD;
+  const day = parseInt(m[3], 10);
+  const monthIdx = parseInt(m[2], 10) - 1;
+  const months = [
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+  ];
+  if (monthIdx < 0 || monthIdx > 11) return editionAAMMDD;
+  return `${day} de ${months[monthIdx]}`;
 }
 
 /**

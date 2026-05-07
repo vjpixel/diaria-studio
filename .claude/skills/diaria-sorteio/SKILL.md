@@ -1,6 +1,6 @@
 ---
 name: diaria-sorteio
-description: Processa respostas de leitores ao sorteio mensal "ache o erro, ganhe um número". Drena threads do Gmail desde o último processamento, apresenta cada uma pro editor decidir, e ao aprovar atribui número sequencial + cria rascunho automático de resposta. Sub-comandos — list (default, drena pendentes) e draw (sorteia ao final do mês). Aceita argumento opcional YYYY-MM (default é o mês corrente do sorteio).
+description: Processa respostas de leitores ao sorteio mensal "ache o erro, ganhe um número". Drena threads do Gmail desde o último processamento, apresenta cada uma pro editor decidir, e ao aprovar atribui número sequencial + cria rascunho automático de resposta. Sub-comandos — list (default, drena pendentes) e draw (sorteia no início do mês seguinte). Aceita argumento opcional YYYY-MM (default é o mês corrente do sorteio).
 ---
 
 # /diaria-sorteio (processamento manual do sorteio)
@@ -9,7 +9,7 @@ Drena respostas pendentes do Gmail e processa novos participantes do sorteio men
 
 **Quando usar:**
 - Manualmente, quando o editor quiser processar respostas em batch (uma vez por dia ou por semana, conforme volume).
-- Ao final do mês para sortear o ganhador (sub-comando `draw`).
+- No início do mês seguinte para sortear o ganhador (sub-comando `draw`).
 
 **Quando NÃO usar:**
 - Não chame durante uma edição em curso (`/diaria-edicao`) — pode confundir contexto.
