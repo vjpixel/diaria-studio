@@ -472,13 +472,29 @@ Agent({
 })
 ```
 
-Após title-picker, re-rodar lint + push final pro Drive:
+Após title-picker, re-rodar lint:
 ```bash
 npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+```
+
+## Passo 7b — Inserir TÍTULO/SUBTÍTULO no topo (#916)
+
+Roda **depois** que cada destaque tem 1 só título (pós-poda manual do gate ou pós title-picker). Insere bloco `TÍTULO`/`SUBTÍTULO` no topo do `02-reviewed.md` que Stage 4 (publicação Beehiiv) usa pra preencher subject line + preview text. Sem isso, é trabalho manual do editor todo dia. Idempotente — re-rodar não duplica.
+
+```bash
+npx tsx scripts/insert-titulo-subtitulo.ts \
+  --in data/editions/$1/02-reviewed.md
+```
+
+Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs quebrar, editor preenche manualmente como antes.
+
+## Passo 7c — Push final ao Drive
+
+```bash
 npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
 ```
 
-Erro do agent reportado ao editor — sem fallback automático adicional.
+Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
 
 **Cleanup do snapshot pré-Clarice (#874).** Após o gate fechar (com ou sem title-picker), o snapshot `_internal/02-pre-clarice.md` pode ser removido — não há mais resume mid-Clarice possível pra essa edição:
 
