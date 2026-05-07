@@ -39,7 +39,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv(); // #923 — carregar .env.local antes de qualquer process.env access
 
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
@@ -52,7 +52,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // #650 Tier C: PostEntry/SocialPublished vêm de lib/social-published-store.ts.
 // `make_request_id` entra via escape hatch `[key: string]: unknown`.
-import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+// #918: appendSocialPosts/readSocialPublished são atomic + locked, prevenindo
+// race condition com publish-facebook.ts em paralelo (incidente 2026-05-07
+// onde FB d2/d3 sumiram do JSON quando LinkedIn sobrescreveu).
+import {
+  appendSocialPosts,
+  readSocialPublished,
+} from "./lib/social-published-store.ts";
+import type { PostEntry } from "./lib/social-published-store.ts";
 
 interface MakeWebhookPayload {
   text: string;
@@ -90,19 +97,6 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     }
   }
   return args;
-}
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8")) as SocialPublished;
-  }
-  return { posts: [] };
-}
-
-function savePublished(path: string, data: SocialPublished): void {
-  const tmpPath = path + ".tmp";
-  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n");
-  renameSync(tmpPath, path);
 }
 
 /**
@@ -372,14 +366,21 @@ async function main(): Promise<void> {
   } else {
     publishedPath = internalPath; // nova edição
   }
-  const published = loadPublished(publishedPath);
+  // #918: Estado lido fresh-on-read em cada iteração via readSocialPublished
+  // (evita race com publish-facebook.ts paralelo). appendSocialPosts faz upsert
+  // por platform+destaque sob .lock — não precisamos de buffer local.
 
   const results: PostEntry[] = [];
 
   for (const d of destaques) {
+    // #918: re-ler estado em cada iteração (publish-facebook pode estar
+    // gravando em paralelo). appendSocialPosts faz upsert por platform+destaque,
+    // então failed entries são naturalmente substituídas no próximo append.
+    const currentState = readSocialPublished(publishedPath);
+
     // Resume-aware: pular posts já com status draft/scheduled
     if (skipExisting) {
-      const existing = published.posts.find(
+      const existing = currentState.posts.find(
         (p) =>
           p.platform === "linkedin" &&
           p.destaque === d &&
@@ -390,11 +391,6 @@ async function main(): Promise<void> {
         results.push(existing);
         continue;
       }
-      // Remover entradas failed para retry
-      published.posts = published.posts.filter(
-        (p) =>
-          !(p.platform === "linkedin" && p.destaque === d && p.status === "failed"),
-      );
     }
 
     // Extrair texto do post
@@ -412,8 +408,7 @@ async function main(): Promise<void> {
         scheduled_at: null,
         reason: msg,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       continue;
     }
@@ -468,8 +463,7 @@ async function main(): Promise<void> {
           scheduled_at: null,
           reason: `schedule_error: ${msg}`,
         };
-        published.posts.push(entry);
-        savePublished(publishedPath, published);
+        appendSocialPosts(publishedPath, [entry]);
         results.push(entry);
         continue;
       }
@@ -569,8 +563,7 @@ async function main(): Promise<void> {
           make_request_id: response.request_id,
         };
       }
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
       console.log(
@@ -590,8 +583,7 @@ async function main(): Promise<void> {
         route,
         reason: msg,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
     }
   }
