@@ -15,7 +15,7 @@
  * sem nenhum bucket precisando truncar).
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -84,7 +84,12 @@ function main(): void {
     };
   }
 
-  writeFileSync(outPath, JSON.stringify(capped, null, 2), "utf8");
+  // Atomic write via .tmp + rename — previne corrupção do output em
+  // caso de crash mid-write (review #921 P1). Padrão consistente com
+  // `savePublished` em scripts/publish-linkedin.ts.
+  const tmpPath = outPath + ".tmp";
+  writeFileSync(tmpPath, JSON.stringify(capped, null, 2) + "\n", "utf8");
+  renameSync(tmpPath, outPath);
 
   console.error(
     `[apply-stage2-caps] dest=${approved.highlights?.length ?? 0}, ` +

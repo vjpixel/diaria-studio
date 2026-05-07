@@ -202,6 +202,48 @@ describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("atomic write não deixa .tmp órfão após sucesso (review #921 P1)", async () => {
+    const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+
+    const dir = mkdtempSync(join(tmpdir(), "apply-caps-atomic-"));
+    try {
+      const inPath = join(dir, "01-approved.json");
+      const outPath = join(dir, "01-approved-capped.json");
+      writeFileSync(
+        inPath,
+        JSON.stringify({
+          highlights: [{ url: "h1" }, { url: "h2" }, { url: "h3" }],
+          lancamento: [{ url: "l1" }],
+          pesquisa: [{ url: "p1" }],
+          noticias: [{ url: "n1" }],
+        }),
+        "utf8",
+      );
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "apply-stage2-caps.ts");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", scriptPath, "--in", inPath, "--out", outPath],
+        { cwd: projectRoot, encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+
+      // Output existe e .tmp foi removido (rename atomico).
+      assert.equal(existsSync(outPath), true, "outPath deve existir");
+      assert.equal(
+        existsSync(outPath + ".tmp"),
+        false,
+        ".tmp não deve ficar órfão após sucesso",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("checkStage2Caps", () => {
