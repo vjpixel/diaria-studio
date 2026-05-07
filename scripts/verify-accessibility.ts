@@ -28,6 +28,12 @@ let VERIFY_CACHE_TTL_MS: number = DEFAULT_TTL_MS;
 let VERIFY_CACHE_HITS = 0;
 let VERIFY_CACHE_MISSES = 0;
 
+// #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
+// roda múltiplas tabs no mesmo browser sem problema; serial era ~7-8s/url ×
+// 200+ urls = grande parte dos 22min do verify em 260506. Set via
+// --browser-concurrency N.
+const DEFAULT_BROWSER_CONCURRENCY = 4;
+
 const PAYWALL_DOMAINS = new Set([
   "fortune.com",
   "bloomberg.com",
@@ -395,6 +401,30 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
  * Fallback via Puppeteer para sites JS-heavy que retornam body < 500 chars
  * com fetch HTTP puro. Renderiza a página com um browser real e re-avalia.
  */
+/**
+ * Bounded worker pool — processa indices em paralelo com no máximo
+ * `concurrency` workers ativos. Cada worker pega o próximo índice via
+ * cursor compartilhado; resultados gravados in-place em ordem original.
+ *
+ * Usado pra paralelizar o second-pass de browser fallback (#717 hyp 3) sem
+ * mudar a ordem do array de results.
+ */
+export async function runBounded<T>(
+  indices: number[],
+  concurrency: number,
+  task: (idx: number) => Promise<T>,
+): Promise<void> {
+  const safe = Math.max(1, concurrency);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < indices.length) {
+      const i = cursor++;
+      await task(indices[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: safe }, () => worker()));
+}
+
 async function verifyWithBrowser(
   url: string,
   browser: Browser,
@@ -438,6 +468,8 @@ async function main() {
   // --bodies-dir <path>             (#717 hyp 1) — intra-edição body cache
   // --cache <path>                  (#717 hyp 2) — cross-edition verdict cache
   // --cache-ttl-days <N>            (#717 hyp 2) — TTL override (default 7)
+  // --browser-concurrency <N>       (#717 hyp 3) — paralelismo do fallback Puppeteer (default 4)
+  let browserConcurrency = DEFAULT_BROWSER_CONCURRENCY;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
@@ -453,6 +485,12 @@ async function main() {
         VERIFY_CACHE_TTL_MS = days * 24 * 60 * 60 * 1000;
       }
       i++;
+    } else if (a === "--browser-concurrency" && i + 1 < process.argv.length) {
+      const n = Number(process.argv[i + 1]);
+      if (Number.isFinite(n) && n >= 1) {
+        browserConcurrency = Math.floor(n);
+      }
+      i++;
     } else {
       positional.push(a);
     }
@@ -460,7 +498,7 @@ async function main() {
   const input = positional[0];
   if (!input) {
     console.error(
-      "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N]",
+      "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N] [--browser-concurrency N]",
     );
     process.exit(1);
   }
@@ -488,15 +526,24 @@ async function main() {
     .filter((i) => i >= 0);
 
   if (uncertainIdxs.length > 0) {
-    console.error(`[verify] ${uncertainIdxs.length} uncertain — retrying with browser fallback...`);
+    const effectiveConcurrency = Math.min(browserConcurrency, uncertainIdxs.length);
+    console.error(
+      `[verify] ${uncertainIdxs.length} uncertain — retrying with browser fallback (concurrency=${effectiveConcurrency})...`,
+    );
+    const fallbackStart = Date.now();
     let browser: Browser | null = null;
     try {
       browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
-      for (const idx of uncertainIdxs) {
+      const launched = browser;
+      await runBounded(uncertainIdxs, effectiveConcurrency, async (idx) => {
         const r = results[idx];
-        const browserResult = await verifyWithBrowser(r.url, browser);
+        const browserResult = await verifyWithBrowser(r.url, launched);
         results[idx] = { url: r.url, ...browserResult };
-      }
+      });
+      const elapsedMs = Date.now() - fallbackStart;
+      console.error(
+        `[verify] browser fallback concluído: ${uncertainIdxs.length} URLs em ${(elapsedMs / 1000).toFixed(1)}s (concurrency=${effectiveConcurrency})`,
+      );
     } catch (e) {
       console.error(`[verify] browser fallback failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
