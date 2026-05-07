@@ -309,3 +309,19 @@ describe("aiSideFromAnswer (#927)", () => {
     assert.equal(aiSideFromAnswer({ A: "real", B: "ia" }), "B");
   });
 });
+
+describe("writeEiaAnswerSidecar atomic write (#927)", () => {
+  it("não deixa sidecar parcial visível durante write — usa .tmp + rename", () => {
+    const dir = makeDir();
+    try {
+      writeEiaAnswerSidecar(dir, "260507", { A: "real", B: "ia" });
+      const tmpPath = eiaAnswerSidecarPath(dir) + ".tmp";
+      // Após write completo, .tmp não deve existir (foi renomeado).
+      assert.equal(existsSync(tmpPath), false, ".tmp removido após renameSync");
+      // Sidecar final está no lugar.
+      assert.ok(existsSync(eiaAnswerSidecarPath(dir)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

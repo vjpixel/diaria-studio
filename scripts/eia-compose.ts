@@ -943,6 +943,13 @@ async function main(): Promise<void> {
   // #927: gabarito também gravado em sidecar JSON dedicado. Drive strippa
   // YAML frontmatter no round-trip Markdown → Doc → Markdown, então
   // gabarito fica num arquivo que sobrevive (binário, em _internal/).
+  // Defensive: realSide é tipado mas se vier "" ou null por bug upstream,
+  // mapping silenciosamente vira ambos="ia" — falhar loud em vez disso.
+  if (sides.realSide !== "A" && sides.realSide !== "B") {
+    throw new Error(
+      `eia-compose: sides.realSide deve ser "A" ou "B", recebido: ${JSON.stringify(sides.realSide)}`,
+    );
+  }
   const aMapping: "real" | "ia" = sides.realSide === "A" ? "real" : "ia";
   const bMapping: "real" | "ia" = sides.realSide === "B" ? "real" : "ia";
   writeEiaAnswerSidecar(outDir, edition, { A: aMapping, B: bMapping });

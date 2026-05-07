@@ -21,7 +21,7 @@
  *   - `readEiaAnswer(editionDir)` — lê com fallback chain.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 export interface EiaAnswer {
@@ -58,7 +58,11 @@ export function writeEiaAnswerSidecar(
   mkdirSync(dirname(path), { recursive: true });
   const aiSide: "A" | "B" = answer.A === "ia" ? "A" : "B";
   const sidecar: EiaAnswerSidecar = { edition, answer, ai_side: aiSide };
-  writeFileSync(path, JSON.stringify(sidecar, null, 2) + "\n", "utf8");
+  // Atomic write: .tmp + renameSync — match convenção do projeto (lib/json-safe).
+  // Evita sidecar parcial se processo morrer no meio do writeFileSync.
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, JSON.stringify(sidecar, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
 }
 
 /**
