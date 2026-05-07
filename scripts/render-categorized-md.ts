@@ -556,10 +556,13 @@ export function renderEaiBlock(editionDir: string): string {
     }
     if (!creditLine) return `\n${separator}\n\n## É IA? ⏳ (ainda processando)\n\n${separator}\n`;
 
-    // #584/#927: extrair gabarito (sidecar > meta.json > frontmatter) e
-    // mostrar pro editor — apenas em categorized.md / pre-publish, strippado
-    // depois pra não estragar o poll Trivia da newsletter.
-    const gabarito = readEiaAnswer(editionDir) ?? extractEaiAnswer(content);
+    // #584/#927/#939: extrair gabarito via fallback chain (sidecar > meta.json
+    // > frontmatter) e mostrar pro editor — apenas em categorized.md /
+    // pre-publish, strippado depois pra não estragar o poll Trivia da
+    // newsletter. readEiaAnswer já cobre frontmatter como nível 3, então não
+    // há fallback adicional necessário (#939: extractEaiAnswer in-memory
+    // duplicava trabalho).
+    const gabarito = readEiaAnswer(editionDir);
     const gabaritoLine = gabarito ? `\n> Gabarito: **A = ${gabarito.A}**, **B = ${gabarito.B}**\n` : "";
 
     return `\n${separator}\n\n## É IA?\n\n${creditLine}\n${gabaritoLine}\n${separator}\n`;
@@ -571,9 +574,9 @@ export function renderEaiBlock(editionDir: string): string {
  * Extrai `eia_answer.A` e `eia_answer.B` do frontmatter de `01-eia.md` (#584).
  * Retorna null se ausente ou malformado.
  *
- * **#927:** mantido como fallback in-memory (parser de string já carregada).
- * Para resolução completa com sidecar JSON, use `readEiaAnswer(editionDir)`
- * de `lib/eia-answer.ts`.
+ * **#939**: não é mais usada como fallback em renderEaiBlock — `readEiaAnswer`
+ * cobre frontmatter como nível 3. Mantida exportada para tests legados e
+ * potential reuso (parser pure-string sem disk read).
  */
 export function extractEaiAnswer(eiaMd: string): { A: string; B: string } | null {
   const fmMatch = eiaMd.match(/^---\s*\n([\s\S]*?)\n---/);
