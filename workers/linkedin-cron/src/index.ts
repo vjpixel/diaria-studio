@@ -13,15 +13,19 @@
  *   5. Falhas incrementam retry_count; após MAX_RETRIES (5) movem pra dlq:{uuid}
  *
  * Endpoints:
- *   POST /queue        → adiciona item à fila. Auth: header X-Diaria-Token
- *   GET  /health       → debug — quantos items na fila, próximo agendado
- *   GET  /list         → debug — lista completa (auth required)
- *   GET  /dlq          → debug — lista dead-letter queue (auth required)
+ *   POST   /queue       → adiciona item à fila. Auth: header X-Diaria-Token
+ *   GET    /health      → debug — quantos items na fila, próximo agendado
+ *   GET    /list        → debug — lista completa (auth required)
+ *   GET    /dlq         → debug — lista dead-letter queue (auth required)
+ *   DELETE /dlq/:key    → cleanup — remove entry específica do DLQ (auth required, #894 P2-B)
  *
  * KV schema:
  *   queue:{scheduled_at_iso}:{uuid}  = QueueEntry JSON (lex-sortable por scheduled_at — #883)
  *   queue:{uuid}                     = QueueEntry JSON (legacy, ainda processado pra compat)
- *   dlq:{uuid}                       = QueueEntry JSON após esgotar retries (#880)
+ *   dlq:{scheduled_at_iso}:{uuid}    = QueueEntry JSON após esgotar retries (#880, #894 P1-A)
+ *
+ * DLQ retention (#894 P1-B): entries no DLQ expiram automaticamente após DLQ_TTL_SECONDS
+ * (30 dias) via expirationTtl. Janela suficiente pra editor revisar/agir sem acumular.
  *
  * Secrets (via `wrangler secret put`):
  *   DIARIA_TOKEN       → header X-Diaria-Token pra autenticar /queue, /list e /dlq
@@ -49,6 +53,7 @@ export const MAX_RETRIES = 5; // #880 — após isso, vai pra dlq:
 export const FETCH_TIMEOUT_MS = 30_000; // #881 — timeout por fetch ao Make
 export const MAX_TEXT_LENGTH = 10_000; // #882 — limite de caracteres do post
 export const MAX_URL_LENGTH = 2_000; // #882 — limite de comprimento de image_url
+export const DLQ_TTL_SECONDS = 30 * 24 * 3600; // #894 P1-B — DLQ entries expiram em 30 dias
 
 // ── Auth helper ────────────────────────────────────────────────────────────
 
@@ -97,17 +102,55 @@ export function buildQueueKey(scheduledAtIso: string, uuid: string): string {
 }
 
 /**
+ * Constrói key DLQ a partir da queue key original e scheduled_at (#894 P1-A).
+ *
+ * Reusa UUID original pra manter rastreabilidade entry-da-fila ↔ entry-no-dlq:
+ * - Schema novo `queue:<iso>:<uuid>` → `dlq:<iso>:<uuid>` (mesmo iso/uuid)
+ * - Schema legacy `queue:<uuid>` → `dlq:<scheduled_at>:<uuid>` (mantém uuid,
+ *   adiciona iso pra ordenação lex no DLQ)
+ *
+ * Tem fallback pra UUID novo se a key original for malformada (corrupção).
+ */
+export function buildDlqKey(originalKey: string, scheduledAtIso: string): string {
+  if (!originalKey.startsWith("queue:")) {
+    // Não deveria acontecer, mas fallback defensivo
+    return `dlq:${scheduledAtIso}:${crypto.randomUUID()}`;
+  }
+  const rest = originalKey.slice("queue:".length);
+  // Schema novo: extrair UUID após o último `:`
+  const lastColon = rest.lastIndexOf(":");
+  if (lastColon >= 0) {
+    const uuid = rest.slice(lastColon + 1);
+    return `dlq:${scheduledAtIso}:${uuid}`;
+  }
+  // Schema legacy `queue:<uuid>`: usa o uuid direto
+  return `dlq:${scheduledAtIso}:${rest}`;
+}
+
+/**
+ * Regex pra schema novo: `queue:{iso}:{uuid}`.
+ *
+ * - ISO 8601 UTC: `YYYY-MM-DDTHH:MM:SS[.fff]Z` (Z opcional pra robustez)
+ * - UUID v4: hex + hifens (8-4-4-4-12)
+ *
+ * Mantemos `[\d:.]+` no segmento ISO em vez de regex estrita pra tolerar
+ * variações que `Date.toISOString()` pode produzir em edge cases (mas
+ * ainda exige a estrutura `queue:<data>T<hora>:<...>` reconhecível).
+ */
+const QUEUE_KEY_NEW_RE = /^queue:\d{4}-\d{2}-\d{2}T[\d:.]+Z?:[\da-fA-F-]+$/;
+
+/**
  * Detecta se uma key é do schema legacy `queue:{uuid}` (sem timestamp).
  *
- * Schema novo é `queue:{iso}:{uuid}` (3+ segmentos quando split por `:`),
- * legacy é `queue:{uuid}` (2 segmentos). Mantemos compat pra não exigir
- * migração manual no KV.
+ * Schema novo é `queue:{iso}:{uuid}` (verificado via regex). Legacy é
+ * qualquer outra coisa começando com `queue:` que não bate o padrão novo.
+ * Mantemos compat pra não exigir migração manual no KV.
+ *
+ * #894 P2-A — substitui heurística frágil baseada em contagem de `:`.
  */
 export function isLegacyKey(key: string): boolean {
-  // queue:{uuid} → 2 partes; queue:{iso}:{uuid} → 4+ partes (ISO contém :)
-  const rest = key.startsWith("queue:") ? key.slice("queue:".length) : key;
-  // UUID v4 tem 4 hifens e nenhum `:` — se rest contém `:`, é schema novo
-  return !rest.includes(":");
+  if (!key.startsWith("queue:")) return false;
+  return !QUEUE_KEY_NEW_RE.test(key);
 }
 
 // ── POST /queue — enfileira ─────────────────────────────────────────────────
@@ -305,6 +348,33 @@ async function handleDlq(request: Request, env: Env): Promise<Response> {
   return json({ count: items.length, items });
 }
 
+// ── DELETE /dlq/:key — cleanup manual de DLQ (#894 P2-B) ───────────────────
+
+/**
+ * Remove uma entry específica do DLQ. Útil pra editor limpar dead-letters
+ * via API após investigar (em vez de `wrangler kv key delete`).
+ *
+ * Responses:
+ *   200 → { deleted: true, key }
+ *   401 → unauthorized
+ *   400 → key inválida (não começa com `dlq:`)
+ *   404 → key não existe (ou já expirou via TTL)
+ */
+async function handleDlqDelete(request: Request, env: Env, key: string): Promise<Response> {
+  if (!isAuthorized(request, env)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  if (!key.startsWith("dlq:")) {
+    return json({ error: "key must start with 'dlq:'" }, 400);
+  }
+  const existing = await env.LINKEDIN_QUEUE.get(key);
+  if (existing === null) {
+    return json({ error: "key not found", key }, 404);
+  }
+  await env.LINKEDIN_QUEUE.delete(key);
+  return json({ deleted: true, key });
+}
+
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
 /**
@@ -385,12 +455,22 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
     const nextRetry = currentRetry + 1;
 
     if (nextRetry >= MAX_RETRIES) {
-      // Move pra dead-letter queue. Usamos UUID novo pra evitar colisão (key
-      // legacy `queue:{uuid}` reusaria o mesmo uuid, e schema novo
-      // `queue:{iso}:{uuid}` extrai o uuid do final). Mais simples: novo uuid.
-      const dlqKey = `dlq:${crypto.randomUUID()}`;
+      // #894 P1-A — Move pra DLQ com ordem atômica: PUT dlq primeiro, delete
+      // queue depois. Se Worker crashar entre as 2 ops, o item permanece em
+      // ambos: o cron seguinte vai re-processar a queue entry (e potencialmente
+      // re-mover pra DLQ, gerando duplicata). Trade-off: duplicata é benigna
+      // (DLQ é só auditoria, não dispara ação) e o TTL (#894 P1-B) garante que
+      // entries antigas evaporam. Inverter a ordem (delete primeiro, put
+      // depois) seria pior: crash entre as ops perde o item silenciosamente.
+      //
+      // Reusa o UUID original pra rastreabilidade (`queue:<ts>:<uuid>` →
+      // `dlq:<ts>:<uuid>`). Pra schema legacy (`queue:<uuid>`), usa o uuid
+      // direto. Mantém vínculo entre entry da fila e entry no DLQ.
+      const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
       const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry };
-      await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry));
+      await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
+        expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
+      });
       await env.LINKEDIN_QUEUE.delete(k.name);
       console.error(
         `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
@@ -429,6 +509,11 @@ export default {
     if (path === "/dlq" && request.method === "GET") {
       return handleDlq(request, env);
     }
+    // #894 P2-B — DELETE /dlq/:key pra cleanup via API
+    if (path.startsWith("/dlq/") && request.method === "DELETE") {
+      const key = decodeURIComponent(path.slice("/dlq/".length));
+      return handleDlqDelete(request, env, key);
+    }
 
     return json(
       {
@@ -438,6 +523,7 @@ export default {
           "GET /health",
           "GET /list (auth: X-Diaria-Token)",
           "GET /dlq (auth: X-Diaria-Token)",
+          "DELETE /dlq/:key (auth: X-Diaria-Token)",
         ],
       },
       404,
@@ -454,11 +540,12 @@ export default {
   },
 };
 
-// Internal exports pra testes (#879 #880 #881 #882 #883)
+// Internal exports pra testes (#879 #880 #881 #882 #883 #894)
 export const __test__ = {
   handleEnqueue,
   handleHealth,
   handleList,
   handleDlq,
+  handleDlqDelete,
   fireDueItems,
 };
