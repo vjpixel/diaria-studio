@@ -152,6 +152,29 @@ export function buildReport(opts: {
   };
 }
 
+/**
+ * #891 P3: thresholds pra detectar regressão de payload size pós-cap.
+ *
+ * Calibrados contra dado real (não estimativa):
+ * - Baseline 260507 pós-cap = 243KB (67 sources ativas, todas no cap 30).
+ * - 300KB warn: baseline + 25% de margem. Sinaliza que (a) novas sources
+ *   foram adicionadas, (b) alguma fonte explodiu além do cap, ou (c)
+ *   subagent retornou payload extra-grande no return string.
+ * - 700KB error: território perigoso. Cenário do bug original (561KB
+ *   pré-cap, ~3M tokens, 309% do limite) cai aqui — auto-reporter pega
+ *   level=error e cria issue automática.
+ *
+ * Não bloqueia gate — só dispara warn/error level no run-log.
+ */
+export const PAYLOAD_WARN_BYTES = 300 * 1024;
+export const PAYLOAD_ERROR_BYTES = 700 * 1024;
+
+export function payloadLevel(bytes: number): "info" | "warn" | "error" {
+  if (bytes >= PAYLOAD_ERROR_BYTES) return "error";
+  if (bytes >= PAYLOAD_WARN_BYTES) return "warn";
+  return "info";
+}
+
 function appendRunLog(opts: {
   logPath: string;
   edition: string;
@@ -160,14 +183,19 @@ function appendRunLog(opts: {
   now: Date;
 }): void {
   mkdirSync(dirname(opts.logPath), { recursive: true });
+  const level = payloadLevel(opts.totals.bytes);
   const event = {
     timestamp: opts.now.toISOString(),
     edition: opts.edition,
     stage: 1,
     agent: "log-stage-1-payload-sizes",
-    level: "info" as const,
+    level,
     message: "stage1_payload_sizes",
-    details: { totals: opts.totals, top_3: opts.top_3 },
+    details: {
+      totals: opts.totals,
+      top_3: opts.top_3,
+      threshold: { warn_bytes: PAYLOAD_WARN_BYTES, error_bytes: PAYLOAD_ERROR_BYTES },
+    },
   };
   appendFileSync(opts.logPath, JSON.stringify(event) + "\n", "utf8");
 }

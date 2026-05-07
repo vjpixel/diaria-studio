@@ -6,6 +6,9 @@ import { join } from "node:path";
 import {
   buildReport,
   listInternalJsonFiles,
+  payloadLevel,
+  PAYLOAD_WARN_BYTES,
+  PAYLOAD_ERROR_BYTES,
 } from "../scripts/log-stage-1-payload-sizes.ts";
 
 function makeFixture(): { root: string; internalDir: string; edition: string } {
@@ -202,5 +205,39 @@ describe("buildReport (#891)", () => {
     } finally {
       rmSync(root, { recursive: true });
     }
+  });
+});
+
+describe("payloadLevel ratchet (#891)", () => {
+  it("info quando bytes < 300KB (baseline saudável pós-cap)", () => {
+    assert.equal(payloadLevel(0), "info");
+    assert.equal(payloadLevel(150 * 1024), "info");
+    // Baseline 260507 pós-cap (243K) cai em info — pipeline saudável.
+    assert.equal(payloadLevel(243 * 1024), "info");
+    assert.equal(payloadLevel(PAYLOAD_WARN_BYTES - 1), "info");
+  });
+
+  it("warn quando bytes >= 300KB e < 700KB", () => {
+    assert.equal(payloadLevel(PAYLOAD_WARN_BYTES), "warn");
+    assert.equal(payloadLevel(500 * 1024), "warn");
+    assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES - 1), "warn");
+  });
+
+  it("error quando bytes >= 700KB", () => {
+    assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES), "error");
+    assert.equal(payloadLevel(1024 * 1024), "error");
+    // 1M bytes — território de context overflow, dispara issue via auto-reporter.
+    assert.equal(payloadLevel(1500 * 1024), "error");
+  });
+
+  it("cenário do bug original (561K pré-cap em 260507) cai em warn agora", () => {
+    // Pre-cap, 561K passava sob o radar (sem alarm). Pós-cap, threshold 300/700
+    // pega esse range em warn (não bloqueia, mas sinaliza pra editor investigar).
+    assert.equal(payloadLevel(561 * 1024), "warn");
+  });
+
+  it("constants exportadas: warn=300KB, error=700KB", () => {
+    assert.equal(PAYLOAD_WARN_BYTES, 300 * 1024);
+    assert.equal(PAYLOAD_ERROR_BYTES, 700 * 1024);
   });
 });

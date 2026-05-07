@@ -18,13 +18,11 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import { capArticles, MAX_ARTICLES_PER_SOURCE, type Article } from "./lib/article-cap.ts";
 
-export interface Article {
-  url: string;
-  title: string;
-  published_at: string | null;
-  summary: string;
-}
+// Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
+export { capArticles, MAX_ARTICLES_PER_SOURCE };
+export type { Article };
 
 export interface FetchResult {
   source: string;
@@ -35,6 +33,10 @@ export interface FetchResult {
   /** #678: quantos artigos foram descartados pelo topicFilter (feed funcionou, mas sem match).
    * Se > 0, o orchestrator NÃO deve fazer fallback para WebSearch — o feed está ok. */
   filtered_by_topic?: number;
+  /** #891: quantos artigos foram cortados pelo cap por source. Indica que o feed
+   * tinha mais conteúdo que MAX_ARTICLES_PER_SOURCE — útil pra triagem de
+   * fontes que dominam payload (ex: arXiv devolveu 229 artigos em 260507). */
+  truncated_by_cap?: number;
 }
 
 export interface FetchOptions {
@@ -262,12 +264,20 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
     // #678: expõe quantos artigos foram descartados pelo topicFilter para que o
     // orchestrator não faça fallback WebSearch desnecessário (feed ok, sem match hoje).
     const filteredByTopic = hasTopicFilter ? byWindow.length - filtered.length : undefined;
+    // #891: cap por source — feeds gigantes (arXiv, agregadores) bloat o payload do orchestrator.
+    const { capped, truncated } = capArticles(filtered);
+    if (truncated > 0) {
+      console.error(
+        `[fetch-rss] cap aplicado em ${opts.sourceName}: ${filtered.length} → ${capped.length} (${truncated} cortados)`,
+      );
+    }
     return {
       source: opts.sourceName,
       method: "rss",
       feed_url: opts.url,
-      articles: filtered,
+      articles: capped,
       ...(filteredByTopic !== undefined ? { filtered_by_topic: filteredByTopic } : {}),
+      ...(truncated > 0 ? { truncated_by_cap: truncated } : {}),
     };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
