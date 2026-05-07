@@ -5,6 +5,7 @@ import {
   expandYear,
   arxivIdSentinelDate,
   isClearlyBeforeCutoff,
+  assertSentinelCoversWindow,
 } from "../scripts/lib/arxiv-id.ts";
 
 describe("parseArxivId (#717 hyp 4)", () => {
@@ -135,5 +136,82 @@ describe("isClearlyBeforeCutoff (#717 hyp 4)", () => {
   it("retorna false pra cutoff inválido (defensive)", () => {
     assert.equal(isClearlyBeforeCutoff(arxiv(26, 3), "not a date"), false);
     assert.equal(isClearlyBeforeCutoff(arxiv(26, 3), ""), false);
+  });
+});
+
+describe("assertSentinelCoversWindow (#849 — sentinel-vs-window assertion)", () => {
+  it("ok=true quando margin*30 >= window*1.5 (default 1mo cobre 20d)", () => {
+    const r = assertSentinelCoversWindow(1, 20);
+    assert.equal(r.ok, true);
+    assert.equal(r.message, "");
+    assert.equal(r.suggestedMarginMonths, undefined);
+  });
+
+  it("ok=true quando margin folgado (1mo cobre 14d)", () => {
+    const r = assertSentinelCoversWindow(1, 14);
+    assert.equal(r.ok, true);
+  });
+
+  it("ok=true no boundary exato (1mo = 30d, window = 20d → required 30d)", () => {
+    const r = assertSentinelCoversWindow(1, 20);
+    assert.equal(r.ok, true);
+  });
+
+  it("ok=false quando window > 20d com default margin", () => {
+    const r = assertSentinelCoversWindow(1, 30);
+    assert.equal(r.ok, false);
+    assert.equal(r.suggestedMarginMonths, 2);
+    assert.match(r.message, /WARNING/);
+    assert.match(r.message, /marginMonths=1/);
+    assert.match(r.message, /windowDays=30|janela de 30d/);
+    assert.match(r.message, /marginMonths=2/);
+  });
+
+  it("ok=false em catch-up window (60d) — sugere margin=3", () => {
+    const r = assertSentinelCoversWindow(1, 60);
+    assert.equal(r.ok, false);
+    assert.equal(r.suggestedMarginMonths, 3);
+  });
+
+  it("ok=true após bump margin proporcional", () => {
+    // 60d window precisa de 90d margin = 3 months
+    const r = assertSentinelCoversWindow(3, 60);
+    assert.equal(r.ok, true);
+  });
+
+  it("rejeita marginMonths inválido (NaN)", () => {
+    const r = assertSentinelCoversWindow(NaN, 20);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /marginMonths inválido/);
+  });
+
+  it("rejeita marginMonths negativo", () => {
+    const r = assertSentinelCoversWindow(-1, 20);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /marginMonths inválido/);
+  });
+
+  it("rejeita windowDays inválido", () => {
+    const r = assertSentinelCoversWindow(1, NaN);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /windowDays inválido/);
+  });
+
+  it("rejeita windowDays negativo", () => {
+    const r = assertSentinelCoversWindow(1, -5);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /windowDays inválido/);
+  });
+
+  it("ok=true em windowDays=0 (sem janela = sem risco de pre-skip errado)", () => {
+    const r = assertSentinelCoversWindow(1, 0);
+    assert.equal(r.ok, true);
+  });
+
+  it("suggestedMarginMonths arredonda pra cima (math.ceil)", () => {
+    // window=22d → required=33d → ceil(33/30)=2
+    const r = assertSentinelCoversWindow(1, 22);
+    assert.equal(r.ok, false);
+    assert.equal(r.suggestedMarginMonths, 2);
   });
 });

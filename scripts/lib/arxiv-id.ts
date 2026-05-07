@@ -127,3 +127,72 @@ export function isClearlyBeforeCutoff(
 
   return arxivAbs < cutoffAbs - marginMonths;
 }
+
+/**
+ * Resultado de validação da relação entre `marginMonths` (parâmetro do
+ * arxiv pre-skip) e `windowDays` (janela editorial). Quando os dois
+ * parâmetros estão fora de proporção, o pre-skip pode rejeitar papers
+ * que ainda estavam dentro da janela editorial — false-negative silencioso.
+ *
+ * Usado por `verify-dates.ts` quando `--window-days` é passado pra alertar
+ * o editor antes de processar.
+ *
+ * Heurística: `marginMonths * 30 >= windowDays * 1.5`. Default
+ * `marginMonths = 1` (≈30 days) cobre até `windowDays = 20`. Edições com
+ * janela maior (catch-up depois de feriado, fim-de-ano) precisam de
+ * margin proporcionalmente maior.
+ */
+export interface SentinelWindowCheck {
+  ok: boolean;
+  /** Margin atual em meses. */
+  marginMonths: number;
+  /** Janela editorial em dias. */
+  windowDays: number;
+  /** Margin sugerido se `ok === false`. */
+  suggestedMarginMonths?: number;
+  /** Mensagem human-readable pro warn (vazio quando ok). */
+  message: string;
+}
+
+/**
+ * Valida a relação margin/window. Retorna `{ ok: true, message: "" }`
+ * quando proporcional; caso contrário, sugere `marginMonths` apropriado.
+ */
+export function assertSentinelCoversWindow(
+  marginMonths: number,
+  windowDays: number,
+): SentinelWindowCheck {
+  if (!Number.isFinite(marginMonths) || marginMonths < 0) {
+    return {
+      ok: false,
+      marginMonths,
+      windowDays,
+      message: `[arxiv] marginMonths inválido: ${marginMonths}`,
+    };
+  }
+  if (!Number.isFinite(windowDays) || windowDays < 0) {
+    return {
+      ok: false,
+      marginMonths,
+      windowDays,
+      message: `[arxiv] windowDays inválido: ${windowDays}`,
+    };
+  }
+  const requiredDays = windowDays * 1.5;
+  const actualDays = marginMonths * 30;
+  if (actualDays >= requiredDays) {
+    return { ok: true, marginMonths, windowDays, message: "" };
+  }
+  const suggested = Math.ceil(requiredDays / 30);
+  return {
+    ok: false,
+    marginMonths,
+    windowDays,
+    suggestedMarginMonths: suggested,
+    message:
+      `[arxiv] WARNING: marginMonths=${marginMonths} pode rejeitar papers ` +
+      `em janela de ${windowDays}d (precisa de ≥${requiredDays}d ` +
+      `de margin, atual ≈${actualDays}d). ` +
+      `Considerar marginMonths=${suggested}.`,
+  };
+}

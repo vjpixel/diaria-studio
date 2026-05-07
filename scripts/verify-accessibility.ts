@@ -596,14 +596,15 @@ async function main() {
   // estável conforme isCacheableVerdict.
   // #836: counters acumulados aqui em locais (era module-level antes).
   if (verifyCache !== null && verifyCachePath !== null) {
+    // Cache foi configurado pra esta run, então toda URL passou pela
+    // cache lookup (ela é a primeira coisa em verify()). Hit = explícito
+    // `_cacheHit: true`. Miss = qualquer outro estado (incluindo paths
+    // que short-circuitam pra video/aggregator/etc após o miss inicial).
     let cacheHits = 0;
     let cacheMisses = 0;
     for (const r of results) {
       if (r._cacheHit === true) cacheHits++;
-      else if (r._cacheHit === false) cacheMisses++;
-      // _cacheHit === undefined: cache não foi consultado (eg. video,
-      // shortener short-circuit antes do cache check) — não conta nem
-      // hit nem miss.
+      else cacheMisses++;
     }
     let added = 0;
     for (const r of results) {
