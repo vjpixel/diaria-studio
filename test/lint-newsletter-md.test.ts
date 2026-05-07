@@ -813,6 +813,81 @@ describe("checkEaiSection (#588)", () => {
     const md = "DESTAQUE 1\r\n\r\n## É IA?\r\nCrédito.\r\n";
     assert.equal(checkEaiSection(md).ok, true);
   });
+
+  describe("gabarito body line (#908)", () => {
+    it("aceita gabarito A=ia,B=real em blockquote com negrito", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "  B: real",
+        "---",
+        "",
+        "DESTAQUE 1",
+        "",
+        "É IA?",
+        "",
+        "Crédito da imagem real.",
+        "",
+        "> Gabarito: **A = ia**, **B = real**",
+        "",
+      ].join("\n");
+      assert.equal(checkEaiSection(md).ok, true);
+    });
+
+    it("aceita gabarito A=real,B=ia (ordem invertida)", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: real",
+        "  B: ia",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Crédito.",
+        "",
+        "> Gabarito: **A = real**, **B = ia**",
+      ].join("\n");
+      assert.equal(checkEaiSection(md).ok, true);
+    });
+
+    it("falha quando frontmatter tem eia_answer mas body não tem gabarito", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "  B: real",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Crédito sem gabarito.",
+      ].join("\n");
+      const result = checkEaiSection(md);
+      assert.equal(result.ok, false);
+      assert.match(result.error!, /gabarito/i);
+      assert.match(result.error!, /#908/);
+    });
+
+    it("não exige gabarito quando frontmatter não tem eia_answer", () => {
+      const md = [
+        "---",
+        "title: edicao",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Crédito.",
+      ].join("\n");
+      assert.equal(checkEaiSection(md).ok, true);
+    });
+
+    it("não exige gabarito quando MD não tem frontmatter", () => {
+      const md = "É IA?\n\nCrédito.\n";
+      assert.equal(checkEaiSection(md).ok, true);
+    });
+  });
 });
 
 describe("checkEiaAnswer (#744)", () => {

@@ -68,6 +68,51 @@ export function findPreviousIntentionalError(
 }
 
 /**
+ * Pure (#915): envolve strings entre aspas (duplas ou simples) em **negrito**
+ * markdown. Editor pediu negrito nas posições "X" (erro) e "Y" (correção)
+ * pra dar contraste visual no concurso "Ache o erro".
+ *
+ * Idempotente: não dobra negrito se string já estiver bold (`**"X"**`).
+ * Aceita ambos formatos de aspas que aparecem no detail/gabarito do
+ * editor (entries históricos usam single quote; novos podem usar double).
+ *
+ * Estratégia: temporariamente substituir pares já-bold por sentinel,
+ * envolver os restantes, e restaurar. Mais simples que regex com
+ * lookbehind/lookahead encadeados.
+ */
+export function boldQuotedStrings(text: string): string {
+  const SENTINEL_DBL = "DBL";
+  const SENTINEL_SGL = "SGL";
+  const dblTokens: string[] = [];
+  const sglTokens: string[] = [];
+
+  // 1. Salvar pares já-bold em sentinels (ordem: double primeiro)
+  let work = text.replace(/\*\*"([^"]+)"\*\*/g, (m) => {
+    dblTokens.push(m);
+    return `${SENTINEL_DBL}${dblTokens.length - 1}${SENTINEL_DBL}`;
+  });
+  work = work.replace(/\*\*'([^']+)'\*\*/g, (m) => {
+    sglTokens.push(m);
+    return `${SENTINEL_SGL}${sglTokens.length - 1}${SENTINEL_SGL}`;
+  });
+
+  // 2. Envolver as aspas restantes (ainda não-bold) em **
+  work = work.replace(/"([^"]+)"/g, '**"$1"**');
+  work = work.replace(/'([^']+)'/g, "**'$1'**");
+
+  // 3. Restaurar sentinels
+  work = work.replace(
+    new RegExp(`${SENTINEL_DBL}(\\d+)${SENTINEL_DBL}`, "g"),
+    (_m, idx) => dblTokens[Number(idx)],
+  );
+  work = work.replace(
+    new RegExp(`${SENTINEL_SGL}(\\d+)${SENTINEL_SGL}`, "g"),
+    (_m, idx) => sglTokens[Number(idx)],
+  );
+  return work;
+}
+
+/**
  * Pure: compõe o texto de revelação do erro anterior.
  *
  * Estratégia:
@@ -76,20 +121,23 @@ export function findPreviousIntentionalError(
  *   - Detail vazio: "tinha um erro intencional"
  *
  * Não vaza informação demais — usa o detail tal como gravado pelo editor
- * (já é redação humana). Não tenta reformatar.
+ * (já é redação humana). Não tenta reformatar — só envolve strings entre
+ * aspas em negrito (#915).
  */
 export function composeRevealText(prev: IntentionalError): string {
   const detail = (prev.detail ?? "").trim();
   const gabarito = ((prev as { gabarito?: string }).gabarito ?? "").trim();
   const editionFmt = formatEditionLabel(prev.edition);
 
+  let text: string;
   if (gabarito && detail) {
-    return `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}. O correto era ${gabarito}.`;
+    text = `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}. O correto era ${gabarito}.`;
+  } else if (detail) {
+    text = `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}.`;
+  } else {
+    text = `A edição anterior (${editionFmt}) tinha um erro intencional.`;
   }
-  if (detail) {
-    return `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}.`;
-  }
-  return `A edição anterior (${editionFmt}) tinha um erro intencional.`;
+  return boldQuotedStrings(text);
 }
 
 /**

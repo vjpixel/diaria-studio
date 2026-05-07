@@ -18,6 +18,7 @@ import {
   renderSection,
   insertOrUpdateSection,
   currentHasIntentionalErrorFlag,
+  boldQuotedStrings,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 
@@ -86,6 +87,65 @@ describe("composeRevealText (#911)", () => {
     };
     const text = composeRevealText(prev);
     assert.match(text, /erro intencional/);
+  });
+
+  it("#915: strings entre aspas duplas saem em negrito", () => {
+    const prev: IntentionalError = {
+      edition: "260506",
+      error_type: "wrong_number",
+      is_feature: true,
+      detail: 'escrevi "fundadores de 220 anos" onde deveria ser "fundadores de 22 anos"',
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /\*\*"fundadores de 220 anos"\*\*/);
+    assert.match(text, /\*\*"fundadores de 22 anos"\*\*/);
+  });
+
+  it("#915: strings entre aspas simples (legacy) também saem em negrito", () => {
+    const prev: IntentionalError = {
+      edition: "260506",
+      error_type: "wrong_number",
+      is_feature: true,
+      detail: "Texto trazia '220 anos' onde deveria ser '22 anos'",
+      // @ts-expect-error — gabarito é campo extra
+      gabarito: "22 anos",
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /\*\*'220 anos'\*\*/);
+    assert.match(text, /\*\*'22 anos'\*\*/);
+  });
+});
+
+describe("boldQuotedStrings (#915)", () => {
+  it("envolve strings entre aspas duplas em negrito", () => {
+    assert.equal(
+      boldQuotedStrings('escrevi "X" onde deveria ser "Y"'),
+      'escrevi **"X"** onde deveria ser **"Y"**',
+    );
+  });
+
+  it("envolve strings entre aspas simples em negrito", () => {
+    assert.equal(
+      boldQuotedStrings("escrevi 'X' onde deveria ser 'Y'"),
+      "escrevi **'X'** onde deveria ser **'Y'**",
+    );
+  });
+
+  it("idempotente: não dobra negrito quando já bold", () => {
+    const already = 'escrevi **"X"** onde deveria ser **"Y"**';
+    assert.equal(boldQuotedStrings(already), already);
+  });
+
+  it("não modifica texto sem aspas", () => {
+    assert.equal(
+      boldQuotedStrings("texto sem aspas pra tocar"),
+      "texto sem aspas pra tocar",
+    );
+  });
+
+  it("preserva texto fora das aspas", () => {
+    const out = boldQuotedStrings('Disse "olá" e foi embora.');
+    assert.equal(out, 'Disse **"olá"** e foi embora.');
   });
 });
 

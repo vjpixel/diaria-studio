@@ -7,8 +7,9 @@
  * pra NOTÍCIAS — não pra LANÇAMENTOS, mesmo quando o tema é o
  * lançamento.
  *
- * Modo MD (#160):
+ * Modo MD (#160, #902):
  *   npx tsx scripts/validate-lancamentos.ts <md-path>
+ *   npx tsx scripts/validate-lancamentos.ts --in <md-path>
  *
  *   Output JSON: { lancamento_count, invalid_urls[], status }
  *
@@ -214,10 +215,11 @@ function main(): void {
     return;
   }
 
-  const arg = process.argv[2];
-  if (!arg) {
+  // #902: aceitar `--in <path>` além de positional pra alinhar com outros validators do projeto.
+  const arg = flagArgs.in || process.argv[2];
+  if (!arg || arg.startsWith("--")) {
     console.error(
-      "Uso: validate-lancamentos.ts <md-path>\n" +
+      "Uso: validate-lancamentos.ts [--in <path> | <md-path>]\n" +
         "  ou: validate-lancamentos.ts --approved <01-approved.json> [--write-removed <path>]",
     );
     process.exit(2);
