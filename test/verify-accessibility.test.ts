@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { classifyHttpStatus, detectSoft404Title } from "../scripts/verify-accessibility.ts";
+import {
+  classifyHttpStatus,
+  detectSoft404Title,
+  runBounded,
+} from "../scripts/verify-accessibility.ts";
 
 const TRUSTED_HOST = "techcrunch.com"; // está em TRUSTED_PUBLISHERS
 const UNKNOWN_HOST = "someblog.example.com"; // não está
@@ -106,5 +110,83 @@ describe("detectSoft404Title (#695) — soft 404 via título", () => {
   it("case insensitive — 'NOT FOUND' → detecta", () => {
     const body = `<html><head><title>NOT FOUND</title></head><body>${"x".repeat(1000)}</body></html>`;
     assert.ok(detectSoft404Title(body));
+  });
+});
+
+describe("runBounded — bounded worker pool (#717 hyp 3)", () => {
+  it("processa todos os indices fornecidos exatamente uma vez", async () => {
+    const indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const visited: number[] = [];
+    await runBounded(indices, 3, async (idx) => {
+      visited.push(idx);
+    });
+    assert.equal(visited.length, indices.length);
+    assert.deepEqual([...visited].sort((a, b) => a - b), indices);
+  });
+
+  it("respeita cap de concorrência (no máximo N tasks ativas em paralelo)", async () => {
+    const indices = Array.from({ length: 20 }, (_, i) => i);
+    let active = 0;
+    let peak = 0;
+    await runBounded(indices, 4, async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+    });
+    assert.ok(peak <= 4, `peak active deveria ser ≤ 4, foi ${peak}`);
+    assert.ok(peak >= 1, `peak active deveria ser ≥ 1, foi ${peak}`);
+  });
+
+  it("concurrency=1 vira execução serial", async () => {
+    const indices = [0, 1, 2, 3, 4];
+    let active = 0;
+    let peak = 0;
+    await runBounded(indices, 1, async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 2));
+      active--;
+    });
+    assert.equal(peak, 1);
+  });
+
+  it("concurrency 0 é tratado como 1 (não trava)", async () => {
+    const indices = [0, 1, 2];
+    const visited: number[] = [];
+    await runBounded(indices, 0, async (idx) => {
+      visited.push(idx);
+    });
+    assert.equal(visited.length, 3);
+  });
+
+  it("array vazio é no-op", async () => {
+    let called = 0;
+    await runBounded([], 4, async () => {
+      called++;
+    });
+    assert.equal(called, 0);
+  });
+
+  it("concurrency > indices.length usa apenas indices.length workers efetivos", async () => {
+    const indices = [0, 1];
+    let active = 0;
+    let peak = 0;
+    await runBounded(indices, 10, async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 3));
+      active--;
+    });
+    assert.ok(peak <= 2, `peak deveria ser ≤ 2, foi ${peak}`);
+  });
+
+  it("propaga indices arbitrários (não precisa ser 0..N)", async () => {
+    const indices = [42, 100, 7];
+    const visited: number[] = [];
+    await runBounded(indices, 2, async (idx) => {
+      visited.push(idx);
+    });
+    assert.deepEqual([...visited].sort((a, b) => a - b), [7, 42, 100]);
   });
 });
