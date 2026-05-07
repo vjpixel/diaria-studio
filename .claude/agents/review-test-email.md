@@ -156,7 +156,47 @@ Verificar cada item e registrar como `ok` ou `issue`:
    **Fallback:** se o CLI falhar (exit 2 / arquivo não criado / erro inesperado), seguir com
    os checks 1-7 normais e logar warning `"lint_cli_failed: {detalhe}"` no `issues[]`.
 
-Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
+10-15. **Verificação visual de formatação (#753) — prefixo `email:formatting:`.**
+
+   Inspecionar o HTML do email (Gmail MCP retorna HTML cru; fallback Chrome:
+   `read_page` + computed styles via `javascript_tool`). Verificar atributos de
+   estilo nos elementos relevantes:
+
+   10. **Negrito nos títulos dos destaques.** O título de cada destaque (D1, D2,
+       D3) deve estar em negrito (`<b>`, `<strong>`, ou `font-weight:bold|700+`).
+       Se peso normal ou ausente:
+       `"email:formatting: D{N} título sem negrito"`
+
+   11. **Itálico no crédito É IA?.** A linha de crédito/caption da seção É IA?
+       deve estar em itálico (`<i>`, `<em>`, ou `font-style:italic`). Se não:
+       `"email:formatting: seção É IA? crédito não está em itálico"`
+
+   12. **Tamanho de fonte dos títulos.** Títulos de destaque devem ser
+       visivelmente maiores que o corpo (tipicamente ≥18px vs 14-16px do
+       corpo). Se title e corpo aparecerem com mesmo tamanho:
+       `"email:formatting: D{N} título sem hierarquia visual de tamanho"`
+
+   13. **Tamanho de fonte dos labels de categoria.** Labels como "LANÇAMENTO",
+       "PESQUISA" devem ser menores que o corpo (tipicamente 11-13px) e em
+       all-caps. Se aparecerem em tamanho padrão ou sem capitalização:
+       `"email:formatting: D{N} label de categoria sem estilo correto"`
+
+   14. **Sublinhado nos links.** Links clicáveis devem ter sublinhado
+       (`text-decoration:underline`) ou cor diferenciada (não `color: inherit`).
+       Links sem nenhuma diferenciação visual:
+       `"email:formatting: link sem diferenciação visual em '{contexto}'"`
+
+   15. **Consistência de fonte (info-only, não blocker).** O corpo da newsletter
+       deve usar uma fonte sans-serif consistente (Inter, Arial, Helvetica
+       ou equivalente). Se partes do email renderizarem em fonte diferente
+       (ex: Times New Roman por fallback CSS quebrado):
+       `"info:formatting: fonte inconsistente detectada em '{seção}'"`
+
+       **Nota**: usar prefixo `info:` (não `email:formatting:`) — Gmail
+       frequentemente proxeia/reescreve CSS, false-positive aceitável. Não
+       bloqueia o loop fix.
+
+Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Visual formatting checks (#753) usam `email:formatting:` (blocker) ou `info:formatting:` (não-blocker). Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
 ### 3a. Cross-reference com intentional-errors.jsonl
 
@@ -251,6 +291,12 @@ Checar os seguintes itens no conteúdo do email:
 6. **Links funcionais.** Extrair alguns hrefs do email e verificar que não estão vazios, `#` ou `javascript:`. Se encontrar links inválidos: `"email:link_broken: link em '{contexto}' tem href inválido: '{href}'"`.
 
 7. **Encoding.** Verificar que caracteres especiais (ã, ç, í, ê, ó, ú, etc.) estão renderizados corretamente (não aparecem como `?` ou boxes). Se corrompidos: `"email:encoding_broken: caracteres especiais corrompidos em '{contexto}'"`.
+
+8. **Visual formatting (#753 — subset relevante pro mensal).** Inspecionar HTML do email pra verificar formatação de elementos chave:
+   - **Itálico no crédito** (se houver linha de crédito/caption equivalente ao É IA?): `<i>`, `<em>`, ou `font-style:italic`. Se ausente: `"email:formatting: crédito não está em itálico"`.
+   - **Tamanho de fonte dos títulos de DESTAQUE**: devem ser visivelmente maiores que o corpo (≥18px vs 14-16px). Se sem hierarquia: `"email:formatting: D{N} título sem hierarquia visual de tamanho"`.
+
+   Outros checks de visual formatting (negrito títulos, sublinhado links, fonte consistente, label categoria) **não se aplicam** ao mensal — estrutura é diferente do diário.
 
 **Não verificar:** imagens (serão adicionadas manualmente pela Clarice no dashboard Brevo), estrutura visual de boxes ou cores (diferente do Beehiiv), intentional errors (são específicos do diário).
 
