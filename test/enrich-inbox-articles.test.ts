@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   needsEnrichment,
   extractMetadata,
   mergeMetadata,
   enrichArticles,
 } from "../scripts/enrich-inbox-articles.ts";
+import { bodyCacheFilename } from "../scripts/lib/url-body-cache.ts";
 
 describe("needsEnrichment — predicate for inbox unenriched articles (#109)", () => {
   it("identifica artigo com flag editor_submitted e título placeholder '(inbox)'", () => {
@@ -269,5 +273,135 @@ describe("enrichArticles — orchestration with mocked fetcher", () => {
     const { outcomes } = await enrichArticles(articles, fetcher, { concurrency: 1 });
     assert.equal(outcomes.length, 5);
     assert.ok(outcomes.every((o) => o.enriched));
+  });
+});
+
+describe("enrichArticles — body cache integration (#717 hyp 7)", () => {
+  it("cache hit: usa body cached, não chama o fetcher, marca cache_hit + incrementa stats", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-cache-hit-"));
+    try {
+      const url = "https://cached.example.com/article";
+      writeFileSync(
+        join(dir, bodyCacheFilename(url)),
+        `<meta property="og:title" content="From cache"/><meta property="og:description" content="Cached desc"/>`,
+      );
+      const articles = [{ url, title: "(inbox)", flag: "editor_submitted" }];
+      let fetcherCalls = 0;
+      const fetcher = async (): Promise<string | null> => {
+        fetcherCalls++;
+        return null;
+      };
+      const { articles: out, outcomes, stats } = await enrichArticles(
+        articles,
+        fetcher,
+        { bodiesDir: dir },
+      );
+      assert.equal(fetcherCalls, 0);
+      assert.equal(out[0].title, "From cache");
+      assert.equal(out[0].summary, "Cached desc");
+      assert.equal(outcomes[0].enriched, true);
+      assert.equal(outcomes[0].cache_hit, true);
+      assert.equal(stats.cache_hits, 1);
+      assert.equal(stats.cache_misses, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cache miss: cai pro fetcher e incrementa cache_misses", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-cache-miss-"));
+    try {
+      const articles = [
+        { url: "https://uncached.example.com/x", title: "(inbox)", flag: "editor_submitted" },
+      ];
+      const fetcher = async (): Promise<string | null> =>
+        `<meta property="og:title" content="Fetched title"/>`;
+      const { articles: out, outcomes, stats } = await enrichArticles(
+        articles,
+        fetcher,
+        { bodiesDir: dir },
+      );
+      assert.equal(out[0].title, "Fetched title");
+      assert.equal(outcomes[0].enriched, true);
+      assert.equal(outcomes[0].cache_hit, undefined);
+      assert.equal(stats.cache_hits, 0);
+      assert.equal(stats.cache_misses, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bodiesDir omitido (cache desabilitado): comportamento legado, fetcher sempre chamado, stats zeradas", async () => {
+    const articles = [
+      { url: "https://x", title: "(inbox)", flag: "editor_submitted" },
+    ];
+    let fetcherCalls = 0;
+    const fetcher = async (): Promise<string | null> => {
+      fetcherCalls++;
+      return `<meta property="og:title" content="From fetcher"/>`;
+    };
+    const { outcomes, stats } = await enrichArticles(articles, fetcher);
+    assert.equal(fetcherCalls, 1);
+    assert.equal(outcomes[0].enriched, true);
+    assert.equal(outcomes[0].cache_hit, undefined);
+    assert.equal(stats.cache_hits, 0);
+    assert.equal(stats.cache_misses, 0);
+  });
+
+  it("mix de cache hit + miss em um lote: stats refletem cada caso individualmente", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-cache-mix-"));
+    try {
+      const cachedUrl = "https://c.example.com/hit";
+      const missedUrl = "https://m.example.com/miss";
+      writeFileSync(
+        join(dir, bodyCacheFilename(cachedUrl)),
+        `<meta property="og:title" content="Hit title"/>`,
+      );
+      const articles = [
+        { url: cachedUrl, title: "(inbox)", flag: "editor_submitted" },
+        { url: missedUrl, title: "(inbox)", flag: "editor_submitted" },
+      ];
+      const fetched: string[] = [];
+      const fetcher = async (url: string): Promise<string | null> => {
+        fetched.push(url);
+        return `<meta property="og:title" content="Miss title"/>`;
+      };
+      const { outcomes, stats } = await enrichArticles(articles, fetcher, {
+        bodiesDir: dir,
+        concurrency: 1,
+      });
+      assert.deepEqual(fetched, [missedUrl]);
+      assert.equal(stats.cache_hits, 1);
+      assert.equal(stats.cache_misses, 1);
+      const hit = outcomes.find((o) => o.url === cachedUrl)!;
+      const miss = outcomes.find((o) => o.url === missedUrl)!;
+      assert.equal(hit.cache_hit, true);
+      assert.equal(miss.cache_hit, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cache hit com HTML sem metadata: registra no_metadata_found mas ainda marca cache_hit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-cache-empty-"));
+    try {
+      const url = "https://nometa.example.com/page";
+      writeFileSync(
+        join(dir, bodyCacheFilename(url)),
+        "<html><head></head><body>nada</body></html>",
+      );
+      const articles = [{ url, title: "(inbox)", flag: "editor_submitted" }];
+      const { outcomes, stats } = await enrichArticles(
+        articles,
+        async () => null,
+        { bodiesDir: dir },
+      );
+      assert.equal(outcomes[0].enriched, false);
+      assert.equal(outcomes[0].reason, "no_metadata_found");
+      assert.equal(outcomes[0].cache_hit, true);
+      assert.equal(stats.cache_hits, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

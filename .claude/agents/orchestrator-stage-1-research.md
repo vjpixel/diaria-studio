@@ -208,9 +208,10 @@ Substitui cada artigo inbox com `verdict: "aggregator"` pelos links primários e
 URLs do editor entram com `title: "(inbox)"` e `summary: null`. Após a expansão de agregadores:
 ```bash
 npx tsx scripts/enrich-inbox-articles.ts \
-  --in data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json
+  --in data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json \
+  --bodies-dir data/editions/{AAMMDD}/_internal/link-verify-bodies
 ```
-O script só toca artigos com `flag: "editor_submitted"` ou `source: "inbox"` cujo título seja placeholder (`(inbox)`, `[INBOX] ...`) ou cujo `summary` esteja vazio. Para cada um, fetch da URL final + extração de `og:title` / `og:description` (com fallback pra `<title>` e `meta name=description`). Títulos curados pelo editor são preservados. Falhas de fetch viram outcome `fetch_failed` no stdout — não bloqueiam pipeline. Ler o JSON de volta após o script (mutated in place).
+O script só toca artigos com `flag: "editor_submitted"` ou `source: "inbox"` cujo título seja placeholder (`(inbox)`, `[INBOX] ...`) ou cujo `summary` esteja vazio. Para cada um, lê o body cacheado por `verify-accessibility.ts` no passo 1i (#717 hipótese 7 — `--bodies-dir`); se ausente, faz fetch da URL final. Em seguida, extrai `og:title` / `og:description` (com fallback pra `<title>` e `meta name=description`). Títulos curados pelo editor são preservados. Falhas de fetch viram outcome `fetch_failed` no stdout — não bloqueiam pipeline. Ler o JSON de volta após o script (mutated in place). Stderr loga `[enrich] body-cache: H/T hit (P%)` — hit ratio típico esperado >70% (URLs do inbox foram fetched no 1i).
 
 ### 1l. Dedup
 
