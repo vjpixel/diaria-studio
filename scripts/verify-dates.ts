@@ -20,8 +20,11 @@ import {
   parseArxivId,
   arxivIdSentinelDate,
   isClearlyBeforeCutoff,
+  assertSentinelCoversWindow,
 } from "./lib/arxiv-id.ts";
 import type { VerifyDateOptions } from "./lib/verify-options.ts";
+
+const DEFAULT_ARXIV_MARGIN_MONTHS = 1;
 
 // User-Agent de browser real — muitos sites (openai.com, exame.com, etc)
 // bloqueiam user-agents que identificam bots. Mantemos um header plausível.
@@ -336,10 +339,14 @@ export async function verifyDate(
 async function main() {
   // CLI shape preservada: positional <articles.json> [out.json], + flags opcionais
   // --bodies-dir <path> (#717 hyp 1) e --cutoff-iso <YYYY-MM-DD> (#717 hyp 4).
+  // --window-days N (#849 / #836) — opcional, dispara assert da relação
+  // marginMonths/windowDays e avisa se desproporcional. Não afeta o
+  // comportamento de pre-skip (margin segue default).
   // #836: módulo-level vars eliminadas. Toda configuração vive em locals
   // de main() ou na VerifyDateOptions threaded por chamada.
   let bodiesDir: string | null = null;
   let cutoffIso: string | null = null;
+  let windowDays: number | null = null;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
@@ -349,6 +356,12 @@ async function main() {
     } else if (a === "--cutoff-iso" && i + 1 < process.argv.length) {
       cutoffIso = process.argv[i + 1];
       i++;
+    } else if (a === "--window-days" && i + 1 < process.argv.length) {
+      const n = Number(process.argv[i + 1]);
+      if (Number.isFinite(n) && n > 0) {
+        windowDays = n;
+      }
+      i++;
     } else {
       positional.push(a);
     }
@@ -356,10 +369,20 @@ async function main() {
   const inputArg = positional[0];
   if (!inputArg) {
     console.error(
-      "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD]",
+      "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD] [--window-days N]",
     );
     console.error("  articles.json: array de { url, date }");
     process.exit(1);
+  }
+
+  // #849 — quando ambos `--cutoff-iso` e `--window-days` foram passados,
+  // validar a relação margin/window. Pré-skip silencioso pode levar a
+  // false-negative em janelas grandes (ex: catch-up depois de feriado).
+  if (cutoffIso !== null && windowDays !== null) {
+    const check = assertSentinelCoversWindow(DEFAULT_ARXIV_MARGIN_MONTHS, windowDays);
+    if (!check.ok) {
+      console.error(check.message);
+    }
   }
 
   const articles: ArticleInput[] = JSON.parse(readFileSync(inputArg, "utf8"));
