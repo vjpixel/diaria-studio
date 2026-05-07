@@ -8,9 +8,9 @@ workers_dev = true
 # Cole o ID retornado abaixo:
 [[kv_namespaces]]
 binding = "LINKEDIN_QUEUE"
-id = "0321ee63442b4303bbc55daeb41a9a8f"
+id = "4d6bb6a2bc864ea29dc15c2083806b2e"
 
-# Cron trigger — a cada 30 minutos.
+# Cron trigger — a cada 5 minutos (teste; pode subir pra */15 ou */30 em prod).
 # Ao disparar, lê itens com scheduled_at <= now e fira o webhook Make.
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/5 * * * *"]
