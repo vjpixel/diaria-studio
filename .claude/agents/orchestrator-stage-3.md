@@ -62,7 +62,12 @@ O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? j
   Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")
   ```
   Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
-- **Gerar imagens via script (sem Agent).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default):
+- **Lint pre-flight do prompt (#810).** Para cada destaque d1, d2, d3, rodar lint determinístico antes de gastar API call. Detecta violações da regra editorial (`context/editorial-rules.md`): "Noite Estrelada" / "Starry Night", resolução em pixels, DPI:
+  ```bash
+  npx tsx scripts/lint-image-prompt.ts data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md
+  ```
+  Se exit `1` (violações encontradas), pausar geração desse destaque e mostrar ao editor as violações (stderr lista trechos + categoria + regra). Editor pode editar `_internal/02-d{N}-prompt.md` no Drive ou local e responder "retry". Não chamar `image-generate.ts` antes do lint passar — defesa em profundidade vs `NEGATIVE_PROMPT` parcial do `image-generate`.
+- **Gerar imagens via script (sem Agent).** Para cada destaque d1, d2, d3 sequencialmente (Gemini API por default), DEPOIS do lint passar:
   ```bash
   npx tsx scripts/image-generate.ts \
     --editorial data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md \
