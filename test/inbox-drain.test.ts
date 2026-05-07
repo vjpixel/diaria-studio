@@ -11,13 +11,11 @@ import {
   incrementEmptyDrain,
   resetEmptyDrain,
   shouldWarnEmptyDrains,
-  stripLabelFromQuery,
   decideEmptyDrainAction,
   dedupForwards,
   EMPTY_DRAIN_WARN_THRESHOLD,
   loadCursor,
   main as drainMain,
-  type AltQueryResult,
 } from "../scripts/inbox-drain.ts";
 
 function makeMessage(subject: string, id = "msg"): {
@@ -217,151 +215,34 @@ describe("contador de drains vazios consecutivos", () => {
   });
 });
 
-describe("stripLabelFromQuery (#274)", () => {
-  it("remove `label:Diaria` simples", () => {
-    assert.equal(stripLabelFromQuery("label:Diaria"), "");
-  });
-
-  it("remove `label:` no início preservando o resto", () => {
-    assert.equal(
-      stripLabelFromQuery("label:Diaria from:editor@gmail.com"),
-      "from:editor@gmail.com",
-    );
-  });
-
-  it("remove `label:` no meio preservando o resto", () => {
-    assert.equal(
-      stripLabelFromQuery("from:editor@gmail.com label:Diaria"),
-      "from:editor@gmail.com",
-    );
-  });
-
-  it("remove `label:` em várias ocorrências", () => {
-    assert.equal(
-      stripLabelFromQuery("label:Foo label:Bar from:editor@gmail.com"),
-      "from:editor@gmail.com",
-    );
-  });
-
-  it("query sem `label:` passa intacta", () => {
-    assert.equal(
-      stripLabelFromQuery("from:editor@gmail.com after:2026/04/01"),
-      "from:editor@gmail.com after:2026/04/01",
-    );
-  });
-
-  it("query vazia retorna vazia", () => {
-    assert.equal(stripLabelFromQuery(""), "");
-  });
-
-  it("é case-insensitive em LABEL", () => {
-    assert.equal(stripLabelFromQuery("LABEL:Diaria from:x"), "from:x");
-  });
-
-  it("preserva nome de label com hífen ou underscore (typical Gmail labels)", () => {
-    assert.equal(
-      stripLabelFromQuery("label:diar-ia/inbox after:2026/04/01"),
-      "after:2026/04/01",
-    );
-  });
-});
-
-describe("decideEmptyDrainAction (#274 + #286)", () => {
-  const altRanZero: AltQueryResult = { ran: true, thread_count: 0, failed: false };
-  const altRanFound: AltQueryResult = { ran: true, thread_count: 5, failed: false };
-  const altFailed: AltQueryResult = { ran: true, thread_count: 0, failed: true };
-  const altNotRun: AltQueryResult = { ran: false, thread_count: 0, failed: false };
-
+describe("decideEmptyDrainAction (#900) — simplificado", () => {
   it("abaixo do threshold: kind=none (sem ação)", () => {
     const cursor = {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD - 1,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
-    assert.deepEqual(r, { kind: "none" });
+    assert.deepEqual(decideEmptyDrainAction(cursor), { kind: "none" });
   });
 
-  it("threshold + alt ran achou threads: label_broken", () => {
+  it("no threshold: silent_reset (inbox vazio é estado válido)", () => {
     const cursor = {
       last_drain_iso: null,
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanFound);
-    assert.deepEqual(r, { kind: "label_broken", thread_count: 5 });
+    assert.deepEqual(decideEmptyDrainAction(cursor), { kind: "silent_reset" });
   });
 
-  it("threshold + alt ran 0 threads: silent_reset", () => {
+  it("muito acima do threshold: continua silent_reset", () => {
     const cursor = {
       last_drain_iso: null,
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD + 50,
     };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
-    assert.deepEqual(r, { kind: "silent_reset" });
+    assert.deepEqual(decideEmptyDrainAction(cursor), { kind: "silent_reset" });
   });
 
-  it("#286 fix: threshold + alt FAILED: warn padrão (NÃO silent reset)", () => {
-    const cursor = {
-      last_drain_iso: null,
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
-    };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed);
-    assert.equal(r.kind, "warn");
-    if (r.kind === "warn") {
-      assert.match(r.reason, /alt query.*falhou/);
-      assert.match(r.reason, /não dá pra distinguir/);
-      assert.match(r.reason, /Diaria/); // menciona o label name
-    }
-  });
-
-  it("threshold + query custom (sem label:): warn padrão (alt não roda)", () => {
-    const cursor = {
-      last_drain_iso: null,
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
-    };
-    const r = decideEmptyDrainAction(
-      cursor,
-      "from:editor@gmail.com",
-      altNotRun,
-    );
-    assert.equal(r.kind, "warn");
-    if (r.kind === "warn") {
-      assert.match(r.reason, /query custom/);
-      assert.match(r.reason, /from:editor@gmail\.com/);
-    }
-  });
-
-  it("threshold acima do limite (5 drains): mesmo comportamento do exato", () => {
-    const cursor = {
-      last_drain_iso: null,
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD + 5,
-    };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altRanZero);
-    assert.deepEqual(r, { kind: "silent_reset" });
-  });
-
-  it("warn reason inclui contagem de drains", () => {
-    const cursor = { last_drain_iso: null, consecutive_empty_drains: 7 };
-    const r = decideEmptyDrainAction(cursor, "label:Diaria", altFailed);
-    assert.equal(r.kind, "warn");
-    if (r.kind === "warn") {
-      assert.match(r.reason, /7 drains/);
-    }
-  });
-
-  it("label name é extraído da query no warn de alt-failed", () => {
-    const cursor = {
-      last_drain_iso: null,
-      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
-    };
-    const r = decideEmptyDrainAction(
-      cursor,
-      "label:CustomLabel after:2026/01/01",
-      altFailed,
-    );
-    assert.equal(r.kind, "warn");
-    if (r.kind === "warn") {
-      assert.match(r.reason, /CustomLabel/);
-    }
+  it("cursor sem consecutive_empty_drains (default 0): kind=none", () => {
+    const cursor = { last_drain_iso: null };
+    assert.deepEqual(decideEmptyDrainAction(cursor), { kind: "none" });
   });
 });
 
@@ -612,33 +493,23 @@ describe("inbox-drain main() integration (#306)", () => {
     );
   });
 
-  it("alt query failure → não lança exceção, new_entries=0 (#431)", async () => {
-    // Set cursor at threshold so alt query runs after an empty primary drain
+  it("primary query empty acima do threshold → silent_reset, new_entries=0 (#900)", async () => {
     writeFileSync(CURSOR_PATH, JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     }), "utf8");
 
-    let primaryCalled = false;
     globalThis.fetch = async (url: string | URL | Request) => {
       const u = String(url);
       if (u.includes("/labels")) {
         return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
       }
       if (u.includes("/threads")) {
-        if (!primaryCalled) {
-          // First call = primary query (with label) → empty → triggers alt query
-          primaryCalled = true;
-          return makeGmailResponse({ threads: [] });
-        }
-        // Second call = alt query (without label) → HTTP 500 → caught as altQuery.failed
-        return makeGmailResponse({ error: "internal server error" }, 500);
+        return makeGmailResponse({ threads: [] });
       }
       return makeGmailResponse({});
     };
 
-    // Should not throw — main() wraps the alt query in try/catch and handles
-    // the failure via decideEmptyDrainAction (warn path), never re-throws.
     let threw = false;
     let output: Record<string, unknown> = {};
     try {
@@ -646,8 +517,12 @@ describe("inbox-drain main() integration (#306)", () => {
     } catch {
       threw = true;
     }
-    assert.equal(threw, false, "drainMain() não deve lançar exceção quando alt query falha");
+    assert.equal(threw, false, "drainMain() não deve lançar exceção quando inbox vazio");
     assert.equal(output.new_entries, 0);
+    assert.equal(output.skipped, false, "skipped=false — drain rodou, só não tinha email");
+    // Cursor pós-silent_reset: consecutive_empty_drains zerado
+    const cursor = JSON.parse(readFileSync(CURSOR_PATH, "utf8"));
+    assert.equal(cursor.consecutive_empty_drains, 0, "silent_reset deve zerar contador");
   });
 });
 
