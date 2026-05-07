@@ -123,6 +123,43 @@ describe("buildReport (#891)", () => {
     }
   });
 
+  it("top_3 com tie em bytes: ordem é estável (alfabética por filename)", () => {
+    // Array.sort() é estável desde ES2019. Como listInternalJsonFiles já retorna
+    // os arquivos em ordem alfabética, ties em `bytes` preservam essa ordem no
+    // sort decrescente — garantia explícita para evitar regressão futura.
+    const { root, internalDir, edition } = makeFixture();
+    try {
+      writeFileSync(join(internalDir, "a-large.json"), "x".repeat(100));
+      writeFileSync(join(internalDir, "b-medium.json"), "y".repeat(50));
+      writeFileSync(join(internalDir, "c-medium.json"), "z".repeat(50));
+
+      const report1 = buildReport({ edition, internalDir, repoRoot: root });
+      const report2 = buildReport({ edition, internalDir, repoRoot: root });
+      const report3 = buildReport({ edition, internalDir, repoRoot: root });
+
+      assert.equal(report1.top_3.length, 3);
+      assert.ok(report1.top_3[0].path.endsWith("a-large.json"));
+      assert.equal(report1.top_3[0].bytes, 100);
+      // Tie em 50 bytes entre b-medium.json e c-medium.json — alfabética desempata
+      assert.ok(
+        report1.top_3[1].path.endsWith("b-medium.json"),
+        `expected b-medium.json second, got: ${report1.top_3[1].path}`
+      );
+      assert.equal(report1.top_3[1].bytes, 50);
+      assert.ok(
+        report1.top_3[2].path.endsWith("c-medium.json"),
+        `expected c-medium.json third, got: ${report1.top_3[2].path}`
+      );
+      assert.equal(report1.top_3[2].bytes, 50);
+
+      // Determinismo: runs consecutivos produzem mesmo top_3
+      assert.deepEqual(report2.top_3, report1.top_3);
+      assert.deepEqual(report3.top_3, report1.top_3);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
   it("paths são relativos ao repo root, com separadores POSIX", () => {
     const { root, internalDir, edition } = makeFixture();
     try {
