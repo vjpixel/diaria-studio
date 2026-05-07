@@ -190,8 +190,28 @@ export function buildUrlBucketMap(
 export const COVERAGE_LINE_RE =
   /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss(?:ão|ões) e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos?\. (?:Selecionamos o artigo mais relevante|Selecionamos os \d+ mais relevantes)/i;
 
+/**
+ * #925: pula YAML frontmatter (`---\n...\n---\n`) antes de procurar a
+ * primeira linha do body. Writer agent emite `eia_answer` no frontmatter
+ * (output canônico, não anomalia), e o lint não pode tratar `---` (delim
+ * do frontmatter) como primeira linha de cobertura.
+ *
+ * Frontmatter malformado (sem fechamento) é tratado como body — não pula
+ * nada, deixa o regex falhar com mensagem clara.
+ */
+function stripFrontmatter(md: string): string {
+  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return md;
+  // Procurar fechamento — `\n---` no início de linha após o delim de abertura.
+  // Buscamos a partir do índice 4 pra não pegar o `---` da abertura.
+  const closeMatch = md.slice(4).match(/^---\r?\n/m);
+  if (!closeMatch || closeMatch.index === undefined) return md;
+  const endOfClose = 4 + closeMatch.index + closeMatch[0].length;
+  return md.slice(endOfClose);
+}
+
 export function checkCoverageLine(md: string): { ok: boolean; firstLine: string } {
-  const lines = md.split("\n");
+  const body = stripFrontmatter(md);
+  const lines = body.split("\n");
   const firstNonEmpty = lines.find((l) => l.trim().length > 0) ?? "";
   return {
     ok: COVERAGE_LINE_RE.test(firstNonEmpty.trim()),

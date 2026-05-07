@@ -221,4 +221,86 @@ DESTAQUE 1 | NOTÍCIA
     const md = `Para esta edição, eu (o editor) enviei 1 submissão e a Diar.ia encontrou outros 186 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.`;
     assert.equal(checkCoverageLine(md).ok, true);
   });
+
+  describe("#925: pula YAML frontmatter", () => {
+    it("aceita cover line após frontmatter eia_answer", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "  B: real",
+        "---",
+        "",
+        "Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 369 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+        "",
+        "---",
+        "",
+        "DESTAQUE 1 | ...",
+      ].join("\n");
+      const r = checkCoverageLine(md);
+      assert.equal(r.ok, true, `firstLine: ${r.firstLine}`);
+    });
+
+    it("regression: sem frontmatter continua funcionando", () => {
+      const md = [
+        "Para esta edição, eu (o editor) enviei 26 submissões e a Diar.ia encontrou outros 186 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+        "",
+        "---",
+        "",
+        "DESTAQUE 1",
+      ].join("\n");
+      assert.equal(checkCoverageLine(md).ok, true);
+    });
+
+    it("aceita cover line com frontmatter vazio", () => {
+      const md = [
+        "---",
+        "---",
+        "",
+        "Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 100 artigos. Selecionamos os 8 mais relevantes para as pessoas que assinam a newsletter.",
+      ].join("\n");
+      assert.equal(checkCoverageLine(md).ok, true);
+    });
+
+    it("frontmatter malformado (sem fechamento) → trata tudo como body, lint falha (não quebra)", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "Para esta edição, eu (o editor) enviei 5 submissões...",
+      ].join("\n");
+      // `---` é primeira linha, regex falha — comportamento esperado, não crash.
+      const r = checkCoverageLine(md);
+      assert.equal(r.ok, false);
+      assert.equal(r.firstLine, "---");
+    });
+
+    it("CRLF: aceita cover line após frontmatter com line endings Windows", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "  B: real",
+        "---",
+        "",
+        "Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 369 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+      ].join("\r\n");
+      assert.equal(checkCoverageLine(md).ok, true);
+    });
+
+    it("--- como separador de seção do body NÃO conta como frontmatter", () => {
+      const md = [
+        "Para esta edição, eu (o editor) enviei 26 submissões e a Diar.ia encontrou outros 186 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+        "",
+        "---",
+        "",
+        "DESTAQUE 1",
+        "",
+        "---",
+        "",
+        "DESTAQUE 2",
+      ].join("\n");
+      assert.equal(checkCoverageLine(md).ok, true);
+    });
+  });
 });
