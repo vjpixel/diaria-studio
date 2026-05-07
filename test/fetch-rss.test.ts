@@ -419,9 +419,10 @@ describe("fetchRss + cap integração (#891 / #945)", () => {
     return () => { globalThis.fetch = orig; };
   }
 
-  it("FetchResult inclui truncated_by_cap quando feed > 30 items (regressão arXiv 229)", async () => {
+  it("FetchResult inclui truncated_by_cap quando feed > cap (regressão arXiv 229)", async () => {
     const { fetchRss } = await import("../scripts/fetch-rss.ts");
-    const restore = stubFetch(buildRssXml(50));
+    const TOTAL = 50;
+    const restore = stubFetch(buildRssXml(TOTAL));
     try {
       const result = await fetchRss({
         url: "http://example.com/feed",
@@ -429,18 +430,20 @@ describe("fetchRss + cap integração (#891 / #945)", () => {
         days: 365, // janela grande pra todos passarem por filterByWindow
         now: new Date("2026-05-08T00:00:00Z"),
       });
-      assert.equal(result.articles.length, 30, "cap aplica");
-      assert.equal(result.truncated_by_cap, 20, "20 items cortados");
-      // Articles ordenados desc — primeiro deve ser o mais recente (item 23 = hh23)
-      assert.match(result.articles[0].url, /\/(2[0-9]|1[6-9])$/, "primeiro article tem hour alta (mais recente)");
+      assert.equal(result.articles.length, MAX_ARTICLES_PER_SOURCE, "cap aplica");
+      assert.equal(result.truncated_by_cap, TOTAL - MAX_ARTICLES_PER_SOURCE, "items cortados = total - cap");
+      // Articles ordenados por published_at desc — primeiro deve ter hour máxima (23).
+      // Asserta o invariante real (pubDate desc), não proxy via URL.
+      assert.match(result.articles[0].published_at ?? "", /T23:00:00/, "primeiro article = hour 23 (mais recente)");
     } finally {
       restore();
     }
   });
 
-  it("FetchResult NÃO inclui truncated_by_cap quando feed <= 30 items", async () => {
+  it("FetchResult NÃO inclui truncated_by_cap quando feed <= cap", async () => {
     const { fetchRss } = await import("../scripts/fetch-rss.ts");
-    const restore = stubFetch(buildRssXml(20));
+    const TOTAL = 20;
+    const restore = stubFetch(buildRssXml(TOTAL));
     try {
       const result = await fetchRss({
         url: "http://example.com/feed",
@@ -448,7 +451,7 @@ describe("fetchRss + cap integração (#891 / #945)", () => {
         days: 365,
         now: new Date("2026-05-08T00:00:00Z"),
       });
-      assert.equal(result.articles.length, 20);
+      assert.equal(result.articles.length, TOTAL);
       assert.equal(result.truncated_by_cap, undefined, "campo ausente quando cap não aplica");
     } finally {
       restore();

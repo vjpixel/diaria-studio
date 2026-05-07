@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseSitemap, filterByWindow } from "../scripts/lib/fetch-sitemap.ts";
+import { MAX_ARTICLES_PER_SOURCE } from "../scripts/lib/article-cap.ts";
 
 const SAMPLE_SITEMAP = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -148,9 +149,10 @@ describe("fetchSitemapEntries + cap integração (#891 / #945)", () => {
     return () => { globalThis.fetch = orig; };
   }
 
-  it("SitemapFetchResult inclui truncated_by_cap quando sitemap > 30 entries", async () => {
+  it("SitemapFetchResult inclui truncated_by_cap quando sitemap > cap", async () => {
     const { fetchSitemapEntries } = await import("../scripts/lib/fetch-sitemap.ts");
-    const restore = stubFetch(buildSitemapXml(40));
+    const TOTAL = 40;
+    const restore = stubFetch(buildSitemapXml(TOTAL));
     try {
       const result = await fetchSitemapEntries({
         url: "https://example.com/sitemap.xml",
@@ -158,16 +160,19 @@ describe("fetchSitemapEntries + cap integração (#891 / #945)", () => {
         days: 365,
         now: new Date("2026-05-08T00:00:00Z"),
       });
-      assert.equal(result.articles.length, 30, "cap aplica");
-      assert.equal(result.truncated_by_cap, 10, "10 entries cortadas");
+      assert.equal(result.articles.length, MAX_ARTICLES_PER_SOURCE, "cap aplica");
+      assert.equal(result.truncated_by_cap, TOTAL - MAX_ARTICLES_PER_SOURCE, "entries cortadas = total - cap");
+      // Mesmo invariante que fetchRss: articles ordenados por published_at desc (#945 nit C).
+      assert.match(result.articles[0].published_at ?? "", /T23:00:00/, "primeira article = lastmod hour 23");
     } finally {
       restore();
     }
   });
 
-  it("SitemapFetchResult NÃO inclui truncated_by_cap quando <= 30 entries", async () => {
+  it("SitemapFetchResult NÃO inclui truncated_by_cap quando <= cap", async () => {
     const { fetchSitemapEntries } = await import("../scripts/lib/fetch-sitemap.ts");
-    const restore = stubFetch(buildSitemapXml(15));
+    const TOTAL = 15;
+    const restore = stubFetch(buildSitemapXml(TOTAL));
     try {
       const result = await fetchSitemapEntries({
         url: "https://example.com/sitemap.xml",
@@ -175,7 +180,7 @@ describe("fetchSitemapEntries + cap integração (#891 / #945)", () => {
         days: 365,
         now: new Date("2026-05-08T00:00:00Z"),
       });
-      assert.equal(result.articles.length, 15);
+      assert.equal(result.articles.length, TOTAL);
       assert.equal(result.truncated_by_cap, undefined);
     } finally {
       restore();
