@@ -23,6 +23,12 @@ export const PostEntrySchema = z.object({
   failure_reason: z.string().optional(),
   fb_post_id: z.string().optional(),
   requires_manual_image_upload: z.boolean().optional(),
+  // #886 LinkedIn route observability — qual canal de fire foi usado.
+  // No failed path, é o route originalmente intentado, não tentativas subsequentes.
+  route: z.enum(["worker_queue", "make_now"]).optional(),
+  // Reservado pra fallback worker→make (#892, ainda não implementado).
+  fallback_used: z.boolean().optional(),
+  fallback_reason: z.string().optional(),
 }).passthrough();
 
 export type PostEntry = z.infer<typeof PostEntrySchema>;

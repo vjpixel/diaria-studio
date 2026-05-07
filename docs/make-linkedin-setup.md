@@ -41,13 +41,7 @@ One-time setup to enable programmatic LinkedIn publishing via Make.com webhook i
 
 Escolha **uma** das opções:
 
-### Opção A — `.env.local` (recomendado, gitignored)
-
-```bash
-MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
-```
-
-### Opção B — `platform.config.json` (NÃO recomendado)
+### Opção A — `platform.config.json` (recomendado)
 
 ```json
 "publishing": {
@@ -59,9 +53,19 @@ MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
 }
 ```
 
-> ⚠️ **Não use em repositório público.** A URL do webhook Make.com é secret-equivalente — qualquer um com a URL pode disparar publicações no LinkedIn. `platform.config.json` é versionado, então o segredo iria pro git history. Prefira sempre a Opção A (`.env`, gitignored). Mantenha `make_webhook_url: ""` no config versionado.
+### Opção B — `.env.local` (override pra testes / CI alternativo)
+
+```bash
+MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
+```
+
+> **URL pública é aceitável.** A URL fica versionada no `platform.config.json` (mesma postura que `cloudflare_worker_url`). A defesa primária contra abuso é o token `X-Diaria-Token` do Worker (`.env.local`, gitignored), que é o caminho real de scheduling. O Make webhook em si não tem auth, mas:
 >
-> A variável de ambiente tem precedência sobre o config.
+> - Free tier Make = 1.000 ops/mês — atacante consumiria isso rápido, mas dano material é zero (post passa pelo módulo LinkedIn com OAuth da própria conta, não há vazamento de credencial nem persistência).
+> - Volume real é ~270 ops/mês, sobra margem pra absorver tentativas pontuais.
+> - Se o webhook começar a ser exercitado por terceiros, basta rotacionar a URL no Make (criar novo webhook, atualizar config, deploy).
+>
+> A variável de ambiente continua tendo precedência sobre o config — útil pra apontar pra um webhook de teste sem editar o config versionado.
 
 ---
 
@@ -111,6 +115,24 @@ Resume-aware: posts já com `status: "draft"` ou `"scheduled"` são pulados.
 ```
 
 `image_url` vem de `06-public-images.json`. Se ausente, o post vai sem imagem (graceful fallback).
+
+---
+
+## Rotação do webhook (caso URL vaze)
+
+A URL do webhook Make é versionada (`platform.config.json`) e pode aparecer em logs públicos. Se houver suspeita de uso indevido (volume Make.com inflando, posts inesperados na company page), rotacionar:
+
+1. **Criar novo webhook no Make**: abra o scenario `Integration LinkedIn`, no módulo `Custom webhook` clique em `Add` → gera URL nova (substitui a antiga no scenario, mas a antiga continua válida no servidor Make até deletar).
+2. **Atualizar secret no Worker** (caminho real de scheduling):
+   ```bash
+   cd workers/linkedin-cron
+   echo "https://hook.us2.make.com/<NEW>" | wrangler secret put MAKE_WEBHOOK_URL
+   ```
+3. **Atualizar `platform.config.json`** → `publishing.social.linkedin.make_webhook_url` com a URL nova.
+4. **Commit + merge** do config.
+5. **Deletar a URL antiga no Make UI** (módulo webhook → `Stop` → `Remove`). Até este passo, a antiga continua aceitando POSTs — fazer por último, depois de confirmar que a nova está em produção.
+
+> A defesa primária contra abuso continua sendo o token `X-Diaria-Token` do Worker — só o caminho `worker_queue` é o que de fato importa pra integridade. Webhook rotation é defesa secundária pra cortar volume Make.com inflado.
 
 ---
 
