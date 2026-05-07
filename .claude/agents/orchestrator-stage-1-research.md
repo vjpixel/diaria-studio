@@ -400,6 +400,16 @@ npx tsx scripts/validate-stage-1-output.ts \
 
 Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832). Pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill `/diaria-1-pesquisa` isolado tem (#828).
 
+### 1w-ter. Log payload sizes (#891 — observability)
+
+Antes do gate, registrar tamanho de cada JSON intermediário em `_internal/`. Visibilidade pra investigar context overflow (#891):
+
+```bash
+npx tsx scripts/log-stage-1-payload-sizes.ts --edition {AAMMDD}
+```
+
+Output: grava `_internal/01-payload-sizes.json` (relatório completo) e append em `data/run-log.jsonl` com `level: info`, `message: "stage1_payload_sizes"`, `details.totals` + `details.top_3`. Nunca falha — best-effort. Próximo PR usa esses dados pra escolher entre Opção A (subagents retornam só path) ou Opção B (agregação imediata) descritas no #891.
+
 ### 1x. GATE HUMANO
 
 Apresentar ao usuário:
