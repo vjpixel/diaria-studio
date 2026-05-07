@@ -118,6 +118,24 @@ Resume-aware: posts já com `status: "draft"` ou `"scheduled"` são pulados.
 
 ---
 
+## Rotação do webhook (caso URL vaze)
+
+A URL do webhook Make é versionada (`platform.config.json`) e pode aparecer em logs públicos. Se houver suspeita de uso indevido (volume Make.com inflando, posts inesperados na company page), rotacionar:
+
+1. **Criar novo webhook no Make**: abra o scenario `Integration LinkedIn`, no módulo `Custom webhook` clique em `Add` → gera URL nova (substitui a antiga no scenario, mas a antiga continua válida no servidor Make até deletar).
+2. **Atualizar secret no Worker** (caminho real de scheduling):
+   ```bash
+   cd workers/linkedin-cron
+   echo "https://hook.us2.make.com/<NEW>" | wrangler secret put MAKE_WEBHOOK_URL
+   ```
+3. **Atualizar `platform.config.json`** → `publishing.social.linkedin.make_webhook_url` com a URL nova.
+4. **Commit + merge** do config.
+5. **Deletar a URL antiga no Make UI** (módulo webhook → `Stop` → `Remove`). Até este passo, a antiga continua aceitando POSTs — fazer por último, depois de confirmar que a nova está em produção.
+
+> A defesa primária contra abuso continua sendo o token `X-Diaria-Token` do Worker — só o caminho `worker_queue` é o que de fato importa pra integridade. Webhook rotation é defesa secundária pra cortar volume Make.com inflado.
+
+---
+
 ## Troubleshooting
 
 | Erro | Causa | Solução |

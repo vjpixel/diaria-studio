@@ -548,6 +548,8 @@ async function main(): Promise<void> {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`FAILED linkedin/${d}: ${msg}`);
+      // route registrado é o originalmente intentado, não tentativas subsequentes
+      // (sem fallback worker→make ainda — #892).
       const entry: PostEntry = {
         platform: "linkedin",
         destaque: d,
