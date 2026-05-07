@@ -1,25 +1,27 @@
 /**
  * publish-linkedin.ts (#506)
  *
- * Posta no LinkedIn company page (Diar.ia) via webhook Make.com.
- * Make.com recebe o payload e executa o post via módulo LinkedIn.
+ * Posta no LinkedIn company page (Diar.ia). 2 caminhos de fire:
+ *   - "fire-now": POSTa direto no webhook Make.com (Scenario A "Integration LinkedIn")
+ *     que executa o post imediatamente via módulo LinkedIn.
+ *   - "queue": POSTa pro Cloudflare Worker `diaria-linkedin-cron` que enfileira em KV
+ *     e fira o webhook Make automaticamente quando `scheduled_at` chega.
+ *     Usado quando `--schedule` é passado E `scheduled_at` é futuro.
  *
- * Pré-requisito: MAKE_LINKEDIN_WEBHOOK_URL no env OU campo
- * `publishing.social.linkedin.make_webhook_url` em platform.config.json.
- * A variável de env tem precedência sobre o config.
+ * Pré-requisitos:
+ *   - MAKE_LINKEDIN_WEBHOOK_URL no env OU `publishing.social.linkedin.make_webhook_url` no config
+ *   - (opcional) DIARIA_LINKEDIN_CRON_URL no env OU `publishing.social.linkedin.cloudflare_worker_url`
+ *   - (opcional) DIARIA_LINKEDIN_CRON_TOKEN no env (header X-Diaria-Token pro Worker)
+ *   Sem o Worker configurado, fallback é fire-now (mesmo se scheduled_at futuro) — mas
+ *   nesse caso o Make.com posta imediatamente, ignorando o scheduled_at.
  *
  * Uso:
  *   npx tsx scripts/publish-linkedin.ts \
  *     --edition-dir data/editions/260504 \
- *     [--schedule]          # se presente, calcula scheduled_at e envia no payload
+ *     [--schedule]          # se presente, calcula scheduled_at e usa queue p/ posts futuros
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--only d1,d2,d3]     # subset de posts (default: todos)
  *     [--day-offset N]      # override de day_offset do config
- *
- * Payload enviado ao Make.com (por post):
- *   { text, image_url, scheduled_at, destaque }
- *
- * Make.com valida e posta/agenda no LinkedIn company page.
  *
  * Output: appends em {edition-dir}/_internal/06-social-published.json
  * (mesmo arquivo do publish-facebook.ts, mesmo formato, plataforma "linkedin")
@@ -53,6 +55,13 @@ interface MakeWebhookResponse {
   request_id?: string;
   accepted?: boolean;
   [k: string]: unknown;
+}
+
+interface WorkerQueueResponse {
+  queued: boolean;
+  key: string;
+  scheduled_at: string;
+  destaque: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -153,6 +162,53 @@ export async function postToMakeWebhook(
   throw lastError ?? new Error("make_webhook_failed");
 }
 
+/**
+ * Enfileira o post no Cloudflare Worker `diaria-linkedin-cron` (KV-backed).
+ * Worker fira o webhook Make automaticamente quando `scheduled_at` chega.
+ *
+ * Retorna a resposta do Worker (com `key` da fila) ou lança em falha.
+ */
+export async function postToWorkerQueue(
+  workerUrl: string,
+  token: string,
+  payload: MakeWebhookPayload,
+  maxAttempts = 2,
+): Promise<WorkerQueueResponse> {
+  // Worker espera /queue endpoint
+  const queueUrl = workerUrl.replace(/\/+$/, "") + "/queue";
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(queueUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Diaria-Token": token,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Worker queue HTTP ${res.status}: ${body.slice(0, 300)}`);
+      }
+      const text = await res.text();
+      try {
+        return JSON.parse(text) as WorkerQueueResponse;
+      } catch {
+        throw new Error(`Worker returned non-JSON response: ${text.slice(0, 200)}`);
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      console.error(`[publish-linkedin] worker attempt ${attempt} failed: ${lastError.message}`);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+  throw lastError ?? new Error("worker_queue_failed");
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -195,7 +251,10 @@ async function main(): Promise<void> {
   ) as {
     publishing?: {
       social?: {
-        linkedin?: { make_webhook_url?: string };
+        linkedin?: {
+          make_webhook_url?: string;
+          cloudflare_worker_url?: string;
+        };
         [k: string]: unknown;
       };
     };
@@ -216,6 +275,16 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+
+  // Worker URL + token: opcionais. Sem eles, fallback é fire-now via Make webhook
+  // (mas posts agendados pra futuro vão postar IMEDIATAMENTE — Make.com não respeita
+  // scheduled_at do payload). Configurar pra agendamento real.
+  const workerUrl =
+    process.env.DIARIA_LINKEDIN_CRON_URL ??
+    config.publishing?.social?.linkedin?.cloudflare_worker_url ??
+    "";
+  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
 
   // Carregar 03-social.md
   const socialMdPath = resolve(editionDir, "03-social.md");
@@ -358,23 +427,42 @@ async function main(): Promise<void> {
       destaque: d,
     };
 
-    // Enviar ao Make.com com retry
+    // Decidir route: Worker queue (se scheduled_at futuro + worker configurado) ou Make webhook direto
+    const isFutureSchedule =
+      scheduledAt !== null && Date.parse(scheduledAt) > Date.now();
+    const route =
+      useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
+
     try {
-      console.log(`Publishing linkedin/${d} via Make.com...`);
-      const response = await postToMakeWebhook(webhookUrl, payload);
-      const entry: PostEntry = {
-        platform: "linkedin",
-        destaque: d,
-        url: null, // LinkedIn post URL só fica disponível após publicação efetiva
-        status: scheduledAt ? "scheduled" : "draft",
-        scheduled_at: scheduledAt,
-        make_request_id: response.request_id,
-      };
+      let entry: PostEntry;
+      if (route === "worker_queue") {
+        console.log(`Queuing linkedin/${d} via Cloudflare Worker (fire at ${scheduledAt})...`);
+        const response = await postToWorkerQueue(workerUrl, workerToken, payload);
+        entry = {
+          platform: "linkedin",
+          destaque: d,
+          url: null,
+          status: "scheduled",
+          scheduled_at: scheduledAt,
+          worker_queue_key: response.key,
+        };
+      } else {
+        console.log(`Publishing linkedin/${d} via Make.com (fire-now)...`);
+        const response = await postToMakeWebhook(webhookUrl, payload);
+        entry = {
+          platform: "linkedin",
+          destaque: d,
+          url: null, // LinkedIn post URL só fica disponível após publicação efetiva
+          status: scheduledAt ? "scheduled" : "draft",
+          scheduled_at: scheduledAt,
+          make_request_id: response.request_id,
+        };
+      }
       published.posts.push(entry);
       savePublished(publishedPath, published);
       results.push(entry);
       console.log(
-        `OK linkedin/${d} — ${entry.status}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
+        `OK linkedin/${d} — ${entry.status} via ${route}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -73,7 +73,8 @@
     "social": {
       "mode": "draft_or_schedule",
       "linkedin": {
-        "make_webhook_url": "https://hook.us2.make.com/2alvu89nbn9uo5tpvnjnhpbu22uf1sb6",
+        "make_webhook_url": "https://hook.us2.make.com/dmikx9ktrmee9woy1synf5vvgo5qhx2t",
+        "cloudflare_worker_url": "https://diaria-linkedin-cron.diaria.workers.dev",
         "company_page_id": "110742958",
         "company_page_name": "Diar.ia",
         "company_page_url": "https://www.linkedin.com/company/110742958/admin/dashboard/",

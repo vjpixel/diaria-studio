@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { extractPostText, postToMakeWebhook } from "../scripts/publish-linkedin.ts";
+import { extractPostText, postToMakeWebhook, postToWorkerQueue } from "../scripts/publish-linkedin.ts";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
 const CRLF = LF.replace(/\n/g, "\r\n");
@@ -64,6 +64,65 @@ describe("postToMakeWebhook (#528)", () => {
     globalThis.fetch=async(_u:string|URL|Request,o?:RequestInit)=>{body=o?.body as string;return new Response(JSON.stringify({accepted:true}),{status:200});};
     await postToMakeWebhook(webhookUrl,payload,1);
     assert.ok(body!==undefined); assert.equal(JSON.parse(body).image_url,null);
+  });
+});
+
+describe("postToWorkerQueue (Cloudflare Worker enqueue)", () => {
+  const workerUrl = "https://diaria-linkedin-cron.diaria.workers.dev";
+  const token = "test-token-abc";
+  const payload = { text: "Post agendado", image_url: "https://drive.google.com/uc?id=x", scheduled_at: "2026-05-08T09:00:00-03:00", destaque: "d1" };
+  let saved: typeof globalThis.fetch;
+  beforeEach(() => { saved = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = saved; });
+
+  it("POSTa para /queue com X-Diaria-Token header", async () => {
+    let capturedUrl: string | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
+    globalThis.fetch = async (u: string | URL | Request, o?: RequestInit) => {
+      capturedUrl = u.toString();
+      capturedHeaders = o?.headers as Record<string, string>;
+      return new Response(JSON.stringify({ queued: true, key: "queue:abc-123", scheduled_at: payload.scheduled_at, destaque: "d1" }), { status: 202 });
+    };
+    const r = await postToWorkerQueue(workerUrl, token, payload, 1);
+    assert.equal(capturedUrl, workerUrl + "/queue");
+    assert.equal(capturedHeaders?.["X-Diaria-Token"], token);
+    assert.equal(r.queued, true);
+    assert.equal(r.key, "queue:abc-123");
+  });
+
+  it("retry: 503 na 1a tentativa 202 na 2a", async () => {
+    let n = 0;
+    globalThis.fetch = async (_u: string | URL | Request, _o?: RequestInit) => {
+      n++;
+      if (n === 1) return new Response("upstream", { status: 503 });
+      return new Response(JSON.stringify({ queued: true, key: "queue:retry-ok", scheduled_at: payload.scheduled_at, destaque: "d1" }), { status: 202 });
+    };
+    const r = await postToWorkerQueue(workerUrl, token, payload, 2);
+    assert.equal(n, 2);
+    assert.equal(r.queued, true);
+    assert.equal(r.key, "queue:retry-ok");
+  });
+
+  it("lanca apos maxAttempts com 401 unauthorized", async () => {
+    let n = 0;
+    globalThis.fetch = async (_u: string | URL | Request, _o?: RequestInit) => { n++; return new Response("unauthorized", { status: 401 }); };
+    await assert.rejects(() => postToWorkerQueue(workerUrl, "wrong-token", payload, 2), /Worker queue HTTP 401/);
+    assert.equal(n, 2);
+  });
+
+  it("normaliza trailing slash no workerUrl", async () => {
+    let capturedUrl: string | undefined;
+    globalThis.fetch = async (u: string | URL | Request, _o?: RequestInit) => {
+      capturedUrl = u.toString();
+      return new Response(JSON.stringify({ queued: true, key: "k", scheduled_at: payload.scheduled_at, destaque: "d1" }), { status: 202 });
+    };
+    await postToWorkerQueue(workerUrl + "///", token, payload, 1);
+    assert.equal(capturedUrl, workerUrl + "/queue", "// ou / a mais não devem duplicar");
+  });
+
+  it("lanca em resposta non-JSON HTTP 200", async () => {
+    globalThis.fetch = async (_u: string | URL | Request, _o?: RequestInit) => new Response("oops", { status: 200 });
+    await assert.rejects(() => postToWorkerQueue(workerUrl, token, payload, 1), /non-JSON/);
   });
 });
 

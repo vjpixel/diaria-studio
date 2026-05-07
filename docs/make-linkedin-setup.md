@@ -2,6 +2,8 @@
 
 One-time setup to enable programmatic LinkedIn publishing via Make.com webhook instead of Chrome automation.
 
+> **Pra agendar posts pra horários futuros**, este doc cobre só o "fire-now" (Make → LinkedIn imediato). Pra agendamento real (post X às 09:00), siga **`linkedin-cron-worker-setup.md`** — Cloudflare Worker que enfileira e fira pro webhook Make na hora certa.
+
 ## Pré-requisitos
 
 - Conta Make.com (free tier basta — 1.000 ops/mês, ~270 usadas por mês)
