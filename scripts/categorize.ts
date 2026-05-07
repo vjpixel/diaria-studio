@@ -354,12 +354,21 @@ const LAUNCH_VERB_PATTERN =
   /\b(introducing|introduces|launch(es|ing)?|launches?|now\s+available|unveils?|releas(e|es|ing)|announc(es|ing|ed)|meet\s+\w+|say\s+hello\s+to\b|presents?|reveals?|debuts?|disponibiliza|lan[çc]a(mos|m|r)?|apresenta(mos|m|r)?|revela(mos|m|r)?|chega(m)?\s+(o|a|os|as)\s+novo|chegou\s+o\s+novo)\b/i;
 
 /**
- * Para domínios oficiais (LANCAMENTO_DOMAINS / LANCAMENTO_PATTERNS) — confirma
- * que o título tem verbo de anúncio. Sem verbo = provavelmente customer story,
- * blog técnico, posicionamento editorial, etc. — vai pra noticias.
+ * Detecta se o título/summary tem verbo de anúncio explícito ("lança",
+ * "apresenta", "revela", "disponibiliza", "anuncia", "introducing", "unveils",
+ * etc.).
  *
- * Aplicado APENAS no override de `categorize()` quando outras regras (deal,
- * update, customer-story) já não caçaram. Defensive.
+ * **AVISO — NÃO usar como gate de classificação de lançamento.** Muitos
+ * lançamentos legítimos têm headlines product-name-only ("Gemini 2.0 Flash",
+ * "Claude 4 Sonnet", "Claude for Creative Work") que NÃO contêm verbo de
+ * anúncio mas são lançamentos reais. Gating por este helper geraria
+ * falso-negativo agressivo. Este helper só serve como sinal *informativo* —
+ * ex: input pro scorer dar weight extra, ou em combinação com outros checks.
+ *
+ * Para gating real de "é lançamento", usar combinação de:
+ *   isOfficialLaunchDomain(url) + !isCustomerStory(...) + !isNonLaunchPath(url)
+ *   + !isDeal(...) + !isUpdate(...)
+ * (ver lógica em `categorize()` neste mesmo arquivo.)
  */
 export function hasLaunchVerb(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
