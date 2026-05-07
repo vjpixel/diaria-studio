@@ -149,6 +149,12 @@ Falha não bloqueia (fallback usa o arquivo original).
   ```
   Anotar resultado em `sync_results[2]`; ignorar falhas.
 
+- **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:
+  ```bash
+  npx tsx scripts/measure-highlights.ts data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Stderr exibe `d1: N chars (M palavras)` por destaque + total + warnings quando algum destaque está fora da faixa saudável (600-1500 chars). Incluir o output stderr no prompt do gate pra editor avaliar balanceamento (d1 muito longo vs d3 raso = desbalanceio editorial; >1500 = newsletter densa, CTR cai). Não bloquear — informativo only.
+
 - **GATE HUMANO unificado (newsletter + social):** mostrar `_internal/02-clarice-diff.md` e o conteúdo de `03-social.md`. Instruir:
   ```
   ✏️  Etapa 2 — Escrita pronta.
