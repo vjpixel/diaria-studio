@@ -121,11 +121,11 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 
 ### Beehiiv MCP OAuth
 
-- **Para que serve:** dedup de edições passadas (Stage 0 — `refresh-dedup-runner` chama `mcp__beehiiv__list_posts`) e survey audience refresh (`/diaria-atualiza-audiencia`).
+- **Para que serve:** survey audience refresh (`/diaria-atualiza-audiencia`). Nota: dedup de edições passadas (Stage 0) hoje usa `scripts/refresh-dedup.ts` via Beehiiv REST API (`BEEHIIV_API_KEY`), não o MCP — a credencial MCP só é necessária pra audience refresh.
 - **Onde gerar / re-conectar:** [claude.ai → Settings → Connectors](https://claude.ai/settings/connectors) → "Beehiiv" → reauthorize.
 - **Onde atualizar:** dentro da claude.ai (não há arquivo local).
 - **Como testar:** dentro do Claude Code, rodar `/mcp` — lista deve incluir `claude.ai Beehiiv` como conectado. Em seguida `/diaria-refresh-dedup` deve completar sem erro.
-- **Sinais de expiração:** subagente `refresh-dedup-runner` retorna erro de auth ou timeout repetido nas chamadas Beehiiv.
+- **Sinais de expiração:** `/diaria-atualiza-audiencia` retorna erro de auth ou timeout repetido nas chamadas Beehiiv MCP.
 - **Downtime esperado:** 2-3 minutos (re-auth no browser).
 
 ### Gmail MCP OAuth
@@ -159,7 +159,8 @@ Tabela de mapeamento erro → credencial:
 | `PERMISSION_DENIED` em image gen | Gemini API key | Rotação seção Gemini |
 | `Authentication error` em Cloudflare | `CLOUDFLARE_API_TOKEN` | Rotação seção CF |
 | Clarice retorna 401/403 | `CLARICE_API_KEY` | Rotação seção Clarice |
-| `refresh-dedup-runner` falha auth | Beehiiv MCP | Re-conectar em claude.ai |
+| `/diaria-atualiza-audiencia` falha auth | Beehiiv MCP | Re-conectar em claude.ai |
+| `scripts/refresh-dedup.ts` falha auth | `BEEHIIV_API_KEY` (env var) | Gerar novo token no dashboard Beehiiv → atualizar `.env` |
 
 ### 2. Avalie o impacto e decida fallback
 
