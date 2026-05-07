@@ -21,24 +21,12 @@ import {
   arxivIdSentinelDate,
   isClearlyBeforeCutoff,
 } from "./lib/arxiv-id.ts";
+import type { VerifyDateOptions } from "./lib/verify-options.ts";
 
 // User-Agent de browser real — muitos sites (openai.com, exame.com, etc)
 // bloqueiam user-agents que identificam bots. Mantemos um header plausível.
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-
-// #717 hypothesis #1: cache dir intra-edição. Set via CLI --bodies-dir.
-// Quando set, lê body cached antes de fetch — verify-accessibility já leu.
-let BODIES_CACHE_DIR: string | null = null;
-let CACHE_HITS = 0;
-let CACHE_MISSES = 0;
-
-// #717 hypothesis #4: arxiv pre-filter. Set via CLI --cutoff-iso.
-// Quando set, papers arxiv cujo YYMM-do-ID é claramente anterior ao cutoff
-// recebem data sintética (sentinel YYYY-MM-15) sem fetch. filter-date-window
-// downstream remove naturalmente. Saves ~3min/edição com arxiv ativo.
-let ARXIV_CUTOFF_ISO: string | null = null;
-let ARXIV_PRESKIP_COUNT = 0;
 
 interface ArticleInput {
   url: string;
@@ -59,6 +47,18 @@ export interface DateVerifyResult {
    */
   date_unverified: boolean;
   note?: string;
+  /**
+   * Sinaliza se este resultado veio do body cache (#717 hyp 1) ou do fetch
+   * normal. Usado por `main()` pra acumular hits/misses. Undefined quando
+   * o caminho não tocou cache (ex: arxiv pre-skip). #836: replaced module-
+   * level CACHE_HITS/CACHE_MISSES counters.
+   */
+  _cacheHit?: boolean;
+  /**
+   * Sinaliza arxiv pre-skip (#717 hyp 4). Usado por main() pra contagem.
+   * Undefined quando não foi pre-skip.
+   */
+  _arxivPreSkipped?: boolean;
 }
 
 function normalizeDate(raw: string): string | null {
@@ -76,52 +76,12 @@ function normalizeDate(raw: string): string | null {
   }
 }
 
-async function extractPublishedDate(
-  url: string,
-  timeoutMs = 10000
-): Promise<{ date: string | null; note: string }> {
-  // #717 hypothesis #1: tenta body cached antes de fetch — verify-accessibility
-  // já leu o mesmo URL no mesmo pipeline.
-  const cached = loadCachedBody(BODIES_CACHE_DIR, url);
-  let body: string;
-  if (cached !== null) {
-    CACHE_HITS++;
-    body = cached;
-  } else {
-    if (BODIES_CACHE_DIR !== null) CACHE_MISSES++;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-
-    try {
-      // Usamos `fetch` (undici global) em vez de `undici.request` para seguir
-      // redirects automaticamente (303/301/302 são comuns em nature.com etc).
-      const res = await fetch(url, {
-        method: "GET",
-        signal: ctrl.signal,
-        redirect: "follow",
-        headers: {
-          "user-agent": BROWSER_UA,
-          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
-          "sec-fetch-dest": "document",
-          "sec-fetch-mode": "navigate",
-          "sec-fetch-site": "none",
-        },
-      });
-
-      if (res.status >= 400) {
-        return { date: null, note: `HTTP ${res.status}` };
-      }
-
-      body = await res.text();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return { date: null, note: msg };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
+/**
+ * Pura: extrai a melhor data possível do body HTML usando 7 estratégias
+ * em ordem de confiança. Sem I/O, sem state. #836: extraída de
+ * `extractPublishedDate` pra simplificar attach de cacheHit no wrapper.
+ */
+function extractDateFromBody(body: string): { date: string | null; note: string } {
   try {
 
     // 1. JSON-LD datePublished (maior confiança — estruturado e intencionalmente exposto)
@@ -252,14 +212,83 @@ async function extractPublishedDate(
   }
 }
 
-export async function verifyDate(article: ArticleInput): Promise<DateVerifyResult> {
+/**
+ * Orquestra: carrega body do cache (se disponível) ou faz fetch, depois
+ * delega pra `extractDateFromBody` pra parsing puro. Retorna o resultado
+ * + cacheHit pra accumulação em main(). #836: substitui as vars module-
+ * level CACHE_HITS/CACHE_MISSES por per-call return.
+ */
+async function extractPublishedDate(
+  url: string,
+  bodiesDir: string | null,
+  timeoutMs = 10000,
+): Promise<{ date: string | null; note: string; cacheHit: boolean | undefined }> {
+  const cached = loadCachedBody(bodiesDir, url);
+  let body: string;
+  let cacheHit: boolean | undefined;
+  if (cached !== null) {
+    cacheHit = true;
+    body = cached;
+  } else {
+    cacheHit = bodiesDir !== null ? false : undefined;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      // Usamos `fetch` (undici global) em vez de `undici.request` para seguir
+      // redirects automaticamente (303/301/302 são comuns em nature.com etc).
+      const res = await fetch(url, {
+        method: "GET",
+        signal: ctrl.signal,
+        redirect: "follow",
+        headers: {
+          "user-agent": BROWSER_UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+        },
+      });
+
+      if (res.status >= 400) {
+        return { date: null, note: `HTTP ${res.status}`, cacheHit };
+      }
+
+      body = await res.text();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { date: null, note: msg, cacheHit };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const parsed = extractDateFromBody(body);
+  return { ...parsed, cacheHit };
+}
+
+/**
+ * Verifica/corrige a data de publicação de um único artigo. Threaded
+ * `opts` carrega bodiesDir e cutoffIso; counters retornam em `_cacheHit`
+ * e `_arxivPreSkipped` no resultado, acumulados por main().
+ *
+ * #836: opts substitui ~5 vars module-level (BODIES_CACHE_DIR,
+ * CACHE_HITS, CACHE_MISSES, ARXIV_CUTOFF_ISO, ARXIV_PRESKIP_COUNT).
+ */
+export async function verifyDate(
+  article: ArticleInput,
+  opts: VerifyDateOptions = {},
+): Promise<DateVerifyResult> {
+  const bodiesDir = opts.bodiesDir ?? null;
+  const cutoffIso = opts.cutoffIso ?? null;
+
   // #717 hypothesis #4: arxiv pre-skip. Quando o URL é arxiv e o YYMM do ID
   // é claramente anterior ao cutoff (1+ mês de margem), retorna data sintética
   // sem fetch. filter-date-window remove naturalmente.
-  if (ARXIV_CUTOFF_ISO !== null) {
+  if (cutoffIso !== null) {
     const arxiv = parseArxivId(article.url);
-    if (arxiv !== null && isClearlyBeforeCutoff(arxiv, ARXIV_CUTOFF_ISO)) {
-      ARXIV_PRESKIP_COUNT++;
+    if (arxiv !== null && isClearlyBeforeCutoff(arxiv, cutoffIso)) {
       const sentinel = arxivIdSentinelDate(arxiv);
       const originalNorm = normalizeDate(article.date);
       return {
@@ -269,12 +298,13 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
         changed: originalNorm !== sentinel,
         fetch_failed: false,
         date_unverified: false,
-        note: `arxiv pre-skip: id ${arxiv.id} → ${sentinel} (cutoff ${ARXIV_CUTOFF_ISO}, sem fetch)`,
+        note: `arxiv pre-skip: id ${arxiv.id} → ${sentinel} (cutoff ${cutoffIso}, sem fetch)`,
+        _arxivPreSkipped: true,
       };
     }
   }
 
-  const { date, note } = await extractPublishedDate(article.url);
+  const { date, note, cacheHit } = await extractPublishedDate(article.url, bodiesDir);
   const originalNorm = normalizeDate(article.date);
 
   if (!date) {
@@ -286,6 +316,7 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
       fetch_failed: true,
       date_unverified: true,
       note,
+      _cacheHit: cacheHit,
     };
   }
 
@@ -298,20 +329,25 @@ export async function verifyDate(article: ArticleInput): Promise<DateVerifyResul
     fetch_failed: false,
     date_unverified: false,
     note: changed ? `era ${originalNorm ?? article.date} → encontrado ${date} (${note})` : undefined,
+    _cacheHit: cacheHit,
   };
 }
 
 async function main() {
   // CLI shape preservada: positional <articles.json> [out.json], + flags opcionais
   // --bodies-dir <path> (#717 hyp 1) e --cutoff-iso <YYYY-MM-DD> (#717 hyp 4).
+  // #836: módulo-level vars eliminadas. Toda configuração vive em locals
+  // de main() ou na VerifyDateOptions threaded por chamada.
+  let bodiesDir: string | null = null;
+  let cutoffIso: string | null = null;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === "--bodies-dir" && i + 1 < process.argv.length) {
-      BODIES_CACHE_DIR = process.argv[i + 1];
+      bodiesDir = process.argv[i + 1];
       i++;
     } else if (a === "--cutoff-iso" && i + 1 < process.argv.length) {
-      ARXIV_CUTOFF_ISO = process.argv[i + 1];
+      cutoffIso = process.argv[i + 1];
       i++;
     } else {
       positional.push(a);
@@ -328,36 +364,51 @@ async function main() {
 
   const articles: ArticleInput[] = JSON.parse(readFileSync(inputArg, "utf8"));
 
+  const verifyOpts: VerifyDateOptions = { bodiesDir, cutoffIso };
+
   // Concurrency limit: no máximo 5 fetches simultâneos para evitar rate limiting
   const CONCURRENCY = 5;
   const results: DateVerifyResult[] = [];
   for (let i = 0; i < articles.length; i += CONCURRENCY) {
     const batch = articles.slice(i, i + CONCURRENCY);
-    results.push(...(await Promise.all(batch.map(verifyDate))));
+    results.push(...(await Promise.all(batch.map((a) => verifyDate(a, verifyOpts)))));
+  }
+
+  // #836: counters acumulados aqui em locals (era module-level antes).
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  let arxivPreSkipped = 0;
+  for (const r of results) {
+    if (r._cacheHit === true) cacheHits++;
+    else if (r._cacheHit === false) cacheMisses++;
+    if (r._arxivPreSkipped === true) arxivPreSkipped++;
   }
 
   const changed = results.filter((r) => r.changed).length;
   const failed = results.filter((r) => r.fetch_failed).length;
   let cacheLine = "";
-  if (BODIES_CACHE_DIR !== null) {
-    const total = CACHE_HITS + CACHE_MISSES;
-    const hitPct = total > 0 ? Math.round((CACHE_HITS / total) * 100) : 0;
-    cacheLine = ` [body-cache: ${CACHE_HITS}/${total} hit (${hitPct}%)]`;
+  if (bodiesDir !== null) {
+    const total = cacheHits + cacheMisses;
+    const hitPct = total > 0 ? Math.round((cacheHits / total) * 100) : 0;
+    cacheLine = ` [body-cache: ${cacheHits}/${total} hit (${hitPct}%)]`;
   }
   let arxivLine = "";
-  if (ARXIV_CUTOFF_ISO !== null) {
-    arxivLine = ` [arxiv-pre-skip: ${ARXIV_PRESKIP_COUNT} (cutoff ${ARXIV_CUTOFF_ISO})]`;
+  if (cutoffIso !== null) {
+    arxivLine = ` [arxiv-pre-skip: ${arxivPreSkipped} (cutoff ${cutoffIso})]`;
   }
   console.error(
     `verify-dates: ${results.length} artigos — ${changed} datas corrigidas, ${failed} fetches falhos${cacheLine}${arxivLine}`
   );
 
+  // Strip internal _cacheHit / _arxivPreSkipped fields antes de serializar.
+  const serializable = results.map(({ _cacheHit, _arxivPreSkipped, ...rest }) => rest);
+
   const outArg = positional[1];
   if (outArg) {
-    writeFileSync(outArg, JSON.stringify(results, null, 2), "utf8");
-    console.error(`Wrote ${results.length} results to ${outArg}`);
+    writeFileSync(outArg, JSON.stringify(serializable, null, 2), "utf8");
+    console.error(`Wrote ${serializable.length} results to ${outArg}`);
   } else {
-    process.stdout.write(JSON.stringify(results, null, 2));
+    process.stdout.write(JSON.stringify(serializable, null, 2));
   }
 }
 
