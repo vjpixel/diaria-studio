@@ -21,6 +21,10 @@ Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (dis
 ## Pré-requisitos
 
 - `data/editions/$1/_internal/01-approved.json` deve existir (para É IA? buscar contexto da edição)
+
+## Passo 0 — Task tracking setup (#904)
+
+**Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*`, `Stage 1*`, `Stage 2*`). Em seguida, criar tasks pra esta etapa: `Stage 3a — É IA? collect/regenerate`, `Stage 3b — image generate (d1/d2/d3)`, `Stage 3c — gate humano`. Marcar `completed` quando cada passo retornar; `Stage 3c` fecha imediatamente após aprovação do gate. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
 - `GEMINI_API_KEY` configurada como variável de ambiente (para geração das imagens e É IA?)
 - Para as imagens de destaque: `data/editions/$1/_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` devem existir (gerados pela Etapa 2 — writer; #607)
 - (Opcional) `BEEHIIV_API_KEY` + `BEEHIIV_PUBLICATION_ID` para auto-fill de resultado do poll anterior no É IA?

@@ -28,6 +28,10 @@ Crítico: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar 
 - Bloco `publishing` em `platform.config.json` configurado
 - `FACEBOOK_PAGE_ACCESS_TOKEN` no env pra Graph API
 
+## Passo -1 — Task tracking setup (#904)
+
+**Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*` a `Stage 3*`). Em seguida, criar tasks pra esta etapa: `Stage 4a — confirm channels`, `Stage 4b — dispatch publishers (newsletter + social paralelo)`, `Stage 4c — review-test-email loop`, `Stage 4d — gate humano final`, `Stage 4e — auto-reporter`. Marcar `completed` quando cada passo retornar. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
+
 ## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336)
 
 **OBRIGATÓRIO — executar antes de qualquer Agent ou Bash de publicação.** Perguntar explicitamente ao editor por canal:

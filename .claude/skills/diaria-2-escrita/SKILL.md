@@ -27,6 +27,24 @@ Os blocos Bash/Agent abaixo usam placeholders. **O Claude executando este skill 
 ## Pré-requisitos
 
 - `data/editions/$1/_internal/01-approved.json` deve existir com `highlights[]` (scorer já rodou na Etapa 1). Se não, avise: rode `/diaria-1-pesquisa` primeiro e aprove.
+
+## Passo 0 — Task tracking setup (#904)
+
+**Defensive cleanup primeiro:** varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*`, `Stage 1*`). Cobre o caso de Stage 1 ter aprovado o gate sem fechar `Stage 1x` (bug histórico — issue #904).
+
+**Em seguida**, criar tasks pra esta etapa via `TaskCreate` (uma por sub-stage):
+- `Stage 2a — drive pull (input)`
+- `Stage 2b — caps editoriais + dispatch paralelo (writer + social)`
+- `Stage 2c — merge social + push intermediário`
+- `Stage 2d — newsletter Clarice + humanize + lints`
+- `Stage 2e — social Clarice + humanize`
+- `Stage 2f — drive push final`
+- `Stage 2g — gate humano`
+- `Stage 2h — title-picker fallback (pós-gate)`
+
+Cada task fica `pending` até o passo correspondente começar (`in_progress`) e `completed` quando o passo retornar. Tasks de gate (`Stage 2g`) fecham **imediatamente após o editor aprovar** — não esperar o title-picker. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene".
+
+**No-op se TaskCreate/TaskUpdate não estiver disponível** (CLI puro fora do harness Claude Code).
 - Se `$2 = social`: apenas o pré-requisito acima é necessário.
 - Se `$2 = newsletter`: apenas o pré-requisito acima é necessário.
 
