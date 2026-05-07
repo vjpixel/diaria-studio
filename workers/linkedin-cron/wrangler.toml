@@ -1,0 +1,16 @@
+name = "diaria-linkedin-cron"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# KV namespace pra fila de posts agendados.
+# Criar com: wrangler kv:namespace create LINKEDIN_QUEUE
+# Cole o ID retornado abaixo:
+[[kv_namespaces]]
+binding = "LINKEDIN_QUEUE"
+id = "REPLACE_WITH_KV_ID"
+
+# Cron trigger — a cada 30 minutos.
+# Ao disparar, lê itens com scheduled_at <= now e fira o webhook Make.
+[triggers]
+crons = ["*/30 * * * *"]
