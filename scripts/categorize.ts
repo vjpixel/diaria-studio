@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
-import { AI_RELEVANT_TERMS, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
+import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
 import type { Article } from "./lib/types/article.ts"; // #650
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
@@ -83,11 +83,20 @@ export const ARXIV_RELEVANT_TERMS = AI_RELEVANT_TERMS;
  * Retorna `true` se o artigo arXiv deve passar pelo pipeline editorial.
  * Para artigos não-arXiv, sempre retorna `true` (sem filtro).
  * Para artigos arXiv, exige ao menos 1 match de `AI_RELEVANT_TERMS`
- * no título ou resumo (#501, #642).
+ * no título ou resumo (#501, #642, #901).
+ *
+ * Importante: usamos `containsAITerms` em vez de `isArticleAIRelevant` porque
+ * a versão #901 da `isArticleAIRelevant` faz bypass automático para artigos
+ * em domínios 100%-IA (incluindo arxiv.org). Isso desativaria o filtro de
+ * relevância pra arxiv (que é o oposto do que queremos: arxiv tem alto
+ * volume off-topic em outras áreas, exatamente o cenário que motivou #501).
  */
 export function isArxivRelevant(article: Article): boolean {
   if (!article.url?.includes("arxiv.org")) return true; // não é arXiv → passa
-  return isArticleAIRelevant(article);
+  // Avaliar SOMENTE título + summary, sem bypass de domínio.
+  const text = `${article.title ?? ""} ${article.summary ?? ""}`;
+  // import { containsAITerms } resolvido abaixo via re-export
+  return containsAITerms(text);
 }
 
 const PESQUISA_PATTERNS: RegExp[] = [
@@ -170,7 +179,44 @@ const DEAL_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Updates incrementais / changelogs / melhorias em produto existente.
+ * #898: Customer stories / case studies / parcerias com cliente.
+ * Override → noticias (anteriormente classificadas como lancamento).
+ *
+ * Padrões cobertos (alta-confiança, baixo falso-positivo):
+ *   - "How {company} uses {product}" / "How {company} delivered/built X"
+ *   - Customer story headings
+ *   - "{Brand} works with X / partners with Y / brings"
+ *   - "{Brand} helps X" (Singular Bank helps bankers move fast with ChatGPT)
+ *   - "Class of YYYY" (ChatGPT Futures: Class of 2026 — programa, não produto)
+ *   - "Frontier enterprises" / "B2B Signals" / "Field Notes" — relatórios B2B
+ */
+const CUSTOMER_STORY_PATTERNS: RegExp[] = [
+  // "How {entity} (uses|leverages|powered|delivered|built|works|achieves)"
+  /\bhow\s+\w+(\s+\w+){0,3}\s+(uses?|leverag(es?|ed?)|powered?|delivered?|built|works?\s+with|achiev(es?|ed?)|earn(s|ed)?\s+smarter)\b/i,
+  // "How {entity} delivers/scales X" — variante com objeto direto
+  /\bhow\s+\w+(\s+\w+){0,3}\s+(delivers?|scales?|optimizes?|automates?)\b.{0,40}\b(at scale|workflow|business)\b/i,
+  // "X helps Y move/grow/scale/work" — customer narrative
+  /\b\w+\s+helps?\s+\w+(\s+\w+){0,3}\s+(move|grow|scale|work|earn|build|automate|deliver)\b/i,
+  // Programa de bolsa / aceleradora — "Class of YYYY"
+  /\bclass\s+of\s+\d{4}\b/i,
+  // "X uses Y/Z to Z" (Uber uses OpenAI to help people earn)
+  /\b\w+\s+uses?\s+(openai|claude|chatgpt|gemini|copilot|anthropic)\b/i,
+  // "Customer story", "customer stories", "case study", "case studies"
+  /\bcustomer\s+(story|stories|spotlight)\b|\bcase\s+stud(y|ies)\b/i,
+  // Relatórios B2B / signals
+  /\bfrontier\s+enterprises?\b|\bb2b\s+signals?\b|\bfield\s+notes?\b/i,
+  // "X collaborate(s) with Y" / "collaboration with Y"
+  /\b(collaborat(es?|ed|ion)|partners?|partnership|brings?)\s+with\s+\w+/i,
+  // "X and Y collaborate/partner/announce" — parceria explícita no título
+  // Ex: "OpenAI and PwC collaborate", "Anthropic and Apple partner"
+  /\b\w+\s+and\s+\w+\s+(collaborat(es?|ed?)|partners?|jointly|announce[ds]?)\b/i,
+  // "X + Y" pattern em título oficial — quase sempre parceria
+  // Ex: "Flow Music and Believe bring next-gen tools"
+  /\b(\w+\s+and\s+\w+\s+bring|jointly\s+(announce|launch|introduce))\b/i,
+];
+
+/**
+ * #898: Updates incrementais / changelogs / melhorias em produto existente.
  * Domínio oficial mas título claramente aponta pra update, não lançamento novo.
  * Override → noticias (#318).
  */
@@ -253,6 +299,71 @@ function isNonProductAnnouncement(article: Article): boolean {
 function isBusinessDeal(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
   return DEAL_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * #898: predicate pra customer story / case study / programa / parceria.
+ * Aplicado apenas em domínio oficial (LANCAMENTO_DOMAINS / LANCAMENTO_PATTERNS)
+ * pra reclassificar pra `noticias`. Não toca conteúdo de jornalismo.
+ */
+export function isCustomerStory(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return CUSTOMER_STORY_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * #898: paths em domínio oficial que sinalizam claramente NÃO-lançamento
+ * (customer stories, programs, marketing, ads, field notes). Match em
+ * `host+pathname` (ex: "openai.com/customers/foo").
+ *
+ * Mantido conservador — paths reservados pra anúncios de produto (`/blog/`,
+ * `/news/`, `/index/`, `/research/`) NÃO entram aqui.
+ */
+const NON_LAUNCH_PATH_PATTERNS: RegExp[] = [
+  /\/customers?\//i,
+  /\/customer-stor(y|ies)\//i,
+  /\/case-stud(y|ies)\//i,
+  /\/futures?\//i, // openai.com/futures (programa, não produto)
+  /\/scholars?\//i,
+  /\/fellowship\//i,
+  /\/grants?\//i,
+  /\/b2b-signals?\//i,
+  /\/field-notes?\//i,
+  /\/ads?\//i, // marketing/ads dashboards/announcements
+  /\/marketing\//i,
+  /\/safety-report\//i, // já filtrado no openai pattern, redundante mas defensive
+  /\/transparency\//i,
+];
+
+export function isNonLaunchPath(url: string): boolean {
+  const { full } = hostAndPath(url);
+  if (!full) return false;
+  return NON_LAUNCH_PATH_PATTERNS.some((p) => p.test(full));
+}
+
+/**
+ * #898: verbos PT/EN de anúncio de produto. Requeridos no título quando o
+ * domínio é oficial — sem isso, "lançamento" puxa pra `noticias` por
+ * default (cobertura de imprensa, blog técnico, posicionamento editorial,
+ * etc. não anuncia produto).
+ *
+ * Mantido permissivo pra evitar falso-negativo em formatos novos:
+ * "Introducing X", "Meet X", "Say hello to X" todos contam.
+ */
+const LAUNCH_VERB_PATTERN =
+  /\b(introducing|introduces|launch(es|ing)?|launches?|now\s+available|unveils?|releas(e|es|ing)|announc(es|ing|ed)|meet\s+\w+|say\s+hello\s+to\b|presents?|reveals?|debuts?|disponibiliza|lan[çc]a(mos|m|r)?|apresenta(mos|m|r)?|revela(mos|m|r)?|chega(m)?\s+(o|a|os|as)\s+novo|chegou\s+o\s+novo)\b/i;
+
+/**
+ * Para domínios oficiais (LANCAMENTO_DOMAINS / LANCAMENTO_PATTERNS) — confirma
+ * que o título tem verbo de anúncio. Sem verbo = provavelmente customer story,
+ * blog técnico, posicionamento editorial, etc. — vai pra noticias.
+ *
+ * Aplicado APENAS no override de `categorize()` quando outras regras (deal,
+ * update, customer-story) já não caçaram. Defensive.
+ */
+export function hasLaunchVerb(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return LAUNCH_VERB_PATTERN.test(hay);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,18 +532,28 @@ export function categorize(article: Article): Category {
 
   // 2. Lançamento (domínio oficial) — mas só se o tema for realmente
   //    anúncio de produto/feature. Desclassificar:
+  //    - Path-blocklist (`/customers/`, `/futures`, `/b2b-signals`, …) → noticias (#898).
   //    - Business deals (parceria, aquisição, contrato de infra, investimento)
   //      → noticias.
   //    - Anúncios de programa/bolsa/grant/fellowship → noticias.
+  //    - Customer stories / case studies / parcerias-com-cliente → noticias (#898).
   //    - Updates incrementais / changelogs → noticias (#318).
   //    - URLs em `/research/` de blogs de ML → pesquisa (papers, não produto).
+  //    - SEM verbo de anúncio no título → noticias (#898). Defensive final.
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
+    if (isNonLaunchPath(article.url)) return "noticias"; // #898
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";
+    if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
+    // #898: as overrides acima (path-blocklist, deal, customer-story,
+    // non-product-announcement, update) cobrem os falso-positivos comuns.
+    // `hasLaunchVerb` continua exposta como helper pra callers que queiram
+    // gating mais agressivo (ex: scorer), mas não é gate aqui — quebraria
+    // títulos product-name-only ("Gemini 2.0 Flash", "Claude for Creative Work").
     return "lancamento";
   }
 

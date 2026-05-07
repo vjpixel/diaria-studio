@@ -1,6 +1,16 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { categorize, isVideoUrl, isArxivRelevant, categorizeArticles, isUnresolvableInboxArticle, type Article } from "../scripts/categorize.ts";
+import {
+  categorize,
+  isVideoUrl,
+  isArxivRelevant,
+  categorizeArticles,
+  isUnresolvableInboxArticle,
+  isCustomerStory,
+  isNonLaunchPath,
+  hasLaunchVerb,
+  type Article,
+} from "../scripts/categorize.ts";
 
 describe("categorize() — regras de domínio", () => {
   it("classifica anúncio oficial da OpenAI como lancamento", () => {
@@ -1180,6 +1190,200 @@ describe("isUnresolvableInboxArticle (#722 — drop unresolvable inbox articles)
     assert.ok(
       allArticles.some((a) => a.url === "https://example.com/real-article"),
       "artigo real deve permanecer no pool",
+    );
+  });
+});
+
+describe("isCustomerStory (#898) — patterns de customer story / parceria", () => {
+  it("detecta 'How {company} uses {product}'", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "How Singular Bank uses ChatGPT and Codex" }),
+      true,
+    );
+  });
+
+  it("detecta 'X uses OpenAI to help'", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "Uber uses OpenAI to help people earn smarter" }),
+      true,
+    );
+  });
+
+  it("detecta 'X helps Y move/grow/scale'", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "Singular Bank helps bankers move fast with ChatGPT" }),
+      true,
+    );
+  });
+
+  it("detecta 'Class of YYYY' (programa)", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "Introducing ChatGPT Futures: Class of 2026" }),
+      true,
+    );
+  });
+
+  it("detecta 'X collaborate with Y'", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "OpenAI and PwC collaborate on enterprise AI" }),
+      true,
+    );
+  });
+
+  it("detecta 'Frontier enterprises' / 'B2B Signals'", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "How frontier enterprises are building an AI advantage" }),
+      true,
+    );
+    assert.equal(
+      isCustomerStory({ url: "x", title: "B2B Signals: AI adoption trends" }),
+      true,
+    );
+  });
+
+  it("não dispara em lançamento real (Introducing X)", () => {
+    assert.equal(
+      isCustomerStory({ url: "x", title: "Introducing GPT-5" }),
+      false,
+    );
+    assert.equal(
+      isCustomerStory({ url: "x", title: "Claude 4.5 Sonnet now available" }),
+      false,
+    );
+  });
+
+  it("não dispara em title vazio", () => {
+    assert.equal(isCustomerStory({ url: "x", title: "" }), false);
+    assert.equal(isCustomerStory({ url: "x" }), false);
+  });
+});
+
+describe("isNonLaunchPath (#898) — paths de programa/customer/marketing", () => {
+  it("/customers/ → true", () => {
+    assert.equal(isNonLaunchPath("https://openai.com/customers/uber"), true);
+  });
+
+  it("/customer-stories/ → true", () => {
+    assert.equal(isNonLaunchPath("https://anthropic.com/customer-stories/foo"), true);
+  });
+
+  it("/futures/ → true", () => {
+    assert.equal(isNonLaunchPath("https://openai.com/futures/class-of-2026"), true);
+  });
+
+  it("/scholars/ ou /fellowship/ → true", () => {
+    assert.equal(isNonLaunchPath("https://research.google/scholars/2026"), true);
+    assert.equal(isNonLaunchPath("https://anthropic.com/fellowship/cohort-2"), true);
+  });
+
+  it("/ads/ ou /marketing/ → true", () => {
+    assert.equal(isNonLaunchPath("https://blog.google/products/ads/new-feature"), true);
+    assert.equal(isNonLaunchPath("https://openai.com/marketing/ai-trends"), true);
+  });
+
+  it("/index/ ou /news/ ou /blog/ → false (paths legítimos de lançamento)", () => {
+    assert.equal(isNonLaunchPath("https://openai.com/index/introducing-gpt-5"), false);
+    assert.equal(isNonLaunchPath("https://anthropic.com/news/claude-launches"), false);
+    assert.equal(isNonLaunchPath("https://huggingface.co/blog/new-model"), false);
+  });
+});
+
+describe("hasLaunchVerb (#898)", () => {
+  it("detecta verbos EN: Introducing, launches, unveils, announces", () => {
+    assert.equal(hasLaunchVerb({ url: "x", title: "Introducing GPT-5" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "OpenAI launches Sora" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Anthropic unveils Claude 5" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Google announces Gemini 3" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Meta presents Llama 4" }), true);
+  });
+
+  it("detecta verbos PT-BR: lança, apresenta, revela, disponibiliza", () => {
+    assert.equal(hasLaunchVerb({ url: "x", title: "OpenAI lança GPT-5" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Anthropic apresenta Claude 5" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Google revela novidades" }), true);
+    assert.equal(hasLaunchVerb({ url: "x", title: "Apple disponibiliza Apple Intelligence" }), true);
+  });
+
+  it("não confunde com customer story", () => {
+    assert.equal(
+      hasLaunchVerb({ url: "x", title: "How Singular Bank uses ChatGPT" }),
+      false,
+    );
+    assert.equal(
+      hasLaunchVerb({ url: "x", title: "OpenAI + PwC collaborate" }),
+      false,
+    );
+  });
+});
+
+describe("categorize() — #898 customer-story / path-blocklist override", () => {
+  it("openai.com customer story → noticias (não lancamento)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/singular-bank",
+        title: "Singular Bank helps bankers move fast with ChatGPT and Codex",
+      }),
+      "noticias",
+    );
+  });
+
+  it("openai.com /futures/ Class of 2026 → noticias (path-blocklist + customer-story)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/futures/class-of-2026",
+        title: "Introducing ChatGPT Futures: Class of 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("anthropic.com partnership story → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.anthropic.com/news/openai-pwc-collaborate",
+        title: "OpenAI and PwC collaborate on enterprise deployments",
+      }),
+      "noticias",
+    );
+  });
+
+  it("blog.google customer story → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/uber-customer-story",
+        title: "How Uber uses Gemini to help drivers earn smarter",
+      }),
+      "noticias",
+    );
+  });
+
+  it("regression: openai.com lançamento real → continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-5-5",
+        title: "Introducing GPT-5.5",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("regression: anthropic.com news real → continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://www.anthropic.com/news/claude-4-5-sonnet",
+        title: "Claude 4.5 Sonnet",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("regression: huggingface.co/blog real → lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/new-vision-model",
+        title: "Introducing the new vision model",
+      }),
+      "lancamento",
     );
   });
 });
