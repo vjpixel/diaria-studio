@@ -87,22 +87,18 @@ describe("readEiaAnswerSidecar (#927)", () => {
 
   it("retorna null para JSON corrompido", () => {
     const dir = makeDir();
-    const origWarn = console.warn;
-    console.warn = () => {}; // silenciar warn esperado (#938)
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(eiaAnswerSidecarPath(dir), "{not valid json", "utf8");
-      assert.equal(readEiaAnswerSidecar(dir), null);
+      // Pass dir as logRootDir to keep run-log.jsonl out of cwd (#942).
+      assert.equal(readEiaAnswerSidecar(dir, dir), null);
     } finally {
-      console.warn = origWarn;
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("retorna null para schema inválido (valores estranhos)", () => {
     const dir = makeDir();
-    const origWarn = console.warn;
-    console.warn = () => {}; // silenciar warn esperado (#938)
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(
@@ -110,9 +106,8 @@ describe("readEiaAnswerSidecar (#927)", () => {
         JSON.stringify({ edition: "x", answer: { A: "foo", B: "bar" }, ai_side: "A" }),
         "utf8",
       );
-      assert.equal(readEiaAnswerSidecar(dir), null);
+      assert.equal(readEiaAnswerSidecar(dir, dir), null);
     } finally {
-      console.warn = origWarn;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -316,36 +311,40 @@ describe("aiSideFromAnswer (#927)", () => {
   });
 });
 
-describe("readEiaAnswer warn em corrompido (#938)", () => {
-  function captureWarn<T>(fn: () => T): { result: T; warnings: string[] } {
-    const warnings: string[] = [];
-    const orig = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map((a) => typeof a === "string" ? a : JSON.stringify(a)).join(" "));
-    };
-    try {
-      const result = fn();
-      return { result, warnings };
-    } finally {
-      console.warn = orig;
-    }
+describe("readEiaAnswer log estruturado em corrompido (#942)", () => {
+  /**
+   * Lê o run-log.jsonl gravado em logRootDir e retorna apenas eventos
+   * emitidos por lib/eia-answer (filtra ruído de outros agents).
+   */
+  function readLogEvents(logRootDir: string): Array<{ level: string; message: string; details: unknown }> {
+    const logPath = join(logRootDir, "data/run-log.jsonl");
+    if (!existsSync(logPath)) return [];
+    const lines = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+    return lines
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.agent === "lib/eia-answer");
   }
 
-  it("readEiaAnswerSidecar: warn quando JSON corrompido", () => {
+  it("readEiaAnswerSidecar: log warn estruturado quando JSON corrompido", () => {
     const dir = makeDir();
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(eiaAnswerSidecarPath(dir), "{not valid", "utf8");
-      const { result, warnings } = captureWarn(() => readEiaAnswerSidecar(dir));
+      const result = readEiaAnswerSidecar(dir, dir);
       assert.equal(result, null);
-      assert.equal(warnings.length, 1, "deve emitir 1 warn");
-      assert.match(warnings[0], /sidecar corrompido/);
+      const events = readLogEvents(dir);
+      assert.equal(events.length, 1, "deve emitir 1 event warn");
+      assert.equal(events[0].level, "warn");
+      assert.equal(events[0].message, "sidecar_corrupted");
+      const details = events[0].details as { path: string; error: string };
+      assert.match(details.path, /01-eia-answer\.json$/);
+      assert.ok(details.error.length > 0, "error message preserved");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("readEiaAnswerSidecar: warn quando schema inválido", () => {
+  it("readEiaAnswerSidecar: log warn quando schema inválido", () => {
     const dir = makeDir();
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
@@ -354,33 +353,53 @@ describe("readEiaAnswer warn em corrompido (#938)", () => {
         JSON.stringify({ answer: { A: "weird", B: "values" } }),
         "utf8",
       );
-      const { result, warnings } = captureWarn(() => readEiaAnswerSidecar(dir));
+      const result = readEiaAnswerSidecar(dir, dir);
       assert.equal(result, null);
-      assert.match(warnings[0], /schema inválido/);
+      const events = readLogEvents(dir);
+      assert.equal(events[0].message, "sidecar_schema_invalid");
+      const details = events[0].details as { A: string; B: string };
+      assert.equal(details.A, "weird");
+      assert.equal(details.B, "values");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("readEiaAnswerSidecar: NÃO warn quando arquivo ausente (caso normal)", () => {
+  it("readEiaAnswerSidecar: NÃO loga quando arquivo ausente (caso normal)", () => {
     const dir = makeDir();
     try {
-      const { result, warnings } = captureWarn(() => readEiaAnswerSidecar(dir));
+      const result = readEiaAnswerSidecar(dir, dir);
       assert.equal(result, null);
-      assert.equal(warnings.length, 0, "ausente é caso normal — nenhum warn");
+      assert.equal(readLogEvents(dir).length, 0, "ausente é caso normal — nenhum event");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("readEiaAnswerFromMeta: warn quando JSON corrompido", () => {
+  it("readEiaAnswerFromMeta: log warn estruturado quando JSON corrompido", () => {
     const dir = makeDir();
     try {
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{nope", "utf8");
-      const { result, warnings } = captureWarn(() => readEiaAnswerFromMeta(dir));
+      const result = readEiaAnswerFromMeta(dir, dir);
       assert.equal(result, null);
-      assert.match(warnings[0], /meta\.json corrompido/);
+      const events = readLogEvents(dir);
+      assert.equal(events[0].message, "meta_corrupted");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("event inclui edition derivada do dirname (#942 Opção B)", () => {
+    // Cria estrutura data/editions/260507 dentro do tmpdir pra exercitar editionFromDir
+    const dir = makeDir();
+    try {
+      const editionDir = join(dir, "data/editions/260507");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(eiaAnswerSidecarPath(editionDir), "{bad", "utf8");
+      readEiaAnswerSidecar(editionDir, dir);
+      const events = readLogEvents(dir);
+      assert.equal(events[0].edition as unknown, "260507", "edition derivada de basename");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

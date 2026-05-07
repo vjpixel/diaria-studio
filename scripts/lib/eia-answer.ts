@@ -22,7 +22,21 @@
  */
 
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
+import { logEvent } from "./run-log.ts";
+
+/**
+ * #942: deriva edition AAMMDD/YYMM do path do editionDir. Convenções aceitas:
+ *   - data/editions/{AAMMDD}/ → "260507"
+ *   - data/monthly/{YYMM}/ → "2605"
+ *   - tmpdir arbitrário (tests) → basename qualquer (não-fatal, edition fica lixo)
+ *
+ * `null` se basename for vazio (não deveria acontecer com path absoluto).
+ */
+function editionFromDir(editionDir: string): string | null {
+  const base = basename(resolve(editionDir));
+  return base.length > 0 ? base : null;
+}
 
 export interface EiaAnswer {
   /** Slot A: "real" se foto real, "ia" se imagem gerada. */
@@ -68,11 +82,15 @@ export function writeEiaAnswerSidecar(
 /**
  * Lê o gabarito do sidecar JSON. Retorna null se ausente ou malformado.
  *
- * **#938**: quando arquivo existe mas falha em parse/schema, faz `console.warn`
- * antes de retornar null. Sinal de bug upstream (write não-atômico, disk
- * full, race) — fallback chain continua operando, só quebra o silêncio.
+ * **#938**: quando arquivo existe mas falha em parse/schema, sinal de bug
+ * upstream (write não-atômico, disk full, race) — fallback chain continua
+ * operando, só quebra o silêncio.
+ *
+ * **#942**: log via run-log estruturado em vez de `console.warn` cru.
+ * Auto-reporter (Stage final) pega `level: "warn"` em `lib/eia-answer` e
+ * cria issue automática se sidecar corromper em produção.
  */
-export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
+export function readEiaAnswerSidecar(editionDir: string, logRootDir?: string): EiaAnswer | null {
   const path = eiaAnswerSidecarPath(editionDir);
   if (!existsSync(path)) return null;
   try {
@@ -82,12 +100,24 @@ export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
     if ((a === "real" || a === "ia") && (b === "real" || b === "ia")) {
       return { A: a, B: b };
     }
-    console.warn(
-      `[eia-answer] sidecar com schema inválido (A=${JSON.stringify(a)}, B=${JSON.stringify(b)}): ${path}`,
-    );
+    logEvent({
+      edition: editionFromDir(editionDir),
+      stage: null,
+      agent: "lib/eia-answer",
+      level: "warn",
+      message: "sidecar_schema_invalid",
+      details: { path, A: a, B: b },
+    }, logRootDir);
     return null;
   } catch (err) {
-    console.warn(`[eia-answer] sidecar corrompido (não parseou): ${path}`, err);
+    logEvent({
+      edition: editionFromDir(editionDir),
+      stage: null,
+      agent: "lib/eia-answer",
+      level: "warn",
+      message: "sidecar_corrupted",
+      details: { path, error: err instanceof Error ? err.message : String(err) },
+    }, logRootDir);
     return null;
   }
 }
@@ -98,8 +128,9 @@ export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
  *
  * **#938**: warn quando meta existe mas falha em parse — não confundir com
  * "ausente" (caso normal pré-#927).
+ * **#942**: log estruturado via run-log (não console.warn cru).
  */
-export function readEiaAnswerFromMeta(editionDir: string): EiaAnswer | null {
+export function readEiaAnswerFromMeta(editionDir: string, logRootDir?: string): EiaAnswer | null {
   const path = resolve(editionDir, "_internal", "01-eia-meta.json");
   if (!existsSync(path)) return null;
   try {
@@ -108,7 +139,14 @@ export function readEiaAnswerFromMeta(editionDir: string): EiaAnswer | null {
     if (meta.ai_side === "B") return { A: "real", B: "ia" };
     return null;
   } catch (err) {
-    console.warn(`[eia-answer] meta.json corrompido (não parseou): ${path}`, err);
+    logEvent({
+      edition: editionFromDir(editionDir),
+      stage: null,
+      agent: "lib/eia-answer",
+      level: "warn",
+      message: "meta_corrupted",
+      details: { path, error: err instanceof Error ? err.message : String(err) },
+    }, logRootDir);
     return null;
   }
 }
