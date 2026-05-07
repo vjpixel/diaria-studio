@@ -167,6 +167,29 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 - Clicar em "Save draft" / "Save as draft".
 - Capturar `draft_url` da barra de endereço (deve conter `/posts/{id}/edit`).
 
+### 6.5. Setar Subject line do email (#610)
+
+Antes de enviar o test email, garantir que o Subject está correto.
+Beehiiv aplica subject automático baseado em template — pode herdar o
+título da edição anterior (caso real 260505: test email veio com D1
+de 260504). Setar explicitamente evita re-envio manual.
+
+1. **Localizar campo Subject**: navegar pra área de configurações do post
+   (geralmente menu "..." ou aba "Settings"/"Email" no painel lateral).
+   Encontrar input com label "Subject" ou "Subject line".
+2. **Limpar** o conteúdo existente (triple-click ou Ctrl+A + Delete).
+3. **Setar valor**: usar o `title` extraído no passo 1 (que já é o D1 title).
+   - Modo normal: `{title}`
+   - Modo test (`test_email_only: true`): prefixar com `[TEST] ` (ex: `[TEST] Falha na Lovable atinge Spotify, Uber e outros`).
+4. **Confirmar**: tab away do input pra trigar save automático.
+5. **Verificar**: ler o valor de volta via `read_page` e confirmar que bate
+   com o esperado. Se Beehiiv re-aplicou template default sobrescrevendo, retry 1×.
+6. Re-salvar o draft (botão "Save draft" novamente).
+
+Se o campo Subject não for encontrado após 2 tentativas, registrar em
+`unfixed_issues[]` com `reason: "subject_field_not_found"` e prosseguir
+com o test email — editor pode editar manualmente.
+
 ### 7. Enviar email de teste
 
 - Abrir menu de testes → enviar para `test_email` → confirmar.
@@ -181,6 +204,7 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 {
   "draft_url": "https://app.beehiiv.com/posts/{id}/edit",
   "title": "...",
+  "subject_set": "...",
   "template_used": "Default",
   "test_email_sent_to": "vjpixel@gmail.com",
   "test_email_sent_at": "2026-04-18T12:34:56.789Z",
@@ -188,6 +212,8 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
   "unfixed_issues": []
 }
 ```
+
+`subject_set` (#610): valor que o agent setou no campo Subject (com prefix `[TEST] ` se test mode). Se passo 6.5 falhou, registrar `subject_set: null` e adicionar entry em `unfixed_issues[]`.
 
 `unfixed_issues[]` agrega problemas detectados no passo 5.3 (Verificação pós-paste) que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
