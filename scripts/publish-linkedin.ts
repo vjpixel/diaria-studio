@@ -36,6 +36,9 @@
  * Posts com status "failed" são retentados.
  */
 
+import { loadProjectEnv } from "./lib/env-loader.ts";
+loadProjectEnv(); // #923 — carregar .env.local antes de qualquer process.env access
+
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -310,6 +313,34 @@ async function main(): Promise<void> {
     "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
+
+  // #923 fail-fast: --schedule sem Worker = silent fire-now bug. Aborta.
+  // Bug histórico (2026-05-07): .env.local não carregava → workerToken="" →
+  // useWorkerForScheduled=false → fallback pra Make.com fire-now → 3 posts
+  // postados imediatamente em vez de agendados. Pra evitar repetição, qualquer
+  // --schedule sem Worker config aborta com mensagem clara.
+  if (doSchedule && !useWorkerForScheduled) {
+    const lines = [
+      "ERRO: --schedule passado mas Cloudflare Worker não está configurado.",
+      "  DIARIA_LINKEDIN_CRON_URL: " + (workerUrl ? "set" : "MISSING"),
+      "  DIARIA_LINKEDIN_CRON_TOKEN: " +
+        (workerToken
+          ? "set (length=" + workerToken.length + ")"
+          : "MISSING — provavelmente .env.local não carregada"),
+      "",
+      "Sem o Worker, --schedule cairia em fire-now via Make.com (publica",
+      "IMEDIATAMENTE, ignora scheduled_at). Pra evitar publicação acidental,",
+      "este script aborta.",
+      "",
+      "Resolução:",
+      "  1. Confirmar que .env.local existe e contém DIARIA_LINKEDIN_CRON_TOKEN",
+      "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
+      "     com cloudflare_worker_url",
+      "  3. OU rodar SEM --schedule pra postar imediatamente conscientemente",
+    ];
+    console.error(lines.join("\n"));
+    process.exit(2);
+  }
 
   // Carregar 03-social.md
   const socialMdPath = resolve(editionDir, "03-social.md");

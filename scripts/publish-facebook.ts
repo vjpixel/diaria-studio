@@ -25,7 +25,9 @@
  * Output: appends em {edition-dir}/06-social-published.json
  */
 
-import "dotenv/config";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+loadProjectEnv(); // #923 — carrega .env.local + .env (precedência) antes de process.env access
+
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
