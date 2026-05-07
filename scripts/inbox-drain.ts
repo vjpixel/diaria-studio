@@ -296,19 +296,21 @@ export function shouldWarnEmptyDrains(cursor: InboxCursor): boolean {
 /**
  * Decisão pura sobre o que fazer quando o drain volta vazio.
  *
- * Histórico (#274/#286/#304/#900): havia heurística "label_broken" que rodava
- * uma alt query sem `label:` pra detectar filtro Gmail quebrado. Removida em
- * #900 — a alt query gerava falso positivo quando vjpixel@ recebia outros
- * emails legítimos que NÃO precisam passar por diariaeditor@ (newsletters
- * pessoais subscritas direto, GitHub, system mails). Esses sempre vão estar
- * presentes em vjpixel@ sem o label, fazendo a heurística reportar
- * `label_broken` constante. Editor descobre filtro quebrado por outras vias
- * (ausência prolongada de submissões + revisar Gmail UI direto).
- *
- * Branches simplificados:
+ * Branches atuais (apenas 2):
  * - **none** — abaixo do threshold, sem ação.
  * - **silent_reset** — acima do threshold, reset silencioso. Inbox vazio é
  *   estado válido (editor pode passar dias sem submissões).
+ *
+ * Histórico (#274/#286/#304/#900): a versão anterior tinha 4 branches
+ * (`none`, `label_broken`, `silent_reset`, `warn`) e rodava uma alt query
+ * sem `label:` pra detectar filtro Gmail quebrado. As branches `label_broken`
+ * e `warn` foram removidas em #900 — a alt query gerava falso positivo
+ * crônico porque vjpixel@ recebe legitimamente outros emails que NÃO precisam
+ * passar por diariaeditor@ (newsletters pessoais subscritas direto, GitHub,
+ * system mails). Esses sempre vão estar presentes em vjpixel@ sem o label,
+ * fazendo a heurística reportar filtro quebrado constantemente. Editor
+ * descobre filtro quebrado por outras vias (ausência prolongada de
+ * submissões + revisar Gmail UI direto).
  */
 export type EmptyDrainAction =
   | { kind: "none" }
