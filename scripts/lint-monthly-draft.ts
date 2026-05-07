@@ -73,7 +73,11 @@ function main(): void {
   let hasWarning = false;
 
   for (const { label, prefix } of targets) {
-    const section = sections.find(s => s.trim().startsWith(prefix));
+    // Aceita header plain ou em **negrito** (#590) — match prefix com ou sem `**` leading.
+    const section = sections.find(s => {
+      const trimmed = s.trim();
+      return trimmed.startsWith(prefix) || trimmed.startsWith("**" + prefix);
+    });
     if (!section) {
       console.log(`[lint-monthly] ${label}: não encontrado no draft`);
       continue;

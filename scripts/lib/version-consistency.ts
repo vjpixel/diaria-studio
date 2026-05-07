@@ -50,11 +50,11 @@ const VERSION_PATTERN = /\bV(\d+(?:\.\d+)?)\b/g;
  * Retorna o último header visto (ou string vazia se não dentro de destaque).
  */
 export function destaqueHeaderAt(line: string, current: string): string {
-  // "DESTAQUE 1 | 🔒 SEGURANÇA" → "DESTAQUE 1"
-  const m = line.match(/^DESTAQUE\s+(\d+)\b/i);
+  // "DESTAQUE 1 | 🔒 SEGURANÇA" → "DESTAQUE 1" (plain ou **negrito** #590)
+  const m = line.match(/^(?:\*\*)?DESTAQUE\s+(\d+)\b/i);
   if (m) return `DESTAQUE ${m[1]}`;
-  // Sections que terminam um destaque: outras seções top-level
-  if (/^(LANÇAMENTOS|PESQUISAS|TUTORIAIS|OUTRAS NOTÍCIAS|É IA\?|---)/i.test(line.trim())) {
+  // Sections que terminam um destaque: outras seções top-level (plain ou bold)
+  if (/^(?:\*\*)?(LANÇAMENTOS|PESQUISAS|TUTORIAIS|OUTRAS NOTÍCIAS|É IA\?|---)/i.test(line.trim())) {
     return "";
   }
   return current;

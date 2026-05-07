@@ -11,11 +11,13 @@
 
 /**
  * Regex pra linha que contém APENAS um markdown link bem-formado.
- * Aceita whitespace antes/depois, mas nada além do link na linha.
+ * Aceita whitespace antes/depois, e wrapping em **negrito** (#590) —
+ * `**[Título](URL)**` é equivalente a `[Título](URL)` pro parser.
  *
  * Exemplos válidos:
  *   "[Título](https://example.com)"
  *   "  [Título com espaços](https://x.com/path?q=1)  "
+ *   "**[Título em negrito](https://x.com)**"
  *
  * Exemplos rejeitados (ficam pro fallback legacy):
  *   "Texto antes [Título](https://x.com)"
@@ -23,7 +25,7 @@
  *   "Linha solo de URL: https://x.com"
  *   "[título sem url]()"
  */
-const INLINE_LINK_RE = /^\s*\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)\s*$/;
+const INLINE_LINK_RE = /^\s*(?:\*\*)?\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)(?:\*\*)?\s*$/;
 
 export interface InlineLink {
   title: string;

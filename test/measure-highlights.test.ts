@@ -166,6 +166,45 @@ Body dois sem --- final.`;
     assert.equal(r.highlights.length, 2);
     assert.equal(r.highlights[1].number, 2);
   });
+
+  it("aceita header em **negrito** (#590)", () => {
+    const md = `**DESTAQUE 1 | PESQUISA**
+Body um.
+
+Por que isso importa:
+Razão do impacto.
+
+---
+
+**DESTAQUE 2 | LANÇAMENTO**
+Body dois.
+
+---
+`;
+    const r = parseHighlights(md);
+    assert.equal(r.highlights.length, 2);
+    assert.equal(r.highlights[0].number, 1);
+    assert.equal(r.highlights[0].category, "PESQUISA");
+    assert.equal(r.highlights[1].number, 2);
+    assert.equal(r.highlights[1].category, "LANÇAMENTO");
+  });
+
+  it("backwards-compat: format misto (alguns bold, outros plain) funciona", () => {
+    const md = `**DESTAQUE 1 | A**
+Body um.
+
+---
+
+DESTAQUE 2 | B
+Body dois.
+
+---
+`;
+    const r = parseHighlights(md);
+    assert.equal(r.highlights.length, 2);
+    assert.equal(r.highlights[0].category, "A");
+    assert.equal(r.highlights[1].category, "B");
+  });
 });
 
 describe("flagOutOfRange — warnings out-of-range (#739)", () => {

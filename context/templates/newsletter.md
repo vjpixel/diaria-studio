@@ -8,18 +8,20 @@ Formato exato do output da edição. Seguir rigorosamente.
 
 **Linha de cobertura (#592, #609):** primeira linha do reviewed.md, formato literal copiado de `_internal/01-approved.json` campo `coverage.line`. Padrão esperado:
 
+**Negrito em headers/títulos (#590):** nomes de seção e títulos saem em **negrito** (`**...**`) para hierarquia visual no Drive review (mobile). URLs e parágrafos seguem plain. Markdown link `[Título](URL)` é compatível com bold via `**[Título](URL)**`.
+
 ```
 Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.
 
 ---
 
-DESTAQUE 1 | [CATEGORIA]
+**DESTAQUE 1 | [CATEGORIA]**
 
-[Opção de título 1 — máx. 52 chars](URL)
+**[Opção de título 1 — máx. 52 chars](URL)**
 
-[Opção de título 2 — máx. 52 chars](URL)
+**[Opção de título 2 — máx. 52 chars](URL)**
 
-[Opção de título 3 — máx. 52 chars](URL)
+**[Opção de título 3 — máx. 52 chars](URL)**
 
 [Parágrafo 1 — abre a história]
 
@@ -35,45 +37,45 @@ Por que isso importa:
 
 ---
 
-DESTAQUE 2 | [CATEGORIA]
+**DESTAQUE 2 | [CATEGORIA]**
 
 [mesmo formato]
 
 ---
 
-DESTAQUE 3 | [CATEGORIA]
+**DESTAQUE 3 | [CATEGORIA]**
 
 [mesmo formato]
 
 ---
 
-LANÇAMENTOS
+**LANÇAMENTOS**
 
-[Título do item](URL)
+**[Título do item](URL)**
 
 [Frase descritiva em 1 linha]
 
-[Título do próximo item](URL)
+**[Título do próximo item](URL)**
 
 [Frase descritiva]
 
 ---
 
-PESQUISAS
+**PESQUISAS**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento]
 
 ---
 
-OUTRAS NOTÍCIAS
+**OUTRAS NOTÍCIAS**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento]
 
 ---
 
-VÍDEOS (opcional — omitir se bucket vazio)
+**VÍDEOS** (opcional — omitir se bucket vazio)
 
-[Título do Vídeo] — [Canal](URL)
+**[Título do Vídeo]** — [Canal](URL)
 
 [Frase descritiva em 1 linha]
 ```
@@ -102,7 +104,7 @@ URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2,
 
 ## Não fazer
 
-- Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.).
+- Não usar markdown em parágrafos. **Negrito (`**...**`) só é permitido em** nomes de seção (`**LANÇAMENTOS**`, `**DESTAQUE N**`) e títulos (#590). Outros markups (`#`, `-`, `_`, `>`) sempre proibidos.
 - Não incluir texto fora do template.
 - Não adicionar emojis no corpo do texto — apenas o emoji de categoria no header `DESTAQUE N | emoji CATEGORIA` é permitido (#265).
 - Não mencionar "Diar.ia" dentro do corpo dos destaques (é redundante).

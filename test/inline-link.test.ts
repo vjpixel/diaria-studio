@@ -58,3 +58,24 @@ describe("isInlineLinkLine (#599)", () => {
     assert.equal(isInlineLinkLine("https://example.com"), false);
   });
 });
+
+describe("parseInlineLink — suporte a **negrito** (#590)", () => {
+  it("aceita **[Título](URL)** e extrai title+url corretamente", () => {
+    const r = parseInlineLink("**[Título em negrito](https://example.com)**");
+    assert.deepEqual(r, { title: "Título em negrito", url: "https://example.com" });
+  });
+
+  it("aceita **[Título](URL)** com whitespace ao redor", () => {
+    const r = parseInlineLink("  **[Título](https://example.com)**  ");
+    assert.deepEqual(r, { title: "Título", url: "https://example.com" });
+  });
+
+  it("isInlineLinkLine retorna true pra wrap em **negrito**", () => {
+    assert.equal(isInlineLinkLine("**[Título](https://example.com)**"), true);
+  });
+
+  it("backwards-compat: linha plain sem negrito continua funcionando", () => {
+    const r = parseInlineLink("[Título](https://example.com)");
+    assert.deepEqual(r, { title: "Título", url: "https://example.com" });
+  });
+});

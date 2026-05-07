@@ -53,10 +53,12 @@ interface SectionMapping {
   label: string;
 }
 
+// Headers podem ser plain (legacy) ou em **negrito** (#590). Aceita ambos
+// pra backwards-compat com edições antigas + suporta o novo formato.
 const SECTIONS: SectionMapping[] = [
-  { header: /^LAN[ÇC]AMENTOS\s*$/m, bucket: "lancamento", label: "LANÇAMENTOS" },
-  { header: /^PESQUISAS\s*$/m, bucket: "pesquisa", label: "PESQUISAS" },
-  { header: /^OUTRAS\s+NOT[ÍI]CIAS\s*$/m, bucket: "noticias", label: "OUTRAS NOTÍCIAS" },
+  { header: /^(?:\*\*)?LAN[ÇC]AMENTOS(?:\*\*)?\s*$/m, bucket: "lancamento", label: "LANÇAMENTOS" },
+  { header: /^(?:\*\*)?PESQUISAS(?:\*\*)?\s*$/m, bucket: "pesquisa", label: "PESQUISAS" },
+  { header: /^(?:\*\*)?OUTRAS\s+NOT[ÍI]CIAS(?:\*\*)?\s*$/m, bucket: "noticias", label: "OUTRAS NOTÍCIAS" },
 ];
 
 const SECTION_BREAK_RE = /^---\s*$/;
@@ -355,8 +357,8 @@ export function lintIntroCount(md: string): IntroCountResult {
     }
     if (inEai) continue;
 
-    // Header de destaque
-    if (/^DESTAQUE\s+\d+\s*\|/.test(t)) {
+    // Header de destaque — plain ou em **negrito** (#590)
+    if (/^(?:\*\*)?DESTAQUE\s+\d+\s*\|/.test(t)) {
       inHighlight = true;
       highlightUrlSeen = false;
       inSection = false;
@@ -364,8 +366,8 @@ export function lintIntroCount(md: string): IntroCountResult {
       continue;
     }
 
-    // Header de seção secundária
-    if (/^(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)\s*$/.test(t)) {
+    // Header de seção secundária — plain ou em **negrito** (#590)
+    if (/^(?:\*\*)?(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/.test(t)) {
       inSection = true;
       inHighlight = false;
       sectionItemState = "expect_title";
@@ -508,7 +510,9 @@ function parseArgs(argv: string[]): Record<string, string> {
  * line entre título e URL ainda funciona porque a URL termina o bloco.
  */
 
-const HIGHLIGHT_HEADER_RE = /^DESTAQUE\s+(\d+)\s*\|\s*(.+)$/;
+// Header de destaque — plain ou em **negrito** (#590). O `**` final é
+// stripado da capture group 2 abaixo se presente.
+const HIGHLIGHT_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+(\d+)\s*\|\s*(.+?)(?:\*\*)?$/;
 const URL_LINE_RE = /^https?:\/\//;
 const SECTION_BREAK_LINE_RE = /^---\s*$/;
 const SECTION_HEADER_LINE_RE = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]{5,}$/;
