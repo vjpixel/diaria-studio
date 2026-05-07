@@ -409,7 +409,7 @@ async function main() {
   if (pastUrls.size === 0 && pastTitles.length === 0) {
     console.error(
       `WARN [dedup]: past-editions.md sem seções YYYY-MM-DD — histórico vazio. ` +
-      `Dedup contra edições anteriores não funcionou. Verificar se refresh-dedup-runner completou.`,
+      `Dedup contra edições anteriores não funcionou. Verificar se scripts/refresh-dedup.ts completou.`,
     );
   }
 

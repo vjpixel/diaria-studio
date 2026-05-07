@@ -34,7 +34,7 @@ Pra Diar.ia (que está no Max hoje): Custom HTML continua coberto. Mas se consid
 
 ### 2. API + MCP
 
-- **Beehiiv**: MCP em uso (`refresh-dedup-runner`, audience update). Pipeline integrada.
+- **Beehiiv**: REST API + MCP em uso (`scripts/refresh-dedup.ts` via REST direto, audience update via MCP). Pipeline integrada.
 - **Kit**: API completa, sem MCP oficial. Migrar = ~50-100 linhas de HTTP/auth.
 - **Substack**: API não-oficial. Pipeline atual não funcionaria sem reverse-engineer + cookie auth — frágil, pode quebrar a qualquer release. **Risco alto pra automação editorial**.
 

@@ -130,7 +130,7 @@ export function evaluateFreshness(
     max_staleness_hours: maxStalenessHours,
     reason: ok
       ? undefined
-      : `edição mais recente publicada há ${ageHours.toFixed(1)}h (limite ${maxStalenessHours}h) — refresh-dedup-runner pode ter falhado silenciosamente; investigar antes de prosseguir`,
+      : `edição mais recente publicada há ${ageHours.toFixed(1)}h (limite ${maxStalenessHours}h) — scripts/refresh-dedup.ts pode ter falhado silenciosamente; investigar antes de prosseguir`,
   };
 }
 
@@ -220,7 +220,7 @@ function main(): void {
     emitJson(
       parsed.rawPath,
       parsed.maxStalenessHours,
-      `raw não existe em ${parsed.rawPath} — rodar refresh-dedup-runner em modo bootstrap antes`,
+      `raw não existe em ${parsed.rawPath} — rodar npx tsx scripts/refresh-dedup.ts (bootstrap) antes`,
     );
     process.exit(1);
   }

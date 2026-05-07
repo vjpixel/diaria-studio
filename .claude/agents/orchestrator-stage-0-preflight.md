@@ -96,17 +96,22 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
   ```
   Se já existe (resume), não sobrescrever — manter `Início` e linhas de stages anteriores intactos.
 
-### 0d. Refresh automático de dedup
+### 0d. Refresh automático de dedup (#895)
 
-Disparar o subagente `refresh-dedup-runner` via `Agent`. O subagente:
-- Garante `publicationId` em `platform.config.json` (descobre via `list_publications` se necessário).
-- Detecta se é bootstrap (primeira vez) ou incremental (dia a dia).
-- No incremental, só busca edições **mais novas** que a mais recente já na base (pode ser zero — nesse caso pula e reporta `skipped: true`).
-- Regenera `context/past-editions.md` via `scripts/refresh-past-editions.ts`, respeitando `dedupEditionCount` do config.
-- Retorna JSON `{ mode, new_posts, total_in_base, most_recent_date, skipped }`.
-- **Se falhar**, propagar o erro ao usuário e parar — não prossiga com dedup stale.
+Rodar `scripts/refresh-dedup.ts` via Bash. O script:
+- Usa a Beehiiv REST API direto (token em `BEEHIIV_API_KEY`); sem dependência de MCP ou subagente (#895 — o agent legado `refresh-dedup-runner` apontava pra UUID antigo de MCP que não existe mais; rodar inline no top-level pulava a regen do MD, regredindo #162).
+- Detecta bootstrap (raw não existe) vs incremental (raw existe → busca só edições mais novas que `max(published_at)` do raw).
+- **Sempre regenera `context/past-editions.md`** — mesmo com 0 novos posts (cobre o caso de `git pull` ter resetado o tracked file enquanto o raw, gitignored, ficou intacto; #162).
+- Popula `links[]` resolvendo tracking URLs do Beehiiv (#234) e lendo `_internal/01-approved.json` local quando disponível (#238).
+- Respeita `dedupEditionCount` do `platform.config.json`.
+- Retorna JSON `{ mode, new_posts, total_in_base, most_recent_date, skipped: false, md_regenerated: true }`.
+- **Se falhar (exit != 0)**, propagar o erro ao usuário e parar — não prossiga com dedup stale.
 
-**Summary do dedup refresh (#314).** Após retornar, imprimir via Bash node snippet que lê `context/past-editions.md` e lista as 5 edições mais recentes (`## YYYY-MM-DD` sections). Se `new_posts > 0`, indicar `+{new_posts} nova(s)`. Se `skipped`, indicar `no-op (MD regenerado)`.
+```bash
+npx tsx scripts/refresh-dedup.ts
+```
+
+**Summary do dedup refresh (#314).** Após retornar, imprimir via Bash node snippet que lê `context/past-editions.md` e lista as 5 edições mais recentes (`## YYYY-MM-DD` sections). Se `new_posts > 0`, indicar `+{new_posts} nova(s)`. Como `skipped` agora é sempre `false` e o MD é sempre regenerado, indicar `no-op (MD regenerado)` quando `new_posts === 0`.
 
 **Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
