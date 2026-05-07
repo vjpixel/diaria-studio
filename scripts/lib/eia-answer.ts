@@ -67,6 +67,10 @@ export function writeEiaAnswerSidecar(
 
 /**
  * Lê o gabarito do sidecar JSON. Retorna null se ausente ou malformado.
+ *
+ * **#938**: quando arquivo existe mas falha em parse/schema, faz `console.warn`
+ * antes de retornar null. Sinal de bug upstream (write não-atômico, disk
+ * full, race) — fallback chain continua operando, só quebra o silêncio.
  */
 export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
   const path = eiaAnswerSidecarPath(editionDir);
@@ -78,8 +82,12 @@ export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
     if ((a === "real" || a === "ia") && (b === "real" || b === "ia")) {
       return { A: a, B: b };
     }
+    console.warn(
+      `[eia-answer] sidecar com schema inválido (A=${JSON.stringify(a)}, B=${JSON.stringify(b)}): ${path}`,
+    );
     return null;
-  } catch {
+  } catch (err) {
+    console.warn(`[eia-answer] sidecar corrompido (não parseou): ${path}`, err);
     return null;
   }
 }
@@ -87,6 +95,9 @@ export function readEiaAnswerSidecar(editionDir: string): EiaAnswer | null {
 /**
  * Lê `ai_side` de `_internal/01-eia-meta.json` e deriva o mapping A/B.
  * Retorna null se meta ausente, malformado ou ai_side null.
+ *
+ * **#938**: warn quando meta existe mas falha em parse — não confundir com
+ * "ausente" (caso normal pré-#927).
  */
 export function readEiaAnswerFromMeta(editionDir: string): EiaAnswer | null {
   const path = resolve(editionDir, "_internal", "01-eia-meta.json");
@@ -96,7 +107,8 @@ export function readEiaAnswerFromMeta(editionDir: string): EiaAnswer | null {
     if (meta.ai_side === "A") return { A: "ia", B: "real" };
     if (meta.ai_side === "B") return { A: "real", B: "ia" };
     return null;
-  } catch {
+  } catch (err) {
+    console.warn(`[eia-answer] meta.json corrompido (não parseou): ${path}`, err);
     return null;
   }
 }
