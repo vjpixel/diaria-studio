@@ -304,9 +304,11 @@ Drena respostas pendentes do concurso "ache o erro, ganhe um número" antes de S
 
 Cutoff = `confirmed_at` mais recente em `data/contest-entries.jsonl` (via `npx tsx scripts/sorteio-process.ts list`); se vazio, 30 dias atrás.
 
-Usar `mcp__claude_ai_Gmail__search_threads` com query `label:Diar.ia after:{cutoff_yyyy_mm_dd}`. Limit 20 threads. Se Gmail retornar erro: skip silencioso (logar warn).
+Usar `mcp__claude_ai_Gmail__search_threads` com query `"diaria@mail.beehiiv.com" -from:vjpixel after:{cutoff_yyyy_mm_dd}`. Limit 20 threads. Se Gmail retornar erro: skip silencioso (logar warn).
 
-Pra cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (formato `FULL_CONTENT`). Extrair: `thread_id`, `sender_email`, `sender_name`, `subject`, `body` (concatenar messages do leitor — não da resposta), `received_iso`. Montar JSON array `RawThread[]` (ver schema em `scripts/sorteio-classify.ts`).
+**Por que essa query** (lição da #852, validada 2026-05-07): respostas de leitores ao sorteio chegam direto em `vjpixel@gmail.com` (Beehiiv usa Reply-To pra editor pessoal), **sem label nenhum**. A query antiga `label:Diar.ia` retornava 0 threads silenciosamente. A query nova procura threads onde a edição da Beehiiv (`diaria@mail.beehiiv.com`) aparece e exclui mensagens enviadas pelo próprio editor, pegando apenas replies de leitores.
+
+Pra cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (formato `FULL_CONTENT`). Filtrar threads onde a única mensagem é do `diaria@mail.beehiiv.com` (a newsletter original, sem reply de leitor) — pular silenciosamente. Para threads com reply real: extrair `thread_id`, `sender_email`, `sender_name`, `subject`, `body` (concatenar messages do leitor — não da resposta nem da newsletter original), `received_iso`. Montar JSON array `RawThread[]` (ver schema em `scripts/sorteio-classify.ts`).
 
 #### Etapa 2 — Classificar via helper TS
 

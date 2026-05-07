@@ -36,12 +36,17 @@ npx tsx scripts/sorteio-process.ts list 2>/dev/null | head -50
 
 ### Passo 2: drenar Gmail
 
-Buscar threads em `diariaeditor@gmail.com` que:
-- Tenham label da newsletter Diar.ia (verificar — pode ser `Diar.ia` ou similar).
+Respostas de leitores ao sorteio chegam **direto em `vjpixel@gmail.com`** (Beehiiv usa Reply-To pra editor pessoal), **sem label nenhum**. Buscar threads que:
+- Citem a newsletter original (`diaria@mail.beehiiv.com` aparece no body da edição forwardada/respondida).
+- Tenham mensagem de não-vjpixel (ou seja, leitor real respondeu).
 - Foram recebidas APÓS o cutoff do passo 1.
 - Ainda NÃO foram processadas (verificar via `--thread-id` na lib `contest-entries`).
 
-Use `mcp__claude_ai_Gmail__search_threads` com query como `label:Diar.ia after:YYYY/MM/DD`. Mantenha-se conservador — limit 20 threads por chamada.
+Use `mcp__claude_ai_Gmail__search_threads` com query `"diaria@mail.beehiiv.com" -from:vjpixel after:YYYY/MM/DD`. Mantenha-se conservador — limit 20 threads por chamada.
+
+**Por que não label** (#852 lesson, 2026-05-07): a query antiga `label:Diar.ia` retornava 0 threads silenciosamente porque emails de leitores não recebem label automaticamente. A query nova procura pela referência ao remetente da Beehiiv no body (citação típica de reply) e exclui mensagens do próprio editor, pegando apenas replies reais.
+
+Pra cada thread, filtrar antes de apresentar: se a única mensagem é do `diaria@mail.beehiiv.com` (newsletter original sem reply do leitor), pular silenciosamente.
 
 ### Passo 3: para cada thread nova, apresentar ao editor
 
