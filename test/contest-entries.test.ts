@@ -211,10 +211,13 @@ describe("drawMonthLabel — formato PT-BR (#597)", () => {
 });
 
 describe("formatReplyText — texto pronto pra resposta (#597)", () => {
-  it("inclui primeiro nome, edição, mês e número", () => {
+  it("inclui primeiro nome, edição (frase relativa), mês e número", () => {
     const text = formatReplyText(SAMPLE);
     assert.match(text, /Test/); // primeiro nome
-    assert.match(text, /260504/); // edição
+    // edição: frase relativa em PT-BR (NUNCA AAMMDD em texto pra leitor — #930).
+    // SAMPLE: edition=260504 vs confirmed_at=2026-05-05 → delta=1 → "de ontem".
+    assert.match(text, /de ontem/);
+    assert.ok(!text.includes("260504"));
     assert.match(text, /junho de 2026/); // mês expandido
     assert.match(text, /é 1\b/); // número
   });
