@@ -144,6 +144,66 @@ describe("applyStage2Caps", () => {
   });
 });
 
+describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
+  it("CLI recalcula coverage.line/selected pós-caps quando coverage existe", async () => {
+    // Importa o módulo só pra simular o que o CLI faria — testa via spawn
+    // pra validar end-to-end.
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+
+    const dir = mkdtempSync(join(tmpdir(), "apply-caps-cov-"));
+    try {
+      const inPath = join(dir, "01-approved.json");
+      const outPath = join(dir, "01-approved-capped.json");
+      writeFileSync(
+        inPath,
+        JSON.stringify({
+          highlights: [{ url: "h1" }, { url: "h2" }, { url: "h3" }],
+          lancamento: [{ url: "l1" }, { url: "l2" }],
+          pesquisa: [
+            { url: "p1" },
+            { url: "p2" },
+            { url: "p3" },
+            { url: "p4" },
+            { url: "p5" },
+          ],
+          noticias: new Array(20).fill({}).map((_, i) => ({ url: `n${i}` })),
+          coverage: {
+            editor_submitted: 5,
+            diaria_discovered: 100,
+            selected: 30, // erroneous pre-cap value
+            line:
+              "Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 100 artigos. Selecionamos os 30 mais relevantes para as pessoas que assinam a newsletter.",
+          },
+        }),
+        "utf8",
+      );
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "apply-stage2-caps.ts");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", scriptPath, "--in", inPath, "--out", outPath],
+        { cwd: projectRoot, encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+
+      const capped = JSON.parse(readFileSync(outPath, "utf8"));
+      // Selected real: 3 + 2 + 3 + 4 = 12 (max(2, 12-3-2-3) = 4 outras)
+      assert.equal(capped.coverage.selected, 12);
+      assert.match(
+        capped.coverage.line,
+        /Selecionamos os 12 mais relevantes/,
+      );
+      assert.doesNotMatch(capped.coverage.line, /30 mais/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("checkStage2Caps", () => {
   it("ok=true quando todos buckets dentro do cap", () => {
     const approved = {

@@ -22,6 +22,14 @@ import {
   applyStage2Caps,
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
+import { formatCoverageLine } from "./lib/inbox-stats.ts";
+
+interface CoverageLike {
+  editor_submitted?: number;
+  diaria_discovered?: number;
+  selected?: number;
+  line?: string;
+}
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -52,6 +60,30 @@ function main(): void {
 
   const approved = JSON.parse(readFileSync(inPath, "utf8")) as ApprovedJson;
   const { approved: capped, report } = applyStage2Caps(approved);
+
+  // #906 — recalcular coverage.line com o `selected` real pós-caps. Sem
+  // isso, o writer copia coverage.line literal e a intro fica com "30
+  // mais relevantes" mesmo quando a edição publica 12 artigos.
+  const cov = capped.coverage as CoverageLike | undefined;
+  if (cov && typeof cov.editor_submitted === "number" && typeof cov.diaria_discovered === "number") {
+    const selectedCapped =
+      (capped.highlights?.length ?? 0) +
+      (capped.lancamento?.length ?? 0) +
+      (capped.pesquisa?.length ?? 0) +
+      (capped.noticias?.length ?? 0) +
+      ((capped.tutorial as unknown[] | undefined)?.length ?? 0) +
+      ((capped.video as unknown[] | undefined)?.length ?? 0);
+    capped.coverage = {
+      ...cov,
+      selected: selectedCapped,
+      line: formatCoverageLine({
+        editorSubmissions: cov.editor_submitted,
+        diariaDiscovered: cov.diaria_discovered,
+        selected: selectedCapped,
+      }),
+    };
+  }
+
   writeFileSync(outPath, JSON.stringify(capped, null, 2), "utf8");
 
   console.error(

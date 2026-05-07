@@ -277,6 +277,16 @@ npx tsx scripts/clarice-diff.ts \
   data/editions/$1/_internal/02-clarice-diff.md
 ```
 
+**Sync intro count (#743, #876, #906) — corrigir 'Selecionamos os N mais relevantes':**
+
+```bash
+npx tsx scripts/sync-intro-count.ts \
+  --md data/editions/$1/02-reviewed.md \
+  --lancamentos-removed data/editions/$1/_internal/02-lancamentos-removed.json
+```
+
+Após caps (#358) + lançamentos rejeitados, o número declarado na intro pode divergir do número real de artigos no body (writer copia `coverage.line` do approved.json bruto, que não reflete os caps). Script conta URLs editoriais reais e corrige cirurgicamente — só o número, sem mexer no resto. `--lancamentos-removed` é opcional; quando ausente, sync-intro-count ignora silenciosamente o ajuste de "X lançamentos".
+
 **Estabilidade de URLs em LANÇAMENTOS pós-Clarice (#873).** Clarice/humanizador podem "limpar" URLs (remover utm, normalizar path, trailing slash), o que quebra a regra "LANÇAMENTOS só com link oficial" (#160). Comparar pré-Clarice vs `02-reviewed.md` final (mesmo path usado pelo orchestrator — review #889 P1):
 
 ```bash
