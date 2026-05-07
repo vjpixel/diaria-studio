@@ -90,3 +90,34 @@ export function aammddToGmailDate(aammdd: string): string {
   const dd = aammdd.slice(4, 6);
   return `${yyyy}/${mm}/${dd}`;
 }
+
+/**
+ * Retorna o primeiro dia do mês corrente em formato Gmail-query (YYYY/MM/01).
+ * Usa BRT timezone (consistente com `firstEditionOfCurrentMonth` e regra #716).
+ *
+ * Usado como fallback do cutoff do drain Gmail no sorteio quando ainda não
+ * há edições publicadas no mês corrente. Sem isso, prompts cairiam em
+ * cálculo inline UTC e errariam por ~3h na borda do mês.
+ */
+export function currentMonthFirstDayGmail(now: Date = new Date()): string {
+  const brtNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const yyyy = brtNow.getUTCFullYear();
+  const mm = String(brtNow.getUTCMonth() + 1).padStart(2, "0");
+  return `${yyyy}/${mm}/01`;
+}
+
+/**
+ * Resolve o cutoff Gmail pro drain do sorteio. Combina os 2 helpers:
+ * primeira edição do mês corrente, ou fallback pro 1º dia do mês se
+ * ainda não há edição publicada.
+ *
+ * Retorna sempre uma string `YYYY/MM/DD` válida pra usar diretamente em
+ * `mcp__claude_ai_Gmail__search_threads` query — nunca null.
+ */
+export function resolveSorteioGmailCutoff(
+  now: Date = new Date(),
+  editionsDir: string = EDITIONS_DIR,
+): string {
+  const firstEdition = firstEditionOfCurrentMonth(now, editionsDir);
+  return firstEdition ? aammddToGmailDate(firstEdition) : currentMonthFirstDayGmail(now);
+}

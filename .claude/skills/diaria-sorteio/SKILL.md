@@ -28,11 +28,11 @@ Se Stage 0 já processou todas as pendentes, esta skill exit 0 silenciosa (sumá
 
 ### Passo 1: descobrir cutoff (primeira edição do mês corrente)
 
-Cutoff é a **data de publicação da primeira edição do mês corrente** (BRT). Idempotência via `findByThreadId` cobre reprocessamento.
+Cutoff é a **data de publicação da primeira edição do mês corrente** (BRT). Se ainda não há edição publicada no mês, fallback pra primeiro dia do mês. Idempotência via `findByThreadId` cobre reprocessamento.
 
 ```bash
 # Cutoff em formato YYYY/MM/DD pra Gmail query
-npx tsx -e "import('./scripts/lib/edition-utils.ts').then(m => { const e = m.firstEditionOfCurrentMonth(); console.log(e ? m.aammddToGmailDate(e) : new Date().toISOString().slice(0,7).replace('-','/') + '/01'); })"
+CUTOFF=$(npx tsx scripts/sorteio-cutoff.ts)  # ex: "2026/05/04"
 
 # Listar entries existentes do mês corrente (referência)
 npx tsx scripts/sorteio-process.ts list 2>/dev/null | head -50

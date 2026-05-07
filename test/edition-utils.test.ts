@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import {
   firstEditionOfCurrentMonth,
   aammddToGmailDate,
+  currentMonthFirstDayGmail,
+  resolveSorteioGmailCutoff,
 } from "../scripts/lib/edition-utils.ts";
 
 function makeEditionsDir(editionDirs: string[]): string {
@@ -116,5 +118,79 @@ describe("aammddToGmailDate (#852)", () => {
     assert.throws(() => aammddToGmailDate("2605"), /AAMMDD inválido/);
     assert.throws(() => aammddToGmailDate("26050a"), /AAMMDD inválido/);
     assert.throws(() => aammddToGmailDate(""), /AAMMDD inválido/);
+  });
+});
+
+describe("currentMonthFirstDayGmail (#852)", () => {
+  it("retorna primeiro dia do mês corrente em BRT", () => {
+    assert.equal(
+      currentMonthFirstDayGmail(new Date("2026-05-07T13:00:00Z")),
+      "2026/05/01",
+    );
+    assert.equal(
+      currentMonthFirstDayGmail(new Date("2026-12-25T15:00:00Z")),
+      "2026/12/01",
+    );
+  });
+
+  it("BRT timezone: 1º maio 02:00 UTC ainda é abril → 2026/04/01", () => {
+    // 1º maio 02:00 UTC = 30 abril 23:00 BRT
+    assert.equal(
+      currentMonthFirstDayGmail(new Date("2026-05-01T02:00:00Z")),
+      "2026/04/01",
+    );
+  });
+
+  it("BRT timezone: 1º maio 04:00 UTC já é maio → 2026/05/01", () => {
+    assert.equal(
+      currentMonthFirstDayGmail(new Date("2026-05-01T04:00:00Z")),
+      "2026/05/01",
+    );
+  });
+});
+
+describe("resolveSorteioGmailCutoff (#852)", () => {
+  it("retorna data da primeira edição quando há edição publicada no mês", () => {
+    const dir = makeEditionsDir(["260417", "260420", "260504", "260505"]);
+    try {
+      const result = resolveSorteioGmailCutoff(
+        new Date("2026-05-07T13:00:00Z"),
+        dir,
+      );
+      assert.equal(result, "2026/05/04");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback pra primeiro dia do mês quando não há edição no mês", () => {
+    const dir = makeEditionsDir(["260417", "260420"]);
+    try {
+      const result = resolveSorteioGmailCutoff(
+        new Date("2026-05-07T13:00:00Z"),
+        dir,
+      );
+      assert.equal(result, "2026/05/01");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback BRT-aware: 1º maio 02h UTC sem edição → 2026/04/01", () => {
+    const dir = makeEditionsDir([]);
+    try {
+      const result = resolveSorteioGmailCutoff(
+        new Date("2026-05-01T02:00:00Z"),
+        dir,
+      );
+      assert.equal(result, "2026/04/01", "BRT ainda em abril");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("nunca retorna null — sempre string YYYY/MM/DD válida", () => {
+    const result = resolveSorteioGmailCutoff(new Date(), "/nonexistent/path");
+    assert.match(result, /^\d{4}\/\d{2}\/\d{2}$/);
   });
 });
