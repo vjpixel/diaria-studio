@@ -1,6 +1,6 @@
 ---
 name: diaria-sorteio
-description: Processa respostas de leitores ao sorteio mensal "ache o erro, ganhe um número". Drena threads do Gmail desde o último processamento, apresenta cada uma pro editor decidir, e ao aprovar atribui número sequencial + cria rascunho automático de resposta. Sub-comandos — list (default, drena pendentes) e draw (sorteia no início do mês seguinte). Aceita argumento opcional YYYY-MM (default é o mês corrente do sorteio).
+description: Processa respostas de leitores ao sorteio mensal "ache o erro, ganhe um número". Drena threads do Gmail desde o último processamento, apresenta cada uma pro editor decidir, e ao aprovar atribui número sequencial + cria rascunho automático de resposta. Sub-comandos — list (default, drena pendentes) e draw (sorteia no início do mês seguinte). Aceita argumento opcional YYYY-MM (default é o mês seguinte ao corrente, mês quando o sorteio acontece).
 ---
 
 # /diaria-sorteio (processamento manual do sorteio)
@@ -19,7 +19,7 @@ Drena respostas pendentes do Gmail e processa novos participantes do sorteio men
 
 - **Sem argumentos** ou apenas `--month YYYY-MM`: modo `list` — drena pendentes e apresenta gate por gate.
 - **`draw [--month YYYY-MM]`**: sorteia o ganhador do mês (random uniforme entre confirmados).
-- **`--month YYYY-MM`** (default): mês do sorteio. Default = mês corrente do calendário (mês de envio das edições rodando agora).
+- **`--month YYYY-MM`** (default): mês do sorteio (mês quando o sorteio acontece). Default = mês seguinte ao corrente — sorteios sempre rodam no início do mês posterior às edições.
 
 ## Modo list (default) — processar pendentes
 
@@ -164,4 +164,4 @@ Não criar o draft automaticamente — vencedor é alto valor, editor decide o t
 
 - Idempotente: rodar a skill 2× seguidas sem novas threads = sumário com 0 aprovações.
 - Schema de `data/contest-entries.jsonl` é fixo (ver `scripts/lib/contest-entries.ts`).
-- Default `--month` é mês corrente do calendário, mas o editor pode passar mês passado pra processar respostas atrasadas.
+- Default `--month` é o mês seguinte ao corrente (mês quando o sorteio acontece). Editor pode passar mês passado pra processar respostas atrasadas.

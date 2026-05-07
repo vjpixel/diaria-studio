@@ -26,6 +26,26 @@ import {
 import { dirname } from "node:path";
 
 /**
+ * Nomes dos meses em PT-BR — compartilhados entre `drawMonthLabel`
+ * (com ano) e `humanEditionDate` (sem ano). Mantido como `as const`
+ * pra type-safety + zero runtime cost.
+ */
+const PT_MONTHS = [
+  "janeiro",
+  "fevereiro",
+  "março",
+  "abril",
+  "maio",
+  "junho",
+  "julho",
+  "agosto",
+  "setembro",
+  "outubro",
+  "novembro",
+  "dezembro",
+] as const;
+
+/**
  * Tipos de erro — mantidos abertos como string union expansível pra não
  * forçar atualização do tipo a cada novo padrão observado. Casos comuns:
  * "factual" (erro factual), "version_inconsistency" (versão divergente),
@@ -192,22 +212,8 @@ export function humanEditionDate(editionAAMMDD: string): string {
   if (!m) return editionAAMMDD;
   const day = parseInt(m[3], 10);
   const monthIdx = parseInt(m[2], 10) - 1;
-  const months = [
-    "janeiro",
-    "fevereiro",
-    "março",
-    "abril",
-    "maio",
-    "junho",
-    "julho",
-    "agosto",
-    "setembro",
-    "outubro",
-    "novembro",
-    "dezembro",
-  ];
   if (monthIdx < 0 || monthIdx > 11) return editionAAMMDD;
-  return `${day} de ${months[monthIdx]}`;
+  return `${day} de ${PT_MONTHS[monthIdx]}`;
 }
 
 /**
@@ -219,22 +225,8 @@ export function drawMonthLabel(drawMonth: string): string {
   if (!m) return drawMonth;
   const year = m[1];
   const monthIdx = parseInt(m[2], 10) - 1;
-  const months = [
-    "janeiro",
-    "fevereiro",
-    "março",
-    "abril",
-    "maio",
-    "junho",
-    "julho",
-    "agosto",
-    "setembro",
-    "outubro",
-    "novembro",
-    "dezembro",
-  ];
   if (monthIdx < 0 || monthIdx > 11) return drawMonth;
-  return `${months[monthIdx]} de ${year}`;
+  return `${PT_MONTHS[monthIdx]} de ${year}`;
 }
 
 /**
