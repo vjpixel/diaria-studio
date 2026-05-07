@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 45 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 46 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -154,6 +154,12 @@
 ### Reuters
 - URL: https://www.reuters.com/technology/artificial-intelligence/
 - Site query: `site:reuters.com/technology/artificial-intelligence`
+
+### The Guardian (AI)
+- URL: https://www.theguardian.com/technology/artificialintelligenceai
+- Site query: `site:theguardian.com/technology/artificialintelligenceai`
+- RSS: https://www.theguardian.com/technology/artificialintelligenceai/rss
+- Topic filter: AI,IA,artificial intelligence,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### Superhuman AI
 - URL: https://www.superhuman.ai/
