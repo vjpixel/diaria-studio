@@ -159,3 +159,82 @@ describe("lintRelativeTime (social, #747)", () => {
     assert.equal(r.matches[0].line, 3);
   });
 });
+
+describe("lintRelativeTime expansion (social, #877)", () => {
+  it("detecta 'Hoje a Anthropic anunciou' (caso canônico do issue)", () => {
+    const md = "# LinkedIn\n\nHoje a Anthropic anunciou um novo modelo.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("detecta 'há 3 dias' / 'há 2 semanas' / 'há 1 mês'", () => {
+    for (const phrase of ["há 3 dias", "há 2 semanas", "há 1 mês", "há 6 meses"]) {
+      const md = `# LinkedIn\n\nO modelo foi anunciado ${phrase}.\n`;
+      const r = lintRelativeTime(md);
+      assert.equal(r.ok, false, `esperava match para "${phrase}"`);
+    }
+  });
+
+  it("detecta 'próxima semana' (sem 'na' obrigatório)", () => {
+    const md = "# LinkedIn\n\nPróxima semana o GPT-6 será aberto a beta.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+  });
+
+  it("detecta múltiplos matches numa linha", () => {
+    const md = "# LinkedIn\n\nHoje a OpenAI fez um anúncio. Recentemente eles também atualizaram.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 2);
+    const words = r.matches.map((m) => m.word.toLowerCase());
+    assert.ok(words.includes("hoje"));
+    assert.ok(words.includes("recentemente"));
+  });
+
+  it("não casa palavras compostas tipo 'ontem-feira' (hifenado)", () => {
+    const md = "# LinkedIn\n\nElaborado pela ontem-feira corp.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("não casa 'anteontem' (sufixo de 'ontem')", () => {
+    const md = "# LinkedIn\n\nIsso aconteceu anteontem mas seguimos em frente.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("pula match dentro de aspas duplas (citação direta de fonte)", () => {
+    const md = `# LinkedIn\n\nO CEO disse "hoje vamos lançar tudo" durante o evento.\n`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, JSON.stringify(r.matches));
+  });
+
+  it("pula match dentro de aspas curvas (smart quotes)", () => {
+    const md = `# LinkedIn\n\nO CEO disse “ontem fechamos o trato” no anúncio.\n`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("pula match dentro de aspas simples (com espaço antes)", () => {
+    const md = `# LinkedIn\n\nA fonte: 'esta semana foi histórica' marcou tudo.\n`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("ainda detecta match fora de aspas mesmo quando há aspas na mesma linha", () => {
+    const md = `# LinkedIn\n\nHoje, segundo "fonte interna", houve mudança.\n`;
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
+
+  it("apóstrofo em palavra (d'água, L'Oréal) não conta como aspas", () => {
+    const md = "# LinkedIn\n\nA L'Oréal não tem nada a ver, mas hoje teve outro anúncio.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    // 'hoje' não está dentro de aspas — deve ser detectado
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+});

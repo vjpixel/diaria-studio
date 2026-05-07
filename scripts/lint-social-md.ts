@@ -138,12 +138,16 @@ export function lintSocialMd(md: string): LintResult {
 }
 
 // ---------------------------------------------------------------------------
-// Temporal reference check (#747) — shared with lint-newsletter-md.ts
+// Temporal reference check (#747, #877) — social-specific
 // ---------------------------------------------------------------------------
 
 /**
- * Detecta referências temporais relativas banidas no MD de social (#747).
- * Mesma lógica de lint-newsletter-md.ts — edições publicam D+1.
+ * Detecta referências temporais relativas banidas no MD de social
+ * (#747, #877). Edições publicam D+1+ — palavras como "hoje", "ontem",
+ * "esta semana" envelhecem mal entre escrever e publicar.
+ *
+ * #877 — quote-skip: matches dentro de aspas (`"..."`, `'...'`, `«...»`,
+ * `“...”`) são ignorados (citação direta de fonte é OK ter relativo).
  */
 export interface RelativeTimeMatch {
   word: string;
@@ -158,8 +162,60 @@ export interface RelativeTimeResult {
 
 // Nota: \b não funciona com caracteres Unicode (ã, ê, etc.) — usamos
 // lookahead/lookbehind em vez de \b para cobrir amanhã, mês, etc.
+//
+// Patterns cobertos (#877):
+//   - hoje, ontem, amanhã (palavra solo; "ontem-feira" / "anteontem" não
+//     casam graças aos lookahead/lookbehind contra \w e ao requirement de
+//     start-of-word — `(?<![\w-])`)
+//   - esta semana, próxima semana, na próxima semana, na semana passada
+//   - este mês, mês passado
+//   - recentemente, agora mesmo, há pouco, acabou de
+//   - há N dia(s) / semana(s) / mês(es)
+//   - nesta {weekday}
 const RELATIVE_TIME_RE =
-  /(?<!\w)(hoje|ontem|amanhã|agora mesmo|esta semana|na semana passada|na próxima semana|este mês|mês passado|recentemente|há pouco|acabou de|nesta (?:segunda|terça|quarta|quinta|sexta|sábado|domingo))(?!\w)/gi;
+  /(?<![\w-])(hoje|ontem|amanhã|agora mesmo|esta semana|próxima semana|na semana passada|na próxima semana|este mês|mês passado|recentemente|há pouco|acabou de|há \d+ (?:dias?|semanas?|m[eê]s(?:es)?)|nesta (?:segunda|terça|quarta|quinta|sexta|sábado|domingo))(?![\w-])/gi;
+
+/**
+ * Identifica os ranges (start, end) de pares de aspas em uma linha.
+ * Cobre `"..."`, `'...'`, `«...»`, `“...”`. Usado para skip de matches
+ * dentro de citações.
+ */
+function quotedRanges(line: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  // Pares simétricos
+  const pairs: Array<[string, string]> = [
+    ['"', '"'],
+    ["'", "'"],
+    ["«", "»"],
+    ["“", "”"],
+  ];
+  for (const [open, close] of pairs) {
+    let idx = 0;
+    while (idx < line.length) {
+      const start = line.indexOf(open, idx);
+      if (start === -1) break;
+      const closeIdx = line.indexOf(close, start + 1);
+      if (closeIdx === -1) break;
+      // Apóstrofo (`'`): só conta como aspas se houver pelo menos um espaço
+      // ou início-de-string antes do par — evita falso quote em "d'água" /
+      // "L'Oréal".
+      if (open === "'" && start > 0 && /\w/.test(line[start - 1])) {
+        idx = start + 1;
+        continue;
+      }
+      ranges.push({ start, end: closeIdx });
+      idx = closeIdx + 1;
+    }
+  }
+  return ranges;
+}
+
+function isInQuotedRange(
+  index: number,
+  ranges: Array<{ start: number; end: number }>,
+): boolean {
+  return ranges.some((r) => index >= r.start && index <= r.end);
+}
 
 export function lintRelativeTime(md: string): RelativeTimeResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -167,9 +223,12 @@ export function lintRelativeTime(md: string): RelativeTimeResult {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const ranges = quotedRanges(line);
     RELATIVE_TIME_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = RELATIVE_TIME_RE.exec(line)) !== null) {
+      // #877 — pular matches dentro de aspas (citação direta)
+      if (isInQuotedRange(m.index, ranges)) continue;
       matches.push({
         word: m[1],
         context: line
@@ -201,7 +260,10 @@ function parseArgs(argv: string[]): Record<string, string> {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args.md) {
-    console.error("Uso: lint-social-md.ts --md <path>");
+    console.error(
+      "Uso: lint-social-md.ts --md <path>\n" +
+        "  ou: lint-social-md.ts --check relative-time --md <path>",
+    );
     process.exit(2);
   }
   const ROOT = process.cwd();
@@ -211,6 +273,26 @@ function main(): void {
     process.exit(2);
   }
   const md = readFileSync(mdPath, "utf8");
+
+  // Modo --check relative-time (#877) — detecta timestamps relativos em posts social
+  if (args.check === "relative-time") {
+    const result = lintRelativeTime(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} referência(s) temporal(is) relativa(s) detectada(s) em posts social:`,
+      );
+      for (const m of result.matches) {
+        console.error(
+          `  linha ${m.line}: relative_time: '${m.word}' encontrado — posts publicam D+1+, use data absoluta\n    contexto: "...${m.context}..."`,
+        );
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo default: validação de CTAs (#602)
   const result = lintSocialMd(md);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {

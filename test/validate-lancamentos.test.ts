@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractLancamentoUrls,
   validateLancamentos,
+  validateLancamentosFromApproved,
 } from "../scripts/validate-lancamentos.ts";
 
 describe("extractLancamentoUrls", () => {
@@ -172,5 +173,68 @@ https://canaltech.com.br/foo
 `;
     const result = validateStage1(md);
     assert.equal(result.status, "error");
+  });
+});
+
+describe("validateLancamentosFromApproved (#876)", () => {
+  it("retorna summary vazio quando não há lançamentos", () => {
+    const r = validateLancamentosFromApproved({});
+    assert.equal(r.original_count, 0);
+    assert.equal(r.final_count, 0);
+    assert.equal(r.removed.length, 0);
+  });
+
+  it("mantém URLs oficiais e remove não-oficiais", () => {
+    const approved = {
+      lancamento: [
+        { url: "https://openai.com/index/gpt-5", title: "GPT-5" },
+        {
+          url: "https://techcrunch.com/2026/04/25/foo",
+          title: "Cobertura TechCrunch",
+        },
+        {
+          url: "https://canaltech.com.br/foo",
+          title: "Canaltech",
+        },
+        { url: "https://blog.google/technology/x", title: "Gemini" },
+      ],
+    };
+    const r = validateLancamentosFromApproved(approved);
+    assert.equal(r.original_count, 4);
+    assert.equal(r.final_count, 2);
+    assert.equal(r.removed.length, 2);
+    assert.ok(
+      r.removed.some((x) => x.url.includes("techcrunch")),
+      JSON.stringify(r.removed),
+    );
+    assert.ok(r.removed.some((x) => x.url.includes("canaltech")));
+    for (const x of r.removed) {
+      assert.equal(x.reason, "non_official_domain");
+    }
+  });
+
+  it("ignora itens sem URL", () => {
+    const approved = {
+      lancamento: [
+        { url: "https://openai.com/index/x", title: "OK" },
+        { title: "sem url" },
+        { url: "" },
+      ],
+    };
+    const r = validateLancamentosFromApproved(approved);
+    assert.equal(r.original_count, 1);
+    assert.equal(r.final_count, 1);
+    assert.equal(r.removed.length, 0);
+  });
+
+  it("preserva o título no removed", () => {
+    const approved = {
+      lancamento: [
+        { url: "https://techcrunch.com/2026/04/x", title: "Cobertura terceirizada" },
+      ],
+    };
+    const r = validateLancamentosFromApproved(approved);
+    assert.equal(r.removed.length, 1);
+    assert.equal(r.removed[0].title, "Cobertura terceirizada");
   });
 });

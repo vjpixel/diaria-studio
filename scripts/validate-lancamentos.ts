@@ -1,5 +1,5 @@
 /**
- * validate-lancamentos.ts (#160)
+ * validate-lancamentos.ts (#160, #876)
  *
  * Garante que a seção LANÇAMENTOS de um `02-reviewed.md` só contém
  * URLs de domínio oficial (whitelist em `categorize.ts`). Cobertura
@@ -7,19 +7,28 @@
  * pra NOTÍCIAS — não pra LANÇAMENTOS, mesmo quando o tema é o
  * lançamento.
  *
- * Uso:
+ * Modo MD (#160):
  *   npx tsx scripts/validate-lancamentos.ts <md-path>
+ *
+ *   Output JSON: { lancamento_count, invalid_urls[], status }
+ *
+ * Modo approved-json (#876, usado em §2a do orchestrator-stage-2):
+ *   npx tsx scripts/validate-lancamentos.ts \
+ *     --approved <01-approved.json> \
+ *     [--write-removed <_internal/02-lancamentos-removed.json>]
+ *
+ *   Valida cada URL em `approved.lancamento[]`. Quando `--write-removed`
+ *   é passado, grava o resumo `{ removed[], original_count, final_count }`
+ *   no path indicado para que `sync-intro-count.ts` ajuste menções
+ *   narrativas a "X lançamentos" no intro pós-Clarice.
  *
  * Exit codes:
  *   0  Todas as URLs em LANÇAMENTOS são oficiais (ou seção vazia)
  *   1  Pelo menos 1 URL não-oficial em LANÇAMENTOS
- *   2  Erro de leitura do arquivo
- *
- * Output JSON em stdout:
- *   { lancamento_count: N, invalid_urls: [...], status: "ok" | "error" }
+ *   2  Erro de leitura/uso
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
@@ -97,11 +106,120 @@ export function validateLancamentos(text: string): ValidationResult {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Modo approved-json (#876) — valida `lancamento[]` no 01-approved.json
+// e devolve a lista de URLs removidas para que `sync-intro-count.ts` ajuste
+// menções narrativas a "X lançamentos" no intro.
+// ---------------------------------------------------------------------------
+
+export interface LancamentoRemoved {
+  url: string;
+  title?: string;
+  reason: string;
+}
+
+export interface LancamentosRemovedSummary {
+  removed: LancamentoRemoved[];
+  original_count: number;
+  final_count: number;
+}
+
+interface ApprovedShape {
+  lancamento?: Array<{ url?: string; title?: string; [k: string]: unknown }>;
+  [k: string]: unknown;
+}
+
+/**
+ * Valida o array `lancamento[]` do 01-approved.json. URLs não-oficiais
+ * vão para `removed` com a razão `non_official_domain`. URLs vazias são
+ * ignoradas (não contam como original nem como removido).
+ */
+export function validateLancamentosFromApproved(
+  approved: ApprovedShape,
+): LancamentosRemovedSummary {
+  const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
+  const removed: LancamentoRemoved[] = [];
+  let kept = 0;
+
+  for (const item of list) {
+    const url = typeof item.url === "string" ? item.url : "";
+    if (!url) continue;
+    if (isOfficialLancamentoUrl(url)) {
+      kept++;
+    } else {
+      removed.push({
+        url,
+        title: typeof item.title === "string" ? item.title : undefined,
+        reason: "non_official_domain",
+      });
+    }
+  }
+
+  const original_count = kept + removed.length;
+  return { removed, original_count, final_count: kept };
+}
+
+function parseFlagArgs(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+      out[a.slice(2)] = argv[i + 1];
+      i++;
+    }
+  }
+  return out;
+}
+
+function mainApproved(args: Record<string, string>, ROOT: string): void {
+  const approvedPath = resolve(ROOT, args.approved);
+  if (!existsSync(approvedPath)) {
+    console.error(`Arquivo não existe: ${approvedPath}`);
+    process.exit(2);
+  }
+  let approved: ApprovedShape;
+  try {
+    approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedShape;
+  } catch (err) {
+    console.error(`Falha ao parsear ${approvedPath}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+  const summary = validateLancamentosFromApproved(approved);
+  console.log(JSON.stringify(summary, null, 2));
+
+  if (args["write-removed"]) {
+    const outPath = resolve(ROOT, args["write-removed"]);
+    writeFileSync(outPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
+  }
+
+  if (summary.removed.length > 0) {
+    console.error(
+      `\n⚠️ ${summary.removed.length} de ${summary.original_count} lançamento(s) removido(s) (URL não-oficial):`,
+    );
+    for (const r of summary.removed) {
+      const titleHint = r.title ? ` ("${r.title.slice(0, 60)}")` : "";
+      console.error(`  ${r.url}${titleHint}`);
+    }
+    process.exit(1);
+  }
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const flagArgs = parseFlagArgs(process.argv.slice(2));
+
+  // Modo approved-json (#876)
+  if (flagArgs.approved) {
+    mainApproved(flagArgs, ROOT);
+    return;
+  }
+
   const arg = process.argv[2];
   if (!arg) {
-    console.error("Uso: validate-lancamentos.ts <md-path>");
+    console.error(
+      "Uso: validate-lancamentos.ts <md-path>\n" +
+        "  ou: validate-lancamentos.ts --approved <01-approved.json> [--write-removed <path>]",
+    );
     process.exit(2);
   }
   const path = resolve(ROOT, arg);
