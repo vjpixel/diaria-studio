@@ -209,31 +209,35 @@ describe("buildReport (#891)", () => {
 });
 
 describe("payloadLevel ratchet (#891)", () => {
-  it("info quando bytes < 200KB", () => {
+  it("info quando bytes < 300KB (baseline saudável pós-cap)", () => {
     assert.equal(payloadLevel(0), "info");
     assert.equal(payloadLevel(150 * 1024), "info");
+    // Baseline 260507 pós-cap (243K) cai em info — pipeline saudável.
+    assert.equal(payloadLevel(243 * 1024), "info");
     assert.equal(payloadLevel(PAYLOAD_WARN_BYTES - 1), "info");
   });
 
-  it("warn quando bytes >= 200KB e < 500KB", () => {
+  it("warn quando bytes >= 300KB e < 700KB", () => {
     assert.equal(payloadLevel(PAYLOAD_WARN_BYTES), "warn");
-    assert.equal(payloadLevel(300 * 1024), "warn");
+    assert.equal(payloadLevel(500 * 1024), "warn");
     assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES - 1), "warn");
   });
 
-  it("error quando bytes >= 500KB", () => {
+  it("error quando bytes >= 700KB", () => {
     assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES), "error");
     assert.equal(payloadLevel(1024 * 1024), "error");
-    // 561K bruto pré-cap em 260507 (cenário do bug original) = error
-    assert.equal(payloadLevel(561 * 1024), "error");
+    // 1M bytes — território de context overflow, dispara issue via auto-reporter.
+    assert.equal(payloadLevel(1500 * 1024), "error");
   });
 
-  it("baseline 260507 pós-cap (243K) cai em warn — sinal pra triar", () => {
-    assert.equal(payloadLevel(243 * 1024), "warn");
+  it("cenário do bug original (561K pré-cap em 260507) cai em warn agora", () => {
+    // Pre-cap era 561K — sem cap, era passing alarm. Pós-cap, threshold 300/700
+    // pega esse range em warn (não bloqueia, mas sinaliza pra editor investigar).
+    assert.equal(payloadLevel(561 * 1024), "warn");
   });
 
-  it("constants exportadas: warn=200KB, error=500KB", () => {
-    assert.equal(PAYLOAD_WARN_BYTES, 200 * 1024);
-    assert.equal(PAYLOAD_ERROR_BYTES, 500 * 1024);
+  it("constants exportadas: warn=300KB, error=700KB", () => {
+    assert.equal(PAYLOAD_WARN_BYTES, 300 * 1024);
+    assert.equal(PAYLOAD_ERROR_BYTES, 700 * 1024);
   });
 });

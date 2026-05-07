@@ -155,17 +155,19 @@ export function buildReport(opts: {
 /**
  * #891 P3: thresholds pra detectar regressão de payload size pós-cap.
  *
- * - 200KB warn: baseline saudável é ~150KB pós-cap (243K em 260507 com 67 sources).
- *   Sinaliza que alguma fonte explodiu, cap não cobriu, ou subagent retornou
- *   payload extra-grande no return string.
- * - 500KB error: território perigoso. Risco real de context overflow no
- *   orchestrator (~3M tokens estimados, 309% do limite, era o sintoma de #891).
+ * Calibrados contra dado real (não estimativa):
+ * - Baseline 260507 pós-cap = 243KB (67 sources ativas, todas no cap 30).
+ * - 300KB warn: baseline + 25% de margem. Sinaliza que (a) novas sources
+ *   foram adicionadas, (b) alguma fonte explodiu além do cap, ou (c)
+ *   subagent retornou payload extra-grande no return string.
+ * - 700KB error: território perigoso. Cenário do bug original (561KB
+ *   pré-cap, ~3M tokens, 309% do limite) cai aqui — auto-reporter pega
+ *   level=error e cria issue automática.
  *
- * Não bloqueia gate — só dispara warn/error level no run-log pra auto-reporter
- * pegar e criar issue automática se passar.
+ * Não bloqueia gate — só dispara warn/error level no run-log.
  */
-export const PAYLOAD_WARN_BYTES = 200 * 1024;
-export const PAYLOAD_ERROR_BYTES = 500 * 1024;
+export const PAYLOAD_WARN_BYTES = 300 * 1024;
+export const PAYLOAD_ERROR_BYTES = 700 * 1024;
 
 export function payloadLevel(bytes: number): "info" | "warn" | "error" {
   if (bytes >= PAYLOAD_ERROR_BYTES) return "error";

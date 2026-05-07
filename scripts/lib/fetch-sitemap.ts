@@ -11,7 +11,7 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
-import { capArticles } from "../fetch-rss.ts";
+import { capArticles, type Article } from "./article-cap.ts";
 
 export interface SitemapEntry {
   loc: string;
@@ -21,12 +21,8 @@ export interface SitemapEntry {
   body_excerpt?: string;
 }
 
-export interface Article {
-  url: string;
-  title: string;
-  published_at: string | null;
-  summary: string;
-}
+// #944 review: Article importada de ./article-cap.ts (single source of truth).
+export type { Article };
 
 export interface SitemapFetchResult {
   source: string;
