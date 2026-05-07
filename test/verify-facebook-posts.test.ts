@@ -1,9 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   reconcilePost,
   verifyPublished,
   inferIsPublished,
+  resolveSocialPublishedPath,
   type PostEntry,
   type GraphPostResponse,
   type SocialPublished,
@@ -200,5 +204,74 @@ describe("inferIsPublished (#600)", () => {
   it("created_time ausente → não infere", () => {
     const r = inferIsPublished({ scheduled_publish_time: fakeNow + 3600 }, fakeNow);
     assert.equal(r.is_published, undefined);
+  });
+});
+
+describe("resolveSocialPublishedPath (#920)", () => {
+  it("prefere _internal/ quando existe (canonical write path de publish-facebook.ts)", () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-fb-path-"));
+    const editionRel = "data/editions/260507";
+    const editionAbs = join(root, editionRel);
+    mkdirSync(join(editionAbs, "_internal"), { recursive: true });
+    writeFileSync(
+      join(editionAbs, "_internal", "06-social-published.json"),
+      "{}",
+    );
+    try {
+      const out = resolveSocialPublishedPath(root, editionRel);
+      assert.equal(
+        out,
+        resolve(editionAbs, "_internal", "06-social-published.json"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cai pra root quando só legacy existe (compat com edições antigas)", () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-fb-path-"));
+    const editionRel = "data/editions/260507";
+    const editionAbs = join(root, editionRel);
+    mkdirSync(editionAbs, { recursive: true });
+    writeFileSync(join(editionAbs, "06-social-published.json"), "{}");
+    try {
+      const out = resolveSocialPublishedPath(root, editionRel);
+      assert.equal(out, resolve(editionAbs, "06-social-published.json"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando não existe em nenhum dos paths", () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-fb-path-"));
+    const editionRel = "data/editions/260507";
+    mkdirSync(join(root, editionRel), { recursive: true });
+    try {
+      const out = resolveSocialPublishedPath(root, editionRel);
+      assert.equal(out, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prefere _internal/ mesmo quando legacy também existe", () => {
+    const root = mkdtempSync(join(tmpdir(), "verify-fb-path-"));
+    const editionRel = "data/editions/260507";
+    const editionAbs = join(root, editionRel);
+    mkdirSync(join(editionAbs, "_internal"), { recursive: true });
+    writeFileSync(join(editionAbs, "06-social-published.json"), "{\"legacy\":true}");
+    writeFileSync(
+      join(editionAbs, "_internal", "06-social-published.json"),
+      "{\"canonical\":true}",
+    );
+    try {
+      const out = resolveSocialPublishedPath(root, editionRel);
+      assert.equal(
+        out,
+        resolve(editionAbs, "_internal", "06-social-published.json"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

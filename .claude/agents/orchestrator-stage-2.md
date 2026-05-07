@@ -264,6 +264,14 @@ Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês
 
     Se exit 0, prosseguir pra Etapa 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
 
+  - **Inserir TÍTULO/SUBTÍTULO no topo (#916).** Roda depois que cada destaque tem 1 só título (pós title-picker / poda manual). Stage 4 (Beehiiv) usa esse bloco como subject + preview text — sem isso, editor preenche manualmente todo dia. Idempotente.
+
+    ```bash
+    npx tsx scripts/insert-titulo-subtitulo.ts \
+      --in data/editions/{AAMMDD}/02-reviewed.md
+    ```
+    Falha = warning, **não bloqueia** (gate já aprovou).
+
   - **Escrever sentinel de conclusão do Stage 2:**
     ```bash
     npx tsx scripts/pipeline-sentinel.ts write \

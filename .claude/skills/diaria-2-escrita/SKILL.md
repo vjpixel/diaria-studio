@@ -325,6 +325,16 @@ npx tsx scripts/verify-clarice-url-stability.ts \
 
 Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
 
+### 3e. Push incremental ao Drive (#903)
+
+Newsletter pós-Clarice/humanize está estável. Subir pro Drive **agora** — não esperar o social terminar (passo 4). Editor pode revisar `02-reviewed.md` no celular enquanto a pipeline de social ainda processa em paralelo. Falha não bloqueia (passo 5 sobe novamente como fallback).
+
+```bash
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+```
+
+Pular se `$2 = social` (newsletter não foi processada nessa run).
+
 ## Passo 4 — Processar social (pular se `$2 = newsletter`)
 
 ### 4a. Cleanup dos tmp files (merge já feito no Passo 2b)
@@ -398,7 +408,19 @@ cp data/editions/$1/_internal/03-social.pre-humanize.md data/editions/$1/03-soci
 
 Falha **não bloqueia**.
 
-## Passo 5 — Drive sync push (outputs)
+### 4d. Push incremental ao Drive (#903)
+
+Social pós-Clarice/humanize está estável. Subir pro Drive **agora** — independente da newsletter (passo 3 pode já ter terminado e subido em 3e, ou ainda estar processando). Editor revisa cada arquivo assim que estabiliza, sem esperar a pipeline inteira. Falha não bloqueia (passo 5 sobe novamente como fallback).
+
+```bash
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 03-social.md
+```
+
+Pular se `$2 = newsletter` (social não foi processado nessa run).
+
+## Passo 5 — Drive sync push (final fallback)
+
+Re-roda o push com **ambos** os arquivos. Garante que qualquer alteração pós-3e/4d (ex: editor mexendo no arquivo entre passos) seja capturada, e cobre o caso onde os pushes incrementais falharam silenciosamente. Pulado individualmente quando `$2` limita escopo.
 
 ```bash
 npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md,03-social.md
@@ -472,13 +494,29 @@ Agent({
 })
 ```
 
-Após title-picker, re-rodar lint + push final pro Drive:
+Após title-picker, re-rodar lint:
 ```bash
 npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md data/editions/$1/02-reviewed.md
+```
+
+## Passo 7b — Inserir TÍTULO/SUBTÍTULO no topo (#916)
+
+Roda **depois** que cada destaque tem 1 só título (pós-poda manual do gate ou pós title-picker). Insere bloco `TÍTULO`/`SUBTÍTULO` no topo do `02-reviewed.md` que Stage 4 (publicação Beehiiv) usa pra preencher subject line + preview text. Sem isso, é trabalho manual do editor todo dia. Idempotente — re-rodar não duplica.
+
+```bash
+npx tsx scripts/insert-titulo-subtitulo.ts \
+  --in data/editions/$1/02-reviewed.md
+```
+
+Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs quebrar, editor preenche manualmente como antes.
+
+## Passo 7c — Push final ao Drive
+
+```bash
 npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
 ```
 
-Erro do agent reportado ao editor — sem fallback automático adicional.
+Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
 
 **Cleanup do snapshot pré-Clarice (#874).** Após o gate fechar (com ou sem title-picker), o snapshot `_internal/02-pre-clarice.md` pode ser removido — não há mais resume mid-Clarice possível pra essa edição:
 
