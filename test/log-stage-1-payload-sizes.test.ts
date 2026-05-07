@@ -6,6 +6,9 @@ import { join } from "node:path";
 import {
   buildReport,
   listInternalJsonFiles,
+  payloadLevel,
+  PAYLOAD_WARN_BYTES,
+  PAYLOAD_ERROR_BYTES,
 } from "../scripts/log-stage-1-payload-sizes.ts";
 
 function makeFixture(): { root: string; internalDir: string; edition: string } {
@@ -202,5 +205,35 @@ describe("buildReport (#891)", () => {
     } finally {
       rmSync(root, { recursive: true });
     }
+  });
+});
+
+describe("payloadLevel ratchet (#891)", () => {
+  it("info quando bytes < 200KB", () => {
+    assert.equal(payloadLevel(0), "info");
+    assert.equal(payloadLevel(150 * 1024), "info");
+    assert.equal(payloadLevel(PAYLOAD_WARN_BYTES - 1), "info");
+  });
+
+  it("warn quando bytes >= 200KB e < 500KB", () => {
+    assert.equal(payloadLevel(PAYLOAD_WARN_BYTES), "warn");
+    assert.equal(payloadLevel(300 * 1024), "warn");
+    assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES - 1), "warn");
+  });
+
+  it("error quando bytes >= 500KB", () => {
+    assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES), "error");
+    assert.equal(payloadLevel(1024 * 1024), "error");
+    // 561K bruto pré-cap em 260507 (cenário do bug original) = error
+    assert.equal(payloadLevel(561 * 1024), "error");
+  });
+
+  it("baseline 260507 pós-cap (243K) cai em warn — sinal pra triar", () => {
+    assert.equal(payloadLevel(243 * 1024), "warn");
+  });
+
+  it("constants exportadas: warn=200KB, error=500KB", () => {
+    assert.equal(PAYLOAD_WARN_BYTES, 200 * 1024);
+    assert.equal(PAYLOAD_ERROR_BYTES, 500 * 1024);
   });
 });

@@ -11,6 +11,7 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import { capArticles } from "../fetch-rss.ts";
 
 export interface SitemapEntry {
   loc: string;
@@ -33,6 +34,8 @@ export interface SitemapFetchResult {
   sitemap_url: string;
   articles: Article[];
   error?: string;
+  /** #891: mesmo cap que fetch-rss — count de artigos cortados além do máximo. */
+  truncated_by_cap?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -280,11 +283,21 @@ export async function fetchSitemapEntries(opts: {
   const enriched = await Promise.all(
     inWindow.map((e) => enrichEntry(e, { timeoutMs })),
   );
+  const articles = enriched.map(entryToArticle);
+  // #891: cap por source — sitemap pode ter centenas de URLs. Mesmo cap
+  // que fetch-rss pra consistência. Articles já vêm filtrados por janela.
+  const { capped, truncated } = capArticles(articles);
+  if (truncated > 0) {
+    console.error(
+      `[fetch-sitemap] cap aplicado em ${opts.sourceName}: ${articles.length} → ${capped.length} (${truncated} cortados)`,
+    );
+  }
 
   return {
     source: opts.sourceName,
     method: "sitemap",
     sitemap_url: opts.url,
-    articles: enriched.map(entryToArticle),
+    articles: capped,
+    ...(truncated > 0 ? { truncated_by_cap: truncated } : {}),
   };
 }

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseFeed, filterByWindow, filterByTopic, fetchRss, type Article } from "../scripts/fetch-rss.ts";
+import { parseFeed, filterByWindow, filterByTopic, fetchRss, capArticles, MAX_ARTICLES_PER_SOURCE, type Article } from "../scripts/fetch-rss.ts";
 
 describe("parseFeed — RSS 2.0", () => {
   const rssSample = `<?xml version="1.0" encoding="UTF-8"?>
@@ -325,5 +325,63 @@ describe("filterByTopic (#347)", () => {
     const articles = [makeArticle("Large language model capabilities")];
     const filtered = filterByTopic(articles, ["large language"]);
     assert.equal(filtered.length, 1);
+  });
+});
+
+describe("capArticles (#891)", () => {
+  function makeArt(i: number, date?: string | null): Article {
+    return {
+      url: `https://example.com/${i}`,
+      title: `Article ${i}`,
+      published_at: date === undefined ? `2026-05-${String(i % 28 + 1).padStart(2, "0")}T00:00:00Z` : date,
+      summary: `Summary ${i}`,
+    };
+  }
+
+  it("MAX_ARTICLES_PER_SOURCE é 30", () => {
+    assert.equal(MAX_ARTICLES_PER_SOURCE, 30);
+  });
+
+  it("retorna sem mudança quando ≤ cap", () => {
+    const arts = Array.from({ length: 5 }, (_, i) => makeArt(i));
+    const { capped, truncated } = capArticles(arts);
+    assert.equal(capped.length, 5);
+    assert.equal(truncated, 0);
+    assert.deepEqual(capped, arts);
+  });
+
+  it("corta quando > cap, mantém os 30 mais recentes (regressão #891 arXiv 229)", () => {
+    // Arts numeradas 1..50 com datas crescentes — o 50 é o mais recente
+    const arts = Array.from({ length: 50 }, (_, i) => ({
+      url: `https://example.com/${i}`,
+      title: `Article ${i}`,
+      published_at: `2026-05-07T${String(i).padStart(2, "0")}:00:00Z`,
+      summary: "x",
+    }));
+    const { capped, truncated } = capArticles(arts);
+    assert.equal(capped.length, 30);
+    assert.equal(truncated, 20);
+    // O mais recente (índice 49) deve estar no resultado
+    assert.ok(capped.some((a) => a.url.endsWith("/49")));
+    // O mais antigo (índice 0) NÃO deve estar
+    assert.ok(!capped.some((a) => a.url.endsWith("/0")));
+  });
+
+  it("articles sem published_at vão pro fim do sort (descartados primeiro)", () => {
+    const arts = [
+      ...Array.from({ length: 30 }, (_, i) => makeArt(i)),
+      ...Array.from({ length: 5 }, (_, i) => makeArt(100 + i, null)),
+    ];
+    const { capped } = capArticles(arts);
+    assert.equal(capped.length, 30);
+    // Nenhum dos null deveria ter passado o cap
+    assert.equal(capped.filter((a) => a.published_at === null).length, 0);
+  });
+
+  it("input não é mutado", () => {
+    const arts = Array.from({ length: 50 }, (_, i) => makeArt(i));
+    const original = [...arts];
+    capArticles(arts);
+    assert.deepEqual(arts, original);
   });
 });

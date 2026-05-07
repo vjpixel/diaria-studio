@@ -152,6 +152,27 @@ export function buildReport(opts: {
   };
 }
 
+/**
+ * #891 P3: thresholds pra detectar regressão de payload size pós-cap.
+ *
+ * - 200KB warn: baseline saudável é ~150KB pós-cap (243K em 260507 com 67 sources).
+ *   Sinaliza que alguma fonte explodiu, cap não cobriu, ou subagent retornou
+ *   payload extra-grande no return string.
+ * - 500KB error: território perigoso. Risco real de context overflow no
+ *   orchestrator (~3M tokens estimados, 309% do limite, era o sintoma de #891).
+ *
+ * Não bloqueia gate — só dispara warn/error level no run-log pra auto-reporter
+ * pegar e criar issue automática se passar.
+ */
+export const PAYLOAD_WARN_BYTES = 200 * 1024;
+export const PAYLOAD_ERROR_BYTES = 500 * 1024;
+
+export function payloadLevel(bytes: number): "info" | "warn" | "error" {
+  if (bytes >= PAYLOAD_ERROR_BYTES) return "error";
+  if (bytes >= PAYLOAD_WARN_BYTES) return "warn";
+  return "info";
+}
+
 function appendRunLog(opts: {
   logPath: string;
   edition: string;
@@ -160,14 +181,19 @@ function appendRunLog(opts: {
   now: Date;
 }): void {
   mkdirSync(dirname(opts.logPath), { recursive: true });
+  const level = payloadLevel(opts.totals.bytes);
   const event = {
     timestamp: opts.now.toISOString(),
     edition: opts.edition,
     stage: 1,
     agent: "log-stage-1-payload-sizes",
-    level: "info" as const,
+    level,
     message: "stage1_payload_sizes",
-    details: { totals: opts.totals, top_3: opts.top_3 },
+    details: {
+      totals: opts.totals,
+      top_3: opts.top_3,
+      threshold: { warn_bytes: PAYLOAD_WARN_BYTES, error_bytes: PAYLOAD_ERROR_BYTES },
+    },
   };
   appendFileSync(opts.logPath, JSON.stringify(event) + "\n", "utf8");
 }

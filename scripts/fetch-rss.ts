@@ -35,6 +35,37 @@ export interface FetchResult {
   /** #678: quantos artigos foram descartados pelo topicFilter (feed funcionou, mas sem match).
    * Se > 0, o orchestrator NÃO deve fazer fallback para WebSearch — o feed está ok. */
   filtered_by_topic?: number;
+  /** #891: quantos artigos foram cortados pelo cap por source. Indica que o feed
+   * tinha mais conteúdo que MAX_ARTICLES_PER_SOURCE — útil pra triagem de
+   * fontes que dominam payload (ex: arXiv devolveu 229 artigos em 260507). */
+  truncated_by_cap?: number;
+}
+
+/**
+ * #891: cap por source pra evitar payload bloat no orchestrator. arXiv
+ * sozinho devolveu 229 artigos em 260507 (158K bytes só do articles[]).
+ * Cap 30 cobre ~95% das fontes (CNN 47, Canaltech 50, arXiv 229 são as
+ * únicas acima); reduz ~57% do payload total Stage 1.
+ *
+ * Articles ordenados por published_at desc antes do slice — pegamos os
+ * mais recentes. published_at null vai pro fim (provavelmente antigos).
+ */
+export const MAX_ARTICLES_PER_SOURCE = 30;
+
+export function capArticles(articles: Article[]): { capped: Article[]; truncated: number } {
+  if (articles.length <= MAX_ARTICLES_PER_SOURCE) {
+    return { capped: articles, truncated: 0 };
+  }
+  const sorted = [...articles].sort((a, b) => {
+    if (!a.published_at && !b.published_at) return 0;
+    if (!a.published_at) return 1;
+    if (!b.published_at) return -1;
+    return b.published_at.localeCompare(a.published_at);
+  });
+  return {
+    capped: sorted.slice(0, MAX_ARTICLES_PER_SOURCE),
+    truncated: articles.length - MAX_ARTICLES_PER_SOURCE,
+  };
 }
 
 export interface FetchOptions {
@@ -262,12 +293,20 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
     // #678: expõe quantos artigos foram descartados pelo topicFilter para que o
     // orchestrator não faça fallback WebSearch desnecessário (feed ok, sem match hoje).
     const filteredByTopic = hasTopicFilter ? byWindow.length - filtered.length : undefined;
+    // #891: cap por source — feeds gigantes (arXiv, agregadores) bloat o payload do orchestrator.
+    const { capped, truncated } = capArticles(filtered);
+    if (truncated > 0) {
+      console.error(
+        `[fetch-rss] cap aplicado em ${opts.sourceName}: ${filtered.length} → ${capped.length} (${truncated} cortados)`,
+      );
+    }
     return {
       source: opts.sourceName,
       method: "rss",
       feed_url: opts.url,
-      articles: filtered,
+      articles: capped,
       ...(filteredByTopic !== undefined ? { filtered_by_topic: filteredByTopic } : {}),
+      ...(truncated > 0 ? { truncated_by_cap: truncated } : {}),
     };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
