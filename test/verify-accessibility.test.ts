@@ -4,6 +4,8 @@ import {
   classifyHttpStatus,
   detectSoft404Title,
   runBounded,
+  shouldBypassHeadFor,
+  BROWSER_UA,
 } from "../scripts/verify-accessibility.ts";
 
 const TRUSTED_HOST = "techcrunch.com"; // está em TRUSTED_PUBLISHERS
@@ -188,5 +190,62 @@ describe("runBounded — bounded worker pool (#717 hyp 3)", () => {
       visited.push(idx);
     });
     assert.deepEqual([...visited].sort((a, b) => a - b), [7, 42, 100]);
+  });
+});
+
+describe("classifyHttpStatus (#899) — 405/406 em trusted publisher = anti_bot", () => {
+  it("406 em theguardian.com → anti_bot (bot blocking típico)", () => {
+    const r = classifyHttpStatus(406, "theguardian.com", "HEAD");
+    assert.ok(r);
+    assert.equal(r!.verdict, "anti_bot");
+    assert.equal(r!.access_uncertain, true);
+    assert.ok(r!.note?.includes("trusted publisher"));
+  });
+
+  it("405 em bbc.com → anti_bot", () => {
+    const r = classifyHttpStatus(405, "bbc.com", "HEAD");
+    assert.ok(r);
+    assert.equal(r!.verdict, "anti_bot");
+  });
+
+  it("406 em domínio NÃO-trusted → blocked (preserva comportamento)", () => {
+    const r = classifyHttpStatus(406, "random-blog.example.com", "HEAD");
+    assert.ok(r);
+    assert.equal(r!.verdict, "blocked");
+  });
+
+  it("405/406 em GET continua sendo anti_bot em trusted publisher", () => {
+    assert.equal(classifyHttpStatus(405, "bloomberg.com", "GET")?.verdict, "anti_bot");
+    assert.equal(classifyHttpStatus(406, "theguardian.com", "GET")?.verdict, "anti_bot");
+  });
+});
+
+describe("shouldBypassHeadFor (#899) — trusted publishers pulam HEAD", () => {
+  it("theguardian.com → true", () => {
+    assert.equal(shouldBypassHeadFor("theguardian.com"), true);
+  });
+
+  it("bbc.com → true", () => {
+    assert.equal(shouldBypassHeadFor("bbc.com"), true);
+  });
+
+  it("bloomberg.com → true", () => {
+    assert.equal(shouldBypassHeadFor("bloomberg.com"), true);
+  });
+
+  it("anthropic.com → true (já estava em trusted publishers)", () => {
+    assert.equal(shouldBypassHeadFor("anthropic.com"), true);
+  });
+
+  it("random domain → false", () => {
+    assert.equal(shouldBypassHeadFor("randomblog.example.com"), false);
+  });
+});
+
+describe("BROWSER_UA (#899)", () => {
+  it("é UA Chrome típico (passa em sites com bot detection básico)", () => {
+    assert.ok(BROWSER_UA.includes("Mozilla/5.0"));
+    assert.ok(BROWSER_UA.includes("Chrome"));
+    assert.ok(BROWSER_UA.includes("Safari"));
   });
 });

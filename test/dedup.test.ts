@@ -1,11 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   canonicalize,
   normalizeTitle,
   titleSimilarity,
   extractPastUrls,
   extractPastTitles,
+  extractPastEditionArticleTitles,
+  jaccardSimilarity,
+  subjectSimilarity,
+  tokenizeForJaccard,
   dedup,
 } from "../scripts/dedup.ts";
 
@@ -331,5 +338,252 @@ describe("dedup Pass 1b — title similarity vs past editions (#231)", () => {
     ];
     const result = dedup(articles, new Set(), 0.85); // sem pastTitles
     assert.equal(result.kept.length, 1);
+  });
+});
+
+describe("tokenizeForJaccard / jaccardSimilarity (#897)", () => {
+  it("tokeniza removendo stopwords e tokens curtos", () => {
+    const tokens = tokenizeForJaccard("OpenAI lança GPT-5.5 com foco em agentes");
+    assert.ok(tokens.has("openai"));
+    assert.ok(tokens.has("gpt"));
+    assert.ok(tokens.has("foco"));
+    assert.ok(tokens.has("agentes"));
+    // Tokens curtos descartados
+    assert.equal(tokens.has("a"), false);
+    assert.equal(tokens.has("em"), false);
+  });
+
+  it("Jaccard idênticos = 1", () => {
+    const a = tokenizeForJaccard("OpenAI GPT-5 lançamento");
+    const b = tokenizeForJaccard("OpenAI GPT-5 lançamento");
+    assert.equal(jaccardSimilarity(a, b), 1);
+  });
+
+  it("Jaccard sem overlap = 0", () => {
+    const a = tokenizeForJaccard("Política eleições Brasil");
+    const b = tokenizeForJaccard("Receita bolo chocolate");
+    assert.equal(jaccardSimilarity(a, b), 0);
+  });
+
+  it("Jaccard parcial — PT-BR vs EN da mesma história", () => {
+    // OpenAI lança GPT-5 vs OpenAI launches GPT-5
+    // PT: "openai", "lanca", "gpt"
+    // EN: "openai", "launches", "gpt"
+    // Intersection: openai + gpt = 2; Union: 4 → 0.5
+    const a = tokenizeForJaccard("OpenAI lança GPT-5");
+    const b = tokenizeForJaccard("OpenAI launches GPT-5");
+    const sim = jaccardSimilarity(a, b);
+    assert.ok(sim >= 0.4 && sim <= 0.7, `esperado entre 0.4 e 0.7, got ${sim}`);
+  });
+
+  it("Set vazio = 0", () => {
+    assert.equal(jaccardSimilarity(new Set(), new Set(["a", "b"])), 0);
+    assert.equal(jaccardSimilarity(new Set(["a"]), new Set()), 0);
+  });
+
+  it("subjectSimilarity wrapper bate com expectativa do issue (#897)", () => {
+    // Issue cita exemplo: "Truque Google IA 3x mais rápido" e
+    // "Multi-token prediction Gemma 4" — temas relacionados via Gemma 4 mas
+    // entidades diferentes — não deve casar com threshold 0.6.
+    const sim = subjectSimilarity(
+      "Truque Google IA 3x mais rápido",
+      "Multi-token prediction Gemma 4 paper",
+    );
+    assert.ok(sim < 0.6, `esperado < 0.6, got ${sim}`);
+  });
+});
+
+describe("dedup Pass 1c — subject Jaccard vs past article titles (#897)", () => {
+  it("remove artigo cujo título é traduzido/parafraseado de artigo de edição anterior", () => {
+    // Past edition cobriu "GPT-5.5 Instant launch" (openai.com); current
+    // edition tem "ChatGPT alucinações com GPT-5.5" do canaltech (mesma news,
+    // ângulo paralelo). Jaccard sobre tokens normalizados deve >= 0.6.
+    const pastArticleTitles = [
+      "OpenAI lança GPT-5.5 Instant",
+    ];
+    const articles = [
+      { url: "https://canaltech.com.br/openai-gpt-5-5-instant-anuncia", title: "OpenAI lança GPT-5.5 Instant para usuários" },
+    ];
+    const result = dedup(
+      articles,
+      new Set(), // pastUrls
+      0.85,      // titleThreshold (intra)
+      [],        // pastTitles (Pass 1b)
+      0.70,
+      pastArticleTitles, // Pass 1c
+      0.6,
+    );
+    assert.equal(result.kept.length, 0);
+    assert.ok(
+      result.removed.some(r => r.dedup_note.includes("subject similar")),
+      `esperado dedup_note com "subject similar", got: ${JSON.stringify(result.removed)}`,
+    );
+  });
+
+  it("artigo com tema completamente diferente não é dedup'd", () => {
+    const pastArticleTitles = ["OpenAI lança GPT-5.5 Instant"];
+    const articles = [
+      { url: "https://example.com/a", title: "Brasil aprova marco regulatório de IA" },
+    ];
+    const result = dedup(
+      articles, new Set(), 0.85, [], 0.70, pastArticleTitles, 0.6,
+    );
+    assert.equal(result.kept.length, 1);
+  });
+
+  it("threshold conservador — nomes genéricos compartilhados não disparam dup", () => {
+    // Issue calls out: títulos genéricos "Como X usa IA" não devem dar false
+    // positive. Testa com tokens vazios após stopword removal.
+    const pastArticleTitles = ["Como AWS usa IA pra otimizar custos"];
+    const articles = [
+      { url: "https://example.com/a", title: "Como Microsoft usa IA pra automação" },
+    ];
+    // Tokens overlap: "como", "usa" (ambos curtos/stopwords filtrados)
+    // Resto: "aws"/"otimizar"/"custos" vs "microsoft"/"automacao" — sem overlap
+    // jaccard ~ 0 (apenas "ia" se passar pelo filtro >= 3 chars)
+    const result = dedup(
+      articles, new Set(), 0.85, [], 0.70, pastArticleTitles, 0.6,
+    );
+    assert.equal(result.kept.length, 1, "genérico não deve disparar dup");
+  });
+
+  it("sem pastArticleTitles (default []) não toca em afterPass1b output", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "Algum título" },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+  });
+
+  it("título sem tokens significativos (todos curtos) não dispara dup", () => {
+    // "a b c d" tokens todos descartados (< 3 chars) → set vazio → no dup
+    const pastArticleTitles = ["x y z"];
+    const articles = [{ url: "https://a.com/1", title: "a b c d" }];
+    const result = dedup(articles, new Set(), 0.85, [], 0.70, pastArticleTitles, 0.6);
+    assert.equal(result.kept.length, 1);
+  });
+
+  it("artigo sem título passa direto pelo Pass 1c", () => {
+    const pastArticleTitles = ["OpenAI lança GPT-5.5 Instant"];
+    const articles = [{ url: "https://a.com/1" }];
+    const result = dedup(articles, new Set(), 0.85, [], 0.70, pastArticleTitles, 0.6);
+    assert.equal(result.kept.length, 1);
+  });
+});
+
+describe("extractPastEditionArticleTitles (#897)", () => {
+  function withTempEditions(populate: (dir: string) => void): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-dedup-897-"));
+    populate(dir);
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("lê títulos de _internal/01-approved.json (highlights + runners_up + buckets)", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      const ed = join(d, "260505");
+      mkdirSync(join(ed, "_internal"), { recursive: true });
+      writeFileSync(
+        join(ed, "_internal", "01-approved.json"),
+        JSON.stringify({
+          highlights: [{ article: { title: "Destaque 1: GPT-5.5" } }],
+          runners_up: [{ article: { title: "Runner-up: Gemma 4" } }],
+          noticias: [{ title: "Noticia X" }],
+        }),
+      );
+    });
+    try {
+      const titles = extractPastEditionArticleTitles(dir, 3);
+      assert.ok(titles.includes("Destaque 1: GPT-5.5"));
+      assert.ok(titles.includes("Runner-up: Gemma 4"));
+      assert.ok(titles.includes("Noticia X"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lê títulos de root/01-approved.json (formato pré-#574)", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      const ed = join(d, "260427");
+      mkdirSync(ed, { recursive: true });
+      writeFileSync(
+        join(ed, "01-approved.json"),
+        JSON.stringify({
+          highlights: [{ article: { title: "Old format edition title" } }],
+        }),
+      );
+    });
+    try {
+      const titles = extractPastEditionArticleTitles(dir, 3);
+      assert.ok(titles.includes("Old format edition title"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("exclui edição corrente quando currentAammdd fornecido", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      for (const aammdd of ["260505", "260506"]) {
+        const ed = join(d, aammdd);
+        mkdirSync(join(ed, "_internal"), { recursive: true });
+        writeFileSync(
+          join(ed, "_internal", "01-approved.json"),
+          JSON.stringify({ highlights: [{ article: { title: `Title for ${aammdd}` } }] }),
+        );
+      }
+    });
+    try {
+      const titles = extractPastEditionArticleTitles(dir, 3, "260506");
+      assert.ok(titles.includes("Title for 260505"));
+      assert.equal(titles.includes("Title for 260506"), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("respeita window — pega apenas N edições mais recentes", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      for (const aammdd of ["260501", "260502", "260503"]) {
+        const ed = join(d, aammdd);
+        mkdirSync(join(ed, "_internal"), { recursive: true });
+        writeFileSync(
+          join(ed, "_internal", "01-approved.json"),
+          JSON.stringify({ highlights: [{ article: { title: `Title-${aammdd}` } }] }),
+        );
+      }
+    });
+    try {
+      const titles = extractPastEditionArticleTitles(dir, 1);
+      assert.ok(titles.includes("Title-260503"));
+      assert.equal(titles.includes("Title-260502"), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("dir inexistente retorna array vazio (sem crash)", () => {
+    const titles = extractPastEditionArticleTitles("/tmp/does-not-exist-xyz-897", 3);
+    assert.deepEqual(titles, []);
+  });
+
+  it("JSON corrompido em uma edição não impede leitura das outras", () => {
+    const { dir, cleanup } = withTempEditions((d) => {
+      for (const aammdd of ["260501", "260502"]) {
+        const ed = join(d, aammdd);
+        mkdirSync(join(ed, "_internal"), { recursive: true });
+      }
+      // 260501 corrompido
+      writeFileSync(join(d, "260501", "_internal", "01-approved.json"), "{ broken");
+      // 260502 OK
+      writeFileSync(
+        join(d, "260502", "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ article: { title: "Survivor" } }] }),
+      );
+    });
+    try {
+      const titles = extractPastEditionArticleTitles(dir, 3);
+      assert.ok(titles.includes("Survivor"));
+    } finally {
+      cleanup();
+    }
   });
 });

@@ -13,7 +13,8 @@
  * Output: { kept: Article[], removed: RemovedEntry[] }
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { isAggregator } from "./lib/aggregators";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
@@ -106,6 +107,147 @@ export function extractPastTitles(md: string, window: number): string[] {
     if (titleMatch) titles.push(titleMatch[1]);
   }
   return titles;
+}
+
+// ---------------------------------------------------------------------------
+// #897: Subject-level dedup contra past editions
+//
+// Além de URL match e headline match, comparar título do artigo candidato
+// contra títulos de TODOS os artigos cobertos nas últimas N edições. Pega o
+// caso "TechCrunch reporta lançamento OpenAI X" quando "OpenAI lança X" já
+// rodou em N-1.
+//
+// Fonte: `data/editions/{AAMMDD}/_internal/01-approved.json` (highlights +
+// runners_up). Fallback gracioso: se arquivo não existe (edições antigas)
+// ou JSON inválido, simplesmente skipa a edição e segue.
+// ---------------------------------------------------------------------------
+
+interface ApprovedArticleLike {
+  title?: string;
+  article?: { title?: string };
+}
+
+interface ApprovedJsonShape {
+  highlights?: ApprovedArticleLike[];
+  runners_up?: ApprovedArticleLike[];
+  lancamento?: ApprovedArticleLike[];
+  pesquisa?: ApprovedArticleLike[];
+  noticias?: ApprovedArticleLike[];
+  tutorial?: ApprovedArticleLike[];
+}
+
+function readApprovedTitles(approvedPath: string): string[] {
+  if (!existsSync(approvedPath)) return [];
+  let parsed: ApprovedJsonShape;
+  try {
+    parsed = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJsonShape;
+  } catch {
+    return [];
+  }
+  const titles = new Set<string>();
+  const buckets: ApprovedArticleLike[][] = [
+    parsed.highlights ?? [],
+    parsed.runners_up ?? [],
+    parsed.lancamento ?? [],
+    parsed.pesquisa ?? [],
+    parsed.noticias ?? [],
+    parsed.tutorial ?? [],
+  ];
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      const t = item?.article?.title ?? item?.title;
+      if (t && typeof t === "string" && t.trim()) titles.add(t.trim());
+    }
+  }
+  return [...titles];
+}
+
+/**
+ * Lê títulos individuais de artigos cobertos nas últimas `window` edições
+ * salvas localmente em `data/editions/{AAMMDD}/`. Procura `01-approved.json`
+ * em `_internal/` (formato pós-#574) e em root (formato anterior).
+ *
+ * Edição atual (`currentAammdd`) é excluída pra evitar self-match.
+ *
+ * Falha gracioso: arquivos ausentes/corrompidos viram skip silencioso.
+ *
+ * Refs #897.
+ */
+export function extractPastEditionArticleTitles(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): string[] {
+  if (!existsSync(editionsDir)) return [];
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir).filter((d) => /^\d{6}$/.test(d));
+  } catch {
+    return [];
+  }
+  // Sort decrescente (mais recente primeiro), excluir current.
+  dirs.sort().reverse();
+  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
+  const recent = dirs.slice(0, window);
+
+  const titles = new Set<string>();
+  for (const aammdd of recent) {
+    const candidates = [
+      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
+      resolve(editionsDir, aammdd, "01-approved.json"),
+    ];
+    for (const path of candidates) {
+      if (!existsSync(path)) continue;
+      for (const t of readApprovedTitles(path)) titles.add(t);
+      break; // primeiro arquivo encontrado = source-of-truth da edição
+    }
+  }
+  return [...titles];
+}
+
+// ---------------------------------------------------------------------------
+// Jaccard similarity sobre tokens normalizados (#897)
+//
+// Mais permissivo que Levenshtein pra comparar títulos PT-BR vs EN da mesma
+// história — a sobreposição de entidades/keywords domina, palavras de
+// transição diferem.
+// ---------------------------------------------------------------------------
+
+/**
+ * Tokeniza título normalizado em set de palavras de >= 3 chars (descarta
+ * stopwords e tokens curtos). Usa o mesmo `normalizeTitle` (lowercase, sem
+ * acentos, stopwords PT/EN removidas).
+ *
+ * Tokens curtos descartados pra reduzir noise: "a", "de", "em" não diferenciam.
+ */
+export function tokenizeForJaccard(title: string): Set<string> {
+  const normalized = normalizeTitle(title);
+  const tokens = normalized.split(/\s+/).filter((t) => t.length >= 3);
+  return new Set(tokens);
+}
+
+/**
+ * Jaccard similarity entre dois sets — |A ∩ B| / |A ∪ B|. Ambos vazios = 0
+ * (degeneração: títulos sem token significativo não devem disparar dup).
+ */
+export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const t of a) if (b.has(t)) intersection++;
+  const union = a.size + b.size - intersection;
+  if (union === 0) return 0;
+  return intersection / union;
+}
+
+/**
+ * Conveniência: similaridade de subject (Jaccard sobre tokens) entre dois
+ * títulos. Se ambos são similares > threshold, considerar duplicata-de-tema.
+ *
+ * Threshold sugerido pelo issue #897: 0.6 (mais permissivo que Levenshtein
+ * intra-edição em 0.85). Defaults conservadores são caller-controlled.
+ */
+export function subjectSimilarity(a: string, b: string): number {
+  return jaccardSimilarity(tokenizeForJaccard(a), tokenizeForJaccard(b));
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +358,8 @@ export function dedup(
   titleThreshold: number,
   pastTitles: string[] = [],
   titleVsPastThreshold = 0.70,
+  pastArticleTitles: string[] = [],
+  subjectVsPastThreshold = 0.6,
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -279,10 +423,66 @@ export function dedup(
     afterPass1b.push(...afterPass1);
   }
 
+  // ---- Pass 1c: subject (Jaccard) similarity vs past edition ARTICLES (#897) ---
+  // Diferença pra Pass-1b: 1b compara contra o headline-da-newsletter (1 título
+  // por edição, normalmente o destaque #1). 1c compara contra TODOS os artigos
+  // cobertos na edição (highlights + runners_up + buckets). Pega o caso "fonte
+  // diferente, mesma history" que vazaria pelos outros passes.
+  //
+  // Jaccard em vez de Levenshtein: mais permissivo pra PT-BR vs EN — sobreposição
+  // de entidades/produtos domina. Threshold default 0.6.
+  //
+  // Só roda quando pastArticleTitles foi fornecido (backward-compat).
+  const afterPass1c: Article[] = [];
+  if (pastArticleTitles.length > 0) {
+    // Pré-tokenizar past titles uma vez — caro recomputar pra cada artigo.
+    const pastTokens = pastArticleTitles.map((t) => ({
+      title: t,
+      tokens: tokenizeForJaccard(t),
+    }));
+    for (const art of afterPass1b) {
+      if (!art.title) {
+        afterPass1c.push(art);
+        continue;
+      }
+      const candidateTokens = tokenizeForJaccard(art.title);
+      // Títulos sem tokens significativos (curtos/vazios) não disparam
+      // — Jaccard contra qualquer set vazio = 0.
+      if (candidateTokens.size === 0) {
+        afterPass1c.push(art);
+        continue;
+      }
+      let isDupVsPastSubject = false;
+      let bestMatch: { title: string; sim: number } | null = null;
+      for (const pt of pastTokens) {
+        const sim = jaccardSimilarity(candidateTokens, pt.tokens);
+        if (sim >= subjectVsPastThreshold && (bestMatch === null || sim > bestMatch.sim)) {
+          bestMatch = { title: pt.title, sim };
+        }
+      }
+      if (bestMatch !== null) {
+        removed.push({
+          url: art.url,
+          title: art.title,
+          dedup_note: `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard) a artigo de edição anterior "${bestMatch.title}"`,
+        });
+        isDupVsPastSubject = true;
+      }
+      if (!isDupVsPastSubject) afterPass1c.push(art);
+    }
+    if (afterPass1b.length > afterPass1c.length) {
+      console.error(
+        `dedup Pass-1c (#897): ${afterPass1b.length - afterPass1c.length} artigo(s) removido(s) por subject-Jaccard >= ${subjectVsPastThreshold} contra título de artigo em edição anterior`,
+      );
+    }
+  } else {
+    afterPass1c.push(...afterPass1b);
+  }
+
   // ---- Pass 2: dedup within the current list -----------------------------
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
-  for (const art of afterPass1b) {
+  for (const art of afterPass1c) {
     const canon = canonicalize(art.url);
     const group = byUrl.get(canon) ?? [];
     group.push(art);
@@ -386,7 +586,7 @@ async function main() {
   const outPath = args["out"];
 
   if (!articlesPath) {
-    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--window 3] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--out <out.json>]");
+    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
     process.exit(1);
   }
 
@@ -415,10 +615,36 @@ async function main() {
 
   const titleVsPastThreshold = parseFloat(args["title-vs-past-threshold"] ?? String(CONFIG.dedup.titleVsPastThreshold));
 
-  const result = dedup(articles, pastUrls, titleThreshold, pastTitles, titleVsPastThreshold);
+  // #897: também extrair títulos individuais de artigos de edições passadas
+  // pra subject-level dedup. Default: data/editions/ + window edições recentes.
+  const editionsDir = args["editions-dir"] ?? "data/editions";
+  const subjectVsPastThreshold = parseFloat(
+    args["subject-vs-past-threshold"] ?? "0.6",
+  );
+  const currentAammdd = args["current-edition"]; // optional, exclude self
+  const pastArticleTitles = extractPastEditionArticleTitles(
+    editionsDir,
+    window,
+    currentAammdd,
+  );
+  if (pastArticleTitles.length > 0) {
+    console.error(
+      `dedup: ${pastArticleTitles.length} título(s) de artigos de edições anteriores carregado(s) (#897 subject-dedup)`,
+    );
+  }
+
+  const result = dedup(
+    articles,
+    pastUrls,
+    titleThreshold,
+    pastTitles,
+    titleVsPastThreshold,
+    pastArticleTitles,
+    subjectVsPastThreshold,
+  );
 
   console.error(
-    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold})`
+    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold})`
   );
 
   const removed = result.removed.length;

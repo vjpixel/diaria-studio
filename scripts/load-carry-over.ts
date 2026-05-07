@@ -253,15 +253,16 @@ function main(): void {
 
   const prev = getPreviousEditionDate(currentAammdd, editionsDir);
   if (!prev) {
+    // #867: pool pode estar corrompido (write parcial em interrupção mid-stage).
+    // Usar readJsonOrNull p/ não crashar — pool ilegível = tratar como vazio.
+    const noPrevPool = readJsonOrNull<PoolArticle[]>(poolPathAbs) ?? [];
     console.log(
       JSON.stringify({
         prev: null,
         candidates_total: 0,
         kept: 0,
         skipped: 0,
-        total_pool_size: existsSync(poolPathAbs)
-          ? (JSON.parse(readFileSync(poolPathAbs, "utf8")) as PoolArticle[]).length
-          : 0,
+        total_pool_size: noPrevPool.length,
         reason: "no_previous_edition",
       }),
     );

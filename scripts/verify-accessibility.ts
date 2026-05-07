@@ -34,8 +34,9 @@ const PAYWALL_DOMAINS = new Set([
 ]);
 
 // Domínios que retornam anti-bot em crawlers mas são acessíveis a usuários humanos.
-// Quando esses sites retornam 403/bloqueio, o verdict vira `anti_bot` em vez de
-// `blocked`, e o artigo permanece no pool com flag `access_uncertain` (#320).
+// Quando esses sites retornam 403/406/405 ou timeout, o verdict vira `anti_bot`
+// em vez de `blocked`, e o artigo permanece no pool com flag `access_uncertain`
+// (#320, #899).
 const TRUSTED_PUBLISHERS = new Set([
   "anthropic.com",
   "openai.com",
@@ -51,6 +52,23 @@ const TRUSTED_PUBLISHERS = new Set([
   "microsoft.com",
   "blogs.microsoft.com",
   "blogs.nvidia.com",
+  // #899: tier-1 generalistas com cobertura editorial relevante de IA.
+  // Esses sites bloqueiam HEAD/bots por default (406/403) mas são fontes
+  // confiáveis pro editor — bypass HEAD e tenta GET com UA browser-like
+  // antes de classificar como bloqueado.
+  "theguardian.com",
+  "bbc.com",
+  "bbc.co.uk",
+  "bloomberg.com",
+  "ft.com",
+  "wsj.com",
+  "nytimes.com",
+  "arstechnica.com",
+  "ieee.org",
+  "spectrum.ieee.org",
+  "economist.com",
+  "mittechreview.com.br",
+  "technologyreview.com",
 ]);
 
 // URL shorteners e redirecionadores que devem ter a URL final propagada (#317).
@@ -162,10 +180,13 @@ export function domain(url: string): string {
 }
 
 /**
- * Classifica um HTTP status code retornado por HEAD/GET (#696).
+ * Classifica um HTTP status code retornado por HEAD/GET (#696, #899).
  * Extraída de `verify()` para permitir teste unitário sem mockar undici.
  *
  * Retorna o verdict adequado ou `null` se o status não indica erro (< 400).
+ *
+ * Caller deve passar `tryBrowserFallback: true` quando quiser que `verify()`
+ * tente Puppeteer ao invés de retornar `blocked` direto. Aqui só classifica.
  */
 export function classifyHttpStatus(
   statusCode: number,
@@ -181,8 +202,33 @@ export function classifyHttpStatus(
   if (statusCode === 403 && TRUSTED_PUBLISHERS.has(host)) {
     return { verdict: "anti_bot", note: `${method} 403 (trusted publisher)`, access_uncertain: true };
   }
+  // #899: 405 (Method Not Allowed) e 406 (Not Acceptable) em HEAD são bot-blocking
+  // típicos de Guardian, BBC, etc. Em publisher confiável, tratar como anti_bot —
+  // verify() tenta GET com UA browser-like na sequência antes de marcar como
+  // bloqueado de verdade.
+  if ((statusCode === 405 || statusCode === 406) && TRUSTED_PUBLISHERS.has(host)) {
+    return { verdict: "anti_bot", note: `${method} ${statusCode} (trusted publisher)`, access_uncertain: true };
+  }
   return { verdict: "blocked", note: `${method} ${statusCode}` };
 }
+
+/**
+ * #899: trusted publishers (Guardian, BBC, etc.) retornam 406 em HEAD com UA
+ * default mas servem páginas normais a UA browser-like. Esta função pula HEAD
+ * e vai direto pro GET com UA browser-like quando o host está no tier confiável
+ * de generalistas.
+ */
+export function shouldBypassHeadFor(host: string): boolean {
+  return TRUSTED_PUBLISHERS.has(host);
+}
+
+/**
+ * #899: User-Agent browser-like usado nos GET requests pra trusted publishers.
+ * Sites como Guardian/BBC bloqueiam UA default mas aceitam UA Chrome típico.
+ * Mantido como string única exportada pra reuso e teste.
+ */
+export const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /**
  * Detecta soft 404 pelo conteúdo do elemento <title> (#695).
@@ -370,16 +416,34 @@ export async function verify(
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const head = await request(effectiveUrl, { method: "HEAD", signal: ctrl.signal });
-    if (head.statusCode >= 400) {
-      const r = classifyHttpStatus(head.statusCode, host, "HEAD");
-      if (r) return { ...r, finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    // #899: trusted publishers (Guardian, BBC, etc.) retornam 406 em HEAD
+    // com UA default, mas aceitam GET com UA browser-like. Pular HEAD nesses
+    // hosts evita gerar `anti_bot` falso e vai direto pro GET.
+    const bypassHead = shouldBypassHeadFor(host);
+    if (!bypassHead) {
+      const head = await request(effectiveUrl, { method: "HEAD", signal: ctrl.signal });
+      if (head.statusCode >= 400) {
+        const r = classifyHttpStatus(head.statusCode, host, "HEAD");
+        // #899: anti_bot em HEAD é sinal de bot-blocking — segue pra GET com
+        // UA browser-like ao invés de retornar imediatamente. Bloqueado real
+        // (verdict: blocked) ainda retorna direto.
+        if (r && r.verdict !== "anti_bot") {
+          return { ...r, finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
+        }
+      }
     }
+
+    // #899: UA browser-like pra trusted publishers (anti-bot evasion básico).
+    // Para o resto, mantém UA "DiariaBot/1.0" — cita o bot honestamente nos
+    // sites que aceitam crawlers identificados.
+    const userAgent = bypassHead || TRUSTED_PUBLISHERS.has(host)
+      ? BROWSER_UA
+      : "Mozilla/5.0 (compatible; DiariaBot/1.0)";
 
     const get = await request(effectiveUrl, {
       method: "GET",
       signal: ctrl.signal,
-      headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
+      headers: { "user-agent": userAgent },
     });
     if (get.statusCode >= 400) {
       const r = classifyHttpStatus(get.statusCode, host, "GET");
