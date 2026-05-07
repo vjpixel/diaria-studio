@@ -35,7 +35,13 @@ Exit code handling:
 - Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
 - Destaques: preservar todos (sempre ≤3).
 - Lançamentos: top-5 por score (se houver mais de 5, truncar nos 5 de maior score).
-  - **Validar lançamentos ANTES do cap (#742):** rodar `validate-lancamentos.ts` na lista de lançamentos do approved JSON para identificar URLs não-oficiais. Remover lançamentos rejeitados ANTES de calcular `lançamentos_final`. Isso garante que slots liberados por lançamentos inválidos sejam compensados em Outras Notícias.
+  - **Validar lançamentos ANTES do cap (#742, #876):** rodar `validate-lancamentos.ts` na lista de lançamentos do approved JSON para identificar URLs não-oficiais. Remover lançamentos rejeitados ANTES de calcular `lançamentos_final`. Isso garante que slots liberados por lançamentos inválidos sejam compensados em Outras Notícias. **Persistir o resumo** em `_internal/02-lancamentos-removed.json` para que o `sync-intro-count.ts` (§2b) ajuste menções narrativas a "X lançamentos" no intro:
+    ```bash
+    npx tsx scripts/validate-lancamentos.ts \
+      --approved data/editions/{AAMMDD}/_internal/01-approved.json \
+      --write-removed data/editions/{AAMMDD}/_internal/02-lancamentos-removed.json
+    ```
+    Exit 1 (URLs removidas) é esperado quando o approved tem URL não-oficial — não bloquear, só informativo.
 - Pesquisas: top-3 por score (se houver mais de 3, truncar nos 3 de maior score).
 - Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
   - `lançamentos_final` deve ser contado **após** o passo de validação acima (lançamentos inválidos já removidos).
@@ -118,11 +124,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
      ```
   Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
 
-- **Sincronizar contagem da intro (#743):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total). Corrigir automaticamente:
+- **Sincronizar contagem da intro (#743, #876):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total) e a narrativa pode mencionar "X lançamentos" com X antigo. Corrigir automaticamente, passando o resumo de lançamentos removidos escrito em §2a:
   ```bash
-  npx tsx scripts/sync-intro-count.ts --md data/editions/{AAMMDD}/02-reviewed.md
+  npx tsx scripts/sync-intro-count.ts \
+    --md data/editions/{AAMMDD}/02-reviewed.md \
+    --lancamentos-removed data/editions/{AAMMDD}/_internal/02-lancamentos-removed.json
   ```
-  Se o script retornar `changed: true`, logar `warn` no run-log com os valores antes/depois. Não bloquear — correção é cirúrgica e não altera o restante do texto.
+  Se o script retornar `changed: true` ou `lancamentos_changed: true`, logar `warn` no run-log com os valores antes/depois. Não bloquear — correções são cirúrgicas (apenas o número, sem mexer no resto do texto). Quando `02-lancamentos-removed.json` não existe (ex: §2a foi pulado em rerun), o script ignora silenciosamente esse passo.
 
 - **Validar LANÇAMENTOS oficiais (#160):**
   ```bash
@@ -153,6 +161,12 @@ Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto
 Falha não bloqueia (fallback usa o arquivo original).
 
 **Revisar social com Clarice (inline):** ler `03-social.md`, chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar, propagar o erro.
+
+**Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
+```bash
+npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
+```
+Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. Exit 1 = matches encontrados. **Incluir os matches no prompt do gate** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
 
 ### 2d. Sync push + gate unificado
 
