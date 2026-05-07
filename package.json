@@ -8,6 +8,7 @@
     "sync-sources": "tsx scripts/sync-sources.ts",
     "discover-rss": "tsx scripts/discover-rss.ts",
     "validate-feeds": "tsx scripts/validate-feeds.ts",
+    "lint-contest-entries": "tsx scripts/lint-contest-entries.ts",
     "smoke": "tsx scripts/smoke-test.ts",
     "verify-facebook-posts": "tsx scripts/verify-facebook-posts.ts",
     "collect-edition-signals": "tsx scripts/collect-edition-signals.ts",

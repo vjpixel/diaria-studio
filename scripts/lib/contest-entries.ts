@@ -54,6 +54,19 @@ const PT_MONTHS = [
 export type ErrorType = string;
 
 /**
+ * Tipos canônicos conhecidos. Single source of truth — `lint-contest-entries.ts`
+ * importa daqui em vez de duplicar a lista. Adicionar novos tipos aqui mantém
+ * lint alinhado.
+ */
+export const KNOWN_ERROR_TYPES = new Set([
+  "factual",
+  "version_inconsistency",
+  "math",
+  "typo",
+  "outdated",
+]);
+
+/**
  * Schema de uma entry — exatamente o formato observado em
  * `data/contest-entries.jsonl` no bootstrap manual (260504-260505).
  */
