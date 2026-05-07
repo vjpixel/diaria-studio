@@ -4,7 +4,7 @@ import puppeteer, { type Browser } from "puppeteer";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize, extractHost } from "./lib/url-utils.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { saveCachedBody } from "./lib/url-body-cache.ts";
+import { loadCachedBody, saveCachedBody } from "./lib/url-body-cache.ts";
 import {
   loadCache as loadVerifyCache,
   saveCache as saveVerifyCache,
@@ -12,6 +12,7 @@ import {
   setCached as setVerifyCached,
   isCacheableVerdict,
   DEFAULT_TTL_MS,
+  MAX_CACHED_BODY_SIZE,
 } from "./lib/url-verify-cache.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
 
@@ -607,21 +608,44 @@ async function main() {
       else cacheMisses++;
     }
     let added = 0;
+    let bodiesCarriedToVerifyCache = 0;
     for (const r of results) {
       if (!isCacheableVerdict(r.verdict)) continue;
       const key = canonicalize(r.url);
+
+      // #866: cache hits já estão no verify cache (potencialmente com body
+      // de runs anteriores). Skip rewrite pra preservar body existente —
+      // setVerifyCached overwriteria com entry sem body.
+      if (r._cacheHit === true) continue;
+
+      // #866: pra cache miss em URL accessible, lift body do bodies-dir
+      // pro verify cache entry. Permite que verify-dates em runs futuros
+      // (cross-edição) reuse o body sem refetch.
+      let body: string | undefined;
+      if (bodiesCacheDir && r.verdict === "accessible") {
+        const cached = loadCachedBody(bodiesCacheDir, key);
+        if (cached && cached.length <= MAX_CACHED_BODY_SIZE) {
+          body = cached;
+          bodiesCarriedToVerifyCache++;
+        }
+      }
+
       setVerifyCached(verifyCache, key, {
         verdict: r.verdict,
         finalUrl: r.finalUrl,
         ...(r.note ? { note: r.note } : {}),
+        ...(body ? { body } : {}),
       });
       added++;
     }
     saveVerifyCache(verifyCachePath, verifyCache);
     const cacheTotal = cacheHits + cacheMisses;
     const hitPct = cacheTotal > 0 ? Math.round((cacheHits / cacheTotal) * 100) : 0;
+    const bodyNote = bodiesCarriedToVerifyCache > 0
+      ? `, +${bodiesCarriedToVerifyCache} bodies (#866)`
+      : "";
     console.error(
-      `[verify] cross-edition cache: ${cacheHits}/${cacheTotal} hit (${hitPct}%), +${added} novos entries persistidos`,
+      `[verify] cross-edition cache: ${cacheHits}/${cacheTotal} hit (${hitPct}%), +${added} novos entries persistidos${bodyNote}`,
     );
   }
 
