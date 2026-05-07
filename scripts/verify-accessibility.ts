@@ -12,21 +12,8 @@ import {
   setCached as setVerifyCached,
   isCacheableVerdict,
   DEFAULT_TTL_MS,
-  type CacheEntry,
 } from "./lib/url-verify-cache.ts";
-
-// #717 hypothesis #1: cache dir intra-edição pra evitar fetch duplicado
-// entre verify-accessibility e verify-dates. Set via CLI --bodies-dir.
-let BODIES_CACHE_DIR: string | null = null;
-
-// #717 hypothesis #2: cross-edition cache de verdicts. Set via CLI --cache.
-// Quando set, URLs com verdict cacheado dentro do TTL (default 7d) skipam
-// HEAD+GET inteiro. Cache persistido em data/link-verify-cache.json.
-let VERIFY_CACHE: Map<string, CacheEntry> | null = null;
-let VERIFY_CACHE_PATH: string | null = null;
-let VERIFY_CACHE_TTL_MS: number = DEFAULT_TTL_MS;
-let VERIFY_CACHE_HITS = 0;
-let VERIFY_CACHE_MISSES = 0;
+import type { VerifyOptions } from "./lib/verify-options.ts";
 
 // #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
 // roda múltiplas tabs no mesmo browser sem problema; serial era ~7-8s/url ×
@@ -157,6 +144,14 @@ type VerifyResult = {
   note?: string;
   resolvedFrom?: string; // set when an aggregator URL was resolved to its primary source
   access_uncertain?: boolean; // true para anti_bot em publisher confiável (#320)
+  /**
+   * Sinaliza se este resultado veio do cache cross-edition (#717 hyp 2)
+   * ou do path normal (HEAD/GET). Usado por `main()` pra acumular
+   * estatísticas de cache. Undefined quando cache não foi configurado
+   * (`opts.verifyCache` ausente). Não afeta consumers downstream — é
+   * descartado no output JSON pelo serializer (cache hint é interno).
+   */
+  _cacheHit?: boolean;
 };
 
 export { canonicalize };
@@ -286,7 +281,30 @@ async function followRedirects(url: string, timeoutMs: number): Promise<{ finalU
   }
 }
 
-export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, isRetry = false, browser?: Browser | null): Promise<VerifyResult> {
+/**
+ * Verify a single URL. Threaded `opts` carries cache config; counters
+ * are returned in `_cacheHit` field on the result, accumulated by main().
+ *
+ * Note: `isRetry` is internal recursion state (set when called from
+ * aggregator resolution), separate from `opts` since it's not a user-
+ * controllable knob. Stays as a positional second arg.
+ *
+ * #836 change: cache lookup no longer guarded by `!isRetry` — recursive
+ * primary URLs from aggregator resolution can also benefit from cache
+ * hits. Aggregator verdicts are never cached, so no risk of returning
+ * stale aggregator data via the cache path.
+ */
+export async function verify(
+  url: string,
+  opts: VerifyOptions = {},
+  isRetry = false,
+  browser?: Browser | null,
+): Promise<VerifyResult> {
+  const timeoutMs = opts.timeoutMs ?? CONFIG.timeouts.verify;
+  const verifyCache = opts.verifyCache ?? null;
+  const verifyCacheTtlMs = opts.verifyCacheTtlMs ?? DEFAULT_TTL_MS;
+  const bodiesDir = opts.bodiesDir ?? null;
+
   let effectiveUrl = canonicalize(url);
   let host = domain(effectiveUrl);
   let resolvedFrom: string | undefined;
@@ -294,17 +312,17 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
   // #717 hypothesis #2: cross-edition cache lookup ANTES de qualquer fetch.
   // Cache key = canonical URL. Hit → short-circuit com verdict cacheado.
   // Skipa video/shortener/aggregator/paywall/HEAD/GET — todos os caminhos.
-  if (VERIFY_CACHE !== null && !isRetry) {
-    const cached = getVerifyCached(VERIFY_CACHE, effectiveUrl, VERIFY_CACHE_TTL_MS);
+  // #836: !isRetry guard removed — recursive primary URLs benefit from cache.
+  if (verifyCache !== null) {
+    const cached = getVerifyCached(verifyCache, effectiveUrl, verifyCacheTtlMs);
     if (cached !== null) {
-      VERIFY_CACHE_HITS++;
       return {
         verdict: cached.verdict,
         finalUrl: cached.finalUrl ?? effectiveUrl,
         ...(cached.note ? { note: cached.note } : {}),
+        _cacheHit: true,
       };
     }
-    VERIFY_CACHE_MISSES++;
   }
 
   // ---- Vídeos: YouTube e Vimeo recebem verdict `video` (#359) ----------------
@@ -335,7 +353,7 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
       if (!isRetry) {
         const primary = await resolveAggregator(effectiveUrl, host, timeoutMs);
         if (primary) {
-          const primaryResult = await verify(primary, timeoutMs, true);
+          const primaryResult = await verify(primary, opts, true);
           if (primaryResult.verdict !== "aggregator") {
             return { ...primaryResult, resolvedFrom: resolvedFrom ?? effectiveUrl };
           }
@@ -370,7 +388,7 @@ export async function verify(url: string, timeoutMs = CONFIG.timeouts.verify, is
     // #717 hypothesis #1: persistir body raw pra verify-dates não re-fetchar.
     // Lê raw primeiro, depois deriva versão truncada/lowercase pros checks.
     const rawBody = await get.body.text();
-    saveCachedBody(BODIES_CACHE_DIR, effectiveUrl, rawBody);
+    saveCachedBody(bodiesDir, effectiveUrl, rawBody);
     const body = rawBody.slice(0, 50_000).toLowerCase();
     for (const marker of PAYWALL_MARKERS) {
       if (body.includes(marker)) return { verdict: "paywall", finalUrl: effectiveUrl, note: `marker: ${marker}`, ...(resolvedFrom ? { resolvedFrom } : {}) };
@@ -442,8 +460,16 @@ async function verifyWithBrowser(
       (globalThis as Record<string, unknown>).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
     });
     await page.goto(finalUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    // Extra wait for JS-heavy sites to hydrate
-    await new Promise((r) => setTimeout(r, 5000));
+    // #844: aguardar network idle (até 2s parado, máximo 5s) em vez de 5s
+    // fixos. Páginas que hidratam rápido saem cedo; pesadas continuam até
+    // o teto. Páginas que nunca ficam idle (tracking pixels, websockets
+    // persistentes) caem no timeout interno e seguem normalmente.
+    try {
+      await page.waitForNetworkIdle({ idleTime: 2000, timeout: 5000 });
+    } catch {
+      // Timeout é esperado em sites com tracking persistente — proceder
+      // com whatever the page rendered up to this point.
+    }
 
     const bodyText = await page.evaluate(() => document.body?.innerText ?? "");
     for (const marker of PAYWALL_MARKERS) {
@@ -469,20 +495,26 @@ async function main() {
   // --cache <path>                  (#717 hyp 2) — cross-edition verdict cache
   // --cache-ttl-days <N>            (#717 hyp 2) — TTL override (default 7)
   // --browser-concurrency <N>       (#717 hyp 3) — paralelismo do fallback Puppeteer (default 4)
+  //
+  // #836: módulo-level vars eliminadas. Toda configuração vive em locals
+  // de main() ou na VerifyOptions threaded por chamada de verify().
+  let bodiesCacheDir: string | null = null;
+  let verifyCachePath: string | null = null;
+  let verifyCacheTtlMs: number = DEFAULT_TTL_MS;
   let browserConcurrency = DEFAULT_BROWSER_CONCURRENCY;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === "--bodies-dir" && i + 1 < process.argv.length) {
-      BODIES_CACHE_DIR = process.argv[i + 1];
+      bodiesCacheDir = process.argv[i + 1];
       i++;
     } else if (a === "--cache" && i + 1 < process.argv.length) {
-      VERIFY_CACHE_PATH = process.argv[i + 1];
+      verifyCachePath = process.argv[i + 1];
       i++;
     } else if (a === "--cache-ttl-days" && i + 1 < process.argv.length) {
       const days = Number(process.argv[i + 1]);
       if (Number.isFinite(days) && days > 0) {
-        VERIFY_CACHE_TTL_MS = days * 24 * 60 * 60 * 1000;
+        verifyCacheTtlMs = days * 24 * 60 * 60 * 1000;
       }
       i++;
     } else if (a === "--browser-concurrency" && i + 1 < process.argv.length) {
@@ -504,10 +536,18 @@ async function main() {
   }
 
   // Carregar cache cross-edição se path foi passado.
-  if (VERIFY_CACHE_PATH !== null) {
-    VERIFY_CACHE = loadVerifyCache(VERIFY_CACHE_PATH, VERIFY_CACHE_TTL_MS);
-    console.error(`[verify] cache carregado: ${VERIFY_CACHE.size} entries (${VERIFY_CACHE_PATH})`);
+  let verifyCache: Map<string, import("./lib/url-verify-cache.ts").CacheEntry> | null = null;
+  if (verifyCachePath !== null) {
+    verifyCache = loadVerifyCache(verifyCachePath, verifyCacheTtlMs);
+    console.error(`[verify] cache carregado: ${verifyCache.size} entries (${verifyCachePath})`);
   }
+
+  // Bag única passada pra cada verify() — todas as configurações em um lugar.
+  const verifyOpts: VerifyOptions = {
+    bodiesDir: bodiesCacheDir,
+    verifyCache,
+    verifyCacheTtlMs,
+  };
 
   let urls: string[];
   if (input.endsWith(".json")) {
@@ -518,7 +558,7 @@ async function main() {
   }
 
   // First pass: verify all URLs with undici (fast, no JS)
-  const results = await Promise.all(urls.map(async (url) => ({ url, ...(await verify(url)) })));
+  const results = await Promise.all(urls.map(async (url) => ({ url, ...(await verify(url, verifyOpts)) })));
 
   // Second pass: retry uncertain results with Puppeteer (JS rendering)
   const uncertainIdxs = results
@@ -554,23 +594,33 @@ async function main() {
   // #717 hypothesis #2: persistir verdicts cacheáveis no cross-edition cache.
   // Aplica a TODOS os results (incluindo browser-fallback ones) — verdict
   // estável conforme isCacheableVerdict.
-  if (VERIFY_CACHE !== null && VERIFY_CACHE_PATH !== null) {
+  // #836: counters acumulados aqui em locais (era module-level antes).
+  if (verifyCache !== null && verifyCachePath !== null) {
+    let cacheHits = 0;
+    let cacheMisses = 0;
+    for (const r of results) {
+      if (r._cacheHit === true) cacheHits++;
+      else if (r._cacheHit === false) cacheMisses++;
+      // _cacheHit === undefined: cache não foi consultado (eg. video,
+      // shortener short-circuit antes do cache check) — não conta nem
+      // hit nem miss.
+    }
     let added = 0;
     for (const r of results) {
       if (!isCacheableVerdict(r.verdict)) continue;
       const key = canonicalize(r.url);
-      setVerifyCached(VERIFY_CACHE, key, {
+      setVerifyCached(verifyCache, key, {
         verdict: r.verdict,
         finalUrl: r.finalUrl,
         ...(r.note ? { note: r.note } : {}),
       });
       added++;
     }
-    saveVerifyCache(VERIFY_CACHE_PATH, VERIFY_CACHE);
-    const cacheTotal = VERIFY_CACHE_HITS + VERIFY_CACHE_MISSES;
-    const hitPct = cacheTotal > 0 ? Math.round((VERIFY_CACHE_HITS / cacheTotal) * 100) : 0;
+    saveVerifyCache(verifyCachePath, verifyCache);
+    const cacheTotal = cacheHits + cacheMisses;
+    const hitPct = cacheTotal > 0 ? Math.round((cacheHits / cacheTotal) * 100) : 0;
     console.error(
-      `[verify] cross-edition cache: ${VERIFY_CACHE_HITS}/${cacheTotal} hit (${hitPct}%), +${added} novos entries persistidos`,
+      `[verify] cross-edition cache: ${cacheHits}/${cacheTotal} hit (${hitPct}%), +${added} novos entries persistidos`,
     );
   }
 
@@ -588,12 +638,16 @@ async function main() {
     details: { paywall, blocked, aggregator, ok, total },
   });
 
+  // Strip internal `_cacheHit` field before serialization — purely
+  // pra accumulating stats em main(), não pertence ao output JSON.
+  const serializable = results.map(({ _cacheHit, ...rest }) => rest);
+
   const out = positional[1];
   if (out) {
-    writeFileSync(out, JSON.stringify(results, null, 2), "utf8");
-    console.log(`Wrote ${results.length} results to ${out}`);
+    writeFileSync(out, JSON.stringify(serializable, null, 2), "utf8");
+    console.log(`Wrote ${serializable.length} results to ${out}`);
   } else {
-    console.log(JSON.stringify(results, null, 2));
+    console.log(JSON.stringify(serializable, null, 2));
   }
 }
 
