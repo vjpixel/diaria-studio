@@ -106,8 +106,10 @@ describe("lintContestEntries (#954)", () => {
     assert.match(r.warnings[0], /error_type desconhecido/);
   });
 
-  it("aceita todos os 5 error_types conhecidos sem warn", () => {
-    const types = ["factual", "version_inconsistency", "math", "typo", "outdated"];
+  it("aceita todos error_types em KNOWN_ERROR_TYPES sem warn", async () => {
+    const { KNOWN_ERROR_TYPES } = await import("../scripts/lib/contest-entries.ts");
+    const types = [...KNOWN_ERROR_TYPES];
+    assert.ok(types.length >= 5, "deve ter ao menos os 5 tipos canônicos");
     for (let i = 0; i < types.length; i++) {
       const e = JSON.stringify({
         ...JSON.parse(VALID),

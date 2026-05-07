@@ -13,7 +13,13 @@
  *   5. `edition` formato AAMMDD (6 dígitos, ano 25-29)
  *   6. `confirmed_at` parseable como ISO 8601 com timezone
  *   7. `reader_email` aparenta formato válido
- *   8. `error_type` ∈ {factual, version_inconsistency, math, typo, outdated} — warn se desconhecido
+ *   8. `error_type` ∈ KNOWN_ERROR_TYPES (importado de lib/contest-entries) — warn se desconhecido
+ *
+ * Não-validações intencionais:
+ *   - `reply_thread_id` vazio é tolerado: bootstrap retroativo (#948, #953)
+ *     pode ter perdido rastro de algumas threads. Schema check confere
+ *     presença, não conteúdo.
+ *   - `detail` formato livre — texto descritivo, sem estrutura imposta.
  *
  * Uso:
  *   npx tsx scripts/lint-contest-entries.ts
@@ -30,16 +36,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "./lib/cli-args.ts";
+import { KNOWN_ERROR_TYPES } from "./lib/contest-entries.ts";
 
 const DEFAULT_PATH = "data/contest-entries.jsonl";
-
-const KNOWN_ERROR_TYPES = new Set([
-  "factual",
-  "version_inconsistency",
-  "math",
-  "typo",
-  "outdated",
-]);
 
 const REQUIRED_FIELDS = [
   "draw_month",
