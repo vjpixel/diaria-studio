@@ -34,6 +34,7 @@ import {
   type ApprovedJson as CapsApprovedJson,
 } from "./lib/apply-stage2-caps.ts"; // #907
 import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 
 interface ApprovedArticle {
   url: string;
@@ -852,16 +853,7 @@ export function lintRelativeTime(md: string): RelativeTimeResult {
   };
 }
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  return out;
-}
+// #926: parseArgs local removido — usar parseCliArgs (scripts/lib/cli-args.ts).
 
 /**
  * Conta linhas de título por bloco DESTAQUE (#178, atualizado em #245).
@@ -1211,7 +1203,7 @@ export function checkEaiSection(md: string): { ok: boolean; error?: string } {
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCliArgs(process.argv.slice(2)).values;
 
   // Modo --check titles-per-highlight (#178)
   if (args.check === "titles-per-highlight") {
