@@ -287,6 +287,109 @@ export function checkEiaAnswer(
 }
 
 /**
+ * Verifica que `02-reviewed.md` tem `intentional_error` declarado no
+ * frontmatter (#754). Editor adiciona manualmente após revisar a edição.
+ *
+ * Convenção editorial Diar.ia: cada edição inclui 1 erro proposital pros
+ * assinantes acharem (concurso mensal). Sem declaração, `review-test-email`
+ * não consegue distinguir erro intencional de erro real, e o concurso
+ * mensal precisa lembrar manualmente o que era cada erro.
+ *
+ * Frontmatter esperado:
+ * ```yaml
+ * intentional_error:
+ *   description: "..."
+ *   location: "..."
+ *   category: "factual|attribution|numeric|ortografico|data"
+ *   correct_value: "..."
+ * ```
+ *
+ * Roda no Stage 4 (publish-newsletter) ANTES de criar o draft no Beehiiv.
+ * Falha bloqueia publicação.
+ */
+export interface IntentionalErrorCheckResult {
+  ok: boolean;
+  label?: string;
+  parsed?: {
+    description?: string;
+    location?: string;
+    category?: string;
+    correct_value?: string;
+  };
+}
+
+const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
+  "description",
+  "location",
+  "category",
+  "correct_value",
+] as const;
+
+export function checkIntentionalError(
+  mdPath: string,
+): IntentionalErrorCheckResult {
+  if (!existsSync(mdPath)) {
+    return {
+      ok: false,
+      label: `intentional_error_missing: ${mdPath} not found`,
+    };
+  }
+  const md = readFileSync(mdPath, "utf8");
+
+  // Extract frontmatter block
+  const fmMatch = md.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: 02-reviewed.md sem frontmatter — adicione bloco YAML com intentional_error",
+    };
+  }
+
+  const fmBody = fmMatch[1];
+  if (!/intentional_error\s*:/i.test(fmBody)) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: frontmatter sem chave intentional_error — adicione description/location/category/correct_value",
+    };
+  }
+
+  // Parse simple YAML — intentional_error is a mapping with 4 string fields.
+  const parsed: IntentionalErrorCheckResult["parsed"] = {};
+  const ieBlockMatch = fmBody.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlockMatch) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: chave intentional_error não está no formato mapping (4 campos indentados)",
+    };
+  }
+  for (const line of ieBlockMatch[1].split("\n")) {
+    const m = line.match(/^[ \t]+(\w+)\s*:\s*"?(.*?)"?\s*$/);
+    if (!m) continue;
+    const key = m[1] as keyof typeof parsed;
+    const value = m[2].trim();
+    if (value.length > 0) parsed[key] = value;
+  }
+
+  const missing = REQUIRED_INTENTIONAL_ERROR_FIELDS.filter(
+    (f) => !parsed[f as keyof typeof parsed],
+  );
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      label: `intentional_error_incomplete: campos faltando — ${missing.join(", ")}`,
+      parsed,
+    };
+  }
+
+  return { ok: true, parsed };
+}
+
+/**
  * Verifica que o número declarado na intro ("Selecionamos os N mais relevantes")
  * bate com a contagem real de URLs editoriais no body (#743).
  *
@@ -911,6 +1014,36 @@ function main(): void {
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) {
       console.error(`\n❌ ${result.label}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check intentional-error-flagged (#754) — verifica que 02-reviewed.md
+  // tem intentional_error declarado no frontmatter (concurso mensal de erro
+  // proposital). Roda no Stage 4 (publish-newsletter) antes de criar draft.
+  if (args.check === "intentional-error-flagged") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check intentional-error-flagged --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    const result = checkIntentionalError(mdPath);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.label}`);
+      console.error(
+        `\nEdite ${args.md} e adicione o frontmatter intentional_error com 4 campos:`,
+      );
+      console.error(`---
+intentional_error:
+  description: "o que o assinante deve identificar"
+  location: "DESTAQUE 2, parágrafo 2, primeira frase"
+  category: "factual"   # factual | ortografico | numerico | attribution | data
+  correct_value: "valor correto"
+---`);
       process.exit(1);
     }
     return;

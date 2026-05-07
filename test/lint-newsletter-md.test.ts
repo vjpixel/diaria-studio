@@ -11,6 +11,7 @@ import {
   checkTitleLengths,
   checkWhyMattersFormat,
   checkEiaAnswer,
+  checkIntentionalError,
   lintIntroCount,
   lintRelativeTime,
 } from "../scripts/lint-newsletter-md.ts";
@@ -861,6 +862,90 @@ describe("checkEiaAnswer (#744)", () => {
     const result = checkEiaAnswer(mdPath, dir);
     assert.equal(result.ok, false);
     assert.match(result.label!, /not found/);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("checkIntentionalError (#754)", () => {
+  const TMP = "test/_tmp_intentional_error";
+
+  it("ok com frontmatter completo (4 campos)", () => {
+    const dir = join(TMP, "complete");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(
+      mdPath,
+      `---
+intentional_error:
+  description: "OpenAI no lugar de Anthropic"
+  location: "DESTAQUE 2, parágrafo 2"
+  category: "attribution"
+  correct_value: "Anthropic"
+---
+
+Body.`,
+    );
+    const r = checkIntentionalError(mdPath);
+    assert.equal(r.ok, true);
+    assert.equal(r.parsed?.description, "OpenAI no lugar de Anthropic");
+    assert.equal(r.parsed?.category, "attribution");
+    assert.equal(r.parsed?.correct_value, "Anthropic");
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falha quando arquivo não existe", () => {
+    const r = checkIntentionalError("test/_does_not_exist/02-reviewed.md");
+    assert.equal(r.ok, false);
+    assert.match(r.label!, /not found/);
+  });
+
+  it("falha quando frontmatter ausente", () => {
+    const dir = join(TMP, "no_fm");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, "DESTAQUE 1 | TESTE\nBody sem fm.");
+    const r = checkIntentionalError(mdPath);
+    assert.equal(r.ok, false);
+    assert.match(r.label!, /sem frontmatter/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falha quando frontmatter sem chave intentional_error", () => {
+    const dir = join(TMP, "fm_no_key");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(mdPath, `---
+eia_answer:
+  A: real
+  B: ia
+---
+
+Body.`);
+    const r = checkIntentionalError(mdPath);
+    assert.equal(r.ok, false);
+    assert.match(r.label!, /sem chave intentional_error/);
+    rmSync(dir, { recursive: true });
+  });
+
+  it("falha quando campos obrigatórios faltam", () => {
+    const dir = join(TMP, "incomplete");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(
+      mdPath,
+      `---
+intentional_error:
+  description: "x"
+  category: "factual"
+---
+
+Body.`,
+    );
+    const r = checkIntentionalError(mdPath);
+    assert.equal(r.ok, false);
+    assert.match(r.label!, /campos faltando/);
+    assert.match(r.label!, /location/);
+    assert.match(r.label!, /correct_value/);
     rmSync(dir, { recursive: true });
   });
 });
