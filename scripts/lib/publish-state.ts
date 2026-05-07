@@ -23,10 +23,13 @@ export type PublishState =
   | "scheduled"
   /** Já publicado/enviado (publish_date <= now). */
   | "published"
-  /** Publish/send completou (sinônimo de published — alguns providers usam). */
-  | "sent"
   /** Estado não-mapeado (failed, error, schema desconhecido). */
   | "unknown";
+
+// #833: removido `'sent'` — era dead code. Nenhum resolve* retorna `'sent'`;
+// `resolveLinkedInState` aceita `status: "sent"` como input mas mapeia pra
+// `"published"`. Callers que queriam exhaustive switch escreviam branch dead.
+// "published" cobre o caso semanticamente.
 
 // ─── Beehiiv ───────────────────────────────────────────────────────────────
 
@@ -54,6 +57,9 @@ export function resolveBeehiivState(
 ): PublishState {
   const status = (post.status ?? "").toLowerCase();
   if (status === "draft") return "draft";
+  // #833: archived é "unknown" porque o helper alvo é current-edition relay
+  // (status atual ao editor). Posts archived foram publicados em algum
+  // momento, mas isso é past-edition reporting — fora do escopo.
   if (status === "archived") return "unknown";
   if (status !== "confirmed") return "unknown";
 
@@ -93,9 +99,13 @@ export function resolveLinkedInState(
 
   if (status === "scheduled") {
     const scheduledAt = post.scheduled_at;
-    if (!scheduledAt) return "scheduled"; // ausência de timestamp = trust o status
+    // #833: alinhado ao Beehiiv defensive default — sem timestamp,
+    // não dá pra confirmar se é futuro ou drift pra "published". Retornar
+    // "unknown" é mais seguro que trust no status raw (mesma motivação do
+    // #573 incident). Caller deve resolver o estado real antes de relayar.
+    if (!scheduledAt) return "unknown";
     const scheduledMs = Date.parse(scheduledAt);
-    if (Number.isNaN(scheduledMs)) return "scheduled";
+    if (Number.isNaN(scheduledMs)) return "unknown";
     return scheduledMs > now.getTime() ? "scheduled" : "published";
   }
 

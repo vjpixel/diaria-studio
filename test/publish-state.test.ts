@@ -110,20 +110,23 @@ describe("resolveLinkedInState (#782)", () => {
     );
   });
 
-  it("scheduled sem scheduled_at → trust o status", () => {
+  it("scheduled sem scheduled_at → unknown (defensive, #833)", () => {
+    // #833: alinhado ao Beehiiv defensive default — sem timestamp,
+    // não dá pra confirmar futuro vs drift pra published. "unknown"
+    // força o caller a resolver antes de relayar.
     assert.equal(
       resolveLinkedInState({ status: "scheduled" }, NOW),
-      "scheduled",
+      "unknown",
     );
   });
 
-  it("scheduled com timestamp inválido → trust o status (defensive)", () => {
+  it("scheduled com timestamp inválido → unknown (defensive, #833)", () => {
     assert.equal(
       resolveLinkedInState(
         { status: "scheduled", scheduled_at: "not-a-date" },
         NOW,
       ),
-      "scheduled",
+      "unknown",
     );
   });
 
@@ -144,5 +147,31 @@ describe("resolveFacebookState (#782)", () => {
       "scheduled",
     );
     assert.equal(resolveFacebookState({ status: "failed" }, NOW), "unknown");
+  });
+});
+
+describe("PublishState — sem variant 'sent' (#833)", () => {
+  // #833: variant 'sent' foi removida da union. Testa regressão — se alguém
+  // re-adicionar `case 'sent':` ou retornar 'sent', alinhamento quebra.
+
+  it("LinkedIn 'sent' input mapeia pra 'published', nunca 'sent'", () => {
+    const result = resolveLinkedInState({ status: "sent" }, NOW);
+    assert.equal(result, "published");
+    // Defensive: se 'sent' voltar como retorno, este assert quebra
+    assert.notEqual(result as string, "sent");
+  });
+
+  it("Facebook 'sent' input mapeia pra 'published', nunca 'sent'", () => {
+    const result = resolveFacebookState({ status: "sent" }, NOW);
+    assert.equal(result, "published");
+    assert.notEqual(result as string, "sent");
+  });
+
+  it("Beehiiv nunca retorna 'sent' (não é status conhecido)", () => {
+    // Beehiiv não tem 'sent' como input, mas defensive: confirmar que
+    // status desconhecido vira 'unknown', não 'sent'
+    const result = resolveBeehiivState({ status: "sent" }, NOW);
+    assert.notEqual(result as string, "sent");
+    assert.equal(result, "unknown");
   });
 });
