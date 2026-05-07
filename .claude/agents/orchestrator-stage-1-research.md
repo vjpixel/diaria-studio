@@ -338,6 +338,13 @@ O script produz o formato combinado (seção Destaques vazia no topo + seções 
 
 **Regra absoluta**: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de nova chamada deste script para manter o MD em sincronia. Se só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 
+### 1v-early. Push incremental ao Drive (#903)
+
+Subir `01-categorized.md` agora — antes de 1v-bis/1w-bis/1w. Editor começa a revisar enquanto pipeline ainda lint+valida. Falha não bloqueia (1w sobe de novo como fallback obrigatório).
+```bash
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
+```
+
 ### 1v-bis. Lint LANÇAMENTOS — bloqueia URLs não-oficiais antes do gate (#587)
 
 Antes de apresentar o gate, validar que items em `## Lançamentos` do MD têm URL oficial (per regra invariável #160). Sem este check, o editor podia mover artigos com URL não-oficial pra LANÇAMENTOS no gate, e o writer da Etapa 2 silenciosamente reclassificava pra OUTRAS NOTÍCIAS — quebrando o contrato de aprovação.
