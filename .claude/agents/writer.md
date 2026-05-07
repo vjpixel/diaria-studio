@@ -10,7 +10,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Input
 
 - `highlights`: 3 destaques rankeados (d1, d2, d3) — já filtrados pelo editor no gate do Stage 1.
-- `categorized`: saída do categorizer — `lancamento`, `pesquisa`, `noticias` aprovados.
+- `categorized`: saída do categorizer **com caps de #358 já aplicados** (`_internal/01-approved-capped.json`) — `lancamento`, `pesquisa`, `noticias` aprovados e truncados aos limites editoriais. **Não acrescentar artigos ao output além dos que vierem em `categorized`.** Os caps são: lançamentos ≤ 5, pesquisas ≤ 3, outras notícias = `max(2, 12 − destaques − lançamentos − pesquisas)`. O orchestrator garante que `categorized` já respeita esses limites; ignore qualquer impulso de incluir runners-up ou expandir uma seção que pareça curta — o lint pós-escrita falha se a edição passar dos caps (#907).
 - `edition_date`: ISO.
 - `out_path`: ex: `data/editions/260418/_internal/02-draft.md`.
 
@@ -58,7 +58,50 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
      ---
      ```
    - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
+3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após OUTRAS NOTÍCIAS (e antes de ASSINE/encerramento), incluir bloco:
+
+   ```
+   ---
+
+   **ERRO INTENCIONAL**
+
+   {placeholder — script render-erro-intencional.ts substitui pós-Clarice}
+
+   Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.
+
+   ---
+   ```
+
+   Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
+
 3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções também em negrito (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`). Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
+
+   **Exemplo literal (#909) — copiar formato exato:**
+
+   ```
+   **LANÇAMENTOS**
+
+   **[Agentes Claude para serviços financeiros](https://www.anthropic.com/news/finance-agents)**
+   Anthropic lança dez novos plugins para Cowork e Claude Code, integrações com Microsoft 365 e conectores específicos para serviços financeiros.
+
+   **[Gemini Robotics-ER 1.6](https://deepmind.google/blog/gemini-robotics-er-1-6/)**
+   DeepMind lançou nova versão do modelo de robótica com raciocínio espacial aprimorado para execução de tarefas físicas.
+   ```
+
+   **Anti-exemplos (NÃO emitir, lint section-item-format pega):**
+
+   ```
+   [Título](https://x.com) Descrição na mesma linha.        ← errado: 2 linhas, não 1
+   [Título](                                                 ← errado: URL quebrada em 3 linhas
+     https://x.com
+   )
+   Descrição.
+
+   **[Título sem descrição](https://x.com)**                 ← errado: faltou descrição
+   **[Próximo item](https://y.com)**
+   ```
+
+   Cada item: `**[Título](URL)**` em 1 linha, descrição em outra linha imediatamente abaixo (sem linha em branco entre as duas), depois 1 linha em branco antes do próximo item.
 4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
    - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.
@@ -74,7 +117,15 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - **Nenhum travessão (—) no texto.** Substituir por dois-pontos (antes de definição ou exemplo), vírgula (aposto ou conector) ou ponto (remate). Exceção única: meia-risca (–) em intervalos numéricos ("1989–2002").
    - Sem repetir link das últimas 3 edições.
-   - **Comprimento dos destaques**: d1 ≤ 1200 caracteres, todos os demais ≤ 1000 caracteres (contando parágrafos do corpo + "Por que isso importa:" + parágrafo de impacto; títulos e URL fora da conta). Tolerância de 5% vira warning; acima disso, reescrever até caber.
+   - **Comprimento dos destaques (#914)**: cada destaque tem mínimo + máximo. Char count exclui URL e títulos — só body + "Por que isso importa:" + parágrafo de impacto.
+
+     | Destaque | Mínimo | Máximo |
+     |---|---|---|
+     | D1 | 1000 | 1200 |
+     | D2 | 900  | 1000 |
+     | D3 | 900  | 1000 |
+
+     Se conteúdo ficar abaixo do mínimo, expandir com mais 1 parágrafo de body OU estender "Por que isso importa:" — não publicar destaque anêmico. Se passar do máximo, podar parágrafo menos relevante. Tolerância de 5% acima do máximo vira warning; abaixo do mínimo é erro (lint `--check destaque-min-chars` falha pré-Clarice).
    - Trailing spaces: cada opção de título `[Título](URL)` dos destaques e cada linha `[Título](URL)` de item de seção secundária termina com dois espaços (`  `). Descrição dos itens: sem trailing spaces.
 6. Gerar **3 prompts de imagem separados** seguindo `context/editorial-rules.md` seção 2 (Van Gogh impasto, 2:1, sem pixels, sem Noite Estrelada). Um prompt por destaque, cada um descrevendo uma cena concreta derivada do tema daquele destaque. **Regra obrigatória (#373):** todo prompt deve terminar com `Sem texto, letras, palavras, letreiros, placas ou legendas visíveis na imagem.` Evitar elementos que implicitamente contenham texto (cartazes, painéis digitais com conteúdo, telas com texto legível, placas com inscrição) — substituir por equivalentes abstratos (painel luminoso, cartazes coloridos sem texto, tela iluminada com cursor).
    - `_internal/02-d1-prompt.md` — destaque 1 (capa principal)

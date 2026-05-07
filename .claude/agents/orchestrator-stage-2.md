@@ -31,7 +31,7 @@ Exit code handling:
 
 ### 2a. Writer + social em paralelo
 
-**Limites por bucket (#358, #742) — aplicados antes de passar ao writer (01-approved.json em disco não é alterado):**
+**Limites por bucket (#358, #742, #907) — aplicados antes de passar ao writer via `apply-stage2-caps.ts`:**
 - Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
 - Destaques: preservar todos (sempre ≤3).
 - Lançamentos: top-5 por score (se houver mais de 5, truncar nos 5 de maior score).
@@ -46,13 +46,19 @@ Exit code handling:
 - Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
   - `lançamentos_final` deve ser contado **após** o passo de validação acima (lançamentos inválidos já removidos).
   - Se validação de lançamentos removeu N itens, os N slots liberados são preenchidos a partir do pool de `noticias` (top por score, respeitando o cap resultante).
-- Passar o `categorized` truncado ao writer no campo `categorized` (não salvar em disco — só memória do orchestrator).
+- **Aplicar caps via script TS (#907)** — não confiar no writer LLM pra respeitar:
+  ```bash
+  npx tsx scripts/apply-stage2-caps.ts \
+    --in data/editions/{AAMMDD}/_internal/01-approved.json \
+    --out data/editions/{AAMMDD}/_internal/01-approved-capped.json
+  ```
+  Writer recebe `01-approved-capped.json`. Lint pós-writer (`--check section-counts`) valida que o output respeitou os caps; falha = re-disparar writer.
 
 **Em uma única mensagem**, disparar os 3 agents simultaneamente:
 
 1. `Agent` → `writer` (Sonnet) passando:
-   - `highlights` (extraído de `_internal/01-approved.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
-   - `categorized` (o `_internal/01-approved.json` com buckets truncados pelos limites acima — nunca o arquivo bruto)
+   - `highlights` (extraído de `_internal/01-approved-capped.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
+   - `categorized = _internal/01-approved-capped.json` (já truncado pelos caps de #358 via `apply-stage2-caps.ts` — nunca o arquivo bruto)
    - `edition_date`
    - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
    - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
@@ -81,13 +87,30 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
 
-- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved.json`:
+- **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --md data/editions/{AAMMDD}/_internal/02-draft.md \
-    --approved data/editions/{AAMMDD}/_internal/01-approved.json
+    --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
   ```
   Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com `bucket: "noticias"` que o writer põe em LANÇAMENTOS por associação temática.
+
+- **Lint section-counts (#358, #907).** Validar que cada seção secundária respeita o cap de #358 (lançamentos≤5, pesquisas≤3, outras=`max(2, 12-d-l-p)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante:
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --check section-counts \
+    --md data/editions/{AAMMDD}/_internal/02-draft.md \
+    --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
+  ```
+  Exit 1 = re-disparar writer com a violação no prompt.
+
+- **Lint destaque-min-chars (#914).** Validar que cada destaque atinge mínimo (D1≥1000, D2/D3≥900):
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --check destaque-min-chars \
+    --md data/editions/{AAMMDD}/_internal/02-draft.md
+  ```
+  Exit 1 = destaque anêmico — re-disparar writer com instruction de expandir.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash

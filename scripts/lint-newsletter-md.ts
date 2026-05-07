@@ -29,6 +29,11 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
 import { parseInlineLink } from "./lib/inline-link.ts"; // #599
+import {
+  checkStage2Caps,
+  type ApprovedJson as CapsApprovedJson,
+} from "./lib/apply-stage2-caps.ts"; // #907
+import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 
 interface ApprovedArticle {
   url: string;
@@ -242,6 +247,263 @@ export function lintNewsletter(
   }
 
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
+ * Conta itens distintos por seção secundária (LANÇAMENTOS / PESQUISAS /
+ * OUTRAS NOTÍCIAS). Cada item = 1 URL única na seção. (#907)
+ *
+ * Reusa `extractUrlsBySection` mas dedup por URL (markdown link emite a
+ * mesma URL 2x — `[url](url)` casa o regex 2 vezes).
+ */
+export interface SectionCounts {
+  lancamento: number;
+  pesquisa: number;
+  noticias: number;
+}
+
+export function countItemsPerSection(md: string): SectionCounts {
+  const urlsBySection = extractUrlsBySection(md);
+  const dedup = (entries: Array<{ url: string; line: number }> | undefined) => {
+    if (!entries) return 0;
+    return new Set(entries.map((e) => e.url)).size;
+  };
+  return {
+    lancamento: dedup(urlsBySection["LANÇAMENTOS"]),
+    pesquisa: dedup(urlsBySection["PESQUISAS"]),
+    noticias: dedup(urlsBySection["OUTRAS NOTÍCIAS"]),
+  };
+}
+
+/**
+ * Validador #907: verifica que cada seção secundária respeita o cap de #358.
+ *
+ * Lê o `01-approved.json` pra obter o número de destaques (entra na fórmula
+ * de Outras Notícias). Conta itens no MD e compara com cap calculado.
+ *
+ * Retorna `ok: false` quando alguma seção excede cap. Editor (Pixel)
+ * detectou em 260507: writer publicou 9 itens de Outras Notícias quando
+ * cap esperado era 4.
+ */
+export interface SectionCountsResult {
+  ok: boolean;
+  counts: SectionCounts;
+  caps: { lancamento: number; pesquisa: number; noticias: number };
+  destaques: number;
+  violations: string[];
+}
+
+export function checkSectionCounts(
+  md: string,
+  approved: ApprovedJson,
+): SectionCountsResult {
+  const counts = countItemsPerSection(md);
+  const dest = approved.highlights?.length ?? 0;
+  const fakeApproved: CapsApprovedJson = {
+    highlights: approved.highlights ?? [],
+    lancamento: new Array(counts.lancamento),
+    pesquisa: new Array(counts.pesquisa),
+    noticias: new Array(counts.noticias),
+  };
+  const r = checkStage2Caps(fakeApproved);
+  return {
+    ok: r.ok,
+    counts,
+    caps: r.expectedCaps,
+    destaques: dest,
+    violations: r.violations,
+  };
+}
+
+/**
+ * Verifica que cada destaque atinge o mínimo de chars (#914).
+ *
+ * Mínimos editoriais (complementam os máximos do writer.md):
+ *   D1 ≥ 1000 chars  (máx 1200)
+ *   D2 ≥ 900 chars   (máx 1000)
+ *   D3 ≥ 900 chars   (máx 1000)
+ *
+ * Char count exclui URLs (mesma estratégia do `parseHighlights` em
+ * measure-highlights.ts) — mede só o body do destaque (parágrafos +
+ * "Por que isso importa" + parágrafo de impacto).
+ *
+ * Em 260507 D1=999, D2=708, D3=679 — D1 quase no piso, D2/D3 bem abaixo
+ * (variação D1↔D3 = +47% no peso editorial).
+ */
+export const DESTAQUE_MIN_CHARS = {
+  1: 1000,
+  2: 900,
+  3: 900,
+} as const;
+
+export interface DestaqueMinCharsError {
+  destaque: number;
+  category: string;
+  chars: number;
+  min: number;
+}
+
+export interface DestaqueMinCharsReport {
+  ok: boolean;
+  errors: DestaqueMinCharsError[];
+  highlights: Array<{ destaque: number; category: string; chars: number; min: number }>;
+}
+
+export function checkDestaqueMinChars(md: string): DestaqueMinCharsReport {
+  const measured = parseHighlights(md);
+  const errors: DestaqueMinCharsError[] = [];
+  const summary: DestaqueMinCharsReport["highlights"] = [];
+
+  for (const h of measured.highlights) {
+    const min =
+      DESTAQUE_MIN_CHARS[h.number as 1 | 2 | 3] ?? DESTAQUE_MIN_CHARS[3];
+    summary.push({
+      destaque: h.number,
+      category: h.category,
+      chars: h.chars,
+      min,
+    });
+    if (h.chars < min) {
+      errors.push({
+        destaque: h.number,
+        category: h.category,
+        chars: h.chars,
+        min,
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors, highlights: summary };
+}
+
+/**
+ * Verifica formato de itens nas seções secundárias (#909).
+ *
+ * Regra (writer.md passo 3 + context/templates/newsletter.md):
+ *   linha N:   **[Título](URL)**
+ *   linha N+1: Descrição em 1 frase plain text (não vazia, sem markdown)
+ *   linha N+2: vazia (separador entre items)
+ *
+ * Detecções:
+ *   - "[Título](URL) descrição" — título + descrição na mesma linha (bug 260507)
+ *   - URL quebrada em multilinha "[Título](\nurl\n)" — pega via reflexo
+ *     (depende de normalize-newsletter ter rodado antes)
+ *   - inline link em uma linha mas próxima linha vazia ou outro inline
+ *     link (faltou descrição entre)
+ *
+ * Não enforça `**negrito**` em volta — bold é cosmetic e validate-domains
+ * já cobre se necessário.
+ */
+export interface SectionItemFormatError {
+  section: string;
+  line: number;
+  type:
+    | "title_and_description_same_line"
+    | "title_without_description"
+    | "broken_url_multiline";
+  excerpt: string;
+}
+
+export interface SectionItemFormatReport {
+  ok: boolean;
+  errors: SectionItemFormatError[];
+}
+
+const SECTION_ITEM_HEADER_RE =
+  /^(?:\*\*)?(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/;
+
+// Linha contendo APENAS um inline link bem-formado (com **bold** opcional
+// e trailing spaces opcionais). Segura pra detectar item title-line.
+const INLINE_LINK_ONLY_RE =
+  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\s*\*{0,2}\s*$/;
+
+// Linha com inline link + texto extra (descrição colada). Match conservador.
+const INLINE_LINK_WITH_TEXT_RE =
+  /^\s*\*{0,2}\s*\[[^\]]+\]\(https?:\/\/[^\s)]+\)\*{0,2}\s+\S/;
+
+export function checkSectionItemFormat(md: string): SectionItemFormatReport {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const errors: SectionItemFormatError[] = [];
+
+  let currentSection: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const t = raw.trim();
+
+    const sectionMatch = t.match(SECTION_ITEM_HEADER_RE);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].toUpperCase();
+      continue;
+    }
+    if (t === "---") {
+      currentSection = null;
+      continue;
+    }
+    if (
+      currentSection &&
+      /^(?:\*\*)?DESTAQUE\s+\d+/.test(t)
+    ) {
+      currentSection = null;
+      continue;
+    }
+
+    if (!currentSection) continue;
+
+    // Detecta inline link + descrição na mesma linha
+    if (INLINE_LINK_WITH_TEXT_RE.test(raw)) {
+      errors.push({
+        section: currentSection,
+        line: i + 1,
+        type: "title_and_description_same_line",
+        excerpt: t.slice(0, 100),
+      });
+      continue;
+    }
+
+    // Inline link bem-formado em linha solo: validar próxima linha não-vazia
+    // existe e é descrição (não outro inline link nem header).
+    if (INLINE_LINK_ONLY_RE.test(raw)) {
+      // Próxima linha não-vazia
+      let j = i + 1;
+      while (j < lines.length && lines[j].trim() === "") j++;
+      if (j >= lines.length) {
+        errors.push({
+          section: currentSection,
+          line: i + 1,
+          type: "title_without_description",
+          excerpt: t.slice(0, 100),
+        });
+        continue;
+      }
+      const nextNonEmpty = lines[j].trim();
+      // Próximo é outro inline link → faltou descrição
+      if (INLINE_LINK_ONLY_RE.test(lines[j])) {
+        errors.push({
+          section: currentSection,
+          line: i + 1,
+          type: "title_without_description",
+          excerpt: t.slice(0, 100),
+        });
+        continue;
+      }
+      // Se a próxima linha não-vazia for um header (DESTAQUE, --- ou
+      // SEÇÃO) também conta como faltando descrição.
+      if (
+        SECTION_ITEM_HEADER_RE.test(nextNonEmpty) ||
+        /^(?:\*\*)?DESTAQUE\s+\d+/.test(nextNonEmpty) ||
+        nextNonEmpty === "---"
+      ) {
+        errors.push({
+          section: currentSection,
+          line: i + 1,
+          type: "title_without_description",
+          excerpt: t.slice(0, 100),
+        });
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
 }
 
 /**
@@ -1049,6 +1311,112 @@ intentional_error:
     return;
   }
 
+  // Modo --check destaque-min-chars (#914) — valida mínimo de chars por destaque
+  if (args.check === "destaque-min-chars") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkDestaqueMinChars(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ destaque-min-chars: ${result.errors.length} destaque(s) abaixo do mínimo:`,
+      );
+      for (const e of result.errors) {
+        const deficit = e.min - e.chars;
+        console.error(
+          `  D${e.destaque} (${e.category}): ${e.chars} chars — abaixo do mínimo de ${e.min} (deficit: ${deficit} chars)`,
+        );
+      }
+      console.error(
+        `\nFix: re-disparar writer pra expandir o body do destaque (mais 1 parágrafo OU "Por que isso importa" estendido).`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check section-item-format (#909) — valida formato de itens em seções secundárias
+  if (args.check === "section-item-format") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check section-item-format --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkSectionItemFormat(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ section-item-format: ${result.errors.length} item(ns) fora do formato esperado:`,
+      );
+      for (const e of result.errors) {
+        console.error(`  ${e.section} linha ${e.line}: ${e.type}`);
+        console.error(`    "${e.excerpt}"`);
+      }
+      console.error(
+        `\nFormato esperado: "**[Título](URL)**" + linha em branco + descrição plain.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check section-counts (#907) — verifica que seções secundárias
+  // respeitam caps de #358 (lançamentos≤5, pesquisas≤3, outras=max(2, 12-d-l-p))
+  if (args.check === "section-counts") {
+    if (!args.md || !args.approved) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    const approvedPath = resolve(ROOT, args.approved);
+    if (!existsSync(mdPath) || !existsSync(approvedPath)) {
+      console.error(
+        `Arquivo não encontrado: ${!existsSync(mdPath) ? mdPath : approvedPath}`,
+      );
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+    const result = checkSectionCounts(md, approved);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ section-counts: ${result.violations.length} seção(ões) excede(m) cap de #358:`,
+      );
+      for (const v of result.violations) console.error(`  ${v}`);
+      console.error(
+        `\nDestaques na edição: ${result.destaques}. Caps esperados: ` +
+          `lançamentos≤${result.caps.lancamento}, pesquisas≤${result.caps.pesquisa}, ` +
+          `outras≤${result.caps.noticias} (formula: max(2, 12-${result.destaques}-l-p))`,
+      );
+      console.error(
+        `\nFix: re-rodar /diaria-2-escrita ${args.md.match(/\d{6}/)?.[0] ?? "AAMMDD"} newsletter — ` +
+          `o orchestrator agora aplica caps via apply-stage2-caps.ts antes do writer.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check intro-count (#743) — verifica que intro bate com contagem real
   if (args.check === "intro-count") {
     if (!args.md) {
@@ -1109,7 +1477,9 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +
         "  ou: lint-newsletter-md.ts --check intro-count --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
+        "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
     );
     process.exit(2);
   }
