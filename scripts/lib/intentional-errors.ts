@@ -117,3 +117,82 @@ export function normalizeDestaque(d: number | string): string {
   const m = s.match(/(\d+)/);
   return m ? m[1] : s;
 }
+
+/**
+ * Pure: extrai número do destaque a partir de uma string `location` do
+ * frontmatter (#754). Aceita formatos como "DESTAQUE 2, parágrafo 2",
+ * "destaque 1", "OUTRAS NOTÍCIAS, item 3", etc.
+ *
+ * Retorna: 1|2|3 (destaque numerado), "outras_noticias", "lancamentos",
+ * "pesquisas", "header", ou string vazia se não bate em nenhum padrão.
+ */
+export function destaqueFromLocation(location: string): number | string {
+  if (typeof location !== "string") return "";
+  const lower = location.toLowerCase();
+
+  const dMatch = lower.match(/destaque\s*(\d+)/);
+  if (dMatch) {
+    const n = parseInt(dMatch[1], 10);
+    if (n === 1 || n === 2 || n === 3) return n;
+  }
+
+  if (/outras\s*not[íi]cias/i.test(lower)) return "outras_noticias";
+  if (/lan[çc]amentos/i.test(lower)) return "lancamentos";
+  if (/pesquisas/i.test(lower)) return "pesquisas";
+  if (/é\s*ia|eia|header|cabe[çc]alho/i.test(lower)) return "header";
+
+  return "";
+}
+
+/**
+ * Pure: converte frontmatter `intentional_error` (#754) pra entry compatível
+ * com `data/intentional-errors.jsonl` (#630). Faz mapping de campos:
+ *   description → detail
+ *   category → error_type
+ *   location → destaque (parsed via destaqueFromLocation)
+ *   correct_value → preserved como campo adicional
+ *
+ * `is_feature: true` sempre — frontmatter declarado pelo editor é por
+ * definição erro intencional.
+ */
+export interface IntentionalErrorFrontmatter {
+  description?: string;
+  location?: string;
+  category?: string;
+  correct_value?: string;
+}
+
+export function frontmatterToEntry(
+  fm: IntentionalErrorFrontmatter,
+  edition: string,
+): IntentionalError {
+  const destaque = fm.location ? destaqueFromLocation(fm.location) : "";
+  return {
+    edition,
+    error_type: fm.category ?? "unknown",
+    destaque: destaque || undefined,
+    is_feature: true,
+    detail: fm.description ?? "",
+    source: "frontmatter_02_reviewed",
+    detected_by: "lint-newsletter-md.ts intentional-error-flagged",
+    resolution: "published_intentionally",
+    ...(fm.correct_value ? { correct_value: fm.correct_value } : {}),
+  } as IntentionalError;
+}
+
+/**
+ * Idempotente: verifica se já existe entry pra `edition` no array; se não,
+ * append a entry derivada do frontmatter.
+ */
+export function syncFrontmatterToEntries(
+  fm: IntentionalErrorFrontmatter,
+  edition: string,
+  existing: IntentionalError[],
+): { added: boolean; entries: IntentionalError[] } {
+  const already = existing.some(
+    (e) => e.edition === edition && e.source === "frontmatter_02_reviewed",
+  );
+  if (already) return { added: false, entries: existing };
+  const newEntry = frontmatterToEntry(fm, edition);
+  return { added: true, entries: [...existing, newEntry] };
+}
