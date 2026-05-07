@@ -17,7 +17,11 @@
  *   npx tsx scripts/check-source-blocklist.ts --in sources.json --out filtered.json
  *
  * Output JSON em stdout (ou --out): { kept: Source[], skipped: SkippedSource[] }.
- * Exit codes: 0 sempre (script é informativo, não bloqueador).
+ * Exit codes:
+ *   0 = filter completed (kept/skipped split shown).
+ *   2 = input parse error (JSON inválido ou não-array). Garbage in =
+ *       falhar loud em vez de retornar `{ kept: [], skipped: [] }`
+ *       silenciosamente, que pareceria "filtro pegou tudo".
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
