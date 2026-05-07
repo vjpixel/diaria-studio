@@ -33,6 +33,7 @@ import {
   checkStage2Caps,
   type ApprovedJson as CapsApprovedJson,
 } from "./lib/apply-stage2-caps.ts"; // #907
+import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 
 interface ApprovedArticle {
   url: string;
@@ -312,6 +313,67 @@ export function checkSectionCounts(
     destaques: dest,
     violations: r.violations,
   };
+}
+
+/**
+ * Verifica que cada destaque atinge o mínimo de chars (#914).
+ *
+ * Mínimos editoriais (complementam os máximos do writer.md):
+ *   D1 ≥ 1000 chars  (máx 1200)
+ *   D2 ≥ 900 chars   (máx 1000)
+ *   D3 ≥ 900 chars   (máx 1000)
+ *
+ * Char count exclui URLs (mesma estratégia do `parseHighlights` em
+ * measure-highlights.ts) — mede só o body do destaque (parágrafos +
+ * "Por que isso importa" + parágrafo de impacto).
+ *
+ * Em 260507 D1=999, D2=708, D3=679 — D1 quase no piso, D2/D3 bem abaixo
+ * (variação D1↔D3 = +47% no peso editorial).
+ */
+export const DESTAQUE_MIN_CHARS = {
+  1: 1000,
+  2: 900,
+  3: 900,
+} as const;
+
+export interface DestaqueMinCharsError {
+  destaque: number;
+  category: string;
+  chars: number;
+  min: number;
+}
+
+export interface DestaqueMinCharsReport {
+  ok: boolean;
+  errors: DestaqueMinCharsError[];
+  highlights: Array<{ destaque: number; category: string; chars: number; min: number }>;
+}
+
+export function checkDestaqueMinChars(md: string): DestaqueMinCharsReport {
+  const measured = parseHighlights(md);
+  const errors: DestaqueMinCharsError[] = [];
+  const summary: DestaqueMinCharsReport["highlights"] = [];
+
+  for (const h of measured.highlights) {
+    const min =
+      DESTAQUE_MIN_CHARS[h.number as 1 | 2 | 3] ?? DESTAQUE_MIN_CHARS[3];
+    summary.push({
+      destaque: h.number,
+      category: h.category,
+      chars: h.chars,
+      min,
+    });
+    if (h.chars < min) {
+      errors.push({
+        destaque: h.number,
+        category: h.category,
+        chars: h.chars,
+        min,
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors, highlights: summary };
 }
 
 /**
@@ -1244,6 +1306,40 @@ intentional_error:
   category: "factual"   # factual | ortografico | numerico | attribution | data
   correct_value: "valor correto"
 ---`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check destaque-min-chars (#914) — valida mínimo de chars por destaque
+  if (args.check === "destaque-min-chars") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkDestaqueMinChars(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ destaque-min-chars: ${result.errors.length} destaque(s) abaixo do mínimo:`,
+      );
+      for (const e of result.errors) {
+        const deficit = e.min - e.chars;
+        console.error(
+          `  D${e.destaque} (${e.category}): ${e.chars} chars — abaixo do mínimo de ${e.min} (deficit: ${deficit} chars)`,
+        );
+      }
+      console.error(
+        `\nFix: re-disparar writer pra expandir o body do destaque (mais 1 parágrafo OU "Por que isso importa" estendido).`,
+      );
       process.exit(1);
     }
     return;
