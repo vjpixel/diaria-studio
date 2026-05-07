@@ -27,6 +27,26 @@ import { fileURLToPath } from "node:url";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 export type { PostEntry, SocialPublished };
 
+/**
+ * Pure: resolve canonical path of `06-social-published.json` (#920).
+ *
+ * `publish-facebook.ts` writes to `_internal/06-social-published.json` (#158
+ * canonical convention). Older editions had it in the root. Verify must read
+ * from wherever it actually lives — prefer `_internal/`, fall back to root.
+ *
+ * Returns `null` if neither exists. Exported for tests.
+ */
+export function resolveSocialPublishedPath(
+  rootDir: string,
+  editionDir: string,
+): string | null {
+  const internal = resolve(rootDir, editionDir, "_internal", "06-social-published.json");
+  if (existsSync(internal)) return internal;
+  const rootLegacy = resolve(rootDir, editionDir, "06-social-published.json");
+  if (existsSync(rootLegacy)) return rootLegacy;
+  return null;
+}
+
 export interface GraphPostResponse {
   /**
    * Inferido (não retornado pela API) — true se created_time presente E
@@ -73,15 +93,41 @@ export async function defaultFetchPost(
 ): Promise<GraphPostResponse> {
   // #600: is_published foi deprecated em Graph API v18+ (retorna #100 error).
   // Inferimos publicação por presença de created_time + scheduled_publish_time vencido.
-  const fields = "created_time,permalink_url,scheduled_publish_time";
+  //
+  // #920: permalink_url também retorna #100 em posts agendados (não publicados
+  // ainda — sem URL pública). Pedi-lo junto com os outros fields fazia o
+  // request inteiro falhar, marcando posts scheduled-OK como `failed`.
+  // Estratégia: pedimos só os campos seguros pra determinar status, e
+  // tentamos permalink_url num GET separado (best-effort, swallow erros).
+  const safeFields = "created_time,scheduled_publish_time";
+  const baseUrl = `https://graph.facebook.com/${apiVersion}/${postId}`;
   // Token via Authorization header (não query string) pra evitar leak em logs
   // de proxies/CDNs intermediários — security review da sessão 2026-04-24.
-  const url = `https://graph.facebook.com/${apiVersion}/${postId}?fields=${fields}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `OAuth ${pageToken}` },
-  });
+  const headers = { Authorization: `OAuth ${pageToken}` };
+  const res = await fetch(`${baseUrl}?fields=${safeFields}`, { headers });
   const data = (await res.json()) as GraphPostResponse;
-  return inferIsPublished(data, Math.floor(Date.now() / 1000));
+
+  // Best-effort permalink_url — só faz sentido pra posts já publicados.
+  // Pula a tentativa pra requests com erro ou que ainda estão scheduled no futuro.
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const stillScheduled =
+    typeof data.scheduled_publish_time === "number" &&
+    data.scheduled_publish_time > nowUnix;
+  if (!data.error && !stillScheduled && data.created_time) {
+    try {
+      const permRes = await fetch(`${baseUrl}?fields=permalink_url`, { headers });
+      if (permRes.ok) {
+        const permJson = (await permRes.json()) as { permalink_url?: string };
+        if (permJson.permalink_url) {
+          data.permalink_url = permJson.permalink_url;
+        }
+      }
+    } catch {
+      // permalink_url é metadata cosmético — silenciar falhas.
+    }
+  }
+
+  return inferIsPublished(data, nowUnix);
 }
 
 /**
@@ -178,9 +224,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const publishedPath = resolve(ROOT, editionDir, "06-social-published.json");
-  if (!existsSync(publishedPath)) {
-    console.error(`Arquivo não encontrado: ${publishedPath}`);
+  // #920: prefer _internal/ (canonical, written by publish-facebook.ts), fall
+  // back to root (legacy editions). Hardcoding root caused verify to fail when
+  // publish-facebook.ts wrote to _internal/ — `Arquivo não encontrado`.
+  const publishedPath = resolveSocialPublishedPath(ROOT, editionDir);
+  if (!publishedPath) {
+    const internal = resolve(ROOT, editionDir, "_internal", "06-social-published.json");
+    const root = resolve(ROOT, editionDir, "06-social-published.json");
+    console.error(`Arquivo não encontrado em nenhum dos paths esperados:\n  - ${internal}\n  - ${root}`);
     process.exit(1);
   }
 
