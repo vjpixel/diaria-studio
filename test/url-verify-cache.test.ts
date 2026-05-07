@@ -9,6 +9,8 @@ import {
   getCached,
   setCached,
   isCacheableVerdict,
+  getCachedBody,
+  MAX_CACHED_BODY_SIZE,
   DEFAULT_TTL_MS,
   type CacheEntry,
 } from "../scripts/lib/url-verify-cache.ts";
@@ -212,5 +214,102 @@ describe("getCached / setCached (#717 hyp 2)", () => {
     const entry = map.get("https://x.com/y");
     assert.equal(entry?.note, "known-paywall domain");
     assert.equal(entry?.finalUrl, "https://x.com/y/redirected");
+  });
+});
+
+describe("getCachedBody — body fallback cross-edição (#866)", () => {
+  it("retorna null quando URL não está no cache", () => {
+    const map = new Map<string, CacheEntry>();
+    assert.equal(getCachedBody(map, "https://x.com/y"), null);
+  });
+
+  it("retorna null quando entry não tem body persistido", () => {
+    const map = new Map<string, CacheEntry>();
+    setCached(map, "https://x.com/y", {
+      verdict: "accessible",
+      finalUrl: "https://x.com/y",
+    });
+    assert.equal(getCachedBody(map, "https://x.com/y"), null);
+  });
+
+  it("retorna body quando entry tem body persistido", () => {
+    const map = new Map<string, CacheEntry>();
+    const html = "<html><head>...</head><body>conteúdo</body></html>";
+    setCached(map, "https://x.com/y", {
+      verdict: "accessible",
+      finalUrl: "https://x.com/y",
+      body: html,
+    });
+    assert.equal(getCachedBody(map, "https://x.com/y"), html);
+  });
+
+  it("body persiste através de save+load round trip", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "verify-cache-body-"));
+    const cachePath = join(tmpDir, "cache.json");
+    try {
+      const map = new Map<string, CacheEntry>();
+      const html = "<html>conteúdo cached</html>";
+      setCached(map, "https://x.com/y", {
+        verdict: "accessible",
+        finalUrl: "https://x.com/y",
+        body: html,
+      });
+      saveCache(cachePath, map);
+
+      const loaded = loadCache(cachePath);
+      assert.equal(getCachedBody(loaded, "https://x.com/y"), html);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("body acima de MAX_CACHED_BODY_SIZE é stripado em save", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "verify-cache-body-big-"));
+    const cachePath = join(tmpDir, "cache.json");
+    try {
+      const map = new Map<string, CacheEntry>();
+      const tooBig = "a".repeat(MAX_CACHED_BODY_SIZE + 1);
+      setCached(map, "https://x.com/y", {
+        verdict: "accessible",
+        finalUrl: "https://x.com/y",
+        body: tooBig,
+      });
+      saveCache(cachePath, map);
+
+      const loaded = loadCache(cachePath);
+      assert.equal(loaded.get("https://x.com/y")?.body, undefined);
+      // Mas o resto da entry está preservado
+      assert.equal(loaded.get("https://x.com/y")?.verdict, "accessible");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("body inserido via JSON externo acima do limite é stripado em load", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "verify-cache-body-tampered-"));
+    const cachePath = join(tmpDir, "cache.json");
+    try {
+      const tooBig = "x".repeat(MAX_CACHED_BODY_SIZE + 100);
+      // Escrever arquivo direto (bypass saveCache) com body acima do limite
+      const file = {
+        version: 1,
+        entries: {
+          "https://tampered.com/y": {
+            verdict: "accessible",
+            verified_at: new Date().toISOString(),
+            finalUrl: "https://tampered.com/y",
+            body: tooBig,
+          },
+        },
+      };
+      writeFileSync(cachePath, JSON.stringify(file), "utf8");
+
+      const loaded = loadCache(cachePath);
+      // Body stripado, resto preservado (defensive ao tampering)
+      assert.equal(loaded.get("https://tampered.com/y")?.body, undefined);
+      assert.equal(loaded.get("https://tampered.com/y")?.verdict, "accessible");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

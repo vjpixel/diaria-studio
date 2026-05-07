@@ -244,4 +244,66 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
       rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it("body é lifted pro verify cache (#866) — accessible apenas, ≤ 50KB", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "verify-e2e-body-lift-"));
+    const bodiesDir = join(tmpRoot, "bodies");
+    const cachePath = join(tmpRoot, "verify-cache.json");
+    try {
+      const urls = [
+        `http://127.0.0.1:${port}/200-good`,
+        `http://127.0.0.1:${port}/404`,
+      ];
+      const r = await runVerify(urls, bodiesDir, cachePath);
+      assert.equal(r.exitCode, 0);
+
+      // Stderr menciona body lift count quando aplicável
+      assert.match(r.stderr, /\+1 bodies \(#866\)/);
+
+      const cache = JSON.parse(readFileSync(cachePath, "utf8"));
+      const accessibleEntry = Object.values(cache.entries).find(
+        (e: any) => e.verdict === "accessible",
+      ) as any;
+      const blockedEntry = Object.values(cache.entries).find(
+        (e: any) => e.verdict === "blocked",
+      ) as any;
+
+      // Accessible entry deve ter body
+      assert.ok(accessibleEntry?.body, "accessible entry deveria ter body persistido");
+      assert.match(accessibleEntry.body, /Artigo Real/);
+
+      // Blocked entry NÃO deve ter body (#866 só lift accessible)
+      assert.equal(blockedEntry?.body, undefined);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("cache hit em segunda run preserva body sem rewrite (#866)", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "verify-e2e-body-preserve-"));
+    const bodiesDir = join(tmpRoot, "bodies");
+    const cachePath = join(tmpRoot, "verify-cache.json");
+    try {
+      const urls = [`http://127.0.0.1:${port}/200-good`];
+
+      // First run: body lifted pra cache
+      await runVerify(urls, bodiesDir, cachePath);
+      const beforeBody = (Object.values(
+        JSON.parse(readFileSync(cachePath, "utf8")).entries,
+      )[0] as any).body;
+      assert.ok(beforeBody);
+
+      // Second run com bodies-dir limpo (simula nova edição)
+      rmSync(bodiesDir, { recursive: true, force: true });
+      await runVerify(urls, bodiesDir, cachePath);
+
+      // Body deve continuar no cache (cache hit, no rewrite)
+      const afterBody = (Object.values(
+        JSON.parse(readFileSync(cachePath, "utf8")).entries,
+      )[0] as any).body;
+      assert.equal(afterBody, beforeBody, "body preservado através de cache hit");
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });

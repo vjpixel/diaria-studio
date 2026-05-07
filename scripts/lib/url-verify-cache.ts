@@ -47,7 +47,30 @@ export interface CacheEntry {
   note?: string;
   /** Optional final URL after redirects (preserved across cache hits). */
   finalUrl?: string;
+  /**
+   * Optional body raw HTML — populado quando verdict é `accessible` E body
+   * é texto razoável (<= MAX_CACHED_BODY_SIZE). Permite que `verify-dates.ts`
+   * em runs futuros extraia `published_at` sem refetch (#866).
+   *
+   * Cache file size impact: ~10-50KB por entry com body. Com 100 URLs
+   * cached → cache JSON pode crescer pra ~5MB. Aceitável dado o ganho
+   * de eliminar fetches redundantes em verify-dates.
+   *
+   * `loadCache` valida tamanho ao deserializar — entries com body acima
+   * do limite são truncadas (body removido) defensivamente.
+   */
+  body?: string;
 }
+
+/**
+ * Limite máximo de tamanho do body cached em bytes (UTF-8). Acima disso,
+ * o body é descartado pra evitar JSON cache file gigante. 50KB cobre a
+ * vasta maioria de páginas editoriais (heads, JSON-LD, primeiros parágrafos).
+ *
+ * Compatível com a truncagem de 50K em `verify-accessibility.ts` antes
+ * dos paywall markers — mesmo prefix do body bruto.
+ */
+export const MAX_CACHED_BODY_SIZE = 50_000;
 
 export interface CacheFile {
   /** Schema version — bump when entry shape changes incompatibly. */
@@ -88,9 +111,34 @@ export function loadCache(
     if (!CACHEABLE_VERDICTS.has(entry.verdict)) continue;
     const at = Date.parse(entry.verified_at);
     if (Number.isNaN(at) || at < cutoff) continue;
-    map.set(url, entry as CacheEntry);
+    // #866: defensive — drop body if exceeds limit (file foi tamperado ou
+    // limite foi reduzido entre versions). Preserva o resto da entry.
+    const sanitized: CacheEntry = { ...(entry as CacheEntry) };
+    if (sanitized.body && sanitized.body.length > MAX_CACHED_BODY_SIZE) {
+      delete sanitized.body;
+    }
+    map.set(url, sanitized);
   }
   return map;
+}
+
+/**
+ * Lookup do body cached pra uma URL (#866). Usado por `verify-dates.ts`
+ * como fallback após o body cache intra-edição (`bodies-dir`). Compounds
+ * com #835 e #841 — quando verify cache hit cross-edição, body também vem
+ * de graça (sem refetch).
+ *
+ * Retorna null se URL não está no cache OU entry não tem body persistido
+ * (ex: entry de versão anterior, ou body excedeu MAX_CACHED_BODY_SIZE
+ * no save).
+ */
+export function getCachedBody(
+  map: Map<string, CacheEntry>,
+  canonicalUrl: string,
+): string | null {
+  const entry = map.get(canonicalUrl);
+  if (!entry) return null;
+  return entry.body ?? null;
 }
 
 /**
@@ -107,7 +155,14 @@ export function saveCache(cachePath: string, map: Map<string, CacheEntry>): void
     for (const [url, entry] of map.entries()) {
       if (!CACHEABLE_VERDICTS.has(entry.verdict)) continue;
       if (!entry.verified_at) continue;
-      entries[url] = entry;
+      // #866: drop body if exceeds limit pra evitar cache file gigante.
+      // Preserva resto da entry (verdict, finalUrl, note). Defensive twin
+      // do check em loadCache — guarda contra body adicionado externamente.
+      const sanitized: CacheEntry = { ...entry };
+      if (sanitized.body && sanitized.body.length > MAX_CACHED_BODY_SIZE) {
+        delete sanitized.body;
+      }
+      entries[url] = sanitized;
     }
     const file: CacheFile = { version: 1, entries };
     const tmpPath = cachePath + ".tmp";

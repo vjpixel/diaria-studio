@@ -51,6 +51,14 @@ export interface VerifyDateOptions {
   bodiesDir?: string | null;
 
   /**
+   * Cross-edition verify cache map (#866). Quando set, `verifyDate()` usa
+   * como fallback se body não está em `bodiesDir`. Permite reuso de body
+   * cacheado em runs anteriores quando verify cache hit (cross-edição).
+   * Caller carrega via `loadCache` e passa o map já populado.
+   */
+  verifyCache?: Map<string, import("./url-verify-cache.ts").CacheEntry> | null;
+
+  /**
    * Cutoff ISO (YYYY-MM-DD) pra arxiv pre-skip (#717 hyp 4, #839). URLs
    * de arxiv com YYMM anterior ao cutoff retornam imediatamente sem fetch.
    */

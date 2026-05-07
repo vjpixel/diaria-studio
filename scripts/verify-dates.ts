@@ -17,6 +17,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import {
+  loadCache as loadVerifyCache,
+  getCachedBody,
+  type CacheEntry,
+} from "./lib/url-verify-cache.ts";
+import {
   parseArxivId,
   arxivIdSentinelDate,
   isClearlyBeforeCutoff,
@@ -220,20 +225,42 @@ function extractDateFromBody(body: string): { date: string | null; note: string 
  * delega pra `extractDateFromBody` pra parsing puro. Retorna o resultado
  * + cacheHit pra accumulação em main(). #836: substitui as vars module-
  * level CACHE_HITS/CACHE_MISSES por per-call return.
+ *
+ * #866: lookup de body em 2 fontes na ordem:
+ *   1. `bodiesDir` intra-edição (#717 hyp 1) — preferred, sempre fresh
+ *   2. `verifyCache` cross-edição (#866) — fallback quando verify cache
+ *      hit não populou bodies-dir
+ *   3. fetch via rede (último recurso)
  */
 async function extractPublishedDate(
   url: string,
   bodiesDir: string | null,
+  verifyCache: Map<string, CacheEntry> | null,
   timeoutMs = 10000,
-): Promise<{ date: string | null; note: string; cacheHit: boolean | undefined }> {
-  const cached = loadCachedBody(bodiesDir, url);
-  let body: string;
+): Promise<{
+  date: string | null;
+  note: string;
+  cacheHit: boolean | undefined;
+  cacheSource?: "bodies-dir" | "verify-cache";
+}> {
+  // Source 1: intra-edition body cache
+  let body: string | null = loadCachedBody(bodiesDir, url);
   let cacheHit: boolean | undefined;
-  if (cached !== null) {
+  let cacheSource: "bodies-dir" | "verify-cache" | undefined;
+  if (body !== null) {
     cacheHit = true;
-    body = cached;
-  } else {
-    cacheHit = bodiesDir !== null ? false : undefined;
+    cacheSource = "bodies-dir";
+  } else if (verifyCache !== null) {
+    // Source 2: cross-edition verify cache body (#866)
+    body = getCachedBody(verifyCache, url);
+    if (body !== null) {
+      cacheHit = true;
+      cacheSource = "verify-cache";
+    }
+  }
+
+  if (body === null) {
+    cacheHit = bodiesDir !== null || verifyCache !== null ? false : undefined;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
@@ -268,7 +295,7 @@ async function extractPublishedDate(
   }
 
   const parsed = extractDateFromBody(body);
-  return { ...parsed, cacheHit };
+  return { ...parsed, cacheHit, ...(cacheSource ? { cacheSource } : {}) };
 }
 
 /**
@@ -285,6 +312,7 @@ export async function verifyDate(
 ): Promise<DateVerifyResult> {
   const bodiesDir = opts.bodiesDir ?? null;
   const cutoffIso = opts.cutoffIso ?? null;
+  const verifyCache = opts.verifyCache ?? null;
 
   // #717 hypothesis #4: arxiv pre-skip. Quando o URL é arxiv e o YYMM do ID
   // é claramente anterior ao cutoff (1+ mês de margem), retorna data sintética
@@ -307,8 +335,14 @@ export async function verifyDate(
     }
   }
 
-  const { date, note, cacheHit } = await extractPublishedDate(article.url, bodiesDir);
+  const { date, note, cacheHit, cacheSource } = await extractPublishedDate(
+    article.url,
+    bodiesDir,
+    verifyCache,
+  );
   const originalNorm = normalizeDate(article.date);
+  // Note opcional pra rastreabilidade (#866) — útil pra debug
+  void cacheSource;
 
   if (!date) {
     return {
@@ -347,6 +381,7 @@ async function main() {
   let bodiesDir: string | null = null;
   let cutoffIso: string | null = null;
   let windowDays: number | null = null;
+  let verifyCachePath: string | null = null;
   const positional: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
@@ -362,6 +397,11 @@ async function main() {
         windowDays = n;
       }
       i++;
+    } else if (a === "--verify-cache" && i + 1 < process.argv.length) {
+      // #866: path do cross-edition verify cache. Quando set, body cached
+      // em entries de runs anteriores serve como fallback ao bodies-dir.
+      verifyCachePath = process.argv[i + 1];
+      i++;
     } else {
       positional.push(a);
     }
@@ -369,7 +409,7 @@ async function main() {
   const inputArg = positional[0];
   if (!inputArg) {
     console.error(
-      "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD] [--window-days N]",
+      "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD] [--window-days N] [--verify-cache <path>]",
     );
     console.error("  articles.json: array de { url, date }");
     process.exit(1);
@@ -387,7 +427,22 @@ async function main() {
 
   const articles: ArticleInput[] = JSON.parse(readFileSync(inputArg, "utf8"));
 
-  const verifyOpts: VerifyDateOptions = { bodiesDir, cutoffIso };
+  // #866: carregar cross-edition verify cache pra fallback de body em
+  // verify-dates. Quando verify-accessibility lifted body pra cache no
+  // run anterior, evita refetch aqui.
+  let verifyCacheMap: Map<string, CacheEntry> | null = null;
+  if (verifyCachePath !== null) {
+    verifyCacheMap = loadVerifyCache(verifyCachePath);
+    console.error(
+      `[verify-dates] verify cache carregado: ${verifyCacheMap.size} entries (#866 body fallback)`,
+    );
+  }
+
+  const verifyOpts: VerifyDateOptions = {
+    bodiesDir,
+    cutoffIso,
+    verifyCache: verifyCacheMap,
+  };
 
   // Concurrency limit: no máximo 5 fetches simultâneos para evitar rate limiting
   const CONCURRENCY = 5;
