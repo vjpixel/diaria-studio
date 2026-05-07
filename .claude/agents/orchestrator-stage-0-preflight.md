@@ -325,9 +325,19 @@ echo '<RAW_THREADS_JSON>' | npx tsx scripts/sorteio-classify.ts \
   --output data/editions/{AAMMDD}/_internal/sorteio-pending.json
 ```
 
-Output JSON: `{ generated_at, total_input, already_processed, candidates[] }`. Cada candidate tem `recommendation` ∈ `APPROVE` | `REJECT` | `REVIEW` + `reason`.
+Output JSON: `{ generated_at, total_input, already_processed, skipped_invalid, candidates[] }`. Cada candidate tem `recommendation` ∈ `APPROVE` | `REJECT` | `REVIEW` + `reason`.
 
 Se `candidates.length === 0`: skip silencioso (todas processadas ou input vazio). Logar `info`.
+
+**Observabilidade do guard (#951)**: se `skipped_invalid > 0`, logar warn pra auto-reporter pegar (sinaliza que o guard `isValidRawThread` filtrou threads — pode indicar regressão no filtro upstream do orchestrator):
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent sorteio-classify --level warn \
+  --message "sorteio_classify_skipped_invalid" \
+  --details '{"skipped_invalid":N,"total_input":M}'
+```
+
+Se `skipped_invalid === 0`, não logar nada (caminho normal).
 
 #### Etapa 3 — Apresentar gate batch ao editor
 

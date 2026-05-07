@@ -54,6 +54,16 @@ Use `mcp__claude_ai_Gmail__search_threads` com query `"diaria@mail.beehiiv.com" 
 
 Pra cada thread, filtrar antes de apresentar: se a única mensagem é do `diaria@mail.beehiiv.com` (newsletter original sem reply do leitor), pular silenciosamente.
 
+**Observabilidade do guard (#951)**: o classifier também tem guard interno `isValidRawThread` que filtra threads inválidas (sender = `diaria@mail.beehiiv.com` ou body trivial). Output JSON inclui `skipped_invalid: N`. Se `N > 0` após o classify, logar warn:
+
+```bash
+npx tsx scripts/log-event.ts --agent sorteio-classify --level warn \
+  --message "sorteio_classify_skipped_invalid" \
+  --details '{"skipped_invalid":N,"total_input":M}'
+```
+
+Sinaliza que filtros upstream (orchestrator/skill) deixaram passar threads que o guard precisou rejeitar — pode indicar regressão na query Gmail.
+
 ### Passo 3: para cada thread nova, apresentar ao editor
 
 Para cada thread retornada:
