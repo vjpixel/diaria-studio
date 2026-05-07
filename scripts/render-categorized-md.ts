@@ -31,6 +31,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
 import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { readEiaAnswer } from "./lib/eia-answer.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
 // de outro diretório não quebra resolução de inbox.md / platform.config.json.
@@ -555,10 +556,10 @@ export function renderEaiBlock(editionDir: string): string {
     }
     if (!creditLine) return `\n${separator}\n\n## É IA? ⏳ (ainda processando)\n\n${separator}\n`;
 
-    // #584: extrair gabarito do frontmatter `eia_answer` e mostrar pro editor
-    // (apenas em categorized.md / pre-publish — strippado depois pra não estragar
-    // o poll Trivia da newsletter)
-    const gabarito = extractEaiAnswer(content);
+    // #584/#927: extrair gabarito (sidecar > meta.json > frontmatter) e
+    // mostrar pro editor — apenas em categorized.md / pre-publish, strippado
+    // depois pra não estragar o poll Trivia da newsletter.
+    const gabarito = readEiaAnswer(editionDir) ?? extractEaiAnswer(content);
     const gabaritoLine = gabarito ? `\n> Gabarito: **A = ${gabarito.A}**, **B = ${gabarito.B}**\n` : "";
 
     return `\n${separator}\n\n## É IA?\n\n${creditLine}\n${gabaritoLine}\n${separator}\n`;
@@ -569,6 +570,10 @@ export function renderEaiBlock(editionDir: string): string {
 /**
  * Extrai `eia_answer.A` e `eia_answer.B` do frontmatter de `01-eia.md` (#584).
  * Retorna null se ausente ou malformado.
+ *
+ * **#927:** mantido como fallback in-memory (parser de string já carregada).
+ * Para resolução completa com sidecar JSON, use `readEiaAnswer(editionDir)`
+ * de `lib/eia-answer.ts`.
  */
 export function extractEaiAnswer(eiaMd: string): { A: string; B: string } | null {
   const fmMatch = eiaMd.match(/^---\s*\n([\s\S]*?)\n---/);

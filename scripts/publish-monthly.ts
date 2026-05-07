@@ -27,6 +27,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
+import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -454,8 +455,9 @@ function draftToEmail(
  * sem esperar até a próxima edição.
  *
  * Tenta ler de (em ordem):
- *   1. data/monthly/{YYMM}/_internal/01-eia-meta.json — campo ai_side
- *   2. data/monthly/{YYMM}/01-eia.md — frontmatter eia_answer
+ *   1. data/monthly/{YYMM}/_internal/01-eia-answer.json — sidecar (#927)
+ *   2. data/monthly/{YYMM}/_internal/01-eia-meta.json — campo ai_side
+ *   3. data/monthly/{YYMM}/01-eia.md — frontmatter eia_answer
  */
 async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<void> {
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
@@ -465,17 +467,25 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
     return;
   }
 
-  // Tentar ler ai_side de 01-eia-meta.json
+  // #927: sidecar JSON é canonical (sobrevive Drive round-trip).
   let aiSide: string | null = null;
-  const metaPath = resolve(monthlyDir, "_internal", "01-eia-meta.json");
-  if (existsSync(metaPath)) {
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-      aiSide = meta.ai_side ?? null;
-    } catch { /* ignorar */ }
+  const sidecar = readEiaAnswerSidecar(monthlyDir);
+  if (sidecar) {
+    aiSide = aiSideFromAnswer(sidecar);
   }
 
-  // Fallback: parsear frontmatter de 01-eia.md
+  // Fallback 1: ler ai_side de 01-eia-meta.json
+  if (!aiSide) {
+    const metaPath = resolve(monthlyDir, "_internal", "01-eia-meta.json");
+    if (existsSync(metaPath)) {
+      try {
+        const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+        aiSide = meta.ai_side ?? null;
+      } catch { /* ignorar */ }
+    }
+  }
+
+  // Fallback 2: parsear frontmatter de 01-eia.md
   if (!aiSide) {
     const eiaPath = resolve(monthlyDir, "01-eia.md");
     if (existsSync(eiaPath)) {

@@ -33,6 +33,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
+import { readEiaAnswer } from "./lib/eia-answer.ts"; // #927
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -547,6 +548,24 @@ export function extractEiaFrontmatter(eiaPath: string): string | null {
   return block;
 }
 
+/**
+ * #927: Resolve o bloco YAML `eia_answer:` para propagar pra `02-reviewed.md`.
+ * Tenta na ordem:
+ *   1. Sidecar JSON `_internal/01-eia-answer.json` (canonical, pós-#927).
+ *   2. Frontmatter de `01-eia.md` (legacy / backward compat).
+ *
+ * Sidecar tem precedência porque sobrevive Drive round-trip; frontmatter
+ * pode ter sido strippado se 01-eia.md já passou pelo Drive.
+ */
+export function resolveEiaFrontmatterBlock(editionDir: string): string | null {
+  const answer = readEiaAnswer(editionDir);
+  if (answer) {
+    return `eia_answer:\n  A: ${answer.A}\n  B: ${answer.B}`;
+  }
+  const eiaPath = resolve(editionDir, "01-eia.md");
+  return extractEiaFrontmatter(eiaPath);
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
@@ -559,19 +578,18 @@ function main(): void {
   const text = readFileSync(inPath, "utf8");
   const result = normalizeNewsletter(text);
 
-  // #744: propagar eia_answer do 01-eia.md para o output
+  // #744/#927: propagar eia_answer pro output (sidecar > frontmatter).
   // Inferir edition_dir a partir do path de --in (assume que está em
   // data/editions/{AAMMDD}/_internal/ ou data/editions/{AAMMDD}/).
   let outputText = result.text;
-  const eiaPath = join(resolve(ROOT, args.in), "..", "..", "01-eia.md");
-  const eiaPathAlt = join(resolve(ROOT, args.in), "..", "01-eia.md");
-  const resolvedEiaPath = existsSync(eiaPath)
-    ? eiaPath
-    : existsSync(eiaPathAlt)
-    ? eiaPathAlt
-    : null;
-  if (resolvedEiaPath) {
-    const fmBlock = extractEiaFrontmatter(resolvedEiaPath);
+  // Detecta edition_dir tentando dois levels (--in pode vir de _internal/ ou root/).
+  const inDirAbs = dirname(resolve(ROOT, args.in));
+  const candidates = [resolve(inDirAbs, ".."), inDirAbs];
+  const editionDir = candidates.find(
+    (d) => existsSync(join(d, "01-eia.md")) || existsSync(join(d, "_internal/01-eia-answer.json")),
+  );
+  if (editionDir) {
+    const fmBlock = resolveEiaFrontmatterBlock(editionDir);
     if (fmBlock) {
       // Só prepend se o output ainda não tem frontmatter com eia_answer
       const alreadyHas = /^---[\s\S]*?eia_answer[\s\S]*?---/.test(outputText);
