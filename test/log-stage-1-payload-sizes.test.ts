@@ -231,7 +231,7 @@ describe("payloadLevel ratchet (#891)", () => {
   });
 
   it("cenário do bug original (561K pré-cap em 260507) cai em warn agora", () => {
-    // Pre-cap era 561K — sem cap, era passing alarm. Pós-cap, threshold 300/700
+    // Pre-cap, 561K passava sob o radar (sem alarm). Pós-cap, threshold 300/700
     // pega esse range em warn (não bloqueia, mas sinaliza pra editor investigar).
     assert.equal(payloadLevel(561 * 1024), "warn");
   });

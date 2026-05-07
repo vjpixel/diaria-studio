@@ -21,9 +21,6 @@ export interface SitemapEntry {
   body_excerpt?: string;
 }
 
-// #944 review: Article importada de ./article-cap.ts (single source of truth).
-export type { Article };
-
 export interface SitemapFetchResult {
   source: string;
   method: "sitemap";
