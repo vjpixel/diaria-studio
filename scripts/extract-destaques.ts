@@ -48,14 +48,16 @@ export function parseDestaques(raw: string): Destaque[] {
   const destaques: Destaque[] = [];
 
   for (const section of sections) {
-    const headerMatch = section.match(/^DESTAQUE\s+([123])\s*\|\s*(.+)$/m);
+    // Header — plain ou em **negrito** (#590)
+    const headerMatch = section.match(/^(?:\*\*)?DESTAQUE\s+([123])\s*\|\s*(.+?)(?:\*\*)?$/m);
     if (!headerMatch) continue;
 
     const n = parseInt(headerMatch[1], 10) as 1 | 2 | 3;
     const category = headerMatch[2].trim();
 
     // Remove the header line; work with the remaining content.
-    const afterHeader = section.replace(/^DESTAQUE.*$/m, '').trim();
+    // Aceita header com ou sem **negrito**.
+    const afterHeader = section.replace(/^(?:\*\*)?DESTAQUE.*$/m, '').trim();
     const lines = afterHeader.split(/\r?\n/);
 
     // Title = first non-empty line after header.

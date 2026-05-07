@@ -90,7 +90,9 @@ export function parseHighlights(reviewedMd: string): MeasureResult {
   const highlights: HighlightSize[] = [];
 
   // Header regex pra detectar início de destaque dentro de cada chunk.
-  const headerRe = /^DESTAQUE\s+(\d+)\s*\|\s*(.+?)\n([\s\S]*)$/;
+  // Suporta plain ou **negrito** (#590). `\*\*` opcional no início e fim
+  // do título da seção (fim antes da newline).
+  const headerRe = /^(?:\*\*)?DESTAQUE\s+(\d+)\s*\|\s*(.+?)(?:\*\*)?\n([\s\S]*)$/;
 
   // Split by `\n---\n` (separator entre seções). Cada chunk pode ser
   // um destaque, ou outras seções (LANÇAMENTOS, PESQUISAS, etc).

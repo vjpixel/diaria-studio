@@ -47,7 +47,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 ## 6. Formatação geral
 
-- **Sem markdown** no output final. Nada de `**bold**`, `# headers`, `- bullets`, `_italic_`.
+- **Markdown limitado** (#590): permitido em **negrito** (`**...**`) apenas em: nomes de seção (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`, `**DESTAQUE N | EMOJI CATEGORIA**`, `**É IA?**`), títulos de destaques (cada uma das 3 opções), e títulos de itens em LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS. **Proibido em corpo de parágrafo**, em URLs/descrições, e em `_italic_`/`# headers`/`- bullets`. Markdown link `[título](url)` continua permitido (#599) — não conta como formatação.
 - Linha em branco entre elementos.
 - Em LANÇAMENTOS/PESQUISAS/OUTRAS: título na 1ª linha, frase descritiva na 2ª, URL limpa na 3ª, linha em branco, próximo item.
 
@@ -92,7 +92,7 @@ Antes de aprovar o texto final da edição, validar:
 - [ ] Títulos dos destaques com ≤52 caracteres.
 - [ ] 3 opções de título propostas por destaque.
 - [ ] URLs de LANÇAMENTOS/PESQUISAS/OUTRAS: apenas URL, sem texto adicional.
-- [ ] Texto sem markdown (sem bold, bullets, headers).
+- [ ] Texto sem markdown em parágrafos (bold permitido apenas em seções/títulos per #590; sem bullets, sem headers).
 - [ ] Máximo 3 destaques, distribuídos pelas categorias válidas.
 
 ## Seção "Vídeos" (#359)
