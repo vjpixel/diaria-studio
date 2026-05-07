@@ -205,7 +205,15 @@ function parseArgs(argv: string[]): Record<string, string> {
   return args;
 }
 
-function readJsonOrNull<T>(path: string): T | null {
+/**
+ * Lê arquivo JSON com fallback gracioso (#867):
+ *   - File missing → null (sem warn — caso esperado)
+ *   - JSON inválido → null + warn no stderr
+ *
+ * Exportada pra teste unitário; também usada internamente por `main()`
+ * pra carregar pool/categorized/approved sem crashar em writes interrompidas.
+ */
+export function readJsonOrNull<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -283,10 +291,21 @@ function main(): void {
   const approvedUrls = collectApprovedUrls(approved);
   const candidates = flattenCategorized(categorized);
 
-  // Pool atual
-  const pool: PoolArticle[] = existsSync(poolPathAbs)
-    ? (JSON.parse(readFileSync(poolPathAbs, "utf8")) as PoolArticle[])
-    : [];
+  // Pool atual — usa readJsonOrNull pra evitar crash em pool corrompido
+  // (ex: write interrompida mid-Stage 1, partial JSON). Pool ilegível =
+  // tratar como vazio + warn no stderr (#867).
+  const pool: PoolArticle[] = readJsonOrNull<PoolArticle[]>(poolPathAbs) ?? [];
+  if (existsSync(poolPathAbs) && pool.length === 0) {
+    // Existência + vazio = pool legível mas sem entries OU pool ilegível.
+    // readJsonOrNull já loga o erro de parse no stderr quando aplica.
+    // Aqui só sinalizamos que o caminho existia.
+    const stat = readFileSync(poolPathAbs, "utf8").trim();
+    if (stat.length > 0 && stat !== "[]") {
+      console.error(
+        `[load-carry-over] pool em ${poolPathAbs} ilegível ou shape inesperado — prosseguindo sem carry-over`,
+      );
+    }
+  }
   const poolUrls = new Set(pool.map((a) => a.url));
 
   const { kept, skipped } = filterCarryOver(candidates, {

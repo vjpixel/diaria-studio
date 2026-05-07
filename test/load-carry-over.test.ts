@@ -8,6 +8,7 @@ import {
   flattenCategorized,
   filterCarryOver,
   annotateCarryOver,
+  readJsonOrNull,
 } from "../scripts/load-carry-over.ts";
 import { getPreviousEditionDate, listEditions } from "../scripts/lib/edition-utils.ts";
 
@@ -278,5 +279,49 @@ describe("edition-utils", () => {
 
   it("getPreviousEditionDate lança erro para AAMMDD inválido", () => {
     assert.throws(() => getPreviousEditionDate("invalid"), /AAMMDD inválido/);
+  });
+});
+
+describe("readJsonOrNull (#867 — defensive JSON read)", () => {
+  it("retorna null quando arquivo não existe (não logga warn)", () => {
+    const r = readJsonOrNull<unknown>("/tmp/does-not-exist-xyz-867.json");
+    assert.equal(r, null);
+  });
+
+  it("retorna parsed object quando JSON válido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "carry-json-867-"));
+    const path = join(dir, "valid.json");
+    writeFileSync(path, JSON.stringify({ foo: "bar", n: 42 }));
+    try {
+      const r = readJsonOrNull<{ foo: string; n: number }>(path);
+      assert.deepEqual(r, { foo: "bar", n: 42 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null em JSON corrompido (write parcial) sem throw", () => {
+    const dir = mkdtempSync(join(tmpdir(), "carry-json-867-corrupt-"));
+    const path = join(dir, "corrupt.json");
+    writeFileSync(path, '{"partial": "data", "missing":');
+    try {
+      // Não throw — retorna null (warn no stderr é silenciado pelo runner)
+      const r = readJsonOrNull<unknown>(path);
+      assert.equal(r, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null em arquivo vazio (zero bytes)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "carry-json-867-empty-"));
+    const path = join(dir, "empty.json");
+    writeFileSync(path, "");
+    try {
+      const r = readJsonOrNull<unknown>(path);
+      assert.equal(r, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
