@@ -18,6 +18,8 @@ import {
   recommend,
   classify,
   isValidRawThread,
+  MIN_BODY_CHARS,
+  NEWSLETTER_SENDER,
   type RawThread,
 } from "../scripts/sorteio-classify.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
@@ -255,9 +257,28 @@ describe("isValidRawThread — defense-in-depth guard (#949)", () => {
     assert.equal(isValidRawThread(baseValid), true);
   });
 
-  it("rejeita newsletter original do bot (sender = diaria@mail.beehiiv.com)", () => {
-    const fromBot: RawThread = { ...baseValid, sender_email: "diaria@mail.beehiiv.com" };
+  it("rejeita newsletter original do bot (sender = NEWSLETTER_SENDER)", () => {
+    const fromBot: RawThread = { ...baseValid, sender_email: NEWSLETTER_SENDER };
     assert.equal(isValidRawThread(fromBot), false);
+  });
+
+  it("rejeita sender_email vazio (defesa contra payload malformado)", () => {
+    const noSender: RawThread = { ...baseValid, sender_email: "" };
+    assert.equal(isValidRawThread(noSender), false);
+  });
+
+  it("aceita reply que cita NEWSLETTER_SENDER no body (compara sender, não body)", () => {
+    // Reply de leitor real cita "On X, Diar.ia <diaria@mail.beehiiv.com> wrote:"
+    // no body. Guard deve compara sender da thread, não conteúdo do body.
+    const replyComCitacao: RawThread = {
+      ...baseValid,
+      sender_email: "leitor@example.com",
+      body: `Encontrei o erro!
+
+On 6 May 2026, at 05:00, Diar.ia <${NEWSLETTER_SENDER}> wrote:
+> V4 da DeepSeek muda o jogo`,
+    };
+    assert.equal(isValidRawThread(replyComCitacao), true);
   });
 
   it("rejeita body vazio", () => {
@@ -270,14 +291,18 @@ describe("isValidRawThread — defense-in-depth guard (#949)", () => {
     assert.equal(isValidRawThread(ws), false);
   });
 
-  it("rejeita body trivial (< 20 chars)", () => {
+  it("rejeita body trivial (< MIN_BODY_CHARS)", () => {
     const trivial: RawThread = { ...baseValid, body: "ok obrigado" };
     assert.equal(isValidRawThread(trivial), false);
   });
 
-  it("aceita body exatamente 20 chars (limite inclusivo)", () => {
-    const at20: RawThread = { ...baseValid, body: "x".repeat(20) };
-    assert.equal(isValidRawThread(at20), true);
+  it("aceita body exatamente MIN_BODY_CHARS (limite inclusivo)", () => {
+    const atLimit: RawThread = { ...baseValid, body: "x".repeat(MIN_BODY_CHARS) };
+    assert.equal(isValidRawThread(atLimit), true);
+  });
+
+  it("MIN_BODY_CHARS é 20 (regression guard)", () => {
+    assert.equal(MIN_BODY_CHARS, 20);
   });
 });
 
@@ -291,7 +316,7 @@ describe("classify — guard rejeita threads inválidas (#949)", () => {
     body: "Encontrei um erro real na edição 260505 sobre versões",
     received_iso: "2026-05-06T10:00:00Z",
   };
-  const fromBot: RawThread = { ...valid, thread_id: "bot", sender_email: "diaria@mail.beehiiv.com" };
+  const fromBot: RawThread = { ...valid, thread_id: "bot", sender_email: NEWSLETTER_SENDER };
   const emptyBody: RawThread = { ...valid, thread_id: "empty", body: "" };
 
   it("filtra thread do bot newsletter antes de classificar", () => {
