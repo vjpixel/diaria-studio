@@ -41,6 +41,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { CONFIG } from "./lib/config.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -454,13 +455,25 @@ async function main(): Promise<void> {
     // Decidir route: Worker queue (se scheduled_at futuro + worker configurado) ou Make webhook direto
     const isFutureSchedule =
       scheduledAt !== null && Date.parse(scheduledAt) > Date.now();
-    const route =
+    const route: "worker_queue" | "make_now" =
       useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
+
+    // #886 observabilidade: log estruturado da decisão de route antes do fire,
+    // pra trilha de auditoria em incidentes ("por que d2 saiu antes do horário?").
+    logEvent({
+      edition: editionDate,
+      stage: 4,
+      agent: "publish-linkedin",
+      level: "info",
+      message: `linkedin/${d} dispatched via ${route}`,
+      details: { route, scheduled_at: scheduledAt, destaque: d },
+    });
 
     // Try/catch aninhados — semantics:
     //   inner try (route === "worker_queue"): captura falha do Worker e tenta
     //     fallback Make. Se Make sucesso → entry com fallback_used=true,
-    //     status="draft". Se Make TAMBÉM falhar, propaga pro outer catch.
+    //     status="draft", route="worker_queue" (intent original). Se Make
+    //     TAMBÉM falhar, propaga pro outer catch.
     //   outer catch lida com:
     //     (a) extractPostText/computeScheduledAt errors (pré-fire) — esses já
     //         tem `continue` antes daqui, mas a defesa em profundidade fica;
@@ -481,6 +494,7 @@ async function main(): Promise<void> {
             url: null,
             status: "scheduled",
             scheduled_at: scheduledAt,
+            route,
             worker_queue_key: response.key,
           };
         } catch (workerError: unknown) {
@@ -501,8 +515,11 @@ async function main(): Promise<void> {
             // agendamento futuro), nunca "scheduled". scheduled_at preservado
             // pra auditoria mas representa o que NÃO aconteceu. fallback_used +
             // fallback_reason carregam o sinal de que era pra ser scheduled.
+            // route registrado é o originalmente intentado (worker_queue), não
+            // o efetivamente usado (make) — pra rastrear intent.
             status: "draft",
             scheduled_at: scheduledAt,
+            route,
             make_request_id: response.request_id,
             fallback_used: true,
             fallback_reason: sanitizeFallbackReason(wmsg),
@@ -517,6 +534,7 @@ async function main(): Promise<void> {
           url: null, // LinkedIn post URL só fica disponível após publicação efetiva
           status: scheduledAt ? "scheduled" : "draft",
           scheduled_at: scheduledAt,
+          route,
           make_request_id: response.request_id,
         };
       }
@@ -536,6 +554,7 @@ async function main(): Promise<void> {
         url: null,
         status: "failed",
         scheduled_at: scheduledAt,
+        route,
         reason: msg,
       };
       published.posts.push(entry);

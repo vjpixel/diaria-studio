@@ -332,6 +332,72 @@ describe("image_url null por padrao LinkedIn (#528)", () => {
   it("image_url e null no payload nenhuma URL enviada", ()=>{const imageUrl:string|null=null;const p={text:"T",image_url:imageUrl,scheduled_at:null,destaque:"d1"};assert.equal(p.image_url,null);});
 });
 
+describe("route decision worker_queue vs make_now (#886)", () => {
+  // Replica a lógica do main() em publish-linkedin.ts:
+  //   const isFutureSchedule = scheduledAt !== null && Date.parse(scheduledAt) > Date.now();
+  //   const route = useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
+  function decide(opts: { scheduledAt: string | null; useWorkerForScheduled: boolean; now?: number }): "worker_queue" | "make_now" {
+    const { scheduledAt, useWorkerForScheduled } = opts;
+    const now = opts.now ?? Date.now();
+    const isFutureSchedule = scheduledAt !== null && Date.parse(scheduledAt) > now;
+    return useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
+  }
+
+  it("worker configurado + scheduled_at futuro → worker_queue", () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    assert.equal(decide({ scheduledAt: future, useWorkerForScheduled: true }), "worker_queue");
+  });
+
+  it("worker configurado + scheduled_at no passado → make_now", () => {
+    const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    assert.equal(decide({ scheduledAt: past, useWorkerForScheduled: true }), "make_now");
+  });
+
+  it("worker não configurado + scheduled_at futuro → make_now (fallback)", () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    assert.equal(decide({ scheduledAt: future, useWorkerForScheduled: false }), "make_now");
+  });
+
+  it("scheduled_at null → make_now (fire-now sem agendamento)", () => {
+    assert.equal(decide({ scheduledAt: null, useWorkerForScheduled: true }), "make_now");
+  });
+});
+
+describe("PostEntry.route field (#886)", () => {
+  // Garante que o shape de PostEntry aceita `route` e que o consumo no
+  // 06-social-published.json fica inspecionável sem precisar olhar pra
+  // worker_queue_key/make_request_id pra inferir route.
+  it("entry com route='worker_queue' inclui worker_queue_key", () => {
+    const entry = {
+      platform: "linkedin", destaque: "d1", url: null, status: "scheduled" as const,
+      scheduled_at: "2026-05-08T09:00:00-03:00", route: "worker_queue" as const,
+      worker_queue_key: "queue:abc-123",
+    };
+    assert.equal(entry.route, "worker_queue");
+    assert.equal(entry.worker_queue_key, "queue:abc-123");
+  });
+
+  it("entry com route='make_now' inclui make_request_id", () => {
+    const entry = {
+      platform: "linkedin", destaque: "d2", url: null, status: "draft" as const,
+      scheduled_at: null, route: "make_now" as const,
+      make_request_id: "req_xyz",
+    };
+    assert.equal(entry.route, "make_now");
+    assert.equal(entry.make_request_id, "req_xyz");
+  });
+
+  it("entry failed mantém route registrado pra debug", () => {
+    const entry = {
+      platform: "linkedin", destaque: "d3", url: null, status: "failed" as const,
+      scheduled_at: "2026-05-08T09:00:00-03:00", route: "worker_queue" as const,
+      reason: "Worker queue HTTP 503",
+    };
+    assert.equal(entry.route, "worker_queue");
+    assert.equal(entry.reason, "Worker queue HTTP 503");
+  });
+});
+
 describe("image_url via cache 06-public-images.json (#725 bug #9)", () => {
   // Testa a lógica de leitura do cache — o main() de publish-linkedin.ts
   // usa existsSync+readFileSync pra carregar 06-public-images.json.

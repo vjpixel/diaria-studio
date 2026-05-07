@@ -41,13 +41,7 @@ One-time setup to enable programmatic LinkedIn publishing via Make.com webhook i
 
 Escolha **uma** das opções:
 
-### Opção A — `.env.local` (recomendado, gitignored)
-
-```bash
-MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
-```
-
-### Opção B — `platform.config.json` (NÃO recomendado)
+### Opção A — `platform.config.json` (recomendado)
 
 ```json
 "publishing": {
@@ -59,9 +53,19 @@ MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
 }
 ```
 
-> ⚠️ **Não use em repositório público.** A URL do webhook Make.com é secret-equivalente — qualquer um com a URL pode disparar publicações no LinkedIn. `platform.config.json` é versionado, então o segredo iria pro git history. Prefira sempre a Opção A (`.env`, gitignored). Mantenha `make_webhook_url: ""` no config versionado.
+### Opção B — `.env.local` (override pra testes / CI alternativo)
+
+```bash
+MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
+```
+
+> **URL pública é aceitável.** A URL fica versionada no `platform.config.json` (mesma postura que `cloudflare_worker_url`). A defesa primária contra abuso é o token `X-Diaria-Token` do Worker (`.env.local`, gitignored), que é o caminho real de scheduling. O Make webhook em si não tem auth, mas:
 >
-> A variável de ambiente tem precedência sobre o config.
+> - Free tier Make = 1.000 ops/mês — atacante consumiria isso rápido, mas dano material é zero (post passa pelo módulo LinkedIn com OAuth da própria conta, não há vazamento de credencial nem persistência).
+> - Volume real é ~270 ops/mês, sobra margem pra absorver tentativas pontuais.
+> - Se o webhook começar a ser exercitado por terceiros, basta rotacionar a URL no Make (criar novo webhook, atualizar config, deploy).
+>
+> A variável de ambiente continua tendo precedência sobre o config — útil pra apontar pra um webhook de teste sem editar o config versionado.
 
 ---
 

@@ -13,7 +13,7 @@ publish-linkedin.ts --schedule
 │  diaria-linkedin-cron        │
 │  (Cloudflare Worker)         │
 │  ─ KV: queue:{uuid}          │
-│  ─ cron */30 * * * *         │ ← a cada 30min
+│  ─ cron */5 * * * *          │ ← a cada 5min
 └──────────────────────────────┘
         │ scheduled_at <= now?
         │ se sim: POST {payload}
@@ -86,7 +86,7 @@ Uploaded diaria-linkedin-cron
 Deployed diaria-linkedin-cron
   https://diaria-linkedin-cron.diaria.workers.dev
 Triggers
-  - Schedule: */30 * * * *
+  - Schedule: */5 * * * *
 ```
 
 ## Passo 5 — Configurar a Diar.ia
@@ -151,7 +151,7 @@ curl -H "X-Diaria-Token: <seu-token>" \
 
 ### 6.4 Aguardar cron
 
-O cron roda a cada 30min. Quando `scheduled_at` chegar, o item é firado. Verifique:
+O cron roda a cada 5min. Quando `scheduled_at` chegar, o item é firado. Verifique:
 - Logs do Worker: `wrangler tail` (em `workers/linkedin-cron/`)
 - Logs Make: dashboard scenarios → execuções
 - LinkedIn company page: post deve aparecer
@@ -168,9 +168,16 @@ Resume-aware: posts já com `worker_queue_key` em `06-social-published.json` sã
 ## Custos
 
 Cloudflare Workers (free tier):
-- 100k requests/dia (sobra)
-- 30 cron triggers/dia (usamos 48 — pode upgrade pra Workers Paid $5/mês se virar problema, ou aumentar interval)
+- 100k requests/dia (cron `*/5` = 288 fires/dia, sobra)
+- Cron triggers ilimitados no free tier (Workers Paid só pesa em CPU time)
 - 1GB KV storage (mais que suficiente)
+
+Cron `*/5` consome ~8.640 fires/mês. Cada fire é 1 KV `list` (queue lookup) + 0–1 KV `delete` por item maduro. Negligível dentro do free tier.
+
+Make.com (free tier 1.000 ops/mês):
+- Cron empty (sem item maduro): 0 ops Make.
+- Cron com item maduro: 3 ops (webhook trigger + LinkedIn create post + webhook response).
+- Volume real: 3 posts/dia × 30 dias = ~90 fires/mês = ~270 ops Make. Sobra ~730.
 
 Free tier deve cobrir.
 
