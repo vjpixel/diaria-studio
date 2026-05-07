@@ -29,6 +29,10 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
 import { parseInlineLink } from "./lib/inline-link.ts"; // #599
+import {
+  checkStage2Caps,
+  type ApprovedJson as CapsApprovedJson,
+} from "./lib/apply-stage2-caps.ts"; // #907
 
 interface ApprovedArticle {
   url: string;
@@ -242,6 +246,72 @@ export function lintNewsletter(
   }
 
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/**
+ * Conta itens distintos por seção secundária (LANÇAMENTOS / PESQUISAS /
+ * OUTRAS NOTÍCIAS). Cada item = 1 URL única na seção. (#907)
+ *
+ * Reusa `extractUrlsBySection` mas dedup por URL (markdown link emite a
+ * mesma URL 2x — `[url](url)` casa o regex 2 vezes).
+ */
+export interface SectionCounts {
+  lancamento: number;
+  pesquisa: number;
+  noticias: number;
+}
+
+export function countItemsPerSection(md: string): SectionCounts {
+  const urlsBySection = extractUrlsBySection(md);
+  const dedup = (entries: Array<{ url: string; line: number }> | undefined) => {
+    if (!entries) return 0;
+    return new Set(entries.map((e) => e.url)).size;
+  };
+  return {
+    lancamento: dedup(urlsBySection["LANÇAMENTOS"]),
+    pesquisa: dedup(urlsBySection["PESQUISAS"]),
+    noticias: dedup(urlsBySection["OUTRAS NOTÍCIAS"]),
+  };
+}
+
+/**
+ * Validador #907: verifica que cada seção secundária respeita o cap de #358.
+ *
+ * Lê o `01-approved.json` pra obter o número de destaques (entra na fórmula
+ * de Outras Notícias). Conta itens no MD e compara com cap calculado.
+ *
+ * Retorna `ok: false` quando alguma seção excede cap. Editor (Pixel)
+ * detectou em 260507: writer publicou 9 itens de Outras Notícias quando
+ * cap esperado era 4.
+ */
+export interface SectionCountsResult {
+  ok: boolean;
+  counts: SectionCounts;
+  caps: { lancamento: number; pesquisa: number; noticias: number };
+  destaques: number;
+  violations: string[];
+}
+
+export function checkSectionCounts(
+  md: string,
+  approved: ApprovedJson,
+): SectionCountsResult {
+  const counts = countItemsPerSection(md);
+  const dest = approved.highlights?.length ?? 0;
+  const fakeApproved: CapsApprovedJson = {
+    highlights: approved.highlights ?? [],
+    lancamento: new Array(counts.lancamento),
+    pesquisa: new Array(counts.pesquisa),
+    noticias: new Array(counts.noticias),
+  };
+  const r = checkStage2Caps(fakeApproved);
+  return {
+    ok: r.ok,
+    counts,
+    caps: r.expectedCaps,
+    destaques: dest,
+    violations: r.violations,
+  };
 }
 
 /**
@@ -1049,6 +1119,46 @@ intentional_error:
     return;
   }
 
+  // Modo --check section-counts (#907) — verifica que seções secundárias
+  // respeitam caps de #358 (lançamentos≤5, pesquisas≤3, outras=max(2, 12-d-l-p))
+  if (args.check === "section-counts") {
+    if (!args.md || !args.approved) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    const approvedPath = resolve(ROOT, args.approved);
+    if (!existsSync(mdPath) || !existsSync(approvedPath)) {
+      console.error(
+        `Arquivo não encontrado: ${!existsSync(mdPath) ? mdPath : approvedPath}`,
+      );
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+    const result = checkSectionCounts(md, approved);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ section-counts: ${result.violations.length} seção(ões) excede(m) cap de #358:`,
+      );
+      for (const v of result.violations) console.error(`  ${v}`);
+      console.error(
+        `\nDestaques na edição: ${result.destaques}. Caps esperados: ` +
+          `lançamentos≤${result.caps.lancamento}, pesquisas≤${result.caps.pesquisa}, ` +
+          `outras≤${result.caps.noticias} (formula: max(2, 12-${result.destaques}-l-p))`,
+      );
+      console.error(
+        `\nFix: re-rodar /diaria-2-escrita ${args.md.match(/\d{6}/)?.[0] ?? "AAMMDD"} newsletter — ` +
+          `o orchestrator agora aplica caps via apply-stage2-caps.ts antes do writer.`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check intro-count (#743) — verifica que intro bate com contagem real
   if (args.check === "intro-count") {
     if (!args.md) {
@@ -1109,7 +1219,9 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +
         "  ou: lint-newsletter-md.ts --check intro-count --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
+        "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
     );
     process.exit(2);
   }

@@ -10,7 +10,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 ## Input
 
 - `highlights`: 3 destaques rankeados (d1, d2, d3) — já filtrados pelo editor no gate do Stage 1.
-- `categorized`: saída do categorizer — `lancamento`, `pesquisa`, `noticias` aprovados.
+- `categorized`: saída do categorizer **com caps de #358 já aplicados** (`_internal/01-approved-capped.json`) — `lancamento`, `pesquisa`, `noticias` aprovados e truncados aos limites editoriais. **Não acrescentar artigos ao output além dos que vierem em `categorized`.** Os caps são: lançamentos ≤ 5, pesquisas ≤ 3, outras notícias = `max(2, 12 − destaques − lançamentos − pesquisas)`. O orchestrator garante que `categorized` já respeita esses limites; ignore qualquer impulso de incluir runners-up ou expandir uma seção que pareça curta — o lint pós-escrita falha se a edição passar dos caps (#907).
 - `edition_date`: ISO.
 - `out_path`: ex: `data/editions/260418/_internal/02-draft.md`.
 

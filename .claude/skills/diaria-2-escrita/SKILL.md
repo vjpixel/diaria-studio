@@ -67,6 +67,23 @@ npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/$1/ --stag
 
 Falha de sync = warning, **nunca bloqueia**.
 
+## Passo 1b — Aplicar caps editoriais Stage 2 (#358, #907)
+
+Antes de passar o approved.json ao writer, truncar buckets aos limites de #358:
+
+- Destaques: sem corte (sempre 3 após gate Stage 1)
+- Lançamentos: ≤ 5
+- Pesquisas: ≤ 3
+- Outras Notícias: `max(2, 12 − destaques − lançamentos − pesquisas)`
+
+```bash
+npx tsx scripts/apply-stage2-caps.ts \
+  --in data/editions/$1/_internal/01-approved.json \
+  --out data/editions/$1/_internal/01-approved-capped.json
+```
+
+Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do script (input ausente, etc.) = parar — sem caps o writer pode publicar 9 notícias quando cap esperado era 4 (caso real em 260507).
+
 ## Passo 2 — Dispatch paralelo
 
 **Em uma única mensagem**, dispatchar os agents conforme `$2`:
@@ -77,7 +94,7 @@ Falha de sync = warning, **nunca bloqueia**.
 Agent({
   subagent_type: "writer",
   description: "Etapa 2 — newsletter writer",
-  prompt: "Escreve a newsletter completa da edição $1 a partir de data/editions/$1/_internal/01-approved.json. Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: data/editions/$1/_internal/02-draft.md"
+  prompt: "Escreve a newsletter completa da edição $1 a partir de data/editions/$1/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: data/editions/$1/_internal/02-draft.md"
 })
 
 Agent({
@@ -133,18 +150,29 @@ Se `$2 = social`, pular o cp da newsletter (apenas merge + push de 03-social.md)
 ```bash
 npx tsx scripts/lint-newsletter-md.ts \
   --md data/editions/$1/_internal/02-draft.md \
-  --approved data/editions/$1/_internal/01-approved.json
+  --approved data/editions/$1/_internal/01-approved-capped.json
 npx tsx scripts/lint-newsletter-md.ts \
   --check title-length \
   --md data/editions/$1/_internal/02-draft.md
 npx tsx scripts/lint-newsletter-md.ts \
   --check why-matters-format \
   --md data/editions/$1/_internal/02-draft.md
+npx tsx scripts/lint-newsletter-md.ts \
+  --check section-counts \
+  --md data/editions/$1/_internal/02-draft.md \
+  --approved data/editions/$1/_internal/01-approved-capped.json
+npx tsx scripts/lint-newsletter-md.ts \
+  --check destaque-min-chars \
+  --md data/editions/$1/_internal/02-draft.md
 npx tsx scripts/validate-domains.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/normalize-newsletter.ts \
   --in data/editions/$1/_internal/02-draft.md \
   --out data/editions/$1/_internal/02-draft.md
 ```
+
+`--check section-counts` (#907) valida que LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS no MD respeitam os caps de #358. Exit 1 = re-disparar writer com erro explicitado.
+
+`--check destaque-min-chars` (#914) valida que cada destaque atinge o mínimo de chars (D1≥1000, D2/D3≥900). Exit 1 = re-disparar writer pra expandir.
 
 ### 3b. Clarice (inline)
 
