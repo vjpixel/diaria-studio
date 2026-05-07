@@ -102,3 +102,83 @@ describe("filterByWindow", () => {
     assert.equal(result[0].loc, "https://x.com/b");
   });
 });
+
+describe("fetchSitemapEntries + cap integração (#891 / #945)", () => {
+  /**
+   * Constrói sitemap.xml com N entries, todas com lastmod recente o
+   * suficiente pra passar o filterByWindow default. Entry N tem hh=N%24.
+   */
+  function buildSitemapXml(entryCount: number, baseDate = "2026-05-07"): string {
+    const urls = Array.from({ length: entryCount }, (_, i) => {
+      const hh = String(i % 24).padStart(2, "0");
+      return `<url>
+        <loc>https://example.com/articles/${i}</loc>
+        <lastmod>${baseDate}T${hh}:00:00Z</lastmod>
+      </url>`;
+    }).join("");
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  ${urls}
+</urlset>`;
+  }
+
+  /**
+   * Stuba globalThis.fetch — sitemap inicial responde com XML do sitemap;
+   * fetches subsequentes (enrichEntry) também recebem o mesmo body trivial,
+   * suficiente pra completar o pipeline. Retorna restore.
+   */
+  function stubFetch(sitemapXml: string): () => void {
+    const orig = globalThis.fetch;
+    let callCount = 0;
+    globalThis.fetch = (async (url: unknown) => {
+      callCount++;
+      // Primeira chamada é o sitemap em si
+      if (callCount === 1 || String(url).endsWith(".xml")) {
+        return new Response(sitemapXml, {
+          status: 200,
+          headers: { "Content-Type": "application/xml" },
+        });
+      }
+      // Enrich requests (cada entry) — HTML mínimo, só pra não falhar.
+      return new Response(
+        "<html><head><title>Test</title></head><body>x</body></html>",
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    }) as typeof globalThis.fetch;
+    return () => { globalThis.fetch = orig; };
+  }
+
+  it("SitemapFetchResult inclui truncated_by_cap quando sitemap > 30 entries", async () => {
+    const { fetchSitemapEntries } = await import("../scripts/lib/fetch-sitemap.ts");
+    const restore = stubFetch(buildSitemapXml(40));
+    try {
+      const result = await fetchSitemapEntries({
+        url: "https://example.com/sitemap.xml",
+        sourceName: "test-large-sitemap",
+        days: 365,
+        now: new Date("2026-05-08T00:00:00Z"),
+      });
+      assert.equal(result.articles.length, 30, "cap aplica");
+      assert.equal(result.truncated_by_cap, 10, "10 entries cortadas");
+    } finally {
+      restore();
+    }
+  });
+
+  it("SitemapFetchResult NÃO inclui truncated_by_cap quando <= 30 entries", async () => {
+    const { fetchSitemapEntries } = await import("../scripts/lib/fetch-sitemap.ts");
+    const restore = stubFetch(buildSitemapXml(15));
+    try {
+      const result = await fetchSitemapEntries({
+        url: "https://example.com/sitemap.xml",
+        sourceName: "test-small-sitemap",
+        days: 365,
+        now: new Date("2026-05-08T00:00:00Z"),
+      });
+      assert.equal(result.articles.length, 15);
+      assert.equal(result.truncated_by_cap, undefined);
+    } finally {
+      restore();
+    }
+  });
+});
