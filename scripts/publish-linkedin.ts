@@ -36,7 +36,10 @@
  * Posts com status "failed" são retentados.
  */
 
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+loadProjectEnv(); // #923 — carregar .env.local antes de qualquer process.env access
+
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
@@ -49,7 +52,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // #650 Tier C: PostEntry/SocialPublished vêm de lib/social-published-store.ts.
 // `make_request_id` entra via escape hatch `[key: string]: unknown`.
-import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+// #918: appendSocialPosts/readSocialPublished são atomic + locked, prevenindo
+// race condition com publish-facebook.ts em paralelo (incidente 2026-05-07
+// onde FB d2/d3 sumiram do JSON quando LinkedIn sobrescreveu).
+import {
+  appendSocialPosts,
+  readSocialPublished,
+} from "./lib/social-published-store.ts";
+import type { PostEntry } from "./lib/social-published-store.ts";
 
 interface MakeWebhookPayload {
   text: string;
@@ -87,19 +97,6 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     }
   }
   return args;
-}
-
-function loadPublished(path: string): SocialPublished {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, "utf8")) as SocialPublished;
-  }
-  return { posts: [] };
-}
-
-function savePublished(path: string, data: SocialPublished): void {
-  const tmpPath = path + ".tmp";
-  writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n");
-  renameSync(tmpPath, path);
 }
 
 /**
@@ -311,6 +308,34 @@ async function main(): Promise<void> {
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
 
+  // #923 fail-fast: --schedule sem Worker = silent fire-now bug. Aborta.
+  // Bug histórico (2026-05-07): .env.local não carregava → workerToken="" →
+  // useWorkerForScheduled=false → fallback pra Make.com fire-now → 3 posts
+  // postados imediatamente em vez de agendados. Pra evitar repetição, qualquer
+  // --schedule sem Worker config aborta com mensagem clara.
+  if (doSchedule && !useWorkerForScheduled) {
+    const lines = [
+      "ERRO: --schedule passado mas Cloudflare Worker não está configurado.",
+      "  DIARIA_LINKEDIN_CRON_URL: " + (workerUrl ? "set" : "MISSING"),
+      "  DIARIA_LINKEDIN_CRON_TOKEN: " +
+        (workerToken
+          ? "set (length=" + workerToken.length + ")"
+          : "MISSING — provavelmente .env.local não carregada"),
+      "",
+      "Sem o Worker, --schedule cairia em fire-now via Make.com (publica",
+      "IMEDIATAMENTE, ignora scheduled_at). Pra evitar publicação acidental,",
+      "este script aborta.",
+      "",
+      "Resolução:",
+      "  1. Confirmar que .env.local existe e contém DIARIA_LINKEDIN_CRON_TOKEN",
+      "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
+      "     com cloudflare_worker_url",
+      "  3. OU rodar SEM --schedule pra postar imediatamente conscientemente",
+    ];
+    console.error(lines.join("\n"));
+    process.exit(2);
+  }
+
   // Carregar 03-social.md
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
@@ -341,14 +366,21 @@ async function main(): Promise<void> {
   } else {
     publishedPath = internalPath; // nova edição
   }
-  const published = loadPublished(publishedPath);
+  // #918: Estado lido fresh-on-read em cada iteração via readSocialPublished
+  // (evita race com publish-facebook.ts paralelo). appendSocialPosts faz upsert
+  // por platform+destaque sob .lock — não precisamos de buffer local.
 
   const results: PostEntry[] = [];
 
   for (const d of destaques) {
+    // #918: re-ler estado em cada iteração (publish-facebook pode estar
+    // gravando em paralelo). appendSocialPosts faz upsert por platform+destaque,
+    // então failed entries são naturalmente substituídas no próximo append.
+    const currentState = readSocialPublished(publishedPath);
+
     // Resume-aware: pular posts já com status draft/scheduled
     if (skipExisting) {
-      const existing = published.posts.find(
+      const existing = currentState.posts.find(
         (p) =>
           p.platform === "linkedin" &&
           p.destaque === d &&
@@ -359,11 +391,6 @@ async function main(): Promise<void> {
         results.push(existing);
         continue;
       }
-      // Remover entradas failed para retry
-      published.posts = published.posts.filter(
-        (p) =>
-          !(p.platform === "linkedin" && p.destaque === d && p.status === "failed"),
-      );
     }
 
     // Extrair texto do post
@@ -381,8 +408,7 @@ async function main(): Promise<void> {
         scheduled_at: null,
         reason: msg,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       continue;
     }
@@ -437,8 +463,7 @@ async function main(): Promise<void> {
           scheduled_at: null,
           reason: `schedule_error: ${msg}`,
         };
-        published.posts.push(entry);
-        savePublished(publishedPath, published);
+        appendSocialPosts(publishedPath, [entry]);
         results.push(entry);
         continue;
       }
@@ -538,8 +563,7 @@ async function main(): Promise<void> {
           make_request_id: response.request_id,
         };
       }
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
       const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
       console.log(
@@ -559,8 +583,7 @@ async function main(): Promise<void> {
         route,
         reason: msg,
       };
-      published.posts.push(entry);
-      savePublished(publishedPath, published);
+      appendSocialPosts(publishedPath, [entry]);
       results.push(entry);
     }
   }

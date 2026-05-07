@@ -224,6 +224,29 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
+  // #919 verify-after-put: KV.put pode "succeed" sem persistir em casos raros
+  // (eventual consistency edge, namespace misconfig, region-specific glitch).
+  // Read-back imediato confirma que a entry está acessível antes de retornar
+  // 202 — caso contrário caller acreditaria que enfileirou mas a queue está
+  // vazia (silent fail bug 2026-05-07: "200 OK" mas queue_size=0).
+  //
+  // Custo: +1 KV.get por enqueue (~10ms). Aceitável: enqueue é raro (3×/dia)
+  // e o sinal de falha precoce previne perda silenciosa de posts.
+  const verifyRaw = await env.LINKEDIN_QUEUE.get(key);
+  if (verifyRaw === null) {
+    return json(
+      {
+        error: "kv_put_verify_failed",
+        message:
+          "KV.put returned without error but read-back returned null. " +
+          "Eventual consistency or namespace misconfig — não retornamos 202 " +
+          "pra evitar silent fail (caller acreditaria enqueue mas queue ficou vazia).",
+        key,
+      },
+      500,
+    );
+  }
+
   return json(
     {
       queued: true,

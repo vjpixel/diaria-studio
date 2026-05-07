@@ -706,3 +706,76 @@ describe("#894 P2-B DELETE /dlq/:key endpoint", () => {
     assert.ok(kv.store.has(queueKey));
   });
 });
+
+// ── #919 — verify-after-put em handleEnqueue ───────────────────────────────
+
+describe("#919 handleEnqueue verify-after-put (silent fail prevention)", () => {
+  it("retorna 500 quando KV.put 'succeeds' mas read-back retorna null", async () => {
+    const { env, kv } = mkEnv();
+    // Mock: put faz nada mas reporta sucesso, get retorna null
+    kv.put = async (_key: string, _value: string) => {
+      // Simula put bem-sucedido sem persistir
+    };
+    kv.get = async (_key: string) => null;
+
+    const body = {
+      text: "post",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 500);
+    const data = (await res.json()) as { error: string; message: string };
+    assert.equal(data.error, "kv_put_verify_failed");
+    assert.match(data.message, /silent fail/);
+  });
+
+  it("retorna 202 quando KV.put + read-back funcionam (caminho feliz)", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "post",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d2",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    const data = (await res.json()) as { queued: boolean; key: string };
+    assert.equal(data.queued, true);
+    assert.ok(data.key.startsWith("queue:"));
+    assert.equal(kv.store.size, 1);
+  });
+
+  it("verify-after-put: put real + get real (smoke do mock)", async () => {
+    // Confirma que mock KV é consistente: o que put grava, get retorna.
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "consistency",
+      scheduled_at: "2027-01-01T00:00:00Z",
+      destaque: "d3",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    // Confirma que a entry foi efetivamente armazenada
+    const data = (await res.json()) as { key: string };
+    const stored = kv.store.get(data.key);
+    assert.ok(stored, "entry deveria estar no KV após 202");
+    const parsed = JSON.parse(stored as string) as QueueEntry;
+    assert.equal(parsed.text, "consistency");
+    assert.equal(parsed.destaque, "d3");
+  });
+});

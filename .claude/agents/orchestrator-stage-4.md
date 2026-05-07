@@ -202,6 +202,39 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 
 - Ler `05-published.json` (pode ter sido atualizado pelo fix mode).
 
+### 4f-bis. Verify dispatch — confirma destinos reais (#917)
+
+**Roda APENAS se houve dispatch de social** (consent-check em 4b incluiu Facebook automatico OU LinkedIn automatico). Se ambos foram manual ou skipped, pular essa secao.
+
+```bash
+npx tsx scripts/verify-stage-4-dispatch.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+O script:
+- Le `_internal/06-social-published.json` (entries de FB + LinkedIn).
+- Pra cada FB entry com `fb_post_id` e status != "failed": GET Graph API
+  `/{post_id}?fields=is_published,scheduled_publish_time,...` confirmando
+  que o post existe + esta agendado/publicado conforme esperado.
+- Pra cada LinkedIn entry com status != "failed" e sem `fallback_used`: GET
+  Worker `/list` e confere que o destaque esta na fila KV.
+- Persiste relatorio em `_internal/06-verify-dispatch.json` e printa report
+  human-readable em stderr.
+
+**Orchestrator:** ler `06-verify-dispatch.json` apos a chamada e expor o
+relatorio dentro do gate (4g) — campo `Verificacao pos-dispatch:`.
+
+Exit codes:
+- `0` -> tudo verificado, prosseguir normal.
+- `1` -> ao menos 1 post nao confirmado. Logar warn e PROSSEGUIR pro gate
+  com o relatorio destacado (editor decide se reagenda manualmente). NAO
+  bloquear automaticamente — o objetivo e visibilidade, nao gate rigido.
+- `2` -> erro de input (arquivo missing, env missing). Logar warn,
+  prosseguir sem o bloco no gate (editor ainda revisa social manualmente).
+
+⚠️ **Por que nao bloquear automaticamente?** Editor pode aceitar publicacao
+parcial (ex: 1 post LinkedIn falhou mas os outros 5 estao OK), e force-block
+travaria a edicao. O relatorio no gate da visibilidade — editor decide.
+
 ### 4g. Gate único
 
 - **Sync push antes do gate (#507):**
@@ -241,6 +274,18 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
   LinkedIn  D3  scheduled  2026-04-19 16:00 BRT          (browser)
   ```
   Posts com `status: "failed"` aparecem destacados com `reason`.
+
+  **Verificacao pos-dispatch (#917)** — se `_internal/06-verify-dispatch.json` existe, ler e mostrar resumo:
+  ```
+  Verificacao pos-dispatch: 5/6 confirmados (1 nao verificado)
+    OK   facebook/d1 — scheduled at 09:00 BRT (Graph API)
+    OK   facebook/d2 — scheduled at 12:30 BRT (Graph API)
+    OK   facebook/d3 — scheduled at 17:00 BRT (Graph API)
+    OK   linkedin/d1 — queued (Worker KV)
+    FAIL linkedin/d2 — nenhum item no Worker KV pro destaque d2 (queue silent fail?)
+    OK   linkedin/d3 — queued (Worker KV)
+  ```
+  Se algum FAIL, instruir o editor: "1+ post nao confirmado no destino. Verifique manualmente no Facebook/LinkedIn antes de aprovar; se faltar, re-rode `/diaria-4-publicar social {AAMMDD}` com `--no-skip-existing`."
 
   **Upload manual de imagens (gate obrigatório, só para newsletter)** — as imagens do email de teste do Beehiiv são placeholders (localhost). Editor DEVE subir as imagens no Beehiiv antes de aprovar:
   ```
