@@ -98,3 +98,14 @@ Se o usuário pedir "refazer do zero", **pedir confirmação adicional digitando
 ### Cost tracking
 
 Manter `_internal/cost.md` atualizado ao final de cada stage. Se já existe (resume), não sobrescrever cabeçalho — apenas append novas linhas na tabela e recalcular `Total de chamadas`.
+
+### Task tracking — UI hygiene (#904)
+
+Quando rodando dentro do harness Claude Code (`/diaria-*` skills), o top-level usa `TaskCreate`/`TaskUpdate` pra refletir progresso na UI. **Invariante**: nenhuma task fica `in_progress` depois que o stage dela fecha. Sintoma do bug: timer "10m 24s" continua ativo em `Stage 1x — GATE HUMANO` mesmo com Stage 2 já rodando.
+
+Regras:
+1. **Cada skill** (`/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`) cria suas próprias tasks no início — uma por sub-stage interno. Ver instruções específicas em cada `SKILL.md`.
+2. **Marcar `completed` imediatamente após o gate aprovar** (ou imediatamente após o sentinel ser escrito quando `auto_approve=true`). Não esperar o próximo skill começar — a aprovação do gate é o ponto natural de fechamento.
+3. **Defensive cleanup no início de cada skill**: antes de criar tasks novas, varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de stages anteriores (`Stage 0*`, `Stage 1*`, etc., quando entrando em Stage ≥2). Cobre o caso de skill anterior ter sido interrompida sem fechar suas tasks.
+4. **Resume**: se um skill detecta que o stage anterior foi aprovado (sentinel/output existe) mas alguma task daquele stage ainda está `in_progress`, marcar como `completed` com nota `auto-cleanup at next stage start`.
+5. **No-op em modo CLI puro** (sem harness Claude Code): chamadas TaskCreate/TaskUpdate são opcionais — se a tool não estiver disponível, pular silenciosamente. Não bloqueia.

@@ -7,12 +7,15 @@ description: Processa respostas de leitores ao sorteio mensal "ache o erro, ganh
 
 Drena respostas pendentes do Gmail e processa novos participantes do sorteio mensal. Storage em `data/contest-entries.jsonl` (já tem entries em 260504-260505 do bootstrap manual).
 
-**Quando usar:**
-- Manualmente, quando o editor quiser processar respostas em batch (uma vez por dia ou por semana, conforme volume).
-- No início do mês seguinte para sortear o ganhador (sub-comando `draw`).
+**Modo automático integrado (#929):** o passo `0p` do orchestrator Stage 0 já dreina e processa pendentes em **modo batch** antes de Stage 1 quando `/diaria-edicao` ou `/diaria-1-pesquisa` rodam. Esta skill standalone permanece útil pra:
+- Processar fora do horário de edição (interactive, thread-por-thread).
+- Fazer o sorteio do mês (`draw`).
+- Re-processar uma thread skipada anteriormente sem rodar pipeline.
+
+Se Stage 0 já processou todas as pendentes, esta skill exit 0 silenciosa (sumário com 0 aprovações).
 
 **Quando NÃO usar:**
-- Não chame durante uma edição em curso (`/diaria-edicao`) — pode confundir contexto.
+- Não chame durante uma edição em curso (`/diaria-edicao`) — Stage 0 já cuida disso; rodar simultaneamente confunde contexto.
 - Não chame se o `mcp__claude_ai_Gmail` estiver offline (verificar com `/mcp`).
 
 ## Argumentos

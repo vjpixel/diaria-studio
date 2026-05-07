@@ -41,6 +41,10 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
 
 3. Enter / "ok" / "sim" → manter default. Número N ≥ 1 → `window_days = N`, recalcular `window_start`.
 
+## Passo 1b — Defensive cleanup de tasks órfãs (#904)
+
+Antes de criar qualquer task nova, varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de invocações anteriores (`Stage 0*`, `Stage 1*`, `Stage 2*`, etc.). Cobre o caso de skill anterior ter sido interrompida sem fechar suas tasks. **No-op se TaskList/TaskUpdate não estiver disponível** (modo CLI puro fora do harness Claude Code) — a invariante `Task tracking — UI hygiene` em `orchestrator.md` cobre o detalhe.
+
 ## Passo 2 — Pré-requisitos e execução do playbook
 
 1. Verificar pré-requisitos: `context/sources.md` e `context/audience-profile.md` (ambos não-placeholder). `past-editions.md` é regenerado automaticamente — não precisa estar atualizado.
@@ -69,3 +73,9 @@ Semântica completa (exit codes, output JSON, falha do próprio validator) em **
 ## Output
 
 `data/editions/{AAMMDD}/_internal/01-categorized.json` + `01-categorized.md` — apresentar ao usuário para aprovação. Após aprovação, salvar em `_internal/01-approved.json`.
+
+## Passo 4 — Fechar task tracking pós-gate (#904)
+
+**Imediatamente após gate aprovado** (quando o sentinel `pipeline-sentinel.ts write --step 1` for executado em 1y do orchestrator), marcar todas as tasks `Stage 1*` (incluindo `Stage 1x — GATE HUMANO`) como `completed` via `TaskUpdate`. Sem isso, o timer da task de gate continua rodando indefinidamente na UI mesmo com Stage 2 já dispatchado.
+
+**No-op se TaskUpdate não estiver disponível** (CLI puro). A invariante completa está em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene".
