@@ -194,6 +194,37 @@ export function recommend(
  * Threads com `thread_id` já em entries do mês corrente (ou qualquer mês)
  * são silenciosamente filtradas — idempotência via `findByThreadId`.
  */
+/**
+ * Mínimo de caracteres no body pra considerar a thread substantiva o
+ * suficiente pra inferir error_type/edition. Replies tipo "ok obrigado"
+ * (10 chars) são triviais demais. Calibrar se aparecer caso real.
+ */
+export const MIN_BODY_CHARS = 20;
+
+/** Sender da newsletter Diar.ia no Beehiiv — usado pra detectar "thread só com a edição original". */
+export const NEWSLETTER_SENDER = "diaria@mail.beehiiv.com";
+
+/**
+ * Defense-in-depth (#949): rejeita threads inválidas antes do classify.
+ *
+ * Casos rejeitados:
+ *   1. `sender_email` ausente ou `=== NEWSLETTER_SENDER` — newsletter
+ *      original sem reply de leitor. Compara o **sender** da thread, não
+ *      string no body (reply de leitor cita o sender da newsletter no body
+ *      como "On X, Diar.ia <diaria@mail.beehiiv.com> wrote:" e isso é OK).
+ *      Orchestrator deveria filtrar antes, mas guard previne regressão
+ *      silenciosa se prompt for refatorado.
+ *   2. `body` ausente, vazio ou trivial (< MIN_BODY_CHARS) — sem conteúdo
+ *      pra analisar, classifier não tem como inferir error_type ou edition.
+ *
+ * Não throw — só retorna false; caller acumula em `skipped_invalid`.
+ */
+export function isValidRawThread(t: RawThread): boolean {
+  if (!t.sender_email || t.sender_email === NEWSLETTER_SENDER) return false;
+  if (!t.body || t.body.trim().length < MIN_BODY_CHARS) return false;
+  return true;
+}
+
 export function classify(
   threads: RawThread[],
   alreadyProcessed: Set<string>,
@@ -202,6 +233,7 @@ export function classify(
   const candidates: ClassifiedCandidate[] = [];
   for (const t of threads) {
     if (alreadyProcessed.has(t.thread_id)) continue;
+    if (!isValidRawThread(t)) continue;
     const editionGuessed = guessEditionFromBody(t.body);
     const errorTypeGuess = guessErrorType(t.body);
     const gabarito = classifyGabarito(
@@ -273,11 +305,15 @@ function main(): number {
   const intentional = loadIntentionalErrors(INTENTIONAL_PATH);
 
   const candidates = classify(threads, alreadyProcessed, intentional);
+  const skippedInvalid = threads.filter(
+    (t) => !alreadyProcessed.has(t.thread_id) && !isValidRawThread(t),
+  ).length;
 
   const result = {
     generated_at: new Date().toISOString(),
     total_input: threads.length,
     already_processed: threads.filter((t) => alreadyProcessed.has(t.thread_id)).length,
+    skipped_invalid: skippedInvalid,
     candidates,
   };
 
