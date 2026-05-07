@@ -114,6 +114,14 @@ export function splitConcatenatedHighlightHeader(
 export function splitConcatenatedSectionItem(
   line: string,
 ): { lines: string[]; split: boolean; warning?: string } {
+  // #909 — guard: linha que é APENAS um inline link bem-formado (sem texto
+  // antes nem depois do `)`) não deve ser tocada. Sem este guard, o
+  // bareUrlRe abaixo casa a URL dentro de `(...)`, produz textBefore/After
+  // estranhos e re-emite linhas corrompidas.
+  if (isInlineLinkLine(line)) {
+    return { lines: [line], split: false };
+  }
+
   // M2: detecta múltiplas URLs na linha. Caso ambíguo — recusa split
   // pra não chutar a fronteira errada e silenciosamente corromper o
   // conteúdo. Conta tanto bare URLs quanto markdown links.
@@ -138,7 +146,26 @@ export function splitConcatenatedSectionItem(
     };
   }
 
-  // Caso A: markdown link [url](url) em qualquer posição
+  // Caso A1 (#909): markdown link `[Título](URL)` proper (title text
+  // diferente da URL) seguido de descrição na mesma linha. Forma comum
+  // do bug: writer emite `**[Título](URL)**` + texto descritivo colado.
+  // Trata isso como caso prioritário — devolve `[Título](URL)` + descrição
+  // em 2 linhas (sem extrair URL bare). Aceita `**`/spaces wrappers.
+  const inlineLinkWithTextRe =
+    /^(\s*\*{0,2}\s*\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)\*{0,2})\s+(.+\S)\s*$/;
+  const inlineLinkWithText = line.match(inlineLinkWithTextRe);
+  if (inlineLinkWithText) {
+    const linkPart = inlineLinkWithText[1].trim();
+    const description = inlineLinkWithText[4].trim();
+    // Sanity: descrição deve ter conteúdo real (≥3 chars) — evita pegar
+    // pontuação isolada como `**[X](Y)** .`
+    if (description.length >= 3) {
+      return { lines: [linkPart, description], split: true };
+    }
+  }
+
+  // Caso A2: markdown link [url](url) em qualquer posição (legacy — title
+  // == url, bare URL render como link clicável)
   const mdLinkRe = /\[([^\]]+)\]\(\1\)/;
   const mdLinkMatch = line.match(mdLinkRe);
   // Caso B: bare URL em qualquer posição
@@ -222,12 +249,14 @@ const SECTION_HEADERS = [
 ];
 
 function isSectionHeader(line: string): boolean {
-  const trimmed = line.trim();
+  // Aceita plain ou **negrito** (#590) — writer pós-#590 emite headers com bold
+  const trimmed = line.trim().replace(/^\*\*|\*\*$/g, "").trim();
   return SECTION_HEADERS.some((h) => trimmed === h);
 }
 
 function isHighlightHeader(line: string): boolean {
-  return /^DESTAQUE\s+\d+\s*\|/.test(line.trim());
+  // Aceita plain ou **negrito** (#590)
+  return /^(?:\*\*)?DESTAQUE\s+\d+\s*\|/.test(line.trim());
 }
 
 function looksLikeUrl(line: string): boolean {
@@ -378,11 +407,41 @@ function removeEmdashes(text: string): { text: string; count: number } {
   return { text: result2, count };
 }
 
+/**
+ * Pre-fix: detecta markdown link com URL quebrada em múltiplas linhas
+ * (`[Título](\n  url\n  )`) e colapsa pra forma canônica `[Título](url)`
+ * em uma única linha. Sintoma observado em 260507 (#909) — writer LLM
+ * quebrou dentro do parens em vez de depois do link.
+ *
+ * Reescreve o markdown global (não trata linha-por-linha) porque o bug
+ * é multi-linha. Idempotente — não toca em links bem-formados.
+ *
+ * Retorna objeto `{ text, fixed_count }` pra report.
+ */
+export function fixBrokenInlineLinks(
+  text: string,
+): { text: string; fixed_count: number } {
+  let count = 0;
+  // Match `[Título](\n*\s*url\s*\n*)` em múltiplas linhas. `[\s\S]` evita
+  // dot-all flag mismatch entre engines. Conservador: requer URL imediatamente
+  // após `(` (com possível whitespace+newline) e `)` no fim com possível
+  // whitespace.
+  const re =
+    /\[([^\]\n]+)\]\(\s*\n\s*(https?:\/\/[^\s)]+)\s*\n\s*\)/g;
+  const out = text.replace(re, (_match, title, url) => {
+    count++;
+    return `[${title.trim()}](${url.trim()})`;
+  });
+  return { text: out, fixed_count: count };
+}
+
 export function normalizeNewsletter(text: string): {
   text: string;
   report: NormalizeReport;
 } {
-  const lines = text.split("\n");
+  // Pre-fix multi-line broken inline links (#909)
+  const { text: prefixed, fixed_count: brokenLinks } = fixBrokenInlineLinks(text);
+  const lines = prefixed.split("\n");
   const out: string[] = [];
   const report: NormalizeReport = {
     highlight_headers_split: 0,
@@ -390,6 +449,11 @@ export function normalizeNewsletter(text: string): {
     emdashes_removed: 0,
     warnings: [],
   };
+  if (brokenLinks > 0) {
+    report.warnings.push(
+      `${brokenLinks} markdown link(s) com URL quebrada em múltiplas linhas — colapsado pra [título](url) único`,
+    );
+  }
 
   // Track section context — quando estamos dentro de LANÇAMENTOS/PESQUISAS/etc,
   // tentar split de items concatenados. Em DESTAQUE bodies, NÃO mexer (o LLM

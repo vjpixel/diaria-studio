@@ -59,6 +59,33 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
      ```
    - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
 3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções também em negrito (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`). Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
+
+   **Exemplo literal (#909) — copiar formato exato:**
+
+   ```
+   **LANÇAMENTOS**
+
+   **[Agentes Claude para serviços financeiros](https://www.anthropic.com/news/finance-agents)**
+   Anthropic lança dez novos plugins para Cowork e Claude Code, integrações com Microsoft 365 e conectores específicos para serviços financeiros.
+
+   **[Gemini Robotics-ER 1.6](https://deepmind.google/blog/gemini-robotics-er-1-6/)**
+   DeepMind lançou nova versão do modelo de robótica com raciocínio espacial aprimorado para execução de tarefas físicas.
+   ```
+
+   **Anti-exemplos (NÃO emitir, lint section-item-format pega):**
+
+   ```
+   [Título](https://x.com) Descrição na mesma linha.        ← errado: 2 linhas, não 1
+   [Título](                                                 ← errado: URL quebrada em 3 linhas
+     https://x.com
+   )
+   Descrição.
+
+   **[Título sem descrição](https://x.com)**                 ← errado: faltou descrição
+   **[Próximo item](https://y.com)**
+   ```
+
+   Cada item: `**[Título](URL)**` em 1 linha, descrição em outra linha imediatamente abaixo (sem linha em branco entre as duas), depois 1 linha em branco antes do próximo item.
 4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
    - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.

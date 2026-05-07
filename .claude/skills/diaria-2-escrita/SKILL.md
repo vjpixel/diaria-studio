@@ -168,7 +168,12 @@ npx tsx scripts/validate-domains.ts data/editions/$1/_internal/02-draft.md
 npx tsx scripts/normalize-newsletter.ts \
   --in data/editions/$1/_internal/02-draft.md \
   --out data/editions/$1/_internal/02-draft.md
+npx tsx scripts/lint-newsletter-md.ts \
+  --check section-item-format \
+  --md data/editions/$1/_internal/02-draft.md
 ```
+
+`--check section-item-format` (#909) roda **depois** de normalize — se ainda houver item com título+descrição na mesma linha (caso heurístico do normalize não resolveu), exit 1 = re-disparar writer com instrução explícita de quebrar.
 
 `--check section-counts` (#907) valida que LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS no MD respeitam os caps de #358. Exit 1 = re-disparar writer com erro explicitado.
 
