@@ -372,13 +372,23 @@ async function main(): Promise<void> {
     }
   }
 
-  const expectedCount = 6; // 3 FB + 3 LinkedIn
+  // expectedCount = entries reais em 06-social-published.json (não hardcoded 6).
+  // Suporta edicoes parciais (so LinkedIn, so 1-2 destaques de teste, etc).
+  // Edicao normal tem 6 (3 FB + 3 LI); count mismatch so sinaliza se algum
+  // destaque ficou fora do esperado, nao desvio editorial intencional.
+  const expectedCount = fbEntries.length + liEntries.length;
   const actualCount = results.filter((r) => r.verified).length;
   const ok = strict ? actualCount === expectedCount : results.every((r) => r.verified);
 
-  if (results.length !== expectedCount) {
+  // Detectar bug de merge #918: total != soma fb + li sugere sobrescrita
+  // (entries silenciosamente perdidas durante write concorrente).
+  const totalEntries = published.posts.filter(
+    (p) => p.platform === "linkedin" || p.platform === "facebook",
+  ).length;
+  if (totalEntries !== expectedCount) {
     warnings.push(
-      `count mismatch: esperava ${expectedCount} entries (3 FB + 3 LI), recebeu ${results.length}. ` +
+      `count mismatch: 06-social-published.json tem ${totalEntries} entries social, ` +
+        `mas reconcile reconstruiu so ${expectedCount} (${fbEntries.length} FB + ${liEntries.length} LI). ` +
         "Possivel bug de merge em 06-social-published.json (#918).",
     );
   }
