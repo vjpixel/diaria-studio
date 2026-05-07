@@ -292,6 +292,99 @@ Se encontrar threads:
 
 Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (não bloqueia — CI check é informativo). Logar `info "0n skipped: Gmail MCP unavailable"`.
 
+### 0p. Sorteio — drain + gate batch (#929)
+
+Drena respostas pendentes do concurso "ache o erro, ganhe um número" antes de Stage 1. Roda toda invocação de `/diaria-edicao` ou `/diaria-1-pesquisa`. Sem isso, respostas ficam dependentes da disciplina manual (`/diaria-sorteio` standalone — fácil de esquecer).
+
+**Falha em qualquer step = warning, NUNCA bloqueia Stage 1.** Sorteio é nice-to-have. Edição prossegue mesmo se Gmail offline ou classifier falhar.
+
+**Skip silencioso** se `mcp__claude_ai_Gmail` está offline (sintoma: `0n` puxou skip por mesmo motivo) ou se `auto_approve = true` (sem editor pra confirmar gate batch). Logar `info "0p skipped: {reason}"`.
+
+#### Etapa 1 — Buscar threads pendentes via Gmail MCP
+
+Cutoff = `confirmed_at` mais recente em `data/contest-entries.jsonl` (via `npx tsx scripts/sorteio-process.ts list`); se vazio, 30 dias atrás.
+
+Usar `mcp__claude_ai_Gmail__search_threads` com query `label:Diar.ia after:{cutoff_yyyy_mm_dd}`. Limit 20 threads. Se Gmail retornar erro: skip silencioso (logar warn).
+
+Pra cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (formato `FULL_CONTENT`). Extrair: `thread_id`, `sender_email`, `sender_name`, `subject`, `body` (concatenar messages do leitor — não da resposta), `received_iso`. Montar JSON array `RawThread[]` (ver schema em `scripts/sorteio-classify.ts`).
+
+#### Etapa 2 — Classificar via helper TS
+
+```bash
+echo '<RAW_THREADS_JSON>' | npx tsx scripts/sorteio-classify.ts \
+  --output data/editions/{AAMMDD}/_internal/sorteio-pending.json
+```
+
+Output JSON: `{ generated_at, total_input, already_processed, candidates[] }`. Cada candidate tem `recommendation` ∈ `APPROVE` | `REJECT` | `REVIEW` + `reason`.
+
+Se `candidates.length === 0`: skip silencioso (todas processadas ou input vazio). Logar `info`.
+
+#### Etapa 3 — Apresentar gate batch ao editor
+
+```
+🎯 Sorteio — N respostas pendentes:
+
+  [1] {sender_name} <{sender_email}>
+      Edição: {edition_guessed} (relativa: "ontem"/"anteontem"/...)
+      Match: {hit/miss/unclear emoji} "{body_excerpt}"
+      Recommendation: {APPROVE/REJECT/REVIEW} ({reason})
+
+  [2] ...
+
+Default: APPROVE para [1], REJECT para [2], SKIP para [3].
+Editor confirma com:
+  - Enter: aplica defaults
+  - "all approve" / "all skip" / "all reject"
+  - "1,3 approve; 2 reject"
+  - "skip all"
+```
+
+Aguardar resposta. **Defaults** vêm do `recommendation` do classifier — APPROVE → approve, REJECT → reject, REVIEW → skip (humano valida ações sociais — regra #573, e ambíguo merece segunda chance na próxima rodada).
+
+#### Etapa 4 — Aplicar decisões em batch
+
+Construir `decisions.json` no formato:
+```json
+[
+  {
+    "thread_id": "...",
+    "action": "approve",
+    "month": "2026-06",
+    "email": "...",
+    "name": "...",
+    "edition": "260507",
+    "error_type": "version_inconsistency",
+    "detail": "..."
+  },
+  { "thread_id": "...", "action": "reject" }
+]
+```
+
+Para `month` (mês do sorteio): default = mês seguinte ao `received_iso` da thread (sorteio mensal). Em caso de dúvida, perguntar ao editor.
+
+```bash
+npx tsx scripts/sorteio-process.ts batch-add \
+  --decisions data/editions/{AAMMDD}/_internal/sorteio-decisions.json \
+  --output data/editions/{AAMMDD}/_internal/sorteio-results.json
+```
+
+Output: `{ summary, results[] }`. Pra cada `result.status === "approved"` com `reply_text`, criar draft no Gmail:
+
+```
+mcp__claude_ai_Gmail__create_draft({
+  thread_id: result.thread_id,
+  body: result.reply_text,
+  subject: "Re: {subject_original}"
+})
+```
+
+Sumário ao editor:
+```
+Sorteio: {summary.approved} aprovada(s) (#a, #b, ...), {summary.rejected} rejeitada(s), {summary.skipped} skipada(s). Drafts criados: {N}.
+```
+
+Logar via `scripts/log-event.ts` com `level: info` + `details: summary`.
+
 ### 0m. Auto-reporter — preparado pra rodar no final
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").
