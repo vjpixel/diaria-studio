@@ -78,7 +78,17 @@ Por que isso importa:
 **[Título do Vídeo]** — [Canal](URL)
 
 [Frase descritiva em 1 linha]
+
+---
+
+**ERRO INTENCIONAL**
+
+A edição anterior ({prev_edition}) tinha um erro intencional: {prev_detail}. O correto era {prev_gabarito}.
+
+Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.
 ```
+
+**Seção ERRO INTENCIONAL (#911):** o concurso "Ache o erro" pede ao leitor identificar 1 erro proposital por edição (sorteio mensal premia com livro). Esta seção fecha o loop entre edições — revela o gabarito da edição anterior + convida pra atual. Conteúdo é renderizado pelo script `scripts/render-erro-intencional.ts` lendo `data/intentional-errors.jsonl`. Writer pode emitir o placeholder literal e o script substitui pós-Clarice.
 
 URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2, sobrando 1 título-com-URL. Todas as 3 opções pré-gate apontam pra **mesma URL canônica** (são variantes do mesmo título do mesmo artigo).
 

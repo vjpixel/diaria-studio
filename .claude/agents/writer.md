@@ -58,6 +58,22 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
      ---
      ```
    - Se não encontrar em nenhuma fonte, omitir a seção e incluir aviso em `warnings`.
+3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após OUTRAS NOTÍCIAS (e antes de ASSINE/encerramento), incluir bloco:
+
+   ```
+   ---
+
+   **ERRO INTENCIONAL**
+
+   {placeholder — script render-erro-intencional.ts substitui pós-Clarice}
+
+   Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.
+
+   ---
+   ```
+
+   Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
+
 3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções também em negrito (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`). Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 
    **Exemplo literal (#909) — copiar formato exato:**
