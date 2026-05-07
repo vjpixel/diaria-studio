@@ -71,6 +71,63 @@ describe("extractUrlsBySection", () => {
     assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
   });
 
+  it("URL em parágrafo narrativo é ignorada (P2 #889)", () => {
+    const md = `LANÇAMENTOS
+
+A nova versão foi anunciada em https://anthropic.com/news/x e gerou debate.
+
+- Item de verdade — https://anthropic.com/news/y
+`;
+    const urls = extractUrlsBySection(md);
+    // URL em parágrafo narrativo é ignorada; só a do list item conta.
+    assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/y"]);
+  });
+
+  it("URL em item numerado (1.) é capturada", () => {
+    const md = `LANÇAMENTOS
+
+1. Primeiro item — https://anthropic.com/news/x
+2. Segundo item — https://openai.com/index/y
+`;
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, [
+      "https://anthropic.com/news/x",
+      "https://openai.com/index/y",
+    ]);
+  });
+
+  it("URL em item com asterisco (*) é capturada", () => {
+    const md = `LANÇAMENTOS
+
+* Item — https://anthropic.com/news/x
+`;
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
+  });
+
+  it("humanizer move URL de parágrafo narrativo entre seções não vira falso positivo", () => {
+    // Pre: URL na intro narrativa + URL em LANÇAMENTOS (list item).
+    const pre = `Intro: a Anthropic anunciou em https://anthropic.com/news/foo um novo modelo.
+
+LANÇAMENTOS
+
+- Item — https://anthropic.com/news/bar
+`;
+    // Post: humanizer reescreveu a intro e moveu a URL pro fim do parágrafo
+    // (mas é o mesmo conteúdo narrativo). LANÇAMENTOS intacto.
+    const post = `Intro reescrita pelo humanizer. A Anthropic divulgou novo modelo: https://anthropic.com/news/foo.
+
+LANÇAMENTOS
+
+- Item — https://anthropic.com/news/bar
+`;
+    const result = verifyStability(pre, post);
+    assert.equal(result.status, "ok");
+    assert.equal(result.lancamento_changes.length, 0);
+    // URLs em narrativa não contam como other_changes — são ignoradas.
+    assert.equal(result.other_changes.length, 0);
+  });
+
   it("seção '---' encerra a seção atual", () => {
     const md = `LANÇAMENTOS
 
@@ -78,7 +135,7 @@ describe("extractUrlsBySection", () => {
 
 ---
 
-Texto sem seção: https://example.com
+- Item solto: https://example.com
 `;
     const urls = extractUrlsBySection(md);
     assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);

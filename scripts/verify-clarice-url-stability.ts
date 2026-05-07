@@ -41,6 +41,12 @@ export type Section = "LANCAMENTOS" | "PESQUISAS" | "NOTICIAS" | "OUTRAS";
 
 const URL_RE = /https?:\/\/\S+/g;
 
+// List item line — bullet marker (`-`, `*`, `+`) or numbered (`1.`, `2.`).
+// URLs only count when they appear in a list item; URLs in narrative
+// paragraphs are intentionally ignored to avoid false positives when
+// the humanizer reorders prose around URLs.
+const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
+
 // Headers — accept "## Header" (Stage 1) or plain caps (Stage 2).
 const SECTION_PATTERNS: Array<{ section: Section; re: RegExp }> = [
   { section: "LANCAMENTOS", re: /^(?:##\s+)?lan[çc]amentos\s*$/i },
@@ -104,6 +110,11 @@ export function extractUrlsBySection(text: string): Record<Section, string[]> {
       current = "OUTRAS";
       continue;
     }
+    // Only extract URLs from list-item lines. URLs embedded in narrative
+    // paragraphs are ignored — Clarice/humanizer reorder prose freely
+    // and that motion would otherwise produce false-positive add/remove
+    // diffs across sections (#889 review P2).
+    if (!LIST_ITEM_RE.test(line)) continue;
     const matches = line.matchAll(URL_RE);
     for (const m of matches) {
       const url = trimUrl(m[0]);

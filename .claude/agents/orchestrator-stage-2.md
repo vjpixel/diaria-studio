@@ -111,10 +111,19 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   O script aplica a fallback chain `(02-humanized.md → 02-normalized.md → 02-draft.md)`, valida que o arquivo escolhido existe, e grava o nome relativo em `data/editions/{AAMMDD}/_internal/02-clarice-input.txt`. Se nenhum existir, exit 1 (FATAL).
 
-  **Snapshot pré-Clarice (#874).** Antes de aplicar Clarice, copiar o `CLARICE_INPUT` resolvido para `_internal/02-pre-clarice.md`. Esse snapshot é (a) source-of-truth pra resume mid-Clarice (ver SKILL diaria-2-escrita), (b) input pro check de estabilidade de URLs (#873) abaixo:
+  **Snapshot pré-Clarice (#874).** Antes de aplicar Clarice, copiar o `CLARICE_INPUT` resolvido para `_internal/02-pre-clarice.md`. Esse snapshot é (a) source-of-truth pra resume mid-Clarice (ver SKILL diaria-2-escrita), (b) input pro check de estabilidade de URLs (#873) abaixo, (c) input do `clarice-diff.ts`:
   ```bash
   CLARICE_INPUT=$(cat data/editions/{AAMMDD}/_internal/02-clarice-input.txt)
   cp "data/editions/{AAMMDD}/_internal/$CLARICE_INPUT" data/editions/{AAMMDD}/_internal/02-pre-clarice.md
+  ```
+
+  **Assertion obrigatória (review #889 P2).** Antes de chamar `mcp__clarice__correct_text`, verificar que o snapshot foi gravado. Se ausente, abortar e logar erro — sem snapshot não há como detectar URL stability nem fazer resume mid-Clarice:
+  ```bash
+  test -f data/editions/{AAMMDD}/_internal/02-pre-clarice.md || {
+    npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level error --message "pre-clarice snapshot missing — aborting before MCP Clarice call"
+    echo "ERRO: snapshot pré-Clarice ausente — abortar antes de chamar MCP Clarice." >&2
+    exit 1
+  }
   ```
 
   1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.

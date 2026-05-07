@@ -39,12 +39,17 @@ Se `data/editions/$1/02-reviewed.md` já existir **e** `$2` não foi passado ou 
 ```
 Etapa 2 foi interrompida durante/depois da Clarice. Como continuar?
 
-(1) Usar `02-reviewed.md` atual sem re-Clarice  [default]
-(2) Re-aplicar Clarice em cima de `_internal/02-pre-clarice.md` (snapshot limpo)
+(1) Usar `02-reviewed.md` atual sem re-Clarice
+(2) Re-aplicar Clarice em cima de `_internal/02-pre-clarice.md` (snapshot limpo)  [default]
 (3) Regenerar tudo do zero (writer → humanize → Clarice)
 ```
 
-- Default (1): pular regeneração e ir direto ao gate.
+**Detecção de mid-state (review #889 P3):** o default é definido pelo estado dos arquivos:
+- Se `_internal/02-clarice-suggestions.json` existir → mid-Clarice provável → **default = (2)** (re-aplicar do snapshot limpo, evita double-apply).
+- Se `_internal/02-clarice-suggestions.json` NÃO existir mas `02-reviewed.md` sim → Clarice nem chegou a rodar OU já fechou em ciclo anterior → **default = (1)** (usar atual).
+
+Comportamentos por opção:
+- Opção (1): pular regeneração e ir direto ao gate.
 - Opção (2): copiar `_internal/02-pre-clarice.md` → `_internal/02-draft.md` (restaurar estado pré-Clarice limpo) e retomar do Passo 3b (Clarice). **Nunca** re-aplicar Clarice em cima do estado humanizado-pós-Clarice-parcial.
 - Opção (3): apagar outputs e rodar Passo 1 em diante.
 
@@ -147,11 +152,20 @@ npx tsx scripts/normalize-newsletter.ts \
 > `BLOQUEADO: MCP Clarice indisponível. Reconecte (verifique CLARICE_API_KEY e reinicie o MCP local) e responda "retry" para continuar, ou "skip" para pular Clarice nesta edição.`
 Nunca aguardar passivamente. O MCP pode cair mid-session sem aviso do usuário — o `<system-reminder>` é o sinal de detecção. Tratar como mensagem de erro de alta prioridade.
 
-Snapshot pré-Clarice para o diff posterior (3d), rollback se algo falhar, e resume mid-Clarice (#874). Mantemos dois nomes: `02-pre-clarice.md` é o canonical (#874 — sinal pra resume), `02-draft.pre-clarice.md` é alias legado pra clarice-diff:
+Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.
 
 ```bash
 cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-pre-clarice.md
-cp data/editions/$1/_internal/02-draft.md data/editions/$1/_internal/02-draft.pre-clarice.md
+```
+
+**Assertion obrigatória (review #889 P2).** Antes de chamar `mcp__clarice__correct_text`, verificar que o snapshot foi gravado. Se `_internal/02-pre-clarice.md` não existir nesse momento, **abortar** e logar erro:
+
+```bash
+test -f data/editions/$1/_internal/02-pre-clarice.md || {
+  npx tsx scripts/log-event.ts --edition $1 --stage 2 --agent orchestrator --level error --message "pre-clarice snapshot missing — aborting before MCP Clarice call"
+  echo "ERRO: snapshot pré-Clarice ausente — abortar antes de chamar MCP Clarice. Re-rodar /diaria-2-escrita $1 do zero." >&2
+  exit 1
+}
 ```
 
 1. Ler `data/editions/$1/_internal/02-draft.md`.
@@ -214,31 +228,31 @@ Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
 
 ### 3d. Validações finais
 
-`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice e o output final (`02-draft.md` após Clarice + humanizador), mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer — incluindo o que o humanizador reverteu da Clarice:
-
-```bash
-npx tsx scripts/validate-lancamentos.ts data/editions/$1/_internal/02-draft.md
-npx tsx scripts/clarice-diff.ts \
-  data/editions/$1/_internal/02-draft.pre-clarice.md \
-  data/editions/$1/_internal/02-draft.md \
-  data/editions/$1/_internal/02-clarice-diff.md
-```
-
-**Estabilidade de URLs em LANÇAMENTOS pós-Clarice (#873).** Clarice/humanizador podem "limpar" URLs (remover utm, normalizar path, trailing slash), o que quebra a regra "LANÇAMENTOS só com link oficial" (#160). Comparar pré-Clarice vs final:
-
-```bash
-npx tsx scripts/verify-clarice-url-stability.ts \
-  --pre data/editions/$1/_internal/02-pre-clarice.md \
-  --post data/editions/$1/_internal/02-draft.md
-```
-
-Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
-
-Copiar draft final para a versão que o editor revisa:
+Copiar o draft final para a versão que o editor revisa **antes** de rodar verify/diff — assim a verificação de URLs e o diff são feitos contra o mesmo path que o orchestrator usa (review #889 P1 — consistência de paths):
 
 ```bash
 cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
 ```
+
+`clarice-diff.ts` lê argumentos posicionais. Diff é entre o pré-Clarice (snapshot canonical `02-pre-clarice.md`) e `02-reviewed.md`, mostrando o efeito líquido das passagens editoriais sobre o draft cru do writer:
+
+```bash
+npx tsx scripts/validate-lancamentos.ts data/editions/$1/02-reviewed.md
+npx tsx scripts/clarice-diff.ts \
+  data/editions/$1/_internal/02-pre-clarice.md \
+  data/editions/$1/02-reviewed.md \
+  data/editions/$1/_internal/02-clarice-diff.md
+```
+
+**Estabilidade de URLs em LANÇAMENTOS pós-Clarice (#873).** Clarice/humanizador podem "limpar" URLs (remover utm, normalizar path, trailing slash), o que quebra a regra "LANÇAMENTOS só com link oficial" (#160). Comparar pré-Clarice vs `02-reviewed.md` final (mesmo path usado pelo orchestrator — review #889 P1):
+
+```bash
+npx tsx scripts/verify-clarice-url-stability.ts \
+  --pre data/editions/$1/_internal/02-pre-clarice.md \
+  --post data/editions/$1/02-reviewed.md
+```
+
+Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
 
 ## Passo 4 — Processar social (pular se `$2 = newsletter`)
 
@@ -325,7 +339,6 @@ Após o push, limpar os snapshots intermediários (não precisam mais — rollba
 
 ```bash
 for f in \
-  data/editions/$1/_internal/02-draft.pre-clarice.md \
   data/editions/$1/_internal/02-draft.pre-humanize.md \
   data/editions/$1/_internal/03-social.pre-humanize.md; do
   [ -f "$f" ] && rm "$f"
