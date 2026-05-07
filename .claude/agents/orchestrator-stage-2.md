@@ -59,6 +59,14 @@ Exit code handling:
 
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
+**Validar outputs dos 3 agents antes de qualquer processamento (#872):** se um dos 3 falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente. Antes de prosseguir, rodar:
+
+```bash
+npx tsx scripts/validate-stage-2-outputs.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios. Exit 1 = algum agent falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
+
 ### 2b. Processar newsletter
 
 - **Pull pós-gate** (antes de qualquer edição local pós-aprovação):
@@ -91,14 +99,20 @@ Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
   Falha da skill **não bloqueia** — fallback usa `02-normalized.md` como input pra Clarice. Em caso de falha, logar warn: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador falhou — usando normalized'`.
 
 - **Revisar com Clarice (inline — sem Agent):**
-  Definir `CLARICE_INPUT` na ordem de prioridade: (1) `_internal/02-humanized.md` se existe (humanizador aplicado); (2) `_internal/02-normalized.md` se existe (normalize sucedeu); (3) `_internal/02-draft.md` (fallback). **Usar a mesma path em ambos os passos abaixo (Clarice input + diff source)** — inconsistência aqui causa file-not-found no diff.
-  1. Ler conteúdo de `data/editions/{AAMMDD}/{CLARICE_INPUT}`.
+  Determinar e **persistir** `CLARICE_INPUT` em arquivo (#871) — evita drift entre o passo de leitura e o passo de diff:
+  ```bash
+  npx tsx scripts/resolve-clarice-input.ts --edition-dir data/editions/{AAMMDD}/
+  ```
+  O script aplica a fallback chain `(02-humanized.md → 02-normalized.md → 02-draft.md)`, valida que o arquivo escolhido existe, e grava o nome relativo em `data/editions/{AAMMDD}/_internal/02-clarice-input.txt`. Se nenhum existir, exit 1 (FATAL).
+
+  1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido).
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
-  4. Gerar diff legível usando o mesmo `CLARICE_INPUT` definido acima:
+  4. Gerar diff legível lendo o **mesmo** filename do passo 1:
      ```bash
+     CLARICE_INPUT=$(cat data/editions/{AAMMDD}/_internal/02-clarice-input.txt)
      npx tsx scripts/clarice-diff.ts \
-       data/editions/{AAMMDD}/{CLARICE_INPUT} \
+       "data/editions/{AAMMDD}/_internal/$CLARICE_INPUT" \
        data/editions/{AAMMDD}/02-reviewed.md \
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
@@ -118,20 +132,19 @@ Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
 
 ### 2c. Processar social
 
-Após os social agents retornarem, fazer merge em `03-social.md` via Bash. Remover todos os comentários HTML (`<!-- ... -->`) do conteúdo mesclado — são apenas para debug interno e não devem aparecer no arquivo publicável:
+Após os social agents retornarem, fazer merge em `03-social.md` via script TS. Substitui o snippet inline anterior (#870) — agora com try/catch, validação de tmp files e error reporting actionable:
 
 ```bash
-node -e "
-  const fs=require('fs');
-  const dir='{edition_dir}';
-  const stripHtmlComments=s=>s.replace(/<!--[\s\S]*?-->/g,'').replace(/\n{3,}/g,'\n\n');
-  const li=stripHtmlComments(fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim());
-  const fb=stripHtmlComments(fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim());
-  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
-  fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
-  fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
-"
+npx tsx scripts/merge-social-md.ts --edition-dir data/editions/{AAMMDD}/
 ```
+
+O script:
+- Verifica que `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios; exit 1 com mensagem clara indicando qual agent falhou se algum estiver ausente
+- Faz strip de comentários HTML (`<!-- ... -->`) com fallback safe pra comments mal-formados (#875)
+- Concatena em `# LinkedIn` + `# Facebook` e grava em `03-social.md`
+- Deleta os tmp files após sucesso
+
+Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
 **Humanizar social (#308):** invocar skill `humanizador` in-place no `03-social.md`:
 ```
