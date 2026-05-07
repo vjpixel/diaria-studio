@@ -76,3 +76,34 @@ export function renderGateBanner(
 
   return rows.join("\n");
 }
+
+/**
+ * Render a halt banner — used when the pipeline cannot proceed (MCP
+ * disconnect, subagent error, exception, ratelimit). Distinct from the
+ * gate banner: the gate is an *expected* pause for editor approval; the
+ * halt is an *unexpected* pause that the editor needs to notice fast.
+ *
+ * Differences vs `renderGateBanner` (#737):
+ * - Title is hard-coded "🛑 PIPELINE PAROU 🛑" — quickly distinguishable
+ *   from gate banners (yellow / `🟡 GATE`).
+ * - Three structured fields (STAGE, MOTIVO, AÇÃO) — every halt explains
+ *   what stopped and what the editor can do.
+ * - No color codes embedded — caller (`scripts/render-halt-banner.ts`)
+ *   wraps with ANSI red on TTY only, so this lib stays pure.
+ */
+export function renderHaltBanner(opts: {
+  stage: string;
+  reason: string;
+  action: string;
+  width?: number;
+}): string {
+  return renderGateBanner(
+    "🛑  PIPELINE PAROU  🛑",
+    [
+      `STAGE:  ${opts.stage}`,
+      `MOTIVO: ${opts.reason}`,
+      `AÇÃO:   ${opts.action}`,
+    ],
+    opts.width ?? 60,
+  );
+}
