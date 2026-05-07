@@ -237,4 +237,38 @@ describe("lintRelativeTime expansion (social, #877)", () => {
     // 'hoje' não está dentro de aspas — deve ser detectado
     assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
   });
+
+  // -- Overlap / boundary edge cases (P2 review #890) ---------------------
+  it("'há 3 dias atrás' detecta 'há 3 dias' uma única vez (sem overlap)", () => {
+    // 'atrás' depois de 'há 3 dias' não deve gerar match duplicado nem evitar
+    // o match (lookahead `(?![\\w-])` para o fim da frase deve se satisfazer
+    // com o espaço antes de 'atrás').
+    const md = "# LinkedIn\n\nO modelo foi anunciado há 3 dias atrás no evento.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    const haCount = r.matches.filter((m) =>
+      /^há \d+ dias?$/i.test(m.word),
+    ).length;
+    assert.equal(haCount, 1, `esperava 1 match 'há N dias', achou ${haCount}`);
+  });
+
+  it("'ahoje' (prefix grudado em palavra) NÃO casa 'hoje'", () => {
+    const md = "# LinkedIn\n\nA palavra ahoje é inventada e não é referência.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("'hoje,' (vírgula sufixo) casa 'hoje' normalmente", () => {
+    const md = "# LinkedIn\n\nHoje, a empresa anunciou um novo modelo.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+
+  it("'hoje.' (ponto sufixo) casa 'hoje' normalmente", () => {
+    const md = "# LinkedIn\n\nA empresa anunciou hoje.\n";
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
 });

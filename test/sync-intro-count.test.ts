@@ -117,6 +117,69 @@ describe("syncLancamentosNarrative (helper puro, #876)", () => {
     assert.equal(r.changed, true);
     assert.match(r.md, /3 lancamentos/);
   });
+
+  // -- Regressão: regex ESCAPE em template literal (P0 review #890) --------
+  // Histórico: review apontou risco de `\b` / `\s` virarem `b` / `s` em
+  // template literal (sem escape). Esses tests provam que a substituição
+  // realmente acontece — se o escape regredir, eles falham.
+  it("[regressão] substitui de fato '5 lançamentos' (regex escape ok)", () => {
+    const md = "Selecionamos 5 lançamentos da semana foram destaque.";
+    const summary = {
+      removed: [{ url: "https://x.com/1", reason: "non_official_domain" }],
+      original_count: 5,
+      final_count: 3,
+    };
+    const r = syncLancamentosNarrative(md, summary);
+    assert.equal(r.changed, true, "regex deve casar e substituir");
+    assert.equal(
+      r.md,
+      "Selecionamos 3 lançamentos da semana foram destaque.",
+    );
+  });
+
+  it("'5 lançamentos' + '5 ferramentas' no mesmo intro: só lançamentos muda", () => {
+    const md = "Tivemos 5 lançamentos da semana e 5 ferramentas no roundup.";
+    const summary = {
+      removed: [
+        { url: "https://x.com/1", reason: "non_official_domain" },
+        { url: "https://y.com/2", reason: "non_official_domain" },
+      ],
+      original_count: 5,
+      final_count: 3,
+    };
+    const r = syncLancamentosNarrative(md, summary);
+    assert.equal(r.changed, true);
+    assert.match(r.md, /3 lançamentos da semana/);
+    assert.match(r.md, /5 ferramentas no roundup/, "ferramentas preservado");
+  });
+
+  it("'Os 5 lançamentos abaixo': pega o '5' precedido de palavra", () => {
+    const md = "Os 5 lançamentos abaixo são destaques da semana.";
+    const summary = {
+      removed: [
+        { url: "https://x.com/1", reason: "non_official_domain" },
+        { url: "https://y.com/2", reason: "non_official_domain" },
+      ],
+      original_count: 5,
+      final_count: 3,
+    };
+    const r = syncLancamentosNarrative(md, summary);
+    assert.equal(r.changed, true);
+    assert.match(r.md, /Os 3 lançamentos abaixo/);
+  });
+
+  it("'5lançamentos' (sem espaço): NÃO casa (\\s+ requirement)", () => {
+    const md = "Tivemos 5lançamentos sem espaço (texto malformado).";
+    const summary = {
+      removed: [{ url: "https://x.com/1", reason: "non_official_domain" }],
+      original_count: 5,
+      final_count: 3,
+    };
+    const r = syncLancamentosNarrative(md, summary);
+    // Sem espaço entre número e palavra, o pattern \s+ não casa — preserva
+    assert.equal(r.changed, false);
+    assert.equal(r.md, md);
+  });
 });
 
 // ---------------------------------------------------------------------------

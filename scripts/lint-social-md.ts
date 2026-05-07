@@ -1,15 +1,30 @@
 /**
- * lint-social-md.ts (#602)
+ * lint-social-md.ts (#602, #877)
  *
- * Valida regras invariáveis do `03-social.md`. Especialmente:
+ * Valida regras invariáveis do `03-social.md`. Dois modos:
  *
- *   - LinkedIn CTA termina com `diar.ia.br` (sem `https://`, sem `.` final)
- *   - Facebook CTA termina com `https://diar.ia.br.` (com prefixo + ponto)
+ * 1. Default (sem `--check`): valida CTAs (#602)
+ *    - LinkedIn CTA termina com `diar.ia.br` (sem `https://`, sem `.` final)
+ *    - Facebook CTA termina com `https://diar.ia.br.` (com prefixo + ponto)
  *
- * Regras opostas entre plataformas — agent confunde sem validação determinística.
+ *    Regras opostas entre plataformas — agent confunde sem validação
+ *    determinística.
+ *
+ * 2. `--check relative-time` (#877): valida timestamps relativos (defense-in-depth)
+ *    - Detecta "hoje", "ontem", "há N dias", "esta semana", etc.
+ *    - Posts vão pra fila com D+1+ delay; relativos envelhecem mal.
+ *
+ * IMPORTANTE: o flag `--check relative-time` é OBRIGATÓRIO pra validação de
+ * timestamps. SEM o flag, o lint só checa CTAs e ignora qualquer "hoje" /
+ * "ontem" no MD. Se o orchestrator esquecer o flag, posts com timestamps
+ * relativos passam pelo gate sem warning.
  *
  * Uso:
+ *   # Default — checa CTAs
  *   npx tsx scripts/lint-social-md.ts --md data/editions/260505/03-social.md
+ *
+ *   # Modo relative-time — checa timestamps narrativos
+ *   npx tsx scripts/lint-social-md.ts --check relative-time --md <path>
  *
  * Exit code:
  *   0 = ok
