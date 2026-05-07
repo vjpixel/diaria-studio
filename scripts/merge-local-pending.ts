@@ -48,8 +48,33 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-function aammddToIso(yymmdd: string): string {
+export function aammddToIso(yymmdd: string): string {
   return `20${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`;
+}
+
+/**
+ * Pure: decide se uma edição entra na janela de pending detection (#863).
+ *
+ * Regras:
+ * - Janela ancorada em `anchorIso` (today UTC), não em `currentIso` (edition_date).
+ *   Para test mode com edição futura, ancorar em today previne perda de pendings legítimos.
+ * - Edição entra se: `cutoff <= editionDate < currentEdition`
+ *   (não inclui a própria edição corrente nem futuras).
+ *
+ * Datas usam UTC midnight pra comparação consistente.
+ */
+export function isWithinPendingWindow(
+  editionIso: string,
+  currentIso: string,
+  anchorIso: string,
+  windowDays: number,
+): boolean {
+  const editionMs = new Date(editionIso + "T00:00:00Z").getTime();
+  const cutoffMs = new Date(anchorIso + "T00:00:00Z").getTime() - windowDays * 24 * 60 * 60 * 1000;
+  const currentMs = new Date(currentIso + "T00:00:00Z").getTime();
+  if (editionMs < cutoffMs) return false; // fora da janela (anterior ao cutoff)
+  if (editionMs >= currentMs) return false; // edição atual ou futura
+  return true;
 }
 
 function extractUrlsFromApproved(approvedPath: string): string[] {
@@ -96,14 +121,21 @@ function main() {
   const current = args["current"] ?? "";
   const editionsDir = resolve(ROOT, args["editions-dir"] ?? "data/editions/");
   const windowDays = parseInt(args["window-days"] ?? "5", 10);
+  // #863: anchor = data de execução (today), não edition_date. Alinha com
+  // CLAUDE.md "Edição é sempre D+1" — a janela de pending é "últimos N dias
+  // até hoje", não "últimos N dias até a edição". Para test mode com edição
+  // futura, ancorar em today previne perda de pending legítimos.
+  // Caller pode override via --anchor-iso. Default = today UTC.
+  const anchorIso = args["anchor-iso"] ?? new Date().toISOString().split("T")[0];
 
   if (!current) {
-    console.error("Uso: merge-local-pending.ts --current AAMMDD [--editions-dir data/editions/] [--window-days 5]");
+    console.error("Uso: merge-local-pending.ts --current AAMMDD [--editions-dir data/editions/] [--window-days 5] [--anchor-iso YYYY-MM-DD]");
     process.exit(1);
   }
 
   const currentIso = aammddToIso(current);
-  const cutoffMs = new Date(currentIso).getTime() - windowDays * 24 * 60 * 60 * 1000;
+  // Cutoff anchored em --anchor-iso (default today), não em current/edition.
+  const cutoffMs = new Date(anchorIso + "T00:00:00Z").getTime() - windowDays * 24 * 60 * 60 * 1000;
 
   // Carregar past-editions.md atual
   let md = "";
@@ -142,7 +174,11 @@ function main() {
     const urls = extractUrlsFromApproved(approvedPath);
     if (urls.length === 0) continue;
 
-    const daysAgo = Math.round((new Date(currentIso).getTime() - editionMs) / (24 * 60 * 60 * 1000));
+    // #863: daysAgo computado contra anchor (today), não current (edition).
+    // Stale check downstream alerta sobre pending há >2d, deve ser relativo
+    // a "hoje" pra fazer sentido editorial.
+    const anchorMs = new Date(anchorIso + "T00:00:00Z").getTime();
+    const daysAgo = Math.round((anchorMs - editionMs) / (24 * 60 * 60 * 1000));
     pendingEditions.push({ yymmdd, iso: editionIso, urls, daysAgo });
   }
 
@@ -198,4 +234,11 @@ function main() {
   );
 }
 
-main();
+// Guard: roda main() só quando script é executado direto, não em import (testes).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}

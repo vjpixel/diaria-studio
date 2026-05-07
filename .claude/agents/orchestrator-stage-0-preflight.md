@@ -126,14 +126,17 @@ Para evitar que URLs de edições aprovadas localmente mas ainda não publicadas
 ```bash
 npx tsx scripts/merge-local-pending.ts \
   --current {AAMMDD} \
+  --anchor-iso {anchor_iso} \
   --editions-dir data/editions/ \
   --window-days 5 \
   --past-raw data/past-editions-raw.json
 ```
 O script:
-1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias que tenham `_internal/01-approved.json` mas **não** tenham `05-published.json` com `status: "published"`.
+1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** tenham `05-published.json` com `status: "published"`.
 2. Extrai todas as URLs dessas edições e injeta em `context/past-editions.md` com flag `pending_publish: true`.
-3. Se encontrar edições pending há > 2 dias, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
+3. Se encontrar edições pending há > 2 dias **a partir de today**, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
+
+**`--anchor-iso` (#863)**: A janela de pending detection é ancorada em "hoje" (data de execução), não em `edition_date`. Crítico para test mode com edição agendada no futuro — sem isso, pending legítimos da última semana saem da janela. Se omitido, default é `Date.now()` UTC.
 
 Se o script não existir ainda (`ENOENT`) ou falhar com exit != 0 (#693): pular, mas **logar warn** explicitamente:
 ```bash
