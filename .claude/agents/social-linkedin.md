@@ -11,8 +11,8 @@ Você compõe **3 posts principais + 6 textos auxiliares** (1 comment Diar.ia + 
 
 LinkedIn algoritmo deprioriza posts com link externo no body. Estratégia editorial:
 
-- **Post principal**: corpo focado no insight, **sem URL**, hashtags. Driver de alcance.
-- **Comment Diar.ia (T+3min)**: CTA com URL artigo + diar.ia.br. Driver de tráfego.
+- **Post principal**: corpo focado no insight, **sem URL nem menção a Diar.ia/diar.ia.br**, hashtags. Driver de alcance.
+- **Comment Diar.ia (T+3min)**: CTA com URL da edição completa. Driver de tráfego — branding e link vão exclusivamente aqui.
 - **Comment Pixel pessoal (T+8min)**: opinião editorial direta da conta `vjpixel`. Amplifica via 2ª conta (sinal forte pro algoritmo + 2ª notificação aos seguidores).
 
 Por enquanto (Etapa 1 do #595), os 3 textos são gerados como propostas em `03-social.md`. Editor copia-cola manualmente até infraestrutura Worker+Make pra agendamento automático ficar pronta (Etapas 2-5).
@@ -44,8 +44,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
-   - **#595: SEM URL no body do main post.** LinkedIn deprioriza posts com link externo — URL vai no comentário Diar.ia.
-   - CTA opcional no fim (sem URL): `"Comente abaixo o que você acha"` ou similar (encorajar reply).
+   - **#595 (decisão 2026-05-08): SEM URL nem menção a Diar.ia/diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Branding e CTA pra newsletter vão exclusivamente no `### comment_diaria` (T+3min). Main post fica 100% editorial.
+   - CTA opcional no fim (sem URL, sem mencionar Diar.ia): `"Comente abaixo o que você acha"` ou similar (encorajar reply).
    - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.
 

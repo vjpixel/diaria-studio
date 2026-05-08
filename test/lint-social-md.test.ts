@@ -370,4 +370,34 @@ describe("lintLinkedinSchema (#595)", () => {
     assert.equal(r.ok, true);
     assert.equal(r.destaques.length, 0);
   });
+
+  it("#595 (2026-05-08): erro quando main post menciona 'Diar.ia'", () => {
+    const dWithBrand = `\n${"X".repeat(800)} A Diar.ia traz mais notícias todo dia. ${"Y".repeat(500)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nReceba grátis em diar.ia.br\n\nÉ rápido.\n\n### comment_pixel\n\n${"Z".repeat(400)}\n`;
+    const md = buildMd({ d1: dWithBrand, d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter(
+      (e) => e.destaque === "d1" && e.rule === "main_post_mentions_diaria",
+    );
+    assert.equal(errs.length, 1, JSON.stringify(r.errors));
+  });
+
+  it("#595 (2026-05-08): erro quando main post contém 'diar.ia.br'", () => {
+    const dWithUrl = `\n${"X".repeat(800)} Veja mais em diar.ia.br para acompanhar de perto. ${"Y".repeat(500)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nReceba grátis em diar.ia.br\n\nÉ rápido.\n\n### comment_pixel\n\n${"Z".repeat(400)}\n`;
+    const md = buildMd({ d1: dWithUrl, d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter(
+      (e) => e.destaque === "d1" && e.rule === "main_post_mentions_diaria_url",
+    );
+    assert.equal(errs.length, 1);
+  });
+
+  it("#595 (2026-05-08): main 100% editorial sem branding passa", () => {
+    const r = lintLinkedinSchema(
+      buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: fullDestaque() }),
+    );
+    const brandErrs = r.errors.filter(
+      (e) => e.rule === "main_post_mentions_diaria" || e.rule === "main_post_mentions_diaria_url",
+    );
+    assert.equal(brandErrs.length, 0);
+  });
 });

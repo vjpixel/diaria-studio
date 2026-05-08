@@ -10,7 +10,8 @@ Cada destaque gera **3 textos** (#595): main post + comment Diar.ia + comment Pi
 - 2–3 parágrafos curtos.
 - Tom profissional, mas não corporativo engessado.
 - **Sem URL no body** (#595) — LinkedIn deprioriza posts com link externo. URL vai no comment Diar.ia (T+3min).
-- CTA final opcional: encorajar reply (ex: "Comente abaixo o que você acha"). NÃO incluir CTA pra newsletter aqui — vai no comment.
+- **Sem qualquer menção a Diar.ia ou diar.ia.br** no main post (decisão editorial 2026-05-08). Nem CTA, nem branding, nem URL textual. Main post é 100% editorial — branding e CTA vão exclusivamente no `### comment_diaria`.
+- CTA final opcional: encorajar reply (ex: "Comente abaixo o que você acha"). NÃO mencionar Diar.ia.
 - Incluir as **3 hashtags mais relevantes** ao tema (ex: `#InteligenciaArtificial #Mercado #Regulacao`).
 - 1200–1500 caracteres é o sweet spot.
 
@@ -46,6 +47,7 @@ Cada destaque gera **3 textos** (#595): main post + comment Diar.ia + comment Pi
 - Não repetir o hook no parágrafo seguinte.
 - Não incluir "🚀", "💡", "🔥" no hook.
 - **Não incluir URL** no body do main post.
+- **Não mencionar "Diar.ia" nem "diar.ia.br"** no main post — branding/CTA vão no comment_diaria (T+3min). Main fica 100% editorial.
 - Não usar `#Tecnologia` sozinha (genérica) — substituir por específica (#367).
 
 ## 2. Comment Diar.ia (`### comment_diaria`)
