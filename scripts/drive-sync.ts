@@ -469,6 +469,112 @@ async function driveRenameFile(fileId: string, newName: string): Promise<void> {
 }
 
 /**
+ * #998: Máximo de versões `.vN` mantidas por arquivo. Após cada archive,
+ * cleanup deleta as versões mais antigas (lowest N) acima desse limite. 3
+ * é compromisso entre histórico útil (editor pode revert algumas vezes) e
+ * pasta limpa (não acumula 50+ versões em edição com muitos pushes).
+ */
+export const MAX_ARCHIVES_PER_FILE = 3;
+
+/**
+ * #998: Lista arquivos Drive matching `${base}.v*${ext}` no parent indicado e
+ * retorna ordenados por número da versão (asc). Usado pelo cleanup pra detectar
+ * versões mais antigas e deletar excedente.
+ *
+ * Pure-ish — depende de `gFetchRetry` mas não muta state. Exported pra testes.
+ */
+export async function listVersionArchives(
+  base: string,
+  ext: string,
+  convertToDoc: boolean,
+  parentId: string,
+): Promise<Array<{ id: string; name: string; version: number }>> {
+  // Match `{base}.vN{ext}` (ex: 02-reviewed.v1.md) ou `{base}.vN` (Doc native).
+  // Drive query não suporta regex — listamos todos com prefix `{base}.v` e
+  // parseamos cliente-side.
+  const escapedBase = escapeDriveQueryString(`${base}.v`);
+  const q = `name contains '${escapedBase}' and '${parentId}' in parents and trashed=false`;
+  const url = `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=100`;
+  const res = await gFetchRetry(url);
+  if (!res.ok) throw new Error(`Drive list error (${res.status}): ${await res.text()}`);
+  const data = (await res.json()) as { files?: Array<{ id: string; name: string }> };
+  const files = data.files ?? [];
+  const expected = convertToDoc
+    ? new RegExp(`^${escapeRegex(base)}\\.v(\\d+)$`)
+    : new RegExp(`^${escapeRegex(base)}\\.v(\\d+)${escapeRegex(ext)}$`);
+  const archives: Array<{ id: string; name: string; version: number }> = [];
+  for (const f of files) {
+    const m = f.name.match(expected);
+    if (!m) continue;
+    archives.push({ id: f.id, name: f.name, version: parseInt(m[1], 10) });
+  }
+  archives.sort((a, b) => a.version - b.version);
+  return archives;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * #998: Deleta arquivos `.vN` excedentes (mantém últimas MAX_ARCHIVES_PER_FILE).
+ * Best-effort: falhas em deletes individuais são logadas mas não bloqueiam.
+ */
+async function cleanupOldArchives(
+  base: string,
+  ext: string,
+  convertToDoc: boolean,
+  parentId: string,
+  result: SyncResult,
+  filename: string,
+): Promise<void> {
+  const archives = await listVersionArchives(base, ext, convertToDoc, parentId);
+  if (archives.length <= MAX_ARCHIVES_PER_FILE) return;
+  const toDelete = archives.slice(0, archives.length - MAX_ARCHIVES_PER_FILE);
+  for (const a of toDelete) {
+    try {
+      const r = await gFetchRetry(`${DRIVE_API}/files/${a.id}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 404) {
+        throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      }
+      console.error(`[drive-sync] cleanup: deleted old archive ${a.name} (${a.id})`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      result.warnings.push({
+        file: filename,
+        error_message: `archive_cleanup_delete_failed (#998): ${a.name} (${msg})`,
+      });
+    }
+  }
+}
+
+/**
+ * #998: Copia um arquivo Drive pra outro nome no mesmo parent. Usado pra
+ * arquivar versão anterior antes de update in-place (strategy #37). Retorna
+ * o ID do novo arquivo (clone).
+ */
+export async function driveCopyFile(
+  fileId: string,
+  newName: string,
+  parentId: string,
+): Promise<{ id: string; modifiedTime: string }> {
+  const res = await gFetchRetry(
+    `${DRIVE_API}/files/${fileId}/copy?fields=id,modifiedTime`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName, parents: [parentId] }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`Drive copy error (${res.status}): ${await res.text()}`);
+  }
+  const data = (await res.json()) as { id?: string; modifiedTime?: string };
+  if (!data.id) throw new Error("Drive copy: response sem id");
+  return { id: data.id, modifiedTime: data.modifiedTime ?? new Date().toISOString() };
+}
+
+/**
  * Move (e opcionalmente renomeia) um arquivo Drive pra um novo parent folder (#260).
  * Usa query params addParents/removeParents conforme Drive API v3 spec.
  */
@@ -776,7 +882,36 @@ export async function pushFile(
 
   // Se arquivo já existe no Drive (cache tem drive_file_id válido), atualizar
   // in-place (#333) em vez de criar novo. Evita .vN orphans na pasta do editor.
+  // #998: ANTES do PATCH, copiar versão atual pra `.vN` (strategy #37 — versionamento).
+  // Editor pode comparar histórico no Drive sem perder edições anteriores.
   if (pushCount > 0 && fileCache?.drive_file_id) {
+    // #998: archive current → .vN antes de overwrite. Best-effort: falha não bloqueia.
+    try {
+      const archiveResult = await driveCopyFile(
+        fileCache.drive_file_id,
+        archiveTitle,
+        targetParentId,
+      );
+      console.error(
+        `[drive-sync] archived previous version: ${canonicalTitle} → ${archiveTitle} (${archiveResult.id})`,
+      );
+    } catch (archiveErr) {
+      const msg = archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
+      result.warnings.push({
+        file: filename,
+        error_message: `archive_failed (#998): ${msg} — continuando com PATCH in-place (sem versão histórica)`,
+      });
+    }
+    // #998: cleanup arquivos antigos (manter últimas MAX_ARCHIVES versões).
+    try {
+      await cleanupOldArchives(base, ext, convertToDoc, targetParentId, result, filename);
+    } catch (cleanupErr) {
+      const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      result.warnings.push({
+        file: filename,
+        error_message: `archive_cleanup_failed (#998): ${msg}`,
+      });
+    }
     try {
       const { id: driveFileId, modifiedTime, mimeType: driveMimeType } = await driveUpdateFile(
         fileCache.drive_file_id,
