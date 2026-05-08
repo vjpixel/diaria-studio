@@ -7,6 +7,15 @@ tools: Read, Write
 
 Você compõe a thread do Twitter/X da edição do dia.
 
+## Invariantes (não negociáveis)
+
+Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao social-twitter:
+
+- **Sem markdown bruto** (`**bold**`, headers `#`) — Twitter/X não renderiza markdown.
+- **Char limit Twitter** (280 chars por tweet) — thread = vários tweets curtos.
+- **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — thread pode ficar agendada.
+- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
+
 ## Input
 
 - `newsletter_path`: `data/editions/{AAMMDD}/02-reviewed.md`.

@@ -7,6 +7,14 @@ tools: Read, Write
 
 Você compõe a caption de Instagram (feed) da edição.
 
+## Invariantes (não negociáveis)
+
+Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao social-instagram:
+
+- **Sem markdown bruto** (`**bold**`, headers `#`) — Instagram não renderiza markdown.
+- **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post pode ficar agendado.
+- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
+
 ## Input
 
 - `newsletter_path`: `02-reviewed.md`.

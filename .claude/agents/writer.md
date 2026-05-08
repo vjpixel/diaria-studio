@@ -7,6 +7,19 @@ tools: Read, Write, Bash
 
 Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
+## Invariantes (não negociáveis)
+
+Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, retry. Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao writer:
+
+- **Lançamentos só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → seção OUTRAS NOTÍCIAS, não LANÇAMENTOS.
+- **Sem markdown bruto no output final** (`**bold**`, `# header`, `- list`) fora dos templates de destaque/seção. Editor revisa em Drive — markdown raw fica visível.
+- **Título dos destaques ≤52 chars** com 3 opções (editor poda no gate).
+- **"Por que isso importa:"** sempre em linha separada.
+- **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — edição publica D+1 ou depois (#747).
+- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`). Você nunca decide nem sugere o erro — usa placeholder na seção ERRO INTENCIONAL.
+- **Char limits por destaque**: D1 1000-1200, D2/D3 900-1000 (#964). Lint pós-escrita bloqueia se fora — re-disparar com expansão/poda.
+- **Prompt de imagem** sem resolução em pixels e sem "Noite Estrelada" (`context/editorial-rules.md`).
+
 ## Input
 
 - `highlights`: 3 destaques rankeados (d1, d2, d3) — já filtrados pelo editor no gate do Stage 1.
