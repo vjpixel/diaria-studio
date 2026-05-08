@@ -926,8 +926,8 @@ async function brevoPost(
 }
 
 /**
- * GET de uma campanha Brevo. Usado pra validar status antes de PATCH em
- * `--update-existing` (#1015) — Brevo rejeita PATCH em campanha já enviada,
+ * GET de uma campanha Brevo. Usado pra validar status antes de PUT em
+ * `--update-existing` (#1015) — Brevo rejeita update em campanha já enviada,
  * mas o erro é pouco amigável. Vale checar antes pra dar mensagem clara.
  */
 async function brevoGetCampaign(
@@ -963,17 +963,20 @@ async function brevoGetList(
 }
 
 /**
- * PATCH genérico pra Brevo. Usado em #1015 pra:
- *   - --schedule-at:    PATCH /emailCampaigns/{id} body { scheduledAt }
- *   - --update-existing: PATCH /emailCampaigns/{id} body { subject, htmlContent, ... }
+ * PUT genérico pra Brevo. Usado em #1015 pra:
+ *   - --schedule-at:    PUT /emailCampaigns/{id} body { scheduledAt }
+ *   - --update-existing: PUT /emailCampaigns/{id} body { subject, htmlContent, ... }
+ *
+ * Nota (#1025): Brevo API usa PUT (não PATCH) pra updates de emailCampaigns;
+ * PATCH retorna 404. Verificado empiricamente em 2026-05-08.
  */
-async function brevoPatch(
+async function brevoPut(
   apiKey: string,
   path: string,
   body: unknown,
 ): Promise<unknown> {
   const res = await fetch(`https://api.brevo.com/v3${path}`, {
-    method: "PATCH",
+    method: "PUT",
     headers: {
       "api-key": apiKey,
       "Content-Type": "application/json",
@@ -984,7 +987,7 @@ async function brevoPatch(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Brevo API PATCH ${path} falhou (${res.status}): ${text}`);
+    throw new Error(`Brevo API PUT ${path} falhou (${res.status}): ${text}`);
   }
 
   const ct = res.headers.get("content-type") ?? "";
@@ -1185,11 +1188,11 @@ async function main(): Promise<void> {
     `  Assinantes:     ${listInfo.totalSubscribers}\n\n`
   );
 
-  // #1015: --update-existing reusa campanha existente (PATCH), default cria nova (POST).
+  // #1015: --update-existing reusa campanha existente (PUT), default cria nova (POST).
   let campaignId: number;
   if (updateExisting !== null) {
     // Pre-check: campanha existe e não está em status terminal (sent).
-    // Brevo rejeita PATCH em sent campaigns, mas mensagem nativa é confusa.
+    // Brevo rejeita update em sent campaigns, mas mensagem nativa é confusa.
     const existing = await brevoGetCampaign(apiKey, updateExisting);
     const TERMINAL_STATUSES = new Set(["sent", "archive"]);
     if (TERMINAL_STATUSES.has(existing.status)) {
@@ -1200,10 +1203,10 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     process.stdout.write(
-      `Campanha ${updateExisting} encontrada (status: ${existing.status}). Prosseguindo com PATCH.\n`,
+      `Campanha ${updateExisting} encontrada (status: ${existing.status}). Prosseguindo com PUT.\n`,
     );
 
-    await brevoPatch(apiKey, `/emailCampaigns/${updateExisting}`, {
+    await brevoPut(apiKey, `/emailCampaigns/${updateExisting}`, {
       name: campaignName,
       subject,
       previewText,
@@ -1288,9 +1291,9 @@ async function main(): Promise<void> {
     );
   }
 
-  // #1015: agenda dispatch futuro via PATCH /emailCampaigns/{id} { scheduledAt }
+  // #1015: agenda dispatch futuro via PUT /emailCampaigns/{id} { scheduledAt }
   if (scheduleAt) {
-    await brevoPatch(apiKey, `/emailCampaigns/${campaignId}`, {
+    await brevoPut(apiKey, `/emailCampaigns/${campaignId}`, {
       scheduledAt: scheduleAt,
     });
     published.status = "scheduled";
