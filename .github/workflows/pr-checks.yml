@@ -1,0 +1,54 @@
+name: PR Checks (#970)
+
+# Guards adicionais pra PRs que CI principal não cobre:
+# 1. check-invariants --static: regras estruturais do repo (ex: drive-sync nunca push _internal/_forensic, #959)
+# 2. Regression test gate: PR de bugfix exige teste novo (ou label `no-regression-test` + justificativa)
+#
+# Não substitui ci.yml — roda em paralelo com escopo focado.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  invariants-static:
+    name: Static invariants check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run check-invariants --static
+        run: npx tsx scripts/check-invariants.ts --static
+
+  regression-test-gate:
+    name: Regression test gate (PR de bugfix exige teste novo)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Detect bugfix + verify regression test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/check-pr-bugfix.ts
