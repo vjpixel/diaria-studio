@@ -24,7 +24,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando dois filtros e
 2. Gravar em `{edition_dir}tmp-dates-input.json`.
 3. Rodar (derivar `cutoff_iso = anchor_iso - window_days`):
    ```bash
-   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json --bodies-dir {edition_dir}_internal/link-verify-bodies --cutoff-iso {cutoff_iso} --window-days {window_days} --verify-cache data/link-verify-cache.json
+   npx tsx scripts/verify-dates.ts {edition_dir}tmp-dates-input.json {edition_dir}tmp-dates-output.json --bodies-dir {edition_dir}_internal/_forensic/link-verify-bodies --cutoff-iso {cutoff_iso} --window-days {window_days} --verify-cache data/link-verify-cache.json
    ```
    - `--bodies-dir` (#717 hipótese 1) lê bodies já fetched por `verify-accessibility.ts` no passo 1i — evita re-fetch de URLs já vistas no mesmo pipeline. stderr inclui `[body-cache: H/T hit (P%)]`.
    - `--verify-cache` (#866) é fallback cross-edição: quando body não está no `bodies-dir` da edição atual MAS verify cache tem entry com body (lifted no run anterior), reusa sem refetch. Compounds com #717 hyp 2 (cross-edition verify cache) — antes, verify cache hit ainda forçava verify-dates a fetchar. Stderr loga `[verify-dates] verify cache carregado: N entries`.

@@ -64,6 +64,24 @@ describe("listInternalJsonFiles (#891)", () => {
     }
   });
 
+  it("ignora subdir _forensic/ (#959 — link-verify-bodies movido pra lá)", () => {
+    const { root, internalDir } = makeFixture();
+    try {
+      writeFileSync(join(internalDir, "01-approved.json"), "{}");
+      const forensicDir = join(internalDir, "_forensic");
+      const bodiesDir = join(forensicDir, "link-verify-bodies");
+      mkdirSync(bodiesDir, { recursive: true });
+      writeFileSync(join(bodiesDir, "001.html"), "<html>...</html>");
+      writeFileSync(join(forensicDir, "raw-research.json"), "{}");
+
+      const files = listInternalJsonFiles(internalDir);
+      const names = files.map((f) => f.split(/[\\/]/).pop());
+      assert.deepEqual(names, ["01-approved.json"]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
   it("ignora _test-backup-* dirs", () => {
     const { root, internalDir } = makeFixture();
     try {

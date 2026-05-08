@@ -823,6 +823,24 @@ async function main(): Promise<void> {
   }
 
   console.log(JSON.stringify(result, null, 2));
+
+  // #977: opt-in fail-on-warning. Default mantém exit 0 mesmo com warnings
+  // (compatibilidade com chamadas existentes). Quando flag ligada:
+  //   --fail-on-warning           exit 2 se há QUALQUER warning
+  //   --fail-on-conflict          exit 2 só se há warning de CONFLICT
+  // Conflito do editor (#496/#605/#963) é categoria especial: indica que
+  // o Drive tem edições do editor que o pipeline não pegou — orchestrator
+  // precisa pular pra modo halt em vez de seguir achando que push deu certo.
+  if (result.warnings.length > 0) {
+    const failOnWarning = flags.has("fail-on-warning");
+    const failOnConflict = flags.has("fail-on-conflict");
+    const hasConflict = result.warnings.some((w) =>
+      w.error_message.startsWith("CONFLICT:"),
+    );
+    if (failOnWarning || (failOnConflict && hasConflict)) {
+      process.exit(2);
+    }
+  }
 }
 
 function logSyncWarnings(result: SyncResult): void {
