@@ -273,16 +273,16 @@ export function computeScore(m: Merged, now: Date): number {
   return s;
 }
 
-function isClariceAudience(m: Merged): boolean {
-  return m.description === "clrc-pt" || m.tag === "clrc-pt";
-}
-
 // ---------------------------------------------------------------------------
 // verify_risk: escala 1–10 de necessidade de verificar o email antes de enviar
 //   1–3 = baixo (enviar sem verificar)
 //   4–6 = médio (verificar se possível)
 //   7–8 = alto  (verificar antes de enviar)
 //   9–10 = crítico (verificar prioritariamente ou descartar)
+//
+// Não usa tag clrc-pt como sinal: tagging só começou em 2024 e foi populado
+// inconsistentemente até 2025; usar tag enviesava contatos antigos legítimos
+// pra níveis piores. Pra não-pagantes, recência sozinha é o sinal mais defensável.
 // ---------------------------------------------------------------------------
 
 function verifyRisk(m: Merged, now: Date): number {
@@ -301,7 +301,7 @@ function verifyRisk(m: Merged, now: Date): number {
   // 3: engajado + conta jovem
   if (m.payment_count >= 3 && months < 24) return 3;
 
-  // --- Médio risco (4–6): algum histórico mas incerteza crescente ---
+  // --- Médio risco (4–5): algum histórico mas incerteza crescente ---
 
   // 4: pagou pelo menos 1x e conta ≤ 3 anos
   if (m.payment_count >= 1 && months < 36) return 4;
@@ -309,23 +309,21 @@ function verifyRisk(m: Merged, now: Date): number {
   // 5: pagou pelo menos 1x e conta 3–5 anos
   if (m.payment_count >= 1 && months < 60) return 5;
 
-  // 6: nunca pagou, clrc-pt tag + conta ≤ 2 anos
-  if (isClariceAudience(m) && months < 24) return 6;
+  // --- Risco crescente por recência pura (6–10): nunca pagou ---
 
-  // --- Alto risco (7–8): nunca pagou, sinal fraco ---
+  // 6: nunca pagou, conta ≤ 1 ano (lead fresco)
+  if (months < 12) return 6;
 
-  // 7: nunca pagou, clrc-pt tag, conta 2–4 anos
-  if (isClariceAudience(m) && months < 48) return 7;
+  // 7: nunca pagou, conta 1–2 anos
+  if (months < 24) return 7;
 
-  // 8: nunca pagou, sem tag, conta ≤ 2 anos
-  if (months < 24) return 8;
+  // 8: nunca pagou, conta 2–3 anos
+  if (months < 36) return 8;
 
-  // --- Crítico (9–10): lead muito frio ---
-
-  // 9: nunca pagou, sem tag, conta 2–4 anos
+  // 9: nunca pagou, conta 3–4 anos
   if (months < 48) return 9;
 
-  // 10: nunca pagou, sem tag, 4+ anos
+  // 10: nunca pagou, 4+ anos (fóssil)
   return 10;
 }
 
@@ -334,15 +332,17 @@ function verifyRisk(m: Merged, now: Date): number {
 // ---------------------------------------------------------------------------
 
 function openProbability(m: Merged, now: Date): number {
-  // Base pela relação financeira com a Clarice
+  // Base pela relação financeira com a Clarice.
+  // Tag clrc-pt removida do critério: tagging começou em 2024 e foi populado
+  // inconsistentemente, criava viés contra contatos antigos legítimos.
+  // Não-pagantes agora começam todos em 14 (média ponderada do 17/11 anterior).
   let prob: number;
   if (m.status === "active")          prob = 62; // cliente pagando hoje
   else if (m.total_spend >= 1000)     prob = 50;
   else if (m.total_spend >= 100)      prob = 40;
   else if (m.total_spend >= 10)       prob = 30;
   else if (m.total_spend > 0)         prob = 22;
-  else if (isClariceAudience(m))      prob = 17; // nunca pagou, mas é clrc-pt
-  else                                prob = 11; // lead completamente frio
+  else                                prob = 14; // nunca pagou (recência aplica modificador abaixo)
 
   // Modificador de recência
   if (m.created) {
@@ -449,12 +449,14 @@ function main(): void {
   console.error(`📦 emails únicos pós-merge: ${merged.size}`);
   console.error(`   colapso: ${allRecords.length - merged.size} duplicatas eliminadas`);
 
-  // Distribution diagnostics
+  // Distribution diagnostics — tag clrc-pt rastreada só pra log informacional;
+  // não entra mais no scoring (verifyRisk/openProbability) pois o tagging foi
+  // populado inconsistentemente entre 2021–2024.
   const distrClrcPt = { yes: 0, no: 0 };
   const distrSpend = { zero: 0, lt10: 0, lt100: 0, lt1000: 0, gte1000: 0 };
   const distrCreated: { [year: string]: number } = {};
   for (const m of merged.values()) {
-    if (isClariceAudience(m)) distrClrcPt.yes++;
+    if (m.description === "clrc-pt" || m.tag === "clrc-pt") distrClrcPt.yes++;
     else distrClrcPt.no++;
     if (m.total_spend === 0) distrSpend.zero++;
     else if (m.total_spend < 10) distrSpend.lt10++;
@@ -491,7 +493,7 @@ function main(): void {
       excluded.push({ ...m, reason: lqCheck.reason });
       continue;
     }
-    if (filterClrcPt && !isClariceAudience(m)) {
+    if (filterClrcPt && !(m.description === "clrc-pt" || m.tag === "clrc-pt")) {
       excluded.push({ ...m, reason: "not_clrc_pt" });
       continue;
     }
@@ -562,7 +564,7 @@ function main(): void {
         `spend=${t.total_spend.toFixed(0)} ` +
         `pmt=${t.payment_count} ` +
         `created=${t.created?.toISOString().slice(0, 10) || "?"} ` +
-        `clrc=${isClariceAudience(t) ? "Y" : "N"}`,
+        `clrc=${(t.description === "clrc-pt" || t.tag === "clrc-pt") ? "Y" : "N"}`,
     );
   }
 
