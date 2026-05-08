@@ -434,7 +434,8 @@ function semestersBack(from: Date, now: Date): number {
  * semestres deslizantes baseados em `now` (#1020). Antes era objeto estático
  * que ficava errado a cada virada de semestre.
  *
- * Use esta função em vez do antigo objeto `TIER_LABELS`.
+ * Use esta função em vez de objeto estático — labels precisam ser
+ * recalculados a cada chamada pra refletir `now` correto.
  */
 export function tierLabel(tier: number, now: Date = new Date()): string {
   if (tier === 1) return "Assinante atual (active/past_due/paused/trialing)";
@@ -487,22 +488,10 @@ export function tierOf(m: Merged, now: Date = new Date()): number {
   return 10; // ≥ 7 semestres atrás (~3,5+ anos)
 }
 
-/**
- * @deprecated Use `tierLabel(tier, now)` em vez. Mantido pra retrocompat
- * mas labels podem ficar errados conforme o tempo passa.
- */
-export const TIER_LABELS: { readonly [k: number]: string } = {
-  1: tierLabel(1),
-  2: tierLabel(2),
-  3: tierLabel(3),
-  4: tierLabel(4),
-  5: tierLabel(5),
-  6: tierLabel(6),
-  7: tierLabel(7),
-  8: tierLabel(8),
-  9: tierLabel(9),
-  10: "Lead nunca-pagou — caudão antigo (≥7 semestres atrás)",
-};
+// (TIER_LABELS estático foi removido em #1026 — substituído por `tierLabel(t, now)`.
+// Manter um objeto estático com `new Date()` em import-time congela os labels
+// no momento que o módulo é carregado, ficando errado depois de virar semestre.
+// Use a função pra labels corretos em qualquer ponto no tempo.)
 
 // ---------------------------------------------------------------------------
 // Output

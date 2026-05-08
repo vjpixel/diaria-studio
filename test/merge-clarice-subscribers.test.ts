@@ -699,4 +699,20 @@ describe("tierLabel — labels dinâmicos (#1020)", () => {
     // Mai/2026 (2026-H1) — 6 = 2023-H1
     assert.match(tierLabel(9, new Date("2026-05-08T00:00:00Z")), /2023-H1/);
   });
+
+  it("T10 tem label fixo de caudão (não depende de now)", () => {
+    // T10 absorve qualquer coisa ≥ 7 semestres atrás, então não tem
+    // semestre específico. Label deve indicar "caudão" + threshold.
+    const label = tierLabel(10, new Date("2026-05-08T00:00:00Z"));
+    assert.match(label, /caud[ãa]o/i, "T10 label deve mencionar 'caudão'");
+    assert.match(label, /≥7|≥ 7|7 semestres/, "T10 label deve indicar threshold de 7 semestres");
+    // Independência de now: mesmo label em outras datas
+    const labelFuture = tierLabel(10, new Date("2030-12-31T00:00:00Z"));
+    assert.equal(label, labelFuture, "T10 label não deve variar com now");
+  });
+
+  it("tier desconhecido retorna fallback", () => {
+    assert.match(tierLabel(99, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
+    assert.match(tierLabel(0, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
+  });
 });
