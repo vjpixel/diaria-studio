@@ -6,6 +6,7 @@ import {
   lintFacebookCTAs,
   lintSocialMd,
   lintRelativeTime,
+  lintLinkedinSchema,
 } from "../scripts/lint-social-md.ts";
 
 const validMd = `# LinkedIn
@@ -270,5 +271,103 @@ describe("lintRelativeTime expansion (social, #877)", () => {
     const r = lintRelativeTime(md);
     assert.equal(r.ok, false);
     assert.ok(r.matches.some((m) => m.word.toLowerCase() === "hoje"));
+  });
+});
+
+describe("lintLinkedinSchema (#595)", () => {
+  function buildMd(parts: { d1?: string; d2?: string; d3?: string }): string {
+    const sections: string[] = ["# LinkedIn", ""];
+    if (parts.d1) sections.push("## d1", parts.d1);
+    if (parts.d2) sections.push("## d2", parts.d2);
+    if (parts.d3) sections.push("## d3", parts.d3);
+    return sections.join("\n");
+  }
+
+  function fullDestaque(): string {
+    const main = "X".repeat(1300);
+    // comment_diaria: 200-400 chars tolerância. Inclui {edition_url} placeholder.
+    const cd =
+      "Edição completa com mais 9 destaques de IA do dia em {edition_url}" +
+      "\n\nReceba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br" +
+      "\n\nMais sobre esse e outros casos.";
+    // comment_pixel: 300-600 chars tolerância. ~400.
+    const cp =
+      "Pra quem implanta agente em produção, o frame mudou: a discussão central " +
+      "não é mais 'esse modelo é seguro?' e sim 'qual é o blast radius de um agente " +
+      "que se replica sozinho?' Permissão de rede vira controle primário, não " +
+      "secundário. E a maioria dos setups que vi essa semana não trata assim.";
+    return `\n${main}\n\n### comment_diaria\n\n${cd}\n\n### comment_pixel\n\n${cp}\n`;
+  }
+
+  it("ok=true quando todos 3 destaques têm main + comment_diaria + comment_pixel", () => {
+    const md = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.destaques.length, 3);
+    for (const d of r.destaques) {
+      assert.equal(d.has_main, true);
+      assert.equal(d.has_comment_diaria, true);
+      assert.equal(d.has_comment_pixel, true);
+    }
+  });
+
+  it("ok=false quando comment_diaria ausente em d2", () => {
+    const dWithoutComments = `\n${"X".repeat(1300)}\n`;
+    const md = buildMd({
+      d1: fullDestaque(),
+      d2: dWithoutComments,
+      d3: fullDestaque(),
+    });
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, false);
+    const errs = r.errors.filter((e) => e.destaque === "d2");
+    assert.ok(errs.some((e) => e.rule === "missing_comment_diaria"));
+    assert.ok(errs.some((e) => e.rule === "missing_comment_pixel"));
+  });
+
+  it("ok=false quando comment_pixel ausente em d3", () => {
+    const dPartial = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nReceba em diar.ia.br\n\nMais sobre o caso.\n`;
+    const md = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: dPartial });
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, false);
+    const errs = r.errors.filter((e) => e.destaque === "d3");
+    assert.ok(errs.some((e) => e.rule === "missing_comment_pixel"));
+    // comment_diaria está presente
+    assert.ok(!errs.some((e) => e.rule === "missing_comment_diaria"));
+  });
+
+  it("warning de char count quando main muito curto", () => {
+    const dSmallMain = `\n${"X".repeat(500)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nReceba em diar.ia.br\n\nMais sobre o caso.\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
+    const md = buildMd({ d1: dSmallMain, d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, false);
+    const errs = r.errors.filter((e) => e.destaque === "d1" && e.rule === "main_chars_out_of_range");
+    assert.equal(errs.length, 1);
+  });
+
+  it("#595: erro quando comment_diaria sem placeholder {edition_url} nem URL resolvida", () => {
+    const dWithoutUrl = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nReceba notícias de IA em diar.ia.br hoje mesmo, é grátis e simples.\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
+    const md = buildMd({ d1: dWithoutUrl, d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, false);
+    const errs = r.errors.filter(
+      (e) => e.destaque === "d1" && e.rule === "comment_diaria_missing_edition_url",
+    );
+    assert.equal(errs.length, 1);
+  });
+
+  it("#595: aceita comment_diaria com URL diar.ia.br/p/<slug> (resolvido pós-Stage 4)", () => {
+    const dResolved = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em https://diar.ia.br/p/modelos-replicam\n\nReceba grátis em diar.ia.br\n\nÉ rápido.\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
+    const md = buildMd({ d1: dResolved, d2: fullDestaque(), d3: fullDestaque() });
+    const r = lintLinkedinSchema(md);
+    const errs = r.errors.filter((e) => e.rule === "comment_diaria_missing_edition_url");
+    assert.equal(errs.length, 0);
+  });
+
+  it("ok=true em md sem seção LinkedIn (no-op)", () => {
+    const md = "# Facebook\n\n## d1\nApenas FB.\n";
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.destaques.length, 0);
   });
 });

@@ -217,6 +217,12 @@ npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMM
 ```
 Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. Exit 1 = matches encontrados. **Incluir os matches no prompt do gate** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
 
+**Lint LinkedIn schema 3-textos pré-gate (#595):** social-linkedin agora gera main + comment_diaria + comment_pixel por destaque. Validar:
+```bash
+npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+```
+Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comment_pixel) ou char count fora do range. Exit 1 = re-disparar `social-linkedin` agent.
+
 ### 2d. Sync push + gate unificado
 
 - **Sync push antes do gate:**
