@@ -273,7 +273,18 @@ export function computeScore(m: Merged, now: Date): number {
   return s;
 }
 
-function isClariceAudience(m: Merged): boolean {
+/**
+ * Helper informacional — verifica se o contato tem tag/description `clrc-pt`.
+ *
+ * **NÃO usar em scoring** (verifyRisk, openProbability, computeScore). O tagging
+ * Stripe começou em 2024 e foi populado inconsistentemente até 2025; usar como
+ * sinal enviesa contatos antigos legítimos.
+ *
+ * Uso correto: filtros opt-in (--filter-clrc-pt) e logs informacionais.
+ */
+export function hasClariceAudienceTag(
+  m: Pick<Merged, "description" | "tag">,
+): boolean {
   return m.description === "clrc-pt" || m.tag === "clrc-pt";
 }
 
@@ -283,9 +294,13 @@ function isClariceAudience(m: Merged): boolean {
 //   4–6 = médio (verificar se possível)
 //   7–8 = alto  (verificar antes de enviar)
 //   9–10 = crítico (verificar prioritariamente ou descartar)
+//
+// Não usa tag clrc-pt como sinal: tagging só começou em 2024 e foi populado
+// inconsistentemente até 2025; usar tag enviesava contatos antigos legítimos
+// pra níveis piores. Pra não-pagantes, recência sozinha é o sinal mais defensável.
 // ---------------------------------------------------------------------------
 
-function verifyRisk(m: Merged, now: Date): number {
+export function verifyRisk(m: Merged, now: Date): number {
   const months = m.created
     ? (now.getTime() - m.created.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
     : 48; // sem data → tratar como antigo
@@ -301,7 +316,7 @@ function verifyRisk(m: Merged, now: Date): number {
   // 3: engajado + conta jovem
   if (m.payment_count >= 3 && months < 24) return 3;
 
-  // --- Médio risco (4–6): algum histórico mas incerteza crescente ---
+  // --- Médio risco (4–5): algum histórico mas incerteza crescente ---
 
   // 4: pagou pelo menos 1x e conta ≤ 3 anos
   if (m.payment_count >= 1 && months < 36) return 4;
@@ -309,23 +324,21 @@ function verifyRisk(m: Merged, now: Date): number {
   // 5: pagou pelo menos 1x e conta 3–5 anos
   if (m.payment_count >= 1 && months < 60) return 5;
 
-  // 6: nunca pagou, clrc-pt tag + conta ≤ 2 anos
-  if (isClariceAudience(m) && months < 24) return 6;
+  // --- Risco crescente por recência pura (6–10): nunca pagou ---
 
-  // --- Alto risco (7–8): nunca pagou, sinal fraco ---
+  // 6: nunca pagou, conta ≤ 1 ano (lead fresco)
+  if (months < 12) return 6;
 
-  // 7: nunca pagou, clrc-pt tag, conta 2–4 anos
-  if (isClariceAudience(m) && months < 48) return 7;
+  // 7: nunca pagou, conta 1–2 anos
+  if (months < 24) return 7;
 
-  // 8: nunca pagou, sem tag, conta ≤ 2 anos
-  if (months < 24) return 8;
+  // 8: nunca pagou, conta 2–3 anos
+  if (months < 36) return 8;
 
-  // --- Crítico (9–10): lead muito frio ---
-
-  // 9: nunca pagou, sem tag, conta 2–4 anos
+  // 9: nunca pagou, conta 3–4 anos
   if (months < 48) return 9;
 
-  // 10: nunca pagou, sem tag, 4+ anos
+  // 10: nunca pagou, 4+ anos (fóssil)
   return 10;
 }
 
@@ -333,16 +346,22 @@ function verifyRisk(m: Merged, now: Date): number {
 // open_probability: chance estimada (0–100%) de abrir a newsletter
 // ---------------------------------------------------------------------------
 
-function openProbability(m: Merged, now: Date): number {
-  // Base pela relação financeira com a Clarice
+export function openProbability(m: Merged, now: Date): number {
+  // Base pela relação financeira com a Clarice.
+  // Tag clrc-pt removida do critério: tagging começou em 2024 e foi populado
+  // inconsistentemente, criava viés contra contatos antigos legítimos.
+  //
+  // Não-pagantes agora começam em 12 (média ponderada da fórmula antiga
+  // 17 se clrc-pt / 11 caso contrário). Cálculo: na base atual ~24% têm tag,
+  // logo 0.24*17 + 0.76*11 ≈ 12.4. Arredondado pra 12 — fiel ao histórico,
+  // sem premiar artificialmente leads sem tag por uma inferência fraca.
   let prob: number;
   if (m.status === "active")          prob = 62; // cliente pagando hoje
   else if (m.total_spend >= 1000)     prob = 50;
   else if (m.total_spend >= 100)      prob = 40;
   else if (m.total_spend >= 10)       prob = 30;
   else if (m.total_spend > 0)         prob = 22;
-  else if (isClariceAudience(m))      prob = 17; // nunca pagou, mas é clrc-pt
-  else                                prob = 11; // lead completamente frio
+  else                                prob = 12; // nunca pagou (recência aplica modificador abaixo)
 
   // Modificador de recência
   if (m.created) {
@@ -449,12 +468,14 @@ function main(): void {
   console.error(`📦 emails únicos pós-merge: ${merged.size}`);
   console.error(`   colapso: ${allRecords.length - merged.size} duplicatas eliminadas`);
 
-  // Distribution diagnostics
+  // Distribution diagnostics — tag clrc-pt rastreada só pra log informacional;
+  // não entra mais no scoring (verifyRisk/openProbability) pois o tagging foi
+  // populado inconsistentemente entre 2021–2024.
   const distrClrcPt = { yes: 0, no: 0 };
   const distrSpend = { zero: 0, lt10: 0, lt100: 0, lt1000: 0, gte1000: 0 };
   const distrCreated: { [year: string]: number } = {};
   for (const m of merged.values()) {
-    if (isClariceAudience(m)) distrClrcPt.yes++;
+    if (hasClariceAudienceTag(m)) distrClrcPt.yes++;
     else distrClrcPt.no++;
     if (m.total_spend === 0) distrSpend.zero++;
     else if (m.total_spend < 10) distrSpend.lt10++;
@@ -491,7 +512,7 @@ function main(): void {
       excluded.push({ ...m, reason: lqCheck.reason });
       continue;
     }
-    if (filterClrcPt && !isClariceAudience(m)) {
+    if (filterClrcPt && !hasClariceAudienceTag(m)) {
       excluded.push({ ...m, reason: "not_clrc_pt" });
       continue;
     }
@@ -562,7 +583,7 @@ function main(): void {
         `spend=${t.total_spend.toFixed(0)} ` +
         `pmt=${t.payment_count} ` +
         `created=${t.created?.toISOString().slice(0, 10) || "?"} ` +
-        `clrc=${isClariceAudience(t) ? "Y" : "N"}`,
+        `clrc=${hasClariceAudienceTag(t) ? "Y" : "N"}`,
     );
   }
 
