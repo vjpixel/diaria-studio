@@ -925,6 +925,27 @@ async function brevoPost(
   return {};
 }
 
+/**
+ * GET de uma campanha Brevo. Usado pra validar status antes de PATCH em
+ * `--update-existing` (#1015) — Brevo rejeita PATCH em campanha já enviada,
+ * mas o erro é pouco amigável. Vale checar antes pra dar mensagem clara.
+ */
+async function brevoGetCampaign(
+  apiKey: string,
+  campaignId: number,
+): Promise<{ id: number; name: string; status: string }> {
+  const res = await fetch(`https://api.brevo.com/v3/emailCampaigns/${campaignId}`, {
+    method: "GET",
+    headers: { "api-key": apiKey, Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Brevo API GET /emailCampaigns/${campaignId} falhou (${res.status}): ${text}`);
+  }
+  const data = await res.json() as { id: number; name: string; status: string };
+  return data;
+}
+
 async function brevoGetList(
   apiKey: string,
   listId: number,
@@ -1111,9 +1132,11 @@ async function main(): Promise<void> {
   const ts = new Date().toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo" }).slice(0, 16);
   let campaignName = `Diar.ia Mensal ${yymm} — ${ts}`;
 
-  // Para `--send-test`: incrementa contador local e prefixa subject + nome com `[Teste N]`.
-  // Permite distinguir múltiplas iterações de teste no inbox do editor.
-  // Counter persiste em `_internal/test-counter.txt` (gitignored, por edição).
+  // Para `--send-test`: PRÉ-COMPUTA o próximo número, prefixa subject + nome
+  // com `[Teste N]`. O write em disco do counter só acontece DEPOIS do sucesso
+  // do /sendTest API call (mais abaixo) — assim falhas de API não consomem
+  // numbers de teste fantasmas.
+  let nextTestNumber = 0;
   if (sendTest && !dryRun) {
     const internalDir = resolve(monthlyDir, "_internal");
     if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
@@ -1121,10 +1144,9 @@ async function main(): Promise<void> {
     const current = existsSync(counterPath)
       ? parseInt(readFileSync(counterPath, "utf8").trim(), 10) || 0
       : 0;
-    const next = current + 1;
-    writeFileSync(counterPath, String(next));
-    subject = `[Teste ${next}] ${subject}`;
-    campaignName = `${campaignName} — Teste ${next}`;
+    nextTestNumber = current + 1;
+    subject = `[Teste ${nextTestNumber}] ${subject}`;
+    campaignName = `${campaignName} — Teste ${nextTestNumber}`;
   }
 
   if (dryRun) {
@@ -1132,14 +1154,24 @@ async function main(): Promise<void> {
     if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
     const previewPath = resolve(internalDir, `preview-list${effectiveListId ?? "default"}.html`);
     writeFileSync(previewPath, html);
+    const action = updateExisting !== null
+      ? `atualizada (id=${updateExisting})`
+      : "criada";
+    const dispatchLabel = scheduleAt
+      ? `\n  Dispatch: AGENDADO pra ${scheduleAt}`
+      : sendNow
+      ? "\n  Dispatch: ENVIO IMEDIATO"
+      : sendTest
+      ? `\n  Dispatch: TEST EMAIL pra ${sendTestTo ?? brevo.test_email}`
+      : "\n  Dispatch: nenhum (só draft)";
     process.stdout.write(
-      `[DRY RUN] Campanha que seria criada:\n` +
+      `[DRY RUN] Campanha que seria ${action}:\n` +
       `  Nome:     ${campaignName}\n` +
       `  Assunto:  ${subject}\n` +
       `  Preview:  ${previewText}\n` +
       `  List ID:  ${effectiveListId} (fonte: ${listSource})\n` +
-      `  Remetente: ${brevo.sender_name} <${brevo.sender_email}>\n` +
-      `  HTML completo: ${previewPath}\n`
+      `  Remetente: ${brevo.sender_name} <${brevo.sender_email}>${dispatchLabel}\n` +
+      `  HTML completo: ${previewPath}\n`,
     );
     return;
   }
@@ -1156,6 +1188,21 @@ async function main(): Promise<void> {
   // #1015: --update-existing reusa campanha existente (PATCH), default cria nova (POST).
   let campaignId: number;
   if (updateExisting !== null) {
+    // Pre-check: campanha existe e não está em status terminal (sent).
+    // Brevo rejeita PATCH em sent campaigns, mas mensagem nativa é confusa.
+    const existing = await brevoGetCampaign(apiKey, updateExisting);
+    const TERMINAL_STATUSES = new Set(["sent", "archive"]);
+    if (TERMINAL_STATUSES.has(existing.status)) {
+      process.stderr.write(
+        `ERRO: campanha ${updateExisting} está em status "${existing.status}" e não pode ser atualizada.\n` +
+        `Crie uma campanha nova (omitir --update-existing) ou use uma diferente.\n`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(
+      `Campanha ${updateExisting} encontrada (status: ${existing.status}). Prosseguindo com PATCH.\n`,
+    );
+
     await brevoPatch(apiKey, `/emailCampaigns/${updateExisting}`, {
       name: campaignName,
       subject,
@@ -1213,6 +1260,13 @@ async function main(): Promise<void> {
     await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendTest`, {
       emailTo: [testRecipient],
     });
+
+    // Counter só persiste após sucesso do /sendTest — evita "queimar" números
+    // se a API falhar (rate limit, sender unverified, etc.).
+    if (nextTestNumber > 0) {
+      const counterPath = resolve(monthlyDir, "_internal/test-counter.txt");
+      writeFileSync(counterPath, String(nextTestNumber));
+    }
 
     published.status = "test_sent";
     published.test_email = testRecipient;
