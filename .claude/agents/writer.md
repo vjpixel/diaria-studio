@@ -150,14 +150,14 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
    Gravar cada um no diretório da edição. Arquivos separados do texto — o editor pode editar cada prompt individualmente antes da geração.
 7. Gravar o texto da edição em `out_path`.
-8. **Validar o comprimento dos destaques** rodando:
+8. **Validar o comprimento dos destaques** rodando o lint canônico (#976) — single source of truth com o gate do orchestrator:
    ```bash
-   node scripts/validate-highlights.js {out_path}
+   npx tsx scripts/lint-newsletter-md.ts --check destaque-min-chars --md {out_path}
+   npx tsx scripts/lint-newsletter-md.ts --check destaque-max-chars --md {out_path}
    ```
-   O script imprime um JSON com `chars/limit/status` por destaque e sai com código 0 (ok/warning) ou 1 (erro).
-   - Se `status` = `"error"` em algum destaque: reescrever aquele destaque para caber no limite (preservando título e URL), regravar `out_path` e rodar a validação de novo. Repetir até passar.
-   - Se `status` = `"warning"`: seguir, mas incluir o texto do warning em `warnings` do output.
-   - Só responda ao orchestrator quando não houver mais erros.
+   - `destaque-min-chars` exit 1 → expandir o destaque (mais 1 parágrafo de body OU "Por que isso importa" estendido) e regravar `out_path`. Repetir até passar.
+   - `destaque-max-chars` (#964) exit 1 → trimar o destaque (cortar parágrafo menos relevante OU encurtar "Por que isso importa") e regravar. Repetir até passar.
+   - Só responda ao orchestrator quando ambos os checks passarem (exit 0).
 
 ## Output
 

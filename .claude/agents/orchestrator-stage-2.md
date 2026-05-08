@@ -104,13 +104,17 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Exit 1 = re-disparar writer com a violação no prompt.
 
-- **Lint destaque-min-chars (#914).** Validar que cada destaque atinge mínimo (D1≥1000, D2/D3≥900):
+- **Lint destaque-min-chars (#914) + destaque-max-chars (#964).** Validar mínimo e máximo de cada destaque (D1: 1000–1200, D2/D3: 900–1000):
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --check destaque-min-chars \
     --md data/editions/{AAMMDD}/_internal/02-draft.md
+  npx tsx scripts/lint-newsletter-md.ts \
+    --check destaque-max-chars \
+    --md data/editions/{AAMMDD}/_internal/02-draft.md
   ```
-  Exit 1 = destaque anêmico — re-disparar writer com instruction de expandir.
+  Exit 1 do min = destaque anêmico — re-disparar writer com instruction de expandir.
+  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash
