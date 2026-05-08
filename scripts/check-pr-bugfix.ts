@@ -1,5 +1,5 @@
 /**
- * check-pr-bugfix-test.ts (#970)
+ * check-pr-bugfix.ts (#970)
  *
  * Roda em GH Action `pr-checks.yml` pra cada PR. Detecta se o PR é bugfix
  * (heurística por título "fix:" / closes label `bug` / etc) e, se for,

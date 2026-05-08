@@ -1,5 +1,5 @@
 /**
- * test/check-pr-bugfix-test.test.ts (#970)
+ * test/check-pr-bugfix.test.ts (#970)
  *
  * Cobre helpers puros do guard CI #970. Não testa main() (depende de gh CLI
  * + git diff externos — testado via integração no GH Action real).
@@ -12,7 +12,7 @@ import {
   hasExceptionLabel,
   hasNewOrModifiedTest,
   justificationInBody,
-} from "../scripts/check-pr-bugfix-test.ts";
+} from "../scripts/check-pr-bugfix.ts";
 
 describe("isBugfixPr (#970)", () => {
   it("detecta label `bug`", () => {
