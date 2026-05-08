@@ -18,6 +18,8 @@ import {
   savePrePushSnapshot,
   loadPrePushSnapshot,
   snapshotPath,
+  listVersionArchives,
+  MAX_ARCHIVES_PER_FILE,
   type DriveCache,
   type SyncResult,
 } from "../scripts/drive-sync.ts";
@@ -876,5 +878,78 @@ describe("snapshot helpers (#963)", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+describe("listVersionArchives (#998)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let originalCreds: string | null;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalCreds = existsSync(CREDS_PATH) ? readFileSync(CREDS_PATH, "utf8") : null;
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalCreds === null) {
+      try { unlinkSync(CREDS_PATH); } catch { /* ignore */ }
+    } else {
+      writeFileSync(CREDS_PATH, originalCreds, "utf8");
+    }
+  });
+
+  it("lista e ordena archives .vN ascendentes (extension MD)", async () => {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/files?q=")) {
+        return makeDriveResponse({
+          files: [
+            { id: "a3", name: "02-reviewed.v3.md" },
+            { id: "a1", name: "02-reviewed.v1.md" },
+            { id: "a2", name: "02-reviewed.v2.md" },
+            // ruido: arquivo que NÃO bate o padrão
+            { id: "noise", name: "02-reviewed.draft.md" },
+          ],
+        });
+      }
+      throw new Error("Unexpected fetch: " + url);
+    };
+    const archives = await listVersionArchives("02-reviewed", ".md", false, "parentId");
+    assert.deepEqual(
+      archives.map((a) => a.version),
+      [1, 2, 3],
+      "ordenação asc por version",
+    );
+    // ruido sem .vN é filtrado
+    assert.equal(archives.length, 3);
+  });
+
+  it("lista archives convertToDoc=true (sem extension)", async () => {
+    globalThis.fetch = async () => {
+      return makeDriveResponse({
+        files: [
+          { id: "a1", name: "02-reviewed.v1" },
+          { id: "a2", name: "02-reviewed.v2" },
+        ],
+      });
+    };
+    const archives = await listVersionArchives("02-reviewed", "", true, "parentId");
+    assert.equal(archives.length, 2);
+    assert.deepEqual(archives.map((a) => a.version), [1, 2]);
+  });
+
+  it("retorna [] quando não há archives", async () => {
+    globalThis.fetch = async () => makeDriveResponse({ files: [] });
+    const archives = await listVersionArchives("02-reviewed", ".md", false, "parentId");
+    assert.deepEqual(archives, []);
+  });
+});
+
+describe("MAX_ARCHIVES_PER_FILE (#998)", () => {
+  it("default = 3 (compromisso histórico vs pasta limpa)", () => {
+    assert.equal(MAX_ARCHIVES_PER_FILE, 3);
   });
 });
