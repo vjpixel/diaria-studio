@@ -562,8 +562,14 @@ export function renderEaiBlock(editionDir: string): string {
     // newsletter. readEiaAnswer já cobre frontmatter como nível 3, então não
     // há fallback adicional necessário (#939: extractEaiAnswer in-memory
     // duplicava trabalho).
+    // #957: redundante listar A=ia, B=real porque sempre tem 1 IA + 1 real.
+    // Dizer só qual é a IA — a outra fica implícita como real.
     const gabarito = readEiaAnswer(editionDir);
-    const gabaritoLine = gabarito ? `\n> Gabarito: **A = ${gabarito.A}**, **B = ${gabarito.B}**\n` : "";
+    let gabaritoLine = "";
+    if (gabarito) {
+      const aiSide = gabarito.A === "ia" ? "A" : gabarito.B === "ia" ? "B" : null;
+      gabaritoLine = aiSide ? `\n> Gabarito: **${aiSide} é a IA**\n` : "";
+    }
 
     return `\n${separator}\n\n## É IA?\n\n${creditLine}\n${gabaritoLine}\n${separator}\n`;
   }
