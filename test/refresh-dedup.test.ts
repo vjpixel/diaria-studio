@@ -15,6 +15,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  mkdirSync,
   writeFileSync,
   readFileSync,
   existsSync,
@@ -24,6 +25,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   refreshDedup,
+  autoStampPublishedJson,
+  publishedAtToEditionDir,
   type RefreshConfig,
 } from "../scripts/refresh-dedup.ts";
 
@@ -289,5 +292,119 @@ describe("refresh-dedup.ts (#895)", () => {
     assert.ok(md.includes("Edição antiga"));
     assert.ok(md.includes("Edição nova"));
     assert.ok(md.includes("https://example.com/nova-url"));
+  });
+});
+
+describe("publishedAtToEditionDir (#978)", () => {
+  it("converte ISO UTC pra AAMMDD", () => {
+    assert.equal(publishedAtToEditionDir("2026-05-08T08:00:00Z"), "260508");
+    assert.equal(publishedAtToEditionDir("2026-12-31T23:59:59Z"), "261231");
+  });
+
+  it("retorna null para input malformado", () => {
+    assert.equal(publishedAtToEditionDir(""), null);
+    assert.equal(publishedAtToEditionDir("not-a-date"), null);
+  });
+});
+
+describe("autoStampPublishedJson (#978)", () => {
+  it("cria 05-published.json com inferred_from_beehiiv quando ausente", () => {
+    const root = mkdtempSync(join(tmpdir(), "auto-stamp-create-"));
+    try {
+      mkdirSync(join(root, "260508"), { recursive: true });
+      const post = {
+        id: "post_abc",
+        title: "Edição teste",
+        web_url: "https://diaria.beehiiv.com/p/teste",
+        published_at: "2026-05-08T08:00:00Z",
+      };
+      const wrote = autoStampPublishedJson(root, post);
+      assert.equal(wrote, true);
+      const path = join(root, "260508", "_internal", "05-published.json");
+      assert.ok(existsSync(path));
+      const json = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(json.status, "published");
+      assert.equal(json.post_id, "post_abc");
+      assert.equal(json.published_at, "2026-05-08T08:00:00Z");
+      assert.equal(json.inferred_from_beehiiv, true);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("atualiza status: 'scheduled' → 'published' preservando outros campos", () => {
+    const root = mkdtempSync(join(tmpdir(), "auto-stamp-update-"));
+    try {
+      const editionDir = join(root, "260508");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const path = join(internalDir, "05-published.json");
+      writeFileSync(
+        path,
+        JSON.stringify({
+          status: "scheduled",
+          template_used: "Default",
+          test_email_sent_to: "x@y.com",
+          review_completed: true,
+        }),
+      );
+
+      const post = {
+        id: "post_abc",
+        title: "Edição teste",
+        web_url: "https://diaria.beehiiv.com/p/teste",
+        published_at: "2026-05-08T08:00:00Z",
+      };
+      const wrote = autoStampPublishedJson(root, post);
+      assert.equal(wrote, true);
+      const json = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(json.status, "published");
+      assert.equal(json.template_used, "Default", "preserva metadata existente");
+      assert.equal(json.review_completed, true);
+      assert.equal(json.inferred_from_beehiiv, true);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("idempotente: status já 'published' = no-op", () => {
+    const root = mkdtempSync(join(tmpdir(), "auto-stamp-idem-"));
+    try {
+      const editionDir = join(root, "260508");
+      const internalDir = join(editionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const path = join(internalDir, "05-published.json");
+      writeFileSync(
+        path,
+        JSON.stringify({
+          status: "published",
+          published_at: "2026-05-08T08:00:00Z",
+        }),
+      );
+
+      const post = {
+        id: "post_abc",
+        published_at: "2026-05-08T08:00:00Z",
+      };
+      const wrote = autoStampPublishedJson(root, post);
+      assert.equal(wrote, false, "no-op quando já published");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("não cria edição local que não existe (evita stamp pra agendamentos futuros)", () => {
+    const root = mkdtempSync(join(tmpdir(), "auto-stamp-future-"));
+    try {
+      const post = {
+        id: "post_future",
+        published_at: "2026-12-25T08:00:00Z",
+      };
+      const wrote = autoStampPublishedJson(root, post);
+      assert.equal(wrote, false);
+      assert.equal(existsSync(join(root, "261225")), false);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
   });
 });

@@ -41,7 +41,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -230,6 +230,84 @@ function readJsonOrNull<T>(path: string): T | null {
   }
 }
 
+/**
+ * #978: Converte ISO timestamp pra AAMMDD da edição (UTC).
+ *
+ * Edições publicam por padrão na manhã do dia indicado pelo `publish_date`
+ * (Beehiiv). Não tentamos timezone-shift — UTC é suficiente pro mapping
+ * data→edition_dir.
+ */
+export function publishedAtToEditionDir(isoUtc: string): string | null {
+  const m = isoUtc.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const yy = m[1].slice(2);
+  return `${yy}${m[2]}${m[3]}`;
+}
+
+interface PublishedJson {
+  status?: string;
+  published_at?: string;
+  post_id?: string;
+  post_url?: string;
+  inferred_from_beehiiv?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * #978: auto-stamp `05-published.json` quando refresh-dedup confirma que um
+ * post foi publicado no Beehiiv. Idempotente — só atualiza quando status
+ * != "published" (pra não sobrescrever metadata de rascunho/agendamento que
+ * o agent gravou). Nunca cria diretório novo se a edição não existir local
+ * (evita stamp pra edições futuras do scheduling Beehiiv).
+ *
+ * Caso 260507 publicada manualmente sem 05-published.json: stampa o arquivo
+ * com `inferred_from_beehiiv: true`. Caso 260508 com `status: "scheduled"`
+ * pré-publicação: deixa intocado (status correto refletindo agendamento).
+ *
+ * Retorna true quando arquivo foi escrito/atualizado.
+ */
+export function autoStampPublishedJson(
+  editionsRoot: string,
+  post: Post,
+): boolean {
+  const editionDir = publishedAtToEditionDir(post.published_at);
+  if (!editionDir) return false;
+  const dirPath = resolve(editionsRoot, editionDir);
+  if (!existsSync(dirPath)) return false; // sem edition local — não criar
+  const internalDir = resolve(dirPath, "_internal");
+  const targetPath = resolve(internalDir, "05-published.json");
+
+  let existing: PublishedJson = {};
+  if (existsSync(targetPath)) {
+    try {
+      existing = JSON.parse(readFileSync(targetPath, "utf8"));
+    } catch {
+      existing = {};
+    }
+  }
+  // Status "published" já refletido — no-op pra evitar re-write desnecessário.
+  if (existing.status === "published") return false;
+
+  const updated: PublishedJson = {
+    ...existing,
+    status: "published",
+    published_at: post.published_at,
+    post_id: post.id,
+    post_url: post.web_url ?? existing.post_url,
+    inferred_from_beehiiv: true,
+  };
+
+  try {
+    mkdirSync(internalDir, { recursive: true });
+    const tmp = targetPath + ".tmp";
+    writeFileSync(tmp, JSON.stringify(updated, null, 2), "utf8");
+    renameSync(tmp, targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function mergeById(existing: Post[], incoming: Post[]): Post[] {
   const byId = new Map<string, Post>();
   for (const p of existing) byId.set(p.id, p);
@@ -273,6 +351,10 @@ export interface MainOpts {
   mdPath?: string;
   /** Override config carregada — se passado, pula `loadConfig()`. */
   configOverride?: RefreshConfig;
+  /** #978: override do root de editions (default: data/editions). Tests injetam tmp. */
+  editionsRoot?: string;
+  /** #978: pular auto-stamp de 05-published.json (default: ativo). */
+  noAutoStamp?: boolean;
 }
 
 export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
@@ -353,6 +435,22 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
     }
   }
 
+  // #978: auto-stamp 05-published.json pra cada edição confirmada. Faz com
+  // que Stage 0 da próxima edição não precise re-investigar status de Stage 4
+  // anterior. Idempotente; só toca edições que existem localmente.
+  if (!opts.dryRun && !opts.noAutoStamp) {
+    const editionsRoot = opts.editionsRoot ?? resolve(ROOT, "data/editions");
+    let stamped = 0;
+    for (const post of truncated) {
+      if (autoStampPublishedJson(editionsRoot, post)) stamped++;
+    }
+    if (stamped > 0) {
+      process.stderr.write(
+        `[refresh-dedup] Auto-stamped 05-published.json pra ${stamped} edição(ões) (#978)\n`,
+      );
+    }
+  }
+
   // Persistir raw JSON + regen MD. **Sempre** ambos — mesmo com 0 novos posts,
   // pra cobrir o caso de `git pull` ter resetado o tracked MD enquanto o raw
   // (gitignored) está atualizado (#162, #895).
@@ -390,6 +488,7 @@ async function main() {
   const opts: MainOpts = {
     dryRun: argv.includes("--dry-run"),
     resolveTracking: !argv.includes("--no-resolve-tracking"),
+    noAutoStamp: argv.includes("--no-auto-stamp"),
   };
   const result = await refreshDedup(opts);
   console.log(JSON.stringify(result));
