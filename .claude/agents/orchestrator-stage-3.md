@@ -80,6 +80,11 @@ O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? j
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   ```
   Anotar em `sync_results[3]`; ignorar falhas.
+- **Pre-gate invariants (#1007 Fase 1).** Validar que as 6 imagens existem e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
+  ```bash
+  npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/
+  ```
+  Exit 1 = bloquear gate até fix (regenerar imagem ausente / corrigir prompt). Violations explicam qual destaque/arquivo precisa atenção.
 - **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
 - **Escrever sentinel de conclusão do Stage 3 (após aprovação do gate):**
   ```bash

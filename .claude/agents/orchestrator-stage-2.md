@@ -239,6 +239,12 @@ Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comm
     --action "abrir 02-reviewed.md, resolver markers <<<<<<<, e re-rodar drive-sync push"
   ```
 
+- **Pre-gate invariants (#1007 Fase 1).** Antes do gate, rodar lints como invariantes (defense-in-depth — lints individuais já rodaram, mas registry centraliza):
+  ```bash
+  npx tsx scripts/check-invariants.ts --stage 2 --edition-dir data/editions/{AAMMDD}/
+  ```
+  Exit 1 = re-disparar writer ou bloquear gate até fix manual. Violations são logadas com `source_issue` pra rastreabilidade.
+
 - **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:
   ```bash
   npx tsx scripts/measure-highlights.ts data/editions/{AAMMDD}/02-reviewed.md

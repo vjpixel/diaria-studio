@@ -13,6 +13,10 @@
  *   # Modo per-edition (rodado pelo orchestrator antes de cada gate):
  *   npx tsx scripts/check-invariants.ts --edition-dir data/editions/260508
  *
+ *   # Modo per-stage (rodado pelo orchestrator pré-gate de cada stage; #1007):
+ *   npx tsx scripts/check-invariants.ts --stage 1 --edition-dir data/editions/260508
+ *   npx tsx scripts/check-invariants.ts --stage 0  # Stage 0 = global, sem editionDir
+ *
  *   # Modo static (rodado em CI ou pre-commit; valida regras estruturais):
  *   npx tsx scripts/check-invariants.ts --static
  *
@@ -31,6 +35,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getRulesForStage } from "./lib/invariant-checks/index.ts";
+import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -166,11 +172,17 @@ async function main(): Promise<void> {
   const isStatic = !!args.static;
   const editionDir = args["edition-dir"] as string | undefined;
   const onlyRule = args.rule as string | undefined;
+  const stageRaw = args.stage;
+  const stage =
+    typeof stageRaw === "string" && /^[0-4]$/.test(stageRaw)
+      ? (Number(stageRaw) as 0 | 1 | 2 | 3 | 4)
+      : undefined;
 
-  if (!isStatic && !editionDir) {
+  if (!isStatic && !editionDir && stage === undefined) {
     console.error(
       "Uso: check-invariants.ts --static [--rule <id>]\n" +
-        "  ou: check-invariants.ts --edition-dir <path> [--rule <id>]",
+        "  ou: check-invariants.ts --edition-dir <path> [--rule <id>]\n" +
+        "  ou: check-invariants.ts --stage <0-4> [--edition-dir <path>] [--rule <id>]",
     );
     process.exit(2);
   }
@@ -178,7 +190,31 @@ async function main(): Promise<void> {
   const violations: Violation[] = [];
   const rulesRun: string[] = [];
 
-  if (isStatic) {
+  if (stage !== undefined) {
+    // #1007: per-stage rules. Stage 0 não precisa editionDir.
+    if (stage > 0 && !editionDir) {
+      console.error(
+        `Stage ${stage} requer --edition-dir <path>. Apenas Stage 0 pode rodar sem.`,
+      );
+      process.exit(2);
+    }
+    const editionDirAbs = editionDir ? resolve(ROOT, editionDir) : "";
+    for (const rule of getRulesForStage(stage)) {
+      if (onlyRule && rule.id !== onlyRule) continue;
+      rulesRun.push(rule.id);
+      const ruleViolations: InvariantViolation[] = rule.run(editionDirAbs);
+      for (const v of ruleViolations) {
+        violations.push({
+          rule: v.rule,
+          message: v.message,
+          source_issue: v.source_issue,
+          severity: v.severity,
+          file: v.file,
+          line: v.line,
+        });
+      }
+    }
+  } else if (isStatic) {
     for (const rule of STATIC_RULES) {
       if (onlyRule && rule.id !== onlyRule) continue;
       rulesRun.push(rule.id);

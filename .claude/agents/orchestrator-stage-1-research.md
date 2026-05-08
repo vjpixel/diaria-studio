@@ -407,6 +407,16 @@ npx tsx scripts/validate-stage-1-output.ts \
 
 Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832). Pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill `/diaria-1-pesquisa` isolado tem (#828).
 
+### 1w-quat. Pre-gate invariants (#1007 Fase 1)
+
+Validar shape de `01-categorized.md` + `_internal/01-categorized.json` (template `01-approved.json` se já aplicado pelo `validate-stage-1-output`):
+
+```bash
+npx tsx scripts/check-invariants.ts --stage 1 --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit 1 = violations bloqueiam o gate (ex: `01-categorized.md` sem seção "## É IA?"). Apresentar violations ao editor; ele decide se re-roda Stage 1 ou força bypass com `--no-gates`.
+
 ### 1w-ter. Log payload sizes (#891 — observability)
 
 Antes do gate, registrar tamanho de cada JSON intermediário em `_internal/`. Visibilidade pra investigar context overflow (#891):

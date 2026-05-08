@@ -431,6 +431,16 @@ Logar via `scripts/log-event.ts` com `level: info` + `details: summary`.
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").
 
+### 0z. Pre-flight invariants (#1007 Fase 1)
+
+Última verificação antes de gastar tokens na pesquisa. Valida env vars críticas (BEEHIIV_API_KEY, Drive credentials, past-editions-raw shape):
+
+```bash
+npx tsx scripts/check-invariants.ts --stage 0
+```
+
+Exit 1 = abort imediato com violations no stderr. Editor corrige (env, credentials) e re-roda. Esses checks são baratos (<1s) e evitam falhas tardias caras (Stage 4 sem `LINKEDIN_WORKER_URL`, etc — verificado novamente lá).
+
 ---
 
 ## Stage 1 — Research

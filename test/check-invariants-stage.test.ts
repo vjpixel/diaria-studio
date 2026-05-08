@@ -1,0 +1,333 @@
+/**
+ * test/check-invariants-stage.test.ts (#1007 Fase 1)
+ *
+ * Cobre o modo `--stage N` do check-invariants.ts e cada uma das regras
+ * registradas em scripts/lib/invariant-checks/. Cada teste constrói uma
+ * edição-fixture mínima e dispara violations específicas.
+ */
+
+import { describe, it, before, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import {
+  ALL_INVARIANT_RULES,
+  getRulesForStage,
+} from "../scripts/lib/invariant-checks/index.ts";
+import { STAGE_0_RULES } from "../scripts/lib/invariant-checks/stage-0.ts";
+import {
+  checkApprovedHas3Highlights,
+  checkCategorizedHasEiaSection,
+} from "../scripts/lib/invariant-checks/stage-1.ts";
+import {
+  checkAllImagesExist,
+  checkPromptsClean,
+  checkEiaAnswerResolved,
+} from "../scripts/lib/invariant-checks/stage-3.ts";
+import {
+  checkPublicImagesPopulated,
+  checkLinkedinWorkerUrlSet,
+  checkFbPageIdSet,
+} from "../scripts/lib/invariant-checks/stage-4.ts";
+
+const PROJECT_ROOT = resolve(import.meta.dirname, "..");
+
+function makeFixtureEdition(): string {
+  const dir = mkdtempSync(join(tmpdir(), "diaria-invariants-"));
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  return dir;
+}
+
+describe("invariant-checks registry (#1007)", () => {
+  it("expõe regras nos stages 0-4", () => {
+    for (let stage = 0; stage <= 4; stage++) {
+      const rules = getRulesForStage(stage as 0 | 1 | 2 | 3 | 4);
+      assert.ok(rules.length > 0, `Stage ${stage} sem regras`);
+      for (const rule of rules) {
+        assert.equal(rule.stage, stage);
+        assert.ok(typeof rule.run === "function");
+        assert.ok(rule.source_issue.startsWith("#"));
+      }
+    }
+  });
+
+  it("ALL_INVARIANT_RULES tem ≥12 regras", () => {
+    assert.ok(
+      ALL_INVARIANT_RULES.length >= 12,
+      `Esperava ≥12 regras, achei ${ALL_INVARIANT_RULES.length}`,
+    );
+  });
+});
+
+describe("Stage 0 invariants", () => {
+  it("beehiiv-key-set falha quando BEEHIIV_API_KEY ausente", () => {
+    const original = process.env.BEEHIIV_API_KEY;
+    delete process.env.BEEHIIV_API_KEY;
+    try {
+      const rule = STAGE_0_RULES.find((r) => r.id === "beehiiv-key-set")!;
+      const v = rule.run("");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /BEEHIIV_API_KEY/);
+    } finally {
+      if (original !== undefined) process.env.BEEHIIV_API_KEY = original;
+    }
+  });
+
+  it("beehiiv-key-set passa quando setada", () => {
+    process.env.BEEHIIV_API_KEY = "test-key";
+    try {
+      const rule = STAGE_0_RULES.find((r) => r.id === "beehiiv-key-set")!;
+      assert.equal(rule.run("").length, 0);
+    } finally {
+      delete process.env.BEEHIIV_API_KEY;
+    }
+  });
+});
+
+describe("Stage 1 invariants", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("approved-has-3-highlights falha quando arquivo ausente", () => {
+    const v = checkApprovedHas3Highlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "approved-exists");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("approved-has-3-highlights falha com 2 highlights", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}] }),
+    );
+    const v = checkApprovedHas3Highlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "approved-has-3-highlights");
+    assert.match(v[0].message, /2 highlights/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("approved-has-3-highlights passa com 3", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}, {}], coverage: { line: "x" } }),
+    );
+    const v = checkApprovedHas3Highlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("categorized-has-eia-section falha sem '## É IA?'", () => {
+    writeFileSync(join(fixture, "01-categorized.md"), "# foo\n\n## bar\n");
+    const v = checkCategorizedHasEiaSection(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "categorized-has-eia-section");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("categorized-has-eia-section passa com seção presente", () => {
+    writeFileSync(join(fixture, "01-categorized.md"), "## É IA?\n\nfoto X\n");
+    const v = checkCategorizedHasEiaSection(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("Stage 3 invariants", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("all-images-exist falha quando todas ausentes", () => {
+    const v = checkAllImagesExist(fixture);
+    assert.equal(v.length, 6); // 6 imagens obrigatórias
+    for (const violation of v) {
+      assert.equal(violation.severity, "error");
+    }
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("prompts-clean detecta '1024x1024'", () => {
+    writeFileSync(
+      join(fixture, "04-d1-sd-prompt.json"),
+      JSON.stringify({ prompt: "Van Gogh impasto, 1024x1024 resolution" }),
+    );
+    const v = checkPromptsClean(fixture);
+    assert.ok(v.some((x) => x.rule === "prompts-no-pixels"));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("prompts-clean detecta 'Noite Estrelada'", () => {
+    writeFileSync(
+      join(fixture, "04-d1-sd-prompt.json"),
+      JSON.stringify({ prompt: "estilo Noite Estrelada Van Gogh" }),
+    );
+    const v = checkPromptsClean(fixture);
+    assert.ok(v.some((x) => x.rule === "prompts-no-noite-estrelada"));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("prompts-clean passa com prompt limpo", () => {
+    writeFileSync(
+      join(fixture, "04-d1-sd-prompt.json"),
+      JSON.stringify({ prompt: "Van Gogh impasto style, 2:1 aspect ratio" }),
+    );
+    const v = checkPromptsClean(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("eia-answer-resolved falha sem frontmatter", () => {
+    writeFileSync(join(fixture, "01-eia.md"), "# É IA?\n\nfoto X\n");
+    const v = checkEiaAnswerResolved(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "eia-answer-resolved");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("eia-answer-resolved passa com 'eia_answer: A'", () => {
+    writeFileSync(
+      join(fixture, "01-eia.md"),
+      "---\neia_answer: A\n---\n\n# É IA?\n",
+    );
+    const v = checkEiaAnswerResolved(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("Stage 4 invariants", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("public-images-populated falha quando arquivo ausente", () => {
+    const v = checkPublicImagesPopulated(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "public-images-exists");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("public-images-populated falha quando d1.rectangle_url null", () => {
+    writeFileSync(
+      join(fixture, "06-public-images.json"),
+      JSON.stringify({
+        d1: { square_url: "https://x/d1.jpg" },
+        d2: { square_url: "https://x/d2.jpg" },
+        d3: { square_url: "https://x/d3.jpg" },
+      }),
+    );
+    const v = checkPublicImagesPopulated(fixture);
+    assert.ok(v.some((x) => x.message.includes("d1.rectangle_url")));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("public-images-populated passa com tudo preenchido", () => {
+    writeFileSync(
+      join(fixture, "06-public-images.json"),
+      JSON.stringify({
+        d1: {
+          square_url: "https://x/d1-1x1.jpg",
+          rectangle_url: "https://x/d1-2x1.jpg",
+        },
+        d2: { square_url: "https://x/d2.jpg" },
+        d3: { square_url: "https://x/d3.jpg" },
+      }),
+    );
+    const v = checkPublicImagesPopulated(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("linkedin-worker-url-set falha quando ausente", () => {
+    const original = process.env.LINKEDIN_WORKER_URL;
+    delete process.env.LINKEDIN_WORKER_URL;
+    try {
+      const v = checkLinkedinWorkerUrlSet();
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "linkedin-worker-url-set");
+    } finally {
+      if (original !== undefined) process.env.LINKEDIN_WORKER_URL = original;
+    }
+  });
+
+  it("linkedin-worker-url-set falha quando não-HTTPS", () => {
+    process.env.LINKEDIN_WORKER_URL = "http://insecure.example/fire";
+    try {
+      const v = checkLinkedinWorkerUrlSet();
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "linkedin-worker-url-https");
+    } finally {
+      delete process.env.LINKEDIN_WORKER_URL;
+    }
+  });
+
+  it("fb-page-id-set falha quando ausente", () => {
+    const original = process.env.FB_PAGE_ID;
+    delete process.env.FB_PAGE_ID;
+    try {
+      const v = checkFbPageIdSet();
+      assert.equal(v.length, 1);
+    } finally {
+      if (original !== undefined) process.env.FB_PAGE_ID = original;
+    }
+  });
+});
+
+describe("CLI --stage N", () => {
+  function runCli(args: string[], env: Record<string, string> = {}) {
+    const scriptPath = join(PROJECT_ROOT, "scripts", "check-invariants.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, ...args],
+      {
+        cwd: PROJECT_ROOT,
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+      },
+    );
+  }
+
+  it("--stage 0 sem env vars = exit 1 com violations", () => {
+    const r = runCli(["--stage", "0"], { BEEHIIV_API_KEY: "" });
+    // exit 1 (algum env ausente) é o caso normal num ambiente vanilla
+    const out = JSON.parse(r.stdout);
+    assert.ok(Array.isArray(out.violations));
+    assert.ok(out.rules_run.length > 0);
+  });
+
+  it("--stage 1 sem --edition-dir = exit 2", () => {
+    const r = runCli(["--stage", "1"]);
+    assert.equal(r.status, 2);
+  });
+
+  it("--stage 5 (inválido) cai pra default = exit 2", () => {
+    const r = runCli(["--stage", "5"]);
+    // stage=5 não passa o regex /^[0-4]$/, então fica undefined →
+    // sem editionDir e sem static, exit 2
+    assert.equal(r.status, 2);
+  });
+
+  it("--stage 1 com edition-dir tmp = exit 1 (todos ausentes)", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      const r = runCli(["--stage", "1", "--edition-dir", fixture]);
+      assert.equal(r.status, 1, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.passed, false);
+      assert.ok(out.violations.length > 0);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
