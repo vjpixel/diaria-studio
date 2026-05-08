@@ -74,6 +74,17 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
       resolve(editionDir, "03-social.md"),
       "# Facebook\n\n## d1\nFB d1.\n\n## d2\nFB d2.\n\n## d3\nFB d3.\n\n# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
+    // #999: Image cache populado pra evitar abort do fail-fast novo.
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://example.com/d1.jpg" },
+          d2: { url: "https://example.com/d2.jpg" },
+          d3: { url: "https://example.com/d3.jpg" },
+        },
+      }),
+    );
 
     const result = runCli(
       ["--edition-dir", editionDir, "--schedule"],
@@ -91,5 +102,85 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
     assert.notEqual(result.exitCode, 2, `não deveria abortar com exit 2. stderr=${result.stderr}`);
     // E a mensagem específica não deve aparecer
     assert.doesNotMatch(result.stderr, /--schedule passado mas Cloudflare Worker não está configurado/);
+  });
+});
+
+describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausente em --schedule", () => {
+  function runCli(args: string[], extraEnv: Record<string, string> = {}) {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const scriptPath = resolve(projectRoot, "scripts", "publish-linkedin.ts");
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      MAKE_LINKEDIN_WEBHOOK_URL: "https://hook.example.com/test",
+      DIARIA_LINKEDIN_CRON_URL: "https://test.workers.dev",
+      DIARIA_LINKEDIN_CRON_TOKEN: "test-token",
+      ...extraEnv,
+    };
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, ...args],
+      { cwd: projectRoot, encoding: "utf8", env },
+    );
+    return {
+      exitCode: result.status ?? -1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  }
+
+  it("aborta com exit 2 quando 06-public-images.json não existe + --schedule", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "no-img-cache-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+
+    const result = runCli(["--edition-dir", editionDir, "--schedule"]);
+    rmSync(tmp, { recursive: true, force: true });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /06-public-images\.json não tem URL pra todos os destaques/);
+    assert.match(result.stderr, /upload-images-public\.ts/);
+  });
+
+  it("aborta com exit 2 quando 06-public-images.json existe mas está faltando d2 url", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "partial-img-cache-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://example.com/d1.jpg" },
+          d3: { url: "https://example.com/d3.jpg" },
+        },
+      }),
+    );
+
+    const result = runCli(["--edition-dir", editionDir, "--schedule"]);
+    rmSync(tmp, { recursive: true, force: true });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /06-public-images\.json não tem URL/);
+  });
+
+  it("NÃO aborta quando --no-schedule (route=make_now permite post sem imagem)", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "no-schedule-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+
+    // SEM --schedule. Mesmo sem imagens, fail-fast NÃO dispara.
+    const result = runCli(["--edition-dir", editionDir]);
+    rmSync(tmp, { recursive: true, force: true });
+    assert.notEqual(result.exitCode, 2, `não deveria fail-fast em modo make_now. stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /06-public-images\.json não tem URL/);
   });
 });

@@ -94,6 +94,26 @@ Default se não responder = manual em tudo.
 Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`.
 Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Etapa 4.
 
+### 4c-pre. Upload de imagens públicas (#999 fix — pré-requisito do dispatch)
+
+**ANTES** do dispatch paralelo, se LinkedIn ou Facebook automático foram autorizados em 4b, rodar upload-images-public.ts pra popular o cache `06-public-images.json` com URLs Drive públicas:
+
+```bash
+npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
+```
+
+Imagens publicadas viram payload `image_url` no webhook Make.com (LinkedIn) e attachment do Facebook Graph API. Sem isso, Make rejeita com `BundleValidationError: Missing value of required parameter 'url'` (caso real edição 260508 — image_url=null causou 5 retries → DLQ).
+
+**Fail-loud:** se exit != 0, **halt** Stage 4 com banner:
+```bash
+npx tsx scripts/render-halt-banner.ts \
+  --stage "4 — Publicação" \
+  --reason "upload-images-public.ts falhou: imagens não estão no Drive como pública" \
+  --action "verifique credenciais Google + tente novamente, ou pule LinkedIn/FB automático em 4b"
+```
+
+Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b (sem dispatch automático = sem necessidade de URLs públicas).
+
 ### 4c. Dispatch paralelo (UMA mensagem, 3 chamadas)
 
 **Só dispatchar os canais que o editor autorizou em 4b.** Canais manuais ficam com status `pending_manual`.
