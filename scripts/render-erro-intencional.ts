@@ -28,7 +28,7 @@
  * Stdout: JSON `{ inserted, prev_edition, prev_revealed, current_has_intentional }`.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -65,6 +65,63 @@ export function findPreviousIntentionalError(
     .filter((e) => e.is_feature && typeof e.edition === "string" && e.edition < currentEdition)
     .sort((a, b) => (a.edition < b.edition ? 1 : -1));
   return candidates[0] ?? null;
+}
+
+/**
+ * Pure (#961): extrai o erro intencional declarado na linha "Nessa edição,
+ * escrevi 'X' onde deveria ser 'Y'." de um `02-reviewed.md` publicado.
+ *
+ * Aceita aspas duplas (caso novo) e simples (caso histórico). Caso a linha
+ * não exista, retorna null — o caller decide o fallback (JSONL).
+ */
+export function extractIntentionalErrorFromMd(
+  md: string,
+): { detail: string; gabarito: string } | null {
+  const re = /Nessa\s+edi[çc][ãa]o,?\s+escrevi\s+["']([^"']+?)["']\s+onde\s+deveria\s+ser\s+["']([^"']+?)["']/i;
+  const m = md.match(re);
+  if (!m) return null;
+  return { detail: m[1], gabarito: m[2] };
+}
+
+/**
+ * Pure (#961): dado o root das edições e a edição corrente, encontra a edição
+ * anterior mais recente que tenha `02-reviewed.md` com a linha "Nessa edição,
+ * escrevi 'X' onde deveria ser 'Y'.". Retorna `{ edition, detail, gabarito }`
+ * ou null.
+ *
+ * Critério de "anterior": ordem lexicográfica de AAMMDD que ignora sufixos
+ * (`-backup-…`). Itera pra trás até achar uma que tenha a declaração — assim
+ * uma edição anterior sem declaração não bloqueia a próxima.
+ */
+export function findPreviousIntentionalErrorFromMd(
+  editionsRoot: string,
+  currentEdition: string,
+): { edition: string; detail: string; gabarito: string } | null {
+  if (!existsSync(editionsRoot)) return null;
+  let entries: string[];
+  try {
+    entries = readdirSync(editionsRoot);
+  } catch {
+    return null;
+  }
+  const candidates = entries
+    .filter((d) => /^\d{6}$/.test(d) && d < currentEdition)
+    .sort((a, b) => (a < b ? 1 : -1));
+  for (const editionDir of candidates) {
+    const mdPath = join(editionsRoot, editionDir, "02-reviewed.md");
+    if (!existsSync(mdPath)) continue;
+    let md: string;
+    try {
+      md = readFileSync(mdPath, "utf8");
+    } catch {
+      continue;
+    }
+    const extracted = extractIntentionalErrorFromMd(md);
+    if (extracted) {
+      return { edition: editionDir, ...extracted };
+    }
+  }
+  return null;
 }
 
 /**
@@ -263,9 +320,38 @@ function main(): void {
   const errorsPath = args.errors
     ? resolve(ROOT, args.errors)
     : join(ROOT, "data", "intentional-errors.jsonl");
-  const errors = loadIntentionalErrors(errorsPath);
-  const prev = findPreviousIntentionalError(errors, args.edition);
-  const reveal = prev ? composeRevealText(prev) : null;
+
+  // #961: source of truth primária = "Nessa edição..." declarado pelo editor
+  // no 02-reviewed.md publicado da edição anterior. JSONL fica como fallback
+  // pra quando o MD anterior não tem a linha (ex: edição muito antiga).
+  const editionsRoot = args["editions-dir"]
+    ? resolve(ROOT, args["editions-dir"])
+    : join(ROOT, "data", "editions");
+  const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
+
+  let prev: IntentionalError | null = null;
+  let reveal: string | null = null;
+  let source: "md" | "jsonl" | null = null;
+
+  if (fromMd) {
+    source = "md";
+    prev = {
+      edition: fromMd.edition,
+      detail: fromMd.detail,
+      gabarito: fromMd.gabarito,
+      is_feature: true,
+      error_type: "editor_declared",
+      source: "md_extract",
+    } as IntentionalError;
+    reveal = composeRevealText(prev);
+  } else {
+    const errors = loadIntentionalErrors(errorsPath);
+    prev = findPreviousIntentionalError(errors, args.edition);
+    if (prev) {
+      source = "jsonl";
+      reveal = composeRevealText(prev);
+    }
+  }
 
   const md = readFileSync(mdPath, "utf8");
   const { md: updated, action } = insertOrUpdateSection(md, reveal);
@@ -277,6 +363,7 @@ function main(): void {
     action,
     prev_edition: prev?.edition ?? null,
     prev_revealed: !!reveal,
+    prev_source: source,
     current_has_intentional: currentHasIntentionalErrorFlag(updated),
     path: mdPath,
   };

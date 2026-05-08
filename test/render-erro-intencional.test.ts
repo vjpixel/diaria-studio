@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import {
   findPreviousIntentionalError,
   composeRevealText,
@@ -19,6 +20,8 @@ import {
   insertOrUpdateSection,
   currentHasIntentionalErrorFlag,
   boldQuotedStrings,
+  extractIntentionalErrorFromMd,
+  findPreviousIntentionalErrorFromMd,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 
@@ -258,6 +261,126 @@ describe("currentHasIntentionalErrorFlag (#911)", () => {
   it("retorna false quando sem frontmatter", () => {
     const md = "Apenas body sem frontmatter.";
     assert.equal(currentHasIntentionalErrorFlag(md), false);
+  });
+});
+
+describe("extractIntentionalErrorFromMd (#961)", () => {
+  it("extrai detail/gabarito da linha 'Nessa edição, escrevi \"X\" onde deveria ser \"Y\"' (aspas duplas)", () => {
+    const md = `Texto.\n\nNessa edição, escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16".\n\nMais texto.`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.deepEqual(r, { detail: "iPhone 5 e 6", gabarito: "iPhone 15 e 16" });
+  });
+
+  it("extrai com aspas simples (caso histórico)", () => {
+    const md = `Nessa edição, escrevi 'V4' onde deveria ser 'V8'.`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.deepEqual(r, { detail: "V4", gabarito: "V8" });
+  });
+
+  it("retorna null quando linha não existe", () => {
+    const md = `Nada de erro intencional aqui.`;
+    assert.equal(extractIntentionalErrorFromMd(md), null);
+  });
+
+  it("retorna null quando linha está malformada", () => {
+    const md = `Nessa edição, escrevi "X" mas esqueci o resto.`;
+    assert.equal(extractIntentionalErrorFromMd(md), null);
+  });
+});
+
+describe("findPreviousIntentionalErrorFromMd (#961)", () => {
+  it("encontra a edição anterior mais recente com declaração (pulando vazias)", () => {
+    const root = mkdtempSync(join(tmpdir(), "preheat-erro-"));
+    try {
+      mkdirSync(join(root, "260505"), { recursive: true });
+      mkdirSync(join(root, "260506"), { recursive: true });
+      mkdirSync(join(root, "260507"), { recursive: true });
+      writeFileSync(
+        join(root, "260505", "02-reviewed.md"),
+        `Nessa edição, escrevi "antigo" onde deveria ser "novo".`,
+        "utf8",
+      );
+      writeFileSync(
+        join(root, "260506", "02-reviewed.md"),
+        `Nessa edição, escrevi "X" onde deveria ser "Y".`,
+        "utf8",
+      );
+      writeFileSync(
+        join(root, "260507", "02-reviewed.md"),
+        `Sem declaração aqui.`,
+        "utf8",
+      );
+
+      // 260507 não tem declaração — script pula e usa 260506 (próxima mais recente)
+      const r = findPreviousIntentionalErrorFromMd(root, "260508");
+      assert.equal(r?.edition, "260506");
+      assert.equal(r?.detail, "X");
+      assert.equal(r?.gabarito, "Y");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("pula edição anterior sem declaração e usa a anterior", () => {
+    const root = mkdtempSync(join(tmpdir(), "preheat-erro-skip-"));
+    try {
+      mkdirSync(join(root, "260505"), { recursive: true });
+      mkdirSync(join(root, "260506"), { recursive: true });
+      mkdirSync(join(root, "260507"), { recursive: true });
+      writeFileSync(
+        join(root, "260505", "02-reviewed.md"),
+        `Nessa edição, escrevi "X" onde deveria ser "Y".`,
+        "utf8",
+      );
+      writeFileSync(join(root, "260506", "02-reviewed.md"), `Sem declaração.`, "utf8");
+      writeFileSync(join(root, "260507", "02-reviewed.md"), `Outro sem.`, "utf8");
+
+      const r = findPreviousIntentionalErrorFromMd(root, "260508");
+      assert.deepEqual(r, { edition: "260505", detail: "X", gabarito: "Y" });
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("retorna null quando não há edições anteriores com declaração", () => {
+    const root = mkdtempSync(join(tmpdir(), "preheat-erro-empty-"));
+    try {
+      mkdirSync(join(root, "260505"), { recursive: true });
+      writeFileSync(join(root, "260505", "02-reviewed.md"), `Vazio.`, "utf8");
+      const r = findPreviousIntentionalErrorFromMd(root, "260508");
+      assert.equal(r, null);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("retorna null quando editionsRoot não existe", () => {
+    const r = findPreviousIntentionalErrorFromMd("/path/que/nao/existe", "260508");
+    assert.equal(r, null);
+  });
+
+  it("ignora edições com sufixos não-AAMMDD (backups)", () => {
+    const root = mkdtempSync(join(tmpdir(), "preheat-erro-backups-"));
+    try {
+      mkdirSync(join(root, "260507"), { recursive: true });
+      mkdirSync(join(root, "260507-backup-20260507T2352Z"), { recursive: true });
+      writeFileSync(
+        join(root, "260507", "02-reviewed.md"),
+        `Nessa edição, escrevi "A" onde deveria ser "B".`,
+        "utf8",
+      );
+      writeFileSync(
+        join(root, "260507-backup-20260507T2352Z", "02-reviewed.md"),
+        `Nessa edição, escrevi "BACKUP" onde deveria ser "WRONG".`,
+        "utf8",
+      );
+
+      const r = findPreviousIntentionalErrorFromMd(root, "260508");
+      assert.equal(r?.edition, "260507", "deve usar a versão canônica AAMMDD");
+      assert.equal(r?.detail, "A");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
   });
 });
 
