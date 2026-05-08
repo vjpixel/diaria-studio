@@ -31,6 +31,10 @@ import {
   checkLinkedinWorkerUrlSet,
   checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import {
+  checkStep4Sentinel,
+  checkRefreshDedupStamped,
+} from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 
@@ -41,9 +45,9 @@ function makeFixtureEdition(): string {
 }
 
 describe("invariant-checks registry (#1007)", () => {
-  it("expõe regras nos stages 0-4", () => {
-    for (let stage = 0; stage <= 4; stage++) {
-      const rules = getRulesForStage(stage as 0 | 1 | 2 | 3 | 4);
+  it("expõe regras nos stages 0-5", () => {
+    for (let stage = 0; stage <= 5; stage++) {
+      const rules = getRulesForStage(stage as 0 | 1 | 2 | 3 | 4 | 5);
       assert.ok(rules.length > 0, `Stage ${stage} sem regras`);
       for (const rule of rules) {
         assert.equal(rule.stage, stage);
@@ -53,10 +57,10 @@ describe("invariant-checks registry (#1007)", () => {
     }
   });
 
-  it("ALL_INVARIANT_RULES tem ≥12 regras", () => {
+  it("ALL_INVARIANT_RULES tem ≥14 regras (cobre stages 0-5)", () => {
     assert.ok(
-      ALL_INVARIANT_RULES.length >= 12,
-      `Esperava ≥12 regras, achei ${ALL_INVARIANT_RULES.length}`,
+      ALL_INVARIANT_RULES.length >= 14,
+      `Esperava ≥14 regras, achei ${ALL_INVARIANT_RULES.length}`,
     );
   });
 });
@@ -284,6 +288,55 @@ describe("Stage 4 invariants", () => {
   });
 });
 
+describe("Stage 5 invariants (pós-publicação)", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("step-4-sentinel-exists falha quando ausente", () => {
+    const v = checkStep4Sentinel(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "step-4-sentinel-exists");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("step-4-sentinel-exists passa quando presente", () => {
+    writeFileSync(
+      join(fixture, "_internal", ".step-4-done.json"),
+      JSON.stringify({ step: 4, completed_at: new Date().toISOString() }),
+    );
+    const v = checkStep4Sentinel(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("refresh-dedup-stamped falha quando 05-published.json sem stamp", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-published.json"),
+      JSON.stringify({ status: "draft" }),
+    );
+    const v = checkRefreshDedupStamped(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "refresh-dedup-stamped");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("refresh-dedup-stamped passa com stamp presente", () => {
+    writeFileSync(
+      join(fixture, "_internal", "05-published.json"),
+      JSON.stringify({
+        status: "draft",
+        refresh_dedup_stamped_at: "2026-05-08T12:00:00Z",
+      }),
+    );
+    const v = checkRefreshDedupStamped(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
 describe("CLI --stage N", () => {
   function runCli(args: string[], env: Record<string, string> = {}) {
     const scriptPath = join(PROJECT_ROOT, "scripts", "check-invariants.ts");
@@ -311,9 +364,9 @@ describe("CLI --stage N", () => {
     assert.equal(r.status, 2);
   });
 
-  it("--stage 5 (inválido) cai pra default = exit 2", () => {
-    const r = runCli(["--stage", "5"]);
-    // stage=5 não passa o regex /^[0-4]$/, então fica undefined →
+  it("--stage 6 (inválido) cai pra default = exit 2", () => {
+    const r = runCli(["--stage", "6"]);
+    // stage=6 não passa o regex /^[0-5]$/, então fica undefined →
     // sem editionDir e sem static, exit 2
     assert.equal(r.status, 2);
   });

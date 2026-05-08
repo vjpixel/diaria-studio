@@ -14,17 +14,18 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-function runLint(
+function runCheck(
   script: string,
-  file: string,
+  args: string[],
   ruleId: string,
   sourceIssue: string,
+  file: string,
 ): InvariantViolation[] {
   if (!existsSync(file)) {
     return [
       {
         rule: `${ruleId}-file-exists`,
-        message: `${file} ausente — Stage 2 não completou`,
+        message: `${file} ausente`,
         source_issue: sourceIssue,
         severity: "error",
         file,
@@ -33,7 +34,7 @@ function runLint(
   }
   const result = spawnSync(
     "npx",
-    ["tsx", resolve(ROOT, "scripts", script), "--check", file],
+    ["tsx", resolve(ROOT, "scripts", script), ...args],
     { encoding: "utf8", shell: process.platform === "win32" },
   );
   if (result.status === 0) return [];
@@ -42,7 +43,7 @@ function runLint(
   return [
     {
       rule: ruleId,
-      message: `${script} falhou (exit ${result.status}): ${(stderr || stdout).slice(0, 400)}`,
+      message: `${script} ${args.join(" ")} falhou (exit ${result.status}): ${(stderr || stdout).slice(0, 400)}`,
       source_issue: sourceIssue,
       severity: "error",
       file,
@@ -51,21 +52,67 @@ function runLint(
 }
 
 /**
- * `02-reviewed.md` deve passar todos os lints da newsletter (titles per
- * destaque, "Por que isso importa" linha separada, ≤52 chars, etc).
+ * `02-reviewed.md` deve passar todos os checks granulares de
+ * lint-newsletter-md (titles-per-highlight, why-matters-format,
+ * destaque-min-chars, destaque-max-chars, intro-count, eai-section).
+ *
+ * Cada check é invocado individualmente pra produzir mensagens específicas.
+ * Não chamamos o modo "default" (que exige `--approved` JSON) porque o
+ * approved.json já foi consumido upstream.
  */
 function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "02-reviewed.md");
-  return runLint("lint-newsletter-md.ts", file, "reviewed-passes-all-lints", "#964");
+  const checks: Array<{ name: string; issue: string; extraArgs?: string[] }> = [
+    { name: "titles-per-highlight", issue: "#159" },
+    { name: "title-length", issue: "#editorial-rules" },
+    { name: "why-matters-format", issue: "#editorial-rules" },
+    { name: "destaque-min-chars", issue: "#914" },
+    { name: "destaque-max-chars", issue: "#964" },
+    { name: "intro-count", issue: "#743" },
+    { name: "eai-section", issue: "#481" },
+    { name: "relative-time", issue: "#editorial-rules" },
+  ];
+  const violations: InvariantViolation[] = [];
+  for (const check of checks) {
+    violations.push(
+      ...runCheck(
+        "lint-newsletter-md.ts",
+        ["--check", check.name, "--md", file, ...(check.extraArgs ?? [])],
+        `reviewed-${check.name}`,
+        check.issue,
+        file,
+      ),
+    );
+  }
+  return violations;
 }
 
 /**
- * `03-social.md` deve passar lint social (LinkedIn schema, CTA rules,
- * Diar.ia ausente do main post — #595).
+ * `03-social.md` deve passar lint social. Roda 2 checks granulares:
+ * `linkedin-schema` (#595) e `relative-time` (qualidade editorial).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "03-social.md");
-  return runLint("lint-social-md.ts", file, "social-passes-lints", "#595");
+  const violations: InvariantViolation[] = [];
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "linkedin-schema", "--md", file],
+      "social-linkedin-schema",
+      "#595",
+      file,
+    ),
+  );
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "relative-time", "--md", file],
+      "social-relative-time",
+      "#editorial-rules",
+      file,
+    ),
+  );
+  return violations;
 }
 
 /**
@@ -97,14 +144,14 @@ function checkPorQueIssoImportaSeparate(editionDir: string): InvariantViolation[
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
-    description: "02-reviewed.md passa lint-newsletter-md (#964)",
+    description: "02-reviewed.md passa lint-newsletter-md granulares (#964)",
     source_issue: "#964",
     stage: 2,
     run: checkReviewedPassesAllLints,
   },
   {
     id: "social-passes-lints",
-    description: "03-social.md passa lint-social-md (#595)",
+    description: "03-social.md passa linkedin-schema + relative-time (#595)",
     source_issue: "#595",
     stage: 2,
     run: checkSocialPassesLints,
