@@ -4,9 +4,8 @@
  * Faz upload das imagens de destaque (D1 square, D2, D3) pro Google Drive
  * como arquivos publicamente acessíveis, retornando URLs shareable.
  *
- * Usado pelo Stage 6 social (LinkedIn / Facebook) quando file_upload
- * local não funciona via Claude in Chrome (#48 — Drive + OG preview).
- * `publish-social` cola a URL no post, LinkedIn renderiza preview.
+ * Usado pelo Stage 4 social (LinkedIn / Facebook) — `publish-linkedin.ts`
+ * passa a URL no payload Make.com pra `image_url`; LinkedIn renderiza preview.
  *
  * Uso:
  *   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/260424/

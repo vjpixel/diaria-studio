@@ -55,7 +55,7 @@ Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` e
 
 ## Passo 2 — Executar o playbook diretamente no top-level (#207)
 
-**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-linkedin`, `social-facebook`, `publish-newsletter`, `publish-social`, `auto-reporter` em paralelo conforme cada stage prescreve.
+**Você (top-level Claude Code) lê `.claude/agents/orchestrator.md` e executa o playbook stage-a-stage diretamente.** **Não delegue a um subagente `orchestrator` via `Agent`** — o runtime bloqueia recursão de Agent dentro de subagentes (issue #207). O top-level tem `Agent` disponível e pode dispatchar `source-researcher`, `discovery-searcher`, `eia-composer`, `research-reviewer`, `scorer`, `writer`, `title-picker`, `social-linkedin`, `social-facebook`, `publish-newsletter`, `auto-reporter` em paralelo conforme cada stage prescreve.
 
 Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como prompt de Agent):
 - `edition_date = $1` (AAMMDD)

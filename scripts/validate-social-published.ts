@@ -1,10 +1,10 @@
 /**
  * validate-social-published.ts (#266)
  *
- * Valida `06-social-published.json` produzido pelo agent `publish-social`.
- * Detecta data loss silencioso onde 3 posts LinkedIn foram salvos como
- * drafts mas sobrescreveram um ao outro — agent reporta `summary.draft: 3`
- * mas só 1 draft único existe na conta.
+ * Valida `06-social-published.json` produzido por `publish-linkedin.ts` +
+ * `publish-facebook.ts`. Originalmente detectava data loss silencioso quando
+ * 3 posts LinkedIn (via Chrome agent) sobrescreviam-se em drafts (#266).
+ * Mantido como guard de schema/integridade pós-store atomic (#918).
  *
  * Caso real (#266): edição 260428 reportou 3 drafts LinkedIn mas o editor
  * viu visualmente apenas 1 rascunho — 2 perdidos.

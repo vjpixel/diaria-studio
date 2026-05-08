@@ -3,7 +3,7 @@
  *
  * Calcula o `scheduled_at` (ISO 8601 com offset do timezone) pra agendamentos
  * de posts sociais (LinkedIn, Facebook). Compartilhado entre `publish-facebook.ts`
- * (Graph API) e `.claude/agents/publish-social.md` (LinkedIn via Chrome) pra
+ * (Graph API) e `publish-linkedin.ts` (Worker queue + Make webhook) pra
  * garantir que ambos respeitem o invariante:
  *
  *   target_date = parse(editionDate AAMMDD) + day_offset

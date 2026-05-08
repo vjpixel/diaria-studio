@@ -11,7 +11,7 @@ Dispara a Etapa 4 unificada (publicação paralela: Beehiiv + Facebook + LinkedI
 
 - `/diaria-4-publicar all AAMMDD` — roda publicação paralela + auto-reporter
 - `/diaria-4-publicar newsletter AAMMDD` — re-dispara só `publish-newsletter` (Beehiiv); útil pra fix isolado após template errado
-- `/diaria-4-publicar social AAMMDD` — re-dispara só `publish-facebook` + `publish-social`; útil pra retry de social falhado sem regerar Beehiiv
+- `/diaria-4-publicar social AAMMDD` — re-dispara só `publish-facebook` + `publish-linkedin`; útil pra retry de social falhado sem regerar Beehiiv
 
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 4` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.

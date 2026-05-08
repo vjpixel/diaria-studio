@@ -9,7 +9,9 @@ description: Detalhe da Etapa 4 (publicação paralela — newsletter + social) 
 
 ## Etapa 4 — Publicação (paralelo: newsletter + social) — #38
 
-`publish-newsletter` (Beehiiv), `publish-facebook.ts` (Graph API) e `publish-social` (LinkedIn via Chrome) rodam **em paralelo na mesma mensagem**, com **gate único** depois. O auto-reporter fecha o loop de observabilidade.
+`publish-newsletter` (Beehiiv), `publish-facebook.ts` (Graph API) e `publish-linkedin.ts` (Worker queue + Make.com webhook) rodam **em paralelo na mesma mensagem**, com **gate único** depois. O auto-reporter fecha o loop de observabilidade.
+
+LinkedIn não usa Chrome — Cloudflare Worker enfileira em KV e dispara Make webhook no horário agendado (#971).
 
 Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincronizado fica pra PR 2 (#38).
 
@@ -99,11 +101,11 @@ Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_
 **Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
 2. `Agent` → `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
-3. `Agent` → `publish-social` com `edition_dir = data/editions/{AAMMDD}/`, `skip_existing = true`, e (se `schedule_day_offset` estiver definido) `schedule_day_offset = {schedule_day_offset}`.
+3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
 
-**Tab isolation no Chrome**: cada agent abre tab própria via `tabs_create_mcp` (publish-newsletter → tab Beehiiv; publish-social → tab LinkedIn). Sem reuso de tab entre agents — o conflito do issue #38 é mitigado por isolamento de tab handle no contexto de cada agent.
+**Tab isolation no Chrome**: `publish-newsletter` é o único agent Chrome em Etapa 4 — abre tab Beehiiv própria via `tabs_create_mcp`. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser.
 
-**LinkedIn route — Worker queue + fallback Make (#887):** `publish-social` (que delega pra `publish-linkedin.ts`) prefere o Cloudflare Worker `diaria-linkedin-cron` quando `cloudflare_worker_url` + `DIARIA_LINKEDIN_CRON_TOKEN` estão configurados E `scheduled_at` é futuro. Worker enfileira em KV e dispara o webhook Make no horário agendado. **Se o Worker falhar todos os retries** (503, KV down, deploy quebrado), o script cai automaticamente em `postToMakeWebhook` — Make posta **imediatamente** (ignora `scheduled_at`). Entry resultante traz `status: "draft"` (post live, sem agendamento futuro) + `fallback_used: true` + `fallback_reason: "{HTTP NNN: ...}"` (sanitizado, max ~110 chars) para auditoria. Política: post real > post falhado.
+**LinkedIn route — Worker queue + fallback Make (#887):** `publish-linkedin.ts` prefere o Cloudflare Worker `diaria-linkedin-cron` quando `cloudflare_worker_url` + `DIARIA_LINKEDIN_CRON_TOKEN` estão configurados E `scheduled_at` é futuro. Worker enfileira em KV e dispara o webhook Make no horário agendado. **Se o Worker falhar todos os retries** (503, KV down, deploy quebrado), o script cai automaticamente em `postToMakeWebhook` — Make posta **imediatamente** (ignora `scheduled_at`). Entry resultante traz `status: "draft"` (post live, sem agendamento futuro) + `fallback_used: true` + `fallback_reason: "{HTTP NNN: ...}"` (sanitizado, max ~110 chars) para auditoria. Política: post real > post falhado.
 
 **Editor vê (gate 4g) — visibilidade do fallback:**
 - `data/run-log.jsonl` entry com `level=warn` + `message=worker_fallback` (timestamp BRT + reason sanitizado).
@@ -114,43 +116,29 @@ Se o agendamento era crítico, editor pode deletar o post no LinkedIn e re-rodar
 
 **Aguardar todos os 3 retornarem** antes de prosseguir. Falha/retry de um agent não bloqueia o outro (4d).
 
-**Merge LinkedIn temp file (#758):** Após `publish-social` retornar, verificar se `_internal/06-linkedin.tmp.json` existe. Se existir, fundir com `06-social-published.json`:
-```bash
-npx tsx --input-type=module << 'EOF'
-import { appendSocialPosts } from "./scripts/lib/social-published-store.ts";
-import { readFileSync, existsSync } from "node:fs";
-const tmp = "data/editions/{AAMMDD}/_internal/06-linkedin.tmp.json";
-const out = "data/editions/{AAMMDD}/06-social-published.json";
-if (existsSync(tmp)) {
-  const { posts } = JSON.parse(readFileSync(tmp, "utf8"));
-  appendSocialPosts(out, posts);
-  console.log(`Merged ${posts.length} LinkedIn post(s) from tmp file`);
-}
-EOF
-```
-Se o arquivo não existir (agent escreveu direto no arquivo principal via store), prosseguir normalmente.
+`publish-linkedin.ts` grava direto em `06-social-published.json` via store atomica (#918) — sem tmp file pra merge. `publish-facebook.ts` faz o mesmo.
 
-### 4d. Retry chrome_disconnected (independente por agent)
+### 4d. Retry chrome_disconnected (só publish-newsletter)
 
-Tanto `publish-newsletter` quanto `publish-social` usam o mesmo padrão de retry exponencial — cada um conta sozinho (falha de um não afeta o contador do outro).
+Apenas `publish-newsletter` usa Chrome em Etapa 4. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser — falhas viram exit code do script, não `chrome_disconnected`.
 
-Se qualquer agent retornar `error: "chrome_disconnected"`:
+Se `publish-newsletter` retornar `error: "chrome_disconnected"`:
 1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
-2. Logar warn: `"chrome_disconnected em Etapa 4 ({agent}), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+2. Logar warn: `"chrome_disconnected em Etapa 4 (publish-newsletter), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
 3. Aguardar: `Bash("sleep {delay}")`.
-4. Re-disparar **só** o agent que falhou (com mesmos parâmetros; publish-social com `skip_existing = true`).
+4. Re-disparar publish-newsletter com mesmos parâmetros.
 5. Se repetir, repetir do passo 1 incrementando N.
 6. **Após 10 falhas consecutivas** (~17h acumuladas), logar erro e pausar:
    ```
-   🔌 Claude in Chrome desconectou 10 vezes seguidas em {agent} (Etapa 4).
+   🔌 Claude in Chrome desconectou 10 vezes seguidas em publish-newsletter (Etapa 4).
       Verifique Chrome aberto + extensão Claude in Chrome ativa.
-      ⚠️ Se publish-newsletter: rascunho parcial no Beehiiv pode existir — delete antes do retry.
+      ⚠️ Rascunho parcial no Beehiiv pode existir — delete antes do retry.
       Responda "retry" pra mais 10 tentativas, ou "skip" pra pular este agent.
    ```
 - **Reset do contador**: re-dispatch que sucede (mesmo se falhar por outro motivo depois) reseta N=1.
 - Erros que **não** sejam `chrome_disconnected` (ex: login expirado, template errado) interrompem o loop e são tratados normalmente.
 - Se `publish-newsletter` retornar `error: "beehiiv_login_expired"` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
-- Se `publish-social` retornar `status: "failed"` em algum post por login expirado, logar warn e prosseguir — editor re-roda `/diaria-4-publicar social` após re-logar.
+- Se `publish-linkedin.ts` retornar exit code != 0 (ex: Worker offline), o script já trata fallback Make automaticamente. Falhas reais (token inválido, payload malformado) param o pipeline com erro claro.
 
 ### 4e. Validar template (publish-newsletter)
 
@@ -164,7 +152,7 @@ Se qualquer agent retornar `error: "chrome_disconnected"`:
 
 ### 4f. Loop de review do email de teste (após newsletter retornar)
 
-> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-social` já completaram em 4c. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 4c.
+> NOTA: este loop **não bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` já completaram em 4c. O loop só toca o draft do Beehiiv (newsletter). Social drafts ficam congelados desde 4c.
 
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral da Etapa 4. A Etapa 4 só está completa quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
@@ -305,7 +293,7 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
   **Opções**:
   - aprovar (segue para auto-reporter)
   - regenerar newsletter (re-dispatch `publish-newsletter`)
-  - regenerar social (re-dispatch `publish-facebook` + `publish-social`, com `--skip-existing` / `skip_existing = true` pra resume-aware)
+  - regenerar social (re-dispatch `publish-facebook` + `publish-linkedin`, com `--skip-existing` pra resume-aware)
   - regenerar tudo (volta a 4b)
   - abortar
 

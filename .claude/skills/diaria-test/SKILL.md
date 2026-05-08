@@ -58,7 +58,7 @@ Variáveis pra alimentar o playbook:
 - `edition_iso = 20${date.slice(0,2)}-${date.slice(2,4)}-${date.slice(4,6)}`
 - `window_days = {valor calculado}`
 - `test_mode = true` → auto-aprovar todos os gates, **desabilitar Drive sync** (pular blocos de push/pull), copiar `_internal/01-categorized.json` → `_internal/01-approved.json` direto sem edição humana
-- `with_publish = true` se a flag `--with-publish` foi passada; senão `false` → controla se a Etapa 4 (publicação) roda. Quando `false` (default), o orchestrator força `CHROME_MCP = false` em Stage 0c, fazendo Etapa 4 pular com `status: "skipped"`. Quando `true`, o probe do Chrome roda normalmente — Etapa 4 dispatcha publish-newsletter/publish-facebook/publish-social com `schedule_day_offset = 10`.
+- `with_publish = true` se a flag `--with-publish` foi passada; senão `false` → controla se a Etapa 4 (publicação) roda. Quando `false` (default), o orchestrator força `CHROME_MCP = false` em Stage 0c, fazendo Etapa 4 pular com `status: "skipped"`. Quando `true`, o probe do Chrome roda normalmente — Etapa 4 dispatcha publish-newsletter/publish-facebook/publish-linkedin com `schedule_day_offset = 10`.
 - `schedule_day_offset = 10` → social posts agendados 10 dias à frente (só relevante quando `with_publish = true`).
 
 **Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
