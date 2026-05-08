@@ -24,7 +24,7 @@
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 
@@ -409,6 +409,23 @@ export function openProbability(m: Merged, now: Date): number {
 
 const TIER1_STATUSES = new Set(["active", "past_due", "paused", "trialing"]);
 
+/**
+ * Labels human-readable de cada tier — exportado pra reuso (logging, dashboard
+ * futuro, ferramentas de análise). Mantém em sync com `tierOf`.
+ */
+export const TIER_LABELS: { readonly [k: number]: string } = {
+  1: "Assinante atual (active/past_due/paused/trialing)",
+  2: "Ex-assinante (pagou alguma vez)",
+  3: "Lead nunca-pagou — 2026-H1",
+  4: "Lead nunca-pagou — 2025-H2",
+  5: "Lead nunca-pagou — 2025-H1",
+  6: "Lead nunca-pagou — 2024-H2",
+  7: "Lead nunca-pagou — 2024-H1",
+  8: "Lead nunca-pagou — 2023-H2",
+  9: "Lead nunca-pagou — 2023-H1",
+  10: "Lead nunca-pagou — 2021–2022 (caudão antigo)",
+};
+
 export function tierOf(m: Merged): number {
   if (m.status && TIER1_STATUSES.has(m.status)) return 1;
   if (m.payment_count > 0 || m.total_spend > 0) return 2;
@@ -418,11 +435,15 @@ export function tierOf(m: Merged): number {
   const y = m.created.getUTCFullYear();
   const h2 = m.created.getUTCMonth() >= 6;
 
-  if (y === 2026) return 3;        // 2026-H1 (até jun) — H2 mapeia aqui também por enquanto
+  // FIXME(#1020, antes-de-2026-07-01): adicionar ramo `y === 2026 && h2 ? ... : 3`
+  // ou parametrizar `now` (ver #1020). Hoje N=0 contatos H2 (estamos em 2026-05);
+  // a partir de jul/2026 novos cadastros serão lumpados em T3.
+  if (y === 2026) return 3;
   if (y === 2025) return h2 ? 4 : 5;
   if (y === 2024) return h2 ? 6 : 7;
   if (y === 2023) return h2 ? 8 : 9;
-  return 10; // 2021, 2022, ou anteriores
+  return 10; // 2021, 2022, ou anteriores. Anos futuros (2027+) caem aqui também
+             // até o script ser atualizado — ver FIXME acima.
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +458,14 @@ interface Scored extends Merged {
 }
 
 function formatTierRow(r: Scored): { [k: string]: string | number } {
+  // Schema enxuto pra import no Brevo:
+  // - identidade: email, first_name, full_name
+  // - tier (segmentação) + score/risk/probability (ordenação dentro do tier)
+  // - audit trail: stripe_ids, source_files
+  //
+  // Removidos (#1019, decisão editorial): created, status, plan, delinquent,
+  // total_spend, payment_count, refunded_volume, description, tag — dados
+  // financeiros e meta não vão pro Brevo (campos calculados ficam só no CSV).
   return {
     email: r.email,
     first_name: r.name?.split(" ")[0] || "",
@@ -445,15 +474,6 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
     score: r.score.toFixed(3),
     open_probability: r.open_probability,
     verify_risk: r.verify_risk,
-    created: r.created?.toISOString().slice(0, 10) || "",
-    status: r.status || "",
-    plan: r.plan || "",
-    delinquent: r.delinquent === null ? "" : r.delinquent ? "true" : "false",
-    total_spend: r.total_spend.toFixed(2),
-    payment_count: r.payment_count,
-    refunded_volume: r.refunded_volume.toFixed(2),
-    description: r.description || "",
-    tag: r.tag || "",
     stripe_ids: r.stripe_ids.join(";"),
     source_files: r.source_files.join(";"),
   };
@@ -596,6 +616,26 @@ function main(): void {
     writeFileSync(resolve(DATA_DIR, filename), csv, "utf8");
   }
 
+  // Cleanup de outputs órfãos de runs anteriores que usavam taxonomia diferente.
+  // Remove APENAS arquivos no schema antigo (kit-import-* e brevo-import-tier{N}.csv);
+  // os novos brevo-import-t{NN}.csv (com padding zero) são preservados/sobrescritos.
+  // Idempotente: se rodar 2x, o segundo run já não acha nada pra remover.
+  const orphanPatterns = [
+    /^kit-import-(tier\d+|excluded)\.csv$/,
+    /^brevo-import-tier\d+\.csv$/, // só sem padding (tier1, tier2, tier3 antigos)
+  ];
+  for (const f of readdirSync(DATA_DIR)) {
+    if (orphanPatterns.some((re) => re.test(f))) {
+      const path = resolve(DATA_DIR, f);
+      try {
+        unlinkSync(path);
+        console.error(`🧹 removido órfão: ${f}`);
+      } catch (e) {
+        console.error(`⚠️  falha ao remover ${f}: ${(e as Error).message}`);
+      }
+    }
+  }
+
   // Output: 10 CSVs (brevo-import-t01.csv ... t10.csv).
   // Padding zero garante ordenação alfabética correta no filesystem.
   for (let t = 1; t <= 10; t++) {
@@ -627,19 +667,6 @@ function main(): void {
   for (let t = 1; t <= 10; t++) {
     tierCounts[`t${String(t).padStart(2, "0")}`] = (byTier.get(t) ?? []).length;
   }
-
-  const TIER_LABELS: { [k: number]: string } = {
-    1: "Assinante atual (active/past_due/paused/trialing)",
-    2: "Ex-assinante (pagou alguma vez)",
-    3: "Lead nunca-pagou — 2026-H1",
-    4: "Lead nunca-pagou — 2025-H2",
-    5: "Lead nunca-pagou — 2025-H1",
-    6: "Lead nunca-pagou — 2024-H2",
-    7: "Lead nunca-pagou — 2024-H1",
-    8: "Lead nunca-pagou — 2023-H2",
-    9: "Lead nunca-pagou — 2023-H1",
-    10: "Lead nunca-pagou — 2021–2022 (caudão antigo)",
-  };
 
   console.error(`\n📤 outputs em ${DATA_DIR}:`);
   for (let t = 1; t <= 10; t++) {
