@@ -316,6 +316,20 @@ npx tsx scripts/close-poll.ts --edition {AAMMDD}
 - `POLL_SECRET` deve estar em `.env`. Se não estiver definido, o script emite warn e encerra graciosamente — não bloqueia o pipeline.
 - Logar resultado: se exit 0, `"poll fechado para edição {AAMMDD}"`. Se exit != 0, `warn: "close-poll falhou (POLL_SECRET ausente ou erro de rede) — fechar manualmente via /admin/correct"`.
 
+### 4i. Escrever sentinel de conclusão (#978)
+
+**Sempre** ao fim do Stage 4 — mesmo se publicação foi manual ou gate retornou `pending_manual`. Stage 0 da próxima edição usa o sentinel pra detectar que esta edição completou o ciclo (fix de #978):
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts write \
+  --edition {AAMMDD} --step 4 \
+  --outputs "_internal/05-published.json"
+```
+
+- Sentinel ausente faz Stage 0 da próxima edição re-investigar publicação via Beehiiv API (custo extra, ruído editorial).
+- Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
+- Quando publicação é manual (Pixel cria rascunho direto), `05-published.json` pode ter `status: "pending_manual"` ou similar — o sentinel registra que o **stage** terminou, não que a publicação foi 100% automática. Stage 0 valida estado real via `refresh-dedup` que cruza com Beehiiv API.
+
 ---
 
 ## Etapa 4b — Auto-reporter (#57 / #79)
