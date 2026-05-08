@@ -71,16 +71,20 @@ export function findPreviousIntentionalError(
  * Pure (#961): extrai o erro intencional declarado na linha "Nessa edição,
  * escrevi 'X' onde deveria ser 'Y'." de um `02-reviewed.md` publicado.
  *
- * Aceita aspas duplas (caso novo) e simples (caso histórico). Caso a linha
- * não exista, retorna null — o caller decide o fallback (JSONL).
+ * Aceita aspas duplas (caso novo) e simples (caso histórico). Back-references
+ * (\1, \3) garantem que aspa abrindo bate com a fechando — input malformado
+ * com aspas cruzadas (`"X' onde deveria ser "Y'`) não é silenciosamente
+ * aceito (#991).
+ *
+ * Caso a linha não exista, retorna null — o caller decide o fallback (JSONL).
  */
 export function extractIntentionalErrorFromMd(
   md: string,
 ): { detail: string; gabarito: string } | null {
-  const re = /Nessa\s+edi[çc][ãa]o,?\s+escrevi\s+["']([^"']+?)["']\s+onde\s+deveria\s+ser\s+["']([^"']+?)["']/i;
+  const re = /Nessa\s+edi[çc][ãa]o,?\s+escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
   const m = md.match(re);
   if (!m) return null;
-  return { detail: m[1], gabarito: m[2] };
+  return { detail: m[2], gabarito: m[4] };
 }
 
 /**

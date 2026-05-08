@@ -286,6 +286,30 @@ describe("extractIntentionalErrorFromMd (#961)", () => {
     const md = `Nessa edição, escrevi "X" mas esqueci o resto.`;
     assert.equal(extractIntentionalErrorFromMd(md), null);
   });
+
+  it("#991: rejeita aspas cruzadas (open=\" close=' no detail)", () => {
+    const md = `Nessa edição, escrevi "X' onde deveria ser "Y".`;
+    assert.equal(
+      extractIntentionalErrorFromMd(md),
+      null,
+      "back-reference \\1 deve forçar mesma aspa abrindo e fechando",
+    );
+  });
+
+  it("#991: aceita aspas duplas em ambos os lados", () => {
+    const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
+    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+  });
+
+  it("#991: aceita aspas simples em ambos os lados", () => {
+    const md = `Nessa edição, escrevi 'X' onde deveria ser 'Y'.`;
+    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+  });
+
+  it("#991: aceita aspas mistas — duplas no detail + simples no gabarito (cada lado consistente)", () => {
+    const md = `Nessa edição, escrevi "X" onde deveria ser 'Y'.`;
+    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+  });
 });
 
 describe("findPreviousIntentionalErrorFromMd (#961)", () => {

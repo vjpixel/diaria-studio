@@ -49,6 +49,7 @@ import {
   populateLinksFromTracking,
   populateAllFromApproved,
   renderMarkdown,
+  extractLinks,
 } from "./refresh-past-editions.ts";
 import { extractPublishedAtIso, extractPublishedDate } from "./lib/beehiiv-timestamp.ts";
 import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.ts";
@@ -414,7 +415,16 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   const truncated = sorted.slice(0, cfg.dedupEditionCount);
 
   // Popular links[] do _internal/01-approved.json local (#238) — sempre on.
-  populateAllFromApproved(truncated);
+  // #988: passa editionsRoot quando override existe (tests injetam tmp dir;
+  // antes o read sempre usava ROOT real, contaminando fixture com edition data).
+  // populateAllFromApproved espera o root do projeto (data/editions/ é resolvido
+  // internamente), então passa um nível acima do editionsRoot.
+  if (opts.editionsRoot) {
+    const projectRootForApproved = resolve(opts.editionsRoot, "..", "..");
+    populateAllFromApproved(truncated, projectRootForApproved);
+  } else {
+    populateAllFromApproved(truncated);
+  }
 
   // Resolver tracking URLs do Beehiiv (#234) — opt-out via flag.
   if (opts.resolveTracking) {
@@ -432,6 +442,17 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
       process.stderr.write(
         `[refresh-dedup] Tracking resolution: ${postsTouched} post(s) sem links — ${totalResolved} URLs resolvidas, ${totalSkipped} HEAD failures\n`,
       );
+    }
+  } else {
+    // #988: quando resolveTracking=false, ainda extrair links bare do html
+    // (sem HEAD requests). Útil em produção quando HEAD falha consistentemente
+    // ou em testes que não mockam network. Só toca posts sem links populados.
+    for (const post of truncated) {
+      if (post.links && post.links.length > 0) continue;
+      const content = [post.html, post.markdown].filter(Boolean).join("\n");
+      if (content) {
+        post.links = extractLinks(content);
+      }
     }
   }
 

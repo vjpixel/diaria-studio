@@ -157,8 +157,15 @@ function parseArgs(argv: string[]): CliArgs | null {
   const out: Partial<CliArgs> = {};
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
+    if (!flag.startsWith("--")) continue;
     const value = argv[i + 1];
-    if (!flag.startsWith("--") || value === undefined) continue;
+    // #991: flag final sem valor antes era silenciosamente skipped (continue
+    // pulava o flag inteiro). Agora warn loud — comando malformado merece
+    // visibilidade ao invés de "ah, faltou o relatório, sem alarme".
+    if (value === undefined || value.startsWith("--")) {
+      console.warn(`[clarice-apply] aviso: flag '${flag}' sem valor — ignorando.`);
+      continue;
+    }
     const key = flag.slice(2);
     if (key === "text-file") out.textFile = value;
     else if (key === "suggestions") out.suggestions = value;
