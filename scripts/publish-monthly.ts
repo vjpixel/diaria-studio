@@ -4,18 +4,27 @@
  * Cria uma campanha de email Brevo para o digest mensal e envia email de teste.
  *
  * Uso:
- *   npx tsx scripts/publish-monthly.ts --yymm 2604 [--send-test] [--dry-run]
+ *   npx tsx scripts/publish-monthly.ts --yymm 2604 [flags]
  *
  * Flags:
- *   --yymm      Mês no formato YYMM (obrigatório)
- *   --send-test Envia email de teste após criar a campanha
- *   --dry-run   Valida inputs e exibe preview HTML sem chamar a API
+ *   --yymm                 Mês no formato YYMM (obrigatório)
+ *   --list-id N            Override da lista Brevo (sobrepõe platform.config.json → brevo_monthly.list_id)
+ *   --send-test            Envia email de teste após criar a campanha
+ *   --send-test-to <email> Override do destinatário do test email (default: brevo_monthly.test_email)
+ *   --send-now             Dispara campanha IMEDIATAMENTE pra lista (irreversível)
+ *   --schedule-at <ISO>    Agenda dispatch pra timestamp futuro (ISO 8601, com timezone)
+ *                          Ex: --schedule-at 2026-05-09T12:00:00-03:00
+ *   --update-existing N    Atualiza campanha existente (id N) em vez de criar nova
+ *   --dry-run              Valida inputs e gera HTML preview local sem chamar a API
+ *
+ * Mutuamente exclusivos: --send-test, --send-now, --schedule-at.
  *
  * Output: data/monthly/{YYMM}/_internal/05-published.json
  *
  * Pré-requisitos:
  *   - BREVO_CLARICE_API_KEY definido no ambiente (ou .env)
- *   - platform.config.json → brevo_monthly.list_id e sender_email preenchidos
+ *   - platform.config.json → brevo_monthly.sender_email preenchido
+ *   - list_id resolvido: --list-id N ou brevo_monthly.list_id (CLI tem prioridade)
  *   - data/monthly/{YYMM}/draft.md existente (Etapa 2)
  */
 
@@ -51,41 +60,106 @@ interface MonthlyPublished {
   campaign_name: string;
   subject: string;
   preview_text: string;
-  status: "draft" | "test_sent" | "failed";
+  status: "draft" | "test_sent" | "sent" | "scheduled" | "failed";
   brevo_dashboard_url: string;
+  list_id: number;
+  list_name: string;
+  list_subscribers: number;
   test_email?: string;
   test_sent_at?: string;
+  sent_at?: string;
+  scheduled_at?: string;       // #1015: agendamento futuro
+  updated_existing?: boolean;  // #1015: campanha reusada (não criada nova)
   created_at: string;
   error?: string;
 }
 
 // ─── CLI ───────────────────────────────────────────────────────────────────
 
-function parseArgs(): { yymm: string; sendTest: boolean; dryRun: boolean } {
+interface ParsedArgs {
+  yymm: string;
+  sendTest: boolean;
+  sendNow: boolean;
+  dryRun: boolean;
+  listIdOverride: number | null;
+  sendTestTo: string | null;       // override do destinatário do test email (#1015)
+  scheduleAt: string | null;       // timestamp ISO 8601 pra agendamento (#1015)
+  updateExisting: number | null;   // campaign_id pra reusar (#1015)
+}
+
+function parseArgs(): ParsedArgs {
   const argv = process.argv.slice(2);
   let yymm = "";
   let sendTest = false;
+  let sendNow = false;
   let dryRun = false;
+  let listIdOverride: number | null = null;
+  let sendTestTo: string | null = null;
+  let scheduleAt: string | null = null;
+  let updateExisting: number | null = null;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--yymm" && i + 1 < argv.length) {
       yymm = argv[++i];
     } else if (argv[i] === "--send-test") {
       sendTest = true;
+    } else if (argv[i] === "--send-now") {
+      sendNow = true;
     } else if (argv[i] === "--dry-run") {
       dryRun = true;
+    } else if (argv[i] === "--list-id" && i + 1 < argv.length) {
+      const raw = argv[++i];
+      const n = parseInt(raw, 10);
+      if (Number.isNaN(n) || n <= 0) {
+        process.stderr.write(`ERRO: --list-id inválido: "${raw}"\n`);
+        process.exit(1);
+      }
+      listIdOverride = n;
+    } else if (argv[i] === "--send-test-to" && i + 1 < argv.length) {
+      const raw = argv[++i].trim();
+      // Validação básica de email (não hard, só checa que tem @ e .)
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+        process.stderr.write(`ERRO: --send-test-to inválido: "${raw}"\n`);
+        process.exit(1);
+      }
+      sendTestTo = raw;
+    } else if (argv[i] === "--schedule-at" && i + 1 < argv.length) {
+      const raw = argv[++i];
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) {
+        process.stderr.write(`ERRO: --schedule-at não é ISO 8601 válido: "${raw}"\n`);
+        process.exit(1);
+      }
+      if (d.getTime() <= Date.now()) {
+        process.stderr.write(
+          `ERRO: --schedule-at deve estar no futuro. Recebido: ${d.toISOString()}, agora: ${new Date().toISOString()}\n`,
+        );
+        process.exit(1);
+      }
+      scheduleAt = d.toISOString();
+    } else if (argv[i] === "--update-existing" && i + 1 < argv.length) {
+      const raw = argv[++i];
+      const n = parseInt(raw, 10);
+      if (Number.isNaN(n) || n <= 0) {
+        process.stderr.write(`ERRO: --update-existing inválido: "${raw}"\n`);
+        process.exit(1);
+      }
+      updateExisting = n;
     }
   }
 
   if (!yymm || !/^\d{4}$/.test(yymm)) {
     process.stderr.write(
-      "Uso: publish-monthly.ts --yymm YYMM [--send-test] [--dry-run]\n" +
-      "Exemplo: --yymm 2604\n"
+      "Uso: publish-monthly.ts --yymm YYMM [--list-id N]\n" +
+      "                         [--send-test [--send-test-to <email>]]\n" +
+      "                         [--send-now] [--schedule-at <ISO>]\n" +
+      "                         [--update-existing <campaign_id>] [--dry-run]\n" +
+      "Exemplo: --yymm 2604 --list-id 9 --send-test --send-test-to felipe@clarice.ai\n",
     );
     process.exit(1);
   }
 
-  return { yymm, sendTest, dryRun };
+  return { yymm, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
 }
 
 // ─── HTML conversion ───────────────────────────────────────────────────────
@@ -98,10 +172,18 @@ function escHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Converts [text](url) markdown links to <a> tags. Escapes surrounding text. */
+/** Strip backslash escapes do export Drive (`\!` `\&` `\[` `\]`). */
+function stripBackslashEscapes(s: string): string {
+  return s.replace(/\\([!&\[\]])/g, "$1");
+}
+
+/** Converts [text](url) markdown links to <a> tags + **bold** to <strong>. Escapes surrounding text. */
 function renderInline(text: string): string {
+  // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
+  // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
+  const preStripped = stripBackslashEscapes(text);
   // Split by link pattern; odd indices = link matches
-  const parts = text.split(/(\[[^\]]+\]\([^)]+\))/);
+  const parts = preStripped.split(/(\[[^\]]+\]\([^)]+\))/);
   return parts
     .map((part, i) => {
       if (i % 2 === 1) {
@@ -110,34 +192,78 @@ function renderInline(text: string): string {
           return `<a href="${escHtml(m[2])}" style="color:#0066cc;text-decoration:underline;">${escHtml(m[1])}</a>`;
         }
       }
-      return escHtml(part);
+      // Escapa primeiro, depois converte `**bold**` em <strong>.
+      return escHtml(part).replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
     })
     .join("");
 }
 
-/** Renders blank-line-separated paragraphs as <p> tags. */
+/**
+ * Renders blank-line-separated blocks. Cada bloco é renderizado como `<p>`
+ * por padrão, ou como `<ul>` / `<ol>` se todas as linhas forem itens de lista.
+ *
+ * Detecta:
+ *   - bullet list: `- texto`, `* texto` (com indent opcional)
+ *   - ordered list: `1. texto`, `2. texto` (com indent opcional)
+ */
 function renderParagraphs(text: string): string {
   const paras = text.split(/\n\n+/).filter((p) => p.trim());
   return paras
     .map((p) => {
+      const lines = p.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (lines.length === 0) return "";
+
+      const isUnordered = lines.every((l) => /^[-*]\s+/.test(l));
+      const isOrdered = lines.every((l) => /^\d+\.\s+/.test(l));
+
+      if (isUnordered) {
+        const items = lines
+          .map((l) => l.replace(/^[-*]\s+/, ""))
+          .map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`)
+          .join("\n");
+        return `<ul style="margin:0 0 16px 0;padding-left:24px;">${items}</ul>`;
+      }
+      if (isOrdered) {
+        const items = lines
+          .map((l) => l.replace(/^\d+\.\s+/, ""))
+          .map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`)
+          .join("\n");
+        return `<ol style="margin:0 0 16px 0;padding-left:24px;">${items}</ol>`;
+      }
+
       const inline = renderInline(p.trim().replace(/\n/g, " "));
       return `<p style="margin:0 0 16px 0;">${inline}</p>`;
     })
+    .filter(Boolean)
     .join("\n");
 }
 
-/** Renders a DESTAQUE section block. */
-function renderDestaque(chunk: string): string {
+/**
+ * Renders a DESTAQUE section block. Aceita override de tema (usado pra
+ * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
+ *
+ * Formatos de header reconhecidos (após `normalizeLabel`):
+ *   - `DESTAQUE 1 | ANTHROPIC` (formato antigo, separador `|`)
+ *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
+ *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
+ */
+function renderDestaque(chunk: string, temaOverride?: string): string {
   const lines = chunk.split("\n");
-  const headerLine = lines[0];
-  const m = headerLine.match(/^DESTAQUE (\d+) \| (.+)$/);
-  const num = m ? m[1] : "?";
-  const tema = m ? m[2] : headerLine;
+  // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
+  const cleaned = normalizeLabel(lines[0])
+    .replace(/\\\]/g, " ")
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const m = cleaned.match(/^DESTAQUE\s+(\d+)\s+(.+)$/);
+  const tema = temaOverride ?? (m ? m[2] : cleaned);
 
-  // Find title: first non-empty line after header
+  // Find title: first non-empty line after header. Strip `**...**` (Drive bold).
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
-  const title = i < lines.length ? lines[i].trim() : "";
+  const title = i < lines.length
+    ? lines[i].trim().replace(/^\*\*+/, "").replace(/\*\*+$/, "").trim()
+    : "";
   i++;
 
   const remaining = lines.slice(i).join("\n").trim();
@@ -155,15 +281,9 @@ function renderDestaque(chunk: string): string {
     }
   }
 
-  // Categorias editoriais válidas (mesmo vocabulário do diário Diar.ia).
-  // Temas organizacionais do mensal (nomes de empresa, país etc.) não são exibidos.
-  const VALID_CATEGORIES = new Set([
-    "PESQUISA", "LANÇAMENTO", "MERCADO", "CONCEITO", "FERRAMENTA",
-    "PRODUTO", "TENDÊNCIA", "INDÚSTRIA", "CULTURA", "BRASIL",
-    "OPINIÃO", "DADOS", "REGULAÇÃO",
-  ]);
-  const temaUpper = tema.toUpperCase().trim();
-  const label = VALID_CATEGORIES.has(temaUpper)
+  // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
+  // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
+  const label = tema
     ? `<p style="margin:0 0 4px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;color:#00A0A0;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif;">${escHtml(tema)}</p>`
     : "";
   const titleHtml = title
@@ -182,10 +302,97 @@ function renderDestaque(chunk: string): string {
   return label + titleHtml + mainHtml + conductorHtml;
 }
 
-/** Renders a CLARICE placeholder section. */
+/**
+ * Renders a INTRO section como sumário editorial destacado.
+ * Estrutura: label teal "RESUMO DO MÊS" + parágrafo italic com border-left teal.
+ */
+function renderIntro(body: string): string {
+  const TEAL = "#00A0A0";
+  const labelHtml = `<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:Arial,Helvetica,sans-serif;">Resumo do mês</p>`;
+  const paras = body.split(/\n\n+/).filter((p) => p.trim());
+  const bodyHtml = paras
+    .map((p) => {
+      const inline = renderInline(p.trim().replace(/\n/g, " "));
+      return `<p style="margin:0 0 16px 0;font-size:19px;font-style:italic;color:#333;line-height:1.6;">${inline}</p>`;
+    })
+    .join("\n");
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${TEAL};">${labelHtml}${bodyHtml}</td></tr></table>`;
+}
+
+/**
+ * Renders a LABORATÓRIO CLARICE section como caixa similar ao CLARICE
+ * mas com formatação rica (h3 título, parágrafos, lista numerada).
+ *
+ * Estrutura esperada (após `**` strip):
+ *   LABORATÓRIO CLARICE
+ *
+ *   **Subtítulo bold**
+ *
+ *   Parágrafo introdutório.
+ *
+ *   1. Item lista
+ *   2. Item lista
+ *   ...
+ *
+ *   Dica: ...
+ *   → Teste agora: [link](url)
+ */
+function renderLaboratorio(chunk: string): string {
+  const lines = chunk.split("\n");
+  // Skip header (LABORATÓRIO CLARICE) + blank lines.
+  let i = 1;
+  while (i < lines.length && !lines[i].trim()) i++;
+
+  // Subtítulo: primeira linha não-vazia (espera `**...**`).
+  const subtitleRaw = i < lines.length ? lines[i].trim() : "";
+  const subtitle = subtitleRaw.replace(/^\*\*+/, "").replace(/\*\*+$/, "").trim();
+  i++;
+
+  const remaining = lines.slice(i).join("\n").trim();
+
+  // Split em blocos: parágrafos, listas, dica final.
+  const blocks = remaining.split(/\n\n+/).filter((b) => b.trim());
+
+  const renderedBlocks: string[] = [];
+  for (const block of blocks) {
+    const blockLines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    // Bloco é uma lista numerada se TODAS as linhas começam com `\d+\.`.
+    const isOrdered = blockLines.length > 0 && blockLines.every((l) => /^\d+\.\s/.test(l));
+    if (isOrdered) {
+      const items = blockLines
+        .map((l) => l.replace(/^\d+\.\s+/, ""))
+        .map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`)
+        .join("\n");
+      renderedBlocks.push(
+        `<ol style="margin:0 0 16px 0;padding-left:24px;color:#444;">${items}</ol>`
+      );
+    } else {
+      const inline = renderInline(block.trim().replace(/\n/g, " "));
+      renderedBlocks.push(`<p style="margin:0 0 16px 0;color:#444;">${inline}</p>`);
+    }
+  }
+
+  const TEAL = "#00A0A0";
+  const headerLabel = `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:Arial,Helvetica,sans-serif;">LABORATÓRIO CLARICE</p>`;
+  const subtitleHtml = subtitle
+    ? `<h3 style="margin:0 0 16px 0;font-size:18px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;color:#1a1a1a;">${renderInline(subtitle)}</h3>`
+    : "";
+
+  return [
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed #bbb;border-radius:4px;background:#fafaf4;">`,
+    `<tr><td style="padding:24px 28px;">`,
+    headerLabel,
+    subtitleHtml,
+    renderedBlocks.join("\n"),
+    `</td></tr></table>`,
+  ].join("");
+}
+
+/** Renders a CLARICE — DIVULGAÇÃO placeholder section. */
 function renderClarice(chunk: string): string {
   const lines = chunk.split("\n");
-  const headerLine = escHtml(lines[0]);
+  // Drive exporta `**[CLARICE — DIVULGAÇÃO]**` ou `**LABORATÓRIO CLARICE**`.
+  const headerLine = escHtml(normalizeLabel(lines[0]));
   const content = lines.slice(1).join("\n").trim();
   return [
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed #bbb;border-radius:4px;background:#fafaf4;">`,
@@ -314,15 +521,41 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
 </table>`;
 }
 
+/**
+ * Normaliza um label de seção, removendo bold (`**...**`), brackets escapados
+ * (`\[...\]`) ou nus (`[...]`) e espaços. Necessário pois o Drive exporta
+ * Google Docs com formatação markdown (negrito, brackets) que o parser original
+ * não reconhecia.
+ *
+ * Exemplos:
+ *   "**REMETENTE**"           → "REMETENTE"
+ *   "**\\[INTRO\\]**"         → "INTRO"
+ *   "**[CLARICE — DIVULGAÇÃO]**" → "CLARICE — DIVULGAÇÃO"
+ *   "**DESTAQUE 1 | ANTHROPIC**" → "DESTAQUE 1 | ANTHROPIC"
+ */
+function normalizeLabel(line: string): string {
+  return line
+    .trim()
+    .replace(/^\*\*+/, "")
+    .replace(/\*\*+$/, "")
+    .replace(/^\\?\[/, "")
+    .replace(/\\?\]$/, "")
+    .trim();
+}
+
 /** Parses the header chunk (before first ---) to extract subject, preview, intro. */
 function parseHeaderChunk(chunk: string): {
   subjectOptions: string[];
   preview: string;
   intro: string;
 } {
-  const text = chunk.trim();
+  // Pre-normaliza: strip `**` ao redor de labels canônicos pra os regex abaixo funcionarem.
+  // (Drive exporta `**ASSUNTO**` em vez de `ASSUNTO`; mantemos os regex simples.)
+  const text = chunk
+    .trim()
+    .replace(/^\*\*(REMETENTE|ASSUNTO|PREVIEW|INTRO)\*\*\s*$/gm, "$1")
+    .replace(/^\*\*\\?\[(REMETENTE|ASSUNTO|PREVIEW|INTRO)\\?\]\*\*\s*$/gm, "$1");
 
-  // Split by recognized section headers within the chunk
   const subjectOptions: string[] = [];
   let preview = "";
   let intro = "";
@@ -332,10 +565,15 @@ function parseHeaderChunk(chunk: string): {
     /ASSUNTO[^\n]*\n([\s\S]*?)(?=\nPREVIEW|\nINTRO|$)/
   );
   if (assuntoMatch) {
-    const lines = assuntoMatch[1].trim().split("\n");
+    const lines = assuntoMatch[1].trim().split("\n").filter((l) => l.trim());
     for (const line of lines) {
       const m = line.match(/^\d+\.\s+(.+)$/);
       if (m) subjectOptions.push(m[1].trim());
+    }
+    // Fallback (#XXXX): se ASSUNTO não tem lista numerada, tratar conteúdo como
+    // subject único. Drive doc só lista 1 ASSUNTO sem numeração.
+    if (subjectOptions.length === 0 && lines.length > 0) {
+      subjectOptions.push(lines.join(" ").trim());
     }
   }
 
@@ -380,6 +618,50 @@ function wrapEmail(subject: string, bodyParts: string[]): string {
 </html>`;
 }
 
+/**
+ * Detecta se uma linha é um label de seção (formatado como `**LABEL**` ou
+ * `**\[LABEL\]**` no Drive markdown). Não depende de `---` separators.
+ */
+function isSectionLabel(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("**") || !trimmed.endsWith("**")) return false;
+  const normalized = normalizeLabel(trimmed);
+  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+    normalized
+  );
+}
+
+/**
+ * Splits draft text em chunks por section label (não por `\n---\n`).
+ * Mais robusto: Drive export pode ou não preservar horizontal rules.
+ */
+function splitByLabels(text: string): string[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const sections: string[] = [];
+  let current: string[] = [];
+
+  for (const line of lines) {
+    if (isSectionLabel(line)) {
+      if (current.length > 0) {
+        const chunk = current.join("\n").trim();
+        if (chunk) sections.push(chunk);
+      }
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    const chunk = current.join("\n").trim();
+    if (chunk) sections.push(chunk);
+  }
+
+  // Strip horizontal rules residuais (caso o markdown ainda os tenha).
+  return sections
+    .map((s) => s.replace(/^---\s*$/gm, "").trim())
+    .filter((s) => s.length > 0);
+}
+
 /** Converts draft.md content + optional chosen subject to { subject, previewText, html }. */
 function draftToEmail(
   draft: string,
@@ -389,54 +671,95 @@ function draftToEmail(
   eiaImageUrlB?: string,
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
-  const rawSections = text.split(/\n---\n/);
+  const rawSections = splitByLabels(text);
 
   let subject = chosenSubject ?? "";
   let previewText = "";
   const bodyParts: string[] = [];
+
+  // Helper: extrai conteúdo de um chunk (linhas após a primeira).
+  const chunkBody = (chunk: string): string =>
+    chunk.split("\n").slice(1).join("\n").trim();
 
   for (let idx = 0; idx < rawSections.length; idx++) {
     const chunk = rawSections[idx].trim();
     if (!chunk) continue;
 
     const firstLine = chunk.split("\n")[0].trim();
+    const label = normalizeLabel(firstLine);
 
-    if (idx === 0 && (firstLine.startsWith("ASSUNTO") || firstLine === "PREVIEW" || firstLine === "INTRO")) {
-      // Header chunk: ASSUNTO + PREVIEW + INTRO combined
-      const { subjectOptions, preview, intro } = parseHeaderChunk(chunk);
-      if (!subject && subjectOptions.length > 0) subject = subjectOptions[0];
-      previewText = preview;
-      if (intro) bodyParts.push(renderParagraphs(intro));
+    // REMETENTE: metadata, não renderiza no corpo.
+    if (label === "REMETENTE") continue;
+
+    // ASSUNTO: extrai como subject (override se chosenSubject não setado).
+    if (label === "ASSUNTO") {
+      const body = chunkBody(chunk);
+      const lines = body.split("\n").map((l) => l.trim()).filter(Boolean);
+      let candidate = "";
+      for (const line of lines) {
+        const m = line.match(/^\d+\.\s+(.+)$/);
+        if (m) { candidate = m[1].trim(); break; }
+      }
+      if (!candidate && lines.length > 0) candidate = lines.join(" ").trim();
+      if (!subject && candidate) subject = candidate;
       continue;
     }
 
-    if (firstLine.match(/^DESTAQUE \d+ \|/)) {
+    // PREVIEW: extrai como previewText.
+    if (label === "PREVIEW") {
+      previewText = chunkBody(chunk).split("\n").join(" ").trim();
+      continue;
+    }
+
+    // INTRO: sumário editorial do mês — render destacado (label teal + italic + border).
+    if (label === "INTRO") {
+      const body = chunkBody(chunk);
+      if (body) bodyParts.push(renderIntro(body));
+      continue;
+    }
+
+    // APRESENTAÇÃO: parágrafos planos.
+    if (["APRESENTAÇÃO", "APRESENTACAO"].includes(label)) {
+      const body = chunkBody(chunk);
+      if (body) bodyParts.push(renderParagraphs(body));
+      continue;
+    }
+
+    // DESTAQUE — aceita `DESTAQUE N | TEMA` antigo E `DESTAQUE N\] TEMA` novo.
+    if (label.match(/^DESTAQUE\s+\d+/)) {
       bodyParts.push(renderDestaque(chunk));
       continue;
     }
 
-    if (firstLine.startsWith("CLARICE —")) {
+    if (label.startsWith("CLARICE —")) {
       bodyParts.push(renderClarice(chunk));
       continue;
     }
 
-    if (firstLine === "OUTRAS NOTÍCIAS DO MÊS") {
+    // LABORATÓRIO CLARICE: caixa dedicada (h3 + parágrafos + lista numerada).
+    if (label === "LABORATÓRIO CLARICE") {
+      bodyParts.push(renderLaboratorio(chunk));
+      continue;
+    }
+
+    if (label === "OUTRAS NOTÍCIAS DO MÊS") {
       bodyParts.push(renderOutrasNoticias(chunk));
       continue;
     }
 
-    if (firstLine === "É IA?") {
+    if (label === "É IA?") {
       bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB));
       continue;
     }
 
-    if (firstLine === "ENCERRAMENTO") {
-      const content = chunk.split("\n").slice(1).join("\n").trim();
-      if (content) bodyParts.push(renderParagraphs(content));
+    // ENCERRAMENTO antigo + PARA ENCERRAR (renomeado pelo editor).
+    if (label === "ENCERRAMENTO" || label === "PARA ENCERRAR") {
+      const body = chunkBody(chunk);
+      if (body) bodyParts.push(renderParagraphs(body));
       continue;
     }
 
-    // Fallback: render as plain paragraphs
+    // Fallback: render as plain paragraphs (chunk inteiro, com label).
     bodyParts.push(renderParagraphs(chunk));
   }
 
@@ -602,10 +925,71 @@ async function brevoPost(
   return {};
 }
 
+async function brevoGetList(
+  apiKey: string,
+  listId: number,
+): Promise<{ id: number; name: string; totalSubscribers: number }> {
+  const res = await fetch(`https://api.brevo.com/v3/contacts/lists/${listId}`, {
+    method: "GET",
+    headers: { "api-key": apiKey, Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Brevo API GET /contacts/lists/${listId} falhou (${res.status}): ${text}`);
+  }
+  const data = await res.json() as { id: number; name: string; totalSubscribers: number };
+  return data;
+}
+
+/**
+ * PATCH genérico pra Brevo. Usado em #1015 pra:
+ *   - --schedule-at:    PATCH /emailCampaigns/{id} body { scheduledAt }
+ *   - --update-existing: PATCH /emailCampaigns/{id} body { subject, htmlContent, ... }
+ */
+async function brevoPatch(
+  apiKey: string,
+  path: string,
+  body: unknown,
+): Promise<unknown> {
+  const res = await fetch(`https://api.brevo.com/v3${path}`, {
+    method: "PATCH",
+    headers: {
+      "api-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Brevo API PATCH ${path} falhou (${res.status}): ${text}`);
+  }
+
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("application/json")) {
+    const text = await res.text();
+    return text.length > 0 ? JSON.parse(text) : {};
+  }
+  return {};
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const { yymm, sendTest, dryRun } = parseArgs();
+  const { yymm, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
+
+  // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.
+  const actions = [sendTest && "--send-test", sendNow && "--send-now", scheduleAt && "--schedule-at"].filter(Boolean);
+  if (actions.length > 1) {
+    process.stderr.write(`ERRO: ${actions.join(", ")} são mutuamente exclusivos.\n`);
+    process.exit(1);
+  }
+  // --send-test-to só faz sentido com --send-test
+  if (sendTestTo && !sendTest) {
+    process.stderr.write("ERRO: --send-test-to requer --send-test.\n");
+    process.exit(1);
+  }
 
   // Load platform config
   const configPath = resolve(ROOT, "platform.config.json");
@@ -628,11 +1012,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Resolve list_id: CLI override (--list-id) tem prioridade sobre platform.config.json.
+  const effectiveListId = listIdOverride ?? brevo.list_id;
+  const listSource = listIdOverride !== null ? "--list-id flag" : "platform.config.json";
+
   if (!dryRun) {
-    if (brevo.list_id === null) {
+    if (effectiveListId === null) {
       process.stderr.write(
-        "ERRO: brevo_monthly.list_id é null.\n" +
-        "Configure a lista de contatos no painel Brevo e preencha list_id em platform.config.json (#653).\n"
+        "ERRO: list_id não definido. Passe --list-id N ou configure brevo_monthly.list_id em platform.config.json.\n"
       );
       process.exit(1);
     }
@@ -711,7 +1098,7 @@ async function main(): Promise<void> {
   }
 
   // Convert draft to email
-  const { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB);
 
   if (!subject) {
     process.stderr.write(
@@ -722,46 +1109,89 @@ async function main(): Promise<void> {
   }
 
   const ts = new Date().toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo" }).slice(0, 16);
-  const campaignName = `Diar.ia Mensal ${yymm} — ${ts}`;
+  let campaignName = `Diar.ia Mensal ${yymm} — ${ts}`;
+
+  // Para `--send-test`: incrementa contador local e prefixa subject + nome com `[Teste N]`.
+  // Permite distinguir múltiplas iterações de teste no inbox do editor.
+  // Counter persiste em `_internal/test-counter.txt` (gitignored, por edição).
+  if (sendTest && !dryRun) {
+    const internalDir = resolve(monthlyDir, "_internal");
+    if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
+    const counterPath = resolve(internalDir, "test-counter.txt");
+    const current = existsSync(counterPath)
+      ? parseInt(readFileSync(counterPath, "utf8").trim(), 10) || 0
+      : 0;
+    const next = current + 1;
+    writeFileSync(counterPath, String(next));
+    subject = `[Teste ${next}] ${subject}`;
+    campaignName = `${campaignName} — Teste ${next}`;
+  }
 
   if (dryRun) {
+    const internalDir = resolve(monthlyDir, "_internal");
+    if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
+    const previewPath = resolve(internalDir, `preview-list${effectiveListId ?? "default"}.html`);
+    writeFileSync(previewPath, html);
     process.stdout.write(
       `[DRY RUN] Campanha que seria criada:\n` +
       `  Nome:     ${campaignName}\n` +
       `  Assunto:  ${subject}\n` +
       `  Preview:  ${previewText}\n` +
-      `  List ID:  ${brevo.list_id}\n` +
+      `  List ID:  ${effectiveListId} (fonte: ${listSource})\n` +
       `  Remetente: ${brevo.sender_name} <${brevo.sender_email}>\n` +
-      `  HTML (primeiros 600 chars):\n${html.slice(0, 600)}\n...\n`
+      `  HTML completo: ${previewPath}\n`
     );
     return;
   }
 
-  // Create campaign
-  const campaignResp = await brevoPost(apiKey, "/emailCampaigns", {
-    name: campaignName,
-    subject,
-    previewText,
-    sender: {
-      name: brevo.sender_name,
-      email: brevo.sender_email,
-    },
-    recipients: { listIds: [brevo.list_id] },
-    htmlContent: html,
-  }) as Record<string, unknown>;
-
-  if (typeof campaignResp.id !== "number") {
-    throw new Error(
-      `Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`
-    );
-  }
-  const campaignId = campaignResp.id;
-  const dashboardUrl = `https://app.brevo.com/campaign/email/${campaignId}/edit`;
-
+  // Lookup list metadata para confirmar destinatário antes de criar a campanha (#336).
+  const listInfo = await brevoGetList(apiKey, effectiveListId as number);
   process.stdout.write(
-    `Campanha criada: id=${campaignId}\n` +
-    `Dashboard: ${dashboardUrl}\n`
+    `\nDestinatário:\n` +
+    `  List ID:        ${listInfo.id} (fonte: ${listSource})\n` +
+    `  Nome da lista:  ${listInfo.name}\n` +
+    `  Assinantes:     ${listInfo.totalSubscribers}\n\n`
   );
+
+  // #1015: --update-existing reusa campanha existente (PATCH), default cria nova (POST).
+  let campaignId: number;
+  if (updateExisting !== null) {
+    await brevoPatch(apiKey, `/emailCampaigns/${updateExisting}`, {
+      name: campaignName,
+      subject,
+      previewText,
+      sender: {
+        name: brevo.sender_name,
+        email: brevo.sender_email,
+      },
+      recipients: { listIds: [effectiveListId] },
+      htmlContent: html,
+    });
+    campaignId = updateExisting;
+    process.stdout.write(`Campanha atualizada: id=${campaignId} (--update-existing)\n`);
+  } else {
+    const campaignResp = await brevoPost(apiKey, "/emailCampaigns", {
+      name: campaignName,
+      subject,
+      previewText,
+      sender: {
+        name: brevo.sender_name,
+        email: brevo.sender_email,
+      },
+      recipients: { listIds: [effectiveListId] },
+      htmlContent: html,
+    }) as Record<string, unknown>;
+
+    if (typeof campaignResp.id !== "number") {
+      throw new Error(
+        `Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`
+      );
+    }
+    campaignId = campaignResp.id;
+    process.stdout.write(`Campanha criada: id=${campaignId}\n`);
+  }
+  const dashboardUrl = `https://app.brevo.com/campaign/email/${campaignId}/edit`;
+  process.stdout.write(`Dashboard: ${dashboardUrl}\n`);
 
   const published: MonthlyPublished = {
     campaign_id: campaignId,
@@ -770,21 +1200,52 @@ async function main(): Promise<void> {
     preview_text: previewText,
     status: "draft",
     brevo_dashboard_url: dashboardUrl,
+    updated_existing: updateExisting !== null ? true : undefined,
+    list_id: listInfo.id,
+    list_name: listInfo.name,
+    list_subscribers: listInfo.totalSubscribers,
     created_at: new Date().toISOString(),
   };
 
-  // Send test email
+  // Send test email — destinatário pode ser overrideado via --send-test-to (#1015)
   if (sendTest) {
+    const testRecipient = sendTestTo ?? brevo.test_email;
     await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendTest`, {
-      emailTo: [brevo.test_email],
+      emailTo: [testRecipient],
     });
 
     published.status = "test_sent";
-    published.test_email = brevo.test_email;
+    published.test_email = testRecipient;
     published.test_sent_at = new Date().toISOString();
 
+    const sourceLabel = sendTestTo ? "--send-test-to flag" : "platform.config.json";
     process.stdout.write(
-      `Email de teste enviado para: ${brevo.test_email}\n`
+      `Email de teste enviado para: ${testRecipient} (fonte: ${sourceLabel})\n`,
+    );
+  }
+
+  // Send campaign now (real dispatch para a lista)
+  if (sendNow) {
+    await brevoPost(apiKey, `/emailCampaigns/${campaignId}/sendNow`, {});
+    published.status = "sent";
+    published.sent_at = new Date().toISOString();
+    process.stdout.write(
+      `Campanha disparada para lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinante${listInfo.totalSubscribers === 1 ? "" : "s"}).\n`,
+    );
+  }
+
+  // #1015: agenda dispatch futuro via PATCH /emailCampaigns/{id} { scheduledAt }
+  if (scheduleAt) {
+    await brevoPatch(apiKey, `/emailCampaigns/${campaignId}`, {
+      scheduledAt: scheduleAt,
+    });
+    published.status = "scheduled";
+    published.scheduled_at = scheduleAt;
+    const localTime = new Date(scheduleAt).toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+    });
+    process.stdout.write(
+      `Campanha agendada pra ${scheduleAt} (BRT: ${localTime}) → lista ${listInfo.id} ("${listInfo.name}", ${listInfo.totalSubscribers} assinantes).\n`,
     );
   }
 
