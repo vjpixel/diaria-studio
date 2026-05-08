@@ -200,9 +200,10 @@ npx tsx scripts/verify-stage-4-dispatch.ts --edition-dir data/editions/{AAMMDD}/
 
 O script:
 - Le `_internal/06-social-published.json` (entries de FB + LinkedIn).
-- Pra cada FB entry com `fb_post_id` e status != "failed": GET Graph API
-  `/{post_id}?fields=is_published,scheduled_publish_time,...` confirmando
-  que o post existe + esta agendado/publicado conforme esperado.
+- Pra Facebook (#974): GET `/{page_id}/scheduled_posts?fields=id,scheduled_publish_time,message`
+  uma vez. Pra cada FB entry com `fb_post_id`, match por suffix do post_id.
+  Fallback GET `/{post_id}?fields=id,permalink_url` quando o post não está na
+  lista de scheduled (já publicado / saiu da queue).
 - Pra cada LinkedIn entry com status != "failed" e sem `fallback_used`: GET
   Worker `/list` e confere que o destaque esta na fila KV.
 - Persiste relatorio em `_internal/06-verify-dispatch.json` e printa report
