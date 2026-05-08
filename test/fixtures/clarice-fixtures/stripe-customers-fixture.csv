@@ -1,0 +1,16 @@
+id,Email,Name,Created (UTC),Description,tag (metadata),Delinquent,Plan,Status,Total Spend,Payment Count,Refunded Volume,Dispute Losses
+cus_t1a,active1@clrctest.com.br,Alice Active,2025-06-15 12:00,clrc-pt,clrc-pt,false,plan_a,active,500.00,8,0.00,0.00
+cus_t1b,trialing1@clrctest.com.br,Bob Trialing,2026-04-01 12:00,clrc-pt,clrc-pt,false,plan_a,trialing,0.00,0,0.00,0.00
+cus_t2a,exsub1@clrctest.com.br,Carla Ex,2024-03-10 12:00,clrc-pt,clrc-pt,false,plan_b,canceled,300.00,6,0.00,0.00
+cus_t2b,exsub2@clrctest.com.br,Dario Pago,2023-08-20 12:00,,,false,plan_b,unpaid,150.00,2,0.00,0.00
+cus_t3,lead2026@clrctest.com.br,Eva Lead,2026-02-15 12:00,clrc-pt,clrc-pt,false,,,0.00,0,0.00,0.00
+cus_t4,lead2025h2@clrctest.com.br,Felipe Lead,2025-09-10 12:00,clrc-pt,clrc-pt,false,,,0.00,0,0.00,0.00
+cus_t5,lead2025h1@clrctest.com.br,Gabi Lead,2025-03-05 12:00,,,false,,,0.00,0,0.00,0.00
+cus_t6,lead2024h2@clrctest.com.br,Hugo Lead,2024-08-22 12:00,clrc-pt,clrc-pt,false,,,0.00,0,0.00,0.00
+cus_t7,lead2024h1@clrctest.com.br,Ines Lead,2024-02-14 12:00,,,false,,,0.00,0,0.00,0.00
+cus_t8,lead2023h2@clrctest.com.br,João Lead,2023-10-30 12:00,clrc-pt,clrc-pt,false,,,0.00,0,0.00,0.00
+cus_t9,lead2023h1@clrctest.com.br,Karina Lead,2023-04-15 12:00,,,false,,,0.00,0,0.00,0.00
+cus_t10,lead2022@clrctest.com.br,Lucas Lead,2022-06-01 12:00,clrc-pt,clrc-pt,false,,,0.00,0,0.00,0.00
+cus_excl_dispute,dispute@clrctest.com.br,Maria Dispute,2024-05-15 12:00,clrc-pt,clrc-pt,false,plan_a,canceled,200.00,3,0.00,150.00
+cus_excl_role,contato@empresa.com,Role Account,2025-01-10 12:00,,,false,,,0.00,0,0.00,0.00
+cus_excl_disposable,user@mailinator.com,Disposable User,2025-02-20 12:00,,,false,,,0.00,0,0.00,0.00

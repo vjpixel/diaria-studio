@@ -324,8 +324,11 @@ export function verifyRisk(m: Merged, now: Date): number {
   // 4: pagou pelo menos 1x e conta ≤ 3 anos
   if (m.payment_count >= 1 && months < 36) return 4;
 
-  // 5: pagou pelo menos 1x e conta 3–5 anos
-  if (m.payment_count >= 1 && months < 60) return 5;
+  // 5: pagou pelo menos 1x e conta ≥ 3 anos (legacy paid customer)
+  // Fix #1017: antes era `months < 60` que deixava paid+60mo cair em níveis
+  // 6–10 (nunca-pagou). Sem upper bound aqui, qualquer pagante antigo fica
+  // em 5 corretamente.
+  if (m.payment_count >= 1) return 5;
 
   // --- Risco crescente por recência pura (6–10): nunca pagou ---
 
@@ -410,41 +413,96 @@ export function openProbability(m: Merged, now: Date): number {
 const TIER1_STATUSES = new Set(["active", "past_due", "paused", "trialing"]);
 
 /**
- * Labels human-readable de cada tier — exportado pra reuso (logging, dashboard
- * futuro, ferramentas de análise). Mantém em sync com `tierOf`.
+ * Computa "índice de semestre" de uma data: 0 = jan–jun do ano, 1 = jul–dez,
+ * 2 = jan–jun do ano seguinte, etc. Permite calcular distância em semestres
+ * entre duas datas via subtração.
  */
-export const TIER_LABELS: { readonly [k: number]: string } = {
-  1: "Assinante atual (active/past_due/paused/trialing)",
-  2: "Ex-assinante (pagou alguma vez)",
-  3: "Lead nunca-pagou — 2026-H1",
-  4: "Lead nunca-pagou — 2025-H2",
-  5: "Lead nunca-pagou — 2025-H1",
-  6: "Lead nunca-pagou — 2024-H2",
-  7: "Lead nunca-pagou — 2024-H1",
-  8: "Lead nunca-pagou — 2023-H2",
-  9: "Lead nunca-pagou — 2023-H1",
-  10: "Lead nunca-pagou — 2021–2022 (caudão antigo)",
-};
+function semesterIndex(d: Date): number {
+  return d.getUTCFullYear() * 2 + (d.getUTCMonth() >= 6 ? 1 : 0);
+}
 
-export function tierOf(m: Merged): number {
+/**
+ * Distância em semestres entre `from` e `now`. 0 = mesmo semestre, 1 = semestre
+ * anterior, etc. Negativos = futuro (raro mas possível em fixtures).
+ */
+function semestersBack(from: Date, now: Date): number {
+  return semesterIndex(now) - semesterIndex(from);
+}
+
+/**
+ * Labels human-readable de cada tier — derivados dinamicamente pra refletir
+ * semestres deslizantes baseados em `now` (#1020). Antes era objeto estático
+ * que ficava errado a cada virada de semestre.
+ *
+ * Use esta função em vez do antigo objeto `TIER_LABELS`.
+ */
+export function tierLabel(tier: number, now: Date = new Date()): string {
+  if (tier === 1) return "Assinante atual (active/past_due/paused/trialing)";
+  if (tier === 2) return "Ex-assinante (pagou alguma vez)";
+  if (tier === 10) return "Lead nunca-pagou — caudão antigo (≥7 semestres atrás)";
+
+  // T3 = semestre corrente, T4 = anterior, ..., T9 = 6 semestres atrás.
+  const semesterOffset: { [k: number]: number } = { 3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6 };
+  const offset = semesterOffset[tier];
+  if (offset === undefined) return `Tier ${tier} (desconhecido)`;
+
+  const sIdx = semesterIndex(now) - offset;
+  const year = Math.floor(sIdx / 2);
+  const half = sIdx % 2 === 1 ? "H2" : "H1";
+  return `Lead nunca-pagou — ${year}-${half}`;
+}
+
+/**
+ * Tier de um contato.
+ *
+ * @param m   Contato merged.
+ * @param now Data de referência. Default = `new Date()` (uso em produção).
+ *            Em testes, sempre passar explicitamente pra reprodutibilidade.
+ *
+ * Tiers (#1018, #1020):
+ *  - T1: status atual (active, past_due, paused, trialing)
+ *  - T2: ex-assinante (pagou alguma vez)
+ *  - T3: lead nunca-pagou no semestre corrente
+ *  - T4: lead nunca-pagou no semestre anterior
+ *  - T5–T9: leads em semestres mais antigos (até 6 atrás)
+ *  - T10: caudão (≥ 7 semestres atrás OU sem data)
+ *
+ * Self-adjusting: a definição de "semestre corrente" depende de `now`, então
+ * o script não precisa update manual a cada virada de semestre.
+ */
+export function tierOf(m: Merged, now: Date = new Date()): number {
   if (m.status && TIER1_STATUSES.has(m.status)) return 1;
   if (m.payment_count > 0 || m.total_spend > 0) return 2;
-
-  // Lead nunca-pagante: bucket por semestre de criação.
   if (!m.created) return 10; // sem data → fóssil
-  const y = m.created.getUTCFullYear();
-  const h2 = m.created.getUTCMonth() >= 6;
 
-  // FIXME(#1020, antes-de-2026-07-01): adicionar ramo `y === 2026 && h2 ? ... : 3`
-  // ou parametrizar `now` (ver #1020). Hoje N=0 contatos H2 (estamos em 2026-05);
-  // a partir de jul/2026 novos cadastros serão lumpados em T3.
-  if (y === 2026) return 3;
-  if (y === 2025) return h2 ? 4 : 5;
-  if (y === 2024) return h2 ? 6 : 7;
-  if (y === 2023) return h2 ? 8 : 9;
-  return 10; // 2021, 2022, ou anteriores. Anos futuros (2027+) caem aqui também
-             // até o script ser atualizado — ver FIXME acima.
+  const back = semestersBack(m.created, now);
+  // Futuro (semestre >= now): T3 (mais quente). Raro mas possível com fixtures.
+  if (back <= 0) return 3;
+  if (back === 1) return 4;
+  if (back === 2) return 5;
+  if (back === 3) return 6;
+  if (back === 4) return 7;
+  if (back === 5) return 8;
+  if (back === 6) return 9;
+  return 10; // ≥ 7 semestres atrás (~3,5+ anos)
 }
+
+/**
+ * @deprecated Use `tierLabel(tier, now)` em vez. Mantido pra retrocompat
+ * mas labels podem ficar errados conforme o tempo passa.
+ */
+export const TIER_LABELS: { readonly [k: number]: string } = {
+  1: tierLabel(1),
+  2: tierLabel(2),
+  3: tierLabel(3),
+  4: tierLabel(4),
+  5: tierLabel(5),
+  6: tierLabel(6),
+  7: tierLabel(7),
+  8: tierLabel(8),
+  9: tierLabel(9),
+  10: "Lead nunca-pagou — caudão antigo (≥7 semestres atrás)",
+};
 
 // ---------------------------------------------------------------------------
 // Output
@@ -483,19 +541,19 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
 // Main
 // ---------------------------------------------------------------------------
 
-function main(): void {
+export function main(dataDir: string = DATA_DIR): void {
   const filterClrcPt = process.argv.includes("--filter-clrc-pt");
 
   // Filtra arquivos CSV que NÃO são output do próprio script (importa só fontes
   // do Stripe). Tanto `kit-import-*` (legacy) quanto `brevo-import-*` (atual).
-  const files = readdirSync(DATA_DIR)
+  const files = readdirSync(dataDir)
     .filter((f) =>
       f.endsWith(".csv") &&
       !f.startsWith("kit-import-") &&
       !f.startsWith("brevo-import-"),
     );
 
-  console.error(`📂 lendo ${files.length} CSVs de ${DATA_DIR}`);
+  console.error(`📂 lendo ${files.length} CSVs de ${dataDir}`);
   if (filterClrcPt) {
     console.error(`🎯 filtro hard --filter-clrc-pt ATIVO`);
   } else {
@@ -504,7 +562,7 @@ function main(): void {
 
   const allRecords: Array<{ rec: Record; filename: string }> = [];
   for (const f of files) {
-    const path = resolve(DATA_DIR, f);
+    const path = resolve(dataDir, f);
     const { rows, filename } = readCsv(path);
     let valid = 0;
     for (const row of rows) {
@@ -592,7 +650,7 @@ function main(): void {
     const score = computeScore(m, now);
     const verify_risk = verifyRisk(m, now);
     const open_probability = openProbability(m, now);
-    const tier = tierOf(m);
+    const tier = tierOf(m, now);
     kept.push({ ...m, score, verify_risk, open_probability, tier });
   }
 
@@ -613,7 +671,7 @@ function main(): void {
 
   function writeTier(filename: string, rows: Scored[]): void {
     const csv = Papa.unparse(rows.map(formatTierRow));
-    writeFileSync(resolve(DATA_DIR, filename), csv, "utf8");
+    writeFileSync(resolve(dataDir, filename), csv, "utf8");
   }
 
   // Cleanup de outputs órfãos de runs anteriores que usavam taxonomia diferente.
@@ -624,9 +682,9 @@ function main(): void {
     /^kit-import-(tier\d+|excluded)\.csv$/,
     /^brevo-import-tier\d+\.csv$/, // só sem padding (tier1, tier2, tier3 antigos)
   ];
-  for (const f of readdirSync(DATA_DIR)) {
+  for (const f of readdirSync(dataDir)) {
     if (orphanPatterns.some((re) => re.test(f))) {
-      const path = resolve(DATA_DIR, f);
+      const path = resolve(dataDir, f);
       try {
         unlinkSync(path);
         console.error(`🧹 removido órfão: ${f}`);
@@ -656,7 +714,7 @@ function main(): void {
       stripe_ids: r.stripe_ids.join(";"),
     })),
   );
-  writeFileSync(resolve(DATA_DIR, "brevo-import-excluded.csv"), excludedCsv, "utf8");
+  writeFileSync(resolve(dataDir, "brevo-import-excluded.csv"), excludedCsv, "utf8");
 
   // Distribuição de motivos
   const reasons: { [k: string]: number } = {};
@@ -668,10 +726,10 @@ function main(): void {
     tierCounts[`t${String(t).padStart(2, "0")}`] = (byTier.get(t) ?? []).length;
   }
 
-  console.error(`\n📤 outputs em ${DATA_DIR}:`);
+  console.error(`\n📤 outputs em ${dataDir}:`);
   for (let t = 1; t <= 10; t++) {
     const n = tierCounts[`t${String(t).padStart(2, "0")}`];
-    console.error(`   t${String(t).padStart(2, "0")} (${TIER_LABELS[t]}): ${n.toLocaleString("pt-BR")}`);
+    console.error(`   t${String(t).padStart(2, "0")} (${tierLabel(t, now)}): ${n.toLocaleString("pt-BR")}`);
   }
   console.error(`   excluded: ${excluded.length.toLocaleString("pt-BR")}`);
 
