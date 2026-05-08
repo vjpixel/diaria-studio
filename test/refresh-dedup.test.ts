@@ -179,6 +179,8 @@ describe("refresh-dedup.ts (#895)", () => {
       rawPath,
       mdPath,
       configOverride: TEST_CONFIG,
+      // #988: sandbox isola populateAllFromApproved do real data/editions/
+      editionsRoot: join(sandboxRoot, "fixture-editions"),
     });
 
     assert.equal(result.mode, "bootstrap");
@@ -191,6 +193,7 @@ describe("refresh-dedup.ts (#895)", () => {
 
     const md = readFileSync(mdPath, "utf8");
     assert.ok(md.includes("Bootstrap A"));
+    // #988: extractLinks do html agora roda mesmo com resolveTracking=false
     assert.ok(md.includes("https://example.com/bootstrap-link"));
   });
 
@@ -281,6 +284,8 @@ describe("refresh-dedup.ts (#895)", () => {
       rawPath,
       mdPath,
       configOverride: TEST_CONFIG,
+      // #988: sandbox isola populateAllFromApproved do real data/editions/
+      editionsRoot: join(sandboxRoot, "fixture-editions"),
     });
 
     assert.equal(result.mode, "incremental");
