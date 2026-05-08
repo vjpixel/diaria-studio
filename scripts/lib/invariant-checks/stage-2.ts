@@ -32,10 +32,12 @@ function runCheck(
       },
     ];
   }
+  // Chama tsx via `node --import tsx` direto (não `npx tsx` com shell:true)
+  // — evita mangling de args quando edition-dir tem espaços (#1010).
   const result = spawnSync(
-    "npx",
-    ["tsx", resolve(ROOT, "scripts", script), ...args],
-    { encoding: "utf8", shell: process.platform === "win32" },
+    process.execPath,
+    ["--import", "tsx", resolve(ROOT, "scripts", script), ...args],
+    { encoding: "utf8" },
   );
   if (result.status === 0) return [];
   const stderr = (result.stderr || "").trim();

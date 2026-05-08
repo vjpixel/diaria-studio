@@ -22,6 +22,11 @@ import {
   checkCategorizedHasEiaSection,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
+  checkReviewedPassesAllLints,
+  checkSocialPassesLints,
+  checkPorQueIssoImportaSeparate,
+} from "../scripts/lib/invariant-checks/stage-2.ts";
+import {
   checkAllImagesExist,
   checkPromptsClean,
   checkEiaAnswerResolved,
@@ -81,12 +86,14 @@ describe("Stage 0 invariants", () => {
   });
 
   it("beehiiv-key-set passa quando setada", () => {
+    const original = process.env.BEEHIIV_API_KEY;
     process.env.BEEHIIV_API_KEY = "test-key";
     try {
       const rule = STAGE_0_RULES.find((r) => r.id === "beehiiv-key-set")!;
       assert.equal(rule.run("").length, 0);
     } finally {
-      delete process.env.BEEHIIV_API_KEY;
+      if (original !== undefined) process.env.BEEHIIV_API_KEY = original;
+      else delete process.env.BEEHIIV_API_KEY;
     }
   });
 });
@@ -139,6 +146,111 @@ describe("Stage 1 invariants", () => {
     writeFileSync(join(fixture, "01-categorized.md"), "## É IA?\n\nfoto X\n");
     const v = checkCategorizedHasEiaSection(fixture);
     assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("Stage 2 invariants", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("por-que-isso-importa-separate-line passa silenciosamente quando 02-reviewed.md ausente", () => {
+    // Sanity check é early-return quando arquivo não existe — Stage 2 ainda
+    // não rodou. O check de existência fica em reviewed-passes-all-lints.
+    const v = checkPorQueIssoImportaSeparate(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("por-que-isso-importa-separate-line falha quando inline com texto", () => {
+    writeFileSync(
+      join(fixture, "02-reviewed.md"),
+      "Lorem ipsum. Por que isso importa: contexto.\n",
+    );
+    const v = checkPorQueIssoImportaSeparate(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "por-que-isso-importa-separate-line");
+    assert.equal(v[0].severity, "error");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("por-que-isso-importa-separate-line passa quando em linha separada", () => {
+    writeFileSync(
+      join(fixture, "02-reviewed.md"),
+      "Lorem ipsum.\n\nPor que isso importa: contexto.\n",
+    );
+    const v = checkPorQueIssoImportaSeparate(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("reviewed-passes-all-lints falha com 'file-exists' quando 02-reviewed.md ausente", () => {
+    const v = checkReviewedPassesAllLints(fixture);
+    // 8 lints granulares, todos retornam file-exists violation
+    assert.ok(v.length >= 1);
+    assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
+    assert.match(v[0].message, /02-reviewed\.md ausente/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("reviewed-passes-all-lints propaga violations de subprocess (spawn integration)", () => {
+    // MD trivial — vai falhar em vários lints granulares (não só file-exists).
+    // Esse teste valida que `runCheck` invoca tsx corretamente e propaga
+    // exit code != 0 como violation (cobre regressão de #1010 item 3 —
+    // shell:true mangling de args quando edition-dir tem espaço).
+    writeFileSync(join(fixture, "02-reviewed.md"), "# Diar.ia\n\nNada relevante.\n");
+    const v = checkReviewedPassesAllLints(fixture);
+    // Pelo menos 1 violation de lint real (não file-exists), provando que
+    // o subprocess foi invocado e seu exit code propagado.
+    const realViolations = v.filter((x) => !x.rule.endsWith("-file-exists"));
+    assert.ok(
+      realViolations.length > 0,
+      `Esperava violation de lint real, achei: ${JSON.stringify(v.map((x) => x.rule))}`,
+    );
+    // Mensagem contém o nome do script invocado — confirma que runCheck
+    // formata a violation com contexto de qual lint falhou.
+    assert.ok(
+      realViolations.every((x) => x.message.includes("lint-newsletter-md.ts")),
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("social-passes-lints falha com 'file-exists' quando 03-social.md ausente", () => {
+    const v = checkSocialPassesLints(fixture);
+    assert.equal(v.length, 2); // linkedin-schema + relative-time
+    assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
+    assert.match(v[0].message, /03-social\.md ausente/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("social-passes-lints retorna 0 violations quando ambos subprocess saem 0 (success path)", () => {
+    // MD trivial sem `# LinkedIn` (linkedin-schema é no-op) e sem palavras-
+    // gatilho temporais (relative-time não casa). Valida que `runCheck`
+    // propaga exit code 0 sem violations espúrias — cobre o success path
+    // do spawnSync sem shell:true.
+    writeFileSync(join(fixture, "03-social.md"), "# Outros\n\nConteúdo neutro.\n");
+    const v = checkSocialPassesLints(fixture);
+    assert.equal(v.length, 0, `Esperava 0 violations, achei ${JSON.stringify(v)}`);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("social-passes-lints detecta relative-time inline (spawn integration)", () => {
+    // Palavra-gatilho "ontem" fora de aspas → relative-time falha. Valida
+    // que `runCheck` invoca lint-social-md.ts corretamente e propaga
+    // exit code != 0 como violation.
+    writeFileSync(
+      join(fixture, "03-social.md"),
+      "# Outros\n\nIA aprendeu novo truque ontem.\n",
+    );
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-relative-time"),
+      `Esperava social-relative-time, achei ${JSON.stringify(ruleIds)}`,
+    );
     rmSync(fixture, { recursive: true, force: true });
   });
 });
@@ -279,6 +391,7 @@ describe("Stage 4 invariants", () => {
   });
 
   it("linkedin-worker-url-set falha quando não-HTTPS (error)", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_URL;
     process.env.DIARIA_LINKEDIN_CRON_URL = "http://insecure.example/fire";
     try {
       const v = checkLinkedinWorkerUrlSet();
@@ -286,7 +399,8 @@ describe("Stage 4 invariants", () => {
       assert.equal(v[0].rule, "linkedin-worker-url-https");
       assert.equal(v[0].severity, "error");
     } finally {
-      delete process.env.DIARIA_LINKEDIN_CRON_URL;
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
+      else delete process.env.DIARIA_LINKEDIN_CRON_URL;
     }
   });
 
@@ -425,6 +539,47 @@ describe("CLI --stage N", () => {
       assert.ok(out.violations.length > 0);
     } finally {
       rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("--stage 0 carrega .env.local via DIARIA_PROJECT_ROOT (#1010 item 4)", () => {
+    // E2E real: escreve .env.local em tmp dir, invoca CLI com
+    // DIARIA_PROJECT_ROOT apontando pra ele, valida que loadProjectEnv()
+    // foi chamado (BEEHIIV_API_KEY do disco satisfaz beehiiv-key-set).
+    // Cobre o gap onde testes anteriores setavam process.env manual e nunca
+    // exercitavam o caminho de leitura do disco no CLI.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "diaria-cli-env-"));
+    try {
+      writeFileSync(
+        join(tmpRoot, ".env.local"),
+        "BEEHIIV_API_KEY=from-env-local\n",
+      );
+      // dotenv usa override:false → BEEHIIV_API_KEY precisa estar AUSENTE
+      // (não vazio) no env do subprocess pra que .env.local consiga setá-lo.
+      // Construímos um env limpo sem BEEHIIV_API_KEY herdado do shell parent.
+      const scriptPath = join(PROJECT_ROOT, "scripts", "check-invariants.ts");
+      const cleanEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (k !== "BEEHIIV_API_KEY" && v !== undefined) cleanEnv[k] = v;
+      }
+      cleanEnv.DIARIA_PROJECT_ROOT = tmpRoot;
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", scriptPath, "--stage", "0"],
+        { cwd: PROJECT_ROOT, encoding: "utf8", env: cleanEnv },
+      );
+      const out = JSON.parse(r.stdout);
+      const beehivViolations = out.violations.filter(
+        (v: { rule: string }) => v.rule === "beehiiv-key-set",
+      );
+      assert.equal(
+        beehivViolations.length,
+        0,
+        `BEEHIIV_API_KEY do .env.local deveria satisfazer regra; achei ${JSON.stringify(beehivViolations)} (stderr: ${r.stderr})`,
+      );
+      assert.ok(out.rules_run.includes("beehiiv-key-set"));
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 });
