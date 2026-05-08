@@ -8,6 +8,7 @@ import {
   verifyRisk,
   openProbability,
   hasClariceAudienceTag,
+  tierOf,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -409,5 +410,173 @@ describe("openProbability", () => {
     });
     // 62 + 12 + 10 = 84 → clamp 80
     assert.equal(openProbability(c, NOW), 80);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tierOf — taxonomia 10 tiers (#1018)
+// ---------------------------------------------------------------------------
+
+describe("tierOf", () => {
+  it("T1: status active", () => {
+    assert.equal(tierOf(merged({ status: "active" })), 1);
+  });
+
+  it("T1: status past_due", () => {
+    assert.equal(tierOf(merged({ status: "past_due" })), 1);
+  });
+
+  it("T1: status paused", () => {
+    assert.equal(tierOf(merged({ status: "paused" })), 1);
+  });
+
+  it("T1: status trialing", () => {
+    assert.equal(tierOf(merged({ status: "trialing" })), 1);
+  });
+
+  it("T2: pagou alguma vez (payment_count>0), não está em T1", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 1,
+      total_spend: 100,
+    });
+    assert.equal(tierOf(c), 2);
+  });
+
+  it("T2: paid via total_spend>0 mesmo com payment_count=0", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 0,
+      total_spend: 50,
+    });
+    assert.equal(tierOf(c), 2);
+  });
+
+  it("T1 tem precedência sobre T2 (active + paid)", () => {
+    const c = merged({
+      status: "active",
+      payment_count: 5,
+      total_spend: 500,
+    });
+    assert.equal(tierOf(c), 1);
+  });
+
+  it("T3: lead nunca-pagou criado em 2026", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      total_spend: 0,
+      created: new Date("2026-03-15T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 3);
+  });
+
+  it("T4: lead 2025-H2 (jul–dez)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2025-09-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 4);
+  });
+
+  it("T5: lead 2025-H1 (jan–jun)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2025-03-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 5);
+  });
+
+  it("T6: lead 2024-H2", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2024-09-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 6);
+  });
+
+  it("T7: lead 2024-H1", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2024-02-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 7);
+  });
+
+  it("T8: lead 2023-H2", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2023-08-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 8);
+  });
+
+  it("T9: lead 2023-H1", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2023-01-15T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 9);
+  });
+
+  it("T10: lead 2022 (todo H1+H2 → T10)", () => {
+    const cH1 = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2022-03-01T00:00:00Z"),
+    });
+    const cH2 = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2022-09-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(cH1), 10);
+    assert.equal(tierOf(cH2), 10);
+  });
+
+  it("T10: lead 2021 (todo H1+H2 → T10)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2021-06-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 10);
+  });
+
+  it("T10: lead com created muito antigo (2018)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2018-01-01T00:00:00Z"),
+    });
+    assert.equal(tierOf(c), 10);
+  });
+
+  it("T10 fallback: lead sem created date (sem data → fóssil)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: null,
+    });
+    assert.equal(tierOf(c), 10);
+  });
+
+  it("Tag clrc-pt NÃO afeta tier — dois contatos idênticos com/sem tag dão mesmo tier", () => {
+    const base = {
+      status: "",
+      payment_count: 0,
+      total_spend: 0,
+      created: new Date("2025-03-01T00:00:00Z"),
+    };
+    const withTag = merged({ ...base, tag: "clrc-pt", description: "clrc-pt" });
+    const withoutTag = merged({ ...base, tag: null, description: null });
+    assert.equal(tierOf(withTag), tierOf(withoutTag));
+    assert.equal(tierOf(withTag), 5);
   });
 });
