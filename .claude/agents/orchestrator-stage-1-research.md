@@ -180,7 +180,7 @@ Gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tm
 npx tsx scripts/verify-accessibility.ts \
   data/editions/{AAMMDD}/_internal/tmp-urls-all.json \
   data/editions/{AAMMDD}/_internal/link-verify-all.json \
-  --bodies-dir data/editions/{AAMMDD}/_internal/link-verify-bodies \
+  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
   --cache data/link-verify-cache.json
 ```
 A flag `--cache` (#717 hipótese 2) ativa o cache cross-edição de verdicts. URLs já verificadas como `accessible`/`blocked`/`paywall` em qualquer edição passada (TTL default 7 dias) skipam HEAD+GET inteiro. Cache persistido em `data/link-verify-cache.json` (gitignored). Hit ratio típico esperado >50% após 1-2 semanas de runs. Override TTL com `--cache-ttl-days N`.
@@ -210,7 +210,7 @@ URLs do editor entram com `title: "(inbox)"` e `summary: null`. Após a expansã
 ```bash
 npx tsx scripts/enrich-inbox-articles.ts \
   --in data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json \
-  --bodies-dir data/editions/{AAMMDD}/_internal/link-verify-bodies
+  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies
 ```
 O script só toca artigos com `flag: "editor_submitted"` ou `source: "inbox"` cujo título seja placeholder (`(inbox)`, `[INBOX] ...`) ou cujo `summary` esteja vazio. Para cada um, lê o body cacheado por `verify-accessibility.ts` no passo 1i (#717 hipótese 7 — `--bodies-dir`); se ausente, faz fetch da URL final. Em seguida, extrai `og:title` / `og:description` (com fallback pra `<title>` e `meta name=description`). Títulos curados pelo editor são preservados. Falhas de fetch viram outcome `fetch_failed` no stdout — não bloqueiam pipeline. Ler o JSON de volta após o script (mutated in place). Stderr loga `[enrich] body-cache: H/T hit (P%)` — hit ratio típico esperado >70% (URLs do inbox foram fetched no 1i).
 

@@ -101,8 +101,15 @@ export function listInternalJsonFiles(internalDir: string): string[] {
         continue;
       }
       if (st.isDirectory()) {
-        // skip body caches — não são payloads de orchestrator/subagent
-        if (name === "link-verify-bodies" || name.startsWith("_test-backup")) continue;
+        // skip body caches + qualquer subdir _forensic/ (#959) — não são payloads
+        // de orchestrator/subagent.
+        if (
+          name === "link-verify-bodies" ||
+          name === "_forensic" ||
+          name.startsWith("_test-backup")
+        ) {
+          continue;
+        }
         stack.push(full);
         continue;
       }

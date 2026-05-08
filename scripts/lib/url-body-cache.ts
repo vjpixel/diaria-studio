@@ -9,9 +9,11 @@
  * verify-dates pra ~zero fetches em URLs que verify-accessibility já leu.
  *
  * Escopo: por edição. Diretório criado em
- * `data/editions/{AAMMDD}/_internal/link-verify-bodies/` (gitignored via
- * `_internal/`). Cache cross-edição com TTL é hypothesis #2 do mesmo issue —
- * fora do escopo desta lib.
+ * `data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies/` (gitignored
+ * via `_internal/`; subpath `_forensic/` por convenção de #959 — agentes
+ * subsequentes não devem ler esses bodies, são raw HTML pesado pra debug).
+ * Cache cross-edição com TTL é hypothesis #2 do mesmo issue — fora do escopo
+ * desta lib.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

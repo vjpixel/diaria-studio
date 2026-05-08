@@ -221,9 +221,15 @@ Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês
 
 - **Sync push antes do gate:**
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md --fail-on-conflict
   ```
-  Anotar resultado em `sync_results[2]`; ignorar falhas.
+  Anotar resultado em `sync_results[2]`. Exit 0 = OK (com ou sem warnings não-conflito); Exit 2 = CONFLICT detectado (editor mexeu no Drive após último push) — **parar imediatamente** e renderizar halt banner pedindo pull-merge manual antes de prosseguir (#977/#963):
+  ```bash
+  npx tsx scripts/render-halt-banner.ts \
+    --stage "2 — Escrita" \
+    --reason "drive-sync detectou CONFLICT: editor mexeu em arquivo do Drive após último push" \
+    --action "puxar versão do Drive ('pull') e revisar antes de prosseguir, ou 'force' para sobrescrever"
+  ```
 
 - **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:
   ```bash
