@@ -282,5 +282,5 @@ com o test email — editor pode editar manualmente.
   { "error": "chrome_disconnected", "last_step": "<nome do passo onde falhou>", "details": "<mensagem de erro bruta>" }
   ```
 - **Upload de imagem**: aguardar conclusão antes do próximo bloco.
-- **Sem JS arbitrário neste agent.** Use `form_input` e `find` semanticamente. `javascript_tool` não está nos `tools` deste agent — é restrito ao `publish-social` (LinkedIn contenteditable, #177).
+- **Sem JS arbitrário neste agent.** Use `form_input` e `find` semanticamente. `javascript_tool` não está nos `tools` deste agent.
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.

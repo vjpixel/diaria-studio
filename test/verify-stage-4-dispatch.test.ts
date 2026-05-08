@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   reconcileFb,
   reconcileLinkedin,
+  findScheduledMatch,
 } from "../scripts/verify-stage-4-dispatch.ts";
 import type { PostEntry } from "../scripts/lib/social-published-store.ts";
 
@@ -38,45 +39,77 @@ function liEntry(overrides: Partial<PostEntry> = {}): PostEntry {
   };
 }
 
-describe("#917 reconcileFb", () => {
-  it("verified=true quando scheduled_publish_time futuro", () => {
+describe("#974 reconcileFb (via /scheduled_posts)", () => {
+  it("verified=true quando post_id está na lista /scheduled_posts (match exato)", () => {
     const future = Math.floor(new Date("2026-05-08T09:00:00Z").getTime() / 1000);
-    const r = reconcileFb(fbEntry(), { id: "12345", scheduled_publish_time: future }, NOW);
+    const scheduled = [{ id: "12345", scheduled_publish_time: future, message: "x" }];
+    const r = reconcileFb(fbEntry(), scheduled, undefined, NOW);
     assert.equal(r.verified, true);
     assert.equal(r.platform, "facebook");
     assert.equal(r.destaque, "d1");
+    const ext = r.external_state as { scheduled_publish_time: number };
+    assert.equal(ext.scheduled_publish_time, future);
   });
 
-  it("verified=true quando ja published (sem scheduled_publish_time)", () => {
-    const r = reconcileFb(
-      fbEntry(),
-      { id: "12345", is_published: true, created_time: "2026-05-07T11:00:00Z" },
-      NOW,
-    );
+  it("verified=true quando Graph retorna id formato {page_id}_{post_id}", () => {
+    const future = Math.floor(new Date("2026-05-08T09:00:00Z").getTime() / 1000);
+    const scheduled = [{ id: "987654_12345", scheduled_publish_time: future }];
+    const r = reconcileFb(fbEntry(), scheduled, undefined, NOW);
     assert.equal(r.verified, true);
   });
 
-  it("verified=false quando Graph API retorna error", () => {
-    const r = reconcileFb(fbEntry(), { error: { message: "OAuth" } }, NOW);
+  it("verified=true via fallback GET quando post não está em /scheduled_posts (já publicado)", () => {
+    const r = reconcileFb(
+      fbEntry(),
+      [],
+      { id: "12345", permalink_url: "https://fb.com/p/12345", created_time: "2026-05-07T11:00:00Z" },
+      NOW,
+    );
+    assert.equal(r.verified, true);
+    const ext = r.external_state as { post_exists: boolean };
+    assert.equal(ext.post_exists, true);
+  });
+
+  it("verified=false quando fallback Graph API retorna error", () => {
+    const r = reconcileFb(fbEntry(), [], { error: { message: "OAuth" } }, NOW);
     assert.equal(r.verified, false);
     assert.match(r.reason ?? "", /graph_api_error: OAuth/);
   });
 
-  it("verified=false quando scheduled_publish_time vencido + is_published nao true", () => {
-    const past = Math.floor(new Date("2026-05-07T11:00:00Z").getTime() / 1000);
-    const r = reconcileFb(
-      fbEntry(),
-      { id: "12345", scheduled_publish_time: past, is_published: false },
-      NOW,
-    );
+  it("verified=false quando post não está em /scheduled_posts e fallback nem foi feito", () => {
+    const r = reconcileFb(fbEntry(), [], undefined, NOW);
     assert.equal(r.verified, false);
-    assert.match(r.reason ?? "", /scheduled_publish_time vencido/);
+    assert.match(r.reason ?? "", /post_missing/);
   });
 
-  it("verified=false quando Graph retorna sem id", () => {
-    const r = reconcileFb(fbEntry(), {}, NOW);
+  it("verified=false quando entry sem fb_post_id", () => {
+    const e = fbEntry();
+    delete (e as Record<string, unknown>).fb_post_id;
+    const r = reconcileFb(e, [], undefined, NOW);
     assert.equal(r.verified, false);
-    assert.equal(r.reason, "graph_returned_no_id");
+    assert.equal(r.reason, "no_fb_post_id");
+  });
+});
+
+describe("#974 findScheduledMatch", () => {
+  it("match exato por id", () => {
+    const m = findScheduledMatch("12345", [{ id: "12345" }]);
+    assert.equal(m?.id, "12345");
+  });
+
+  it("match por sufixo {page}_{post}", () => {
+    const m = findScheduledMatch("12345", [{ id: "987654_12345" }]);
+    assert.equal(m?.id, "987654_12345");
+  });
+
+  it("match na direção inversa (fb_post_id já tem prefix de page)", () => {
+    const m = findScheduledMatch("987654_12345", [{ id: "12345" }]);
+    assert.equal(m?.id, "12345");
+  });
+
+  it("undefined quando não há match", () => {
+    const m = findScheduledMatch("99999", [{ id: "12345" }]);
+    assert.equal(m, undefined);
   });
 });
 

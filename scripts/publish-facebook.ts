@@ -82,8 +82,8 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
 }
 
 // computeScheduledAt foi movido pra `scripts/compute-social-schedule.ts` (#270)
-// pra ser compartilhado entre publish-facebook (Graph API) e publish-social
-// (LinkedIn via Chrome). Ambos respeitam o invariante:
+// pra ser compartilhado entre publish-facebook (Graph API) e publish-linkedin
+// (Worker queue + Make webhook). Ambos respeitam o invariante:
 // target_date = parse(editionDate) + day_offset, nunca today() + day_offset.
 // (import movido pro topo do arquivo em #290)
 

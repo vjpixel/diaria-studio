@@ -31,13 +31,50 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readSocialPublished, type PostEntry } from "./lib/social-published-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Resolve FB Page ID com mesma precedência de publish-facebook.ts:
+ * env FACEBOOK_PAGE_ID > data/.fb-credentials.json (legacy fallback).
+ */
+function resolveFbPageId(): string {
+  const fromEnv = process.env.FACEBOOK_PAGE_ID;
+  if (fromEnv) return fromEnv;
+  try {
+    const creds = JSON.parse(
+      readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"),
+    ) as { page_id?: string };
+    return creds.page_id ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Resolve URL do Worker LinkedIn com mesma precedência de publish-linkedin.ts:
+ * env DIARIA_LINKEDIN_CRON_URL > platform.config.json.
+ * Sem essa fallback, o verifier falhava quando o URL era só do config (#975).
+ */
+function resolveLinkedinWorkerUrl(): string {
+  const fromEnv = process.env.DIARIA_LINKEDIN_CRON_URL;
+  if (fromEnv) return fromEnv;
+  try {
+    const config = JSON.parse(
+      readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
+    ) as {
+      publishing?: { social?: { linkedin?: { cloudflare_worker_url?: string } } };
+    };
+    return config.publishing?.social?.linkedin?.cloudflare_worker_url ?? "";
+  } catch {
+    return "";
+  }
+}
 
 // ---- Tipos ----
 
@@ -67,6 +104,17 @@ interface FbGraphResponse {
   error?: { message: string; code?: number };
 }
 
+interface FbScheduledPost {
+  id: string;
+  scheduled_publish_time?: number;
+  message?: string;
+}
+
+interface FbScheduledPostsResponse {
+  data?: FbScheduledPost[];
+  error?: { message: string; code?: number };
+}
+
 interface WorkerListResponse {
   count: number;
   items: Array<{
@@ -81,13 +129,39 @@ interface WorkerListResponse {
 
 // ---- Facebook verifier ----
 
+/**
+ * Lista posts agendados pra Page (`/{page_id}/scheduled_posts`). Endpoint correto
+ * pra verificar agendamentos em Graph API v25.0+ (#974). O endpoint legacy
+ * `/{post_id}?fields=is_published,scheduled_publish_time` não existe mais — Graph
+ * retorna `(#100) Tried accessing nonexisting field`.
+ */
+export async function fetchFbScheduledPosts(
+  pageId: string,
+  pageToken: string,
+  apiVersion: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FbScheduledPostsResponse> {
+  const fields = "id,scheduled_publish_time,message";
+  const url = `https://graph.facebook.com/${apiVersion}/${pageId}/scheduled_posts?fields=${fields}&limit=100`;
+  const res = await fetchImpl(url, {
+    headers: { Authorization: `OAuth ${pageToken}` },
+  });
+  return (await res.json()) as FbScheduledPostsResponse;
+}
+
+/**
+ * Confirma que um post existe (publicado ou ainda válido) via GET simples por id.
+ * Usado como fallback quando o post não está em `/scheduled_posts` (já publicado
+ * ou janela de agendamento passou). Pede só `id` + `permalink_url` pra evitar
+ * o erro `(#100) Tried accessing nonexisting field`.
+ */
 export async function fetchFbPostState(
   postId: string,
   pageToken: string,
   apiVersion: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<FbGraphResponse> {
-  const fields = "id,is_published,scheduled_publish_time,created_time,permalink_url";
+  const fields = "id,permalink_url,created_time";
   const url = `https://graph.facebook.com/${apiVersion}/${postId}?fields=${fields}`;
   const res = await fetchImpl(url, {
     headers: { Authorization: `OAuth ${pageToken}` },
@@ -96,11 +170,30 @@ export async function fetchFbPostState(
 }
 
 /**
- * Reconcilia FB entry com Graph API state. Pure -- testavel sem network.
+ * Faz match de PostEntry com a lista `/scheduled_posts` da Page (#974).
+ * Graph API retorna IDs no formato `{page_id}_{post_id}`; o fb_post_id que
+ * gravamos pode ser só o sufixo. Match por sufixo (endsWith) cobre os dois.
+ */
+export function findScheduledMatch(
+  fbPostId: string,
+  scheduled: FbScheduledPost[],
+): FbScheduledPost | undefined {
+  return scheduled.find(
+    (sp) => sp.id === fbPostId || sp.id.endsWith(`_${fbPostId}`) || fbPostId.endsWith(`_${sp.id}`),
+  );
+}
+
+/**
+ * Reconcilia FB entry contra (1) lista `/scheduled_posts` (preferred), com
+ * fallback (2) GET simples por post_id pra confirmar que existe (caso já
+ * tenha sido publicado/expirado e saido da queue). Pure -- testavel sem network.
+ *
+ * `directGraph` é opcional — só consultado quando `scheduledPosts` não tem match.
  */
 export function reconcileFb(
   entry: PostEntry,
-  graph: FbGraphResponse,
+  scheduledPosts: FbScheduledPost[],
+  directGraph?: FbGraphResponse,
   now: Date = new Date(),
 ): VerifyResult {
   const base: VerifyResult = {
@@ -110,44 +203,55 @@ export function reconcileFb(
     verified: false,
   };
 
-  if (graph.error) {
-    return {
-      ...base,
-      reason: `graph_api_error: ${graph.error.message}`,
-      external_state: graph.error,
-    };
-  }
-  if (!graph.id) {
-    return { ...base, reason: "graph_returned_no_id" };
-  }
+  const fbPostId = (entry.fb_post_id as string | undefined) ?? "";
+  if (!fbPostId) return { ...base, reason: "no_fb_post_id" };
 
-  const nowSec = Math.floor(now.getTime() / 1000);
-  const scheduledSec = graph.scheduled_publish_time;
-
-  if (typeof scheduledSec === "number" && scheduledSec > nowSec) {
+  const match = findScheduledMatch(fbPostId, scheduledPosts);
+  if (match) {
     return {
       ...base,
       verified: true,
       external_state: {
-        scheduled_publish_time: scheduledSec,
-        scheduled_iso: new Date(scheduledSec * 1000).toISOString(),
+        scheduled_publish_time: match.scheduled_publish_time,
+        scheduled_iso:
+          typeof match.scheduled_publish_time === "number"
+            ? new Date(match.scheduled_publish_time * 1000).toISOString()
+            : null,
+        matched_id: match.id,
       },
     };
   }
 
-  if (graph.is_published === true) {
-    return {
-      ...base,
-      verified: true,
-      external_state: { published: true, created_time: graph.created_time },
-    };
+  // Fallback: post não está em /scheduled_posts. Pode ser:
+  //   (a) já publicado (passou o scheduled_publish_time)
+  //   (b) deletado/expirado
+  // GET por id confirma existência sem campos quebrados.
+  if (directGraph) {
+    if (directGraph.error) {
+      return {
+        ...base,
+        reason: `graph_api_error: ${directGraph.error.message}`,
+        external_state: directGraph.error,
+      };
+    }
+    if (directGraph.id) {
+      return {
+        ...base,
+        verified: true,
+        external_state: {
+          post_exists: true,
+          permalink_url: directGraph.permalink_url,
+          created_time: directGraph.created_time,
+          note: "not in /scheduled_posts — provavelmente já publicado",
+        },
+      };
+    }
+    return { ...base, reason: "graph_returned_no_id", external_state: directGraph };
   }
 
   return {
     ...base,
-    reason:
-      "scheduled_publish_time vencido mas is_published nao confirmado -- possivel falha silenciosa",
-    external_state: graph,
+    reason: "post_missing: nao esta em /scheduled_posts e fallback GET nao foi feito",
   };
 }
 
@@ -281,9 +385,10 @@ async function main(): Promise<void> {
   const warnings: string[] = [];
   const results: VerifyResult[] = [];
 
-  // Facebook verification
+  // Facebook verification (#974: usar /scheduled_posts em vez de /{post_id})
   const fbToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN ?? "";
   const fbApiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
+  const fbPageId = resolveFbPageId();
   if (!fbToken && fbEntries.length > 0) {
     warnings.push(
       "FACEBOOK_PAGE_ACCESS_TOKEN ausente -- pulando verificacao Graph API. " +
@@ -298,7 +403,34 @@ async function main(): Promise<void> {
         reason: "missing_fb_token",
       });
     }
-  } else {
+  } else if (!fbPageId && fbEntries.length > 0) {
+    warnings.push(
+      "FACEBOOK_PAGE_ID ausente -- nao consigo consultar /scheduled_posts. " +
+        "FB entries serao marcadas como unverified.",
+    );
+    for (const e of fbEntries) {
+      results.push({
+        destaque: e.destaque,
+        platform: "facebook",
+        expected_status: e.status,
+        verified: false,
+        reason: "missing_fb_page_id",
+      });
+    }
+  } else if (fbEntries.length > 0) {
+    let scheduledPosts: FbScheduledPost[] = [];
+    try {
+      const resp = await fetchFbScheduledPosts(fbPageId, fbToken, fbApiVersion);
+      if (resp.error) {
+        warnings.push(`/scheduled_posts retornou erro: ${resp.error.message}`);
+      } else {
+        scheduledPosts = resp.data ?? [];
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`/scheduled_posts falhou: ${msg}`);
+    }
+
     for (const e of fbEntries) {
       const fbId = (e.fb_post_id as string | undefined) ?? null;
       if (!fbId || e.status === "failed") {
@@ -311,9 +443,16 @@ async function main(): Promise<void> {
         });
         continue;
       }
+      // Match na lista de scheduled. Se não achou, fallback pra GET direto
+      // (post pode ter sido publicado já, sai da queue de scheduled).
+      const match = findScheduledMatch(fbId, scheduledPosts);
+      if (match) {
+        results.push(reconcileFb(e, scheduledPosts));
+        continue;
+      }
       try {
-        const graph = await fetchFbPostState(fbId, fbToken, fbApiVersion);
-        results.push(reconcileFb(e, graph));
+        const direct = await fetchFbPostState(fbId, fbToken, fbApiVersion);
+        results.push(reconcileFb(e, scheduledPosts, direct));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         results.push({
@@ -327,8 +466,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // LinkedIn verification
-  const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? "";
+  // LinkedIn verification (#975: fallback URL pra platform.config.json)
+  const workerUrl = resolveLinkedinWorkerUrl();
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   if ((!workerUrl || !workerToken) && liEntries.length > 0) {
     warnings.push(
