@@ -458,24 +458,22 @@ interface Scored extends Merged {
 }
 
 function formatTierRow(r: Scored): { [k: string]: string | number } {
-  // Schema enxuto pra import no Brevo:
-  // - identidade: email, first_name, full_name
-  // - tier (segmentação) + score/risk/probability (ordenação dentro do tier)
-  // - audit trail: stripe_ids, source_files
+  // Schema mínimo pra import no Brevo (3 colunas — #1019):
+  // - email          (identidade)
+  // - first_name     (personalização: "Olá, {{first_name}}")
+  // - open_probability  (atributo pra segmentação no Brevo)
   //
-  // Removidos (#1019, decisão editorial): created, status, plan, delinquent,
-  // total_spend, payment_count, refunded_volume, description, tag — dados
-  // financeiros e meta não vão pro Brevo (campos calculados ficam só no CSV).
+  // Tier é implícito no filename (brevo-import-t{NN}.csv).
+  // Ordem das linhas implica ordenação por score (não precisa coluna).
+  //
+  // verify_risk não vai no output: decisão de MillionVerifier é tomada
+  // por tier (heurística atual: T6+ → MV, T1–T5 → skip). Função verifyRisk
+  // permanece no script pra documentar a lógica e cobertura de teste, caso
+  // a estratégia mude no futuro.
   return {
     email: r.email,
     first_name: r.name?.split(" ")[0] || "",
-    full_name: r.name || "",
-    tier: r.tier,
-    score: r.score.toFixed(3),
     open_probability: r.open_probability,
-    verify_risk: r.verify_risk,
-    stripe_ids: r.stripe_ids.join(";"),
-    source_files: r.source_files.join(";"),
   };
 }
 
