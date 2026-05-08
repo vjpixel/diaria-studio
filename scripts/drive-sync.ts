@@ -27,8 +27,10 @@
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, unlinkSync } from "node:fs";
+import { resolve, extname, dirname, basename as pathBasename } from "node:path";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
@@ -329,6 +331,128 @@ async function driveDownloadFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+// ---------------------------------------------------------------------------
+// 3-way merge helpers (#963)
+// ---------------------------------------------------------------------------
+
+/**
+ * #963: Path do snapshot pre-push pra um arquivo. Snapshot é copy do conteúdo
+ * que foi pushed por último (base do 3-way merge se conflito for detectado).
+ *
+ * Convenção: `_internal/.drive-snapshots/{filename}`. Subpath gitignorado por
+ * `_internal/`. Snapshot só faz sentido pra arquivos texto (md); binários
+ * usam force-overwrite-on-conflict (não mergeáveis line-by-line).
+ */
+export function snapshotPath(editionDir: string, filename: string): string {
+  return resolve(editionDir, "_internal", ".drive-snapshots", filename);
+}
+
+/**
+ * #963: Tenta 3-way merge via `git merge-file --diff3 -p` (git existe na CI
+ * e em qualquer dev env do projeto). Returns merged content + flag de conflito.
+ *
+ * Args:
+ *   localContent: o que o pipeline tem agora (será o "ours")
+ *   baseContent:  o último push bem-sucedido (base do 3-way)
+ *   remoteContent: conteúdo atual do Drive (será o "theirs")
+ *
+ * Estratégia: cria 3 arquivos tmp, roda git merge-file, lê output.
+ * Exit 0 = clean merge; Exit > 0 = N conflitos (cada um marker `<<<<<<<`).
+ *
+ * Pure quanto possível — testes mockam via input strings, não Drive.
+ */
+export function attemptThreeWayMerge(
+  localContent: string,
+  baseContent: string,
+  remoteContent: string,
+): { merged: string; hasConflicts: boolean; conflictCount: number } {
+  const tmp = tmpdir();
+  const stamp = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  const localTmp = resolve(tmp, `merge-local-${stamp}`);
+  const baseTmp = resolve(tmp, `merge-base-${stamp}`);
+  const remoteTmp = resolve(tmp, `merge-remote-${stamp}`);
+  try {
+    writeFileSync(localTmp, localContent, "utf8");
+    writeFileSync(baseTmp, baseContent, "utf8");
+    writeFileSync(remoteTmp, remoteContent, "utf8");
+    // -p envia output pra stdout; --diff3 inclui base nos conflict markers.
+    // Labels deixam claro qual era qual no marker (--- BASE / +++ DRIVE etc).
+    const r = spawnSync(
+      "git",
+      [
+        "merge-file",
+        "-p",
+        "--diff3",
+        "-L", "local",
+        "-L", "base",
+        "-L", "drive",
+        localTmp,
+        baseTmp,
+        remoteTmp,
+      ],
+      { encoding: "utf8" },
+    );
+    // git merge-file: exit 0 = clean, exit N (N>0) = N conflitos. Exit < 0 = error.
+    const status = r.status ?? -1;
+    const merged = r.stdout ?? "";
+    return {
+      merged,
+      hasConflicts: status !== 0,
+      conflictCount: status > 0 ? status : 0,
+    };
+  } finally {
+    for (const p of [localTmp, baseTmp, remoteTmp]) {
+      try {
+        unlinkSync(p);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
+ * #963: Salva snapshot do conteúdo recém-pushed. Usado como base do 3-way
+ * merge na próxima detecção de conflito. Best-effort — falha de IO loga
+ * warning mas não bloqueia push.
+ */
+export function savePrePushSnapshot(
+  editionDir: string,
+  filename: string,
+  content: string | Buffer,
+): void {
+  // Snapshot só pra texto. Binário (jpg, png) não mergeia bem.
+  if (Buffer.isBuffer(content)) {
+    const ext = extname(filename).toLowerCase();
+    if (ext !== ".md" && ext !== ".txt" && ext !== ".json") return;
+  }
+  const path = snapshotPath(editionDir, filename);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const text = typeof content === "string" ? content : content.toString("utf8");
+    writeFileSync(path, text, "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * #963: Carrega snapshot pre-push se existir. Retorna null quando ausente
+ * (caso primeiro push após implementação — sem base 3-way disponível).
+ */
+export function loadPrePushSnapshot(
+  editionDir: string,
+  filename: string,
+): string | null {
+  const path = snapshotPath(editionDir, filename);
+  if (!existsSync(path)) return null;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Renomeia um arquivo no Drive via PATCH. Usado pelo push pra arquivar a
  * versão anterior antes de subir nova como nome canônico (#37).
@@ -504,13 +628,25 @@ async function resolveDayFolder(
 // Push
 // ---------------------------------------------------------------------------
 
+export type ConflictMode = "warn" | "pull-merge" | "force";
+
+export interface PushFileOpts {
+  /** #963: comportamento em caso de CONFLICT (Drive modified após último push).
+   * - "warn" (default): aborta com warning (compat com behavior original)
+   * - "pull-merge": tenta 3-way merge via git merge-file --diff3
+   * - "force": sobrescreve sem checagem (perigoso)
+   */
+  onConflict?: ConflictMode;
+}
+
 export async function pushFile(
   editionDir: string,
   filename: string,
   yymmdd: string,
   dayFolderId: string,
   cache: DriveCache,
-  result: SyncResult
+  result: SyncResult,
+  opts: PushFileOpts = {},
 ): Promise<void> {
   const edCache = cache.editions[yymmdd];
   const fileCache = edCache.files[filename];
@@ -545,6 +681,7 @@ export async function pushFile(
   // #605: tolerância pra auto-conversão Google Doc (bumpa modifiedTime ~1-2s
   //       sem edit humano). Default 10s; override em platform.config.json
   //       (drive_sync_conflict_tolerance_seconds).
+  // #963: quando opts.onConflict === "pull-merge", tenta 3-way merge antes de abortar.
   if (fileCache?.drive_file_id && fileCache?.drive_modifiedTime) {
     const meta = await driveGetMetadata(fileCache.drive_file_id);
     const cachedMs = new Date(fileCache.drive_modifiedTime).getTime();
@@ -552,13 +689,65 @@ export async function pushFile(
     const diffSec = (driveMs - cachedMs) / 1000;
     const toleranceSec = CONFLICT_TOLERANCE_SECONDS;
     if (diffSec > toleranceSec) {
-      result.warnings.push({
-        file: filename,
-        error_message: `CONFLICT: ${filename} foi modificado no Drive (${meta.modifiedTime}) após o último push (${fileCache.drive_modifiedTime}). Push abortado — fazer pull primeiro para não sobrescrever edições do editor.`,
-      });
-      return; // não sobrescrever
+      // Conflito detectado — comportamento varia por --on-conflict:
+      //   - "pull-merge" (#963): tenta 3-way merge via git merge-file --diff3
+      //   - "warn" (default, compat): aborta push com warning (comportamento original)
+      //   - "force": pula check, sobrescreve Drive sem 3-way (perigoso)
+      const ext = extname(filename).toLowerCase();
+      const isMergeable = ext === ".md" || ext === ".txt" || ext === ".json";
+      if (opts.onConflict === "pull-merge" && isMergeable) {
+        const baseSnapshot = loadPrePushSnapshot(editionDir, filename);
+        if (!baseSnapshot) {
+          result.warnings.push({
+            file: filename,
+            error_message: `CONFLICT: ${filename} foi modificado no Drive mas não há snapshot pre-push pra 3-way merge. Push abortado — fazer pull manual primeiro. (Próximo push terá snapshot disponível.)`,
+          });
+          return;
+        }
+        // Pull current Drive content + read local content
+        let driveContent: string;
+        try {
+          const driveBuf = await driveDownloadFile(fileCache.drive_file_id);
+          driveContent = driveBuf.toString("utf8");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.warnings.push({
+            file: filename,
+            error_message: `CONFLICT: ${filename} pull pra 3-way merge falhou (${msg}). Push abortado.`,
+          });
+          return;
+        }
+        const localPath = resolve(ROOT, editionDir, filename);
+        const localContent = readFileSync(localPath, "utf8");
+        const merge = attemptThreeWayMerge(localContent, baseSnapshot, driveContent);
+        if (merge.hasConflicts) {
+          // Conflito de mesma região — escreve resultado com markers no local +
+          // halt. Editor resolve manualmente, depois re-roda pipeline.
+          writeFileSync(localPath, merge.merged, "utf8");
+          result.warnings.push({
+            file: filename,
+            error_message: `CONFLICT: ${filename} 3-way merge tem ${merge.conflictCount} conflito(s) na mesma região. Markers <<<<<<< escritos em ${localPath}. Editor: resolver conflitos manualmente e re-rodar drive-sync (push).`,
+          });
+          return;
+        }
+        // Clean merge: substituir local pelo merged + atualizar mtime + seguir push.
+        writeFileSync(localPath, merge.merged, "utf8");
+        // Snapshot atualizado já reflete o merged na próxima iteração — saved no fim do push.
+      } else if (opts.onConflict === "force") {
+        // Sobrescreve sem 3-way. Documenta no warning pra trail editorial saber que aconteceu.
+        result.warnings.push({
+          file: filename,
+          error_message: `FORCE_OVERWRITE: ${filename} Drive modificado externamente (${meta.modifiedTime}) mas --on-conflict=force passou — sobrescrevendo.`,
+        });
+      } else {
+        result.warnings.push({
+          file: filename,
+          error_message: `CONFLICT: ${filename} foi modificado no Drive (${meta.modifiedTime}) após o último push (${fileCache.drive_modifiedTime}). Push abortado — fazer pull primeiro para não sobrescrever edições do editor.`,
+        });
+        return; // não sobrescrever
+      }
     }
-    if (diffSec > 0) {
+    if (diffSec > 0 && diffSec <= toleranceSec) {
       // Dentro da tolerância — auto-conversion noise. Atualiza cache silenciosamente.
       fileCache.drive_modifiedTime = meta.modifiedTime;
     }
@@ -605,6 +794,8 @@ export async function pushFile(
         drive_mimeType: driveMimeType,
       };
       result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle + " (updated in-place)" });
+      // #963: snapshot pre-push pra próxima detecção de conflito usar como base 3-way.
+      savePrePushSnapshot(editionDir, filename, bytes);
       return;
     } catch (updateErr) {
       // Fallback: arquivo pode ter sido deletado no Drive — criar novo normalmente
@@ -656,6 +847,8 @@ export async function pushFile(
   };
 
   result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle });
+  // #963: snapshot pre-push pra próxima detecção de conflito usar como base 3-way.
+  savePrePushSnapshot(editionDir, filename, bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +945,11 @@ async function main(): Promise<void> {
   const editionDir = values["edition-dir"] ?? "";
   const stage = parseInt(values["stage"] ?? "0", 10);
   const filesStr = values["files"] ?? "";
+  // #963: --on-conflict pull-merge|warn|force. Default mantém compat ("warn").
+  const onConflictRaw = values["on-conflict"] ?? "warn";
+  const onConflict: ConflictMode = (
+    ["warn", "pull-merge", "force"].includes(onConflictRaw) ? onConflictRaw : "warn"
+  ) as ConflictMode;
 
   if (!mode || !editionDir) {
     console.error(
@@ -797,7 +995,7 @@ async function main(): Promise<void> {
         }
 
         if (mode === "push") {
-          await pushFile(editionDir, filename, yymmdd, dayFolderId, cache, result);
+          await pushFile(editionDir, filename, yymmdd, dayFolderId, cache, result, { onConflict });
         } else {
           await pullFile(editionDir, filename, yymmdd, cache, result);
         }

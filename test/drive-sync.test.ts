@@ -14,6 +14,10 @@ import {
   pushFile,
   pullFile,
   loadConflictToleranceSeconds,
+  attemptThreeWayMerge,
+  savePrePushSnapshot,
+  loadPrePushSnapshot,
+  snapshotPath,
   type DriveCache,
   type SyncResult,
 } from "../scripts/drive-sync.ts";
@@ -768,5 +772,109 @@ describe("pushFile — CONFLICT_TOLERANCE_SECONDS auto-conversion noise (#605, #
       "boundary: diff == tolerance nao deve disparar CONFLICT",
     );
     assert.equal(uploadCalled, true);
+  });
+});
+
+describe("attemptThreeWayMerge (#963)", () => {
+  it("merge clean: edits disjuntos no MD são integrados", () => {
+    const base = "line1\nline2\nline3\nline4\nline5\n";
+    const local = "line1\nLINE2-pipeline\nline3\nline4\nline5\n";
+    const remote = "line1\nline2\nline3\nLINE4-editor\nline5\n";
+    const r = attemptThreeWayMerge(local, base, remote);
+    assert.equal(r.hasConflicts, false, "edits disjuntos não conflitam");
+    assert.match(r.merged, /LINE2-pipeline/);
+    assert.match(r.merged, /LINE4-editor/);
+  });
+
+  it("merge sem mudanças: drive == local == base → no-op merge", () => {
+    const content = "linha 1\nlinha 2\n";
+    const r = attemptThreeWayMerge(content, content, content);
+    assert.equal(r.hasConflicts, false);
+    assert.equal(r.merged.trim(), content.trim());
+  });
+
+  it("merge com conflito: ambos editam mesma linha → markers + hasConflicts=true", () => {
+    const base = "linha 1\nlinha 2\nlinha 3\n";
+    const local = "linha 1\nLINHA-pipeline\nlinha 3\n";
+    const remote = "linha 1\nLINHA-editor\nlinha 3\n";
+    const r = attemptThreeWayMerge(local, base, remote);
+    assert.equal(r.hasConflicts, true);
+    assert.ok(r.conflictCount >= 1);
+    assert.match(r.merged, /<<<<<<</);
+    assert.match(r.merged, />>>>>>>/);
+    assert.match(r.merged, /LINHA-pipeline/);
+    assert.match(r.merged, /LINHA-editor/);
+  });
+
+  it("merge com 1 lado intacto: drive == base, local mudou → usa local", () => {
+    const base = "linha 1\nlinha 2\n";
+    const local = "linha 1\nLINHA-pipeline\n";
+    const remote = base;
+    const r = attemptThreeWayMerge(local, base, remote);
+    assert.equal(r.hasConflicts, false);
+    assert.match(r.merged, /LINHA-pipeline/);
+  });
+
+  it("merge com 1 lado intacto: local == base, drive mudou → usa drive", () => {
+    const base = "linha 1\nlinha 2\n";
+    const local = base;
+    const remote = "linha 1\nLINHA-editor\n";
+    const r = attemptThreeWayMerge(local, base, remote);
+    assert.equal(r.hasConflicts, false);
+    assert.match(r.merged, /LINHA-editor/);
+  });
+});
+
+describe("snapshot helpers (#963)", () => {
+  it("snapshotPath usa _internal/.drive-snapshots/", () => {
+    const p = snapshotPath("data/editions/260508", "02-reviewed.md");
+    const norm = p.replace(/\\/g, "/");
+    assert.match(norm, /_internal\/\.drive-snapshots\/02-reviewed\.md$/);
+  });
+
+  it("save → load round-trip preserva conteúdo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "drive-snap-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      savePrePushSnapshot(dir, "02-reviewed.md", "conteúdo X\n");
+      const loaded = loadPrePushSnapshot(dir, "02-reviewed.md");
+      assert.equal(loaded, "conteúdo X\n");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("load retorna null quando snapshot ausente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "drive-snap-"));
+    try {
+      const loaded = loadPrePushSnapshot(dir, "missing.md");
+      assert.equal(loaded, null);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("save aceita Buffer pra arquivos .md", () => {
+    const dir = mkdtempSync(join(tmpdir(), "drive-snap-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      savePrePushSnapshot(dir, "02-reviewed.md", Buffer.from("texto buffer\n"));
+      const loaded = loadPrePushSnapshot(dir, "02-reviewed.md");
+      assert.equal(loaded, "texto buffer\n");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("save pula binários (.jpg/.png)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "drive-snap-"));
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      savePrePushSnapshot(dir, "04-d1-2x1.jpg", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      const loaded = loadPrePushSnapshot(dir, "04-d1-2x1.jpg");
+      assert.equal(loaded, null, "binário não deve ter snapshot");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
