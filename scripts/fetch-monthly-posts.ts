@@ -97,9 +97,12 @@ async function fetchPostsForMonth(
     // Sem filtro de status: Beehiiv usa "confirmed" para posts publicados,
     // não "published" como seria de esperar. Filtrar client-side pela janela
     // de datas é suficiente para excluir rascunhos (publish_date = 0 ou nulo).
+    // #972: `newest_first` retorna oldest first na Beehiiv API v2. Usar
+    // `publish_date` + `direction=desc` pra paginar do mais recente.
     const params = new URLSearchParams({
       per_page: "50",
-      order_by: "newest_first",
+      order_by: "publish_date",
+      direction: "desc",
       page: String(page),
     });
     const data = await apiFetch<BeehiivListResponse>(
