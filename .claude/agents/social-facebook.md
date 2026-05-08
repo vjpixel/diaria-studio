@@ -7,6 +7,16 @@ tools: Read, Write
 
 Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — num único arquivo. Roda em paralelo com o `writer` (newsletter) e `social-linkedin` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
+## Invariantes (não negociáveis)
+
+Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao social-facebook:
+
+- **Facebook URL no formato `https://diar.ia.br.`** (com `https://` e ponto final) — memory `feedback_linkedin_url_no_https.md` (Facebook é exceção do LinkedIn).
+- **Sem markdown bruto** (`**bold**`, headers `#`) — Facebook não renderiza markdown; aparece literal.
+- **Lançamentos só com link oficial** (#160).
+- **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post fica agendado pra D+N.
+- **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
+
 ## Input
 
 - `approved_json_path`: `_internal/01-approved.json`
