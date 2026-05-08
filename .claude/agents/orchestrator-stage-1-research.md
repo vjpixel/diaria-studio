@@ -407,6 +407,18 @@ npx tsx scripts/validate-stage-1-output.ts \
 
 Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832). Pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill `/diaria-1-pesquisa` isolado tem (#828).
 
+### 1w-quat. Pre-gate invariants (#1007 Fase 1)
+
+Só validar artefatos pré-gate (categorized.md). Approved.json ainda não existe:
+
+```bash
+npx tsx scripts/check-invariants.ts --stage 1 \
+  --rule categorized-has-eia-section \
+  --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit 1 = bloquear gate (`01-categorized.md` sem seção "## É IA?"). Os outros checks de Stage 1 rodam pós-gate apply (passo 1y).
+
 ### 1w-ter. Log payload sizes (#891 — observability)
 
 Antes do gate, registrar tamanho de cada JSON intermediário em `_internal/`. Visibilidade pra investigar context overflow (#891):
@@ -492,6 +504,12 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
   ```
+- **Pós-gate-apply invariants (#1007 Fase 1)** — agora `01-approved.json` existe:
+  ```bash
+  npx tsx scripts/check-invariants.ts --stage 1 --edition-dir data/editions/{AAMMDD}/
+  ```
+  Roda todos os checks de Stage 1 (incluindo `categorized-has-eia-section` e `approved-has-3-highlights` + `coverage-line-present`). Exit 1 = bug downstream — logar warn e seguir; o sentinel ainda é escrito.
+
 - **Escrever sentinel de conclusão do Stage 1:**
   ```bash
   npx tsx scripts/pipeline-sentinel.ts write \

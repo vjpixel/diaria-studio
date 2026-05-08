@@ -69,6 +69,11 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
   (mantém `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pré-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edições pré-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
+- **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` está populado e env vars críticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estão setadas. Falha = abort imediato — evita DLQ recurrence (incident 260508 #999):
+  ```bash
+  npx tsx scripts/check-invariants.ts --stage 4 --edition-dir data/editions/{AAMMDD}/
+  ```
+  Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
 ### 4b. Confirmar modo de publicação por canal (#336)
 
@@ -349,6 +354,16 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - Sentinel ausente faz Stage 0 da próxima edição re-investigar publicação via Beehiiv API (custo extra, ruído editorial).
 - Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 - Quando publicação é manual (Pixel cria rascunho direto), `05-published.json` pode ter `status: "pending_manual"` ou similar — o sentinel registra que o **stage** terminou, não que a publicação foi 100% automática. Stage 0 valida estado real via `refresh-dedup` que cruza com Beehiiv API.
+
+### 4j. Pós-publicação invariants (#1007 Fase 1)
+
+Antes do auto-reporter, validar que (a) sentinel `_internal/.step-4-done.json` foi escrito, (b) `_internal/06-social-published.json` tem `posts[]` não-vazio sem entries `failed`:
+
+```bash
+npx tsx scripts/check-invariants.ts --stage 5 --edition-dir data/editions/{AAMMDD}/
+```
+
+Exit 1 = logar warn (não bloquear auto-reporter — sinaliza falha silenciosa que o auto-reporter deve transformar em issue). Falha aqui é evidência de bug downstream (publish-* não gravou store atomic).
 
 ---
 
