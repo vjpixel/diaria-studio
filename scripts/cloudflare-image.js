@@ -158,4 +158,6 @@ if (resizeW && resizeH) {
 await pipeline.jpeg({ quality: 90 }).toFile(outPath);
 
 console.error(`Imagem gerada: ${outPath}`);
-process.stdout.write(outPath);
+// #995: usar console.log pra newline final (consistência com gemini-image.js,
+// openai-image.js — orchestrator parseia output line-buffered).
+console.log(outPath);
