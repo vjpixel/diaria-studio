@@ -13,15 +13,18 @@
  *   npx tsx scripts/merge-clarice-subscribers.ts [--filter-clrc-pt]
  *
  * Output (em data/clarice-subscribers/):
- *   kit-import-tier1.csv      (top 1000)
- *   kit-import-tier2.csv      (1001–5000)
- *   kit-import-tier3.csv      (resto)
- *   kit-import-excluded.csv   (audit trail)
+ *   brevo-import-t01.csv      Tier 1: assinante atual
+ *   brevo-import-t02.csv      Tier 2: ex-assinante
+ *   brevo-import-t03.csv      Tier 3: lead 2026-H1
+ *   brevo-import-t04.csv      Tier 4: lead 2025-H2
+ *   ...
+ *   brevo-import-t10.csv      Tier 10: lead 2021–2022
+ *   brevo-import-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 
@@ -385,6 +388,65 @@ export function openProbability(m: Merged, now: Date): number {
 }
 
 // ---------------------------------------------------------------------------
+// Tier — taxonomia 10-níveis pra warmup faseado (#1018).
+//
+// T1  = assinante atual (status ∈ {active, past_due, paused, trialing})
+// T2  = ex-assinante (pagou alguma vez E não está em T1)
+// T3  = lead 2026-H1 (nunca pagou, criado jan–jun/2026)
+// T4  = lead 2025-H2
+// T5  = lead 2025-H1
+// T6  = lead 2024-H2
+// T7  = lead 2024-H1
+// T8  = lead 2023-H2
+// T9  = lead 2023-H1
+// T10 = lead 2021–2022 (todo, agrupado — caudão antigo)
+//
+// Critério: estado atual da relação (T1) → história de pagamento (T2) →
+// recência por semestre (T3–T10). Substitui o slicing por rank de score
+// (slice(0,1000)/slice(1000,5000)/slice(5000)) que tinha cortes arbitrários
+// no meio de empates.
+// ---------------------------------------------------------------------------
+
+const TIER1_STATUSES = new Set(["active", "past_due", "paused", "trialing"]);
+
+/**
+ * Labels human-readable de cada tier — exportado pra reuso (logging, dashboard
+ * futuro, ferramentas de análise). Mantém em sync com `tierOf`.
+ */
+export const TIER_LABELS: { readonly [k: number]: string } = {
+  1: "Assinante atual (active/past_due/paused/trialing)",
+  2: "Ex-assinante (pagou alguma vez)",
+  3: "Lead nunca-pagou — 2026-H1",
+  4: "Lead nunca-pagou — 2025-H2",
+  5: "Lead nunca-pagou — 2025-H1",
+  6: "Lead nunca-pagou — 2024-H2",
+  7: "Lead nunca-pagou — 2024-H1",
+  8: "Lead nunca-pagou — 2023-H2",
+  9: "Lead nunca-pagou — 2023-H1",
+  10: "Lead nunca-pagou — 2021–2022 (caudão antigo)",
+};
+
+export function tierOf(m: Merged): number {
+  if (m.status && TIER1_STATUSES.has(m.status)) return 1;
+  if (m.payment_count > 0 || m.total_spend > 0) return 2;
+
+  // Lead nunca-pagante: bucket por semestre de criação.
+  if (!m.created) return 10; // sem data → fóssil
+  const y = m.created.getUTCFullYear();
+  const h2 = m.created.getUTCMonth() >= 6;
+
+  // FIXME(#1020, antes-de-2026-07-01): adicionar ramo `y === 2026 && h2 ? ... : 3`
+  // ou parametrizar `now` (ver #1020). Hoje N=0 contatos H2 (estamos em 2026-05);
+  // a partir de jul/2026 novos cadastros serão lumpados em T3.
+  if (y === 2026) return 3;
+  if (y === 2025) return h2 ? 4 : 5;
+  if (y === 2024) return h2 ? 6 : 7;
+  if (y === 2023) return h2 ? 8 : 9;
+  return 10; // 2021, 2022, ou anteriores. Anos futuros (2027+) caem aqui também
+             // até o script ser atualizado — ver FIXME acima.
+}
+
+// ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 
@@ -392,27 +454,28 @@ interface Scored extends Merged {
   score: number;
   verify_risk: number;
   open_probability: number;
+  tier: number;
 }
 
 function formatTierRow(r: Scored): { [k: string]: string | number } {
+  // Schema mínimo pra import no Brevo (3 colunas — #1019):
+  // - email             (identidade)
+  // - NOME              (personalização: "Olá, {{NOME}}")
+  // - OPEN_PROBABILITY  (atributo Brevo pra segmentação)
+  //
+  // Headers em UPPERCASE batem com nomes dos atributos no Brevo deste account
+  // (PT-BR: NOME mapeia pra firstname). Sem uppercase, o Brevo cria atributos
+  // novos (first_name) em vez de popular os canônicos (verificado via API).
+  //
+  // Tier é implícito no filename (brevo-import-t{NN}.csv).
+  // Ordem das linhas implica ordenação por score (não precisa coluna).
+  //
+  // verify_risk não vai no output: decisão de MillionVerifier é tomada
+  // por tier (heurística atual: T6+ → MV, T1–T5 → skip).
   return {
     email: r.email,
-    first_name: r.name?.split(" ")[0] || "",
-    full_name: r.name || "",
-    score: r.score.toFixed(3),
-    open_probability: r.open_probability,
-    verify_risk: r.verify_risk,
-    created: r.created?.toISOString().slice(0, 10) || "",
-    status: r.status || "",
-    plan: r.plan || "",
-    delinquent: r.delinquent === null ? "" : r.delinquent ? "true" : "false",
-    total_spend: r.total_spend.toFixed(2),
-    payment_count: r.payment_count,
-    refunded_volume: r.refunded_volume.toFixed(2),
-    description: r.description || "",
-    tag: r.tag || "",
-    stripe_ids: r.stripe_ids.join(";"),
-    source_files: r.source_files.join(";"),
+    NOME: r.name?.split(" ")[0] || "",
+    OPEN_PROBABILITY: r.open_probability,
   };
 }
 
@@ -423,8 +486,14 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
 function main(): void {
   const filterClrcPt = process.argv.includes("--filter-clrc-pt");
 
+  // Filtra arquivos CSV que NÃO são output do próprio script (importa só fontes
+  // do Stripe). Tanto `kit-import-*` (legacy) quanto `brevo-import-*` (atual).
   const files = readdirSync(DATA_DIR)
-    .filter((f) => f.endsWith(".csv") && !f.startsWith("kit-import-"));
+    .filter((f) =>
+      f.endsWith(".csv") &&
+      !f.startsWith("kit-import-") &&
+      !f.startsWith("brevo-import-"),
+    );
 
   console.error(`📂 lendo ${files.length} CSVs de ${DATA_DIR}`);
   if (filterClrcPt) {
@@ -523,27 +592,57 @@ function main(): void {
     const score = computeScore(m, now);
     const verify_risk = verifyRisk(m, now);
     const open_probability = openProbability(m, now);
-    kept.push({ ...m, score, verify_risk, open_probability });
+    const tier = tierOf(m);
+    kept.push({ ...m, score, verify_risk, open_probability, tier });
   }
 
   console.error(`\n✅ kept: ${kept.length} · ❌ excluded: ${excluded.length}`);
 
-  // Sort by score desc
-  kept.sort((a, b) => b.score - a.score);
-
-  // Split into tiers
-  const tier1 = kept.slice(0, 1000);
-  const tier2 = kept.slice(1000, 5000);
-  const tier3 = kept.slice(5000);
+  // Agrupa por tier; dentro do tier ordena por score desc + email asc.
+  const byTier = new Map<number, Scored[]>();
+  for (const c of kept) {
+    if (!byTier.has(c.tier)) byTier.set(c.tier, []);
+    byTier.get(c.tier)!.push(c);
+  }
+  for (const arr of byTier.values()) {
+    arr.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.email.localeCompare(b.email);
+    });
+  }
 
   function writeTier(filename: string, rows: Scored[]): void {
     const csv = Papa.unparse(rows.map(formatTierRow));
     writeFileSync(resolve(DATA_DIR, filename), csv, "utf8");
   }
 
-  writeTier("kit-import-tier1.csv", tier1);
-  writeTier("kit-import-tier2.csv", tier2);
-  writeTier("kit-import-tier3.csv", tier3);
+  // Cleanup de outputs órfãos de runs anteriores que usavam taxonomia diferente.
+  // Remove APENAS arquivos no schema antigo (kit-import-* e brevo-import-tier{N}.csv);
+  // os novos brevo-import-t{NN}.csv (com padding zero) são preservados/sobrescritos.
+  // Idempotente: se rodar 2x, o segundo run já não acha nada pra remover.
+  const orphanPatterns = [
+    /^kit-import-(tier\d+|excluded)\.csv$/,
+    /^brevo-import-tier\d+\.csv$/, // só sem padding (tier1, tier2, tier3 antigos)
+  ];
+  for (const f of readdirSync(DATA_DIR)) {
+    if (orphanPatterns.some((re) => re.test(f))) {
+      const path = resolve(DATA_DIR, f);
+      try {
+        unlinkSync(path);
+        console.error(`🧹 removido órfão: ${f}`);
+      } catch (e) {
+        console.error(`⚠️  falha ao remover ${f}: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  // Output: 10 CSVs (brevo-import-t01.csv ... t10.csv).
+  // Padding zero garante ordenação alfabética correta no filesystem.
+  for (let t = 1; t <= 10; t++) {
+    const rows = byTier.get(t) ?? [];
+    const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+    writeTier(filename, rows);
+  }
 
   const excludedCsv = Papa.unparse(
     excluded.map((r) => ({
@@ -557,26 +656,35 @@ function main(): void {
       stripe_ids: r.stripe_ids.join(";"),
     })),
   );
-  writeFileSync(resolve(DATA_DIR, "kit-import-excluded.csv"), excludedCsv, "utf8");
+  writeFileSync(resolve(DATA_DIR, "brevo-import-excluded.csv"), excludedCsv, "utf8");
 
   // Distribuição de motivos
   const reasons: { [k: string]: number } = {};
   for (const e of excluded) reasons[e.reason] = (reasons[e.reason] || 0) + 1;
 
+  // Tier counts pra log + JSON summary
+  const tierCounts: { [k: string]: number } = {};
+  for (let t = 1; t <= 10; t++) {
+    tierCounts[`t${String(t).padStart(2, "0")}`] = (byTier.get(t) ?? []).length;
+  }
+
   console.error(`\n📤 outputs em ${DATA_DIR}:`);
-  console.error(`   tier1: ${tier1.length}`);
-  console.error(`   tier2: ${tier2.length}`);
-  console.error(`   tier3: ${tier3.length}`);
-  console.error(`   excluded: ${excluded.length}`);
+  for (let t = 1; t <= 10; t++) {
+    const n = tierCounts[`t${String(t).padStart(2, "0")}`];
+    console.error(`   t${String(t).padStart(2, "0")} (${TIER_LABELS[t]}): ${n.toLocaleString("pt-BR")}`);
+  }
+  console.error(`   excluded: ${excluded.length.toLocaleString("pt-BR")}`);
 
   console.error(`\n📋 motivos de exclusão:`);
   for (const [r, c] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
     console.error(`   ${r}: ${c}`);
   }
 
-  console.error(`\n🏆 sample top 10:`);
-  for (let i = 0; i < Math.min(10, tier1.length); i++) {
-    const t = tier1[i];
+  // Sample top 10 do T1 (assinantes atuais — quem vai primeiro num warmup).
+  const t1Sample = byTier.get(1) ?? [];
+  console.error(`\n🏆 sample top 10 do T1:`);
+  for (let i = 0; i < Math.min(10, t1Sample.length); i++) {
+    const t = t1Sample[i];
     console.error(
       `   ${(i + 1).toString().padStart(2)}. ${t.email.padEnd(40)} ` +
         `score=${t.score.toFixed(2)} ` +
@@ -596,7 +704,7 @@ function main(): void {
         unique_emails: merged.size,
         kept: kept.length,
         excluded: excluded.length,
-        tiers: { tier1: tier1.length, tier2: tier2.length, tier3: tier3.length },
+        tiers: tierCounts,
         exclude_reasons: reasons,
         distribution: {
           clrc_pt: distrClrcPt,
