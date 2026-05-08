@@ -593,11 +593,15 @@ async function main(): Promise<void> {
       } else {
         console.log(`Publishing linkedin/${d} via Make.com (fire-now)...`);
         const response = await postToMakeWebhook(webhookUrl, payload);
+        // #997: route=make_now sempre posta IMEDIATAMENTE (Make.com ignora
+        // scheduled_at do payload). Status sempre "draft", nunca "scheduled" —
+        // gate humano não pode achar que tá agendado quando o post já saiu.
+        // scheduled_at preservado pra auditoria; route="make_now" disambigua.
         entry = {
           platform: "linkedin",
           destaque: d,
           url: null, // LinkedIn post URL só fica disponível após publicação efetiva
-          status: scheduledAt ? "scheduled" : "draft",
+          status: "draft",
           scheduled_at: scheduledAt,
           route,
           make_request_id: response.request_id,

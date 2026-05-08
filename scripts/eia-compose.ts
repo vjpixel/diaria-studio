@@ -538,8 +538,12 @@ async function translateToPtBR(text: string): Promise<string | null> {
     if (typeof cfg?.gemini?.translate_model === 'string' && cfg.gemini.translate_model.length > 0) {
       model = cfg.gemini.translate_model;
     }
-  } catch {
-    // mantém default
+  } catch (e) {
+    // #996: mantém default mas loga warn — config corrompida silenciosa
+    // dificultava debug ("por que está usando o default?").
+    process.stderr.write(
+      `[eia-compose] warn: platform.config.json não lido (${(e as Error).message}); usando translate_model default '${model}'\n`,
+    );
   }
   try {
     const res = await fetch(
@@ -892,8 +896,12 @@ async function main(): Promise<void> {
         getPtLabel(subjectEnUrl),
         findPtWikipediaUrl(subjectEnUrl),
       ]);
-    } catch {
-      // tradução opcional — falha silenciosa, mantém EN
+    } catch (e) {
+      // #996: tradução opcional — fallback silencioso EN, mas log warn pra
+      // editor saber que algo falhou (debug vai mais rápido).
+      process.stderr.write(
+        `[eia-compose] warn: getPtLabel/findPtWikipediaUrl falhou (${(e as Error).message}); mantendo EN\n`,
+      );
     }
   }
   // #480: traduzir firstSentence EN → pt-BR via Gemini Flash antes de buildCreditLine.
@@ -901,8 +909,11 @@ async function main(): Promise<void> {
   let translatedSentence: string | null = null;
   try {
     translatedSentence = await translateToPtBR(firstSentence(stripHtml(image.description?.text ?? '')));
-  } catch {
-    // fallback silencioso
+  } catch (e) {
+    // #996: log warn — antes engolido, dificultava debug.
+    process.stderr.write(
+      `[eia-compose] warn: translateToPtBR falhou (${(e as Error).message}); fallback pra EN\n`,
+    );
   }
   if (translatedSentence === null) {
     process.stderr.write('[eia-compose] warn: tradução pt-BR indisponível — usando firstSentence EN\n');
