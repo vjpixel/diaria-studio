@@ -370,6 +370,46 @@ async function main(): Promise<void> {
   // (evita race com publish-facebook.ts paralelo). appendSocialPosts faz upsert
   // por platform+destaque sob .lock — não precisamos de buffer local.
 
+  // #999 fail-fast: se 06-public-images.json não existe ou tem destaque
+  // sem URL, abortar quando --schedule passado. Make scenario LinkedIn
+  // exige Image URL — sem ela, post falha 5× e vai pra DLQ silenciosamente.
+  // Caso real edição 260508: image_url=null causou 5 retries → 3 posts perdidos
+  // até editor manual intervir. Sem --schedule (route=make_now), continua
+  // permitindo post sem imagem como safety net.
+  if (doSchedule) {
+    const imgCachePath = resolve(editionDir, "06-public-images.json");
+    let allDestaquesHaveImage = false;
+    if (existsSync(imgCachePath)) {
+      try {
+        const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
+          images?: Record<string, { url?: string }>;
+        };
+        allDestaquesHaveImage = destaques.every((d) => {
+          const url = imgCache.images?.[d]?.url ?? null;
+          return typeof url === "string" && url.length > 0;
+        });
+      } catch {
+        allDestaquesHaveImage = false;
+      }
+    }
+    if (!allDestaquesHaveImage) {
+      console.error(
+        [
+          "ERRO: --schedule passado mas 06-public-images.json não tem URL pra todos os destaques.",
+          `  Path: ${imgCachePath}`,
+          "  Make scenario LinkedIn (Create Company Image Post) exige Image URL — sem ela,",
+          "  webhook retorna BundleValidationError e post entra em retry loop até DLQ.",
+          "",
+          "Resolução: rodar antes do dispatch:",
+          "  npx tsx scripts/upload-images-public.ts --edition-dir " + editionDir + " --mode social",
+          "",
+          "Ou rodar SEM --schedule (route=make_now) pra postar sem imagem.",
+        ].join("\n"),
+      );
+      process.exit(2);
+    }
+  }
+
   const results: PostEntry[] = [];
 
   for (const d of destaques) {
