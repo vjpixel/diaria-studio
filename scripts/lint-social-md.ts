@@ -258,6 +258,168 @@ export function lintRelativeTime(md: string): RelativeTimeResult {
 }
 
 // ---------------------------------------------------------------------------
+// #595: schema validation pra LinkedIn 3-textos-por-destaque
+// ---------------------------------------------------------------------------
+
+export interface LinkedinSchemaError {
+  destaque: string;
+  rule: string;
+  detail: string;
+}
+
+export interface LinkedinSchemaResult {
+  ok: boolean;
+  errors: LinkedinSchemaError[];
+  destaques: Array<{
+    destaque: string;
+    has_main: boolean;
+    has_comment_diaria: boolean;
+    has_comment_pixel: boolean;
+    main_chars: number;
+    comment_diaria_chars: number;
+    comment_pixel_chars: number;
+  }>;
+}
+
+/**
+ * #595: Valida que cada `## d{N}` na seção LinkedIn do `03-social.md` tem
+ * subseções `### comment_diaria` e `### comment_pixel`. Sem isso, Stage 4
+ * (futuro publish-linkedin com 9 items) não tem como compor payload pros 3
+ * scenarios Make.
+ *
+ * Char count limits:
+ *   main: 1200-1500 (sweet spot LinkedIn)
+ *   comment_diaria: 200-400 (CTA + URL)
+ *   comment_pixel: 300-600 (opinião editorial)
+ */
+export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
+  const linkedinSection = extractPlatformSection(md, "linkedin");
+  const errors: LinkedinSchemaError[] = [];
+  const destaques: LinkedinSchemaResult["destaques"] = [];
+  if (!linkedinSection) {
+    return { ok: true, errors, destaques }; // sem seção LinkedIn = no-op
+  }
+
+  // Splitar por `## d{N}`. Cada chunk começa após o header.
+  const chunks = linkedinSection.split(/\n## (d\d+)\n/);
+  // chunks[0] = preâmbulo (vazio ou irrelevante); chunks[1] = "d1", chunks[2] = body d1, chunks[3] = "d2", etc
+  for (let i = 1; i < chunks.length; i += 2) {
+    const destaque = chunks[i];
+    const body = chunks[i + 1] ?? "";
+
+    // Splitar por `### comment_diaria` e `### comment_pixel`.
+    const mainEnd = body.search(/\n### comment_diaria\b/);
+    const commentDiariaStart = body.search(/\n### comment_diaria\b/);
+    const commentPixelStart = body.search(/\n### comment_pixel\b/);
+
+    let mainText = "";
+    let commentDiariaText = "";
+    let commentPixelText = "";
+
+    if (mainEnd === -1) {
+      mainText = body;
+    } else {
+      mainText = body.slice(0, mainEnd);
+    }
+    if (commentDiariaStart !== -1) {
+      const start = body.indexOf("\n", commentDiariaStart + 1) + 1;
+      const end = commentPixelStart !== -1 ? commentPixelStart : body.length;
+      commentDiariaText = body.slice(start, end);
+    }
+    if (commentPixelStart !== -1) {
+      const start = body.indexOf("\n", commentPixelStart + 1) + 1;
+      commentPixelText = body.slice(start);
+    }
+
+    // Strip char_count comments + leading whitespace
+    const stripCommentMarkers = (s: string) =>
+      s.replace(/<!--[\s\S]*?-->/g, "").trim();
+    mainText = stripCommentMarkers(mainText);
+    commentDiariaText = stripCommentMarkers(commentDiariaText);
+    commentPixelText = stripCommentMarkers(commentPixelText);
+
+    const has_main = mainText.length > 0;
+    const has_comment_diaria = commentDiariaText.length > 0;
+    const has_comment_pixel = commentPixelText.length > 0;
+
+    destaques.push({
+      destaque,
+      has_main,
+      has_comment_diaria,
+      has_comment_pixel,
+      main_chars: mainText.length,
+      comment_diaria_chars: commentDiariaText.length,
+      comment_pixel_chars: commentPixelText.length,
+    });
+
+    if (!has_main) {
+      errors.push({
+        destaque,
+        rule: "missing_main",
+        detail: `${destaque}: post principal ausente em ## ${destaque}`,
+      });
+    }
+    if (!has_comment_diaria) {
+      errors.push({
+        destaque,
+        rule: "missing_comment_diaria",
+        detail: `${destaque}: subseção ### comment_diaria ausente — necessária pra CTA + URL (#595)`,
+      });
+    }
+    if (!has_comment_pixel) {
+      errors.push({
+        destaque,
+        rule: "missing_comment_pixel",
+        detail: `${destaque}: subseção ### comment_pixel ausente — necessária pra amplificação 2ª conta (#595)`,
+      });
+    }
+    // Char count ranges (warning only — não bloqueia gate; lints estritos
+    // apenas missing-section)
+    if (has_main && (mainText.length < 800 || mainText.length > 1800)) {
+      errors.push({
+        destaque,
+        rule: "main_chars_out_of_range",
+        detail: `${destaque}: main post ${mainText.length} chars (esperado 1200-1500, tolerância 800-1800)`,
+      });
+    }
+
+    // #595: comment_diaria deve conter `{edition_url}` (placeholder) em Stage 2.
+    // Stage 4 substitui pelo URL Beehiiv real. Lint OK se contém placeholder OU
+    // já contém URL diar.ia.br/p/<slug> (substituição pós-Stage 4).
+    if (has_comment_diaria) {
+      const hasPlaceholder = /\{edition_url\}/.test(commentDiariaText);
+      const hasResolved = /https?:\/\/diar\.ia\.br\/p\//.test(commentDiariaText);
+      if (!hasPlaceholder && !hasResolved) {
+        errors.push({
+          destaque,
+          rule: "comment_diaria_missing_edition_url",
+          detail:
+            `${destaque}: comment_diaria não contém ` +
+            `'{edition_url}' (placeholder Stage 2) nem 'diar.ia.br/p/<slug>' (resolvido pós-Stage 4). ` +
+            `Editor deve apontar pra edição completa, não pro artigo source.`,
+        });
+      }
+    }
+    if (has_comment_diaria && (commentDiariaText.length < 100 || commentDiariaText.length > 600)) {
+      errors.push({
+        destaque,
+        rule: "comment_diaria_chars_out_of_range",
+        detail: `${destaque}: comment_diaria ${commentDiariaText.length} chars (esperado 200-400, tolerância 100-600)`,
+      });
+    }
+    if (has_comment_pixel && (commentPixelText.length < 150 || commentPixelText.length > 800)) {
+      errors.push({
+        destaque,
+        rule: "comment_pixel_chars_out_of_range",
+        detail: `${destaque}: comment_pixel ${commentPixelText.length} chars (esperado 300-600, tolerância 150-800)`,
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors, destaques };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -277,7 +439,8 @@ function main(): void {
   if (!args.md) {
     console.error(
       "Uso: lint-social-md.ts --md <path>\n" +
-        "  ou: lint-social-md.ts --check relative-time --md <path>",
+        "  ou: lint-social-md.ts --check relative-time --md <path>\n" +
+        "  ou: lint-social-md.ts --check linkedin-schema --md <path>",
     );
     process.exit(2);
   }
@@ -302,6 +465,20 @@ function main(): void {
           `  linha ${m.line}: relative_time: '${m.word}' encontrado — posts publicam D+1+, use data absoluta\n    contexto: "...${m.context}..."`,
         );
       }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check linkedin-schema (#595) — valida 3 textos por destaque
+  if (args.check === "linkedin-schema") {
+    const result = lintLinkedinSchema(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} erro(s) no schema LinkedIn (#595 — main + comment_diaria + comment_pixel por destaque):`,
+      );
+      for (const e of result.errors) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
       process.exit(1);
     }
     return;
