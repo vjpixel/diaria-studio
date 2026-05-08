@@ -383,6 +383,30 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
       });
     }
 
+    // #595 (decisão editorial 2026-05-08): main post NÃO pode mencionar
+    // Diar.ia ou diar.ia.br. Branding/CTA vão exclusivamente no comment_diaria
+    // (T+3min). Main post fica 100% editorial.
+    if (has_main) {
+      if (/\bDiar\.ia\b/i.test(mainText)) {
+        errors.push({
+          destaque,
+          rule: "main_post_mentions_diaria",
+          detail:
+            `${destaque}: main post menciona "Diar.ia" — ` +
+            `branding vai exclusivamente no comment_diaria (T+3min), main post fica 100% editorial.`,
+        });
+      }
+      if (/\bdiar\.ia\.br\b/i.test(mainText)) {
+        errors.push({
+          destaque,
+          rule: "main_post_mentions_diaria_url",
+          detail:
+            `${destaque}: main post contém "diar.ia.br" — ` +
+            `URL/CTA pra newsletter vai exclusivamente no comment_diaria.`,
+        });
+      }
+    }
+
     // #595: comment_diaria deve conter `{edition_url}` (placeholder) em Stage 2.
     // Stage 4 substitui pelo URL Beehiiv real. Lint OK se contém placeholder OU
     // já contém URL diar.ia.br/p/<slug> (substituição pós-Stage 4).
