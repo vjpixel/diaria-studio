@@ -95,6 +95,28 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
   |-------|--------|-----|----------|-------|--------|
   ```
   Se já existe (resume), não sobrescrever — manter `Início` e linhas de stages anteriores intactos.
+- **Inicializar `stage-status.md` (#960).** Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
+  ```bash
+  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --init
+  ```
+  Idempotente — se já existe (resume), apenas reabre o estado anterior; não zera. Push ao Drive logo após init:
+  ```bash
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 0 --files stage-status.md
+  ```
+  Falha não bloqueia (`stage-status.md` é observabilidade, não estado canônico).
+
+  **Atualização incremental durante o pipeline:** ao **começar** cada stage (1-4), chamar:
+  ```bash
+  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ \
+    --stage N --status running --start "{ISO_now}"
+  ```
+  Ao **terminar** cada stage:
+  ```bash
+  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ \
+    --stage N --status done --end "{ISO_now}" --duration-ms {ms} \
+    [--cost-usd X] [--tokens-in N] [--tokens-out N] [--models "haiku-4-5,opus-4-7"]
+  ```
+  E re-push do `stage-status.md` ao Drive depois de cada update. Cost/tokens/models opcionais — campos vazios viram `-` no MD.
 
 ### 0d. Refresh automático de dedup (#895)
 
