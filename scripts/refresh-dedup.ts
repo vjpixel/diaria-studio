@@ -154,9 +154,14 @@ async function listPosts(
   let page = 1;
 
   while (collected.length < opts.limit) {
+    // #972: `order_by=newest_first` retorna posts em ordem invertida (mais antigos
+    // primeiro) na Beehiiv API v2. A query correta é `order_by=publish_date` +
+    // `direction=desc`, que retorna os mais recentes primeiro — necessário pro
+    // loop incremental parar no `stopBeforeMs` cutoff.
     const params = new URLSearchParams({
       per_page: "50",
-      order_by: "newest_first",
+      order_by: "publish_date",
+      direction: "desc",
       page: String(page),
     });
     const raw = await apiFetch<unknown>(

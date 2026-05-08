@@ -191,6 +191,50 @@ describe("refresh-dedup.ts (#895)", () => {
     assert.ok(md.includes("https://example.com/bootstrap-link"));
   });
 
+  it("usa order_by=publish_date + direction=desc na listagem (#972)", async () => {
+    const rawPath = join(sandboxRoot, "test-order-by-past-editions-raw.json");
+    const mdPath = join(sandboxRoot, "test-order-by-past-editions.md");
+    if (existsSync(rawPath)) rmSync(rawPath);
+    if (existsSync(mdPath)) rmSync(mdPath);
+
+    const seenQueryStrings: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const u = new URL(url);
+      if (/\/posts$/.test(u.pathname)) {
+        seenQueryStrings.push(u.search);
+        return new Response(
+          JSON.stringify({ data: [], page: 1, total_results: 0, total_pages: 1 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof globalThis.fetch;
+
+    await refreshDedup({
+      dryRun: false,
+      resolveTracking: false,
+      rawPath,
+      mdPath,
+      configOverride: TEST_CONFIG,
+    });
+
+    assert.ok(seenQueryStrings.length > 0, "listPosts deve fazer ao menos 1 request");
+    const firstQs = seenQueryStrings[0];
+    assert.ok(
+      firstQs.includes("order_by=publish_date"),
+      `request deve usar order_by=publish_date (#972), recebeu: ${firstQs}`,
+    );
+    assert.ok(
+      firstQs.includes("direction=desc"),
+      `request deve usar direction=desc (#972), recebeu: ${firstQs}`,
+    );
+    assert.ok(
+      !firstQs.includes("order_by=newest_first"),
+      `nunca deve usar order_by=newest_first (bug #972), recebeu: ${firstQs}`,
+    );
+  });
+
   it("incremental com 1 post novo: merge no raw + popula MD com ambos", async () => {
     const rawPath = join(sandboxRoot, "test3-past-editions-raw.json");
     const mdPath = join(sandboxRoot, "test3-past-editions.md");
