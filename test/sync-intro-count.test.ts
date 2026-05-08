@@ -278,6 +278,38 @@ describe("sync-intro-count CLI (#876 + #743 integration)", () => {
     }
   });
 
+  it("hard guard #973: actual=0 NÃO sobrescreve intro com 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-intro-zero-guard-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      // MD com intro mencionando 12 mas SEM nenhuma URL editorial reconhecida.
+      // (Nenhum bloco DESTAQUE / nenhuma seção LANÇAMENTOS/PESQUISAS/OUTRAS.)
+      // lintIntroCount → claimed=12, actual=0 → ok=false.
+      // Antes do fix #973, o script reescrevia "Selecionamos os 0 mais relevantes".
+      const md = [
+        "Para esta edição, eu (o editor) enviei 1 submissão. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+        "",
+        "Apenas texto sem URLs editoriais.",
+        "",
+      ].join("\n");
+      writeFileSync(mdPath, md, "utf8");
+
+      const r = runCli(["--md", mdPath]);
+      assert.equal(r.code, 0);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.changed, false, "guard impede sobrescrita quando actual=0");
+      assert.equal(out.actual, 0);
+      assert.match(r.stderr, /contagem real retornou 0/);
+
+      // MD permanece intacto — "Selecionamos os 12" preservado, nunca virou "0".
+      const updated = readFileSync(mdPath, "utf8");
+      assert.match(updated, /Selecionamos os 12/);
+      assert.doesNotMatch(updated, /Selecionamos os 0/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("arquivo lancamentos-removed inexistente: silenciosamente no-op em narrativa", () => {
     const dir = mkdtempSync(join(tmpdir(), "sync-intro-missing-removed-"));
     try {

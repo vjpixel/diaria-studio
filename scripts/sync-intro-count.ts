@@ -158,24 +158,35 @@ function main(): void {
     check.claimed !== undefined &&
     check.actual !== undefined
   ) {
-    const claimedStr = String(check.claimed);
-    const actualStr = String(check.actual);
-    const patternRe = new RegExp(
-      `((?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\\s+os?\\s+)${claimedStr}\\b`,
-      "i",
-    );
-    if (patternRe.test(md)) {
-      md = md.replace(patternRe, `$1${actualStr}`);
-      countChanged = true;
-      changedAny = true;
+    // #973 hard guard: actual === 0 é claramente bug do parser (newsletter
+    // sem nenhuma URL editorial nunca acontece em produção). Em vez de
+    // sobrescrever a intro com "Selecionamos os 0 mais relevantes",
+    // logar erro e pular a sincronização — contagem real fica intacta.
+    if (check.actual === 0) {
       console.error(
-        `warn: sync-intro-count: intro dizia ${check.claimed} mas contagem real é ${check.actual} — corrigido em ${mdPath}`,
+        `error: sync-intro-count: contagem real retornou 0 — provável bug de parser (formato do template mudou?). ` +
+          `Pulando sincronização do total. Verificar template e abrir issue se necessário.`,
       );
     } else {
-      // Padrão não encontrado após expansão — avisa mas não bloqueia
-      console.error(
-        `warn: sync-intro-count: padrão não encontrado — verificar manualmente se a intro tem o número correto.`,
+      const claimedStr = String(check.claimed);
+      const actualStr = String(check.actual);
+      const patternRe = new RegExp(
+        `((?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\\s+os?\\s+)${claimedStr}\\b`,
+        "i",
       );
+      if (patternRe.test(md)) {
+        md = md.replace(patternRe, `$1${actualStr}`);
+        countChanged = true;
+        changedAny = true;
+        console.error(
+          `warn: sync-intro-count: intro dizia ${check.claimed} mas contagem real é ${check.actual} — corrigido em ${mdPath}`,
+        );
+      } else {
+        // Padrão não encontrado após expansão — avisa mas não bloqueia
+        console.error(
+          `warn: sync-intro-count: padrão não encontrado — verificar manualmente se a intro tem o número correto.`,
+        );
+      }
     }
   }
 

@@ -358,6 +358,20 @@ export const DESTAQUE_MIN_CHARS = {
   3: 900,
 } as const;
 
+/**
+ * Limites máximos por destaque (#964). D1 maior que D2/D3 reflete hierarquia
+ * editorial (manchete > segundas histórias) — manter D2/D3 mais curtos
+ * preserva ritmo de leitura, newsletter densa cai CTR.
+ *
+ * Em 260508 D2=1409 passou despercebido até a métrica do gate; com max
+ * bloqueante o writer teria sido re-disparado automaticamente.
+ */
+export const DESTAQUE_MAX_CHARS = {
+  1: 1200,
+  2: 1000,
+  3: 1000,
+} as const;
+
 export interface DestaqueMinCharsError {
   destaque: number;
   category: string;
@@ -391,6 +405,46 @@ export function checkDestaqueMinChars(md: string): DestaqueMinCharsReport {
         category: h.category,
         chars: h.chars,
         min,
+      });
+    }
+  }
+
+  return { ok: errors.length === 0, errors, highlights: summary };
+}
+
+export interface DestaqueMaxCharsError {
+  destaque: number;
+  category: string;
+  chars: number;
+  max: number;
+}
+
+export interface DestaqueMaxCharsReport {
+  ok: boolean;
+  errors: DestaqueMaxCharsError[];
+  highlights: Array<{ destaque: number; category: string; chars: number; max: number }>;
+}
+
+export function checkDestaqueMaxChars(md: string): DestaqueMaxCharsReport {
+  const measured = parseHighlights(md);
+  const errors: DestaqueMaxCharsError[] = [];
+  const summary: DestaqueMaxCharsReport["highlights"] = [];
+
+  for (const h of measured.highlights) {
+    const max =
+      DESTAQUE_MAX_CHARS[h.number as 1 | 2 | 3] ?? DESTAQUE_MAX_CHARS[3];
+    summary.push({
+      destaque: h.number,
+      category: h.category,
+      chars: h.chars,
+      max,
+    });
+    if (h.chars > max) {
+      errors.push({
+        destaque: h.number,
+        category: h.category,
+        chars: h.chars,
+        max,
       });
     }
   }
@@ -1394,6 +1448,40 @@ intentional_error:
     return;
   }
 
+  // Modo --check destaque-max-chars (#964) — valida máximo de chars por destaque
+  if (args.check === "destaque-max-chars") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkDestaqueMaxChars(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ destaque-max-chars: ${result.errors.length} destaque(s) acima do máximo:`,
+      );
+      for (const e of result.errors) {
+        const excess = e.chars - e.max;
+        console.error(
+          `  D${e.destaque} (${e.category}): ${e.chars} chars — acima do máximo de ${e.max} (excesso: ${excess} chars)`,
+        );
+      }
+      console.error(
+        `\nFix: re-disparar writer pra trimar o body do destaque (corte parágrafo redundante OU encurte "Por que isso importa").`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check section-item-format (#909) — valida formato de itens em seções secundárias
   if (args.check === "section-item-format") {
     if (!args.md) {
@@ -1528,7 +1616,8 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check intro-count --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
-        "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>",
     );
     process.exit(2);
   }
