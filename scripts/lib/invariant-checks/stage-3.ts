@@ -104,8 +104,14 @@ function checkPromptsClean(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * `01-eia.md` deve ter frontmatter `eia_answer: "A"` ou `"B"` resolvido.
- * Default sem resolução = pipeline Stage 4 não sabe qual imagem usar.
+ * `01-eia.md` deve ter frontmatter:
+ * ```yaml
+ * eia_answer:
+ *   A: real|ia
+ *   B: real|ia
+ * ```
+ * (gerado por scripts/eia-compose.ts:171-176). Sem isso, Stage 4 não sabe
+ * qual imagem é a verdadeira — quebra a Foto do Dia.
  */
 function checkEiaAnswerResolved(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "01-eia.md");
@@ -121,14 +127,29 @@ function checkEiaAnswerResolved(editionDir: string): InvariantViolation[] {
     ];
   }
   const md = readFileSync(path, "utf8");
-  const m = md.match(/^eia_answer:\s*"?([AB])"?\s*$/m);
-  if (!m) {
+  const fmMatch = md.match(/^---\s*\n([\s\S]*?)\n---/m);
+  const fm = fmMatch?.[1] ?? "";
+  const aMatch = fm.match(/^\s+A:\s*(real|ia)\s*$/m);
+  const bMatch = fm.match(/^\s+B:\s*(real|ia)\s*$/m);
+  if (!aMatch || !bMatch) {
     return [
       {
         rule: "eia-answer-resolved",
         message:
-          `01-eia.md sem frontmatter "eia_answer: A|B" — eia-composer não resolveu o sorteio. ` +
-          `Stage 4 não sabe qual imagem promover.`,
+          `01-eia.md sem frontmatter completo "eia_answer: { A: real|ia, B: real|ia }" — ` +
+          `eia-composer não resolveu o sorteio. Stage 4 não sabe qual imagem promover.`,
+        source_issue: "#192",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  if (aMatch[1] === bMatch[1]) {
+    return [
+      {
+        rule: "eia-answer-pair-distinct",
+        message:
+          `01-eia.md tem A=${aMatch[1]} e B=${bMatch[1]} — par precisa ser real+ia, não duplicado.`,
         source_issue: "#192",
         severity: "error",
         file: path,

@@ -1,9 +1,19 @@
 /**
  * Invariants de Stage 1 — Pesquisa (#1007 Fase 1).
  *
- * Checks rodados antes do gate humano de Stage 1 e antes de Stage 2 começar.
- * Foco: garantir que `_internal/01-approved.json` tem shape correto pra
- * Stage 2 não falhar com `undefined` em runtime.
+ * Checks rodados em 2 momentos distintos do Stage 1:
+ *
+ * 1. **Pré-gate** (ainda só `01-categorized.md` existe): apenas
+ *    `categorized-has-eia-section` faz sentido aqui.
+ *
+ * 2. **Pós-gate apply** (após `apply-gate-edits.ts` escrever
+ *    `_internal/01-approved.json`): `approved-has-3-highlights` +
+ *    `coverage-line-present`.
+ *
+ * O orchestrator chama `--stage 1` no momento (2). Pré-gate é coberto
+ * por `--stage 1 --rule categorized-has-eia-section` se quiser ser
+ * explícito, ou simplesmente os checks pós-gate apply assumem que a
+ * gate UI mostrou erros pré-aprovação.
  */
 
 import { existsSync, readFileSync } from "node:fs";

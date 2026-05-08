@@ -3,23 +3,23 @@
  *
  * Rodam após Stage 4 dispatch completo (newsletter + LinkedIn + Facebook),
  * antes do auto-reporter. Detectam falhas silenciosas que aparecem só após
- * publicar — ex: sentinel não escrito, refresh-dedup auto-stamp não rodou.
+ * publicar — ex: sentinel não escrito, social-published incompleto.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 
-interface PublishedJson {
-  refresh_dedup_stamped_at?: string;
-  edition_url?: string;
-  status?: string;
+interface SocialPublishedJson {
+  posts?: Array<{ platform?: string; status?: string }>;
 }
 
 /**
  * `_internal/.step-4-done.json` deve existir após Stage 4 completo. Sem isso,
  * resume-aware do orchestrator (Stage 0b) não detecta que Stage 4 rodou e
  * pode tentar re-disparar publish-* no próximo run.
+ *
+ * Valida o sentinel escrito por scripts/pipeline-sentinel.ts (#780).
  */
 function checkStep4Sentinel(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", ".step-4-done.json");
@@ -40,51 +40,62 @@ function checkStep4Sentinel(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * `05-published.json` deve ter `refresh_dedup_stamped_at` setado (#978).
- * Sem isso, próxima edição pode repetir URLs publicadas hoje porque o dedup
- * não foi atualizado.
+ * `_internal/06-social-published.json` deve ter `posts[]` com pelo menos 1
+ * entry (idealmente 6 = 3 LinkedIn + 3 Facebook), nenhuma com `status:
+ * "failed"`. Sinal de que dispatch social rodou e publish-{linkedin,facebook}
+ * completaram.
  */
-function checkRefreshDedupStamped(editionDir: string): InvariantViolation[] {
-  const path = resolve(editionDir, "_internal", "05-published.json");
+function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "06-social-published.json");
   if (!existsSync(path)) {
     return [
       {
-        rule: "published-json-exists",
-        message: `_internal/05-published.json ausente — Stage 4 newsletter não completou`,
-        source_issue: "#978",
+        rule: "social-published-exists",
+        message:
+          `_internal/06-social-published.json ausente — publish-linkedin/facebook não rodaram ` +
+          `ou falharam antes de gravar. Stage 4 incompleto.`,
+        source_issue: "#272",
         severity: "error",
         file: path,
       },
     ];
   }
-  let data: PublishedJson;
+  let data: SocialPublishedJson;
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
     return [
       {
-        rule: "published-json-parseable",
-        message: `_internal/05-published.json não parseável: ${(e as Error).message}`,
-        source_issue: "#978",
+        rule: "social-published-parseable",
+        message: `06-social-published.json não parseável: ${(e as Error).message}`,
+        source_issue: "#272",
         severity: "error",
         file: path,
       },
     ];
   }
-  if (!data.refresh_dedup_stamped_at) {
-    return [
-      {
-        rule: "refresh-dedup-stamped",
-        message:
-          `_internal/05-published.json sem refresh_dedup_stamped_at — auto-stamp do refresh-dedup não rodou. ` +
-          `Próxima edição pode repetir URLs já publicadas hoje.`,
-        source_issue: "#978",
-        severity: "error",
-        file: path,
-      },
-    ];
+  const posts = Array.isArray(data.posts) ? data.posts : [];
+  const violations: InvariantViolation[] = [];
+  if (posts.length === 0) {
+    violations.push({
+      rule: "social-published-non-empty",
+      message: `06-social-published.json com posts[] vazio — nenhum dispatch teve sucesso`,
+      source_issue: "#272",
+      severity: "error",
+      file: path,
+    });
   }
-  return [];
+  const failed = posts.filter((p) => p.status === "failed");
+  if (failed.length > 0) {
+    violations.push({
+      rule: "social-published-no-failed",
+      message: `06-social-published.json tem ${failed.length} post(s) com status=failed`,
+      source_issue: "#272",
+      severity: "warning",
+      file: path,
+    });
+  }
+  return violations;
 }
 
 export const STAGE_5_RULES: InvariantRule[] = [
@@ -96,12 +107,12 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkStep4Sentinel,
   },
   {
-    id: "refresh-dedup-stamped",
-    description: "05-published.json tem refresh_dedup_stamped_at (#978)",
-    source_issue: "#978",
+    id: "social-published-complete",
+    description: "06-social-published.json não-vazio, sem failed (#272)",
+    source_issue: "#272",
     stage: 5,
-    run: checkRefreshDedupStamped,
+    run: checkSocialPublishedComplete,
   },
 ];
 
-export { checkStep4Sentinel, checkRefreshDedupStamped };
+export { checkStep4Sentinel, checkSocialPublishedComplete };

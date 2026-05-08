@@ -37,6 +37,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -168,6 +169,9 @@ function walkMd(dir: string, visit: (path: string) => void): void {
 }
 
 async function main(): Promise<void> {
+  // Load .env.local antes de checar env vars (#923) — Stage 0 e 4 dependem
+  // de BEEHIIV_API_KEY, FACEBOOK_*, DIARIA_LINKEDIN_CRON_*.
+  loadProjectEnv();
   const args = parseArgs(process.argv.slice(2));
   const isStatic = !!args.static;
   const editionDir = args["edition-dir"] as string | undefined;

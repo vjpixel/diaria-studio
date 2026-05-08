@@ -355,7 +355,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 - Quando publicação é manual (Pixel cria rascunho direto), `05-published.json` pode ter `status: "pending_manual"` ou similar — o sentinel registra que o **stage** terminou, não que a publicação foi 100% automática. Stage 0 valida estado real via `refresh-dedup` que cruza com Beehiiv API.
 
-### 4h. Pós-publicação invariants (#1007 Fase 1)
+### 4j. Pós-publicação invariants (#1007 Fase 1)
 
 Antes do auto-reporter, validar que (a) sentinel `_internal/.step-4-done.json` foi escrito, (b) `05-published.json` tem `refresh_dedup_stamped_at` (#978):
 

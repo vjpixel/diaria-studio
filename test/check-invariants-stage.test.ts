@@ -33,7 +33,7 @@ import {
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 import {
   checkStep4Sentinel,
-  checkRefreshDedupStamped,
+  checkSocialPublishedComplete,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -197,13 +197,24 @@ describe("Stage 3 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("eia-answer-resolved passa com 'eia_answer: A'", () => {
+  it("eia-answer-resolved passa com YAML aninhado A=ia/B=real", () => {
     writeFileSync(
       join(fixture, "01-eia.md"),
-      "---\neia_answer: A\n---\n\n# É IA?\n",
+      "---\neia_answer:\n  A: ia\n  B: real\n---\n\nÉ IA?\n",
     );
     const v = checkEiaAnswerResolved(fixture);
-    assert.equal(v.length, 0);
+    assert.equal(v.length, 0, JSON.stringify(v));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("eia-answer-resolved falha quando A==B (sorteio inválido)", () => {
+    writeFileSync(
+      join(fixture, "01-eia.md"),
+      "---\neia_answer:\n  A: ia\n  B: ia\n---\n\nÉ IA?\n",
+    );
+    const v = checkEiaAnswerResolved(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "eia-answer-pair-distinct");
     rmSync(fixture, { recursive: true, force: true });
   });
 });
@@ -222,68 +233,72 @@ describe("Stage 4 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("public-images-populated falha quando d1.rectangle_url null", () => {
+  it("public-images-populated falha quando d1.url ausente (shape real)", () => {
     writeFileSync(
       join(fixture, "06-public-images.json"),
       JSON.stringify({
-        d1: { square_url: "https://x/d1.jpg" },
-        d2: { square_url: "https://x/d2.jpg" },
-        d3: { square_url: "https://x/d3.jpg" },
-      }),
-    );
-    const v = checkPublicImagesPopulated(fixture);
-    assert.ok(v.some((x) => x.message.includes("d1.rectangle_url")));
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("public-images-populated passa com tudo preenchido", () => {
-    writeFileSync(
-      join(fixture, "06-public-images.json"),
-      JSON.stringify({
-        d1: {
-          square_url: "https://x/d1-1x1.jpg",
-          rectangle_url: "https://x/d1-2x1.jpg",
+        images: {
+          d1: { file_id: "abc", filename: "04-d1-1x1.jpg" }, // sem url
+          d2: { url: "https://drive.example/d2" },
+          d3: { url: "https://drive.example/d3" },
         },
-        d2: { square_url: "https://x/d2.jpg" },
-        d3: { square_url: "https://x/d3.jpg" },
       }),
     );
     const v = checkPublicImagesPopulated(fixture);
-    assert.equal(v.length, 0);
+    assert.ok(v.some((x) => x.message.includes("images.d1.url")));
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("linkedin-worker-url-set falha quando ausente", () => {
-    const original = process.env.LINKEDIN_WORKER_URL;
-    delete process.env.LINKEDIN_WORKER_URL;
+  it("public-images-populated passa com shape real (images.d{N}.url)", () => {
+    writeFileSync(
+      join(fixture, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://drive.example/d1", file_id: "a" },
+          d2: { url: "https://drive.example/d2", file_id: "b" },
+          d3: { url: "https://drive.example/d3", file_id: "c" },
+        },
+      }),
+    );
+    const v = checkPublicImagesPopulated(fixture);
+    assert.equal(v.length, 0, JSON.stringify(v));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("linkedin-worker-url-set warning quando ausente (graceful degrade pra Make)", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_URL;
+    delete process.env.DIARIA_LINKEDIN_CRON_URL;
     try {
       const v = checkLinkedinWorkerUrlSet();
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "linkedin-worker-url-set");
+      assert.equal(v[0].severity, "warning");
     } finally {
-      if (original !== undefined) process.env.LINKEDIN_WORKER_URL = original;
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_URL = original;
     }
   });
 
-  it("linkedin-worker-url-set falha quando não-HTTPS", () => {
-    process.env.LINKEDIN_WORKER_URL = "http://insecure.example/fire";
+  it("linkedin-worker-url-set falha quando não-HTTPS (error)", () => {
+    process.env.DIARIA_LINKEDIN_CRON_URL = "http://insecure.example/fire";
     try {
       const v = checkLinkedinWorkerUrlSet();
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "linkedin-worker-url-https");
+      assert.equal(v[0].severity, "error");
     } finally {
-      delete process.env.LINKEDIN_WORKER_URL;
+      delete process.env.DIARIA_LINKEDIN_CRON_URL;
     }
   });
 
-  it("fb-page-id-set falha quando ausente", () => {
-    const original = process.env.FB_PAGE_ID;
-    delete process.env.FB_PAGE_ID;
+  it("fb-page-id-set falha quando FACEBOOK_PAGE_ID ausente", () => {
+    const original = process.env.FACEBOOK_PAGE_ID;
+    delete process.env.FACEBOOK_PAGE_ID;
     try {
       const v = checkFbPageIdSet();
       assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "facebook-page-id-set");
     } finally {
-      if (original !== undefined) process.env.FB_PAGE_ID = original;
+      if (original !== undefined) process.env.FACEBOOK_PAGE_ID = original;
     }
   });
 });
@@ -312,27 +327,56 @@ describe("Stage 5 invariants (pós-publicação)", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("refresh-dedup-stamped falha quando 05-published.json sem stamp", () => {
-    writeFileSync(
-      join(fixture, "_internal", "05-published.json"),
-      JSON.stringify({ status: "draft" }),
-    );
-    const v = checkRefreshDedupStamped(fixture);
+  it("social-published-complete falha quando arquivo ausente", () => {
+    const v = checkSocialPublishedComplete(fixture);
     assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "refresh-dedup-stamped");
+    assert.equal(v[0].rule, "social-published-exists");
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("refresh-dedup-stamped passa com stamp presente", () => {
+  it("social-published-complete falha quando posts[] vazio", () => {
     writeFileSync(
-      join(fixture, "_internal", "05-published.json"),
+      join(fixture, "_internal", "06-social-published.json"),
+      JSON.stringify({ posts: [] }),
+    );
+    const v = checkSocialPublishedComplete(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "social-published-non-empty");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("social-published-complete passa com 6 posts ok", () => {
+    writeFileSync(
+      join(fixture, "_internal", "06-social-published.json"),
       JSON.stringify({
-        status: "draft",
-        refresh_dedup_stamped_at: "2026-05-08T12:00:00Z",
+        posts: [
+          { platform: "linkedin", status: "scheduled" },
+          { platform: "linkedin", status: "scheduled" },
+          { platform: "linkedin", status: "scheduled" },
+          { platform: "facebook", status: "scheduled" },
+          { platform: "facebook", status: "scheduled" },
+          { platform: "facebook", status: "scheduled" },
+        ],
       }),
     );
-    const v = checkRefreshDedupStamped(fixture);
+    const v = checkSocialPublishedComplete(fixture);
     assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("social-published-complete warning quando algum failed", () => {
+    writeFileSync(
+      join(fixture, "_internal", "06-social-published.json"),
+      JSON.stringify({
+        posts: [
+          { platform: "linkedin", status: "scheduled" },
+          { platform: "linkedin", status: "failed" },
+        ],
+      }),
+    );
+    const v = checkSocialPublishedComplete(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
     rmSync(fixture, { recursive: true, force: true });
   });
 });

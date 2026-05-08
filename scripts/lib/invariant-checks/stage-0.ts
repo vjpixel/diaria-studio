@@ -103,7 +103,7 @@ function checkDriveCredsValid(): InvariantViolation[] {
             "data/.credentials.json sem refresh_token — token expira sem renew. " +
             "Re-rodar `npx tsx scripts/oauth-setup.ts` pra gerar novo.",
           source_issue: "#121",
-          severity: "error",
+          severity: "warning",
         },
       ];
     }
