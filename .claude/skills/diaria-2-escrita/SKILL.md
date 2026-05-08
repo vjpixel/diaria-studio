@@ -136,17 +136,22 @@ Dispatchar só `writer`. Pular steps de social abaixo.
 
 Dispatchar `social-linkedin` + `social-facebook` em paralelo. Pular steps de newsletter abaixo.
 
-Aguardar todos os Agents retornarem antes do passo seguinte.
+## Passo 2b — Push incremental ao Drive (#958)
 
-## Passo 2b — Merge social + push intermediário ao Drive (antes de Clarice/Humanize)
+**Importante:** push **independente** de newsletter e social — cada um sobe ao Drive **assim que o agent correspondente termina**, sem esperar o outro. Editor que abre o Drive no celular logo após disparar `/diaria-2-escrita` vê o rascunho da newsletter ~20-30s depois (vs ~60-90s no fluxo antigo que agrupava). Falha não bloqueia.
 
-Copiar draft da newsletter para raiz, mergear os tmp files de social em `03-social.md`, e fazer push para o editor poder revisar enquanto o processamento continua. Falha não bloqueia.
-
-**Importante:** este passo executa o merge social que antes ficava em Passo 4a — sem isso, o push intermediário só pegaria a newsletter (os tmp files de social ainda não estão merged). Passo 4a é reduzido a cleanup dos tmp files.
+### 2b-news — assim que `writer` retornar
 
 ```bash
 cp data/editions/$1/_internal/02-draft.md data/editions/$1/02-reviewed.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md
+```
 
+Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `social-facebook` retornarem.
+
+### 2b-soc — assim que `social-linkedin` E `social-facebook` retornarem
+
+```bash
 node -e "
   const fs=require('fs');
   const dir='data/editions/$1/';
@@ -155,11 +160,13 @@ node -e "
   fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
 "
 
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 02-reviewed.md,03-social.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/$1/ --stage 2 --files 03-social.md
 ```
 
-Se `$2 = newsletter`, pular o merge social (apenas cp + push de 02-reviewed.md).
-Se `$2 = social`, pular o cp da newsletter (apenas merge + push de 03-social.md).
+Se `$2 = newsletter`, só roda 2b-news (pula 2b-soc).
+Se `$2 = social`, só roda 2b-soc (pula 2b-news).
+
+Após ambos terminarem, prosseguir para Passo 3 (lint + Clarice/humanize na newsletter).
 
 ## Passo 3 — Processar newsletter (pular se `$2 = social`)
 
