@@ -273,6 +273,21 @@ export function computeScore(m: Merged, now: Date): number {
   return s;
 }
 
+/**
+ * Helper informacional — verifica se o contato tem tag/description `clrc-pt`.
+ *
+ * **NÃO usar em scoring** (verifyRisk, openProbability, computeScore). O tagging
+ * Stripe começou em 2024 e foi populado inconsistentemente até 2025; usar como
+ * sinal enviesa contatos antigos legítimos.
+ *
+ * Uso correto: filtros opt-in (--filter-clrc-pt) e logs informacionais.
+ */
+export function hasClariceAudienceTag(
+  m: Pick<Merged, "description" | "tag">,
+): boolean {
+  return m.description === "clrc-pt" || m.tag === "clrc-pt";
+}
+
 // ---------------------------------------------------------------------------
 // verify_risk: escala 1–10 de necessidade de verificar o email antes de enviar
 //   1–3 = baixo (enviar sem verificar)
@@ -285,7 +300,7 @@ export function computeScore(m: Merged, now: Date): number {
 // pra níveis piores. Pra não-pagantes, recência sozinha é o sinal mais defensável.
 // ---------------------------------------------------------------------------
 
-function verifyRisk(m: Merged, now: Date): number {
+export function verifyRisk(m: Merged, now: Date): number {
   const months = m.created
     ? (now.getTime() - m.created.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
     : 48; // sem data → tratar como antigo
@@ -331,18 +346,22 @@ function verifyRisk(m: Merged, now: Date): number {
 // open_probability: chance estimada (0–100%) de abrir a newsletter
 // ---------------------------------------------------------------------------
 
-function openProbability(m: Merged, now: Date): number {
+export function openProbability(m: Merged, now: Date): number {
   // Base pela relação financeira com a Clarice.
   // Tag clrc-pt removida do critério: tagging começou em 2024 e foi populado
   // inconsistentemente, criava viés contra contatos antigos legítimos.
-  // Não-pagantes agora começam todos em 14 (média ponderada do 17/11 anterior).
+  //
+  // Não-pagantes agora começam em 12 (média ponderada da fórmula antiga
+  // 17 se clrc-pt / 11 caso contrário). Cálculo: na base atual ~24% têm tag,
+  // logo 0.24*17 + 0.76*11 ≈ 12.4. Arredondado pra 12 — fiel ao histórico,
+  // sem premiar artificialmente leads sem tag por uma inferência fraca.
   let prob: number;
   if (m.status === "active")          prob = 62; // cliente pagando hoje
   else if (m.total_spend >= 1000)     prob = 50;
   else if (m.total_spend >= 100)      prob = 40;
   else if (m.total_spend >= 10)       prob = 30;
   else if (m.total_spend > 0)         prob = 22;
-  else                                prob = 14; // nunca pagou (recência aplica modificador abaixo)
+  else                                prob = 12; // nunca pagou (recência aplica modificador abaixo)
 
   // Modificador de recência
   if (m.created) {
@@ -456,7 +475,7 @@ function main(): void {
   const distrSpend = { zero: 0, lt10: 0, lt100: 0, lt1000: 0, gte1000: 0 };
   const distrCreated: { [year: string]: number } = {};
   for (const m of merged.values()) {
-    if (m.description === "clrc-pt" || m.tag === "clrc-pt") distrClrcPt.yes++;
+    if (hasClariceAudienceTag(m)) distrClrcPt.yes++;
     else distrClrcPt.no++;
     if (m.total_spend === 0) distrSpend.zero++;
     else if (m.total_spend < 10) distrSpend.lt10++;
@@ -493,7 +512,7 @@ function main(): void {
       excluded.push({ ...m, reason: lqCheck.reason });
       continue;
     }
-    if (filterClrcPt && !(m.description === "clrc-pt" || m.tag === "clrc-pt")) {
+    if (filterClrcPt && !hasClariceAudienceTag(m)) {
       excluded.push({ ...m, reason: "not_clrc_pt" });
       continue;
     }
@@ -564,7 +583,7 @@ function main(): void {
         `spend=${t.total_spend.toFixed(0)} ` +
         `pmt=${t.payment_count} ` +
         `created=${t.created?.toISOString().slice(0, 10) || "?"} ` +
-        `clrc=${(t.description === "clrc-pt" || t.tag === "clrc-pt") ? "Y" : "N"}`,
+        `clrc=${hasClariceAudienceTag(t) ? "Y" : "N"}`,
     );
   }
 

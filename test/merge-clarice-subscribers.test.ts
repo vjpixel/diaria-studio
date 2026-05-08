@@ -5,6 +5,9 @@ import {
   computeScore,
   isLowQualityEmail,
   mergeRecord,
+  verifyRisk,
+  openProbability,
+  hasClariceAudienceTag,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -201,5 +204,210 @@ describe("mergeRecord", () => {
     const rec = { ...merged(), status: "active" };
     mergeRecord(existing, rec, "f.csv");
     assert.equal(existing.status, "active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasClariceAudienceTag
+// ---------------------------------------------------------------------------
+
+describe("hasClariceAudienceTag", () => {
+  it("description = clrc-pt → true", () => {
+    assert.equal(hasClariceAudienceTag(merged({ description: "clrc-pt" })), true);
+  });
+
+  it("tag = clrc-pt → true", () => {
+    assert.equal(hasClariceAudienceTag(merged({ tag: "clrc-pt" })), true);
+  });
+
+  it("description = clrc-en, tag = null → false (só clrc-pt qualifica)", () => {
+    assert.equal(hasClariceAudienceTag(merged({ description: "clrc-en" })), false);
+  });
+
+  it("ambos null → false", () => {
+    assert.equal(hasClariceAudienceTag(merged({ description: null, tag: null })), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyRisk — sem tag clrc-pt no critério (níveis 6–10 puramente recência)
+// ---------------------------------------------------------------------------
+
+describe("verifyRisk", () => {
+  it("nível 1: status active", () => {
+    assert.equal(verifyRisk(merged({ status: "active" }), NOW), 1);
+  });
+
+  it("nível 2: 10+ pagamentos, conta < 24mo", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 12,
+      created: new Date("2025-01-01T00:00:00Z"), // ~16mo antes de NOW
+    });
+    assert.equal(verifyRisk(c, NOW), 2);
+  });
+
+  it("nível 3: 3+ pagamentos, conta < 24mo", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 5,
+      created: new Date("2025-06-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 3);
+  });
+
+  it("nível 4: 1+ pagamento, conta < 36mo", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 1,
+      created: new Date("2024-01-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 4);
+  });
+
+  it("nível 5: 1+ pagamento, conta 36–60mo", () => {
+    const c = merged({
+      status: "canceled",
+      payment_count: 1,
+      created: new Date("2022-01-01T00:00:00Z"), // ~52mo
+    });
+    assert.equal(verifyRisk(c, NOW), 5);
+  });
+
+  it("nível 6: nunca pagou, conta < 12mo", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2025-12-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 6);
+  });
+
+  it("nível 7: nunca pagou, conta 12–24mo", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2024-11-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 7);
+  });
+
+  it("nível 8: nunca pagou, conta 24–36mo", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2023-11-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 8);
+  });
+
+  it("nível 9: nunca pagou, conta 36–48mo", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2022-11-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 9);
+  });
+
+  it("nível 10: nunca pagou, conta 48+mo (fóssil)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2021-01-01T00:00:00Z"),
+    });
+    assert.equal(verifyRisk(c, NOW), 10);
+  });
+
+  it("tag clrc-pt NÃO afeta risk: dois contatos idênticos com/sem tag dão mesmo nível", () => {
+    const base = {
+      status: "",
+      payment_count: 0,
+      created: new Date("2024-11-01T00:00:00Z"), // 12–24mo
+    };
+    const withTag = merged({ ...base, tag: "clrc-pt" });
+    const withoutTag = merged({ ...base, tag: null });
+    assert.equal(verifyRisk(withTag, NOW), verifyRisk(withoutTag, NOW));
+    assert.equal(verifyRisk(withTag, NOW), 7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openProbability — sem tag clrc-pt; não-pagantes começam em 12
+// ---------------------------------------------------------------------------
+
+describe("openProbability", () => {
+  it("active recente (< 12mo): 62 base + 12 recência = 74", () => {
+    const c = merged({
+      status: "active",
+      created: new Date("2025-12-01T00:00:00Z"),
+    });
+    assert.equal(openProbability(c, NOW), 74);
+  });
+
+  it("spend ≥ 1000 + recente: 50 + 12 = 62", () => {
+    const c = merged({
+      status: "canceled",
+      total_spend: 1500,
+      created: new Date("2025-12-01T00:00:00Z"),
+    });
+    // status canceled aplica -3 negativo
+    assert.equal(openProbability(c, NOW), 50 + 12 - 3);
+  });
+
+  it("nunca pagou + recente: base 12 + 12 recência = 24", () => {
+    const c = merged({
+      status: "",
+      total_spend: 0,
+      payment_count: 0,
+      created: new Date("2025-12-01T00:00:00Z"),
+    });
+    assert.equal(openProbability(c, NOW), 12 + 12);
+  });
+
+  it("nunca pagou + antigo (36+mo): 12 base − 6 recência = clamped a 4 (mín)", () => {
+    const c = merged({
+      status: "",
+      total_spend: 0,
+      payment_count: 0,
+      created: new Date("2022-01-01T00:00:00Z"),
+    });
+    // 12 - 6 = 6, mas modificadores adicionais não aplicam → resultado 6
+    assert.equal(openProbability(c, NOW), 6);
+  });
+
+  it("tag clrc-pt NÃO afeta probability: dois contatos idênticos com/sem tag dão mesmo valor", () => {
+    const base = {
+      status: "",
+      total_spend: 0,
+      payment_count: 0,
+      created: new Date("2024-11-01T00:00:00Z"),
+    };
+    const withTag = merged({ ...base, tag: "clrc-pt" });
+    const withoutTag = merged({ ...base, tag: null });
+    assert.equal(openProbability(withTag, NOW), openProbability(withoutTag, NOW));
+  });
+
+  it("clamp inferior em 4", () => {
+    const c = merged({
+      status: "canceled",
+      total_spend: 0,
+      payment_count: 0,
+      delinquent: true,
+      created: new Date("2021-01-01T00:00:00Z"),
+    });
+    // 12 base - 6 recência - 5 delinquent - 3 canceled = -2 → clamp 4
+    assert.equal(openProbability(c, NOW), 4);
+  });
+
+  it("clamp superior em 80", () => {
+    const c = merged({
+      status: "active",
+      total_spend: 5000,
+      payment_count: 30,
+      created: new Date("2025-12-01T00:00:00Z"),
+    });
+    // 62 + 12 + 10 = 84 → clamp 80
+    assert.equal(openProbability(c, NOW), 80);
   });
 });
