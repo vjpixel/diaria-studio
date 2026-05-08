@@ -887,6 +887,40 @@ describe("checkEaiSection (#588)", () => {
       const md = "É IA?\n\nCrédito.\n";
       assert.equal(checkEaiSection(md).ok, true);
     });
+
+    it("aceita formato novo (#957): 'Gabarito: A é a IA' (1 lado)", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: ia",
+        "  B: real",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Crédito.",
+        "",
+        "> Gabarito: **A é a IA**",
+      ].join("\n");
+      assert.equal(checkEaiSection(md).ok, true);
+    });
+
+    it("aceita formato novo invertido: 'Gabarito: B é a IA'", () => {
+      const md = [
+        "---",
+        "eia_answer:",
+        "  A: real",
+        "  B: ia",
+        "---",
+        "",
+        "É IA?",
+        "",
+        "Crédito.",
+        "",
+        "> Gabarito: **B é a IA**",
+      ].join("\n");
+      assert.equal(checkEaiSection(md).ok, true);
+    });
   });
 });
 

@@ -1242,18 +1242,22 @@ export function checkEaiSection(md: string): { ok: boolean; error?: string } {
     const fm = fmMatch[1];
     const hasEiaAnswer = /eia_answer\s*:/.test(fm);
     if (hasEiaAnswer) {
-      // Aceitar formatos: "Gabarito: A = ia, B = real" com ou sem negrito,
-      // com ou sem prefixo `>` (blockquote), com qualquer combinação ia/real.
-      const hasGabarito = /Gabarito\s*:\s*\*{0,2}A\s*=\s*(ia|real)\*{0,2}\s*,\s*\*{0,2}B\s*=\s*(ia|real)\*{0,2}/i.test(
+      // Aceitar formato novo (#957): "Gabarito: **A é a IA**" (1 lado só).
+      // Aceitar formato legacy: "Gabarito: A = ia, B = real" (ambos os lados).
+      // Ambos com ou sem negrito, com ou sem prefixo `>` (blockquote).
+      const hasGabaritoNew = /Gabarito\s*:\s*\*{0,2}[AB]\s+é\s+a\s+IA\*{0,2}/i.test(
         normalized,
       );
-      if (!hasGabarito) {
+      const hasGabaritoLegacy = /Gabarito\s*:\s*\*{0,2}A\s*=\s*(ia|real)\*{0,2}\s*,\s*\*{0,2}B\s*=\s*(ia|real)\*{0,2}/i.test(
+        normalized,
+      );
+      if (!hasGabaritoNew && !hasGabaritoLegacy) {
         return {
           ok: false,
           error:
-            "Seção É IA? sem linha de gabarito no body (#908). Frontmatter tem `eia_answer` mas falta " +
-            "linha `> Gabarito: **A = {ia|real}**, **B = {ia|real}**` no body — editor não consegue ver " +
-            "qual imagem é qual no Drive review sem abrir frontmatter ou 01-eia.md em paralelo.",
+            "Seção É IA? sem linha de gabarito no body (#908/#957). Frontmatter tem `eia_answer` mas falta " +
+            "linha `> Gabarito: **{A|B} é a IA**` no body — editor não consegue ver " +
+            "qual imagem é a IA no Drive review sem abrir frontmatter ou 01-eia.md em paralelo.",
         };
       }
     }

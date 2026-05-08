@@ -47,8 +47,8 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 2b. **Seção É IA?** — após DESTAQUE 2 e antes de DESTAQUE 3:
    - Ler `{edition_dir}/01-categorized.md` e extrair a linha de crédito da seção `## É IA?` (primeira linha não-vazia após o cabeçalho `## É IA?`, ignorando separadores `---`).
    - Fallback: se a seção não existir ou estiver vazia no categorized.md, ler `{edition_dir}/01-eia.md` e extrair a linha de crédito ignorando o bloco frontmatter (`---…---`), a linha `É IA?` e linhas vazias.
-   - **Gabarito (#908)**: ler também o frontmatter `eia_answer` de `{edition_dir}/01-eia.md` (campos `A` e `B`, valores `ia`/`real`). Emitir uma linha de gabarito logo após o crédito — editor-facing pra QC no Drive review (Stage 4 stripa antes da publicação).
-   - Inserir no draft:
+   - **Gabarito (#908, #957)**: ler também o frontmatter `eia_answer` de `{edition_dir}/01-eia.md` (campos `A` e `B`, valores `ia`/`real`). Emitir uma linha de gabarito logo após o crédito — editor-facing pra QC no Drive review (Stage 4 stripa antes da publicação). Como sempre tem 1 IA + 1 real, dizer só qual lado é a IA — a outra fica implícita como real.
+   - Inserir no draft (substituir `{X}` por `A` ou `B` conforme `eia_answer`):
      ```
      ---
 
@@ -56,7 +56,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
      {linha de crédito}
 
-     > Gabarito: **A = {ia|real}**, **B = {ia|real}**
+     > Gabarito: **{X} é a IA**
 
      ---
      ```

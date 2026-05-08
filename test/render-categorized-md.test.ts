@@ -608,6 +608,39 @@ describe("renderEaiBlock (#371, #481)", () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  it("#957: gabarito formato novo 'A é a IA' (não A=ia, B=real)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(
+        join(dir, "01-eia.md"),
+        "---\neia_answer:\n  A: ia\n  B: real\n---\nCrédito da foto",
+        "utf8",
+      );
+      const block = renderEaiBlock(dir);
+      assert.match(block, /Gabarito:\s*\*\*A é a IA\*\*/);
+      assert.doesNotMatch(block, /A = ia/);
+      assert.doesNotMatch(block, /B = real/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#957: gabarito formato novo invertido 'B é a IA'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      writeFileSync(
+        join(dir, "01-eia.md"),
+        "---\neia_answer:\n  A: real\n  B: ia\n---\nCrédito",
+        "utf8",
+      );
+      const block = renderEaiBlock(dir);
+      assert.match(block, /Gabarito:\s*\*\*B é a IA\*\*/);
+      assert.doesNotMatch(block, /A = real/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });
 
 describe("renderSection — bucket Vídeos (#359)", () => {
