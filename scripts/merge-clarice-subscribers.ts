@@ -459,21 +459,23 @@ interface Scored extends Merged {
 
 function formatTierRow(r: Scored): { [k: string]: string | number } {
   // Schema mínimo pra import no Brevo (3 colunas — #1019):
-  // - email          (identidade)
-  // - first_name     (personalização: "Olá, {{first_name}}")
-  // - open_probability  (atributo pra segmentação no Brevo)
+  // - email             (identidade)
+  // - NOME              (personalização: "Olá, {{NOME}}")
+  // - OPEN_PROBABILITY  (atributo Brevo pra segmentação)
+  //
+  // Headers em UPPERCASE batem com nomes dos atributos no Brevo deste account
+  // (PT-BR: NOME mapeia pra firstname). Sem uppercase, o Brevo cria atributos
+  // novos (first_name) em vez de popular os canônicos (verificado via API).
   //
   // Tier é implícito no filename (brevo-import-t{NN}.csv).
   // Ordem das linhas implica ordenação por score (não precisa coluna).
   //
   // verify_risk não vai no output: decisão de MillionVerifier é tomada
-  // por tier (heurística atual: T6+ → MV, T1–T5 → skip). Função verifyRisk
-  // permanece no script pra documentar a lógica e cobertura de teste, caso
-  // a estratégia mude no futuro.
+  // por tier (heurística atual: T6+ → MV, T1–T5 → skip).
   return {
     email: r.email,
-    first_name: r.name?.split(" ")[0] || "",
-    open_probability: r.open_probability,
+    NOME: r.name?.split(" ")[0] || "",
+    OPEN_PROBABILITY: r.open_probability,
   };
 }
 
