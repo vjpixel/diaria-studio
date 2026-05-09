@@ -1,0 +1,46 @@
+name: Weekly Bug Heatmap
+
+# #1014: regenera docs/bug-heatmap.md toda 6ª feira (após weekly-e2e)
+# e commita se houver mudanças.
+
+on:
+  schedule:
+    # Toda 6ª às 10h UTC = 7h BRT (1h após weekly-e2e às 9h UTC)
+    - cron: '0 10 * * 5'
+  workflow_dispatch:
+
+jobs:
+  heatmap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Pra commitar docs/bug-heatmap.md
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Regenerate heatmap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npx tsx scripts/bug-heatmap.ts --out docs/bug-heatmap.md
+
+      - name: Commit if changed
+        run: |
+          git config user.name "diaria-bot"
+          git config user.email "diaria-bot@noreply.github.com"
+          if [ -n "$(git status --porcelain docs/bug-heatmap.md)" ]; then
+            git add docs/bug-heatmap.md
+            today=$(date -u +%Y-%m-%d)
+            git commit -m "chore(heatmap): weekly regen ($today) (#1014)"
+            git push
+          else
+            echo "Heatmap inalterado — nada pra commitar."
+          fi

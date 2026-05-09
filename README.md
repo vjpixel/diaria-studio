@@ -126,5 +126,6 @@ Pipeline fim-a-fim funcional (4 etapas). Editor revisa cada gate e dispara publi
 - [`CLAUDE.md`](./CLAUDE.md) — instruções do projeto (lidas automaticamente pelo Claude Code).
 - [`context/editorial-rules.md`](./context/editorial-rules.md) — regras editoriais invariantes.
 - [`docs/`](./docs/) — guias de setup de componentes (Chrome, ComfyUI, Gmail).
+- [`docs/bug-heatmap.md`](./docs/bug-heatmap.md) — heatmap de bugs por stage (regenerado semanalmente, #1014). Use labels `stage-{0..5}`, `stage-publish`, `stage-research` em issues bug pra alimentar.
 - [`.claude/agents/`](./.claude/agents/) — subagentes do pipeline.
 - [`.claude/skills/`](./.claude/skills/) — slash commands invocáveis.
