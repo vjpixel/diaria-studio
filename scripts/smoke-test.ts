@@ -29,6 +29,7 @@ import { lintSocialMd } from "./lint-social-md.ts";
 import { validateLancamentos } from "./validate-lancamentos.ts";
 import { extractDestaqueUrls, extractPromptUrl, computeSwaps } from "./match-prompts-to-destaques.ts";
 import { inferIsPublished } from "./verify-facebook-posts.ts";
+import { parseApproved } from "./lib/schemas/approved.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE_DIR = resolve(ROOT, "test/fixtures/edition-sample");
@@ -179,7 +180,8 @@ function runStage2Smoke(): { passed: number; failed: string[] } {
 
   const reviewedMd = readFileSync(resolve(FIXTURE_STAGE2, "02-reviewed-canonical.md"), "utf8");
   const socialMd = readFileSync(resolve(FIXTURE_STAGE2, "03-social-canonical.md"), "utf8");
-  const approved = JSON.parse(readFileSync(resolve(FIXTURE_STAGE2, "01-approved.json"), "utf8"));
+  // Schema-validated parse (#1012)
+  const approved = parseApproved(JSON.parse(readFileSync(resolve(FIXTURE_STAGE2, "01-approved.json"), "utf8")));
 
   // 2a. É IA? section present
   const eaiResult = checkEaiSection(reviewedMd);
