@@ -13,6 +13,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,16 +29,9 @@ interface EaiUsedEntry {
   used_at: string;
 }
 
-interface EaiMeta {
-  edition: string;
-  composed_at?: string;
-  wikimedia?: {
-    title?: string;
-    image_url?: string;
-    credit?: string;
-    image_date_used?: string;
-  };
-}
+// (EaiMeta interface local removida em #1031 — usa central EiaMeta inferido
+// de parseEiaMeta. Schema central tem wikimedia required + image_url required;
+// cast removido pra evitar mascarar drift futuro.)
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -112,9 +106,12 @@ function main() {
       continue;
     }
 
-    let meta: EaiMeta;
+    let meta;
     try {
-      meta = JSON.parse(readFileSync(metaPath, "utf8")) as EaiMeta;
+      // #1031: schema-validated parse via central parseEiaMeta
+      // (sem cast: TypeScript infere o tipo central; código usa optional
+      // chaining então não quebra com fields opcionais)
+      meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8")));
     } catch {
       skipped++;
       continue;

@@ -37,9 +37,15 @@ import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
 
+// #1031: tipos locais reconciliados com central ApprovedJsonSchema
+// (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
+// flat/nested highlights (#229) e runners_up que podem ter shape variado.
+// Lógica abaixo já trata undefined defensivamente (`if (h.url)` etc).
 interface ApprovedArticle {
-  url: string;
+  url?: string;
   title?: string;
+  // article nested (HighlightNestedSchema) — opcional, pra casos de runners_up
+  article?: { url?: string; title?: string; [key: string]: unknown };
   [key: string]: unknown;
 }
 

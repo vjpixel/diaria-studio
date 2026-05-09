@@ -28,6 +28,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "node:fs";
+import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,7 +69,17 @@ export function readEiaMeta(editionDir: string): EiaMeta | null {
   const path = resolve(editionDir, "_internal/01-eia-meta.json");
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as EiaMeta;
+    // #1031: schema-validated parse (parseEiaMeta de lib/schemas/eia-meta.ts)
+    // Schema central requer ai_side ∈ {A, B}; se faltar/inválido → null fallback.
+    // Cast pra local EiaMeta justificado: shape compatible (central é mais
+    // strict — central rejeita ai_side null mas aqui já tratamos parse falha
+    // como null, equivalente ao comportamento anterior).
+    const parsed = parseEiaMeta(JSON.parse(readFileSync(path, "utf8")));
+    return {
+      edition: parsed.edition,
+      ai_side: parsed.ai_side,
+      wikimedia: parsed.wikimedia,
+    };
   } catch {
     return null;
   }
