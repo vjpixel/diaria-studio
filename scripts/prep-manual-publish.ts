@@ -46,13 +46,74 @@ async function listCustomFields(opts: {
   publicationId: string;
   apiKey: string;
 }): Promise<string[]> {
-  const url = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/custom_fields?limit=100`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${opts.apiKey}` },
-  });
-  if (!res.ok) throw new Error(`Beehiiv API ${res.status}: ${await res.text()}`);
-  const json = (await res.json()) as { data?: BeehiivCustomField[] };
-  return (json.data ?? []).map((f) => f.display);
+  // Pagina via cursor pra cobrir publications com >100 fields (consistência
+  // com inject-poll-urls.ts:ensureCustomFields — mesmo padrão).
+  const baseUrl = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/custom_fields`;
+  const all: string[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    const res = await fetch(`${baseUrl}?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${opts.apiKey}` },
+    });
+    if (!res.ok)
+      throw new Error(`Beehiiv API ${res.status}: ${await res.text()}`);
+    const json = (await res.json()) as {
+      data?: BeehiivCustomField[];
+      has_more?: boolean;
+      next_cursor?: string;
+    };
+    for (const f of json.data ?? []) all.push(f.display);
+    if (!json.has_more || !json.next_cursor) break;
+    cursor = json.next_cursor;
+  }
+  return all;
+}
+
+interface BeehiivPostListItem {
+  id: string;
+  title: string;
+  status: string;
+}
+
+/**
+ * Procura post template "Default" via Beehiiv API por title exato.
+ * Fallback hardcoded preserva URL conhecida (`5232180a`) em caso de API failure.
+ */
+async function findDefaultTemplateUrl(opts: {
+  publicationId: string;
+  apiKey: string;
+}): Promise<string> {
+  const HARDCODED_FALLBACK =
+    "https://app.beehiiv.com/posts/5232180a-0224-4cd2-a0cb-276aadc7b4f6/edit";
+  const baseUrl = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/posts`;
+  let cursor: string | undefined;
+  try {
+    while (true) {
+      const params = new URLSearchParams({ status: "draft", limit: "100" });
+      if (cursor) params.set("cursor", cursor);
+      const res = await fetch(`${baseUrl}?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${opts.apiKey}` },
+      });
+      if (!res.ok) return HARDCODED_FALLBACK;
+      const json = (await res.json()) as {
+        data?: BeehiivPostListItem[];
+        has_more?: boolean;
+        next_cursor?: string;
+      };
+      const match = (json.data ?? []).find((p) => p.title === "Default");
+      if (match) {
+        const id = match.id.replace(/^post_/, "");
+        return `https://app.beehiiv.com/posts/${id}/edit`;
+      }
+      if (!json.has_more || !json.next_cursor) break;
+      cursor = json.next_cursor;
+    }
+  } catch {
+    return HARDCODED_FALLBACK;
+  }
+  return HARDCODED_FALLBACK;
 }
 
 async function pingWorker(edition: string): Promise<{
@@ -231,9 +292,10 @@ async function main(): Promise<void> {
 
   // Print step-by-step instructions
   const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
+  const templateUrl = await findDefaultTemplateUrl(apiOpts);
   console.log("=== Próximos passos (manual) ===\n");
   console.log("1. Abrir template no Beehiiv:");
-  console.log("   https://app.beehiiv.com/posts/5232180a-0224-4cd2-a0cb-276aadc7b4f6/edit\n");
+  console.log(`   ${templateUrl}\n`);
   console.log("2. Editar Custom HTML block — substituir conteúdo pelo arquivo abaixo:");
   console.log(`   ${htmlPath}\n`);
   console.log("3. Preencher Title + Subject Line da edição (Compose tab)\n");
