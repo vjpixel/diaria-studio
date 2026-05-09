@@ -61,25 +61,14 @@ import {
 } from "./lib/social-published-store.ts";
 import type { PostEntry } from "./lib/social-published-store.ts";
 
-interface MakeWebhookPayload {
-  text: string;
-  image_url: string | null;
-  scheduled_at: string | null;
-  destaque: string;
-}
-
-interface MakeWebhookResponse {
-  request_id?: string;
-  accepted?: boolean;
-  [k: string]: unknown;
-}
-
-interface WorkerQueueResponse {
-  queued: boolean;
-  key: string;
-  scheduled_at: string;
-  destaque: string;
-}
+// #1032: types movidos pra scripts/lib/schemas/linkedin-payload.ts
+import {
+  type MakeWebhookPayload,
+  type MakeWebhookResponse,
+  type WorkerQueueResponse,
+  parseMakeWebhookPayload,
+  parseWorkerQueueResponse,
+} from "./lib/schemas/linkedin-payload.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -509,13 +498,13 @@ async function main(): Promise<void> {
       }
     }
 
-    // Montar payload
-    const payload: MakeWebhookPayload = {
+    // Montar payload — schema-validated pra fail-fast em image_url undefined etc (#1032)
+    const payload: MakeWebhookPayload = parseMakeWebhookPayload({
       text,
       image_url: imageUrl,
       scheduled_at: scheduledAt,
       destaque: d,
-    };
+    });
 
     // Decidir route: Worker queue (se scheduled_at futuro + worker configurado) ou Make webhook direto
     const isFutureSchedule =
