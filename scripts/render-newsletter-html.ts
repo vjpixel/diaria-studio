@@ -357,7 +357,8 @@ const TEAL = "#00A0A0";
 const TEXT_COLOR = "#1A1A1A";
 const FONT_HEADING = "'Poppins', Helvetica, sans-serif";
 const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+// POLL_WORKER_URL removido em #1044 — URLs vêm via custom fields {{poll_a_url}}/{{poll_b_url}}
+// populados por inject-poll-urls.ts (HMAC pré-computado per subscriber).
 
 function esc(s: string): string {
   return s
@@ -504,19 +505,21 @@ function renderEIA(eia: EIA): string {
   // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
   // `01-eia.md` (frontmatter, leitura humana) e `_internal/01-eia-meta.json`.
 
-  // #465: botões de votação via merge tag do Beehiiv.
-  // {{ subscriber.email }} é substituído pelo Beehiiv no envio — NÃO aplicar esc() na URL completa.
+  // #1044: botões de votação usam custom fields populados pelo inject-poll-urls.ts.
+  // poll_a_url/poll_b_url contêm URL HMAC-assinada per subscriber (não-forjável).
+  // Substitui caminho legacy #465 que usava {{ subscriber.email }} (forjável).
+  // Beehiiv resolve {{poll_a_url}} no envio → URL completa pro Worker.
   const voteButtonsRow = eia.edition
     ? `      <tr><td align="center" style="${cellStyle};padding:16px 2px;">
         <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
           <tr>
             <td style="padding:0 8px;">
-              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&amp;edition=${esc(eia.edition)}&amp;choice=A"
+              <a href="{{poll_a_url}}"
                  style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
                  target="_blank" rel="noopener noreferrer">Votar A</a>
             </td>
             <td style="padding:0 8px;">
-              <a href="${POLL_WORKER_URL}/vote?email={{ subscriber.email }}&amp;edition=${esc(eia.edition)}&amp;choice=B"
+              <a href="{{poll_b_url}}"
                  style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
                  target="_blank" rel="noopener noreferrer">Votar B</a>
             </td>
