@@ -2,7 +2,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseApproved, ApprovedSchema } from "../scripts/lib/schemas/approved.ts";
 import { parseEiaMeta, EiaMetaSchema } from "../scripts/lib/schemas/eia-meta.ts";
 import { parsePublicImages, PublicImagesSchema } from "../scripts/lib/schemas/public-images.ts";
 import { parseClariceSuggestions, ClariceSuggestionsSchema } from "../scripts/lib/schemas/clarice-suggestions.ts";
@@ -20,49 +19,9 @@ import { parseClariceSuggestions, ClariceSuggestionsSchema } from "../scripts/li
 
 const FIXTURES = resolve(import.meta.dirname, "fixtures/pipeline-jsons");
 
-// ─── 01-approved.json ──────────────────────────────────────────────────────
-
-describe("ApprovedSchema (01-approved.json)", () => {
-  it("valida fixture real", () => {
-    const path = resolve(FIXTURES, "01-approved.json");
-    const raw = JSON.parse(readFileSync(path, "utf8"));
-    const parsed = parseApproved(raw);
-    assert.ok(parsed.highlights.length > 0, "Esperava ≥1 highlight");
-    assert.ok(parsed.highlights[0].article.url, "Highlight deve ter article.url");
-  });
-
-  it("highlights vazio é válido", () => {
-    const parsed = parseApproved({ highlights: [] });
-    assert.equal(parsed.highlights.length, 0);
-  });
-
-  it("rejeita raw sem highlights", () => {
-    assert.throws(() => parseApproved({}), /highlights/);
-  });
-
-  it("rejeita highlight sem article", () => {
-    assert.throws(() =>
-      parseApproved({
-        highlights: [{ rank: 1, score: 80 }],
-      }),
-    );
-  });
-
-  it("aceita campos extras (passthrough)", () => {
-    const parsed = parseApproved({
-      highlights: [
-        {
-          rank: 1,
-          score: 80,
-          article: { url: "https://x.com", title: "Test" },
-          campo_novo: "valor",
-        },
-      ],
-      extra_top_level: 42,
-    });
-    assert.equal((parsed.highlights[0] as { campo_novo?: string }).campo_novo, "valor");
-  });
-});
+// Nota: 01-approved.json já tem schema em scripts/lib/schemas/edition-state.ts
+// (ApprovedJsonSchema/parseApprovedJson) com tests em test/schemas/edition-state.test.ts.
+// Não re-testar aqui pra evitar duplicação.
 
 // ─── 01-eia-meta.json ──────────────────────────────────────────────────────
 
