@@ -67,10 +67,17 @@ before(() => {
   setGlobalDispatcher(mockAgent);
 });
 
-after(() => {
-  // Restore tudo
-  process.env = originalEnv;
+after(async () => {
+  // Restore tudo. process.env é proxied — limpa adições e reinjeta originais
+  for (const k of Object.keys(process.env)) {
+    if (!(k in originalEnv)) delete process.env[k];
+  }
+  for (const [k, v] of Object.entries(originalEnv)) {
+    if (v !== undefined) process.env[k] = v;
+  }
   process.argv = originalArgv;
+  // Cleanup ordenado: close mock + restore antes de qualquer outra suite rodar
+  await mockAgent.close();
   setGlobalDispatcher(originalDispatcher);
 });
 
@@ -118,6 +125,33 @@ describe("publish-monthly main(): --send-test happy path (#1029)", () => {
     assert.equal(out.list_name, "T1-W1");
     assert.equal(out.list_subscribers, 50);
     assert.ok(out.test_sent_at, "test_sent_at deve estar populado");
+  });
+});
+
+describe("publish-monthly main(): --send-test-to override (#1029)", () => {
+  it("envia test pra email custom (não default), persiste em test_email", async () => {
+    const brevoMock = mockAgent.get("https://api.brevo.com");
+    brevoMock.intercept({ path: "/v3/contacts/lists/9", method: "GET" }).reply(200, {
+      id: 9, name: "T1-W1", totalSubscribers: 50,
+    }, { headers: { "content-type": "application/json" } });
+    brevoMock.intercept({ path: "/v3/emailCampaigns", method: "POST" }).reply(201, {
+      id: 110,
+    }, { headers: { "content-type": "application/json" } });
+    // Mock ACEITA qualquer body — não temos como validar emailTo via undici simples,
+    // mas o status persistido provará que o flow rodou.
+    brevoMock.intercept({ path: "/v3/emailCampaigns/110/sendTest", method: "POST" }).reply(204, "");
+
+    process.argv = [
+      "node", "publish-monthly.ts",
+      "--yymm", "2604",
+      "--list-id", "9",
+      "--send-test",
+      "--send-test-to", "felipe@clarice.ai",
+    ];
+    await main(tmpDir);
+
+    const out = JSON.parse(readFileSync(join(tmpDir, "_internal", "05-published.json"), "utf8"));
+    assert.equal(out.test_email, "felipe@clarice.ai", "test_email deve refletir override");
   });
 });
 
