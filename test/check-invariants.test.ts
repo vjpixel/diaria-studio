@@ -40,6 +40,56 @@ describe("check-invariants — checkNoHtmlInMonthlyDriveSync (#1022)", () => {
     const violations = checkNoHtmlInMonthlyDriveSync();
     assert.equal(violations.length, 0, JSON.stringify(violations, null, 2));
   });
+
+  it("ATIVA quando .md tem drive-sync push com .html em --files", () => {
+    // Cria fixture md com violação injetada
+    const tmp = mkdtempSync(join(tmpdir(), "check-html-"));
+    writeFileSync(
+      join(tmp, "SKILL.md"),
+      "Push: `npx tsx scripts/drive-sync.ts --mode push --files preview-list9.html`\n",
+      "utf8",
+    );
+    try {
+      const violations = checkNoHtmlInMonthlyDriveSync(tmp);
+      assert.equal(violations.length, 1);
+      assert.equal(violations[0].rule, "no-html-in-monthly-drive-sync");
+      assert.equal(violations[0].source_issue, "#1022");
+      assert.equal(violations[0].severity, "error");
+      assert.match(violations[0].message, /HTML/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("não ativa em linha sem --files (comentário menciona .html)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "check-html-comment-"));
+    writeFileSync(
+      join(tmp, "SKILL.md"),
+      "Veja o output em `preview.html` local — não enviado pro Drive.\n",
+      "utf8",
+    );
+    try {
+      const violations = checkNoHtmlInMonthlyDriveSync(tmp);
+      assert.equal(violations.length, 0, "Comentário sem --files não deve disparar");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("não ativa em drive-sync de outro file (md/json/jpg em --files)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "check-html-md-"));
+    writeFileSync(
+      join(tmp, "SKILL.md"),
+      "Push: `npx tsx scripts/drive-sync.ts --mode push --files draft.md,01-eai-A.jpg`\n",
+      "utf8",
+    );
+    try {
+      const violations = checkNoHtmlInMonthlyDriveSync(tmp);
+      assert.equal(violations.length, 0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("check-invariants CLI (#966)", () => {

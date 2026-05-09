@@ -103,10 +103,14 @@ export function checkNoForensicInDriveSync(): Violation[] {
 /**
  * #1022: Drive sync do digest mensal não inclui HTML render.
  * O HTML é input direto do Brevo; editor não revisa lá. Polui pasta.
+ *
+ * @param baseDir Opcional, default = `.claude/skills/diaria-mensal`. Aceito
+ *                pra permitir test com fixture dir contendo violações
+ *                injetadas (sem modificar o repo).
  */
-export function checkNoHtmlInMonthlyDriveSync(): Violation[] {
+export function checkNoHtmlInMonthlyDriveSync(baseDir?: string): Violation[] {
   const violations: Violation[] = [];
-  const targetDirs = [join(ROOT, ".claude", "skills", "diaria-mensal")];
+  const targetDirs = [baseDir ?? join(ROOT, ".claude", "skills", "diaria-mensal")];
   for (const dir of targetDirs) {
     if (!existsSync(dir)) continue;
     walkMd(dir, (path) => {
