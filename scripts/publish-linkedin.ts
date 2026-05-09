@@ -205,9 +205,12 @@ export async function postToWorkerQueue(
       }
       const text = await res.text();
       try {
-        return JSON.parse(text) as WorkerQueueResponse;
-      } catch {
-        throw new Error(`Worker returned non-JSON response: ${text.slice(0, 200)}`);
+        // #1032: schema-validated parse (queued: true required, etc)
+        return parseWorkerQueueResponse(JSON.parse(text));
+      } catch (parseErr) {
+        throw new Error(
+          `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
+        );
       }
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
