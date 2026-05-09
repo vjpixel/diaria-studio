@@ -1,0 +1,4 @@
+id,Email,Name,Created (UTC),Description,tag (metadata),Delinquent,Plan,Status,Total Spend,Payment Count,Refunded Volume,Dispute Losses
+cus_c1a,duplicated@clrctest.com.br,Old Name,2023-03-10 12:00,clrc-pt,clrc-pt,false,plan_a,canceled,200.00,4,0.00,0.00
+cus_c1b,solo2023a@clrctest.com.br,Solo 2023 A,2023-06-15 12:00,clrc-pt,clrc-pt,false,plan_a,canceled,150.00,3,0.00,0.00
+cus_c1c,delinquent@clrctest.com.br,Will Become Active,2023-08-20 12:00,clrc-pt,clrc-pt,false,plan_b,canceled,50.00,1,0.00,0.00

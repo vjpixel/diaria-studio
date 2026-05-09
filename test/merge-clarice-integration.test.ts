@@ -162,3 +162,95 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     }
   });
 });
+
+// ─── Cross-CSV merge invariants (#1027) ────────────────────────────────────
+
+describe("merge-clarice: invariantes de merge cross-CSV", () => {
+  const COHORTS_DIR = resolve(import.meta.dirname, "fixtures/clarice-fixtures");
+  let mergeDir: string;
+
+  before(() => {
+    mergeDir = mkdtempSync(join(tmpdir(), "merge-cross-csv-"));
+    // Copia 3 cohorts pra mesmo dataDir — script faz merge entre eles
+    copyFileSync(
+      join(COHORTS_DIR, "stripe-fixture-cohort1-2023.csv"),
+      join(mergeDir, "stripe-cohort1.csv"),
+    );
+    copyFileSync(
+      join(COHORTS_DIR, "stripe-fixture-cohort2-2024.csv"),
+      join(mergeDir, "stripe-cohort2.csv"),
+    );
+    copyFileSync(
+      join(COHORTS_DIR, "stripe-fixture-cohort3-2026.csv"),
+      join(mergeDir, "stripe-cohort3.csv"),
+    );
+    main(mergeDir);
+  });
+
+  after(() => {
+    if (mergeDir) rmSync(mergeDir, { recursive: true, force: true });
+  });
+
+  function findContact(filename: string, email: string): { [k: string]: string } | undefined {
+    const content = readFileSync(join(mergeDir, filename), "utf8");
+    const rows = Papa.parse<{ [k: string]: string }>(content, {
+      header: true,
+      skipEmptyLines: true,
+    }).data;
+    return rows.find((r) => r.email === email);
+  }
+
+  it("contato duplicado em 3 cohorts: stripe_ids agregados (audit trail)", () => {
+    // duplicated@clrctest.com.br aparece em cohort1 (cus_c1a), cohort2 (cus_c2a), cohort3 (cus_c3a)
+    // Estará em algum tier; vou buscar em todos
+    let found: { [k: string]: string } | undefined;
+    for (let t = 1; t <= 10; t++) {
+      const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+      found = findContact(filename, "duplicated@clrctest.com.br");
+      if (found) break;
+    }
+    assert.ok(found, "duplicated@clrctest.com.br deveria estar em algum tier");
+    // Schema CSV minimal não inclui stripe_ids. Apenas validamos que email apareceu 1x (não 3x)
+    let totalAppearances = 0;
+    for (let t = 1; t <= 10; t++) {
+      if (findContact(`brevo-import-t${String(t).padStart(2, "0")}.csv`, "duplicated@clrctest.com.br")) {
+        totalAppearances++;
+      }
+    }
+    assert.equal(totalAppearances, 1, "Email duplicado deve aparecer em EXATAMENTE 1 tier (mergeado)");
+  });
+
+  it("duplicated: NOME do registro mais recente vence (cohort3, 2026)", () => {
+    // cohort1: "Old Name", cohort2: "New Name 2024", cohort3: "Newest Name 2026"
+    // Merge usa created mais recente — cohort3 vence
+    let found: { [k: string]: string } | undefined;
+    for (let t = 1; t <= 10; t++) {
+      found = findContact(`brevo-import-t${String(t).padStart(2, "0")}.csv`, "duplicated@clrctest.com.br");
+      if (found) break;
+    }
+    assert.ok(found);
+    // first_name = primeira palavra do name; "Newest Name 2026" → "Newest"
+    assert.equal(found!.NOME, "Newest");
+  });
+
+  it("duplicated: paid (spend > 0) é detectado mesmo se o último cohort não tiver pagamento", () => {
+    // duplicated tem total_spend = 200 + 100 + 50 = 350 (somado).
+    // Vai pra T2 (ex-assinante) — não é active hoje.
+    const found = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    assert.ok(found, "duplicated deveria estar em T2 (paid alguma vez, não active hoje)");
+  });
+
+  it("delinquent@: status active de cohort2 vence canceled de cohort1 → vai pra T1", () => {
+    // cohort1: canceled / cohort2: active. Merge mantém active.
+    const found = findContact("brevo-import-t01.csv", "delinquent@clrctest.com.br");
+    assert.ok(found, "delinquent@ deveria estar em T1 após status='active' vencer");
+  });
+
+  it("solo (1 cohort apenas) é tratado normalmente", () => {
+    const solo2023 = findContact("brevo-import-t02.csv", "solo2023a@clrctest.com.br");
+    assert.ok(solo2023, "solo2023a deveria estar em T2 (paid, antigo, não active)");
+
+    const fresh2026 = findContact("brevo-import-t03.csv", "fresh2026@clrctest.com.br");
+    assert.ok(fresh2026, "fresh2026 deveria estar em T3 (lead 2026, never paid)");
+  });
+});
