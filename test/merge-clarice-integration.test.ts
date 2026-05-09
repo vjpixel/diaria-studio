@@ -253,4 +253,46 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     const fresh2026 = findContact("brevo-import-t03.csv", "fresh2026@clrctest.com.br");
     assert.ok(fresh2026, "fresh2026 deveria estar em T3 (lead 2026, never paid)");
   });
+
+  it("duplicated: OPEN_PROBABILITY reflete merge correto (payment_count somado + delinquent OR)", () => {
+    // Decomposição do cálculo esperado:
+    //   spend=350 (somado 200+100+50)  → base 40 (spend ≥100)
+    //   created=2026-02-10 (mais recente vence) → +12 (<12mo)
+    //   payment_count=7 (somado 4+2+1) → +4 (≥5)
+    //   delinquent=true (OR de false/true/false) → −5
+    //   status=canceled (entre canceled/unpaid/canceled, mais ativo não-vazio) → −3
+    //   Total = 40 + 12 + 4 − 5 − 3 = 48
+    //
+    // Esse valor SÓ bate se merge funcionou corretamente:
+    //   - Spend somado: sem soma, cohort3 sozinho teria spend=50 → base 30 (spend ≥10), não 40
+    //   - Payment_count somado: sem soma, cohort3 sozinho teria pmt=1 → sem bonus +4
+    //   - Delinquent OR: sem OR, cohort3 (false) ganharia → sem penalidade −5
+    //   - Created mais recente: sem isso, cohort1 (2023) ganharia → recency seria 0 ou negativa
+    const duplicated = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    assert.ok(duplicated, "duplicated deveria estar em T2");
+    assert.equal(
+      duplicated!.OPEN_PROBABILITY,
+      "48",
+      "OPEN_PROB=48 lock-in reflete merge: spend+pmt somados, delinquent OR, recency cohort3",
+    );
+  });
+
+  it("solo2024 vs duplicated: OPEN_PROBABILITY mostra impacto de delinquent + payment_count", () => {
+    // solo2024@: spend=80 (single), payment_count=2, delinquent=false, canceled, 2024-09 → ~20mo
+    //   base 30 (spend ≥10) + recency +6 (12-24mo) + 0 pmt mod − 3 canceled = 33
+    // duplicated@: como acima = 48
+    //
+    // Diff = 48 − 33 = 15. Composição do diff (apenas atributos diferentes):
+    //   +10 (spend 80 → 350: bumps de 30 base pra 40 base)
+    //   +6 (recency: 20mo → 3mo, +6 vs +12)
+    //   +4 (payment_count: 2 → 7, sem mod vs +4)
+    //   −5 (delinquent: false vs true)
+    //   = +10 +6 +4 −5 = +15 ✓
+    const solo = findContact("brevo-import-t02.csv", "solo2024@clrctest.com.br");
+    const dup = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    assert.ok(solo && dup);
+    const soloProb = parseInt(solo!.OPEN_PROBABILITY, 10);
+    const dupProb = parseInt(dup!.OPEN_PROBABILITY, 10);
+    assert.equal(dupProb - soloProb, 15, "Diff = 15 prova merge somou spend+pmt e aplicou delinquent");
+  });
 });
