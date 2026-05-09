@@ -1,0 +1,97 @@
+name: Weekly E2E
+
+# #1013 (Fase 3 do cluster #1007): roda smoke-test toda 6ª feira às 9h UTC
+# (6h BRT). Smoke já cobre stages 1-4 com fixtures determinísticas + golden
+# diff de Stage 1.
+#
+# Em caso de falha: auto-issue com label bug + e2e-regression é criada.
+
+on:
+  schedule:
+    # Toda 6ª feira às 9h UTC = 6h BRT (antes do início da rotina editorial).
+    - cron: '0 9 * * 5'
+  workflow_dispatch: # Permite trigger manual via gh ou UI.
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # Pra criar auto-issue em caso de falha.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run smoke test (full pipeline E2E)
+        id: smoke
+        run: npm run smoke
+        continue-on-error: true
+
+      - name: Run typecheck
+        id: typecheck
+        run: npm run typecheck
+        continue-on-error: true
+
+      - name: Run unit tests
+        id: tests
+        run: npm test
+        continue-on-error: true
+
+      - name: Auto-issue on failure
+        if: |
+          steps.smoke.outcome == 'failure' ||
+          steps.typecheck.outcome == 'failure' ||
+          steps.tests.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Coleta status de cada step
+          smoke_status="${{ steps.smoke.outcome }}"
+          tc_status="${{ steps.typecheck.outcome }}"
+          tests_status="${{ steps.tests.outcome }}"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          today="$(date -u +%Y-%m-%d)"
+
+          # Garante que label e2e-regression existe (idempotente, self-healing)
+          gh label create e2e-regression --color "ed4242" --description "Falha em weekly E2E (#1013)" --force || true
+
+          # Verifica se já existe issue aberta pra essa semana (evita duplicata)
+          existing=$(gh issue list --label e2e-regression --state open --json number --jq 'length')
+          if [ "$existing" -gt 0 ]; then
+            echo "Já existe issue e2e-regression aberta — pulando criação."
+            exit 0
+          fi
+
+          gh issue create \
+            --title "e2e regression: weekly run failed ($today)" \
+            --label "bug,P1,e2e-regression" \
+            --body "Weekly E2E run falhou em $today.
+
+          **Status por step**:
+          - smoke: $smoke_status
+          - typecheck: $tc_status
+          - tests: $tests_status
+
+          **Run URL**: $run_url
+
+          **Próximos passos**:
+          1. Abrir o run URL e investigar qual step falhou
+          2. Se for regressão: criar PR com fix + teste de regressão (regra #633)
+          3. Se for falso positivo: ajustar fixture/golden e fechar essa issue
+
+          Esta issue foi criada automaticamente pelo workflow weekly-e2e.yml (#1013).
+          Pra evitar spam, novas falhas durante essa semana são suprimidas se essa issue estiver aberta."
+
+      - name: Fail job if any step failed
+        if: |
+          steps.smoke.outcome == 'failure' ||
+          steps.typecheck.outcome == 'failure' ||
+          steps.tests.outcome == 'failure'
+        run: |
+          echo "::error::Weekly E2E falhou. Veja issue auto-criada acima."
+          exit 1
