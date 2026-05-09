@@ -87,8 +87,14 @@ interface ParsedArgs {
   updateExisting: number | null;   // campaign_id pra reusar (#1015)
 }
 
-function parseArgs(): ParsedArgs {
-  const argv = process.argv.slice(2);
+/**
+ * Parse args. Aceita `argv` opcional pra testabilidade — em produção usa
+ * `process.argv.slice(2)` (CLI). Em testes, pass `["--yymm", "2604", ...]`.
+ *
+ * Side-effect: chama `process.exit(1)` em casos inválidos. Tests precisam
+ * cuidar com try/catch ou interceptar process.exit se testar errors.
+ */
+export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   let yymm = "";
   let sendTest = false;
   let sendNow = false;
@@ -164,7 +170,7 @@ function parseArgs(): ParsedArgs {
 
 // ─── HTML conversion ───────────────────────────────────────────────────────
 
-function escHtml(s: string): string {
+export function escHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -173,12 +179,12 @@ function escHtml(s: string): string {
 }
 
 /** Strip backslash escapes do export Drive (`\!` `\&` `\[` `\]`). */
-function stripBackslashEscapes(s: string): string {
+export function stripBackslashEscapes(s: string): string {
   return s.replace(/\\([!&\[\]])/g, "$1");
 }
 
 /** Converts [text](url) markdown links to <a> tags + **bold** to <strong>. Escapes surrounding text. */
-function renderInline(text: string): string {
+export function renderInline(text: string): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
   const preStripped = stripBackslashEscapes(text);
@@ -206,7 +212,7 @@ function renderInline(text: string): string {
  *   - bullet list: `- texto`, `* texto` (com indent opcional)
  *   - ordered list: `1. texto`, `2. texto` (com indent opcional)
  */
-function renderParagraphs(text: string): string {
+export function renderParagraphs(text: string): string {
   const paras = text.split(/\n\n+/).filter((p) => p.trim());
   return paras
     .map((p) => {
@@ -247,7 +253,7 @@ function renderParagraphs(text: string): string {
  *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
  *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
  */
-function renderDestaque(chunk: string, temaOverride?: string): string {
+export function renderDestaque(chunk: string, temaOverride?: string): string {
   const lines = chunk.split("\n");
   // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
   const cleaned = normalizeLabel(lines[0])
@@ -306,7 +312,7 @@ function renderDestaque(chunk: string, temaOverride?: string): string {
  * Renders a INTRO section como sumário editorial destacado.
  * Estrutura: label teal "RESUMO DO MÊS" + parágrafo italic com border-left teal.
  */
-function renderIntro(body: string): string {
+export function renderIntro(body: string): string {
   const TEAL = "#00A0A0";
   const labelHtml = `<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:Arial,Helvetica,sans-serif;">Resumo do mês</p>`;
   const paras = body.split(/\n\n+/).filter((p) => p.trim());
@@ -337,7 +343,7 @@ function renderIntro(body: string): string {
  *   Dica: ...
  *   → Teste agora: [link](url)
  */
-function renderLaboratorio(chunk: string): string {
+export function renderLaboratorio(chunk: string): string {
   const lines = chunk.split("\n");
   // Skip header (LABORATÓRIO CLARICE) + blank lines.
   let i = 1;
@@ -389,7 +395,7 @@ function renderLaboratorio(chunk: string): string {
 }
 
 /** Renders a CLARICE — DIVULGAÇÃO placeholder section. */
-function renderClarice(chunk: string): string {
+export function renderClarice(chunk: string): string {
   const lines = chunk.split("\n");
   // Drive exporta `**[CLARICE — DIVULGAÇÃO]**` ou `**LABORATÓRIO CLARICE**`.
   const headerLine = escHtml(normalizeLabel(lines[0]));
@@ -404,7 +410,7 @@ function renderClarice(chunk: string): string {
 }
 
 /** Renders the OUTRAS NOTÍCIAS DO MÊS section. */
-function renderOutrasNoticias(chunk: string): string {
+export function renderOutrasNoticias(chunk: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
@@ -452,7 +458,7 @@ function renderOutrasNoticias(chunk: string): string {
  * Deriva o código de edição AAMMDD do É IA? mensal = último dia do mês.
  * Ex: "2604" → "260430" (30 de abril de 2026).
  */
-function eiaEditionFromYymm(yymm: string): string {
+export function eiaEditionFromYymm(yymm: string): string {
   const yr = 2000 + parseInt(yymm.slice(0, 2), 10);
   const mo = parseInt(yymm.slice(2, 4), 10);
   const lastDay = new Date(Date.UTC(yr, mo, 0)).getUTCDate();
@@ -460,7 +466,7 @@ function eiaEditionFromYymm(yymm: string): string {
 }
 
 /** Renders the É IA? section with images and voting buttons (#465). */
-function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: string): string {
+export function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
@@ -533,7 +539,7 @@ function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: 
  *   "**[CLARICE — DIVULGAÇÃO]**" → "CLARICE — DIVULGAÇÃO"
  *   "**DESTAQUE 1 | ANTHROPIC**" → "DESTAQUE 1 | ANTHROPIC"
  */
-function normalizeLabel(line: string): string {
+export function normalizeLabel(line: string): string {
   return line
     .trim()
     .replace(/^\*\*+/, "")
@@ -544,7 +550,7 @@ function normalizeLabel(line: string): string {
 }
 
 /** Parses the header chunk (before first ---) to extract subject, preview, intro. */
-function parseHeaderChunk(chunk: string): {
+export function parseHeaderChunk(chunk: string): {
   subjectOptions: string[];
   preview: string;
   intro: string;
@@ -589,7 +595,7 @@ function parseHeaderChunk(chunk: string): {
 }
 
 /** Wraps rendered HTML parts in a full email document. */
-function wrapEmail(subject: string, bodyParts: string[]): string {
+export function wrapEmail(subject: string, bodyParts: string[]): string {
   const divider = `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:28px 0;"><tr><td><hr style="border:none;border-top:1px solid #e0e0e0;" /></td></tr></table>`;
   const body = bodyParts.join(divider);
 
@@ -622,7 +628,7 @@ function wrapEmail(subject: string, bodyParts: string[]): string {
  * Detecta se uma linha é um label de seção (formatado como `**LABEL**` ou
  * `**\[LABEL\]**` no Drive markdown). Não depende de `---` separators.
  */
-function isSectionLabel(line: string): boolean {
+export function isSectionLabel(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.startsWith("**") || !trimmed.endsWith("**")) return false;
   const normalized = normalizeLabel(trimmed);
@@ -635,7 +641,7 @@ function isSectionLabel(line: string): boolean {
  * Splits draft text em chunks por section label (não por `\n---\n`).
  * Mais robusto: Drive export pode ou não preservar horizontal rules.
  */
-function splitByLabels(text: string): string[] {
+export function splitByLabels(text: string): string[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const sections: string[] = [];
   let current: string[] = [];
@@ -663,7 +669,7 @@ function splitByLabels(text: string): string[] {
 }
 
 /** Converts draft.md content + optional chosen subject to { subject, previewText, html }. */
-function draftToEmail(
+export function draftToEmail(
   draft: string,
   chosenSubject: string | null,
   yymm: string,
@@ -1316,7 +1322,15 @@ async function main(): Promise<void> {
   process.stdout.write(`Output salvo: ${outputPath}\n`);
 }
 
-main().catch((err) => {
-  process.stderr.write(`Fatal: ${err.message}\n`);
-  process.exit(1);
-});
+// Guard: só roda main() quando invocado como CLI (não em import de test).
+// Pattern: import.meta.url vs file:// do argv[1] (entrypoint Node).
+const _argv1 = process.argv[1] ? process.argv[1].replace(/\\/g, "/") : "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
