@@ -29,8 +29,16 @@ jobs:
 
       - name: Run smoke test (full pipeline E2E)
         id: smoke
-        run: npm run smoke
+        run: npm run smoke -- --summary-out smoke-summary.json
         continue-on-error: true
+
+      - name: Upload smoke summary artifact (#1013)
+        if: always() # Mesmo se smoke falhar, captura summary parcial
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-summary-${{ github.run_id }}
+          path: smoke-summary.json
+          retention-days: 30
 
       - name: Run typecheck
         id: typecheck
