@@ -75,6 +75,23 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
+### 4a-bis. Injetar URLs do poll É IA? por subscriber (#1044)
+
+Antes do dispatch da newsletter, gerar URLs HMAC-assinadas A/B por subscriber e injetar como custom fields Beehiiv (`poll_a_url`, `poll_b_url`). Template do Beehiiv referencia esses fields no Custom HTML pra renderizar botões clicáveis no email — voto vai pro Cloudflare Worker `diar-ia-poll`.
+
+```bash
+npx tsx scripts/inject-poll-urls.ts --edition {AAMMDD}
+```
+
+- Idempotente: re-rodar sobrescreve URLs sem duplicar custom fields.
+- Requer `BEEHIIV_API_KEY`, `BEEHIIV_PUBLICATION_ID`, `POLL_SECRET` no env. Se algum falta, exit 1.
+- Falha de subscriber individual (rate limit 429, etc) é logada mas não trava o batch — leitor sem URL injetada simplesmente não vê os botões A/B no email (degradação graciosa).
+- Stdout retorna JSON com `{ total_subscribers, patched, failed, skipped_no_email }`. Logar:
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'poll urls injected' --details '{result_json}'
+  ```
+- Se `failed > total_subscribers * 0.1` (mais de 10% falha), pausar com halt banner — provável problema de rate limit ou auth, não vale publicar com poll quebrado pra maioria.
+
 ### 4b. Confirmar modo de publicação por canal (#336)
 
 **INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log (`"Etapa 4 auto-approved: publish dispatch sem confirmação explícita"`).
@@ -328,7 +345,7 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
   | 4 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
   ```
 
-### 4h. Fechar poll É IA? (#465)
+### 4h. Fechar poll É IA? (#465, #1044)
 
 Após o editor aprovar o gate da Etapa 4 (publicação confirmada), registrar a resposta correta no Worker de votação:
 
@@ -340,6 +357,15 @@ npx tsx scripts/close-poll.ts --edition {AAMMDD}
 
 - `POLL_SECRET` deve estar em `.env`. Se não estiver definido, o script emite warn e encerra graciosamente — não bloqueia o pipeline.
 - Logar resultado: se exit 0, `"poll fechado para edição {AAMMDD}"`. Se exit != 0, `warn: "close-poll falhou (POLL_SECRET ausente ou erro de rede) — fechar manualmente via /admin/correct"`.
+- **Sanity check pós-close:** após exit 0, hit `https://diar-ia-poll.diaria.workers.dev/stats?edition={AAMMDD}` e logar `correct_answer` retornado. Se `null`, algo deu errado mesmo com exit 0 — investigar.
+
+**⚠️ Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, `close-poll.ts` deve ser invocado manualmente após cada publicação:
+
+```bash
+npx tsx scripts/close-poll.ts --edition {AAMMDD}
+```
+
+Sem isso, gabarito permanece `null` no Worker e a próxima edição não consegue mostrar "Resultado da última edição: X% acertaram" (`compute-eia-poll-stats` retorna null pra `pct_correct`). Verificável via `curl https://diar-ia-poll.diaria.workers.dev/stats?edition={AAMMDD}` — campo `correct_answer` deve ser "A" ou "B", nunca `null` após edição publicada.
 
 ### 4i. Escrever sentinel de conclusão (#978)
 

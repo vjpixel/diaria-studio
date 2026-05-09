@@ -1,12 +1,12 @@
 {
-  "hash": "9e5a00ce9a6a25ad",
+  "hash": "62ee4e4541436f9e",
   "file_sizes": {
     "orchestrator.md": 112,
     "orchestrator-stage-0-preflight.md": 448,
-    "orchestrator-stage-1-research.md": 525,
+    "orchestrator-stage-1-research.md": 516,
     "orchestrator-stage-2.md": 312,
     "orchestrator-stage-3.md": 101,
-    "orchestrator-stage-4.md": 444
+    "orchestrator-stage-4.md": 470
   },
-  "updated_at": "2026-05-08T17:43:21.051Z"
+  "updated_at": "2026-05-09T14:52:22.242Z"
 }
