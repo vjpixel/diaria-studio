@@ -31,7 +31,6 @@ export const PostEntrySchema = z.object({
   fallback_reason: z.string().optional(),
 }).passthrough();
 
-export type PostEntry = z.infer<typeof PostEntrySchema>;
 
 export const SocialPublishedSchema = z.object({
   posts: z.array(PostEntrySchema),

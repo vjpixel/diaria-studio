@@ -30,7 +30,6 @@ export const BeehiivPostSummarySchema = z.object({
   authors: z.array(z.unknown()).optional(),
 }).passthrough();
 
-export type BeehiivPostSummary = z.infer<typeof BeehiivPostSummarySchema>;
 
 export const ListPostsResponseSchema = z.object({
   data: z.array(BeehiivPostSummarySchema),

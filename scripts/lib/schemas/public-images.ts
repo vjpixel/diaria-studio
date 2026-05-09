@@ -20,7 +20,6 @@ export const PublicImageSchema = z.object({
   filename: z.string(),
 }).passthrough();
 
-export type PublicImage = z.infer<typeof PublicImageSchema>;
 
 /** Map de slot → image. Slots conhecidos: cover, d2, d3, eai_real, eai_ia. */
 export const PublicImagesSchema = z.object({

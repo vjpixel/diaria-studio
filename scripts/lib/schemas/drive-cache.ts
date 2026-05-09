@@ -33,7 +33,5 @@ export const DriveCacheSchema = z.object({
 
 export type DriveCache = z.infer<typeof DriveCacheSchema>;
 
-/** Parse + valida drive-cache.json. */
-export function parseDriveCache(raw: unknown): DriveCache {
-  return DriveCacheSchema.parse(raw);
-}
+// (parseDriveCache removido em #1008 — schema exportado pra uso direto se
+// futuro consumer aparecer; helper extra era dead code)

@@ -47,14 +47,7 @@ export function countEditorSubmissions(
   return count;
 }
 
-/**
- * Resolve o path do inbox archive da edição a partir de `edition_iso`
- * (formato YYYY-MM-DD). Retorna o caminho mesmo se não existir — caller
- * decide se trata como 0 ou erro.
- */
-export function resolveInboxArchivePath(editionIso: string, root: string): string {
-  return `${root.replace(/\/$/, "")}/data/inbox-archive/${editionIso}.md`;
-}
+// (resolveInboxArchivePath removida em #1008 — dead code, knip findings)
 
 /**
  * Lê o email do editor (linha "from") de platform.config.json se houver

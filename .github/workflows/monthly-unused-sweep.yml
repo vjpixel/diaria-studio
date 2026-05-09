@@ -1,0 +1,71 @@
+name: Monthly Unused Code Sweep
+
+# #1008: roda knip todo dia 1 e abre auto-issue se encontrar findings novos.
+# Mantém codebase saudável sem editor babysitting.
+
+on:
+  schedule:
+    # Todo dia 1, 9h UTC
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Run knip
+        id: knip
+        run: |
+          npx knip --reporter compact > knip-output.txt 2>&1 || true
+          findings_count=$(grep -cE "^(Unused|Duplicate)" knip-output.txt || echo 0)
+          echo "findings=$findings_count" >> $GITHUB_OUTPUT
+          cat knip-output.txt
+
+      - name: Auto-issue se findings novos
+        if: steps.knip.outputs.findings != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Cria label sweep se não existir
+          gh label create unused-code-sweep --color "fbca04" --description "Findings de knip mensal (#1008)" 2>/dev/null || true
+
+          # Dedup: pula se já existe issue aberta
+          existing=$(gh issue list --label unused-code-sweep --state open --json number --jq 'length')
+          if [ "$existing" -gt 0 ]; then
+            echo "Já existe sweep issue aberta — skip."
+            exit 0
+          fi
+
+          today=$(date -u +%Y-%m-%d)
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Limita output a 30 linhas pra evitar issue body gigante
+          findings=$(head -30 knip-output.txt)
+
+          gh issue create \
+            --title "unused-code: monthly sweep ($today)" \
+            --label "enhancement,P3,unused-code-sweep,maintainability" \
+            --body "Knip detectou findings em sweep mensal de $today.
+
+          \`\`\`
+          $findings
+          \`\`\`
+
+          **Run URL**: $run_url
+
+          **Próximos passos**:
+          1. Triagem: cada finding é (a) unused real → remover, (b) public API → adicionar a ignore em \`knip.json\`, (c) mecanismo dinâmico → ignore com comentário
+          2. PR único com cleanup
+          3. Fechar essa issue após merge
+
+          Esta issue foi criada automaticamente pelo monthly-unused-sweep.yml (#1008)."

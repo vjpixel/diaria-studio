@@ -21,7 +21,6 @@ export const ClariceSuggestionSchema = z.object({
   explanation: z.string().optional(),
 }).passthrough();
 
-export type ClariceSuggestion = z.infer<typeof ClariceSuggestionSchema>;
 
 export const ClariceSuggestionsSchema = z.array(ClariceSuggestionSchema);
 
