@@ -101,6 +101,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **PR de bugfix exige teste de regressão (#633).** Sem teste novo demonstrando que o bug não voltaria → não merge. Se não for possível testar (ex: agent prompt), justificar explicitamente no PR body. Cobre o padrão recorrente "fix → close → reaparece semanas depois".
 
+- **Digest mensal: Drive sync inclui só Doc editorial + imagens (#1022).** O HTML render (`preview.html`, `preview-list*.html`) é exclusivamente local — input direto do Brevo, nunca sobe pro Drive. O editor revisa o Google Doc (`Edição {Mês}/{Mês} v{N}`), não o HTML. Análogo à convenção `_internal/*` (#959): só sobe pro Drive o que o editor de fato edita.
+
 ---
 
 ## Otimização de tokens

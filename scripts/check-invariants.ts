@@ -101,6 +101,45 @@ export function checkNoForensicInDriveSync(): Violation[] {
 }
 
 /**
+ * #1022: Drive sync do digest mensal não inclui HTML render.
+ * O HTML é input direto do Brevo; editor não revisa lá. Polui pasta.
+ *
+ * @param baseDir Opcional, default = `.claude/skills/diaria-mensal`. Aceito
+ *                pra permitir test com fixture dir contendo violações
+ *                injetadas (sem modificar o repo).
+ */
+export function checkNoHtmlInMonthlyDriveSync(baseDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const targetDirs = [baseDir ?? join(ROOT, ".claude", "skills", "diaria-mensal")];
+  for (const dir of targetDirs) {
+    if (!existsSync(dir)) continue;
+    walkMd(dir, (path) => {
+      const text = readFileSync(path, "utf8");
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // detecta `drive-sync.ts ... --files ...preview*.html` ou similar
+        if (
+          /drive-sync\.ts/.test(line) &&
+          /--files/.test(line) &&
+          /\.html\b/.test(line)
+        ) {
+          violations.push({
+            rule: "no-html-in-monthly-drive-sync",
+            message: `drive-sync mensal inclui HTML (input Brevo, não editorial): "${line.trim().slice(0, 120)}"`,
+            source_issue: "#1022",
+            severity: "error",
+            file: path.replace(ROOT, ""),
+            line: i + 1,
+          });
+        }
+      }
+    });
+  }
+  return violations;
+}
+
+/**
  * Auto-discoverable rule descriptors. Cada rule pode rodar em modo static
  * ou per-edition.
  */
@@ -109,6 +148,11 @@ export const STATIC_RULES = [
     id: "no-forensic-in-drive-sync",
     description: "drive-sync nunca inclui _internal/_forensic/ (#959)",
     run: checkNoForensicInDriveSync,
+  },
+  {
+    id: "no-html-in-monthly-drive-sync",
+    description: "drive-sync mensal nunca inclui HTML render (#1022)",
+    run: checkNoHtmlInMonthlyDriveSync,
   },
 ] as const;
 
