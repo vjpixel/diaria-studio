@@ -5,6 +5,12 @@
  *   Stage 3 (eia-composer) escreve metadata da imagem POTD do Wikimedia;
  *   Stage 4 (publish-monthly) lê pra registrar gabarito + montar crédito
  *   no email. Schema drift = crédito quebrado ou gabarito None.
+ *
+ * Sobre validações strict vs passthrough:
+ *   - `ai_side: z.enum(["A", "B"])` é STRICT (fora de A/B = erro). Contrato fechado.
+ *   - Campos opcionais usam passthrough no nível object (tolerante a extras).
+ *   Mistura intencional: ai_side é crítico (gabarito do poll), outros campos
+ *   são metadata em evolução.
  */
 
 import { z } from "zod";

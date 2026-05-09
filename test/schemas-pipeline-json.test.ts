@@ -11,18 +11,20 @@ import { parseClariceSuggestions, ClariceSuggestionsSchema } from "../scripts/li
  * Tests de schemas Zod pra JSONs internos do pipeline (#1012).
  *
  * Estratégia:
- *   - Validação positiva via fixtures reais existentes em data/editions/
+ *   - Validação positiva via fixtures em test/fixtures/pipeline-jsons/
+ *     (cópias snapshot de produção real de edições passadas)
  *   - Validação negativa pra catch schema drift
- *   - Tests não dependem de edição específica — usam glob da edição mais recente
+ *   - Fixtures isoladas garantem que testes não quebram quando
+ *     edições reais são deletadas/movidas
  */
 
-const ROOT = resolve(import.meta.dirname, "..");
+const FIXTURES = resolve(import.meta.dirname, "fixtures/pipeline-jsons");
 
 // ─── 01-approved.json ──────────────────────────────────────────────────────
 
 describe("ApprovedSchema (01-approved.json)", () => {
-  it("valida fixture real (edição 260508)", () => {
-    const path = resolve(ROOT, "data/editions/260508/_internal/01-approved.json");
+  it("valida fixture real", () => {
+    const path = resolve(FIXTURES, "01-approved.json");
     const raw = JSON.parse(readFileSync(path, "utf8"));
     const parsed = parseApproved(raw);
     assert.ok(parsed.highlights.length > 0, "Esperava ≥1 highlight");
@@ -65,8 +67,8 @@ describe("ApprovedSchema (01-approved.json)", () => {
 // ─── 01-eia-meta.json ──────────────────────────────────────────────────────
 
 describe("EiaMetaSchema (01-eia-meta.json)", () => {
-  it("valida fixture real (edição 260504)", () => {
-    const path = resolve(ROOT, "data/editions/260504/_internal/01-eia-meta.json");
+  it("valida fixture real", () => {
+    const path = resolve(FIXTURES, "01-eia-meta.json");
     const raw = JSON.parse(readFileSync(path, "utf8"));
     const parsed = parseEiaMeta(raw);
     assert.ok(["A", "B"].includes(parsed.ai_side));
@@ -102,8 +104,8 @@ describe("EiaMetaSchema (01-eia-meta.json)", () => {
 // ─── 06-public-images.json ─────────────────────────────────────────────────
 
 describe("PublicImagesSchema (06-public-images.json)", () => {
-  it("valida fixture real (edição 260424)", () => {
-    const path = resolve(ROOT, "data/editions/260424/06-public-images.json");
+  it("valida fixture real", () => {
+    const path = resolve(FIXTURES, "06-public-images.json");
     const raw = JSON.parse(readFileSync(path, "utf8"));
     const parsed = parsePublicImages(raw);
     assert.ok(parsed.images, "Esperava map images");
@@ -140,8 +142,8 @@ describe("PublicImagesSchema (06-public-images.json)", () => {
 // ─── 02-clarice-suggestions.json ───────────────────────────────────────────
 
 describe("ClariceSuggestionsSchema (02-clarice-suggestions.json)", () => {
-  it("valida fixture real (edição 260428)", () => {
-    const path = resolve(ROOT, "data/editions/260428/_internal/02-clarice-suggestions.json");
+  it("valida fixture real", () => {
+    const path = resolve(FIXTURES, "02-clarice-suggestions.json");
     const raw = JSON.parse(readFileSync(path, "utf8"));
     const parsed = parseClariceSuggestions(raw);
     assert.ok(Array.isArray(parsed));

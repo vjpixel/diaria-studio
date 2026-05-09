@@ -4,6 +4,11 @@
  * Bug-driver histórico (#1012):
  *   Cache de URLs públicas das imagens (Drive) consumido pelo LinkedIn payload
  *   e Make webhook. Schema drift = LinkedIn post sem imagem ou Make falha.
+ *
+ * Sobre `passthrough()`: os 4 campos por imagem (file_id, url, mime_type,
+ * filename) são obrigatórios — Make/LinkedIn API quebram sem eles. Slots
+ * (cover, d2, d3, eai_real, eai_ia) são record genérico pra suportar
+ * combinações futuras sem refactor.
  */
 
 import { z } from "zod";

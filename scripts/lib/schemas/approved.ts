@@ -6,6 +6,11 @@
  *   campos inesperados ou faltando em produção.
  *
  * Shape: { highlights: [], runners_up: [], ... }
+ *
+ * Sobre `passthrough()`: tolera campos extras (não quebra quando categorize
+ * adiciona novo field). Pega o caso "campo OBRIGATÓRIO faltando" — não pega
+ * "field renomeado, leitor lê o nome antigo undefined". Trade-off escolhido
+ * pra schemas internos em evolução (vs strict() que aumenta fricção).
  */
 
 import { z } from "zod";

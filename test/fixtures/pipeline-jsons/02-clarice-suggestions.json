@@ -1,0 +1,10 @@
+[
+  {"from": "exclusividade", "to": "exclusividade com", "rule": "Inserir 'com' na frase", "explanation": "Inserir com após exclusividade"},
+  {"from": "de ser a plataforma exclusiva para a comercialização da", "to": "exclusivo de comercializar a", "rule": "Corrigir expressão para maior clareza"},
+  {"from": "em", "to": "nas", "rule": "Corrigir uso de preposição"},
+  {"from": "restrito", "to": "restritas", "rule": "Concordância gênero/número"},
+  {"from": "guardião único", "to": "guardiã única", "rule": "Concordância gênero"},
+  {"from": "que reduziu", "to": "ter reduzido", "rule": "Concordância verbal"},
+  {"from": "sobre", "to": "sobre a", "rule": "Inserir artigo definido"},
+  {"from": "acelerada", "to": "acelerado", "rule": "Concordância gênero"}
+]

@@ -6,6 +6,10 @@
  *   sugestões varia se Clarice API mudar shape — silent skip de sugestões.
  *
  * Shape: array de { from, to, rule, explanation }
+ *
+ * Sobre `passthrough()`: from/to são obrigatórios (sem eles, sugestão é
+ * inutilizável); rule/explanation são opcionais (Clarice API pode adicionar
+ * metadata extra como "confidence", "source_rule_id" sem quebrar).
  */
 
 import { z } from "zod";
