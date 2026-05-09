@@ -1,0 +1,40 @@
+{
+  "images": {
+    "cover": {
+      "file_id": "177go4nqVXLkHn-lbJrFC6GLGT-20c3QK",
+      "url": "https://drive.google.com/uc?id=177go4nqVXLkHn-lbJrFC6GLGT-20c3QK&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "04-d1-2x1.jpg"
+    },
+    "d2": {
+      "file_id": "1FIQWpcPgZjmuDdwCfI5IpCeTjklEP9ua",
+      "url": "https://drive.google.com/uc?id=1FIQWpcPgZjmuDdwCfI5IpCeTjklEP9ua&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "04-d2.jpg"
+    },
+    "d3": {
+      "file_id": "1EtWrAQsZ4y4a2Ms_zwINxMLz5RXEmMu5",
+      "url": "https://drive.google.com/uc?id=1EtWrAQsZ4y4a2Ms_zwINxMLz5RXEmMu5&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "04-d3.jpg"
+    },
+    "eai_real": {
+      "file_id": "15L8qc86N9lEhPeTBVIKPBEJEIs8NeNU1",
+      "url": "https://drive.google.com/uc?id=15L8qc86N9lEhPeTBVIKPBEJEIs8NeNU1&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "01-eai-real.jpg"
+    },
+    "eai_ia": {
+      "file_id": "17H5tBZZZMWMqds4dowyHIzflVp2Tg7hy",
+      "url": "https://drive.google.com/uc?id=17H5tBZZZMWMqds4dowyHIzflVp2Tg7hy&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "01-eai-ia.jpg"
+    },
+    "d1": {
+      "file_id": "1fLyH6n-xiBn6XaiFCeefD5976kvRTZd7",
+      "url": "https://drive.google.com/uc?id=1fLyH6n-xiBn6XaiFCeefD5976kvRTZd7&export=view",
+      "mime_type": "image/jpeg",
+      "filename": "04-d1-1x1.jpg"
+    }
+  }
+}

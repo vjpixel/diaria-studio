@@ -179,6 +179,9 @@ function runStage2Smoke(): { passed: number; failed: string[] } {
 
   const reviewedMd = readFileSync(resolve(FIXTURE_STAGE2, "02-reviewed-canonical.md"), "utf8");
   const socialMd = readFileSync(resolve(FIXTURE_STAGE2, "03-social-canonical.md"), "utf8");
+  // TODO(#1031): migrar pra parseApprovedJson de edition-state.ts. Hoje
+  // bloqueado por mismatch entre tipo local de lint-newsletter-md.ts (url
+  // required) e schema central (url optional).
   const approved = JSON.parse(readFileSync(resolve(FIXTURE_STAGE2, "01-approved.json"), "utf8"));
 
   // 2a. É IA? section present

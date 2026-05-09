@@ -37,6 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import https from "node:https";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
+import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -803,14 +804,14 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
     aiSide = aiSideFromAnswer(sidecar);
   }
 
-  // Fallback 1: ler ai_side de 01-eia-meta.json
+  // Fallback 1: ler ai_side de 01-eia-meta.json (schema-validado, #1012)
   if (!aiSide) {
     const metaPath = resolve(monthlyDir, "_internal", "01-eia-meta.json");
     if (existsSync(metaPath)) {
       try {
-        const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-        aiSide = meta.ai_side ?? null;
-      } catch { /* ignorar */ }
+        const meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8")));
+        aiSide = meta.ai_side;
+      } catch { /* ignorar — schema drift cai no fallback 2 (frontmatter) */ }
     }
   }
 
