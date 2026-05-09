@@ -50,12 +50,8 @@ export function parseMakeWebhookResponse(raw: unknown): MakeWebhookResponse {
 
 // ─── Cloudflare Worker queue ───────────────────────────────────────────────
 
-/**
- * Request body enviado pro Cloudflare Worker que enfileira posts LinkedIn.
- * Mesmo shape do MakeWebhookPayload (worker é proxy + storage).
- */
-export const WorkerQueueRequestSchema = MakeWebhookPayloadSchema;
-export type WorkerQueueRequest = MakeWebhookPayload;
+// Worker queue request shape == MakeWebhookPayload (worker é proxy + storage).
+// Aliases removidos em #1008 — eram unused; consumer usa MakeWebhookPayload diretamente.
 
 /**
  * Response do Worker após enfileirar com sucesso.

@@ -25,7 +25,6 @@ export const WikimediaInfoSchema = z.object({
   image_date_used: z.string().optional(),
 }).passthrough();
 
-export type WikimediaInfo = z.infer<typeof WikimediaInfoSchema>;
 
 export const EiaMetaSchema = z.object({
   edition: z.string(),

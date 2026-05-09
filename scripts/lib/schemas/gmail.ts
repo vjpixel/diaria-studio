@@ -83,7 +83,6 @@ export const GmailMessageSchema = z.object({
   sizeEstimate: z.number().optional(),
 }).passthrough();
 
-export type GmailMessage = z.infer<typeof GmailMessageSchema>;
 
 export const GmailThreadSchema = z.object({
   id: z.string(),

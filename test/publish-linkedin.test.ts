@@ -122,7 +122,8 @@ describe("postToWorkerQueue (Cloudflare Worker enqueue)", () => {
 
   it("lanca em resposta non-JSON HTTP 200", async () => {
     globalThis.fetch = async (_u: string | URL | Request, _o?: RequestInit) => new Response("oops", { status: 200 });
-    await assert.rejects(() => postToWorkerQueue(workerUrl, token, payload, 1), /non-JSON/);
+    // #1032: msg de erro foi unificada pra "Worker response inválido (schema ou JSON)"
+    await assert.rejects(() => postToWorkerQueue(workerUrl, token, payload, 1), /Worker response inválido/);
   });
 });
 
