@@ -137,13 +137,26 @@ export function renderHeatmap(stats: StageStats[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Formata MTTR pra display:
+ *   - null  → "—"
+ *   - <24h  → "Nh" (uma casa decimal)
+ *   - ≥24h  → "Nd" (dias com uma casa decimal)
+ *   Bugs antigos têm MTTR em milhares de horas; dias é mais legível.
+ */
+export function formatMttr(hours: number | null): string {
+  if (hours === null) return "—";
+  if (hours < 24) return `${hours.toFixed(1)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
+
 /** Gera tabela markdown detalhada. */
 export function renderTable(stats: StageStats[]): string {
   const lines: string[] = [];
-  lines.push("| Stage | Total | Open | Closed | MTTR (h) | Regression | Examples |");
+  lines.push("| Stage | Total | Open | Closed | MTTR | Regression | Examples |");
   lines.push("|---|---|---|---|---|---|---|");
   for (const s of stats) {
-    const mttr = s.mttr_hours !== null ? s.mttr_hours.toFixed(1) : "—";
+    const mttr = formatMttr(s.mttr_hours);
     const examples = s.example_issues.map((n) => `#${n}`).join(", ") || "—";
     lines.push(
       `| ${s.stage} | ${s.total} | ${s.open} | ${s.closed} | ${mttr} | ${s.recurrence_count} | ${examples} |`,
@@ -192,7 +205,7 @@ function fetchBugIssues(): GhIssueRaw[] {
       "issue", "list",
       "--label", "bug",
       "--state", "all",
-      "--limit", "200",
+      "--limit", "1000",
       "--json", "number,title,state,createdAt,closedAt,labels",
     ],
     { encoding: "utf8" },

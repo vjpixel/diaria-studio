@@ -8,6 +8,7 @@ import {
   renderHeatmap,
   renderTable,
   renderReport,
+  formatMttr,
   type GhIssueRaw,
 } from "../scripts/bug-heatmap.ts";
 
@@ -228,6 +229,30 @@ describe("renderTable", () => {
     ]);
     const table = renderTable(stats);
     assert.match(table, /\| — \|/);
+  });
+});
+
+describe("formatMttr", () => {
+  it("null → —", () => {
+    assert.equal(formatMttr(null), "—");
+  });
+
+  it("<24h → \"Nh\"", () => {
+    assert.equal(formatMttr(0), "0.0h");
+    assert.equal(formatMttr(5.5), "5.5h");
+    assert.equal(formatMttr(23.9), "23.9h");
+  });
+
+  it("≥24h → \"Nd\" (dias com uma casa)", () => {
+    assert.equal(formatMttr(24), "1.0d");
+    assert.equal(formatMttr(48), "2.0d");
+    assert.equal(formatMttr(168), "7.0d");
+    assert.equal(formatMttr(720), "30.0d");
+  });
+
+  it("bug antigo (1000h+) lê em dias, não horas", () => {
+    // Antes: \"1234.0h\" — agora: \"51.4d\"
+    assert.equal(formatMttr(1234), "51.4d");
   });
 });
 

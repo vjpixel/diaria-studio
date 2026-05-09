@@ -1,7 +1,7 @@
 # Bug Heatmap — Diar.ia
 
-**Gerado em**: 2026-05-09T05:57:10.871Z
-**Total de bugs analisados**: 200 (1 open)
+**Gerado em**: 2026-05-09T06:08:36.257Z
+**Total de bugs analisados**: 284 (1 open)
 **Regressions detectadas**: 1
 
 ## ASCII Heatmap
@@ -17,12 +17,12 @@ stage-4            | ·····························�
 stage-5            | ······························ 0 (open 0)
 stage-publish      | ······························ 0 (open 0)
 stage-research     | ······························ 0 (open 0)
-(unlabeled)        | ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 200 (open 1)
+(unlabeled)        | ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 284 (open 1)
 ```
 
 ## Tabela detalhada
 
-| Stage | Total | Open | Closed | MTTR (h) | Regression | Examples |
+| Stage | Total | Open | Closed | MTTR | Regression | Examples |
 |---|---|---|---|---|---|---|
 | stage-0 | 0 | 0 | 0 | — | 0 | — |
 | stage-1 | 0 | 0 | 0 | — | 0 | — |
@@ -32,7 +32,7 @@ stage-research     | ·····························�
 | stage-5 | 0 | 0 | 0 | — | 0 | — |
 | stage-publish | 0 | 0 | 0 | — | 0 | — |
 | stage-research | 0 | 0 | 0 | — | 0 | — |
-| (unlabeled) | 200 | 1 | 199 | 3.7 | 1 | #1017, #998, #997, #996, #995 |
+| (unlabeled) | 284 | 1 | 283 | 4.9h | 1 | #1017, #998, #997, #996, #995 |
 
 ## Como interpretar
 
