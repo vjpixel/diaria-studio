@@ -153,19 +153,13 @@ Pra desbloquear o auto-fill do "Resultado da última edição" (#107), gravar ar
 
 `ai_side` fica `null` aqui — é preenchido depois pelo `publish-newsletter` quando inserir o Poll/imagens no Beehiiv (sabe se "imagem A é IA" ou "imagem B é IA"). #107 depende desse campo pra calcular % de acerto contra as respostas do Poll.
 
-### 6. (Opcional, #107) Calcular `04-eia-poll-stats.json`
+### 6. (Opcional, #107, #1044) Stats do poll da edição anterior
 
-Se o orchestrator já fez fetch das respostas do poll da edição anterior via Beehiiv MCP e gravou em `{out_dir}/_internal/poll-responses.json`, rodar:
+Desde #1044, o orchestrator-stage-1 1c chama `scripts/fetch-poll-stats.ts` direto contra o Cloudflare Worker `diar-ia-poll`, que grava `{out_dir}/_internal/04-eia-poll-stats.json` no shape esperado pelo writer do Stage 2 (`pct_correct`, `below_threshold`, `total_responses`).
 
-```bash
-npx tsx scripts/compute-eia-poll-stats.ts --edition {AAMMDD} --responses {out_dir}/_internal/poll-responses.json
-```
+O eia-composer não precisa fazer nada aqui — o arquivo já existe quando o composer roda, ou não existe (Worker indisponível, edição anterior sem stats) e o writer trata como "Aguardando respostas".
 
-Output: `{out_dir}/_internal/04-eia-poll-stats.json` com `pct_correct` (ou `null` se `total < threshold`, default 5). O writer do Stage 2 pode ler esse arquivo pra preencher a linha "Resultado da última edição: X% das pessoas acertaram" automaticamente.
-
-Se `poll-responses.json` não existir, o script ainda gera o stats file com `total_responses: 0` e `skipped` apropriado — o writer trata como "Aguardando respostas".
-
-**Quem dispara o fetch das respostas**: orchestrator (tem acesso ao Beehiiv MCP). O eia-composer não chama o MCP — só consome o arquivo se ele existir.
+(Fluxo legacy `compute-eia-poll-stats.ts` deprecated em #1044 — Worker já agrega via counter no /vote.)
 
 `composed_at` em ISO UTC. `edition` é o `AAMMDD`. Os outros campos vêm direto da Wikimedia API response do passo 1.
 

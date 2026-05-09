@@ -86,11 +86,16 @@ npx tsx scripts/inject-poll-urls.ts --edition {AAMMDD}
 - Idempotente: re-rodar sobrescreve URLs sem duplicar custom fields.
 - Requer `BEEHIIV_API_KEY`, `BEEHIIV_PUBLICATION_ID`, `POLL_SECRET` no env. Se algum falta, exit 1.
 - Falha de subscriber individual (rate limit 429, etc) é logada mas não trava o batch — leitor sem URL injetada simplesmente não vê os botões A/B no email (degradação graciosa).
-- Stdout retorna JSON com `{ total_subscribers, patched, failed, skipped_no_email }`. Logar:
+- Stdout retorna JSON com `{ total_subscribers, patched, failed, skipped_no_email }`. Capturar e logar:
   ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'poll urls injected' --details '{result_json}'
+  RESULT=$(npx tsx scripts/inject-poll-urls.ts --edition {AAMMDD})
+  echo "$RESULT" | npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'poll urls injected' --details "$RESULT"
   ```
-- Se `failed > total_subscribers * 0.1` (mais de 10% falha), pausar com halt banner — provável problema de rate limit ou auth, não vale publicar com poll quebrado pra maioria.
+- **Threshold check** — se >10% subscribers falharam, pausar (provável rate limit ou auth):
+  ```bash
+  echo "$RESULT" | node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8'));if(r.failed>r.total_subscribers*0.1){process.exit(1)}"
+  ```
+  Exit 1 = halt banner: `npx tsx scripts/render-halt-banner.ts --stage "4 — Publicação" --reason "inject-poll-urls: >10% subscribers falharam ({failed}/{total})" --action "investigar via Beehiiv API status, ou re-rodar inject-poll-urls antes de seguir"`
 
 ### 4b. Confirmar modo de publicação por canal (#336)
 

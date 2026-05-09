@@ -50,6 +50,8 @@ interface BeehiivPage<T> {
   next_cursor?: string;
 }
 
+// HMAC cobre só (email, edition) — choice é param independente. URLs A e B
+// têm sig idêntico; permite leitor mudar de ideia A↔B no client sem regenerar.
 export function generatePollUrl(
   email: string,
   edition: string,
@@ -82,7 +84,8 @@ async function fetchJson<T>(
     },
   });
   if (!res.ok) {
-    throw new Error(`Beehiiv API ${res.status}: ${await res.text()}`);
+    const body = (await res.text()).slice(0, 500); // truncate — 5xx pode vir HTML grande
+    throw new Error(`Beehiiv API ${res.status}: ${body}`);
   }
   return (await res.json()) as T;
 }
@@ -285,6 +288,12 @@ async function main(): Promise<void> {
   if (!edition) {
     console.error(
       "Uso: inject-poll-urls.ts --edition AAMMDD [--dry-run]",
+    );
+    process.exit(1);
+  }
+  if (!/^\d{6}$/.test(edition)) {
+    console.error(
+      `[inject-poll-urls] --edition deve ser AAMMDD (6 dígitos), recebido: "${edition}"`,
     );
     process.exit(1);
   }

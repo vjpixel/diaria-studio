@@ -7,8 +7,13 @@
  * Uso:
  *   npx tsx scripts/fetch-poll-stats.ts --edition 260502 --out data/editions/260502/_internal/04-eia-poll-stats.json
  *
- * Output JSON (compatível com compute-eia-poll-stats.ts):
- *   { edition, total_responses, correct_pct, skipped, previous_edition }
+ * Output JSON (compatível com eia-compose.ts — consumer real):
+ *   { edition, total_responses, correct_responses, pct_correct,
+ *     correct_choice, below_threshold, skipped?, source, fetched_at }
+ *
+ * Substitui o fluxo antigo (fetch-beehiiv-poll-stats.ts → poll-responses.json
+ * → compute-eia-poll-stats.ts → 04-eia-poll-stats.json). Worker já agrega via
+ * counter no /vote — não precisa middle step.
  *
  * Variáveis de ambiente:
  *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
