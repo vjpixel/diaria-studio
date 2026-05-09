@@ -9,6 +9,7 @@ import {
   openProbability,
   hasClariceAudienceTag,
   tierOf,
+  tierLabel,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -275,6 +276,34 @@ describe("verifyRisk", () => {
     assert.equal(verifyRisk(c, NOW), 5);
   });
 
+  it("nível 5: pagante antigo 60+mo (#1017 fix — antes caía em 10)", () => {
+    // Bug pré-existente: `payment_count >= 1 && months < 60` deixava
+    // pagantes muito antigos (60+mo) caírem em níveis 6-10 (never-paid).
+    // Fix #1017: collapse em level 5 = "qualquer paid >=36mo".
+    const c = merged({
+      status: "canceled",
+      payment_count: 1,
+      total_spend: 100,
+      created: new Date("2020-01-01T00:00:00Z"), // ~75mo (6+ anos)
+    });
+    assert.equal(
+      verifyRisk(c, NOW),
+      5,
+      "Pagante antigo (60+mo) deve ficar em nível 5, não em level 10 (never-paid).",
+    );
+  });
+
+  it("nível 5: pagante muito antigo, várias compras", () => {
+    // Edge case: alguém que pagou muitas vezes mas conta já está velha.
+    const c = merged({
+      status: "canceled",
+      payment_count: 30,
+      total_spend: 1500,
+      created: new Date("2019-06-01T00:00:00Z"), // ~83mo (~7 anos)
+    });
+    assert.equal(verifyRisk(c, NOW), 5);
+  });
+
   it("nível 6: nunca pagou, conta < 12mo", () => {
     const c = merged({
       status: "",
@@ -419,19 +448,19 @@ describe("openProbability", () => {
 
 describe("tierOf", () => {
   it("T1: status active", () => {
-    assert.equal(tierOf(merged({ status: "active" })), 1);
+    assert.equal(tierOf(merged({ status: "active" }), NOW), 1);
   });
 
   it("T1: status past_due", () => {
-    assert.equal(tierOf(merged({ status: "past_due" })), 1);
+    assert.equal(tierOf(merged({ status: "past_due" }), NOW), 1);
   });
 
   it("T1: status paused", () => {
-    assert.equal(tierOf(merged({ status: "paused" })), 1);
+    assert.equal(tierOf(merged({ status: "paused" }), NOW), 1);
   });
 
   it("T1: status trialing", () => {
-    assert.equal(tierOf(merged({ status: "trialing" })), 1);
+    assert.equal(tierOf(merged({ status: "trialing" }), NOW), 1);
   });
 
   it("T2: pagou alguma vez (payment_count>0), não está em T1", () => {
@@ -440,7 +469,7 @@ describe("tierOf", () => {
       payment_count: 1,
       total_spend: 100,
     });
-    assert.equal(tierOf(c), 2);
+    assert.equal(tierOf(c, NOW), 2);
   });
 
   it("T2: paid via total_spend>0 mesmo com payment_count=0", () => {
@@ -449,7 +478,7 @@ describe("tierOf", () => {
       payment_count: 0,
       total_spend: 50,
     });
-    assert.equal(tierOf(c), 2);
+    assert.equal(tierOf(c, NOW), 2);
   });
 
   it("T1 tem precedência sobre T2 (active + paid)", () => {
@@ -458,7 +487,7 @@ describe("tierOf", () => {
       payment_count: 5,
       total_spend: 500,
     });
-    assert.equal(tierOf(c), 1);
+    assert.equal(tierOf(c, NOW), 1);
   });
 
   it("T3: lead nunca-pagou criado em 2026", () => {
@@ -468,7 +497,7 @@ describe("tierOf", () => {
       total_spend: 0,
       created: new Date("2026-03-15T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 3);
+    assert.equal(tierOf(c, NOW), 3);
   });
 
   it("T4: lead 2025-H2 (jul–dez)", () => {
@@ -477,7 +506,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2025-09-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 4);
+    assert.equal(tierOf(c, NOW), 4);
   });
 
   it("T5: lead 2025-H1 (jan–jun)", () => {
@@ -486,7 +515,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2025-03-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 5);
+    assert.equal(tierOf(c, NOW), 5);
   });
 
   it("T6: lead 2024-H2", () => {
@@ -495,7 +524,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2024-09-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 6);
+    assert.equal(tierOf(c, NOW), 6);
   });
 
   it("T7: lead 2024-H1", () => {
@@ -504,7 +533,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2024-02-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 7);
+    assert.equal(tierOf(c, NOW), 7);
   });
 
   it("T8: lead 2023-H2", () => {
@@ -513,7 +542,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2023-08-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 8);
+    assert.equal(tierOf(c, NOW), 8);
   });
 
   it("T9: lead 2023-H1", () => {
@@ -522,7 +551,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2023-01-15T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 9);
+    assert.equal(tierOf(c, NOW), 9);
   });
 
   it("T10: lead 2022 (todo H1+H2 → T10)", () => {
@@ -546,7 +575,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2021-06-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 10);
+    assert.equal(tierOf(c, NOW), 10);
   });
 
   it("T10: lead com created muito antigo (2018)", () => {
@@ -555,7 +584,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: new Date("2018-01-01T00:00:00Z"),
     });
-    assert.equal(tierOf(c), 10);
+    assert.equal(tierOf(c, NOW), 10);
   });
 
   it("T10 fallback: lead sem created date (sem data → fóssil)", () => {
@@ -564,7 +593,7 @@ describe("tierOf", () => {
       payment_count: 0,
       created: null,
     });
-    assert.equal(tierOf(c), 10);
+    assert.equal(tierOf(c, NOW), 10);
   });
 
   it("Tag clrc-pt NÃO afeta tier — dois contatos idênticos com/sem tag dão mesmo tier", () => {
@@ -576,7 +605,114 @@ describe("tierOf", () => {
     };
     const withTag = merged({ ...base, tag: "clrc-pt", description: "clrc-pt" });
     const withoutTag = merged({ ...base, tag: null, description: null });
-    assert.equal(tierOf(withTag), tierOf(withoutTag));
-    assert.equal(tierOf(withTag), 5);
+    assert.equal(tierOf(withTag, NOW), tierOf(withoutTag, NOW));
+    assert.equal(tierOf(withTag, NOW), 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tierOf com semestres deslizantes (#1020)
+// ---------------------------------------------------------------------------
+
+describe("tierOf — semestres deslizantes (#1020)", () => {
+  it("self-adjusting: contato Mar/2026 é T3 quando now=Mai/2026, mas T4 quando now=Ago/2026", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2026-03-15T00:00:00Z"),
+    });
+    // Mai/2026 — Mar/2026 = mesmo semestre (H1) → T3
+    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 3);
+    // Ago/2026 — Mar/2026 = 1 semestre atrás → T4
+    assert.equal(tierOf(c, new Date("2026-08-08T00:00:00Z")), 4);
+    // Mar/2027 — Mar/2026 = 2 semestres atrás → T5
+    assert.equal(tierOf(c, new Date("2027-03-15T00:00:00Z")), 5);
+  });
+
+  it("contato no futuro (raro) cai em T3 (mais quente)", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2026-12-01T00:00:00Z"),
+    });
+    // now = Mai/2026, contato no futuro
+    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 3);
+  });
+
+  it("T10 absorve qualquer coisa ≥ 7 semestres atrás", () => {
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2022-06-01T00:00:00Z"),
+    });
+    // 2022-H2 → 2026-H1 = ~7 semestres atrás → T10
+    assert.equal(tierOf(c, new Date("2026-05-08T00:00:00Z")), 10);
+  });
+
+  it("não muda no MEIO de um semestre (jul → dez 2026 todos no mesmo bucket)", () => {
+    // Lead criado jan/2026
+    const c = merged({
+      status: "",
+      payment_count: 0,
+      created: new Date("2026-01-15T00:00:00Z"),
+    });
+    // now ao longo do 2026-H2 (jul, set, dez): todos devem dar T4
+    assert.equal(tierOf(c, new Date("2026-07-01T00:00:00Z")), 4);
+    assert.equal(tierOf(c, new Date("2026-09-15T00:00:00Z")), 4);
+    assert.equal(tierOf(c, new Date("2026-12-31T00:00:00Z")), 4);
+  });
+
+  it("T1 e T2 não dependem de now (status/spend são sinais permanentes)", () => {
+    const t1 = merged({ status: "active", payment_count: 0 });
+    const t2 = merged({ status: "canceled", payment_count: 5, total_spend: 100 });
+    const dates = [
+      new Date("2024-01-01T00:00:00Z"),
+      new Date("2026-05-08T00:00:00Z"),
+      new Date("2030-12-31T00:00:00Z"),
+    ];
+    for (const d of dates) {
+      assert.equal(tierOf(t1, d), 1, `T1 deve ser sempre 1 (now=${d.toISOString()})`);
+      assert.equal(tierOf(t2, d), 2, `T2 deve ser sempre 2 (now=${d.toISOString()})`);
+    }
+  });
+});
+
+describe("tierLabel — labels dinâmicos (#1020)", () => {
+  it("T1 e T2 têm labels fixos", () => {
+    const NOW = new Date("2026-05-08T00:00:00Z");
+    assert.match(tierLabel(1, NOW), /Assinante atual/);
+    assert.match(tierLabel(2, NOW), /Ex-assinante/);
+  });
+
+  it("T3 = semestre corrente (varia com now)", () => {
+    assert.match(tierLabel(3, new Date("2026-05-08T00:00:00Z")), /2026-H1/);
+    assert.match(tierLabel(3, new Date("2026-08-08T00:00:00Z")), /2026-H2/);
+    assert.match(tierLabel(3, new Date("2027-02-01T00:00:00Z")), /2027-H1/);
+  });
+
+  it("T4 = semestre anterior", () => {
+    // Mai/2026 → corrente é 2026-H1; T4 = 2025-H2
+    assert.match(tierLabel(4, new Date("2026-05-08T00:00:00Z")), /2025-H2/);
+  });
+
+  it("T9 = 6 semestres atrás", () => {
+    // Mai/2026 (2026-H1) — 6 = 2023-H1
+    assert.match(tierLabel(9, new Date("2026-05-08T00:00:00Z")), /2023-H1/);
+  });
+
+  it("T10 tem label fixo de caudão (não depende de now)", () => {
+    // T10 absorve qualquer coisa ≥ 7 semestres atrás, então não tem
+    // semestre específico. Label deve indicar "caudão" + threshold.
+    const label = tierLabel(10, new Date("2026-05-08T00:00:00Z"));
+    assert.match(label, /caud[ãa]o/i, "T10 label deve mencionar 'caudão'");
+    assert.match(label, /≥7|≥ 7|7 semestres/, "T10 label deve indicar threshold de 7 semestres");
+    // Independência de now: mesmo label em outras datas
+    const labelFuture = tierLabel(10, new Date("2030-12-31T00:00:00Z"));
+    assert.equal(label, labelFuture, "T10 label não deve variar com now");
+  });
+
+  it("tier desconhecido retorna fallback", () => {
+    assert.match(tierLabel(99, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
+    assert.match(tierLabel(0, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
   });
 });
