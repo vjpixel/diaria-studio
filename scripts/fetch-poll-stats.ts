@@ -7,8 +7,13 @@
  * Uso:
  *   npx tsx scripts/fetch-poll-stats.ts --edition 260502 --out data/editions/260502/_internal/04-eia-poll-stats.json
  *
- * Output JSON (compatível com compute-eia-poll-stats.ts):
- *   { edition, total_responses, correct_pct, skipped, previous_edition }
+ * Output JSON (compatível com eia-compose.ts — consumer real):
+ *   { edition, total_responses, correct_responses, pct_correct,
+ *     correct_choice, below_threshold, skipped?, source, fetched_at }
+ *
+ * Substitui o fluxo antigo (fetch-beehiiv-poll-stats.ts → poll-responses.json
+ * → compute-eia-poll-stats.ts → 04-eia-poll-stats.json). Worker já agrega via
+ * counter no /vote — não precisa middle step.
  *
  * Variáveis de ambiente:
  *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
@@ -34,7 +39,12 @@ async function main(): Promise<void> {
   }
 
   const url = `${POLL_WORKER_URL}/stats?edition=${edition}`;
-  let data: { total?: number; correct_pct?: number | null; correct_answer?: string | null } = {};
+  let data: {
+    total?: number;
+    correct_pct?: number | null;
+    correct_answer?: string | null;
+    correct_count?: number;
+  } = {};
 
   try {
     const res = await fetch(url);
@@ -46,13 +56,19 @@ async function main(): Promise<void> {
   }
 
   const total = data.total ?? 0;
-  const correctPct = total >= MIN_RESPONSES ? (data.correct_pct ?? null) : null;
+  const belowThreshold = total < MIN_RESPONSES;
+  // Schema compatível com consumers (eia-compose.ts, load-carry-over.ts):
+  // pct_correct (não correct_pct), below_threshold (boolean).
+  const pctCorrect = belowThreshold ? null : (data.correct_pct ?? null);
 
   const output = {
     edition,
     total_responses: total,
-    correct_pct: correctPct,
-    skipped: total < MIN_RESPONSES ? `fewer_than_${MIN_RESPONSES}_responses` : null,
+    correct_responses: data.correct_count ?? 0,
+    pct_correct: pctCorrect,
+    correct_choice: data.correct_answer ?? null,
+    below_threshold: belowThreshold,
+    skipped: belowThreshold ? `fewer_than_${MIN_RESPONSES}_responses` : undefined,
     source: "poll-worker",
     fetched_at: new Date().toISOString(),
   };
@@ -62,7 +78,7 @@ async function main(): Promise<void> {
   if (outPath) {
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, result, "utf8");
-    console.log(`[fetch-poll-stats] Gravado em ${outPath} (total=${total}, correct_pct=${correctPct})`);
+    console.log(`[fetch-poll-stats] Gravado em ${outPath} (total=${total}, pct_correct=${pctCorrect})`);
   } else {
     process.stdout.write(result + "\n");
   }

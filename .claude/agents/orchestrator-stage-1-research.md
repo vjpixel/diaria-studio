@@ -30,27 +30,18 @@ Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em 
 - Ler `context/sources.md` e extrair os nomes+site queries de todas as fontes ativas.
 - Ler `data/source-health.json` (se existir). Anotar fontes com 3+ `recent_outcomes` consecutivos não-ok — **ainda dispara**, mas sinaliza no relatório do Stage 1.
 
-### 1c. Fetch poll stats da edição anterior (#201)
+### 1c. Fetch poll stats da edição anterior (#201, #1044)
 
-O `eia-compose.ts` auto-preenche a linha "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Buscar antes de disparar o composer:
+O `eia-compose.ts` auto-preenche "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Buscar do Cloudflare Worker `diar-ia-poll` (compatível com `eia-compose.ts` — `pct_correct`/`below_threshold`/`total_responses`; sem step intermediário `compute-eia-poll-stats.ts`):
+
 ```bash
-PREV_POST_ID=$(node -e "
-  const r=require('fs').existsSync('data/past-editions-raw.json')
-    ? JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8'))
-    : [];
-  process.stdout.write(r[0]?.id ?? '');
-")
-if [ -n "$PREV_POST_ID" ] && [ -n "$BEEHIIV_API_KEY" ]; then
-  npx tsx scripts/fetch-beehiiv-poll-stats.ts \
-    --post-id "$PREV_POST_ID" \
-    --out data/editions/{AAMMDD}/_internal/poll-responses.json
-  npx tsx scripts/compute-eia-poll-stats.ts \
-    --edition {AAMMDD} \
-    --responses data/editions/{AAMMDD}/_internal/poll-responses.json \
-    --out data/editions/{AAMMDD}/_internal/04-eia-poll-stats.json
+PREV_EDITION=$(node -e "const r=require('fs').existsSync('data/past-editions-raw.json')?JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8')):[];const p=r[0];if(!p||!p.published_at){process.exit(0)}const d=new Date(p.published_at);process.stdout.write(String(d.getUTCFullYear()).slice(-2)+String(d.getUTCMonth()+1).padStart(2,'0')+String(d.getUTCDate()).padStart(2,'0'))")
+if [ -n "$PREV_EDITION" ]; then
+  npx tsx scripts/fetch-poll-stats.ts --edition "$PREV_EDITION" --out data/editions/{AAMMDD}/_internal/04-eia-poll-stats.json
 fi
 ```
-Se `PREV_POST_ID` vazio, `BEEHIIV_API_KEY` não setada, ou qualquer script falhar com exit != 0 — prosseguir silenciosamente sem stats. **Não bloquear** o pipeline por ausência de stats.
+
+Se `PREV_EDITION` vazio ou Worker indisponível — prosseguir silenciosamente sem stats. **Não bloquear** o pipeline.
 
 ### 1d. Dispatch É IA? em paralelo (background)
 
