@@ -61,25 +61,14 @@ import {
 } from "./lib/social-published-store.ts";
 import type { PostEntry } from "./lib/social-published-store.ts";
 
-interface MakeWebhookPayload {
-  text: string;
-  image_url: string | null;
-  scheduled_at: string | null;
-  destaque: string;
-}
-
-interface MakeWebhookResponse {
-  request_id?: string;
-  accepted?: boolean;
-  [k: string]: unknown;
-}
-
-interface WorkerQueueResponse {
-  queued: boolean;
-  key: string;
-  scheduled_at: string;
-  destaque: string;
-}
+// #1032: types movidos pra scripts/lib/schemas/linkedin-payload.ts
+import {
+  type MakeWebhookPayload,
+  type MakeWebhookResponse,
+  type WorkerQueueResponse,
+  parseMakeWebhookPayload,
+  parseWorkerQueueResponse,
+} from "./lib/schemas/linkedin-payload.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -216,9 +205,12 @@ export async function postToWorkerQueue(
       }
       const text = await res.text();
       try {
-        return JSON.parse(text) as WorkerQueueResponse;
-      } catch {
-        throw new Error(`Worker returned non-JSON response: ${text.slice(0, 200)}`);
+        // #1032: schema-validated parse (queued: true required, etc)
+        return parseWorkerQueueResponse(JSON.parse(text));
+      } catch (parseErr) {
+        throw new Error(
+          `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
+        );
       }
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
@@ -509,13 +501,13 @@ async function main(): Promise<void> {
       }
     }
 
-    // Montar payload
-    const payload: MakeWebhookPayload = {
+    // Montar payload — schema-validated pra fail-fast em image_url undefined etc (#1032)
+    const payload: MakeWebhookPayload = parseMakeWebhookPayload({
       text,
       image_url: imageUrl,
       scheduled_at: scheduledAt,
       destaque: d,
-    };
+    });
 
     // Decidir route: Worker queue (se scheduled_at futuro + worker configurado) ou Make webhook direto
     const isFutureSchedule =
