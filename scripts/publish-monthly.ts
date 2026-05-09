@@ -1007,7 +1007,14 @@ async function brevoPut(
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+/**
+ * Main entrypoint do script.
+ *
+ * @param monthlyDirOverride Opcional. Default = `data/monthly/{yymm}`.
+ *                           Em testes, passar tempdir com fixture controlado
+ *                           pra evitar tocar dados reais (#1029).
+ */
+export async function main(monthlyDirOverride?: string): Promise<void> {
   const { yymm, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
 
   // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.
@@ -1075,8 +1082,8 @@ async function main(): Promise<void> {
   // After this point we're either dry-run (apiKey unused) or apiKeyRaw is non-empty.
   const apiKey = apiKeyRaw ?? "";
 
-  // Load draft
-  const monthlyDir = resolve(ROOT, `data/monthly/${yymm}`);
+  // Load draft (#1029: monthlyDirOverride permite injetar fixture em testes)
+  const monthlyDir = monthlyDirOverride ?? resolve(ROOT, `data/monthly/${yymm}`);
   const draftPath = resolve(monthlyDir, "draft.md");
 
   if (!existsSync(draftPath)) {
