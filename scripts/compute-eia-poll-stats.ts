@@ -70,9 +70,16 @@ export function readEiaMeta(editionDir: string): EiaMeta | null {
   if (!existsSync(path)) return null;
   try {
     // #1031: schema-validated parse (parseEiaMeta de lib/schemas/eia-meta.ts)
-    // Schema central requer ai_side ∈ {A, B}; se faltar/inválido → null fallback
+    // Schema central requer ai_side ∈ {A, B}; se faltar/inválido → null fallback.
+    // Cast pra local EiaMeta justificado: shape compatible (central é mais
+    // strict — central rejeita ai_side null mas aqui já tratamos parse falha
+    // como null, equivalente ao comportamento anterior).
     const parsed = parseEiaMeta(JSON.parse(readFileSync(path, "utf8")));
-    return parsed as EiaMeta;
+    return {
+      edition: parsed.edition,
+      ai_side: parsed.ai_side,
+      wikimedia: parsed.wikimedia,
+    };
   } catch {
     return null;
   }
