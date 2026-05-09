@@ -505,12 +505,24 @@ function renderEIA(eia: EIA): string {
   // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
   // `01-eia.md` (frontmatter, leitura humana) e `_internal/01-eia-meta.json`.
 
-  // #1044: botões de votação usam custom fields populados pelo inject-poll-urls.ts.
-  // poll_a_url/poll_b_url contêm URL HMAC-assinada per subscriber (não-forjável).
-  // Substitui caminho legacy #465 que usava {{ subscriber.email }} (forjável).
-  // Beehiiv resolve {{poll_a_url}} no envio → URL completa pro Worker.
+  // #1044 design v2: imagens A/B clicáveis lado a lado (link to {{poll_x_url}}).
+  // Cada imagem é wrapped em <a> com o custom_field URL — voto direto na imagem.
+  // Botão "Votar A"/"Votar B" abaixo serve como CTA backup pra leitores hesitantes.
+  // Substitui caminho legacy #465 (merge-tag forjável); Beehiiv resolve {{...}} no envio.
+  const labelStyle = `font-family:${FONT_BODY};font-weight:700;color:#FFFFFF;background:${TEAL};text-align:center;font-size:24px;padding:10px;margin:8px 0 0 0;border-radius:8px;display:block;`;
+  const imageStyle = `display:block;width:100%;height:auto;border-radius:12px;`;
+  const eiaChoice = (choice: "A" | "B", imgFile: string) =>
+    `<td width="50%" valign="top" style="padding:0 8px;" class="mob-stack">
+            ${eia.edition
+              ? `<a href="{{poll_${choice.toLowerCase()}_url}}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">`
+              : ""}
+              <img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="${imageStyle}" border="0"/>
+              <p style="${labelStyle}">${choice}</p>
+            ${eia.edition ? "</a>" : ""}
+          </td>`;
+
   const voteButtonsRow = eia.edition
-    ? `      <tr><td align="center" style="${cellStyle};padding:16px 2px;">
+    ? `      <tr><td align="center" style="${cellStyle};padding:8px 2px 0 2px;">
         <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
           <tr>
             <td style="padding:0 8px;">
@@ -535,10 +547,17 @@ function renderEIA(eia: EIA): string {
   <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
     <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
       ${renderCategoryLabel("🖼️", "É IA?")}
-      ${renderImageNoCaption(eia.imageA, "Imagem A")}
-      ${renderImageNoCaption(eia.imageB, "Imagem B")}
+      <tr><td align="center" style="padding:8px 0 16px 0;">
+        <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;margin:0;">Qual imagem é gerada por IA? Clique para votar.</p>
+      </td></tr>
+      <tr><td>
+        <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
+          ${eiaChoice("A", eia.imageA)}
+          ${eiaChoice("B", eia.imageB)}
+        </tr></table>
+      </td></tr>
 ${voteButtonsRow}
-      <tr><td align="left" style="${cellStyle}">
+      <tr><td align="left" style="${cellStyle};padding-top:16px;">
         <p style="${paragraphStyle}">${creditHtml}</p>
       </td></tr>
 ${prevResultRow}
