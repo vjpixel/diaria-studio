@@ -329,6 +329,10 @@ function runStage4Smoke(): { passed: number; failed: string[] } {
 function main() {
   const args = process.argv.slice(2);
   const updateGolden = args.includes("--update-golden");
+  // #1013: --summary-out <path> dumpa JSON estruturado de cada stage pra
+  // observabilidade. Útil em CI weekly-e2e (artefato).
+  const summaryOutIdx = args.indexOf("--summary-out");
+  const summaryOutPath = summaryOutIdx >= 0 ? args[summaryOutIdx + 1] : null;
 
   console.log("Rodando pipeline smoke test...");
   const snapshot = runPipeline();
@@ -381,6 +385,26 @@ function main() {
     process.exit(1);
   }
   console.log(`✓ Stage 4: ${s4.passed} checks passaram (Facebook inferIsPublished)`);
+
+  // #1013: dump structured summary se --summary-out passado.
+  // Permite weekly-e2e capturar como artefato pra observabilidade.
+  if (summaryOutPath) {
+    const summary = {
+      generated_at: new Date().toISOString(),
+      stage1: {
+        dedup_kept: snapshot.dedup.kept_count,
+        categorize_buckets: Object.fromEntries(
+          Object.entries(snapshot.categorize).map(([k, v]) => [k, (v as unknown[]).length]),
+        ),
+        passed: true,
+      },
+      stage2: { passed: s2.passed, failures: s2.failed.length },
+      stage3: { passed: s3.passed, failures: s3.failed.length },
+      stage4: { passed: s4.passed, failures: s4.failed.length },
+    };
+    writeFileSync(summaryOutPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
+    console.log(`✓ Summary dumped: ${summaryOutPath}`);
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
