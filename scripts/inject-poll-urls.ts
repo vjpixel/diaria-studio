@@ -90,15 +90,29 @@ async function fetchJson<T>(
 /**
  * Garante que os 2 custom fields (`poll_a_url`, `poll_b_url`) existem na
  * publicação. Idempotente — se já existem, no-op.
+ *
+ * Pagina via cursor pra cobrir publications com >100 fields (Diar.ia tinha 21
+ * em 2026-05-09, perto do default limit de 10 que dispararia false-create).
  */
 export async function ensureCustomFields(opts: ApiOpts): Promise<void> {
   const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
-  const url = `${base}/publications/${opts.publicationId}/custom_fields`;
-  const json = await fetchJson<{ data: BeehiivCustomField[] }>(url, opts.apiKey);
-  const existing = new Set((json.data ?? []).map((f) => f.display));
+  const baseUrl = `${base}/publications/${opts.publicationId}/custom_fields`;
+  const existing = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    const page = await fetchJson<BeehiivPage<BeehiivCustomField>>(
+      `${baseUrl}?${params.toString()}`,
+      opts.apiKey,
+    );
+    for (const f of page.data ?? []) existing.add(f.display);
+    if (!page.has_more || !page.next_cursor) break;
+    cursor = page.next_cursor;
+  }
   for (const name of [FIELD_A, FIELD_B]) {
     if (existing.has(name)) continue;
-    await fetchJson(url, opts.apiKey, {
+    await fetchJson(baseUrl, opts.apiKey, {
       method: "POST",
       body: JSON.stringify({ kind: "string", display: name }),
     });

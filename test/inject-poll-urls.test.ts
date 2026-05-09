@@ -116,7 +116,7 @@ describe("ensureCustomFields", () => {
     const pool = mockAgent.get(BASE);
     pool
       .intercept({
-        path: `/v2/publications/${PUB_ID}/custom_fields`,
+        path: `/v2/publications/${PUB_ID}/custom_fields?limit=100`,
         method: "GET",
       })
       .reply(
@@ -137,11 +137,51 @@ describe("ensureCustomFields", () => {
     // POST quebra com NetConnectNotAllowed.
   });
 
+  it("pagina via cursor pra cobrir publications com >100 custom fields", async () => {
+    const pool = mockAgent.get(BASE);
+    // Page 1: poll_a_url presente, poll_b_url ainda não — has_more=true
+    pool
+      .intercept({
+        path: `/v2/publications/${PUB_ID}/custom_fields?limit=100`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        {
+          data: [
+            { id: "1", kind: "string", display: "outra_coisa" },
+            { id: "2", kind: "string", display: "poll_a_url" },
+          ],
+          has_more: true,
+          next_cursor: "page2_token",
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+    // Page 2: poll_b_url presente
+    pool
+      .intercept({
+        path: `/v2/publications/${PUB_ID}/custom_fields?limit=100&cursor=page2_token`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        {
+          data: [{ id: "3", kind: "string", display: "poll_b_url" }],
+          has_more: false,
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+
+    // Não deve criar nenhum field (ambos existem em páginas distintas).
+    // Se POST disparar, MockAgent rejeita com NetConnectNotAllowed.
+    await ensureCustomFields({ publicationId: PUB_ID, apiKey: API_KEY });
+  });
+
   it("cria os 2 campos se nenhum existe", async () => {
     const pool = mockAgent.get(BASE);
     pool
       .intercept({
-        path: `/v2/publications/${PUB_ID}/custom_fields`,
+        path: `/v2/publications/${PUB_ID}/custom_fields?limit=100`,
         method: "GET",
       })
       .reply(
@@ -218,7 +258,7 @@ describe("run() — batch end-to-end", () => {
     // ensure custom fields: ambos existem
     pool
       .intercept({
-        path: `/v2/publications/${PUB_ID}/custom_fields`,
+        path: `/v2/publications/${PUB_ID}/custom_fields?limit=100`,
         method: "GET",
       })
       .reply(
