@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkNoForensicInDriveSync,
+  checkNoHtmlInMonthlyDriveSync,
   STATIC_RULES,
 } from "../scripts/check-invariants.ts";
 
@@ -30,6 +31,13 @@ describe("check-invariants — STATIC_RULES (#966)", () => {
 describe("check-invariants — checkNoForensicInDriveSync (#959)", () => {
   it("repo atual passa o check (zero violations)", () => {
     const violations = checkNoForensicInDriveSync();
+    assert.equal(violations.length, 0, JSON.stringify(violations, null, 2));
+  });
+});
+
+describe("check-invariants — checkNoHtmlInMonthlyDriveSync (#1022)", () => {
+  it("repo atual passa o check (zero violations)", () => {
+    const violations = checkNoHtmlInMonthlyDriveSync();
     assert.equal(violations.length, 0, JSON.stringify(violations, null, 2));
   });
 });
