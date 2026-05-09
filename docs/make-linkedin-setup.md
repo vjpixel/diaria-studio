@@ -160,3 +160,14 @@ A URL do webhook Make é versionada (`platform.config.json`) e pode aparecer em 
 | **Total por mês (30 edições)** | **~270** | |
 
 Free tier: 1.000 ops/mês — sobram ~730 ops para outros cenários.
+
+---
+
+## Próximo passo — comments T+3min / T+8min (#595)
+
+Após o setup acima funcionar pra posts, estender com comments por destaque (CTA Diar.ia + opinião Pixel pessoal). Ver **`docs/make-595-comments-setup.md`** — 2 partes:
+
+1. Estender este scenario com Router que aceita `action=post` (atual) e `action=comment`.
+2. Criar scenario novo `Pixel LinkedIn comment` autenticado com vjpixel pessoal.
+
+Custo adicional: ~6 ops/edição × 30 dias = **~180 ops/mês a mais** (450 total). Ainda dentro do free tier (1k/mês).

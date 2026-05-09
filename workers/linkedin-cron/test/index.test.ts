@@ -779,3 +779,232 @@ describe("#919 handleEnqueue verify-after-put (silent fail prevention)", () => {
     assert.equal(parsed.destaque, "d3");
   });
 });
+
+// ── #595 — webhook_target + action routing pra comments ────────────────────
+
+describe("#595 enqueue: validação de webhook_target/action/parent_destaque", () => {
+  it("aceita webhook_target=diaria + action=post (caso default)", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "main post",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+      webhook_target: "diaria",
+      action: "post",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    const data = (await res.json()) as { key: string };
+    const parsed = JSON.parse(kv.store.get(data.key) as string) as QueueEntry;
+    assert.equal(parsed.webhook_target, "diaria");
+    assert.equal(parsed.action, "post");
+  });
+
+  it("aceita webhook_target=pixel + action=comment + parent_destaque", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "Pixel comment",
+      scheduled_at: "2026-12-01T12:08:00Z",
+      destaque: "d1",
+      webhook_target: "pixel",
+      action: "comment",
+      parent_destaque: "d1",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    const data = (await res.json()) as { key: string };
+    const parsed = JSON.parse(kv.store.get(data.key) as string) as QueueEntry;
+    assert.equal(parsed.webhook_target, "pixel");
+    assert.equal(parsed.action, "comment");
+    assert.equal(parsed.parent_destaque, "d1");
+  });
+
+  it("rejeita webhook_target=pixel + action=post (combinação inválida)", async () => {
+    const { env } = mkEnv();
+    const body = {
+      text: "x",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+      webhook_target: "pixel",
+      action: "post",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    const data = (await res.json()) as { error: string };
+    assert.match(data.error, /pixel.*comment/);
+  });
+
+  it("rejeita webhook_target inválido", async () => {
+    const { env } = mkEnv();
+    const body = {
+      text: "x",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+      webhook_target: "bogus",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    const data = (await res.json()) as { error: string };
+    assert.match(data.error, /webhook_target/);
+  });
+
+  it("rejeita parent_destaque inválido (não d1/d2/d3)", async () => {
+    const { env } = mkEnv();
+    const body = {
+      text: "x",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d1",
+      action: "comment",
+      parent_destaque: "d99",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    const data = (await res.json()) as { error: string };
+    assert.match(data.error, /parent_destaque/);
+  });
+
+  it("backward-compat: entry sem webhook_target/action funciona como antes", async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "legacy",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d2",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 202);
+    const data = (await res.json()) as { key: string };
+    const parsed = JSON.parse(kv.store.get(data.key) as string) as QueueEntry;
+    assert.equal(parsed.webhook_target, undefined);
+    assert.equal(parsed.action, undefined);
+  });
+});
+
+describe("#595 fireDueItems: routing por webhook_target", () => {
+  // Mock fetch global pra capturar URL alvo + payload
+  let fetchCalls: Array<{ url: string; body: unknown }>;
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      const body = init?.body ? JSON.parse(init.body as string) : undefined;
+      fetchCalls.push({ url: u, body });
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+  });
+
+  function restore() { globalThis.fetch = originalFetch; }
+
+  it("entry sem webhook_target → MAKE_WEBHOOK_URL (backward-compat)", async () => {
+    const { env, kv } = mkEnv("tok", "https://make.test/diaria");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "legacy", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+    };
+    kv.store.set(buildQueueKey(past, "uuid-leg"), JSON.stringify(entry));
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1);
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0].url, "https://make.test/diaria");
+      const fb = fetchCalls[0].body as { action?: string; destaque: string };
+      assert.equal(fb.action, "post"); // default forward
+      assert.equal(fb.destaque, "d1");
+    } finally { restore(); }
+  });
+
+  it("webhook_target=pixel → MAKE_PIXEL_WEBHOOK_URL", async () => {
+    const { env, kv } = mkEnv("tok", "https://make.test/diaria");
+    (env as Env).MAKE_PIXEL_WEBHOOK_URL = "https://make.test/pixel";
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "Pixel comment", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+      webhook_target: "pixel", action: "comment", parent_destaque: "d1",
+    };
+    kv.store.set(buildQueueKey(past, "uuid-pix"), JSON.stringify(entry));
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1);
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0].url, "https://make.test/pixel");
+      const fb = fetchCalls[0].body as { action: string; parent_destaque: string };
+      assert.equal(fb.action, "comment");
+      assert.equal(fb.parent_destaque, "d1");
+    } finally { restore(); }
+  });
+
+  it("webhook_target=pixel sem MAKE_PIXEL_WEBHOOK_URL configurado → DLQ direto", async () => {
+    const { env, kv } = mkEnv("tok", "https://make.test/diaria");
+    // MAKE_PIXEL_WEBHOOK_URL ausente intencionalmente
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-pix-noenv");
+    const entry: QueueEntry = {
+      text: "Pixel comment", image_url: null, scheduled_at: past,
+      destaque: "d1", created_at: past, retry_count: 0,
+      webhook_target: "pixel", action: "comment",
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.dlq, 1);
+      assert.equal(fetchCalls.length, 0); // não tentou nenhum webhook
+      // Entry movida pra dlq:
+      const dlqKeys = Array.from(kv.store.keys()).filter(k => k.startsWith("dlq:"));
+      assert.equal(dlqKeys.length, 1);
+      // Original removida
+      assert.equal(kv.store.has(queueKey), false);
+    } finally { restore(); }
+  });
+
+  it("webhook_target=diaria + action=comment → MAKE_WEBHOOK_URL com action=comment", async () => {
+    const { env, kv } = mkEnv("tok", "https://make.test/diaria");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "Diar.ia comment", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+      webhook_target: "diaria", action: "comment", parent_destaque: "d2",
+    };
+    kv.store.set(buildQueueKey(past, "uuid-com"), JSON.stringify(entry));
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.fired, 1);
+      assert.equal(fetchCalls[0].url, "https://make.test/diaria");
+      const fb = fetchCalls[0].body as { action: string };
+      assert.equal(fb.action, "comment");
+    } finally { restore(); }
+  });
+});

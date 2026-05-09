@@ -58,8 +58,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 import {
   appendSocialPosts,
   readSocialPublished,
+  resolveSubtype,
 } from "./lib/social-published-store.ts";
-import type { PostEntry } from "./lib/social-published-store.ts";
+import type { PostEntry, PostSubtype } from "./lib/social-published-store.ts";
+
+// #595 — webhook_target + action types (espelham linkedin-payload.ts)
+type WebhookTarget = "diaria" | "pixel";
+type QueueAction = "post" | "comment";
 
 // #1032: types movidos pra scripts/lib/schemas/linkedin-payload.ts
 import {
@@ -89,10 +94,11 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
 }
 
 /**
- * Extrai o texto de um post LinkedIn de uma seção `## dN` dentro de `# LinkedIn`.
+ * Isola o bloco completo `## d{N}` dentro de `# LinkedIn` (incluindo eventuais
+ * subseções `### comment_diaria` e `### comment_pixel` — #595).
  * Normaliza CRLF → LF (arquivo pode vir do Drive com Windows line endings).
  */
-export function extractPostText(socialMd: string, destaque: string): string {
+function extractDestaqueBlock(socialMd: string, destaque: string): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
@@ -110,7 +116,56 @@ export function extractPostText(socialMd: string, destaque: string): string {
   const dMatch = platMatch[1].match(dRe);
   if (!dMatch) throw new Error(`Destaque '${destaque}' não encontrado em LinkedIn`);
 
-  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "");
+}
+
+/**
+ * Extrai o texto do **post principal** (sem `### comment_*` subsections — #595).
+ * Backward-compat: se o destaque não tem subseções, retorna o bloco inteiro.
+ */
+export function extractPostText(socialMd: string, destaque: string): string {
+  const block = extractDestaqueBlock(socialMd, destaque);
+  // Cortar no primeiro `### comment_diaria` ou `### comment_pixel` se houver
+  const commentRe = /\n### comment_(diaria|pixel)\b/;
+  const cut = block.search(commentRe);
+  const mainOnly = cut >= 0 ? block.slice(0, cut) : block;
+  return mainOnly.trim();
+}
+
+/**
+ * Extrai o texto do `### comment_diaria` de um destaque (#595).
+ * Substitui `{edition_url}` pelo URL da edição se passado.
+ *
+ * Retorna `null` se a subseção não existe (backward-compat com 03-social.md
+ * gerados antes do schema #595 — main only).
+ */
+export function extractCommentDiaria(
+  socialMd: string,
+  destaque: string,
+  editionUrl: string | null = null,
+): string | null {
+  const block = extractDestaqueBlock(socialMd, destaque);
+  // Match `### comment_diaria\n...` até `### comment_pixel` ou fim
+  const re = /\n### comment_diaria\b\s*\n([\s\S]*?)(?=\n### comment_(pixel|diaria)\b|$)/;
+  const m = block.match(re);
+  if (!m) return null;
+  let text = m[1].trim();
+  if (editionUrl) {
+    text = text.replaceAll("{edition_url}", editionUrl);
+  }
+  return text;
+}
+
+/**
+ * Extrai o texto do `### comment_pixel` de um destaque (#595).
+ * Retorna `null` se a subseção não existe.
+ */
+export function extractCommentPixel(socialMd: string, destaque: string): string | null {
+  const block = extractDestaqueBlock(socialMd, destaque);
+  const re = /\n### comment_pixel\b\s*\n([\s\S]*?)(?=\n### comment_(diaria|pixel)\b|$)/;
+  const m = block.match(re);
+  if (!m) return null;
+  return m[1].trim();
 }
 
 /**
@@ -223,6 +278,190 @@ export async function postToWorkerQueue(
   throw lastError ?? new Error("worker_queue_failed");
 }
 
+// ── Dispatch helper (#595) ────────────────────────────────────────────
+
+/**
+ * Input pra um item de fila — main post OU comment (Diar.ia / Pixel).
+ * Comments têm `subtype: "comment_diaria" | "comment_pixel"`, `webhookTarget`
+ * pode ser "pixel", e `action: "comment"`. Main usa defaults `"main" / "diaria" / "post"`.
+ */
+interface DispatchInput {
+  destaque: string;
+  subtype: PostSubtype;
+  text: string;
+  imageUrl: string | null;
+  scheduledAt: string | null;
+  webhookTarget: WebhookTarget;
+  action: QueueAction;
+  parentDestaque?: string;
+}
+
+interface DispatchContext {
+  publishedPath: string;
+  webhookUrl: string;
+  workerUrl: string;
+  workerToken: string;
+  useWorkerForScheduled: boolean;
+  editionDate: string;
+}
+
+/**
+ * Despacha um item LinkedIn (main, comment_diaria ou comment_pixel) — extrai
+ * a lógica que era inline no loop de destaques (#595, refactor pra suportar 9
+ * items por edição em vez de 3).
+ *
+ * Decide route (worker_queue se scheduled futuro + worker configurado, senão
+ * make_now), monta payload, dispara, e grava entry em 06-social-published.json.
+ * Em failure, grava entry com status="failed" + reason.
+ */
+async function dispatchEntry(
+  input: DispatchInput,
+  ctx: DispatchContext,
+): Promise<PostEntry> {
+  const { destaque: d, subtype, text, imageUrl, scheduledAt } = input;
+  const tag = `linkedin/${d}/${subtype}`;
+
+  // Schema-validated payload (#1032)
+  const payload: MakeWebhookPayload = parseMakeWebhookPayload({
+    text,
+    image_url: imageUrl,
+    scheduled_at: scheduledAt,
+    destaque: d,
+    webhook_target: input.webhookTarget,
+    action: input.action,
+    ...(input.parentDestaque !== undefined && { parent_destaque: input.parentDestaque }),
+  });
+
+  // Route decision: comments precisam de worker queue (timing relativo ao main).
+  // Main pode usar make_now se scheduled é passado.
+  const isFutureSchedule = scheduledAt !== null && Date.parse(scheduledAt) > Date.now();
+  const route: "worker_queue" | "make_now" =
+    ctx.useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
+
+  logEvent({
+    edition: ctx.editionDate,
+    stage: 4,
+    agent: "publish-linkedin",
+    level: "info",
+    message: `${tag} dispatched via ${route}`,
+    details: { route, scheduled_at: scheduledAt, destaque: d, subtype, webhook_target: input.webhookTarget, action: input.action },
+  });
+
+  try {
+    let entry: PostEntry;
+    if (route === "worker_queue") {
+      console.log(`Queuing ${tag} via Cloudflare Worker (fire at ${scheduledAt})...`);
+      try {
+        const response = await postToWorkerQueue(ctx.workerUrl, ctx.workerToken, payload);
+        entry = {
+          platform: "linkedin",
+          destaque: d,
+          subtype,
+          url: null,
+          status: "scheduled",
+          scheduled_at: scheduledAt,
+          route,
+          worker_queue_key: response.key,
+          webhook_target: input.webhookTarget,
+          action: input.action,
+        };
+      } catch (workerError: unknown) {
+        // #887 fallback: Worker falhou → tenta Make direto. Mas Pixel comments
+        // SÓ tem URL no Worker (Diar.ia webhookUrl não é Pixel) — fallback
+        // não-aplicável pra webhook_target=pixel; falha entry com reason claro.
+        const wmsg = workerError instanceof Error ? workerError.message : String(workerError);
+        if (input.webhookTarget === "pixel") {
+          throw new Error(
+            `${wmsg} (fallback worker→make não disponível pra webhook_target=pixel — Make scenario Pixel não tem URL local)`,
+          );
+        }
+        console.warn(
+          `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
+        );
+        const response = await postToMakeWebhook(ctx.webhookUrl, payload);
+        entry = {
+          platform: "linkedin",
+          destaque: d,
+          subtype,
+          url: null,
+          status: "draft",
+          scheduled_at: scheduledAt,
+          route,
+          make_request_id: response.request_id,
+          fallback_used: true,
+          fallback_reason: sanitizeFallbackReason(wmsg),
+          webhook_target: input.webhookTarget,
+          action: input.action,
+        };
+      }
+    } else {
+      // route === "make_now"
+      // Pixel não tem fallback make_now (URL é só no Worker). Falha early.
+      if (input.webhookTarget === "pixel") {
+        throw new Error(
+          `webhook_target=pixel exige Worker configurado — make_now não suportado (Pixel webhook URL fica só no Worker secret)`,
+        );
+      }
+      console.log(`Publishing ${tag} via Make.com (fire-now)...`);
+      const response = await postToMakeWebhook(ctx.webhookUrl, payload);
+      entry = {
+        platform: "linkedin",
+        destaque: d,
+        subtype,
+        url: null,
+        status: "draft",
+        scheduled_at: scheduledAt,
+        route,
+        make_request_id: response.request_id,
+        webhook_target: input.webhookTarget,
+        action: input.action,
+      };
+    }
+    appendSocialPosts(ctx.publishedPath, [entry]);
+    const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
+    console.log(
+      `OK ${tag} — ${entry.status} via ${route}${fallbackTag}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
+    );
+    return entry;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`FAILED ${tag}: ${msg}`);
+    const entry: PostEntry = {
+      platform: "linkedin",
+      destaque: d,
+      subtype,
+      url: null,
+      status: "failed",
+      scheduled_at: scheduledAt,
+      route,
+      reason: msg,
+      webhook_target: input.webhookTarget,
+      action: input.action,
+    };
+    appendSocialPosts(ctx.publishedPath, [entry]);
+    return entry;
+  }
+}
+
+/**
+ * Calcula scheduled_at de comment relativo ao main (#595).
+ * - mainAt no futuro → comment fica em mainAt + offsetMin
+ * - mainAt no passado (ou null/make_now) → comment fica em now + offsetMin
+ *
+ * Razão: se main fira agora (make_now ou já-passou), o comment ainda precisa
+ * esperar o LinkedIn aceitar o post pra ele aparecer no "Get Latest" do Make.
+ * 3min/8min de buffer de now é suficiente.
+ */
+export function computeCommentScheduledAt(
+  mainAtIso: string | null,
+  offsetMinutes: number,
+  now: number = Date.now(),
+): string {
+  const mainMs = mainAtIso ? Date.parse(mainAtIso) : NaN;
+  const baseMs = !isNaN(mainMs) && mainMs > now ? mainMs : now;
+  return new Date(baseMs + offsetMinutes * 60_000).toISOString();
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -244,6 +483,10 @@ async function main(): Promise<void> {
   const dayOffsetOverride = args["day-offset"]
     ? parseInt(args["day-offset"] as string, 10)
     : undefined;
+  // #595 — URL pública da edição Beehiiv pra substituir `{edition_url}` em
+  // comment_diaria. Precedência: --edition-url flag > _internal/05-edition-url.txt
+  // > fallback `https://diar.ia.br` (raiz) com warn.
+  const editionUrlFlag = args["edition-url"] as string | undefined;
 
   // Subset de destaques (--only d1,d2 → ["d1","d2"])
   const onlyArg = args["only"] as string | undefined;
@@ -336,6 +579,26 @@ async function main(): Promise<void> {
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
+  // #595 — Resolver edition_url pra substituir {edition_url} em comment_diaria.
+  // Ordem: --edition-url flag > _internal/05-edition-url.txt > fallback raiz.
+  let editionUrl: string;
+  if (editionUrlFlag) {
+    editionUrl = editionUrlFlag;
+    console.log(`#595: edition_url via flag → ${editionUrl}`);
+  } else {
+    const editionUrlFile = resolve(editionDir, "_internal", "05-edition-url.txt");
+    if (existsSync(editionUrlFile)) {
+      editionUrl = readFileSync(editionUrlFile, "utf8").trim();
+      console.log(`#595: edition_url via 05-edition-url.txt → ${editionUrl}`);
+    } else {
+      editionUrl = "https://diar.ia.br";
+      console.warn(
+        `#595: edition_url não fornecido (sem --edition-url nem 05-edition-url.txt) — fallback ${editionUrl}. ` +
+        `Comment_diaria vai apontar pra raiz da newsletter em vez do post específico.`,
+      );
+    }
+  }
+
   // Extrair edition date (últimos 6 chars do caminho)
   const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
   if (!/^\d{6}$/.test(editionDate)) {
@@ -403,81 +666,64 @@ async function main(): Promise<void> {
   }
 
   const results: PostEntry[] = [];
+  const ctx: DispatchContext = {
+    publishedPath,
+    webhookUrl,
+    workerUrl,
+    workerToken,
+    useWorkerForScheduled,
+    editionDate,
+  };
+
+  // #595 — pre-carregar imageUrl por destaque (mesmo source pra todos os
+  // subtypes; comments não usam imagem mas o helper aceita null).
+  const imageUrlByDestaque: Record<string, string | null> = {};
+  for (const d of destaques) {
+    let imageUrl: string | null = null;
+    const imgCachePath = resolve(editionDir, "06-public-images.json");
+    if (existsSync(imgCachePath)) {
+      try {
+        const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
+          images?: Record<string, { url?: string }>;
+        };
+        const url = imgCache.images?.[d]?.url ?? null;
+        if (url) {
+          imageUrl = url;
+          console.log(`linkedin/${d}: imagem Drive → ${url}`);
+        } else {
+          console.warn(`linkedin/${d}: chave '${d}' ausente em 06-public-images.json — post sem imagem`);
+        }
+      } catch (e) {
+        console.warn(`linkedin/${d}: 06-public-images.json inválido — ${(e as Error).message}`);
+      }
+    } else {
+      console.warn(`linkedin/${d}: 06-public-images.json não existe — rodar upload-images-public.ts antes. Post sem imagem.`);
+    }
+    imageUrlByDestaque[d] = imageUrl;
+  }
 
   for (const d of destaques) {
     // #918: re-ler estado em cada iteração (publish-facebook pode estar
-    // gravando em paralelo). appendSocialPosts faz upsert por platform+destaque,
-    // então failed entries são naturalmente substituídas no próximo append.
+    // gravando em paralelo). appendSocialPosts faz upsert por
+    // (platform, destaque, subtype) sob .lock — failed entries são
+    // naturalmente substituídas no próximo append (#595 ajusta upsert).
     const currentState = readSocialPublished(publishedPath);
 
-    // Resume-aware: pular posts já com status draft/scheduled
-    if (skipExisting) {
-      const existing = currentState.posts.find(
+    // Helper: skip se já temos um entry final pra (linkedin, d, subtype).
+    const alreadyDone = (subtype: PostSubtype): PostEntry | undefined =>
+      currentState.posts.find(
         (p) =>
           p.platform === "linkedin" &&
           p.destaque === d &&
+          resolveSubtype(p) === subtype &&
           (p.status === "draft" || p.status === "scheduled"),
       );
-      if (existing) {
-        console.log(`SKIP linkedin/${d} — already ${existing.status}`);
-        results.push(existing);
-        continue;
-      }
-    }
 
-    // Extrair texto do post
-    let text: string;
-    try {
-      text = extractPostText(socialMd, d);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`ERROR extracting text for linkedin/${d}: ${msg}`);
-      const entry: PostEntry = {
-        platform: "linkedin",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: msg,
-      };
-      appendSocialPosts(publishedPath, [entry]);
-      results.push(entry);
-      continue;
-    }
-
-    // #725 bug #9: carregar URL pública da imagem do cache gerado por
-    // upload-images-public.ts (rodado em Etapa 4a.0 antes do dispatch).
-    // Cache: {edition_dir}/06-public-images.json, chave "d1"/"d2"/"d3".
-    // Graceful fallback: null se cache ausente ou Drive não configurado —
-    // comportamento anterior (post sem imagem) como safety net.
-    let imageUrl: string | null = null;
-    {
-      const imgCachePath = resolve(editionDir, "06-public-images.json");
-      if (existsSync(imgCachePath)) {
-        try {
-          const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
-            images?: Record<string, { url?: string }>;
-          };
-          const url = imgCache.images?.[d]?.url ?? null;
-          if (url) {
-            imageUrl = url;
-            console.log(`linkedin/${d}: imagem Drive → ${url}`);
-          } else {
-            console.warn(`linkedin/${d}: chave '${d}' ausente em 06-public-images.json — post sem imagem`);
-          }
-        } catch (e) {
-          console.warn(`linkedin/${d}: 06-public-images.json inválido — ${(e as Error).message}`);
-        }
-      } else {
-        console.warn(`linkedin/${d}: 06-public-images.json não existe — rodar upload-images-public.ts antes. Post sem imagem.`);
-      }
-    }
-
-    // Calcular scheduled_at
-    let scheduledAt: string | null = null;
+    // ── Calcular mainAt (1× por destaque, reusado pelos comments) ──
+    let mainAt: string | null = null;
     if (doSchedule) {
       try {
-        scheduledAt = computeScheduledAt({
+        mainAt = computeScheduledAt({
           config: config as Parameters<typeof computeScheduledAt>[0]["config"],
           editionDate,
           destaque: d as "d1" | "d2" | "d3",
@@ -487,140 +733,114 @@ async function main(): Promise<void> {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error(`SKIP linkedin/${d}: schedule_error: ${msg}`);
-        const entry: PostEntry = {
-          platform: "linkedin",
-          destaque: d,
-          url: null,
-          status: "failed",
-          scheduled_at: null,
-          reason: `schedule_error: ${msg}`,
-        };
-        appendSocialPosts(publishedPath, [entry]);
-        results.push(entry);
+        // Falha de schedule afeta os 3 subtypes — gravar 3 entries failed
+        for (const sub of ["main", "comment_diaria", "comment_pixel"] as const) {
+          const entry: PostEntry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype: sub,
+            url: null,
+            status: "failed",
+            scheduled_at: null,
+            reason: `schedule_error: ${msg}`,
+          };
+          appendSocialPosts(publishedPath, [entry]);
+          results.push(entry);
+        }
         continue;
       }
     }
 
-    // Montar payload — schema-validated pra fail-fast em image_url undefined etc (#1032)
-    const payload: MakeWebhookPayload = parseMakeWebhookPayload({
-      text,
-      image_url: imageUrl,
-      scheduled_at: scheduledAt,
-      destaque: d,
-    });
-
-    // Decidir route: Worker queue (se scheduled_at futuro + worker configurado) ou Make webhook direto
-    const isFutureSchedule =
-      scheduledAt !== null && Date.parse(scheduledAt) > Date.now();
-    const route: "worker_queue" | "make_now" =
-      useWorkerForScheduled && isFutureSchedule ? "worker_queue" : "make_now";
-
-    // #886 observabilidade: log estruturado da decisão de route antes do fire,
-    // pra trilha de auditoria em incidentes ("por que d2 saiu antes do horário?").
-    logEvent({
-      edition: editionDate,
-      stage: 4,
-      agent: "publish-linkedin",
-      level: "info",
-      message: `linkedin/${d} dispatched via ${route}`,
-      details: { route, scheduled_at: scheduledAt, destaque: d },
-    });
-
-    // Try/catch aninhados — semantics:
-    //   inner try (route === "worker_queue"): captura falha do Worker e tenta
-    //     fallback Make. Se Make sucesso → entry com fallback_used=true,
-    //     status="draft", route="worker_queue" (intent original). Se Make
-    //     TAMBÉM falhar, propaga pro outer catch.
-    //   outer catch lida com:
-    //     (a) extractPostText/computeScheduledAt errors (pré-fire) — esses já
-    //         tem `continue` antes daqui, mas a defesa em profundidade fica;
-    //         entry → status: "failed", sem fallback_used.
-    //     (b) Worker fail + Make fail (fallback exhausted) — entry →
-    //         status: "failed" COM fallback_used: true preservado via reason.
-    //     (c) Make fail no caminho fire-now (sem worker_queue) — entry →
-    //         status: "failed", sem fallback_used.
-    try {
-      let entry: PostEntry;
-      if (route === "worker_queue") {
-        console.log(`Queuing linkedin/${d} via Cloudflare Worker (fire at ${scheduledAt})...`);
-        try {
-          const response = await postToWorkerQueue(workerUrl, workerToken, payload);
-          entry = {
-            platform: "linkedin",
-            destaque: d,
-            url: null,
-            status: "scheduled",
-            scheduled_at: scheduledAt,
-            route,
-            worker_queue_key: response.key,
-          };
-        } catch (workerError: unknown) {
-          // #887: fallback gracioso pra Make direto se Worker falhar todos os retries.
-          // Make.com posta IMEDIATAMENTE (ignora scheduled_at) — post real é melhor
-          // que post falhado. Editor revê resultado no gate + run-log.
-          const wmsg =
-            workerError instanceof Error ? workerError.message : String(workerError);
-          console.warn(
-            `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
-          );
-          const response = await postToMakeWebhook(webhookUrl, payload);
-          entry = {
-            platform: "linkedin",
-            destaque: d,
-            url: null,
-            // Make POSTOU IMEDIATAMENTE — status sempre "draft" (post live, sem
-            // agendamento futuro), nunca "scheduled". scheduled_at preservado
-            // pra auditoria mas representa o que NÃO aconteceu. fallback_used +
-            // fallback_reason carregam o sinal de que era pra ser scheduled.
-            // route registrado é o originalmente intentado (worker_queue), não
-            // o efetivamente usado (make) — pra rastrear intent.
-            status: "draft",
-            scheduled_at: scheduledAt,
-            route,
-            make_request_id: response.request_id,
-            fallback_used: true,
-            fallback_reason: sanitizeFallbackReason(wmsg),
-          };
-        }
+    // ── 1. MAIN ────────────────────────────────────────────────────
+    {
+      const existing = skipExisting ? alreadyDone("main") : undefined;
+      if (existing) {
+        console.log(`SKIP linkedin/${d}/main — already ${existing.status}`);
+        results.push(existing);
       } else {
-        console.log(`Publishing linkedin/${d} via Make.com (fire-now)...`);
-        const response = await postToMakeWebhook(webhookUrl, payload);
-        // #997: route=make_now sempre posta IMEDIATAMENTE (Make.com ignora
-        // scheduled_at do payload). Status sempre "draft", nunca "scheduled" —
-        // gate humano não pode achar que tá agendado quando o post já saiu.
-        // scheduled_at preservado pra auditoria; route="make_now" disambigua.
-        entry = {
-          platform: "linkedin",
+        let text: string;
+        try {
+          text = extractPostText(socialMd, d);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`ERROR extracting text for linkedin/${d}/main: ${msg}`);
+          const entry: PostEntry = {
+            platform: "linkedin",
+            destaque: d,
+            subtype: "main",
+            url: null,
+            status: "failed",
+            scheduled_at: null,
+            reason: msg,
+          };
+          appendSocialPosts(publishedPath, [entry]);
+          results.push(entry);
+          continue; // sem main, comments não fazem sentido
+        }
+
+        results.push(await dispatchEntry({
           destaque: d,
-          url: null, // LinkedIn post URL só fica disponível após publicação efetiva
-          status: "draft",
-          scheduled_at: scheduledAt,
-          route,
-          make_request_id: response.request_id,
-        };
+          subtype: "main",
+          text,
+          imageUrl: imageUrlByDestaque[d],
+          scheduledAt: mainAt,
+          webhookTarget: "diaria",
+          action: "post",
+        }, ctx));
       }
-      appendSocialPosts(publishedPath, [entry]);
-      results.push(entry);
-      const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
-      console.log(
-        `OK linkedin/${d} — ${entry.status} via ${route}${fallbackTag}${scheduledAt ? ` at ${scheduledAt}` : ""}`,
-      );
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`FAILED linkedin/${d}: ${msg}`);
-      // route registrado é o originalmente intentado, não tentativas subsequentes
-      // (sem fallback worker→make ainda — #892).
-      const entry: PostEntry = {
-        platform: "linkedin",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: scheduledAt,
-        route,
-        reason: msg,
-      };
-      appendSocialPosts(publishedPath, [entry]);
-      results.push(entry);
+    }
+
+    // ── 2. COMMENT_DIARIA (T+3min) ─────────────────────────────────
+    {
+      const cdText = extractCommentDiaria(socialMd, d, editionUrl);
+      if (cdText === null) {
+        // Schema antigo (sem subseção comment_diaria) — backward-compat: skip.
+        console.log(`linkedin/${d}/comment_diaria: subseção ausente em 03-social.md — schema pré-#595, skip`);
+      } else {
+        const existing = skipExisting ? alreadyDone("comment_diaria") : undefined;
+        if (existing) {
+          console.log(`SKIP linkedin/${d}/comment_diaria — already ${existing.status}`);
+          results.push(existing);
+        } else {
+          const cdAt = doSchedule ? computeCommentScheduledAt(mainAt, 3) : null;
+          results.push(await dispatchEntry({
+            destaque: d,
+            subtype: "comment_diaria",
+            text: cdText,
+            imageUrl: null, // comments não levam imagem
+            scheduledAt: cdAt,
+            webhookTarget: "diaria",
+            action: "comment",
+            parentDestaque: d,
+          }, ctx));
+        }
+      }
+    }
+
+    // ── 3. COMMENT_PIXEL (T+8min) ──────────────────────────────────
+    {
+      const cpText = extractCommentPixel(socialMd, d);
+      if (cpText === null) {
+        console.log(`linkedin/${d}/comment_pixel: subseção ausente em 03-social.md — schema pré-#595, skip`);
+      } else {
+        const existing = skipExisting ? alreadyDone("comment_pixel") : undefined;
+        if (existing) {
+          console.log(`SKIP linkedin/${d}/comment_pixel — already ${existing.status}`);
+          results.push(existing);
+        } else {
+          const cpAt = doSchedule ? computeCommentScheduledAt(mainAt, 8) : null;
+          results.push(await dispatchEntry({
+            destaque: d,
+            subtype: "comment_pixel",
+            text: cpText,
+            imageUrl: null,
+            scheduledAt: cpAt,
+            webhookTarget: "pixel",
+            action: "comment",
+            parentDestaque: d,
+          }, ctx));
+        }
+      }
     }
   }
 

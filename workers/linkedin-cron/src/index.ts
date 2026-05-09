@@ -36,7 +36,14 @@ export interface Env {
   LINKEDIN_QUEUE: KVNamespace;
   DIARIA_TOKEN: string;
   MAKE_WEBHOOK_URL: string;
+  // #595 — webhook URL do scenario Make "Pixel LinkedIn" (vjpixel personal,
+  // só faz comments na Diar.ia company page). Opcional pra backward-compat:
+  // se ausente, items com webhook_target="pixel" vão pra DLQ com reason claro.
+  MAKE_PIXEL_WEBHOOK_URL?: string;
 }
+
+export type WebhookTarget = "diaria" | "pixel";
+export type QueueAction = "post" | "comment";
 
 export interface QueueEntry {
   text: string;
@@ -45,6 +52,11 @@ export interface QueueEntry {
   destaque: string; // d1 | d2 | d3
   created_at: string;
   retry_count?: number; // #880 — incrementado a cada falha de fetch
+  // #595 — fields opcionais pra suportar comments. Default `webhook_target`
+  // = "diaria" e `action` = "post" pra backward-compat com entries antigas.
+  webhook_target?: WebhookTarget;
+  action?: QueueAction;
+  parent_destaque?: string; // qual destaque o comment pertence (auditoria)
 }
 
 // ── Constantes ─────────────────────────────────────────────────────────────
@@ -185,6 +197,28 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     return json({ error: "destaque must be d1, d2, or d3" }, 400);
   }
 
+  // #595 — Validar webhook_target e action (opcionais; defaults aplicados
+  // em fireDueItems pra backward-compat com entries antigas no KV).
+  if (body.webhook_target !== undefined && body.webhook_target !== "diaria" && body.webhook_target !== "pixel") {
+    return json({ error: "webhook_target must be 'diaria' or 'pixel'" }, 400);
+  }
+  if (body.action !== undefined && body.action !== "post" && body.action !== "comment") {
+    return json({ error: "action must be 'post' or 'comment'" }, 400);
+  }
+  // Pixel scenario só faz comment — rejeitar combinação inválida no enqueue
+  // pra falhar early em vez de DLQ no fire.
+  if (body.webhook_target === "pixel" && body.action === "post") {
+    return json({ error: "webhook_target='pixel' supports only action='comment'" }, 400);
+  }
+  if (body.parent_destaque !== undefined) {
+    if (typeof body.parent_destaque !== "string") {
+      return json({ error: "parent_destaque must be a string" }, 400);
+    }
+    if (!/^d[123]$/.test(body.parent_destaque)) {
+      return json({ error: "parent_destaque must be d1, d2, or d3" }, 400);
+    }
+  }
+
   // #882 — Validar tamanho de payload pra evitar abuso de KV (cap por valor é
   // ~25MB, mas posts LinkedIn maiores que 10k caracteres são quase certamente
   // erro/abuso) e proteger fetch downstream.
@@ -221,6 +255,10 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     destaque: body.destaque as string,
     created_at: new Date().toISOString(),
     retry_count: 0,
+    // #595 — preservar fields opcionais (omitidos se undefined pra não inflar KV)
+    ...(body.webhook_target !== undefined && { webhook_target: body.webhook_target as WebhookTarget }),
+    ...(body.action !== undefined && { action: body.action as QueueAction }),
+    ...(body.parent_destaque !== undefined && { parent_destaque: body.parent_destaque as string }),
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
@@ -433,10 +471,36 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
 
     if (scheduledMs > now) continue; // ainda não chegou a hora
 
+    // #595 — Resolver webhook URL por target. Default "diaria" pra backward-compat.
+    // Pixel target sem MAKE_PIXEL_WEBHOOK_URL configurado → DLQ direto, evita loop.
+    const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
+    const action: QueueAction = entry.action ?? "post";
+    let webhookUrl: string;
+    if (webhookTarget === "pixel") {
+      if (!env.MAKE_PIXEL_WEBHOOK_URL) {
+        // Sem URL Pixel → DLQ imediato (não retry, não dá pra resolver).
+        const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
+        await env.LINKEDIN_QUEUE.put(
+          dlqKey,
+          JSON.stringify({ ...entry, retry_count: MAX_RETRIES }),
+          { expirationTtl: DLQ_TTL_SECONDS },
+        );
+        await env.LINKEDIN_QUEUE.delete(k.name);
+        console.error(
+          `[fire] ${k.name} dropped to dlq: webhook_target=pixel but MAKE_PIXEL_WEBHOOK_URL not configured (dlq_key=${dlqKey})`,
+        );
+        dlq++;
+        continue;
+      }
+      webhookUrl = env.MAKE_PIXEL_WEBHOOK_URL;
+    } else {
+      webhookUrl = env.MAKE_WEBHOOK_URL;
+    }
+
     // Disparar webhook Make (#881 — com timeout)
     let succeeded = false;
     try {
-      const res = await fetch(env.MAKE_WEBHOOK_URL, {
+      const res = await fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -444,6 +508,10 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
           image_url: entry.image_url,
           scheduled_at: entry.scheduled_at,
           destaque: entry.destaque,
+          // #595 — forward action + parent_destaque pro Make scenario.
+          // Make Diar.ia faz Router por action; Pixel só aceita "comment".
+          action,
+          ...(entry.parent_destaque !== undefined && { parent_destaque: entry.parent_destaque }),
         }),
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
@@ -451,7 +519,7 @@ async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; 
       if (res.ok) {
         await env.LINKEDIN_QUEUE.delete(k.name);
         console.log(
-          `[fire] ${k.name} fired (destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
+          `[fire] ${k.name} fired (target=${webhookTarget} action=${action} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
         );
         fired++;
         succeeded = true;
