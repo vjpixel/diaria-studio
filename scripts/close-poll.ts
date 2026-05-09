@@ -22,6 +22,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
@@ -54,13 +55,15 @@ async function main(): Promise<void> {
       console.error(`[close-poll] 01-eia-meta.json não encontrado em ${metaPath}. Use --answer A|B.`);
       process.exit(1);
     }
-    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
-    answer = meta.ai_side;
-    if (!answer || !["A", "B"].includes(answer)) {
-      console.error(`[close-poll] ai_side inválido ou ausente em meta: ${answer}`);
+    // #1031: schema-validated parse — Zod garante ai_side ∈ {A, B}
+    try {
+      const meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8")));
+      answer = meta.ai_side;
+      console.log(`[close-poll] Leu ai_side="${answer}" de ${metaPath}`);
+    } catch (e) {
+      console.error(`[close-poll] schema inválido em ${metaPath}: ${(e as Error).message}`);
       process.exit(1);
     }
-    console.log(`[close-poll] Leu ai_side="${answer}" de ${metaPath}`);
   }
 
   const sig = adminSig(secret, edition, answer);

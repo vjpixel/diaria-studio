@@ -13,6 +13,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -114,7 +115,8 @@ function main() {
 
     let meta: EaiMeta;
     try {
-      meta = JSON.parse(readFileSync(metaPath, "utf8")) as EaiMeta;
+      // #1031: schema-validated parse via central parseEiaMeta
+      meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8"))) as EaiMeta;
     } catch {
       skipped++;
       continue;
