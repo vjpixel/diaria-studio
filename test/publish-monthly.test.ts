@@ -17,6 +17,7 @@ import {
   isSectionLabel,
   splitByLabels,
   draftToEmail,
+  wrapEmail,
   // CLI
   parseArgs,
 } from "../scripts/publish-monthly.ts";
@@ -490,6 +491,53 @@ describe("parseArgs", () => {
       parseArgs(["--yymm", "260408"]); // 6 dígitos, formato AAMMDD
     });
     assert.equal(exitCode, 1);
+  });
+
+  // Nota: --send-test-to sem --send-test é validado em main(), não em parseArgs.
+  // parseArgs aceita o flag isolado e armazena em sendTestTo; main() rejeita.
+  it("--send-test-to isolado é parseado mas main() rejeita (validação separada)", () => {
+    const r = parseArgs(["--yymm", "2604", "--send-test-to", "x@y.com"]);
+    assert.equal(r.sendTestTo, "x@y.com");
+    assert.equal(r.sendTest, false);
+    // Validação cruzada acontece em main(), não em parseArgs.
+  });
+});
+
+// ─── wrapEmail ─────────────────────────────────────────────────────────────
+
+describe("wrapEmail", () => {
+  it("retorna HTML doctype + estrutura básica", () => {
+    const out = wrapEmail("Test Subject", ["<p>body 1</p>"]);
+    assert.match(out, /<!DOCTYPE html/);
+    assert.match(out, /<html xmlns/);
+    assert.match(out, /<title>Test Subject<\/title>/);
+    assert.match(out, /<p>body 1<\/p>/);
+  });
+
+  it("escapa caracteres HTML no subject", () => {
+    const out = wrapEmail("A & B < C", []);
+    assert.match(out, /<title>A &amp; B &lt; C<\/title>/);
+  });
+
+  it("junta múltiplos bodyParts com divider entre eles", () => {
+    const out = wrapEmail("S", ["<p>parte 1</p>", "<p>parte 2</p>"]);
+    assert.match(out, /<p>parte 1<\/p>/);
+    assert.match(out, /<p>parte 2<\/p>/);
+    // Divider tem hr inside
+    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #e0e0e0;"/g);
+    assert.equal(dividerMatches?.length, 1, "Esperava 1 divider entre 2 parts");
+  });
+
+  it("zero bodyParts produz HTML válido (só wrapper, sem body)", () => {
+    const out = wrapEmail("S", []);
+    assert.match(out, /<title>S<\/title>/);
+    assert.match(out, /<\/html>/);
+  });
+
+  it("é mobile-friendly (viewport meta + max-width 600)", () => {
+    const out = wrapEmail("S", []);
+    assert.match(out, /name="viewport"/);
+    assert.match(out, /max-width:600px/);
   });
 });
 
