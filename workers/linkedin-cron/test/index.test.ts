@@ -1008,3 +1008,59 @@ describe("#595 fireDueItems: routing por webhook_target", () => {
     } finally { restore(); }
   });
 });
+
+// ── #1058 — DELETE /queue/:key endpoint ────────────────────────────────────
+
+describe("#1058 DELETE /queue/:key endpoint (cleanup pós-/diaria-test)", () => {
+  it("auth required: sem token retorna 401", async () => {
+    const { env, kv } = mkEnv("real-token");
+    const key = "queue:2026-05-20T12:00:00.000Z:test-uuid";
+    kv.store.set(key, JSON.stringify({
+      text: "test", image_url: null, scheduled_at: "2026-05-20T12:00:00.000Z",
+      destaque: "d1", created_at: "2026-05-10T00:00:00.000Z",
+    } satisfies QueueEntry));
+    const req = new Request(`https://w.test/queue/${encodeURIComponent(key)}`, { method: "DELETE" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 401);
+    assert.ok(kv.store.has(key), "entry must remain when unauthorized");
+  });
+
+  it("auth ok: deleta key e retorna 200", async () => {
+    const { env, kv } = mkEnv();
+    const key = "queue:2026-05-20T12:00:00.000Z:to-delete";
+    kv.store.set(key, JSON.stringify({
+      text: "test", image_url: null, scheduled_at: "2026-05-20T12:00:00.000Z",
+      destaque: "d2", created_at: "2026-05-10T00:00:00.000Z",
+    } satisfies QueueEntry));
+    const otherKey = "queue:2026-05-20T15:00:00.000Z:keep-me";
+    kv.store.set(otherKey, JSON.stringify({ text: "keep" }));
+    const req = authedRequest(`https://w.test/queue/${encodeURIComponent(key)}`, { method: "DELETE" });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as { deleted: boolean; key: string };
+    assert.equal(data.deleted, true);
+    assert.equal(data.key, key);
+    assert.equal(kv.store.has(key), false, "deleted key must be gone");
+    assert.ok(kv.store.has(otherKey), "other keys must remain");
+  });
+
+  it("404 se key não existe", async () => {
+    const { env } = mkEnv();
+    const req = authedRequest(
+      `https://w.test/queue/${encodeURIComponent("queue:does-not-exist:uuid")}`,
+      { method: "DELETE" },
+    );
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 404);
+  });
+
+  it("400 se key não começa com 'queue:' (proteção contra DELETE em dlq:)", async () => {
+    const { env } = mkEnv();
+    const req = authedRequest(
+      `https://w.test/queue/${encodeURIComponent("dlq:wrong-prefix")}`,
+      { method: "DELETE" },
+    );
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+  });
+});

@@ -14,6 +14,7 @@
  *
  * Endpoints:
  *   POST   /queue       → adiciona item à fila. Auth: header X-Diaria-Token
+ *   DELETE /queue/:key  → cleanup — remove entry específica da queue (auth, #1058)
  *   GET    /health      → debug — quantos items na fila, próximo agendado
  *   GET    /list        → debug — lista completa (auth required)
  *   GET    /dlq         → debug — lista dead-letter queue (auth required)
@@ -409,6 +410,34 @@ async function handleDlq(request: Request, env: Env): Promise<Response> {
   return json({ count: items.length, items });
 }
 
+// ── DELETE /queue/:key — cleanup manual de queue (#1058) ──────────────────
+
+/**
+ * Remove uma entry específica da queue. Útil pra cleanup pós-/diaria-test
+ * --with-publish (deletar items agendados que viraram artefatos de teste).
+ * Simétrico ao DELETE /dlq/:key.
+ *
+ * Responses:
+ *   200 → { deleted: true, key }
+ *   401 → unauthorized
+ *   400 → key inválida (não começa com `queue:`)
+ *   404 → key não existe (já firada/deletada)
+ */
+async function handleQueueDelete(request: Request, env: Env, key: string): Promise<Response> {
+  if (!isAuthorized(request, env)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  if (!key.startsWith("queue:")) {
+    return json({ error: "key must start with 'queue:'" }, 400);
+  }
+  const existing = await env.LINKEDIN_QUEUE.get(key);
+  if (existing === null) {
+    return json({ error: "key not found", key }, 404);
+  }
+  await env.LINKEDIN_QUEUE.delete(key);
+  return json({ deleted: true, key });
+}
+
 // ── DELETE /dlq/:key — cleanup manual de DLQ (#894 P2-B) ───────────────────
 
 /**
@@ -605,12 +634,18 @@ export default {
       const key = decodeURIComponent(path.slice("/dlq/".length));
       return handleDlqDelete(request, env, key);
     }
+    // #1058 — DELETE /queue/:key pra cleanup pós-/diaria-test (simetria com /dlq/)
+    if (path.startsWith("/queue/") && request.method === "DELETE") {
+      const key = decodeURIComponent(path.slice("/queue/".length));
+      return handleQueueDelete(request, env, key);
+    }
 
     return json(
       {
         error: "not found",
         endpoints: [
           "POST /queue (auth: X-Diaria-Token)",
+          "DELETE /queue/:key (auth: X-Diaria-Token)",
           "GET /health",
           "GET /list (auth: X-Diaria-Token)",
           "GET /dlq (auth: X-Diaria-Token)",
@@ -638,5 +673,6 @@ export const __test__ = {
   handleList,
   handleDlq,
   handleDlqDelete,
+  handleQueueDelete,
   fireDueItems,
 };
