@@ -52,7 +52,7 @@ export interface PostEntry {
   /** #595 — subtipo do entry; default "main" pra backward-compat. */
   subtype?: PostSubtype;
   url: string | null;
-  status: "draft" | "scheduled" | "failed" | "published";
+  status: "draft" | "scheduled" | "failed" | "published" | "deleted";
   scheduled_at: string | null;
   reason?: string;
   /** Campos platform-specific (fb_post_id, make_request_id, published_at,
