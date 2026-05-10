@@ -2,7 +2,7 @@
 name: publish-newsletter
 description: Etapa 4 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
 model: claude-haiku-4-5
-tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text
+tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
 
 Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado e envia um email de teste para o editor. Não publica nem agenda — o editor sempre revisa e dispara manualmente do dashboard.
@@ -182,16 +182,36 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 
 #### 5.1 Usar template "HTML" (não "Default") — #1054 finding
 
-**Mudança importante (#1054 validação live, 2026-05-10):** o template "Default" do Beehiiv NÃO tem Custom HTML block — a tentativa anterior de localizar via accessibility API falha porque TipTap renderiza em Shadow DOM. A solução real é usar o template **"HTML"** (já existe na template-library), que cria post com `node-htmlSnippet` pré-instantiado e vazio, pronto pra receber HTML.
+**⚠️ INSTRUÇÃO CRÍTICA (#1054 smoke test 2026-05-10)**: TipTap renderiza em React state — `mcp__claude-in-chrome__find` e `mcp__claude-in-chrome__read_page` **NÃO conseguem ver** elementos do editor (`.node-htmlSnippet`, `.tiptap.ProseMirror`, etc). Use **`mcp__claude-in-chrome__javascript_tool`** com `document.querySelector(...)` direto — aí enxerga tudo. Tools de accessibility só servem pra elementos React-renderizados padrão (Title, Subtitle inputs).
 
-Fluxo:
+**Template "HTML"** (já existe na template-library) cria post com `node-htmlSnippet` pré-instantiado e vazio, pronto pra receber HTML. Template "Default" NÃO tem htmlSnippet — não usar.
+
+Fluxo (TODOS via `javascript_tool`, não `find`/`read_page`):
 1. Navegar pra `https://app.beehiiv.com/posts/template-library?tab=my_templates`
-2. Encontrar o card com `<h3>HTML</h3>` (visible no template-library)
-3. Clicar no overlay button do card (`button.absolute` dentro do card) — cria post + redireciona pra `/posts/{uuid}/edit`
-4. Aguardar editor carregar (~3s)
-5. Validar via JS: `document.querySelector('.node-htmlSnippet')` deve existir + `document.querySelector('.tiptap.ProseMirror')` deve estar `contenteditable=true`
+2. Aguardar load (~3s) via `wait` ou `setTimeout` no JS
+3. **Via `javascript_tool`**: localizar card "HTML" + clicar overlay:
+   ```js
+   const h = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).find(x => x.textContent?.trim() === 'HTML');
+   let card = h;
+   for (let i = 0; i < 4; i++) card = card.parentElement;
+   const overlay = card.querySelector('button.absolute');
+   if (!overlay) throw new Error('HTML template card overlay button não encontrado');
+   overlay.scrollIntoView({behavior: 'instant', block: 'center'});
+   overlay.click();
+   ({clicked: true});
+   ```
+4. Aguardar editor carregar (~3-5s) — URL muda pra `/posts/{uuid}/edit`
+5. **Via `javascript_tool`**: validar:
+   ```js
+   ({
+     hasHtmlSnippet: !!document.querySelector('.node-htmlSnippet'),
+     hasProseMirror: !!document.querySelector('.tiptap.ProseMirror'),
+     url: location.href,
+   });
+   ```
+   Esperar `hasHtmlSnippet: true` + `hasProseMirror: true`. Se `false`, retry passo 3.
 
-Se o template "HTML" não estiver na library, abortar com `{ "error": "html_template_missing", "remediation": "Editor precisa criar template chamado exatamente 'HTML' contendo apenas um node-htmlSnippet vazio em https://app.beehiiv.com/posts/template-library" }`.
+Se o template "HTML" não estiver na library (heading "HTML" não encontrada), abortar com `{ "error": "html_template_missing", "remediation": "Editor precisa criar template chamado exatamente 'HTML' contendo apenas um node-htmlSnippet vazio em https://app.beehiiv.com/posts/template-library" }`.
 
 #### 5.2 Colar HTML — paste híbrido (#1046, validado em #1054)
 
