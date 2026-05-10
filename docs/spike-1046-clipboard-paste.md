@@ -179,3 +179,38 @@ Tool input `javascript_tool` aceita ~7KB de string literal antes de truncar. New
 3. **Aceitar chunked + custo de tokens** — funciona, valida design, mas inviável em produção diária.
 
 Issue #1054 mantém aberta pra implementação do (1) Worker host.
+
+---
+
+## Validação live #2 (2026-05-10) — paste DENTRO do htmlSnippet preserva merge tags ⭐
+
+**Insight crítico que reframe todo o spike**: a hipótese original era que TipTap normalizaria `<a href>` e mataria `{{poll_a_url}}` em qualquer paste. Verdade pra paste no editor principal. Mas paste **DENTRO do `node-htmlSnippet` block** preserva merge tags porque o htmlSnippet é raw HTML por design (não parseia hrefs).
+
+### Test concreto
+
+```js
+// Cursor positioned inside .node-htmlSnippet pre/code via Selection API
+const testHtml = '<a href="{{poll_a_url}}" style="...">Votar A</a>';
+const dt = new DataTransfer();
+dt.setData('text/html', testHtml);
+const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+editorEl.dispatchEvent(evt);
+```
+
+Resultado: `code.textContent.includes('{{poll_a_url}}') === true`. Merge tag preservada.
+
+### Implicação no design
+
+- ❌ Não precisa split body/eia (#1046 design original)
+- ❌ Não precisa `editor.commands.insertContent` (não existe + não funciona)
+- ✅ Precisa só: cursor positioning via Selection API + ClipboardEvent paste com chunked accumulator
+- ✅ Newsletter completa (~16KB) cabe num único htmlSnippet
+
+### Custo final
+
+- **Sem Worker host**: 4 chunks × ~7K tokens = ~30K tokens/edição (~$0.09)
+- **Com Worker host**: 1 fetch + 1 paste = ~5K tokens/edição (~$0.015)
+
+Diferença ~$28/ano. Worker host é otimização, não bloqueador.
+
+`.claude/agents/publish-newsletter.md` atualizado com fluxo paste-into-htmlSnippet em commit pós-validação.
