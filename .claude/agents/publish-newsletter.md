@@ -137,35 +137,7 @@ Resume-aware: re-execução pula imagens já no cache.
 
 #### 1.3 Render HTML + substituir URLs
 
-**Modo split (paste híbrido — #1046):** o renderer produz 2 arquivos pra acomodar
-o limite de tamanho do `form_input` Chrome MCP (paste via ClipboardEvent
-do body grande) + preservar merge tags `{{poll_a_url}}/{{poll_b_url}}` na
-seção È IA? (paste via `editor.commands.insertContent`):
-
-```bash
-# Gera 2 arquivos com placeholders {{IMG:filename}} em _internal/:
-#   newsletter-body.html  — 3 destaques + LANÇAMENTOS + PESQUISA + OUTRAS NOTÍCIAS
-#                           + SORTEIO + PARA ENCERRAR (sem È IA?). ~12-25KB.
-#   newsletter-eia.html   — È IA? standalone com merge tags. ~5KB.
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --split
-
-# Substitui placeholders nos 2 arquivos pelas URLs do Drive (in-place).
-npx tsx scripts/substitute-image-urls.ts \
-  --html {edition_dir}/_internal/newsletter-body.html \
-  --images {edition_dir}/06-public-images.json \
-  --out {edition_dir}/_internal/newsletter-body.html
-
-npx tsx scripts/substitute-image-urls.ts \
-  --html {edition_dir}/_internal/newsletter-eia.html \
-  --images {edition_dir}/06-public-images.json \
-  --out {edition_dir}/_internal/newsletter-eia.html
-```
-
-Se qualquer substituição reportar `unresolved: []` não vazio, abortar — uma imagem
-não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
-
-**Modo legado (paste manual editor)**: ainda gera arquivo único pra fluxo
-`prep-manual-publish.ts`:
+**Modo single-file (atual — #1054 validation):** newsletter inteira (16KB) cabe num único `node-htmlSnippet` do template HTML do Beehiiv. Merge tags `{{poll_a_url}}/{{poll_b_url}}` são preservadas pelo htmlSnippet (raw HTML por design — não normaliza hrefs). Mesmo arquivo serve agent automation + paste manual via `prep-manual-publish.ts`:
 
 ```bash
 npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
@@ -174,6 +146,10 @@ npx tsx scripts/substitute-image-urls.ts \
   --images {edition_dir}/06-public-images.json \
   --out {edition_dir}/_internal/newsletter-final.html
 ```
+
+Se substituição reportar `unresolved: []` não vazio, abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
+
+**Modo `--split` (legacy, NÃO usar pelo agent)**: o renderer ainda suporta `--split` que gera `newsletter-body.html` + `newsletter-eia.html` separados. Era pra resolver merge tags via insertContent que não funcionava. #1054 validou que paste-into-htmlSnippet preserva merge tags em arquivo único — `--split` fica obsoleto pro agent flow, mantido só pra eventual debug.
 
 ### 2. Ler configuração
 
@@ -225,10 +201,21 @@ Se o template "HTML" não estiver na library, abortar com `{ "error": "html_temp
 - Post criado a partir do template "HTML" (passo 5.1) com `node-htmlSnippet` vazio pré-instantiado.
 - `_internal/newsletter-final.html` (gerado em 1.3) com URLs Drive substituídas. Modo `--split` é compatível: `newsletter-body.html` + `newsletter-eia.html` podem ser pasted sequencialmente.
 
+**Insight crítico (#1054 validação live, 2026-05-10)**: pastando dentro do `node-htmlSnippet` (não no editor principal), TipTap **NÃO normaliza** os links — merge tags `{{poll_a_url}}/{{poll_b_url}}` sobrevivem porque o htmlSnippet é raw HTML por design. Validação concreta:
+
+```
+Test: ClipboardEvent paste com '<a href="{{poll_a_url}}">Votar A</a>' inside htmlSnippet
+Result: has_poll_a_url_in_text: true ✅
+        has_poll_a_url_in_html: true ✅
+        has_poll_a_url_in_editor: true ✅
+```
+
+Isso elimina necessidade do split body/È IA? do #1046 — newsletter completa (~16KB) cabe num único htmlSnippet, todas as merge tags preservadas.
+
 **Fase 1 — Posicionar cursor dentro do htmlSnippet:**
 
 ```js
-// Selecionar o pre/code dentro do htmlSnippet existente
+// Selecionar o pre/code dentro do htmlSnippet existente (criado pelo template HTML)
 const node = document.querySelector('.node-htmlSnippet');
 const pre = node?.querySelector('pre');
 if (!pre) throw new Error('node-htmlSnippet sem <pre> — template HTML pode estar mal-configurado');
@@ -247,7 +234,7 @@ document.querySelector('.tiptap.ProseMirror')?.focus();
 
 **Fase 2 — Acumular HTML em chunks via Bash + JS:**
 
-⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter body típico (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding.
+⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter completa (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding.
 
 Workflow (Bash gera chunks → JS injeta):
 ```bash
@@ -260,10 +247,10 @@ node -e "const fs=require('fs');const html=fs.readFileSync('{edition_dir}/_inter
 # window.__b64chunks.push("<conteúdo do chunk N>");
 ```
 
-Após todos os chunks pushed:
+Após todos os chunks pushed (com cursor já posicionado dentro do htmlSnippet via Fase 1):
 
 ```js
-// 3. Decodificar + dispatch ClipboardEvent paste
+// 3. Decodificar + dispatch ClipboardEvent paste DENTRO do htmlSnippet
 const html = atob(window.__b64chunks.join(''));
 delete window.__b64chunks;
 const editorEl = document.querySelector('.tiptap.ProseMirror');
@@ -274,9 +261,11 @@ editorEl.dispatchEvent(evt);
 ({pasted: true, defaultPrevented: evt.defaultPrevented, htmlBytes: html.length});
 ```
 
-**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Pra otimizar, ver Path Forward em #1054 (Cloudflare Worker host pra `fetch()` em vez de inline chunks).
+**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Otimização opcional via Cloudflare Worker host (~5K tokens) tracked em #1054 — não bloqueia produção.
 
-**`window.editor` global NÃO existe no Beehiiv** (validado em #1054 — `window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined; React fiber traversal falha). Não tente acessar — use ClipboardEvent paste em vez de `editor.commands.insertContent`.
+**`window.editor` global NÃO existe no Beehiiv** (validado em #1054 — `window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined; React fiber traversal falha). Não tente acessar — use ClipboardEvent paste com cursor INSIDE htmlSnippet em vez de `editor.commands.insertContent`.
+
+**Não usar `--split` mode**: o split body/eia.html foi proposto em #1046 quando achávamos que merge tags morriam. Validação live em #1054 mostrou que paste dentro do htmlSnippet preserva merge tags — então `newsletter-final.html` único é a forma correta. Modo `--split` continua existindo no renderer pra fluxo legado, mas o agent novo usa o single-file.
 
 #### 5.3 Pós-paste — verificação dos merge tags
 
