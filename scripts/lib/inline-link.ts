@@ -36,7 +36,7 @@ export interface InlineLink {
  * Tenta parsear linha como `[título](URL)`. Retorna `null` se não bater
  * o pattern (caller decide fallback).
  *
- * Strippa wrappers `**...**` no título quando balanceados (#XXX) — o source
+ * Strippa wrappers `**...**` no título quando balanceados (#1051) — o source
  * `02-reviewed.md` usa `[**Título**](url)` como convenção de h1, mas no HTML
  * renderizado o `font-weight:bold` já vem do CSS. Sem o strip, os asteriscos
  * vazariam literais na newsletter (visible regression nos 3 destaques).

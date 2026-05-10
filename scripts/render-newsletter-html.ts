@@ -17,7 +17,7 @@
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
@@ -675,13 +675,23 @@ function main(): void {
   const content = extractContent(resolvedDir);
 
   // #1046 — Modo split: produz 2 arquivos pro paste híbrido (body via
-  // ClipboardEvent + È IA? via insertContent). --out e --format ignorados.
+  // ClipboardEvent + È IA? via insertContent). --format json incompatível;
+  // --out ignorado com warning explícito (#1052 review follow-up).
   if (split) {
     if (format !== "html") {
       console.error("--split incompatível com --format json");
       process.exit(1);
     }
+    if (outPath) {
+      console.error(
+        `--split + --out: --out (${outPath}) ignorado. Modo split sempre escreve em _internal/newsletter-{body,eia}.html`,
+      );
+    }
     const internalDir = resolve(resolvedDir, "_internal");
+    // #1052 review follow-up: garante que _internal/ existe antes de write.
+    // Stage 4 normalmente já tem (criado por scripts anteriores), mas defensive
+    // contra fresh edition dirs ou ordens de execução não-padrão.
+    mkdirSync(internalDir, { recursive: true });
     const bodyPath = resolve(internalDir, "newsletter-body.html");
     const eiaPath = resolve(internalDir, "newsletter-eia.html");
     const bodyHtml = renderHTML(content, { excludeEia: true });
