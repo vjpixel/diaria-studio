@@ -243,25 +243,25 @@ Result: has_poll_a_url_in_text: true ✅
 
 Isso elimina necessidade do split body/È IA? do #1046 — newsletter completa (~16KB) cabe num único htmlSnippet, todas as merge tags preservadas.
 
-**Fase 1 — Posicionar cursor dentro do htmlSnippet:**
+**Fase 1 — Validar acesso ao TipTap editor + htmlSnippet existem:**
+
+⚠️ **Nota arquitetural (#1054 validação E2E, 2026-05-10)**: o paste real precisa atualizar **ProseMirror state** (não só DOM). `document.execCommand('insertText')` modifica DOM mas Beehiiv autosave serializa do `editor.state.doc`, então conteúdo via execCommand **não persiste após reload**. Validação concreta: paste de 16KB via execCommand → DOM tinha 16K → reload → só 78 chars persistiram.
+
+A path correta é via TipTap commands API. O editor TipTap está acessível diretamente via `document.querySelector('.tiptap.ProseMirror').editor` (NÃO `window.editor` — esse não existe).
 
 ```js
-// Selecionar o pre/code dentro do htmlSnippet existente (criado pelo template HTML)
+const pm = document.querySelector('.tiptap.ProseMirror');
+const editor = pm?.editor;
 const node = document.querySelector('.node-htmlSnippet');
-const pre = node?.querySelector('pre');
-if (!pre) throw new Error('node-htmlSnippet sem <pre> — template HTML pode estar mal-configurado');
-pre.scrollIntoView({behavior: 'instant', block: 'center'});
-pre.click();
-const code = node.querySelector('code') || pre;
-const range = document.createRange();
-range.selectNodeContents(code);
-range.collapse(true);
-const sel = window.getSelection();
-sel.removeAllRanges();
-sel.addRange(range);
-document.querySelector('.tiptap.ProseMirror')?.focus();
-({inHtmlSnippet: !!node?.contains(sel.anchorNode), pmFocused: document.activeElement === document.querySelector('.tiptap.ProseMirror')});
+({
+  hasEditor: !!editor,
+  hasCommands: !!editor?.commands,
+  hasNode: !!node,
+  isEmpty: node?.classList.contains('is-empty'),
+});
 ```
+
+Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`. Se editor for undefined, esperar 1-2s e retentar (TipTap pode estar inicializando).
 
 **Fase 2 — Gerar chunks base64 via TS helper:**
 
@@ -297,9 +297,15 @@ Para cada `_b64_{i}.txt` (em ordem 0, 1, 2, ...):
 
 Base64 só contém `[A-Za-z0-9+/=]` — sem caracteres especiais que precisem escape em template literal. Não usar JSON.stringify nem string concatenation com `"`.
 
-**Fase 4 — Decodificar + paste via `execCommand('insertText')`:**
+**Fase 4 — Decodificar + paste via TipTap `editor.commands.insertContent`:**
 
-⚠️ **Crítico (#1054 validação #3, 2026-05-10)**: `ClipboardEvent` synthetic dispatch **não funciona** — `defaultPrevented: false`, conteúdo não entra. O método canônico é `document.execCommand('insertText', false, html)` — passa pelo input pipeline nativo do contenteditable que ProseMirror escuta via `beforeinput`/`input`.
+⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
+
+- ❌ `ClipboardEvent` synthetic dispatch — `defaultPrevented: false`, content nem entra no DOM
+- ❌ `document.execCommand('insertText', false, html)` — atualiza DOM (codeLen=16K) mas NÃO atualiza ProseMirror state. Autosave captura state → reload mostra apenas 78 chars (estado pré-paste)
+- ❌ `editor.commands.insertContent(htmlString)` — TipTap parseia como HTML, falha em `RangeError: Invalid content for node tableCell` por causa do schema
+
+A solução validada: passar como **text node literal** (`{ type: 'text', text: ... }`) — TipTap não parseia, htmlSnippet armazena raw HTML como texto puro:
 
 ```js
 (() => {
@@ -310,72 +316,76 @@ Base64 só contém `[A-Za-z0-9+/=]` — sem caracteres especiais que precisem es
   for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
   const html = new TextDecoder('utf-8').decode(bytes);
 
-  // Posicionar cursor dentro do inner DIV de code (não em code direto)
-  const node = document.querySelector('.node-htmlSnippet');
-  const pre = node?.querySelector('pre');
-  const code = pre?.querySelector('code') || pre;
-  const innerDiv = code?.querySelector('div');
-  if (!innerDiv) return { error: 'no innerDiv inside code' };
+  const pm = document.querySelector('.tiptap.ProseMirror');
+  const editor = pm?.editor;
+  if (!editor) return { error: 'no editor' };
 
-  pre.click();
-  const range = document.createRange();
-  range.selectNodeContents(innerDiv);
-  range.collapse(true);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+  // Achar posição do htmlSnippet no doc + posicionar cursor dentro dele
+  let htmlSnippetPos = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'htmlSnippet') {
+      htmlSnippetPos = pos;
+      return false;
+    }
+  });
+  if (htmlSnippetPos === null) return { error: 'no htmlSnippet in doc' };
 
-  const editorEl = document.querySelector('.tiptap.ProseMirror');
-  editorEl?.focus();
+  const tr = editor.state.tr;
+  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
+  tr.setSelection(editor.state.selection.constructor.near($pos));
+  editor.view.dispatch(tr);
 
-  // execCommand insertText — método canônico
-  const ok = document.execCommand('insertText', false, html);
+  // Insert como TEXT NODE (NÃO como HTML parseado)
+  const ok = editor.commands.insertContent({ type: 'text', text: html });
 
   // Cleanup
   delete window.__b64chunks;
 
-  // Verify
-  const codeText = code.textContent || '';
+  const newJSON = JSON.stringify(editor.getJSON());
   return {
-    execOk: ok,
+    inserted: ok,
     htmlBytes: html.length,
-    codeLen: codeText.length,
-    hasPollA: codeText.includes('{{poll_a_url}}'),
-    hasPollB: codeText.includes('{{poll_b_url}}'),
-    hasImgA: codeText.includes('{{IMG:01-eia-A.jpg}}'),
-    hasImgB: codeText.includes('{{IMG:01-eia-B.jpg}}'),
-    isEmptyClass: node.classList.contains('is-empty'),
+    docSize: editor.state.doc.content.size,
+    hasPollA: newJSON.includes('{{poll_a_url}}'),
+    hasPollB: newJSON.includes('{{poll_b_url}}'),
+    hasImgA: newJSON.includes('14e0Acht-c0wRH7geqSBZ_kkYtQdlL3aK'),
+    hasImgB: newJSON.includes('1NHj3Mlb0WEwtngfhZ3S9ycLKK2ZkQb55'),
   };
 })()
 ```
 
 Resultado esperado (validado em #1054):
-- `execOk: true`
-- `codeLen` ≈ 99% do `htmlBytes` (diff é normalização de whitespace, não perda funcional)
-- Todos os 4 markers `hasPoll*`/`hasImg*` = `true`
-- `isEmptyClass: false` (ProseMirror sincronizou state)
+- `inserted: true`
+- `docSize` ≈ `htmlBytes + 4` (overhead do nó)
+- Todos os markers críticos = `true`
 
-Se `execOk: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save (passo 6).
+Se `inserted: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save (passo 6).
+
+**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
 
 **Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Otimização via Cloudflare Worker host (~5K tokens) tracked em #1054 — não bloqueia produção.
 
-**`window.editor` global NÃO existe no Beehiiv** (validado em #1054 — `window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined; React fiber traversal falha). Não tente acessar — use execCommand insertText com cursor inside `.node-htmlSnippet pre code div` em vez de `editor.commands.insertContent`.
+**`window.editor` global NÃO existe no Beehiiv** (`window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined). O editor TipTap está acessível diretamente em `document.querySelector('.tiptap.ProseMirror').editor` — esse path foi validado em E2E #1054.
 
 **Não usar `--split` mode**: o split body/eia.html foi proposto em #1046 quando achávamos que merge tags morriam. Validação live em #1054 mostrou que paste-into-htmlSnippet preserva merge tags — então `newsletter-final.html` único é a forma correta. Modo `--split` continua existindo no renderer pra fluxo legado, mas o agent novo usa o single-file.
 
-**Não usar `ClipboardEvent` dispatch**: validação #3 (#1054, 2026-05-10) confirmou que synthetic ClipboardEvent não aciona TipTap paste handler. `execCommand insertText` é o caminho.
-
-#### 5.3 Pós-paste — verificação dos merge tags
+#### 5.3 Pós-paste — verificação dos merge tags via ProseMirror state
 
 ```js
-// Verificar que {{poll_a_url}} e {{poll_b_url}} aparecem literalmente no doc
-const pmHTML = document.querySelector('.tiptap.ProseMirror')?.innerHTML || '';
-({hasA: pmHTML.includes('{{poll_a_url}}'), hasB: pmHTML.includes('{{poll_b_url}}'), pmLength: pmHTML.length});
+// Verificar via getJSON (ProseMirror state, não DOM) — esse é o que persiste
+const editor = document.querySelector('.tiptap.ProseMirror')?.editor;
+const json = JSON.stringify(editor.getJSON());
+({
+  hasA: json.includes('{{poll_a_url}}'),
+  hasB: json.includes('{{poll_b_url}}'),
+  jsonLen: json.length,
+  docSize: editor.state.doc.content.size
+});
 ```
 
 Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "merge_tag_stripped_{a|b}"`. Editor pode adicionar manualmente via UI.
 
-**Salvar o bloco** (Beehiiv auto-saves periodicamente; forçar save via Ctrl+S ou clicar "Save draft" se houver botão visível).
+**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s antes de prosseguir pra próximos passos. Validação opcional: reload da page e re-checar `getJSON()` — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
 #### 5.3 Verificação pós-paste
 
