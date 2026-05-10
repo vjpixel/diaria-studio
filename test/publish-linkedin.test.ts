@@ -1,6 +1,20 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { extractPostText, postToMakeWebhook, postToWorkerQueue, sanitizeFallbackReason } from "../scripts/publish-linkedin.ts";
+import {
+  extractPostText,
+  extractCommentDiaria,
+  extractCommentPixel,
+  computeCommentScheduledAt,
+  dispatchEntry,
+  postToMakeWebhook,
+  postToWorkerQueue,
+  sanitizeFallbackReason,
+  type DispatchContext,
+  type DispatchInput,
+} from "../scripts/publish-linkedin.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
 const CRLF = LF.replace(/\n/g, "\r\n");
@@ -431,5 +445,256 @@ describe("image_url via cache 06-public-images.json (#725 bug #9)", () => {
     const emptyCache = {} as { images?: Record<string, {url?: string}> };
     const url = emptyCache.images?.["d1"]?.url ?? null;
     assert.equal(url, null);
+  });
+});
+
+// ── #595 — extração de comment_diaria / comment_pixel + extractPostText sem comments ──
+
+const SOCIAL_595 = [
+  "# Facebook",
+  "",
+  "## d1",
+  "Facebook d1.",
+  "",
+  "# LinkedIn",
+  "",
+  "## d1",
+  "Main post d1, parágrafo 1.",
+  "",
+  "Parágrafo 2.",
+  "",
+  "#InteligenciaArtificial",
+  "",
+  "### comment_diaria",
+  "",
+  "Edição completa em {edition_url}",
+  "",
+  "Receba a Diar.ia em diar.ia.br",
+  "",
+  "### comment_pixel",
+  "",
+  "Opinião pessoal do Pixel — frame mudou.",
+  "",
+  "## d2",
+  "Main d2.",
+  "",
+  "### comment_diaria",
+  "Comment Diar.ia d2 em {edition_url}",
+  "",
+  "### comment_pixel",
+  "Pixel d2 opinião.",
+  "",
+  "## d3",
+  "Main d3 sem comments (schema antigo backward-compat).",
+].join("\n");
+
+describe("#595 extractPostText: stop em ### comment_*", () => {
+  it("d1: main não inclui comment_diaria nem comment_pixel", () => {
+    const t = extractPostText(SOCIAL_595, "d1");
+    assert.ok(t.includes("Main post d1"));
+    assert.ok(t.includes("#InteligenciaArtificial"));
+    assert.ok(!t.includes("Edição completa"));
+    assert.ok(!t.includes("Opinião pessoal"));
+  });
+
+  it("d2: main não inclui subsections", () => {
+    const t = extractPostText(SOCIAL_595, "d2");
+    assert.equal(t, "Main d2.");
+  });
+
+  it("d3 sem comments: backward-compat retorna bloco inteiro", () => {
+    const t = extractPostText(SOCIAL_595, "d3");
+    assert.match(t, /Main d3/);
+  });
+
+  it("schema antigo (sem comments) ainda funciona", () => {
+    const old = "# LinkedIn\n\n## d1\nLinkedIn d1.\nLinha 2.\n";
+    const t = extractPostText(old, "d1");
+    assert.ok(t.includes("LinkedIn d1."));
+    assert.ok(t.includes("Linha 2."));
+  });
+});
+
+describe("#595 extractCommentDiaria", () => {
+  it("d1: extrai texto e substitui {edition_url}", () => {
+    const t = extractCommentDiaria(SOCIAL_595, "d1", "https://diar.ia.br/p/foo");
+    assert.ok(t);
+    assert.match(t!, /https:\/\/diar\.ia\.br\/p\/foo/);
+    assert.ok(!t!.includes("{edition_url}"));
+    assert.ok(!t!.includes("Opinião pessoal")); // não vaza pixel
+  });
+
+  it("d2: extrai sem URL passada (placeholder fica intacto)", () => {
+    const t = extractCommentDiaria(SOCIAL_595, "d2");
+    assert.match(t!, /\{edition_url\}/);
+  });
+
+  it("d3 (schema antigo, sem comment_diaria): retorna null", () => {
+    assert.equal(extractCommentDiaria(SOCIAL_595, "d3"), null);
+  });
+
+  it("schema completamente antigo (só main): retorna null", () => {
+    const old = "# LinkedIn\n\n## d1\nLinkedIn d1.\n";
+    assert.equal(extractCommentDiaria(old, "d1"), null);
+  });
+});
+
+describe("#595 extractCommentPixel", () => {
+  it("d1: extrai sem vazar comment_diaria nem proximo destaque", () => {
+    const t = extractCommentPixel(SOCIAL_595, "d1");
+    assert.ok(t);
+    assert.match(t!, /Opinião pessoal/);
+    assert.ok(!t!.includes("Edição completa"));
+    assert.ok(!t!.includes("Main d2"));
+  });
+
+  it("d2: extrai", () => {
+    const t = extractCommentPixel(SOCIAL_595, "d2");
+    assert.equal(t, "Pixel d2 opinião.");
+  });
+
+  it("d3 (sem comment_pixel): retorna null", () => {
+    assert.equal(extractCommentPixel(SOCIAL_595, "d3"), null);
+  });
+});
+
+describe("#595 computeCommentScheduledAt", () => {
+  it("mainAt no futuro: comment = mainAt + offset", () => {
+    const now = Date.parse("2026-12-01T12:00:00Z");
+    const mainAt = "2026-12-01T15:00:00Z";
+    const r = computeCommentScheduledAt(mainAt, 3, now);
+    assert.equal(r, "2026-12-01T15:03:00.000Z");
+  });
+
+  it("mainAt no passado: usa now + offset (não original time)", () => {
+    const now = Date.parse("2026-12-01T15:00:00Z");
+    const mainAtPast = "2026-12-01T10:00:00Z";
+    const r = computeCommentScheduledAt(mainAtPast, 3, now);
+    assert.equal(r, "2026-12-01T15:03:00.000Z");
+  });
+
+  it("mainAt null (make_now sem schedule): usa now + offset", () => {
+    const now = Date.parse("2026-12-01T12:00:00Z");
+    const r = computeCommentScheduledAt(null, 8, now);
+    assert.equal(r, "2026-12-01T12:08:00.000Z");
+  });
+
+  it("mainAt no futuro com offset 8 (comment_pixel): T+8min preservado", () => {
+    const now = Date.parse("2026-12-01T08:00:00Z");
+    const mainAt = "2026-12-01T12:00:00Z";
+    const r = computeCommentScheduledAt(mainAt, 8, now);
+    assert.equal(r, "2026-12-01T12:08:00.000Z");
+  });
+
+  it("mainAt inválido: cai pra now + offset", () => {
+    const now = Date.parse("2026-12-01T12:00:00Z");
+    const r = computeCommentScheduledAt("not-a-date", 3, now);
+    assert.equal(r, "2026-12-01T12:03:00.000Z");
+  });
+});
+
+// ── #595 review: dispatchEntry edge cases (regression coverage) ──
+
+describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fire-now", () => {
+  // Bug: PR #1050 inicial fazia `cdAt/cpAt = doSchedule ? compute() : null`.
+  // Se editor rodasse publish-linkedin sem --schedule (debug, recovery,
+  // retry isolado), comments tinham scheduledAt=null → route=make_now →
+  // dispatchEntry pra webhook_target=pixel jogava `Error: webhook_target=pixel
+  // exige Worker configurado — make_now não suportado`.
+  // Fix: skip comments inteiros se !doSchedule (preserva backward-compat).
+  // Esta suite valida que dispatchEntry SEMPRE falha de forma controlada
+  // pra essa combinação inválida (pixel + scheduled_at null) — defesa em
+  // profundidade caso o caller esqueça o skip.
+
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "publish-linkedin-disp-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  function mkCtx(dir: string): DispatchContext {
+    return {
+      publishedPath: join(dir, "06-social-published.json"),
+      webhookUrl: "https://hook.test/diaria",
+      workerUrl: "https://worker.test",
+      workerToken: "test-tok",
+      useWorkerForScheduled: true,
+      editionDate: "260999",
+    };
+  }
+
+  it("pixel + scheduled_at null + worker não-configurado → entry status=failed (controlled)", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "comment_pixel",
+        text: "Pixel comment",
+        imageUrl: null,
+        scheduledAt: null, // bug scenario — sem schedule, sem now+offset
+        webhookTarget: "pixel",
+        action: "comment",
+        parentDestaque: "d1",
+      };
+      const ctx = mkCtx(dir);
+      const entry = await dispatchEntry(input, ctx);
+      // Não pode throw uncaught — caller espera entry; falha vira status=failed
+      assert.equal(entry.platform, "linkedin");
+      assert.equal(entry.subtype, "comment_pixel");
+      assert.equal(entry.status, "failed");
+      assert.match((entry.reason as string) ?? "", /pixel.*Worker|make_now/i);
+    } finally { cleanup(); }
+  });
+
+  it("pixel + scheduled_at null + worker configurado → ainda fail (worker_queue exige future)", async () => {
+    // Mesmo com worker configurado, scheduled_at=null faz isFutureSchedule=false →
+    // route=make_now → throw. Não há caminho válido pra pixel sem scheduled_at.
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "comment_pixel",
+        text: "Pixel comment",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "pixel",
+        action: "comment",
+        parentDestaque: "d1",
+      };
+      const ctx = mkCtx(dir); // useWorkerForScheduled: true
+      const entry = await dispatchEntry(input, ctx);
+      assert.equal(entry.status, "failed");
+      assert.match((entry.reason as string) ?? "", /pixel.*Worker|make_now/i);
+    } finally { cleanup(); }
+  });
+
+  it("diaria + scheduled_at null → fallback make_now path (post imediato OK)", async () => {
+    // webhook_target=diaria + scheduledAt=null sem Worker → route=make_now é
+    // caminho legítimo (Diar.ia tem URL local, posta imediato). Diferente do pixel.
+    // Mocka fetch pra simular Make webhook 200.
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ accepted: true, request_id: "test-req" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Main post",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const ctx = mkCtx(dir);
+      const entry = await dispatchEntry(input, ctx);
+      assert.equal(entry.status, "draft", "diaria fire-now → draft (post imediato)");
+      assert.equal(entry.route, "make_now");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
   });
 });

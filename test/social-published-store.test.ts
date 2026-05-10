@@ -156,3 +156,68 @@ describe("readSocialPublished (#758)", () => {
     }
   });
 });
+
+// ── #595 — upsert por (platform, destaque, subtype) ──
+
+describe("#595 upsert: 3 LinkedIn entries por destaque (main + 2 comments) coexistem", () => {
+  it("3 entries no mesmo destaque com subtypes diferentes não se sobrescrevem", () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      const entries: PostEntry[] = [
+        { platform: "linkedin", destaque: "d1", subtype: "main", url: null, status: "scheduled", scheduled_at: "2026-05-08T09:00:00Z" },
+        { platform: "linkedin", destaque: "d1", subtype: "comment_diaria", url: null, status: "scheduled", scheduled_at: "2026-05-08T09:03:00Z" },
+        { platform: "linkedin", destaque: "d1", subtype: "comment_pixel", url: null, status: "scheduled", scheduled_at: "2026-05-08T09:08:00Z" },
+      ];
+      appendSocialPosts(path, entries);
+      const result = readSocialPublished(path);
+      assert.equal(result.posts.length, 3);
+      const subtypes = result.posts.map((p) => p.subtype).sort();
+      assert.deepEqual(subtypes, ["comment_diaria", "comment_pixel", "main"]);
+    } finally { cleanup(); }
+  });
+
+  it("re-append de mesma (destaque, subtype) faz upsert", () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      const v1: PostEntry = { platform: "linkedin", destaque: "d1", subtype: "comment_diaria", url: null, status: "failed", scheduled_at: null, reason: "transient" };
+      appendSocialPosts(path, [v1]);
+      const v2: PostEntry = { platform: "linkedin", destaque: "d1", subtype: "comment_diaria", url: null, status: "scheduled", scheduled_at: "2026-05-08T09:03:00Z" };
+      appendSocialPosts(path, [v2]);
+      const result = readSocialPublished(path);
+      assert.equal(result.posts.length, 1);
+      assert.equal(result.posts[0].status, "scheduled");
+      assert.equal(result.posts[0].subtype, "comment_diaria");
+    } finally { cleanup(); }
+  });
+
+  it("backward-compat: entry sem subtype tratado como main; new entry com subtype=main faz upsert", () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      const legacy: PostEntry = { platform: "linkedin", destaque: "d1", url: null, status: "draft", scheduled_at: null };
+      appendSocialPosts(path, [legacy]);
+      const updated: PostEntry = { platform: "linkedin", destaque: "d1", subtype: "main", url: null, status: "scheduled", scheduled_at: "2026-05-08T09:00:00Z" };
+      appendSocialPosts(path, [updated]);
+      const result = readSocialPublished(path);
+      assert.equal(result.posts.length, 1, "legacy (sem subtype) e novo (subtype=main) devem colapsar");
+      assert.equal(result.posts[0].status, "scheduled");
+    } finally { cleanup(); }
+  });
+
+  it("9 LinkedIn + 3 Facebook: 12 entries totais sem colisão", () => {
+    const { path, cleanup } = tmpFile();
+    try {
+      const li: PostEntry[] = [];
+      for (const d of ["d1", "d2", "d3"] as const) {
+        for (const sub of ["main", "comment_diaria", "comment_pixel"] as const) {
+          li.push({ platform: "linkedin", destaque: d, subtype: sub, url: null, status: "scheduled", scheduled_at: null });
+        }
+      }
+      const fb: PostEntry[] = ["d1", "d2", "d3"].map((d) => ({
+        platform: "facebook", destaque: d, url: null, status: "scheduled", scheduled_at: null,
+      }));
+      appendSocialPosts(path, [...li, ...fb]);
+      const result = readSocialPublished(path);
+      assert.equal(result.posts.length, 12);
+    } finally { cleanup(); }
+  });
+});

@@ -162,4 +162,98 @@ describe("#917 reconcileLinkedin", () => {
     const ext = r.external_state as { scheduled_at: string };
     assert.equal(ext.scheduled_at, "2026-05-08T09:00:00Z");
   });
+
+  // ── #595 — fallback narrow por (destaque, action, webhook_target) ──
+
+  function mkRichItem(
+    destaque: string,
+    scheduled: string,
+    extras: { action?: "post" | "comment"; webhook_target?: "diaria" | "pixel"; key?: string } = {},
+  ) {
+    return {
+      key: extras.key ?? `queue:${scheduled}:uuid-${destaque}-${extras.action ?? "post"}-${extras.webhook_target ?? "diaria"}`,
+      text: `${extras.action ?? "post"} ${destaque}`,
+      image_url: null,
+      scheduled_at: scheduled,
+      destaque,
+      created_at: "2026-05-07T08:00:00Z",
+      ...(extras.action !== undefined && { action: extras.action }),
+      ...(extras.webhook_target !== undefined && { webhook_target: extras.webhook_target }),
+    };
+  }
+
+  it("#595 main entry → match item com action=post, ignora comments", () => {
+    const queue = [
+      mkRichItem("d1", "2026-05-08T09:00:00Z", { action: "post", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:03:00Z", { action: "comment", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:08:00Z", { action: "comment", webhook_target: "pixel" }),
+    ];
+    const r = reconcileLinkedin(liEntry({ subtype: "main" }), queue);
+    assert.equal(r.verified, true);
+    const ext = r.external_state as { scheduled_at: string; action: string; subtype: string };
+    assert.equal(ext.action, "post");
+    assert.equal(ext.subtype, "main");
+  });
+
+  it("#595 comment_diaria entry → match item com action=comment + target=diaria", () => {
+    const queue = [
+      mkRichItem("d1", "2026-05-08T09:00:00Z", { action: "post", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:03:00Z", { action: "comment", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:08:00Z", { action: "comment", webhook_target: "pixel" }),
+    ];
+    const r = reconcileLinkedin(
+      liEntry({ subtype: "comment_diaria", scheduled_at: "2026-05-08T09:03:00Z" }),
+      queue,
+    );
+    assert.equal(r.verified, true);
+    const ext = r.external_state as { scheduled_at: string; action: string; webhook_target: string };
+    assert.equal(ext.action, "comment");
+    assert.equal(ext.webhook_target, "diaria");
+    assert.equal(ext.scheduled_at, "2026-05-08T09:03:00Z");
+  });
+
+  it("#595 comment_pixel entry → match item com action=comment + target=pixel", () => {
+    const queue = [
+      mkRichItem("d1", "2026-05-08T09:00:00Z", { action: "post", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:03:00Z", { action: "comment", webhook_target: "diaria" }),
+      mkRichItem("d1", "2026-05-08T09:08:00Z", { action: "comment", webhook_target: "pixel" }),
+    ];
+    const r = reconcileLinkedin(
+      liEntry({ subtype: "comment_pixel", scheduled_at: "2026-05-08T09:08:00Z" }),
+      queue,
+    );
+    assert.equal(r.verified, true);
+    const ext = r.external_state as { webhook_target: string; scheduled_at: string };
+    assert.equal(ext.webhook_target, "pixel");
+    assert.equal(ext.scheduled_at, "2026-05-08T09:08:00Z");
+  });
+
+  it("#595 comment sem item correspondente no KV → verified=false (silent fail)", () => {
+    const queue = [
+      mkRichItem("d1", "2026-05-08T09:00:00Z", { action: "post", webhook_target: "diaria" }),
+      // sem nenhum comment_pixel
+    ];
+    const r = reconcileLinkedin(liEntry({ subtype: "comment_pixel" }), queue);
+    assert.equal(r.verified, false);
+    assert.match(r.reason ?? "", /d1.*comment_pixel/);
+  });
+
+  it("#595 backward-compat: entry sem subtype + queue sem fields → match como main/post/diaria", () => {
+    const queue = [mkQueueItem("d1", "2026-05-08T09:00:00Z")];
+    const r = reconcileLinkedin(liEntry(), queue); // entry sem subtype
+    assert.equal(r.verified, true);
+    assert.equal(r.subtype, "main");
+  });
+
+  it("#595 subtype sempre exposto no result", () => {
+    const r = reconcileLinkedin(
+      liEntry({ subtype: "comment_diaria", worker_queue_key: "queue:2026-05-08T09:03:00.000Z:uuid-cd" }),
+      [mkRichItem("d1", "2026-05-08T09:03:00Z", {
+        key: "queue:2026-05-08T09:03:00.000Z:uuid-cd",
+        action: "comment",
+        webhook_target: "diaria",
+      })],
+    );
+    assert.equal(r.subtype, "comment_diaria");
+  });
 });

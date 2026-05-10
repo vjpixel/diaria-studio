@@ -13,7 +13,8 @@
  *
  * Output: relatorio JSON pra orchestrator + report human-readable em stderr.
  * Exit codes:
- *   0 = todos os 6 posts confirmados (3 FB + 3 LinkedIn)
+ *   0 = todos os posts confirmados (count auto-derivado de fbEntries + liEntries;
+ *       edição #595 normal: 12 = 3 FB + 9 LI [3 main + 3 comment_diaria + 3 comment_pixel])
  *   1 = >=1 post nao passou na verificacao (gate humano ve o problema)
  *   2 = erro de input (arquivo missing, env missing, etc.)
  *
@@ -85,6 +86,8 @@ export interface VerifyResult {
   verified: boolean;
   reason?: string;
   external_state?: unknown;
+  /** #595 — subtype do entry (main / comment_diaria / comment_pixel). */
+  subtype?: string;
 }
 
 export interface VerifyReport {
@@ -124,6 +127,10 @@ interface WorkerListResponse {
     scheduled_at: string;
     destaque: string;
     created_at: string;
+    // #595 — opcionais; presentes pra entries enfileiradas após o rollout.
+    webhook_target?: "diaria" | "pixel";
+    action?: "post" | "comment";
+    parent_destaque?: string;
   }>;
 }
 
@@ -275,16 +282,23 @@ export async function fetchLinkedinQueue(
 
 /**
  * Reconcilia LinkedIn entry com queue do Worker. Pure -- testavel sem network.
+ *
+ * #595: edição agora tem 9 LinkedIn entries (3 main + 3 comment_diaria + 3
+ * comment_pixel). Match por `worker_queue_key` (UUID único) é o caminho
+ * primário; fallback por (destaque, subtype/action) é necessário porque
+ * destaque sozinho retorna múltiplos itens.
  */
 export function reconcileLinkedin(
   entry: PostEntry,
   queueItems: WorkerListResponse["items"],
 ): VerifyResult {
+  const subtype = (entry.subtype as string | undefined) ?? "main";
   const base: VerifyResult = {
     destaque: entry.destaque,
     platform: "linkedin",
     expected_status: entry.status,
     verified: false,
+    subtype, // #595 — sempre exposto pra desambiguar 9 entries por edição
   };
 
   // Posts com fallback_used (Worker falhou -> Make fire-now) nao estao na
@@ -294,11 +308,11 @@ export function reconcileLinkedin(
       ...base,
       verified: true,
       reason: "fallback_used (Worker falhou -> Make fire-now; nao enfileiravel)",
-      external_state: { fallback_used: true },
+      external_state: { fallback_used: true, subtype },
     };
   }
 
-  // Match por worker_queue_key (mais preciso) ou destaque (fallback)
+  // Match por worker_queue_key (mais preciso) — UUID único, sempre 1:1.
   const expectedKey = entry.worker_queue_key as string | undefined;
   const matchByKey = expectedKey
     ? queueItems.find((it) => it.key === expectedKey)
@@ -308,28 +322,45 @@ export function reconcileLinkedin(
     return {
       ...base,
       verified: true,
-      external_state: { key: matchByKey.key, scheduled_at: matchByKey.scheduled_at },
+      external_state: {
+        key: matchByKey.key,
+        scheduled_at: matchByKey.scheduled_at,
+        subtype,
+        webhook_target: matchByKey.webhook_target,
+        action: matchByKey.action,
+      },
     };
   }
 
-  const matchesByDestaque = queueItems.filter((it) => it.destaque === entry.destaque);
-  if (matchesByDestaque.length === 0) {
+  // #595 — Fallback por (destaque, action, webhook_target). Sem isso, 3 entries
+  // por destaque colapsariam num só match destaque-based.
+  const expectedAction = subtype === "main" ? "post" : "comment";
+  const expectedTarget = subtype === "comment_pixel" ? "pixel" : "diaria";
+  const matchesNarrow = queueItems.filter((it) => {
+    if (it.destaque !== entry.destaque) return false;
+    // Backward-compat: items sem webhook_target/action pré-#595 → main only
+    const itAction = it.action ?? "post";
+    const itTarget = it.webhook_target ?? "diaria";
+    return itAction === expectedAction && itTarget === expectedTarget;
+  });
+
+  if (matchesNarrow.length === 0) {
     return {
       ...base,
-      reason: `nenhum item no Worker KV pro destaque ${entry.destaque} (queue silent fail?)`,
-      external_state: { queue_size: queueItems.length },
+      reason: `nenhum item no Worker KV pro (${entry.destaque}, ${subtype}) (queue silent fail?)`,
+      external_state: { queue_size: queueItems.length, subtype },
     };
   }
 
-  // Multiplos com mesmo destaque -- pegar o mais proximo do entry.scheduled_at
+  // Múltiplos itens narrow -> pegar o mais próximo do entry.scheduled_at
   const expectedSched = entry.scheduled_at;
   const best = expectedSched
-    ? matchesByDestaque.reduce((acc, it) => {
+    ? matchesNarrow.reduce((acc, it) => {
         const accDiff = Math.abs(Date.parse(acc.scheduled_at) - Date.parse(expectedSched));
         const itDiff = Math.abs(Date.parse(it.scheduled_at) - Date.parse(expectedSched));
         return itDiff < accDiff ? it : acc;
-      }, matchesByDestaque[0])
-    : matchesByDestaque[0];
+      }, matchesNarrow[0])
+    : matchesNarrow[0];
 
   return {
     ...base,
@@ -337,7 +368,10 @@ export function reconcileLinkedin(
     external_state: {
       key: best.key,
       scheduled_at: best.scheduled_at,
-      multiple_matches: matchesByDestaque.length,
+      multiple_matches: matchesNarrow.length,
+      subtype,
+      webhook_target: best.webhook_target,
+      action: best.action,
     },
   };
 }
@@ -484,6 +518,7 @@ async function main(): Promise<void> {
           expected_status: e.status,
           verified: false,
           reason: "missing_worker_creds",
+          subtype: (e.subtype as string | undefined) ?? "main",
         });
       }
     }
@@ -504,6 +539,7 @@ async function main(): Promise<void> {
           expected_status: e.status,
           verified: false,
           reason: "publish_failed",
+          subtype: (e.subtype as string | undefined) ?? "main",
         });
         continue;
       }

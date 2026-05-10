@@ -27,6 +27,18 @@ export const MakeWebhookPayloadSchema = z.object({
   image_url: z.string().nullable(),
   scheduled_at: z.string().nullable(),
   destaque: z.string(),
+  // #595 — webhook_target roteia entre scenarios Make no Worker:
+  //   "diaria" (default) → MAKE_WEBHOOK_URL (Diar.ia company page, post + comment)
+  //   "pixel"            → MAKE_PIXEL_WEBHOOK_URL (vjpixel personal, comment only)
+  webhook_target: z.enum(["diaria", "pixel"]).optional(),
+  // #595 — action consumido pelo scenario Make:
+  //   "post"    (default) → cria company post (scenario Diar.ia, Router path A)
+  //   "comment" → "Get Latest Post from Diar.ia" + adiciona comment
+  // Pixel scenario só aceita "comment".
+  action: z.enum(["post", "comment"]).optional(),
+  // #595 — parent_destaque rastreia qual destaque o comment pertence (auditoria
+  // + debug). Worker não usa diretamente — só passa adiante.
+  parent_destaque: z.string().optional(),
 }).passthrough();
 
 export type MakeWebhookPayload = z.infer<typeof MakeWebhookPayloadSchema>;

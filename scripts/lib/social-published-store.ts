@@ -38,9 +38,19 @@ function releaseLock(lockPath: string): void {
  * `published_at`, `failure_reason`) entram via escape hatch
  * `[key: string]: unknown` — caller pode usar Pick<> ou cast pra subset.
  */
+/**
+ * Subtipo do post dentro de um destaque. Default `"main"` (post principal).
+ * LinkedIn (#595) tem subtipos auxiliares: `comment_diaria` (T+3min, CTA + URL,
+ * conta Diar.ia) e `comment_pixel` (T+8min, opinião pessoal, conta vjpixel).
+ * Facebook usa só `main`.
+ */
+export type PostSubtype = "main" | "comment_diaria" | "comment_pixel";
+
 export interface PostEntry {
   platform: string;
   destaque: string;
+  /** #595 — subtipo do entry; default "main" pra backward-compat. */
+  subtype?: PostSubtype;
   url: string | null;
   status: "draft" | "scheduled" | "failed" | "published";
   scheduled_at: string | null;
@@ -48,6 +58,14 @@ export interface PostEntry {
   /** Campos platform-specific (fb_post_id, make_request_id, published_at,
    *  failure_reason, etc.) entram via escape hatch. */
   [key: string]: unknown;
+}
+
+/**
+ * Resolve subtype com default "main" (#595 backward-compat). Entries gravadas
+ * antes da extensão de schema não têm o field — tratamos como `main`.
+ */
+export function resolveSubtype(p: Pick<PostEntry, "subtype">): PostSubtype {
+  return p.subtype ?? "main";
 }
 
 export interface SocialPublished {
@@ -72,9 +90,15 @@ export function appendSocialPosts(publishedPath: string, posts: PostEntry[]): vo
       : { posts: [] };
 
     for (const post of posts) {
-      // Upsert: replace existing entry with same platform+destaque, or append
+      // Upsert: replace existing entry with same (platform, destaque, subtype),
+      // or append. Subtype defaulta a "main" pra backward-compat com entries
+      // antigas (pré-#595) que não tinham o field.
+      const postSubtype = resolveSubtype(post);
       const idx = current.posts.findIndex(
-        (p) => p.platform === post.platform && p.destaque === post.destaque,
+        (p) =>
+          p.platform === post.platform &&
+          p.destaque === post.destaque &&
+          resolveSubtype(p) === postSubtype,
       );
       if (idx >= 0) {
         current.posts[idx] = post;
