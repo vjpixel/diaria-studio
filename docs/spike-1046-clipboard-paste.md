@@ -214,3 +214,65 @@ Resultado: `code.textContent.includes('{{poll_a_url}}') === true`. Merge tag pre
 Diferença ~$28/ano. Worker host é otimização, não bloqueador.
 
 `.claude/agents/publish-newsletter.md` atualizado com fluxo paste-into-htmlSnippet em commit pós-validação.
+
+---
+
+## Validação live #3 (2026-05-10) — `execCommand('insertText')` é o método canônico
+
+**Reframe novamente**: ClipboardEvent dispatch falha em produção. `document.execCommand('insertText', false, html)` é o único método que funciona consistentemente.
+
+### O que falhou
+
+ClipboardEvent paste com `target = code` (elemento dentro do htmlSnippet):
+```
+{ defaultPrevented: false, codeNowLength: 0, dispatched: true }
+```
+Evento foi disparado mas TipTap/ProseMirror não interceptou. Bubbling pra `.tiptap.ProseMirror` também não acionou handler. `defaultPrevented: false` confirma que ProseMirror nunca processou.
+
+### O que funcionou
+
+```js
+// 1. Localizar inner editable DIV dentro de code (não code direto)
+const node = document.querySelector('.node-htmlSnippet');
+const pre = node.querySelector('pre');
+const code = pre.querySelector('code');
+const innerDiv = code.querySelector('div');
+
+// 2. Click + Selection API + focus editor
+pre.click();
+const range = document.createRange();
+range.selectNodeContents(innerDiv);
+range.collapse(true);
+const sel = window.getSelection();
+sel.removeAllRanges();
+sel.addRange(range);
+document.querySelector('.tiptap.ProseMirror').focus();
+
+// 3. execCommand insertText — passa o HTML como texto literal
+document.execCommand('insertText', false, html);
+```
+
+Resultado em paste de 16384 bytes:
+
+| Métrica | Valor |
+|---|---|
+| `execCommand` returned | `true` |
+| `code.textContent.length` | 16213 (99% — diff é normalização de whitespace) |
+| `{{poll_a_url}}` preservado | ✅ |
+| `{{poll_b_url}}` preservado | ✅ |
+| `{{IMG:01-eia-A.jpg}}` preservado | ✅ |
+| `{{IMG:01-eia-B.jpg}}` preservado | ✅ |
+| 13 markers de conteúdo (URLs, secções, créditos) | ✅ todos |
+| `is-empty` class removida | ✅ (ProseMirror sincronizou state) |
+
+### Por que `execCommand` funciona e `ClipboardEvent` não
+
+`execCommand('insertText')` usa o caminho de input nativo do contenteditable, que TipTap/ProseMirror escutam via `beforeinput`/`input` events. ClipboardEvent sintético não passa pela mesma pipeline porque navegadores modernos isolam clipboard events do editor pipeline (anti-XSS).
+
+### Implicação no design
+
+- ✅ Método canônico: `execCommand('insertText', false, html)` após cursor positioning + focus
+- ❌ ClipboardEvent (mesmo com DataTransfer) não funciona consistentemente em produção
+- ⚠️ `execCommand` é deprecated mas ainda suportado; alternativa moderna seria `InputEvent` sintético com `inputType: 'insertText'` mas requer mais boilerplate e não foi testado
+
+Próximo passo: atualizar `.claude/agents/publish-newsletter.md` substituindo ClipboardEvent por execCommand no step 5.2. Ou — dado que `javascript_tool` só está disponível ao top-level (não a subagentes), refatorar o agent pra playbook executado pelo orchestrator.
