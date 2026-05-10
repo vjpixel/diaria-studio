@@ -130,3 +130,52 @@ Issue de tracking: #1046 (e #312 como predecessor).
 - Validação manual ponta-a-ponta numa edição real (executar agent contra Beehiiv staging). Sem isso, paste híbrido em produção é primeiro contato.
 - Confirmar nome global da TipTap editor instance (`window.editor` vs `window.__tiptapEditor` vs outro). Spike usou `editor.commands` direto na inspeção mas não documentou onde encontrá-lo.
 - Confirmar limite real de `htmlSnippet` content text (testado ~1.5KB no #1045; precisa testar 5KB do È IA?).
+
+---
+
+## Validação live em #1054 (2026-05-10)
+
+Em `/diaria-test 260510 --with-publish`, validei manualmente via Chrome MCP. Findings que invalidam parte do design original:
+
+### ❌ `window.editor` global NÃO existe
+
+`window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` — todos `undefined`. React fiber traversal não acha editor instance via memoizedProps/stateNode. Beehiiv encapsula o editor em React state inacessível externamente.
+
+**Impacto**: caminho `editor.commands.insertContent({type: 'htmlSnippet', ...})` proposto na "Solução paste híbrido" **não funciona**. Precisa usar ClipboardEvent paste sintético em vez disso.
+
+### ✅ Template "HTML" é o caminho correto (não "Default")
+
+Beehiiv tem template chamado **"HTML"** na template-library que cria post com `node-htmlSnippet` pré-instantiado vazio. Template "Default" não tem isso — tentar localizar Custom HTML block via accessibility API falha (TipTap renderiza em Shadow DOM).
+
+Workflow validado:
+1. Navegar pra `https://app.beehiiv.com/posts/template-library?tab=my_templates`
+2. Clicar overlay button do card "HTML"
+3. Post criado em `/posts/{uuid}/edit` com `<div class="node-htmlSnippet is-empty">` pronto
+
+### ✅ TipTap node `htmlSnippet` confirmado em runtime
+
+`document.querySelector('.node-htmlSnippet')` retorna o nó. Schema interno tem o tipo. Mas inserção via `editor.commands.insertContent({type:'htmlSnippet',...})` impossível sem o `editor` global.
+
+### ✅ Cursor positioning via Selection API funciona
+
+```js
+const pre = document.querySelector('.node-htmlSnippet pre');
+const code = pre.querySelector('code');
+const range = document.createRange();
+range.selectNodeContents(code);
+range.collapse(true);
+window.getSelection().removeAllRanges();
+window.getSelection().addRange(range);
+```
+
+### 🔴 JS arg limit ~7KB (real, não ~10KB)
+
+Tool input `javascript_tool` aceita ~7KB de string literal antes de truncar. Newsletter completa (16KB) precisa de **4 chunks** via base64 + accumulator pattern. Custo realista: ~30K tokens só pra paste de 1 newsletter.
+
+### Novo path forward proposto
+
+1. **Cloudflare Worker host pra HTML render** — Worker serve `_internal/newsletter-final.html` em URL pública (HTTPS). Browser faz `fetch(workerUrl)` em 1 JS call. Custo: ~5K tokens em vez de 30K.
+2. **localStorage cross-tab** — fragil, requer 2 abas no mesmo origin.
+3. **Aceitar chunked + custo de tokens** — funciona, valida design, mas inviável em produção diária.
+
+Issue #1054 mantém aberta pra implementação do (1) Worker host.
