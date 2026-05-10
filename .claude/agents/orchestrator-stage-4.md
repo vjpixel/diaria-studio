@@ -147,7 +147,7 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b
 
 **Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
-2. `Agent` → `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
+2. **Newsletter Beehiiv (#1054 / #207)**: você (top-level) **lê `.claude/agents/publish-newsletter.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não dispatchar via `Agent({ subagent_type: "publish-newsletter" })`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`. Em paralelo aos scripts (1) e (3) — só não há dispatch separado, é execução inline pelo top-level.
 3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
 
 **`--test-mode` flag (#1056)**: quando `test_mode = true`, scripts publish-facebook e publish-linkedin tagam todas as entries gravadas em `06-social-published.json` com `is_test: true`. `delete-test-schedules.ts` honra esse flag por default (`--require-is-test` true) — só deleta entries explicitamente marcadas. Safety: rodar `delete-test-schedules.ts` em pasta de produção real é no-op porque entries de produção não têm `is_test: true`.
@@ -167,26 +167,26 @@ Se o agendamento era crítico, editor pode deletar o post no LinkedIn e re-rodar
 
 `publish-linkedin.ts` grava direto em `06-social-published.json` via store atomica (#918) — sem tmp file pra merge. `publish-facebook.ts` faz o mesmo.
 
-### 4d. Retry chrome_disconnected (só publish-newsletter)
+### 4d. Retry chrome_disconnected (só playbook newsletter)
 
-Apenas `publish-newsletter` usa Chrome em Etapa 4. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser — falhas viram exit code do script, não `chrome_disconnected`.
+Apenas o playbook newsletter usa Chrome em Etapa 4. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser — falhas viram exit code do script, não `chrome_disconnected`.
 
-Se `publish-newsletter` retornar `error: "chrome_disconnected"`:
+Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_disconnected` (ou erro similar — "not connected", "extension", "disconnected", "no tab", "connection refused"):
 1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
-2. Logar warn: `"chrome_disconnected em Etapa 4 (publish-newsletter), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
+2. Logar warn: `"chrome_disconnected em Etapa 4 (playbook newsletter), tentativa {N}/10 — aguardando {delay}s antes de re-disparar"`.
 3. Aguardar: `Bash("sleep {delay}")`.
-4. Re-disparar publish-newsletter com mesmos parâmetros.
+4. Re-executar o playbook newsletter do passo onde quebrou (ou início se ambíguo).
 5. Se repetir, repetir do passo 1 incrementando N.
 6. **Após 10 falhas consecutivas** (~17h acumuladas), logar erro e pausar:
    ```
-   🔌 Claude in Chrome desconectou 10 vezes seguidas em publish-newsletter (Etapa 4).
+   🔌 Claude in Chrome desconectou 10 vezes seguidas no playbook newsletter (Etapa 4).
       Verifique Chrome aberto + extensão Claude in Chrome ativa.
       ⚠️ Rascunho parcial no Beehiiv pode existir — delete antes do retry.
-      Responda "retry" pra mais 10 tentativas, ou "skip" pra pular este agent.
+      Responda "retry" pra mais 10 tentativas, ou "skip" pra pular newsletter.
    ```
-- **Reset do contador**: re-dispatch que sucede (mesmo se falhar por outro motivo depois) reseta N=1.
+- **Reset do contador**: re-execução que sucede (mesmo se falhar por outro motivo depois) reseta N=1.
 - Erros que **não** sejam `chrome_disconnected` (ex: login expirado, template errado) interrompem o loop e são tratados normalmente.
-- Se `publish-newsletter` retornar `error: "beehiiv_login_expired"` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
+- Se o playbook detectar `beehiiv_login_expired` ou similar, pausar com instrução de re-logar (ver `docs/browser-publish-setup.md`).
 - Se `publish-linkedin.ts` retornar exit code != 0 (ex: Worker offline), o script já trata fallback Make automaticamente. Falhas reais (token inválido, payload malformado) param o pipeline com erro claro.
 
 ### 4e. Validar template (publish-newsletter)
