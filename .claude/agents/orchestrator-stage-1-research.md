@@ -81,6 +81,9 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 ### 1f. Dispatch de researchers e discovery
 
+**RSS-only mode (#1055).** Se `rss_only = true` no contexto (default em `/diaria-test`, opt-in via `--full-research`), **pular** todo o dispatch de `source-researcher` e `discovery-searcher` deste passo. RSS batch (1e) e eia-composer (1d) seguem rodando normalmente. Razão: yield de researchers em runs de teste foi 12× pior por fonte (5/200 articles) consumindo ~80% do token budget de Stage 1f. Logar info: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'rss_only mode: skipping source-researchers and discovery'`. Quando `rss_only = false` (modo `/diaria-edicao` normal ou `/diaria-test --full-research`), o dispatch abaixo segue como sempre.
+
+
 - **Pre-flight: skip aggregator-domain sources** (#717 hipótese 5). Antes de dispatchar agents, filtrar fontes que batem na blocklist de `source-researcher` (que voltariam com `articles: []` de qualquer jeito). Rodar:
   ```bash
   echo '[{"name":"...","url":"..."},...]' | npx tsx scripts/check-source-blocklist.ts
