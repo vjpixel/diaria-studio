@@ -79,3 +79,52 @@ describe("parseInlineLink — suporte a **negrito** (#590)", () => {
     assert.deepEqual(r, { title: "Título", url: "https://example.com" });
   });
 });
+
+describe("parseInlineLink — strip de **...** dentro do título (regression: ** vazando no HTML)", () => {
+  // Bug: source `02-reviewed.md` usa formato `[**Título**](url)` (bold dentro
+  // dos colchetes do markdown link). parseInlineLink retornava `**Título**`
+  // como title, e render-newsletter-html embeddava esse texto literal em
+  // <a> tag — assinante via `**asteriscos**` na newsletter.
+  // Fix: strip wrapping `**...**` quando balanceados.
+
+  it("strippa **...** no título: [**Título**](URL) → 'Título'", () => {
+    const r = parseInlineLink("[**Modelos se replicam sozinhos**](https://example.com)");
+    assert.deepEqual(r, { title: "Modelos se replicam sozinhos", url: "https://example.com" });
+  });
+
+  it("strippa com whitespace interno preservado", () => {
+    const r = parseInlineLink("[**  Modelos se replicam  **](https://example.com)");
+    assert.equal(r?.title, "Modelos se replicam");
+  });
+
+  it("strippa em combinação com wrap **negrito** externo (#590)", () => {
+    const r = parseInlineLink("**[**Título duplo**](https://example.com)**");
+    assert.equal(r?.title, "Título duplo");
+  });
+
+  it("não toca em ** unbalanced (só na abertura): preserva literal", () => {
+    const r = parseInlineLink("[**Título sem fechar](https://example.com)");
+    assert.equal(r?.title, "**Título sem fechar");
+  });
+
+  it("não toca em ** unbalanced (só no fim): preserva literal", () => {
+    const r = parseInlineLink("[Título sem abrir**](https://example.com)");
+    assert.equal(r?.title, "Título sem abrir**");
+  });
+
+  it("título 'apenas ****': após strip vira string vazia → retorna null", () => {
+    assert.equal(parseInlineLink("[****](https://example.com)"), null);
+  });
+
+  it("título com ** internos não afetados (só strippa wrap)", () => {
+    const r = parseInlineLink("[**Antes **bold** depois**](https://example.com)");
+    assert.equal(r?.title, "Antes **bold** depois");
+  });
+
+  it("source real da Diar.ia (260508 d1)", () => {
+    const r = parseInlineLink(
+      "[**Modelos se replicam sozinhos, diz estudo inédito**](https://www.theguardian.com/technology/2026/may/07/no-one-has-done-this-in-the-wild-study-observes-ai-replicate-itself)",
+    );
+    assert.equal(r?.title, "Modelos se replicam sozinhos, diz estudo inédito");
+  });
+});

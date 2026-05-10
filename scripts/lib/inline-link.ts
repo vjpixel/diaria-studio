@@ -35,13 +35,23 @@ export interface InlineLink {
 /**
  * Tenta parsear linha como `[título](URL)`. Retorna `null` se não bater
  * o pattern (caller decide fallback).
+ *
+ * Strippa wrappers `**...**` no título quando balanceados (#XXX) — o source
+ * `02-reviewed.md` usa `[**Título**](url)` como convenção de h1, mas no HTML
+ * renderizado o `font-weight:bold` já vem do CSS. Sem o strip, os asteriscos
+ * vazariam literais na newsletter (visible regression nos 3 destaques).
  */
 export function parseInlineLink(line: string): InlineLink | null {
   const m = line.match(INLINE_LINK_RE);
   if (!m) return null;
-  const title = m[1].trim();
+  let title = m[1].trim();
   const url = m[2].trim();
   if (!title || !url) return null;
+  // Strip outer **...** se balanceado. Não tocar em unbalanced ou nested.
+  if (title.length >= 4 && title.startsWith("**") && title.endsWith("**")) {
+    title = title.slice(2, -2).trim();
+  }
+  if (!title) return null;
   return { title, url };
 }
 
