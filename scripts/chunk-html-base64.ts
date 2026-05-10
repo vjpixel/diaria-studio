@@ -15,15 +15,17 @@
  *   { "chunkCount": 4, "totalBase64Bytes": 21984, "htmlBytes": 16384, "files": ["_b64_0.txt", ...] }
  *
  * Background: paste de 16KB completo em htmlSnippet TipTap funciona via
- * execCommand insertText após cursor positioning. Mas cada javascript_tool
- * call só aceita ~7KB de string literal. Solução: chunked accumulator.
+ * `editor.commands.insertContent({type:'text', text: html})` após decode dos
+ * chunks (validação E2E #4 do #1054 — execCommand atualiza só DOM, não state).
+ * Cada javascript_tool call só aceita ~7KB de string literal — daí o
+ * chunked accumulator pattern.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "node:fs";
-import { resolve, dirname, basename } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

@@ -1,6 +1,6 @@
 ---
 name: publish-newsletter
-description: Etapa 4 — PLAYBOOK lido pelo top-level Claude Code (não subagent). Cria a newsletter no Beehiiv como rascunho via paste-into-htmlSnippet com chunked accumulator + execCommand, e envia um email de teste. Outputs em `05-published.json`.
+description: Etapa 4 — PLAYBOOK lido pelo top-level Claude Code (não subagent). Cria a newsletter no Beehiiv como rascunho via paste-into-htmlSnippet com chunked accumulator + TipTap editor.commands.insertContent, e envia um email de teste. Outputs em `05-published.json`.
 model: claude-sonnet-4-6
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
@@ -387,12 +387,11 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 **Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s antes de prosseguir pra próximos passos. Validação opcional: reload da page e re-checar `getJSON()` — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
-#### 5.3 Verificação pós-paste
+#### 5.4 Verificação pós-paste — preview
 
-- Beehiiv renderiza preview do HTML em ~2-3s. Aguardar.
-- **Re-ler DOM** via `read_page` e confirmar:
-  - 5 imagens com preview visível (não placeholders quebrados): 1 cover + 3 inline D1/D2/D3 + 2 É IA?.
-  - Se alguma imagem aparecer como quebrada (ícone de broken image), registrar em `unfixed_issues[]` com `reason: "image_url_broken_{key}"`. Possível causa: URL Drive demora a propagar CDN; re-upload via `upload-images-public.ts --no-cache` pode resolver.
+- Beehiiv não renderiza preview do htmlSnippet **dentro do editor** (htmlSnippet é raw HTML armazenado como texto, não preview visual). A verificação visual completa só acontece via "Email preview" / "Web preview" do Beehiiv ou via test email recebido (passo 7).
+- **Verificação programática suficiente**: o passo 5.3 já validou via `editor.getJSON()` que merge tags + image URLs estão preservados na ProseMirror state. Se passou, o conteúdo está correto e o preview do email vai renderizar.
+- **Validação visual opcional**: editor pode clicar em "Preview" no Beehiiv após o agent completar; URLs de imagens podem demorar a propagar via Google Drive CDN (~30s primeira vez). Se imagem aparecer quebrada no preview, re-upload via `upload-images-public.ts --no-cache` resolve.
 - **Bugs do #39 tratados estruturalmente**:
   - ✅ Encoding Unicode: HTML gerado em build-time, caracteres preservados no arquivo.
   - ✅ Template items default: sem template slots = nada pra remover.
