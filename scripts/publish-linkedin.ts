@@ -84,6 +84,9 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       args.schedule = true;
     } else if (argv[i] === "--skip-existing") {
       args["skip-existing"] = true;
+    } else if (argv[i] === "--test-mode") {
+      // #1056 — tagar entries com is_test:true pra delete-test-schedules safety
+      args["test-mode"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
@@ -303,6 +306,10 @@ export interface DispatchContext {
   workerToken: string;
   useWorkerForScheduled: boolean;
   editionDate: string;
+  /** #1056 — quando true, todas as entries gravadas em 06-social-published.json
+   * recebem `is_test: true`. Usado pelo `delete-test-schedules.ts --require-is-test`
+   * pra cleanup seguro só de artefatos de teste, sem deletar produção. */
+  isTest?: boolean;
 }
 
 /**
@@ -419,6 +426,7 @@ export async function dispatchEntry(
         action: input.action,
       };
     }
+    if (ctx.isTest) entry.is_test = true; // #1056
     appendSocialPosts(ctx.publishedPath, [entry]);
     const fallbackTag = entry.fallback_used ? " (fallback worker→make)" : "";
     console.log(
@@ -440,6 +448,7 @@ export async function dispatchEntry(
       webhook_target: input.webhookTarget,
       action: input.action,
     };
+    if (ctx.isTest) entry.is_test = true; // #1056
     appendSocialPosts(ctx.publishedPath, [entry]);
     return entry;
   }
@@ -478,6 +487,7 @@ async function main(): Promise<void> {
   }
   const editionDir = resolve(ROOT, editionDirRaw);
   const doSchedule = !!args.schedule;
+  const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
   if (args["skip-existing"]) {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
@@ -675,6 +685,7 @@ async function main(): Promise<void> {
     workerToken,
     useWorkerForScheduled,
     editionDate,
+    isTest,
   };
 
   // #595 — pre-carregar imageUrl por destaque (mesmo source pra todos os
@@ -746,6 +757,7 @@ async function main(): Promise<void> {
             scheduled_at: null,
             reason: `schedule_error: ${msg}`,
           };
+          if (isTest) entry.is_test = true; // #1056
           appendSocialPosts(publishedPath, [entry]);
           results.push(entry);
         }
@@ -775,6 +787,7 @@ async function main(): Promise<void> {
             scheduled_at: null,
             reason: msg,
           };
+          if (isTest) entry.is_test = true; // #1056
           appendSocialPosts(publishedPath, [entry]);
           results.push(entry);
           continue; // sem main, comments não fazem sentido

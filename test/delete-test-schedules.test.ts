@@ -91,3 +91,77 @@ describe("deleteLinkedinKey (#1058)", () => {
     assert.equal(r.httpStatus, 401);
   });
 });
+
+// ── #1056 — is_test filter safety logic ──
+
+describe("#1056 is_test filter (filterTargets safety)", () => {
+  // Replica a lógica do filter no main() pra testar isolado
+  // Filter rule: if requireIsTest, p.is_test must be true; status !== "deleted"; platform match
+  function filterTargets(
+    posts: Array<{ status: string; is_test?: boolean; platform: string; destaque: string }>,
+    requireIsTest: boolean,
+    platform: "all" | "facebook" | "linkedin" = "all",
+  ) {
+    return posts.filter((p) => {
+      if (p.status === "deleted") return false;
+      if (requireIsTest && p.is_test !== true) return false;
+      if (platform === "all") return true;
+      return p.platform === platform;
+    });
+  }
+
+  const productionPosts = [
+    { platform: "facebook", destaque: "d1", status: "scheduled" }, // sem is_test (produção real)
+    { platform: "facebook", destaque: "d2", status: "scheduled" },
+    { platform: "linkedin", destaque: "d1", status: "scheduled", subtype: "main" },
+  ];
+
+  const testPosts = [
+    { platform: "facebook", destaque: "d1", status: "scheduled", is_test: true },
+    { platform: "linkedin", destaque: "d1", status: "scheduled", is_test: true, subtype: "main" },
+    { platform: "linkedin", destaque: "d2", status: "scheduled", is_test: true, subtype: "comment_pixel" },
+  ];
+
+  it("require_is_test=true: produção real (sem is_test) → filtra fora (safety)", () => {
+    const targets = filterTargets(productionPosts, true);
+    assert.equal(targets.length, 0, "Sem is_test, nenhum target");
+  });
+
+  it("require_is_test=true: posts marcados is_test:true → incluídos", () => {
+    const targets = filterTargets(testPosts, true);
+    assert.equal(targets.length, 3);
+  });
+
+  it("require_is_test=false: força deleta tudo (perigoso, opt-out via flag)", () => {
+    const targets = filterTargets(productionPosts, false);
+    assert.equal(targets.length, 3, "Com --no-require-is-test, todos voltam");
+  });
+
+  it("entries já deletadas (status=deleted) sempre filtradas", () => {
+    const mixed = [
+      { platform: "facebook", destaque: "d1", status: "deleted", is_test: true },
+      { platform: "linkedin", destaque: "d1", status: "scheduled", is_test: true },
+    ];
+    const targets = filterTargets(mixed, true);
+    assert.equal(targets.length, 1, "Apenas a não-deleted deve sobrar");
+  });
+
+  it("mixed produção + test: require_is_test only deleta os tagados", () => {
+    const mixed = [
+      ...productionPosts,
+      ...testPosts,
+    ];
+    const targets = filterTargets(mixed, true);
+    assert.equal(targets.length, 3, "Apenas os 3 com is_test");
+    for (const t of targets) {
+      // @ts-expect-error testing inline shape
+      assert.equal(t.is_test, true);
+    }
+  });
+
+  it("filter combina platform + is_test", () => {
+    const targets = filterTargets(testPosts, true, "linkedin");
+    assert.equal(targets.length, 2, "Apenas linkedin de test");
+    for (const t of targets) assert.equal(t.platform, "linkedin");
+  });
+});

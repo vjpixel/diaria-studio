@@ -107,10 +107,14 @@ function parseArgs(argv: string[]): {
   editionDir: string | null;
   platform: "all" | "facebook" | "linkedin";
   dryRun: boolean;
+  requireIsTest: boolean;
 } {
   let editionDir: string | null = null;
   let platform: "all" | "facebook" | "linkedin" = "all";
   let dryRun = false;
+  // #1056 — safety: by default só deleta entries com is_test:true. Pra forçar
+  // deletar tudo (perigoso), passar --no-require-is-test.
+  let requireIsTest = true;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--edition-dir" && i + 1 < argv.length) {
@@ -121,9 +125,11 @@ function parseArgs(argv: string[]): {
       else throw new Error(`--platform deve ser facebook ou linkedin (got '${v}')`);
     } else if (arg === "--dry-run") {
       dryRun = true;
+    } else if (arg === "--no-require-is-test") {
+      requireIsTest = false;
     }
   }
-  return { editionDir, platform, dryRun };
+  return { editionDir, platform, dryRun, requireIsTest };
 }
 
 async function main(): Promise<void> {
@@ -151,16 +157,23 @@ async function main(): Promise<void> {
   const published = readSocialPublished(publishedPath);
   const targets = published.posts.filter((p) => {
     if (p.status === "deleted") return false;
+    // #1056 safety: por default só deleta entries com is_test:true.
+    // Sem essa proteção, rodar este script numa edição real (não-test) deletaria
+    // todos os posts agendados. Pra forçar, passar --no-require-is-test.
+    if (args.requireIsTest && p.is_test !== true) return false;
     if (args.platform === "all") return true;
     return p.platform === args.platform;
   });
 
   if (targets.length === 0) {
-    console.log(JSON.stringify({ deleted: [], skipped: [], message: "nenhum post pra deletar" }, null, 2));
+    const skipReason = args.requireIsTest
+      ? "nenhum post com is_test:true pra deletar (use --no-require-is-test pra desabilitar safety)"
+      : "nenhum post pra deletar";
+    console.log(JSON.stringify({ deleted: [], skipped: [], message: skipReason }, null, 2));
     return;
   }
 
-  console.error(`[delete-test-schedules] ${targets.length} posts pra deletar (dry_run=${args.dryRun})`);
+  console.error(`[delete-test-schedules] ${targets.length} posts pra deletar (dry_run=${args.dryRun}, require_is_test=${args.requireIsTest})`);
 
   const results: DeleteResult[] = [];
   const fbCreds = loadFbCredentials();
