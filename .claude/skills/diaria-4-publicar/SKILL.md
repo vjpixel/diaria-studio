@@ -70,13 +70,14 @@ Resume-aware: re-execuções pularão imagens já no cache. Falha = **warning**,
 
 ### Etapa 4a — Publicação paralela (#38)
 
-**3 dispatches em uma única mensagem** (ver `.claude/agents/orchestrator.md` § Etapa 4):
+**Em uma única mensagem dispatcham 2 scripts em paralelo + você (top-level) executa o playbook newsletter** (ver `.claude/agents/orchestrator.md` § Etapa 4):
+
 1. `publish-facebook.ts --schedule` (Graph API, ~30s) — `--schedule` é obrigatório (#503); nunca chamar sem essa flag
-2. `publish-newsletter` (Chrome → Beehiiv) — cria rascunho + envia email de teste
-3. `publish-linkedin.ts` (Make.com webhook → LinkedIn company page) — 3 posts (#506):
+2. `publish-linkedin.ts` (Make.com webhook → LinkedIn company page) — 3 posts (#506):
    ```bash
    npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD} --schedule
    ```
+3. **Newsletter Beehiiv (#1054 / #207)**: você (top-level Claude Code) **lê `.claude/agents/publish-newsletter.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` incluindo `javascript_tool`. **Não dispatchar via `Agent({ subagent_type: "publish-newsletter" })`** — javascript_tool é restrito ao top-level e o paste-into-htmlSnippet vai falhar em qualquer subagent (Haiku/Sonnet/Opus). O playbook produz `_internal/newsletter-final.html` + chunks `_b64_*.txt`, navega Beehiiv via Chrome MCP, cola via execCommand insertText, salva rascunho e envia email de teste.
 
 LinkedIn não usa mais Chrome — sem necessidade de tab isolada para LinkedIn.
 

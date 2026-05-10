@@ -214,3 +214,119 @@ Resultado: `code.textContent.includes('{{poll_a_url}}') === true`. Merge tag pre
 Diferença ~$28/ano. Worker host é otimização, não bloqueador.
 
 `.claude/agents/publish-newsletter.md` atualizado com fluxo paste-into-htmlSnippet em commit pós-validação.
+
+---
+
+## Validação live #3 (2026-05-10) — `execCommand('insertText')` é o método canônico
+
+**Reframe novamente**: ClipboardEvent dispatch falha em produção. `document.execCommand('insertText', false, html)` é o único método que funciona consistentemente.
+
+### O que falhou
+
+ClipboardEvent paste com `target = code` (elemento dentro do htmlSnippet):
+```
+{ defaultPrevented: false, codeNowLength: 0, dispatched: true }
+```
+Evento foi disparado mas TipTap/ProseMirror não interceptou. Bubbling pra `.tiptap.ProseMirror` também não acionou handler. `defaultPrevented: false` confirma que ProseMirror nunca processou.
+
+### O que funcionou
+
+```js
+// 1. Localizar inner editable DIV dentro de code (não code direto)
+const node = document.querySelector('.node-htmlSnippet');
+const pre = node.querySelector('pre');
+const code = pre.querySelector('code');
+const innerDiv = code.querySelector('div');
+
+// 2. Click + Selection API + focus editor
+pre.click();
+const range = document.createRange();
+range.selectNodeContents(innerDiv);
+range.collapse(true);
+const sel = window.getSelection();
+sel.removeAllRanges();
+sel.addRange(range);
+document.querySelector('.tiptap.ProseMirror').focus();
+
+// 3. execCommand insertText — passa o HTML como texto literal
+document.execCommand('insertText', false, html);
+```
+
+Resultado em paste de 16384 bytes:
+
+| Métrica | Valor |
+|---|---|
+| `execCommand` returned | `true` |
+| `code.textContent.length` | 16213 (99% — diff é normalização de whitespace) |
+| `{{poll_a_url}}` preservado | ✅ |
+| `{{poll_b_url}}` preservado | ✅ |
+| `{{IMG:01-eia-A.jpg}}` preservado | ✅ |
+| `{{IMG:01-eia-B.jpg}}` preservado | ✅ |
+| 13 markers de conteúdo (URLs, secções, créditos) | ✅ todos |
+| `is-empty` class removida | ✅ (ProseMirror sincronizou state) |
+
+### Por que `execCommand` funciona e `ClipboardEvent` não
+
+`execCommand('insertText')` usa o caminho de input nativo do contenteditable, que TipTap/ProseMirror escutam via `beforeinput`/`input` events. ClipboardEvent sintético não passa pela mesma pipeline porque navegadores modernos isolam clipboard events do editor pipeline (anti-XSS).
+
+### Implicação no design
+
+- ✅ Método canônico: `execCommand('insertText', false, html)` após cursor positioning + focus
+- ❌ ClipboardEvent (mesmo com DataTransfer) não funciona consistentemente em produção
+- ⚠️ `execCommand` é deprecated mas ainda suportado; alternativa moderna seria `InputEvent` sintético com `inputType: 'insertText'` mas requer mais boilerplate e não foi testado
+
+Próximo passo: atualizar `.claude/agents/publish-newsletter.md` substituindo ClipboardEvent por execCommand no step 5.2. Ou — dado que `javascript_tool` só está disponível ao top-level (não a subagentes), refatorar o agent pra playbook executado pelo orchestrator.
+
+---
+
+## Validação E2E #4 (2026-05-10) — `editor.commands.insertContent({type:'text'})` é o método canônico ⭐⭐⭐
+
+**Validação #3 estava parcialmente errada.** O E2E completo (paste + autosave + reload) revelou que `execCommand('insertText')` atualiza apenas o DOM, NÃO o ProseMirror state. Como o autosave Beehiiv serializa do `editor.state.doc`, o conteúdo via execCommand **não persiste** após reload.
+
+### Reprodução do bug
+
+1. Paste 16KB via execCommand → `code.textContent.length === 16213` ✅
+2. Wait 5s → autosave fires
+3. Reload page → `editor.state.doc.content.size === 4`, apenas 78 chars persistiram (estado pré-paste)
+
+### Métodos descartados
+
+| Método | Status | Razão |
+|---|---|---|
+| `ClipboardEvent` synthetic dispatch | ❌ | `defaultPrevented: false`, content nem entra no DOM |
+| `document.execCommand('insertText')` | ❌ | DOM atualizado mas ProseMirror state não — autosave perde conteúdo |
+| `editor.commands.insertContent(htmlString)` | ❌ | TipTap parseia como HTML, falha em `RangeError: Invalid content for node tableCell` |
+| `navigator.clipboard.writeText` | ❌ | "Document not focused" via Chrome MCP |
+
+### Método canônico
+
+```js
+const editor = document.querySelector('.tiptap.ProseMirror').editor;
+// Posicionar cursor dentro do htmlSnippet
+let pos;
+editor.state.doc.descendants((node, p) => {
+  if (node.type.name === 'htmlSnippet') { pos = p; return false; }
+});
+const tr = editor.state.tr;
+tr.setSelection(editor.state.selection.constructor.near(editor.state.doc.resolve(pos + 1)));
+editor.view.dispatch(tr);
+// Insert TEXT NODE (não HTML parseado)
+editor.commands.insertContent({ type: 'text', text: html });
+```
+
+### Insights chave
+
+1. **TipTap editor é acessível em `document.querySelector('.tiptap.ProseMirror').editor`** — não em `window.editor` (esse não existe). Spike doc anterior afirmava que era impossível.
+2. **htmlSnippet armazena raw HTML como text node** — passing `{type:'text', text:html}` evita parsing/validação de schema.
+3. **DOM ≠ ProseMirror state** — autosave serializa state, não DOM. Validar via `editor.getJSON()`, não `code.textContent`.
+4. **`is-empty` class é cosmético** — não correlaciona com state real. Use `editor.state.doc.content.size` e `editor.getJSON()` pra validar.
+
+### Validação concreta E2E
+
+- Pré-paste: `docSize: 4` (htmlSnippet vazio + paragraph)
+- Pós-paste: `docSize: 16500`, `jsonLen: 17422`
+- Wait 8s
+- **Reload page** + getJSON: `docSize: 16500`, `jsonLen: 17422` ✅
+- Markers persistidos: `{{poll_a_url}}`, `{{poll_b_url}}`, image URLs (14e0Acht..., 1NHj3Mlb...), domínios editoriais
+
+Confirma E2E: paste persiste após reload. Implementação atualizada em PR #1065.

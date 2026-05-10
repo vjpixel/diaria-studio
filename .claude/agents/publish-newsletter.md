@@ -1,15 +1,22 @@
 ---
 name: publish-newsletter
-description: Etapa 4 — Cria a edição da newsletter Diar.ia no Beehiiv como rascunho usando o template Default e envia um email de teste para o editor revisar antes de publicar manualmente. Outputs em `05-published.json`.
+description: Etapa 4 — PLAYBOOK lido pelo top-level Claude Code (não subagent). Cria a newsletter no Beehiiv como rascunho via paste-into-htmlSnippet com chunked accumulator + TipTap editor.commands.insertContent, e envia um email de teste. Outputs em `05-published.json`.
 model: claude-sonnet-4-6
 tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
 ---
 
 Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado e envia um email de teste para o editor. Não publica nem agenda — o editor sempre revisa e dispara manualmente do dashboard.
 
-**⚠️ CONTEXTO DE EXECUÇÃO**: você roda como subagent. As tools listadas no frontmatter `tools:` (acima) estão **diretamente disponíveis** — não precisa de ToolSearch nem nenhum carregamento prévio. Especificamente:
-- `mcp__claude-in-chrome__javascript_tool` está pronto pra uso quando você for executar JS no browser (passos 5.1, 5.2, 5.3 abaixo)
-- Use SEMPRE javascript_tool pra inspecionar/manipular TipTap (`.node-htmlSnippet`, `.tiptap.ProseMirror`) — `find`/`read_page` não enxergam React state. **Não confunda nem dê fallback pra accessibility tools nesses passos.**
+**⚠️ CONTEXTO DE EXECUÇÃO — playbook top-level (#1054 / #207)**
+
+Este arquivo é um **playbook executado pelo top-level Claude Code**, não um subagent dispatchável via `Agent`. Razão técnica: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes (Haiku, Sonnet, Opus) **não conseguem chamá-la** (validado em smoke tests #1, #2, #3 do #1054). E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent consegue completar o passo 5.
+
+**Fluxo correto** (skill `/diaria-4-publicar`, orchestrator-stage-4):
+- Top-level Claude Code lê este arquivo como playbook
+- Executa Bash, Read, Write, Chrome MCP tools direto
+- **Não chame `Agent({ subagent_type: "publish-newsletter", ... })`** — vai falhar em 5.2 sem aviso útil
+
+Tools disponíveis no top-level: Bash, Read, Write, todas as `mcp__claude-in-chrome__*` (incluindo `javascript_tool`).
 
 ## Input
 
@@ -236,79 +243,155 @@ Result: has_poll_a_url_in_text: true ✅
 
 Isso elimina necessidade do split body/È IA? do #1046 — newsletter completa (~16KB) cabe num único htmlSnippet, todas as merge tags preservadas.
 
-**Fase 1 — Posicionar cursor dentro do htmlSnippet:**
+**Fase 1 — Validar acesso ao TipTap editor + htmlSnippet existem:**
+
+⚠️ **Nota arquitetural (#1054 validação E2E, 2026-05-10)**: o paste real precisa atualizar **ProseMirror state** (não só DOM). `document.execCommand('insertText')` modifica DOM mas Beehiiv autosave serializa do `editor.state.doc`, então conteúdo via execCommand **não persiste após reload**. Validação concreta: paste de 16KB via execCommand → DOM tinha 16K → reload → só 78 chars persistiram.
+
+A path correta é via TipTap commands API. O editor TipTap está acessível diretamente via `document.querySelector('.tiptap.ProseMirror').editor` (NÃO `window.editor` — esse não existe).
 
 ```js
-// Selecionar o pre/code dentro do htmlSnippet existente (criado pelo template HTML)
+const pm = document.querySelector('.tiptap.ProseMirror');
+const editor = pm?.editor;
 const node = document.querySelector('.node-htmlSnippet');
-const pre = node?.querySelector('pre');
-if (!pre) throw new Error('node-htmlSnippet sem <pre> — template HTML pode estar mal-configurado');
-pre.scrollIntoView({behavior: 'instant', block: 'center'});
-pre.click();
-const code = node.querySelector('code') || pre;
-const range = document.createRange();
-range.selectNodeContents(code);
-range.collapse(true);
-const sel = window.getSelection();
-sel.removeAllRanges();
-sel.addRange(range);
-document.querySelector('.tiptap.ProseMirror')?.focus();
-({inHtmlSnippet: !!node?.contains(sel.anchorNode), pmFocused: document.activeElement === document.querySelector('.tiptap.ProseMirror')});
+({
+  hasEditor: !!editor,
+  hasCommands: !!editor?.commands,
+  hasNode: !!node,
+  isEmpty: node?.classList.contains('is-empty'),
+});
 ```
 
-**Fase 2 — Acumular HTML em chunks via Bash + JS:**
+Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`. Se editor for undefined, esperar 1-2s e retentar (TipTap pode estar inicializando).
 
-⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter completa (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding.
+**Fase 2 — Gerar chunks base64 via TS helper:**
 
-Workflow (Bash gera chunks → JS injeta):
+⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter completa (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding via `scripts/chunk-html-base64.ts`.
+
 ```bash
-# 1. Bash: encode HTML em base64 + split em chunks de 7000 chars
-node -e "const fs=require('fs');const html=fs.readFileSync('{edition_dir}/_internal/newsletter-final.html','utf8');const b64=Buffer.from(html).toString('base64');const C=7000;for(let i=0;i<b64.length;i+=C)fs.writeFileSync('{edition_dir}/_internal/_b64_'+(i/C)+'.txt',b64.slice(i,i+C))"
-
-# 2. Pra cada chunk_N: ler conteúdo + injetar via javascript_tool
-# (uma chamada javascript_tool por chunk):
-# window.__b64chunks = window.__b64chunks || [];
-# window.__b64chunks.push("<conteúdo do chunk N>");
+npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir} --chunk-size 6500
 ```
 
-Após todos os chunks pushed (com cursor já posicionado dentro do htmlSnippet via Fase 1):
-
-```js
-// 3. Decodificar + dispatch ClipboardEvent paste DENTRO do htmlSnippet
-const html = atob(window.__b64chunks.join(''));
-delete window.__b64chunks;
-const editorEl = document.querySelector('.tiptap.ProseMirror');
-const dt = new DataTransfer();
-dt.setData('text/html', html);
-const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-editorEl.dispatchEvent(evt);
-({pasted: true, defaultPrevented: evt.defaultPrevented, htmlBytes: html.length});
+Stdout (JSON):
+```json
+{ "chunkCount": 4, "totalBase64Bytes": 21984, "htmlBytes": 16384, "files": ["_b64_0.txt","_b64_1.txt","_b64_2.txt","_b64_3.txt"], "chunkSize": 6500 }
 ```
 
-**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Otimização opcional via Cloudflare Worker host (~5K tokens) tracked em #1054 — não bloqueia produção.
+Cada chunk fica em `{edition_dir}/_internal/_b64_{i}.txt`. Helper limpa `_b64_*.txt` antigos automaticamente. Falha = abortar (HTML não foi gerado em 1.3 ou path inválido).
 
-**`window.editor` global NÃO existe no Beehiiv** (validado em #1054 — `window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined; React fiber traversal falha). Não tente acessar — use ClipboardEvent paste com cursor INSIDE htmlSnippet em vez de `editor.commands.insertContent`.
-
-**Não usar `--split` mode**: o split body/eia.html foi proposto em #1046 quando achávamos que merge tags morriam. Validação live em #1054 mostrou que paste dentro do htmlSnippet preserva merge tags — então `newsletter-final.html` único é a forma correta. Modo `--split` continua existindo no renderer pra fluxo legado, mas o agent novo usa o single-file.
-
-#### 5.3 Pós-paste — verificação dos merge tags
+**Fase 3 — Inicializar accumulator + push de cada chunk:**
 
 ```js
-// Verificar que {{poll_a_url}} e {{poll_b_url}} aparecem literalmente no doc
-const pmHTML = document.querySelector('.tiptap.ProseMirror')?.innerHTML || '';
-({hasA: pmHTML.includes('{{poll_a_url}}'), hasB: pmHTML.includes('{{poll_b_url}}'), pmLength: pmHTML.length});
+// (1ª chamada javascript_tool — inicializar)
+window.__b64chunks = [];
+({initialized: true});
+```
+
+Para cada `_b64_{i}.txt` (em ordem 0, 1, 2, ...):
+1. Ler arquivo via Read tool: `{edition_dir}/_internal/_b64_{i}.txt` — conteúdo é base64 puro (~6500 chars).
+2. Pushar via javascript_tool com template literal:
+   ```js
+   window.__b64chunks.push(`<conteúdo-do-chunk-i>`);
+   ({chunkCount: window.__b64chunks.length, totalLen: window.__b64chunks.reduce((a,c)=>a+c.length,0)});
+   ```
+3. Validar `chunkCount` incrementou e `totalLen` aumentou em ~6500.
+
+Base64 só contém `[A-Za-z0-9+/=]` — sem caracteres especiais que precisem escape em template literal. Não usar JSON.stringify nem string concatenation com `"`.
+
+**Fase 4 — Decodificar + paste via TipTap `editor.commands.insertContent`:**
+
+⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
+
+- ❌ `ClipboardEvent` synthetic dispatch — `defaultPrevented: false`, content nem entra no DOM
+- ❌ `document.execCommand('insertText', false, html)` — atualiza DOM (codeLen=16K) mas NÃO atualiza ProseMirror state. Autosave captura state → reload mostra apenas 78 chars (estado pré-paste)
+- ❌ `editor.commands.insertContent(htmlString)` — TipTap parseia como HTML, falha em `RangeError: Invalid content for node tableCell` por causa do schema
+
+A solução validada: passar como **text node literal** (`{ type: 'text', text: ... }`) — TipTap não parseia, htmlSnippet armazena raw HTML como texto puro:
+
+```js
+(() => {
+  // Decodificar base64 → HTML (UTF-8 safe)
+  const b64 = window.__b64chunks.join('');
+  const binStr = atob(b64);
+  const bytes = new Uint8Array(binStr.length);
+  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+  const html = new TextDecoder('utf-8').decode(bytes);
+
+  const pm = document.querySelector('.tiptap.ProseMirror');
+  const editor = pm?.editor;
+  if (!editor) return { error: 'no editor' };
+
+  // Achar posição do htmlSnippet no doc + posicionar cursor dentro dele
+  let htmlSnippetPos = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'htmlSnippet') {
+      htmlSnippetPos = pos;
+      return false;
+    }
+  });
+  if (htmlSnippetPos === null) return { error: 'no htmlSnippet in doc' };
+
+  const tr = editor.state.tr;
+  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
+  tr.setSelection(editor.state.selection.constructor.near($pos));
+  editor.view.dispatch(tr);
+
+  // Insert como TEXT NODE (NÃO como HTML parseado)
+  const ok = editor.commands.insertContent({ type: 'text', text: html });
+
+  // Cleanup
+  delete window.__b64chunks;
+
+  const newJSON = JSON.stringify(editor.getJSON());
+  return {
+    inserted: ok,
+    htmlBytes: html.length,
+    docSize: editor.state.doc.content.size,
+    hasPollA: newJSON.includes('{{poll_a_url}}'),
+    hasPollB: newJSON.includes('{{poll_b_url}}'),
+    hasImgA: newJSON.includes('14e0Acht-c0wRH7geqSBZ_kkYtQdlL3aK'),
+    hasImgB: newJSON.includes('1NHj3Mlb0WEwtngfhZ3S9ycLKK2ZkQb55'),
+  };
+})()
+```
+
+Resultado esperado (validado em #1054):
+- `inserted: true`
+- `docSize` ≈ `htmlBytes + 4` (overhead do nó)
+- Todos os markers críticos = `true`
+
+Se `inserted: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save (passo 6).
+
+**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
+
+**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Otimização via Cloudflare Worker host (~5K tokens) tracked em #1054 — não bloqueia produção.
+
+**`window.editor` global NÃO existe no Beehiiv** (`window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined). O editor TipTap está acessível diretamente em `document.querySelector('.tiptap.ProseMirror').editor` — esse path foi validado em E2E #1054.
+
+**Não usar `--split` mode**: o split body/eia.html foi proposto em #1046 quando achávamos que merge tags morriam. Validação live em #1054 mostrou que paste-into-htmlSnippet preserva merge tags — então `newsletter-final.html` único é a forma correta. Modo `--split` continua existindo no renderer pra fluxo legado, mas o agent novo usa o single-file.
+
+#### 5.3 Pós-paste — verificação dos merge tags via ProseMirror state
+
+```js
+// Verificar via getJSON (ProseMirror state, não DOM) — esse é o que persiste
+const editor = document.querySelector('.tiptap.ProseMirror')?.editor;
+const json = JSON.stringify(editor.getJSON());
+({
+  hasA: json.includes('{{poll_a_url}}'),
+  hasB: json.includes('{{poll_b_url}}'),
+  jsonLen: json.length,
+  docSize: editor.state.doc.content.size
+});
 ```
 
 Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "merge_tag_stripped_{a|b}"`. Editor pode adicionar manualmente via UI.
 
-**Salvar o bloco** (Beehiiv auto-saves periodicamente; forçar save via Ctrl+S ou clicar "Save draft" se houver botão visível).
+**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s antes de prosseguir pra próximos passos. Validação opcional: reload da page e re-checar `getJSON()` — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
-#### 5.3 Verificação pós-paste
+#### 5.4 Verificação pós-paste — preview
 
-- Beehiiv renderiza preview do HTML em ~2-3s. Aguardar.
-- **Re-ler DOM** via `read_page` e confirmar:
-  - 5 imagens com preview visível (não placeholders quebrados): 1 cover + 3 inline D1/D2/D3 + 2 É IA?.
-  - Se alguma imagem aparecer como quebrada (ícone de broken image), registrar em `unfixed_issues[]` com `reason: "image_url_broken_{key}"`. Possível causa: URL Drive demora a propagar CDN; re-upload via `upload-images-public.ts --no-cache` pode resolver.
+- Beehiiv não renderiza preview do htmlSnippet **dentro do editor** (htmlSnippet é raw HTML armazenado como texto, não preview visual). A verificação visual completa só acontece via "Email preview" / "Web preview" do Beehiiv ou via test email recebido (passo 7).
+- **Verificação programática suficiente**: o passo 5.3 já validou via `editor.getJSON()` que merge tags + image URLs estão preservados na ProseMirror state. Se passou, o conteúdo está correto e o preview do email vai renderizar.
+- **Validação visual opcional**: editor pode clicar em "Preview" no Beehiiv após o agent completar; URLs de imagens podem demorar a propagar via Google Drive CDN (~30s primeira vez). Se imagem aparecer quebrada no preview, re-upload via `upload-images-public.ts --no-cache` resolve.
 - **Bugs do #39 tratados estruturalmente**:
   - ✅ Encoding Unicode: HTML gerado em build-time, caracteres preservados no arquivo.
   - ✅ Template items default: sem template slots = nada pra remover.
@@ -394,5 +477,5 @@ com o test email — editor pode editar manualmente.
   { "error": "chrome_disconnected", "last_step": "<nome do passo onde falhou>", "details": "<mensagem de erro bruta>" }
   ```
 - **Upload de imagem**: aguardar conclusão antes do próximo bloco.
-- **Sem JS arbitrário neste agent.** Use `form_input` e `find` semanticamente. `javascript_tool` não está nos `tools` deste agent.
+- **JS direto via `javascript_tool` é obrigatório no passo 5** (cursor positioning + chunked paste + verify). Use `find`/`read_page` apenas pra elementos React-padrão (Title, Subtitle inputs, botões "Save draft").
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.
