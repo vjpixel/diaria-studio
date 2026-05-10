@@ -204,101 +204,91 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 
 **Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.
 
-#### 5.1 Localizar bloco Custom HTML no template
+#### 5.1 Usar template "HTML" (não "Default") — #1054 finding
 
-- O template configurado (`publishing.newsletter.template`) precisa **ter exatamente 1 bloco Custom HTML** pré-configurado — é aí que o conteúdo vai.
-- Se o template tiver outros blocos (ex: "Subscribe CTA" no final), manter.
-- Se não tiver Custom HTML block, abortar com `{ "error": "template_missing_custom_html" }` — editor precisa criar template adequado.
+**Mudança importante (#1054 validação live, 2026-05-10):** o template "Default" do Beehiiv NÃO tem Custom HTML block — a tentativa anterior de localizar via accessibility API falha porque TipTap renderiza em Shadow DOM. A solução real é usar o template **"HTML"** (já existe na template-library), que cria post com `node-htmlSnippet` pré-instantiado e vazio, pronto pra receber HTML.
 
-#### 5.2 Colar HTML — paste híbrido (#1046)
+Fluxo:
+1. Navegar pra `https://app.beehiiv.com/posts/template-library?tab=my_templates`
+2. Encontrar o card com `<h3>HTML</h3>` (visible no template-library)
+3. Clicar no overlay button do card (`button.absolute` dentro do card) — cria post + redireciona pra `/posts/{uuid}/edit`
+4. Aguardar editor carregar (~3s)
+5. Validar via JS: `document.querySelector('.node-htmlSnippet')` deve existir + `document.querySelector('.tiptap.ProseMirror')` deve estar `contenteditable=true`
 
-Paste em 2 fases pra contornar (a) limite de input do `form_input` Chrome MCP
-em payload >10KB e (b) normalização de merge tags `{{poll_x_url}}` pelo
-paste handler do TipTap.
+Se o template "HTML" não estiver na library, abortar com `{ "error": "html_template_missing", "remediation": "Editor precisa criar template chamado exatamente 'HTML' contendo apenas um node-htmlSnippet vazio em https://app.beehiiv.com/posts/template-library" }`.
+
+#### 5.2 Colar HTML — paste híbrido (#1046, validado em #1054)
+
+**Status técnico** (2026-05-10): caminho deterministic validado live; falta apenas otimização de tokens via Cloudflare Worker host (decisão pendente em #1054).
 
 **Pré-requisitos**:
-- Foco no editor de bloco rich-text aberto na posição certa (Custom HTML
-  block ou bloco principal de conteúdo).
-- `_internal/newsletter-body.html` + `_internal/newsletter-eia.html`
-  (gerados em 1.3 via `--split`) já com URLs Drive substituídas.
+- Post criado a partir do template "HTML" (passo 5.1) com `node-htmlSnippet` vazio pré-instantiado.
+- `_internal/newsletter-final.html` (gerado em 1.3) com URLs Drive substituídas. Modo `--split` é compatível: `newsletter-body.html` + `newsletter-eia.html` podem ser pasted sequencialmente.
 
-**Fase 1 — paste body via ClipboardEvent (preserva HTML estruturado, ~12-25KB):**
-
-Ler o body do disco e injetar via `mcp__claude-in-chrome__javascript_tool`.
-A função abaixo lê o arquivo via `fetch('file://...')` (não funciona —
-CSP) — então passe o conteúdo HTML inline no JS arg. Mas o JS arg em si
-tem limite ~10KB.
-
-**Solução**: usar Bash + Chrome JS em coordenação. Bash lê o arquivo,
-escreve em uma variável JS via `chunked` se necessário. Mas pra body
-~12-25KB, dá pra passar via única chamada `javascript_tool` se cabe no
-input do tool (~10KB literal). Caso contrário, chunked accumulator.
-
-Tentativa primária — paste em 1 call (cabe se body <10KB JS-encoded):
+**Fase 1 — Posicionar cursor dentro do htmlSnippet:**
 
 ```js
-// 1. Capturar editor TipTap
-const editorEl = document.querySelector('[contenteditable="true"]');
-if (!editorEl) throw new Error('contenteditable não encontrado');
-editorEl.focus();
-// 2. Construir DataTransfer com HTML
+// Selecionar o pre/code dentro do htmlSnippet existente
+const node = document.querySelector('.node-htmlSnippet');
+const pre = node?.querySelector('pre');
+if (!pre) throw new Error('node-htmlSnippet sem <pre> — template HTML pode estar mal-configurado');
+pre.scrollIntoView({behavior: 'instant', block: 'center'});
+pre.click();
+const code = node.querySelector('code') || pre;
+const range = document.createRange();
+range.selectNodeContents(code);
+range.collapse(true);
+const sel = window.getSelection();
+sel.removeAllRanges();
+sel.addRange(range);
+document.querySelector('.tiptap.ProseMirror')?.focus();
+({inHtmlSnippet: !!node?.contains(sel.anchorNode), pmFocused: document.activeElement === document.querySelector('.tiptap.ProseMirror')});
+```
+
+**Fase 2 — Acumular HTML em chunks via Bash + JS:**
+
+⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter body típico (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding.
+
+Workflow (Bash gera chunks → JS injeta):
+```bash
+# 1. Bash: encode HTML em base64 + split em chunks de 7000 chars
+node -e "const fs=require('fs');const html=fs.readFileSync('{edition_dir}/_internal/newsletter-final.html','utf8');const b64=Buffer.from(html).toString('base64');const C=7000;for(let i=0;i<b64.length;i+=C)fs.writeFileSync('{edition_dir}/_internal/_b64_'+(i/C)+'.txt',b64.slice(i,i+C))"
+
+# 2. Pra cada chunk_N: ler conteúdo + injetar via javascript_tool
+# (uma chamada javascript_tool por chunk):
+# window.__b64chunks = window.__b64chunks || [];
+# window.__b64chunks.push("<conteúdo do chunk N>");
+```
+
+Após todos os chunks pushed:
+
+```js
+// 3. Decodificar + dispatch ClipboardEvent paste
+const html = atob(window.__b64chunks.join(''));
+delete window.__b64chunks;
+const editorEl = document.querySelector('.tiptap.ProseMirror');
 const dt = new DataTransfer();
-dt.setData('text/html', `${HTML_BODY_AQUI}`);
-// 3. Dispatch synthetic paste event
+dt.setData('text/html', html);
 const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
 editorEl.dispatchEvent(evt);
-// 4. Retornar status pro agent verificar
-({ pasted: true, dispatched_returned: !evt.defaultPrevented });
+({pasted: true, defaultPrevented: evt.defaultPrevented, htmlBytes: html.length});
 ```
 
-Se o body for >10KB JS-encoded (mais provável), fallback chunked:
-acumular `window.__bodyChunks` em N chamadas `javascript_tool` e fazer
-`setData('text/html', window.__bodyChunks.join(''))` na última.
-Cada chunk ~7KB, 2-4 chunks típicos.
+**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Pra otimizar, ver Path Forward em #1054 (Cloudflare Worker host pra `fetch()` em vez de inline chunks).
 
-**Fase 2 — paste È IA? via insertContent (preserva merge tags):**
+**`window.editor` global NÃO existe no Beehiiv** (validado em #1054 — `window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined; React fiber traversal falha). Não tente acessar — use ClipboardEvent paste em vez de `editor.commands.insertContent`.
 
-A seção È IA? tem `{{poll_a_url}}/{{poll_b_url}}` que **morrem** se passarem
-pelo paste handler do TipTap (validador de URL rejeita). Solução: usar
-`editor.commands.insertContent` com `htmlSnippet` que injeta como bloco
-raw, sem normalização.
-
-Após Fase 1 (cursor naturalmente no fim do body pasted), executar:
+#### 5.3 Pós-paste — verificação dos merge tags
 
 ```js
-const html = `${HTML_EIA_AQUI}`;
-// Acessar instância TipTap (Beehiiv expõe globalmente; varia: window.editor, window.__tiptapEditor, etc.)
-const editor = window.editor ?? window.tiptapEditor ?? window.__tiptapEditor;
-if (!editor) throw new Error('TipTap editor instance não encontrada — verificar nome global');
-editor.commands.insertContent({
-  type: 'htmlSnippet',
-  attrs: { language: 'html' },
-  content: [{ type: 'text', text: html }],
-});
-({ inserted: true });
+// Verificar que {{poll_a_url}} e {{poll_b_url}} aparecem literalmente no doc
+const pmHTML = document.querySelector('.tiptap.ProseMirror')?.innerHTML || '';
+({hasA: pmHTML.includes('{{poll_a_url}}'), hasB: pmHTML.includes('{{poll_b_url}}'), pmLength: pmHTML.length});
 ```
 
-**Fallback se `insertContent` falhar**: tentar `editor.chain().insertContent(html, { parseOptions: { preserveWhitespace: 'full' }}).run()`. Se ainda falhar, gravar em `unfixed_issues[]` com `reason: "eia_section_paste_failed"` e seguir — editor adiciona manualmente via UI.
+Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "merge_tag_stripped_{a|b}"`. Editor pode adicionar manualmente via UI.
 
-**Pós-paste — verificação dos merge tags:**
-
-```js
-// Verificar que {{poll_a_url}} e {{poll_b_url}} aparecem literalmente no doc.
-const html = editor.getHTML();
-const hasA = html.includes('{{poll_a_url}}');
-const hasB = html.includes('{{poll_b_url}}');
-({ has_poll_a: hasA, has_poll_b: hasB });
-```
-
-Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com
-`reason: "merge_tag_stripped_{a|b}"` e re-tentar Fase 2 1× antes de prosseguir.
-
-**Salvar o bloco** após paste OK.
-
-**Modo legado (fallback)**: se a edição não tem `_internal/newsletter-body.html`
-(ex: editor rodou só `--format html --out`), cair no paste único de
-`newsletter-final.html` via `form_input` (comportamento pré-#1046). Pode
-truncar pra HTML grande — registrar warning no run-log.
+**Salvar o bloco** (Beehiiv auto-saves periodicamente; forçar save via Ctrl+S ou clicar "Save draft" se houver botão visível).
 
 #### 5.3 Verificação pós-paste
 
