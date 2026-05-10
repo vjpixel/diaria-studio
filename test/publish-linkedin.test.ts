@@ -5,10 +5,16 @@ import {
   extractCommentDiaria,
   extractCommentPixel,
   computeCommentScheduledAt,
+  dispatchEntry,
   postToMakeWebhook,
   postToWorkerQueue,
   sanitizeFallbackReason,
+  type DispatchContext,
+  type DispatchInput,
 } from "../scripts/publish-linkedin.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
 const CRLF = LF.replace(/\n/g, "\r\n");
@@ -584,5 +590,111 @@ describe("#595 computeCommentScheduledAt", () => {
     const now = Date.parse("2026-12-01T12:00:00Z");
     const r = computeCommentScheduledAt("not-a-date", 3, now);
     assert.equal(r, "2026-12-01T12:03:00.000Z");
+  });
+});
+
+// ── #595 review: dispatchEntry edge cases (regression coverage) ──
+
+describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fire-now", () => {
+  // Bug: PR #1050 inicial fazia `cdAt/cpAt = doSchedule ? compute() : null`.
+  // Se editor rodasse publish-linkedin sem --schedule (debug, recovery,
+  // retry isolado), comments tinham scheduledAt=null → route=make_now →
+  // dispatchEntry pra webhook_target=pixel jogava `Error: webhook_target=pixel
+  // exige Worker configurado — make_now não suportado`.
+  // Fix: skip comments inteiros se !doSchedule (preserva backward-compat).
+  // Esta suite valida que dispatchEntry SEMPRE falha de forma controlada
+  // pra essa combinação inválida (pixel + scheduled_at null) — defesa em
+  // profundidade caso o caller esqueça o skip.
+
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "publish-linkedin-disp-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  function mkCtx(dir: string): DispatchContext {
+    return {
+      publishedPath: join(dir, "06-social-published.json"),
+      webhookUrl: "https://hook.test/diaria",
+      workerUrl: "https://worker.test",
+      workerToken: "test-tok",
+      useWorkerForScheduled: true,
+      editionDate: "260999",
+    };
+  }
+
+  it("pixel + scheduled_at null + worker não-configurado → entry status=failed (controlled)", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "comment_pixel",
+        text: "Pixel comment",
+        imageUrl: null,
+        scheduledAt: null, // bug scenario — sem schedule, sem now+offset
+        webhookTarget: "pixel",
+        action: "comment",
+        parentDestaque: "d1",
+      };
+      const ctx = mkCtx(dir);
+      const entry = await dispatchEntry(input, ctx);
+      // Não pode throw uncaught — caller espera entry; falha vira status=failed
+      assert.equal(entry.platform, "linkedin");
+      assert.equal(entry.subtype, "comment_pixel");
+      assert.equal(entry.status, "failed");
+      assert.match((entry.reason as string) ?? "", /pixel.*Worker|make_now/i);
+    } finally { cleanup(); }
+  });
+
+  it("pixel + scheduled_at null + worker configurado → ainda fail (worker_queue exige future)", async () => {
+    // Mesmo com worker configurado, scheduled_at=null faz isFutureSchedule=false →
+    // route=make_now → throw. Não há caminho válido pra pixel sem scheduled_at.
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "comment_pixel",
+        text: "Pixel comment",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "pixel",
+        action: "comment",
+        parentDestaque: "d1",
+      };
+      const ctx = mkCtx(dir); // useWorkerForScheduled: true
+      const entry = await dispatchEntry(input, ctx);
+      assert.equal(entry.status, "failed");
+      assert.match((entry.reason as string) ?? "", /pixel.*Worker|make_now/i);
+    } finally { cleanup(); }
+  });
+
+  it("diaria + scheduled_at null → fallback make_now path (post imediato OK)", async () => {
+    // webhook_target=diaria + scheduledAt=null sem Worker → route=make_now é
+    // caminho legítimo (Diar.ia tem URL local, posta imediato). Diferente do pixel.
+    // Mocka fetch pra simular Make webhook 200.
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ accepted: true, request_id: "test-req" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Main post",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const ctx = mkCtx(dir);
+      const entry = await dispatchEntry(input, ctx);
+      assert.equal(entry.status, "draft", "diaria fire-now → draft (post imediato)");
+      assert.equal(entry.route, "make_now");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
   });
 });

@@ -285,7 +285,7 @@ export async function postToWorkerQueue(
  * Comments têm `subtype: "comment_diaria" | "comment_pixel"`, `webhookTarget`
  * pode ser "pixel", e `action: "comment"`. Main usa defaults `"main" / "diaria" / "post"`.
  */
-interface DispatchInput {
+export interface DispatchInput {
   destaque: string;
   subtype: PostSubtype;
   text: string;
@@ -296,7 +296,7 @@ interface DispatchInput {
   parentDestaque?: string;
 }
 
-interface DispatchContext {
+export interface DispatchContext {
   publishedPath: string;
   webhookUrl: string;
   workerUrl: string;
@@ -313,8 +313,10 @@ interface DispatchContext {
  * Decide route (worker_queue se scheduled futuro + worker configurado, senão
  * make_now), monta payload, dispara, e grava entry em 06-social-published.json.
  * Em failure, grava entry com status="failed" + reason.
+ *
+ * Exported pra testes (#595 review) — caller principal é main() inline.
  */
-async function dispatchEntry(
+export async function dispatchEntry(
   input: DispatchInput,
   ctx: DispatchContext,
 ): Promise<PostEntry> {
@@ -790,6 +792,20 @@ async function main(): Promise<void> {
       }
     }
 
+    // ── 2-3. COMMENTS (T+3min / T+8min) — só com --schedule (#595 review)
+    // Sem --schedule (fire-now mode), comments seriam route=make_now e
+    // comment_pixel jogaria erro (Pixel exige Worker). Para preservar backward-
+    // compat com `publish-linkedin` ad-hoc fire-now (debug, recovery, retry
+    // isolado), pulamos comments quando !doSchedule. Pra editor que quer 9
+    // items (3 main + 6 comments), basta passar --schedule.
+    if (!doSchedule) {
+      console.log(
+        `linkedin/${d}: comments pulados (fire-now mode sem --schedule). ` +
+          `Pra agendar 9 items por edição (main + comment_diaria + comment_pixel), passe --schedule.`,
+      );
+      continue;
+    }
+
     // ── 2. COMMENT_DIARIA (T+3min) ─────────────────────────────────
     {
       const cdText = extractCommentDiaria(socialMd, d, editionUrl);
@@ -802,7 +818,7 @@ async function main(): Promise<void> {
           console.log(`SKIP linkedin/${d}/comment_diaria — already ${existing.status}`);
           results.push(existing);
         } else {
-          const cdAt = doSchedule ? computeCommentScheduledAt(mainAt, 3) : null;
+          const cdAt = computeCommentScheduledAt(mainAt, 3);
           results.push(await dispatchEntry({
             destaque: d,
             subtype: "comment_diaria",
@@ -828,7 +844,7 @@ async function main(): Promise<void> {
           console.log(`SKIP linkedin/${d}/comment_pixel — already ${existing.status}`);
           results.push(existing);
         } else {
-          const cpAt = doSchedule ? computeCommentScheduledAt(mainAt, 8) : null;
+          const cpAt = computeCommentScheduledAt(mainAt, 8);
           results.push(await dispatchEntry({
             destaque: d,
             subtype: "comment_pixel",
