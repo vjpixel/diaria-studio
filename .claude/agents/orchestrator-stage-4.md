@@ -146,9 +146,11 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b
 **Só dispatchar os canais que o editor autorizou em 4b.** Canais manuais ficam com status `pending_manual`.
 
 **Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
-1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
 2. `Agent` → `publish-newsletter` com `edition_dir = data/editions/{AAMMDD}/`.
-3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset}`.
+3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
+
+**`--test-mode` flag (#1056)**: quando `test_mode = true`, scripts publish-facebook e publish-linkedin tagam todas as entries gravadas em `06-social-published.json` com `is_test: true`. `delete-test-schedules.ts` honra esse flag por default (`--require-is-test` true) — só deleta entries explicitamente marcadas. Safety: rodar `delete-test-schedules.ts` em pasta de produção real é no-op porque entries de produção não têm `is_test: true`.
 
 **Tab isolation no Chrome**: `publish-newsletter` é o único agent Chrome em Etapa 4 — abre tab Beehiiv própria via `tabs_create_mcp`. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser.
 

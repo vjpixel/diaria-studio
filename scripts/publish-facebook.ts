@@ -45,6 +45,9 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       args["skip-existing"] = true;
     } else if (argv[i] === "--reschedule") {
       args.reschedule = true;
+    } else if (argv[i] === "--test-mode") {
+      // #1056 — tag entries com is_test:true pra delete-test-schedules safety
+      args["test-mode"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
@@ -233,6 +236,8 @@ async function rescheduleFacebookPosts(opts: {
   pageToken: string;
   apiVersion: string;
   dayOffsetOverride?: number;
+  /** #1056 — when true, tag entries com is_test:true */
+  isTest?: boolean;
 }): Promise<{ rescheduled: number; skipped: number; failed: number; posts: PostEntry[] }> {
   const published = loadPublished(opts.publishedPath);
   const fbPosts = published.posts.filter(
@@ -328,6 +333,7 @@ async function rescheduleFacebookPosts(opts: {
         scheduled_at: expectedAt,
         fb_post_id: postId,
       };
+      if (opts.isTest) newEntry.is_test = true; // #1056
       appendSocialPosts(opts.publishedPath, [newEntry]);
       rescheduled += 1;
       results.push(newEntry);
@@ -342,6 +348,7 @@ async function rescheduleFacebookPosts(opts: {
         scheduled_at: null,
         reason: `delete_succeeded_but_repost_failed: ${e.message}`,
       };
+      if (opts.isTest) lostEntry.is_test = true; // #1056
       appendSocialPosts(opts.publishedPath, [lostEntry]);
       failed += 1;
       results.push(lostEntry);
@@ -363,6 +370,7 @@ async function main() {
   }
   const skipExisting = args["no-skip-existing"] !== true;
   const doReschedule = !!args.reschedule;
+  const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
 
   // Load credentials — env vars com fallback para data/.fb-credentials.json (compat retroativa)
@@ -436,6 +444,7 @@ async function main() {
       pageToken: page_access_token,
       apiVersion: api_version,
       dayOffsetOverride,
+      isTest,
     });
     console.log(
       JSON.stringify(
@@ -458,6 +467,12 @@ async function main() {
 
   const destaques = ["d1", "d2", "d3"];
   const results: PostEntry[] = [];
+
+  // #1056 — wrapper que injeta is_test:true em entries quando rodando test_mode
+  const tagAndAppend = (entry: PostEntry): void => {
+    if (isTest) entry.is_test = true;
+    appendSocialPosts(publishedPath, [entry]);
+  };
 
   for (const d of destaques) {
     // Re-read published state from disk on each iteration (#758): LinkedIn agent
@@ -490,7 +505,7 @@ async function main() {
         scheduled_at: null,
         reason: e.message,
       };
-      appendSocialPosts(publishedPath, [entry]);
+      tagAndAppend(entry);
       results.push(entry);
       continue;
     }
@@ -508,7 +523,7 @@ async function main() {
         scheduled_at: null,
         reason: `${imageFile} not found`,
       };
-      appendSocialPosts(publishedPath, [entry]);
+      tagAndAppend(entry);
       results.push(entry);
       continue;
     }
@@ -532,7 +547,7 @@ async function main() {
           scheduled_at: scheduledAt,
           reason: `scheduled_time_invalid: ${msg}`,
         };
-        appendSocialPosts(publishedPath, [entry]);
+        tagAndAppend(entry);
         results.push(entry);
         continue;
       }
@@ -566,7 +581,7 @@ async function main() {
           fb_post_id: postId,
         };
 
-        appendSocialPosts(publishedPath, [entry]);
+        tagAndAppend(entry);
         results.push(entry);
         console.log(`OK facebook/${d} — ${entry.status} — ${postUrl}`);
         success = true;
@@ -590,7 +605,7 @@ async function main() {
         scheduled_at: null,
         reason: lastError,
       };
-      appendSocialPosts(publishedPath, [entry]);
+      tagAndAppend(entry);
       results.push(entry);
     }
   }
