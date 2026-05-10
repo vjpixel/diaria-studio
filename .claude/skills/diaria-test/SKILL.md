@@ -17,14 +17,18 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
   - LinkedIn cria rascunho ou agenda 10 dias à frente via Chrome.
   - **Pré-requisito: Chrome com extensão Claude in Chrome ativa e logado em LinkedIn/Beehiiv.** Se o probe do Chrome MCP falhar, a Etapa 4 ainda pula com warn loud (em vez do silent skip do default).
   - Editor é responsável por **deletar manualmente** os rascunhos/scheduled gerados antes da data de publicação.
+- `--full-research` (opcional) = **opt-in** pra dispatchar `source-researcher` (WebSearch nas fontes sem RSS) e `discovery-searcher` (queries temáticas abertas). Default: **off** (RSS-only — só fontes RSS rodam, researchers/discovery pulados). Razão (#1055): yield de researchers em runs de teste foi 12× pior por fonte e ~80% do token budget de Stage 1f. Pra benchmark de pipeline (RSS + dedup + render), default RSS-only é mais útil. `--full-research` cobre o caminho LLM completo quando explicitamente desejado.
 
 ## O que muda em relação a `/diaria-edicao`
 
 | Aspecto | `/diaria-edicao` | `/diaria-test` (default) | `/diaria-test --with-publish` |
 |---------|------------------|--------------------------|-------------------------------|
 | Gates humanos | Pausa em cada stage | **Auto-approve** | **Auto-approve** |
+| Source researchers (WebSearch) | Rodam ~11 fontes | **Pulados** (RSS-only, `--full-research` re-ativa) | **Pulados** (RSS-only, `--full-research` re-ativa) |
+| Discovery searchers (queries abertas) | ~10 queries paralelas | **Puladas** (RSS-only) | **Puladas** (RSS-only) |
 | Social schedule | `day_offset` do config (0) | n/a (Stage 4 pula) | **`day_offset = 10`** |
 | Newsletter | Rascunho + email de teste | n/a (Stage 4 pula) | Rascunho + email de teste |
+| Lint intentional-error | Bloqueia se ausente | n/a | **Downgrade pra warn** (#1057) |
 | LinkedIn (Chrome) | Rascunho + agenda | **Pulado** (`pending_manual`) | Rascunho + agenda 10 dias à frente |
 | Facebook (Graph API) | Agenda | **Pulado** | Agenda 10 dias à frente |
 | Drive sync | Push + pull normal | **Desabilitado** | **Desabilitado** |
@@ -35,7 +39,7 @@ Todo conteúdo social é agendado 10 dias à frente para que o editor possa dele
 
 ### 1. Setup
 
-1. **Parsear argumentos.** Aceitos: `<date>` (positional, AAMMDD) e `--with-publish` (flag). Ambos opcionais, em qualquer ordem. Setar `with_publish = true` se `--with-publish` aparece em qualquer posição; senão `false`.
+1. **Parsear argumentos.** Aceitos: `<date>` (positional, AAMMDD), `--with-publish` (flag), `--full-research` (flag). Todos opcionais, em qualquer ordem. Setar `with_publish = true` se `--with-publish` aparece; setar `rss_only = false` se `--full-research` aparece (default `rss_only = true`).
 2. Se `<date>` não foi passado, usar hoje (como AAMMDD):
    ```bash
    node -e "process.stdout.write(new Date().toISOString().slice(2,10).replace(/-/g,''))"
@@ -60,6 +64,8 @@ Variáveis pra alimentar o playbook:
 - `test_mode = true` → auto-aprovar todos os gates, **desabilitar Drive sync** (pular blocos de push/pull), copiar `_internal/01-categorized.json` → `_internal/01-approved.json` direto sem edição humana
 - `with_publish = true` se a flag `--with-publish` foi passada; senão `false` → controla se a Etapa 4 (publicação) roda. Quando `false` (default), o orchestrator força `CHROME_MCP = false` em Stage 0c, fazendo Etapa 4 pular com `status: "skipped"`. Quando `true`, o probe do Chrome roda normalmente — Etapa 4 dispatcha publish-newsletter/publish-facebook/publish-linkedin com `schedule_day_offset = 10`.
 - `schedule_day_offset = 10` → social posts agendados 10 dias à frente (só relevante quando `with_publish = true`).
+- `rss_only = true` por default; `false` se `--full-research` foi passado (#1055). Quando `true`, Stage 1f pula source-researchers (WebSearch nas fontes sem RSS) e discovery-searchers (queries temáticas). RSS batch + eia-composer rodam normalmente. Token savings: ~200K em edição típica (medido em #1055).
+- `skip_intentional_error_lint = true` em test_mode (#1057). publish-newsletter agent vai downgrade exit 1 do lint pre-flight `intentional-error-flagged` pra warn em vez de abort. Justificativa: erro intencional só humano declara em produção; em test_mode bloqueio impede testar Stage 4 newsletter end-to-end. Editor sempre vai deletar rascunho de teste antes de publicar.
 
 **Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
 

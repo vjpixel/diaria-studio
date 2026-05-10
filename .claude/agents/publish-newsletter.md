@@ -77,16 +77,18 @@ npx tsx scripts/lint-newsletter-md.ts --check intentional-error-flagged \
 
 Exit codes:
 - `0`: frontmatter declarado e válido — prosseguir.
-- `1`: declaração ausente ou incompleta — **abortar** com:
-  ```json
-  { "error": "intentional_error_missing", "details": "Editor não declarou intentional_error em 02-reviewed.md. Edite o arquivo (+ Drive sync) e adicione frontmatter conforme exemplo no stderr do lint." }
-  ```
-  Editor precisa editar o arquivo (instruções claras no stderr) e
-  re-rodar `/diaria-4-publicar`.
+- `1`: declaração ausente ou incompleta —
+  - **Modo produção (`test_mode = false`)**: **abortar** com:
+    ```json
+    { "error": "intentional_error_missing", "details": "Editor não declarou intentional_error em 02-reviewed.md. Edite o arquivo (+ Drive sync) e adicione frontmatter conforme exemplo no stderr do lint." }
+    ```
+    Editor precisa editar o arquivo (instruções claras no stderr) e re-rodar `/diaria-4-publicar`.
+  - **Modo teste (`test_mode = true`, #1057)**: **downgrade pra warn** + prosseguir. Log warn: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent publish-newsletter --level warn --message 'intentional_error_missing (test_mode skip)'`. Razão: convenção é editor adicionar erro intencional pós-paste em produção (memory `feedback_intentional_error_human_only.md`); em test_mode bloqueio impede testar Stage 4 newsletter end-to-end. Editor sempre deleta rascunho de teste antes de publicar.
 - `2`: erro de uso (path inválido) — abortar com `{ "error": "lint_cli_failed" }`.
 
 Esse lint roda ANTES de criar o draft no Beehiiv pra garantir que erros
-intencionais ficam registrados — mantém a auditoria do concurso possível.
+intencionais ficam registrados — mantém a auditoria do concurso possível
+em produção. Em `test_mode`, o lint é informativo apenas.
 
 #### 0.1 Sync frontmatter → intentional-errors.jsonl
 
