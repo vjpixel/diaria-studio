@@ -135,20 +135,43 @@ Resume-aware: re-execução pula imagens já no cache.
 
 #### 1.3 Render HTML + substituir URLs
 
-```bash
-# Gera HTML com placeholders {{IMG:filename}}
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
+**Modo split (paste híbrido — #1046):** o renderer produz 2 arquivos pra acomodar
+o limite de tamanho do `form_input` Chrome MCP (paste via ClipboardEvent
+do body grande) + preservar merge tags `{{poll_a_url}}/{{poll_b_url}}` na
+seção È IA? (paste via `editor.commands.insertContent`):
 
-# Substitui placeholders pelas URLs do Drive
+```bash
+# Gera 2 arquivos com placeholders {{IMG:filename}} em _internal/:
+#   newsletter-body.html  — 3 destaques + LANÇAMENTOS + PESQUISA + OUTRAS NOTÍCIAS
+#                           + SORTEIO + PARA ENCERRAR (sem È IA?). ~12-25KB.
+#   newsletter-eia.html   — È IA? standalone com merge tags. ~5KB.
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --split
+
+# Substitui placeholders nos 2 arquivos pelas URLs do Drive (in-place).
+npx tsx scripts/substitute-image-urls.ts \
+  --html {edition_dir}/_internal/newsletter-body.html \
+  --images {edition_dir}/06-public-images.json \
+  --out {edition_dir}/_internal/newsletter-body.html
+
+npx tsx scripts/substitute-image-urls.ts \
+  --html {edition_dir}/_internal/newsletter-eia.html \
+  --images {edition_dir}/06-public-images.json \
+  --out {edition_dir}/_internal/newsletter-eia.html
+```
+
+Se qualquer substituição reportar `unresolved: []` não vazio, abortar — uma imagem
+não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
+
+**Modo legado (paste manual editor)**: ainda gera arquivo único pra fluxo
+`prep-manual-publish.ts`:
+
+```bash
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
 npx tsx scripts/substitute-image-urls.ts \
   --html /tmp/newsletter.html \
   --images {edition_dir}/06-public-images.json \
   --out {edition_dir}/_internal/newsletter-final.html
 ```
-
-Se substituição reportar `unresolved: []` não vazio, abortar — uma imagem não tem placeholder correspondente (verificar 06-public-images.json e fluxo de upload).
-
-HTML final (`newsletter-final.html`) está pronto pra colar no Beehiiv.
 
 ### 2. Ler configuração
 
@@ -185,11 +208,95 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 - Se o template tiver outros blocos (ex: "Subscribe CTA" no final), manter.
 - Se não tiver Custom HTML block, abortar com `{ "error": "template_missing_custom_html" }` — editor precisa criar template adequado.
 
-#### 5.2 Colar HTML
+#### 5.2 Colar HTML — paste híbrido (#1046)
 
-- Abrir o bloco Custom HTML (clicar → modo edição).
-- Colar todo o conteúdo de `{edition_dir}/_internal/newsletter-final.html` no campo HTML.
-- Salvar o bloco.
+Paste em 2 fases pra contornar (a) limite de input do `form_input` Chrome MCP
+em payload >10KB e (b) normalização de merge tags `{{poll_x_url}}` pelo
+paste handler do TipTap.
+
+**Pré-requisitos**:
+- Foco no editor de bloco rich-text aberto na posição certa (Custom HTML
+  block ou bloco principal de conteúdo).
+- `_internal/newsletter-body.html` + `_internal/newsletter-eia.html`
+  (gerados em 1.3 via `--split`) já com URLs Drive substituídas.
+
+**Fase 1 — paste body via ClipboardEvent (preserva HTML estruturado, ~12-25KB):**
+
+Ler o body do disco e injetar via `mcp__claude-in-chrome__javascript_tool`.
+A função abaixo lê o arquivo via `fetch('file://...')` (não funciona —
+CSP) — então passe o conteúdo HTML inline no JS arg. Mas o JS arg em si
+tem limite ~10KB.
+
+**Solução**: usar Bash + Chrome JS em coordenação. Bash lê o arquivo,
+escreve em uma variável JS via `chunked` se necessário. Mas pra body
+~12-25KB, dá pra passar via única chamada `javascript_tool` se cabe no
+input do tool (~10KB literal). Caso contrário, chunked accumulator.
+
+Tentativa primária — paste em 1 call (cabe se body <10KB JS-encoded):
+
+```js
+// 1. Capturar editor TipTap
+const editorEl = document.querySelector('[contenteditable="true"]');
+if (!editorEl) throw new Error('contenteditable não encontrado');
+editorEl.focus();
+// 2. Construir DataTransfer com HTML
+const dt = new DataTransfer();
+dt.setData('text/html', `${HTML_BODY_AQUI}`);
+// 3. Dispatch synthetic paste event
+const evt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+editorEl.dispatchEvent(evt);
+// 4. Retornar status pro agent verificar
+({ pasted: true, dispatched_returned: !evt.defaultPrevented });
+```
+
+Se o body for >10KB JS-encoded (mais provável), fallback chunked:
+acumular `window.__bodyChunks` em N chamadas `javascript_tool` e fazer
+`setData('text/html', window.__bodyChunks.join(''))` na última.
+Cada chunk ~7KB, 2-4 chunks típicos.
+
+**Fase 2 — paste È IA? via insertContent (preserva merge tags):**
+
+A seção È IA? tem `{{poll_a_url}}/{{poll_b_url}}` que **morrem** se passarem
+pelo paste handler do TipTap (validador de URL rejeita). Solução: usar
+`editor.commands.insertContent` com `htmlSnippet` que injeta como bloco
+raw, sem normalização.
+
+Após Fase 1 (cursor naturalmente no fim do body pasted), executar:
+
+```js
+const html = `${HTML_EIA_AQUI}`;
+// Acessar instância TipTap (Beehiiv expõe globalmente; varia: window.editor, window.__tiptapEditor, etc.)
+const editor = window.editor ?? window.tiptapEditor ?? window.__tiptapEditor;
+if (!editor) throw new Error('TipTap editor instance não encontrada — verificar nome global');
+editor.commands.insertContent({
+  type: 'htmlSnippet',
+  attrs: { language: 'html' },
+  content: [{ type: 'text', text: html }],
+});
+({ inserted: true });
+```
+
+**Fallback se `insertContent` falhar**: tentar `editor.chain().insertContent(html, { parseOptions: { preserveWhitespace: 'full' }}).run()`. Se ainda falhar, gravar em `unfixed_issues[]` com `reason: "eia_section_paste_failed"` e seguir — editor adiciona manualmente via UI.
+
+**Pós-paste — verificação dos merge tags:**
+
+```js
+// Verificar que {{poll_a_url}} e {{poll_b_url}} aparecem literalmente no doc.
+const html = editor.getHTML();
+const hasA = html.includes('{{poll_a_url}}');
+const hasB = html.includes('{{poll_b_url}}');
+({ has_poll_a: hasA, has_poll_b: hasB });
+```
+
+Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com
+`reason: "merge_tag_stripped_{a|b}"` e re-tentar Fase 2 1× antes de prosseguir.
+
+**Salvar o bloco** após paste OK.
+
+**Modo legado (fallback)**: se a edição não tem `_internal/newsletter-body.html`
+(ex: editor rodou só `--format html --out`), cair no paste único de
+`newsletter-final.html` via `form_input` (comportamento pré-#1046). Pode
+truncar pra HTML grande — registrar warning no run-log.
 
 #### 5.3 Verificação pós-paste
 

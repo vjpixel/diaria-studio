@@ -105,3 +105,28 @@ editor.commands.insertContent({
 **Implementar** após validar 1 ponto adicional: `editor.commands.insertContent` com htmlSnippet de ~3KB de uma vez (já provei pra ~1.5KB no PR #1045). Se cabe em 1 JS call (~10KB limit), solução híbrida viável sem chunked paste.
 
 Issue de tracking: #1046 (e #312 como predecessor).
+
+---
+
+## Implementação (2026-05-09)
+
+**Status**: renderer split implementado + agent prompt atualizado, **falta validação end-to-end** numa edição real.
+
+**Mudanças em código:**
+
+1. **`scripts/render-newsletter-html.ts`** — flag `--split` produz 2 arquivos em `_internal/`:
+   - `newsletter-body.html` (~12KB testado em 260508): destaques + LANÇAMENTOS + PESQUISA + OUTRAS NOTÍCIAS + SORTEIO + PARA ENCERRAR. Sem È IA?, sem merge tags.
+   - `newsletter-eia.html` (~5KB): È IA? standalone com `{{poll_a_url}}/{{poll_b_url}}` preservados, wrapped em outer table própria.
+   - Funções exportadas: `renderHTML(content, { excludeEia })` + `renderEiaStandalone(content)`. 8 tests novos cobrem split sem perda de conteúdo, tamanhos dentro dos limites, eia null quando não configurada.
+   - Modo legado (`--out --format html`) **inalterado** pra backward-compat com `prep-manual-publish.ts` (paste manual editor segue usando `newsletter-final.html` único).
+
+2. **`.claude/agents/publish-newsletter.md`** — passo 5.2 substituído com paste híbrido em 2 fases:
+   - Fase 1: `ClipboardEvent` paste do body via `mcp__claude-in-chrome__javascript_tool`. Fallback chunked acumulator se body >10KB JS-encoded.
+   - Fase 2: `editor.commands.insertContent({type: 'htmlSnippet', ...})` da È IA?. Fallback `editor.chain().insertContent(html, parseOptions...)`.
+   - Pós-paste verifica que `{{poll_a_url}}` e `{{poll_b_url}}` aparecem no `editor.getHTML()`. Re-tenta 1× se stripped.
+
+**Falta:**
+
+- Validação manual ponta-a-ponta numa edição real (executar agent contra Beehiiv staging). Sem isso, paste híbrido em produção é primeiro contato.
+- Confirmar nome global da TipTap editor instance (`window.editor` vs `window.__tiptapEditor` vs outro). Spike usou `editor.commands` direto na inspeção mas não documentou onde encontrá-lo.
+- Confirmar limite real de `htmlSnippet` content text (testado ~1.5KB no #1045; precisa testar 5KB do È IA?).

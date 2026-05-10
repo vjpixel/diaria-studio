@@ -8,6 +8,8 @@ import {
   parseSections,
   parseEIA,
   fallbackEIA,
+  renderHTML,
+  renderEiaStandalone,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -421,5 +423,104 @@ describe("parseEIA prevResultLine (#107)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── #1046 — paste híbrido: split body/È IA? ──
+
+describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
+  // Fixture mínima reusada — destaques sem È IA? configurada e com.
+  // RenderDestaque extends Destaque (de extract-destaques) com `emoji` + `imageFile`.
+  const baseDestaque = {
+    n: 1 as const,
+    category: "RISCO",
+    title: "Modelos se replicam sozinhos",
+    body: "Parágrafo 1.\nParágrafo 2.",
+    why: "Por que importa.",
+    url: "https://example.com/d1",
+    emoji: "⚠️",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixtureSemEia = {
+    title: "Edição teste",
+    subtitle: "Teste sem È IA?",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "01-eia-A.jpg", imageB: "01-eia-B.jpg", edition: "260999" },
+    sections: [],
+  };
+
+  const fixtureComEia = {
+    ...fixtureSemEia,
+    eia: {
+      credit: "Foto: Author / CC BY-SA 4.0.",
+      imageA: "01-eia-A.jpg",
+      imageB: "01-eia-B.jpg",
+      edition: "260999",
+    },
+  };
+
+  it("renderHTML default: inclui È IA? quando eia.credit não-vazio", () => {
+    const html = renderHTML(fixtureComEia);
+    assert.match(html, /É IA\?/);
+    assert.match(html, /\{\{poll_a_url\}\}/);
+    assert.match(html, /\{\{poll_b_url\}\}/);
+  });
+
+  it("renderHTML excludeEia=true: omite seção È IA? mesmo quando configurada", () => {
+    const html = renderHTML(fixtureComEia, { excludeEia: true });
+    assert.ok(!html.includes("É IA?"), "body não deve mencionar È IA?");
+    assert.ok(!html.includes("{{poll_a_url}}"), "body não deve ter merge tags");
+    assert.ok(!html.includes("{{poll_b_url}}"));
+    // Mas deve ter o destaque
+    assert.match(html, /Modelos se replicam/);
+  });
+
+  it("renderHTML excludeEia=true sem eia configurada: idêntico ao default", () => {
+    const a = renderHTML(fixtureSemEia, { excludeEia: true });
+    const b = renderHTML(fixtureSemEia);
+    assert.equal(a, b, "sem È IA? configurada, excludeEia é no-op");
+  });
+
+  it("renderEiaStandalone retorna null quando eia.credit vazio", () => {
+    assert.equal(renderEiaStandalone(fixtureSemEia), null);
+  });
+
+  it("renderEiaStandalone retorna HTML com merge tags preservadas", () => {
+    const html = renderEiaStandalone(fixtureComEia);
+    assert.ok(html, "deve retornar HTML não-null pra eia configurada");
+    assert.match(html!, /\{\{poll_a_url\}\}/);
+    assert.match(html!, /\{\{poll_b_url\}\}/);
+    assert.match(html!, /É IA\?/);
+  });
+
+  it("renderEiaStandalone wrap em outer table própria (paste-ready)", () => {
+    const html = renderEiaStandalone(fixtureComEia);
+    // Deve começar com comment header + abrir <table> próprio
+    assert.match(html!, /^<!-- Diar\.ia È IA\? section/);
+    assert.match(html!, /<table role="none"[^>]*>/);
+    assert.match(html!, /<\/table>$/);
+  });
+
+  it("split: body + standalone juntos têm os mesmos destaques que renderHTML default", () => {
+    // Soma das partes ≈ todo: garantia que split não perde conteúdo.
+    const fullDefault = renderHTML(fixtureComEia);
+    const body = renderHTML(fixtureComEia, { excludeEia: true });
+    const eia = renderEiaStandalone(fixtureComEia);
+    // Destaque presente em body
+    assert.match(body, /Modelos se replicam/);
+    // È IA? credit presente em eia standalone
+    assert.match(eia!, /Foto: Author/);
+    // Default tem ambos, body só destaque, eia só È IA?
+    assert.match(fullDefault, /Modelos se replicam/);
+    assert.match(fullDefault, /Foto: Author/);
+  });
+
+  it("split: tamanhos somados ficam dentro dos limites do paste híbrido", () => {
+    // Limite spike: body via ClipboardEvent ~25KB OK, È IA? via insertContent ~10KB OK.
+    const body = renderHTML(fixtureComEia, { excludeEia: true });
+    const eia = renderEiaStandalone(fixtureComEia)!;
+    assert.ok(body.length < 25_000, `body ${body.length} bytes < 25KB`);
+    assert.ok(eia.length < 10_000, `eia ${eia.length} bytes < 10KB`);
   });
 });
