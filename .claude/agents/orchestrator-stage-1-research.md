@@ -149,11 +149,17 @@ npx tsx scripts/inject-inbox-urls.ts \
   --validate-pool
 ```
 
-Output stdout: `{ injected, already_in_pool, total_editor_urls, total_pool_size, editor_blocks, total_inbox_blocks }`. Logar como info no run-log.
+Output stdout: `{ injected, already_in_pool, total_editor_urls, total_newsletter_urls, total_pool_size, editor_blocks, newsletter_blocks, total_inbox_blocks }`. Logar como info no run-log.
 
 **`--validate-pool`** força saída com erro se algum URL extraído do inbox **não** estiver no pool após injeção. Esse é o sentinel anti-#594 — passo 1h não pode mais ser skipado silenciosamente.
 
-Cada URL vira um artigo sintético: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`. Categorizer prioriza `editor_submitted`. Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
+**#1095 — extração de newsletters não-Pixel:** script também processa blocks do inbox.md cujo sender ≠ editor (Cyberman, Superhuman, AlphaSignal, etc). Extrai URLs primárias (TechCrunch, Guardian, BBC, etc) e injeta como artigos com `flag: "newsletter_extracted"`, `source: "inbox_newsletter:{sender}"`. Filtros aplicados: tracking URLs, afiliados (hubspot offers, _bhiiv referral), auto-promo (URLs do próprio domínio/brand do sender). Opt-out: `--no-newsletters`.
+
+Cada URL vira um artigo sintético:
+- Forward do Pixel: `{ url, source: "inbox", title: "(inbox)", flag: "editor_submitted", submitted_at, submitted_subject, submitted_via }`.
+- Extraído de newsletter: `{ url, source: "inbox_newsletter:{sender}", title: "(newsletter:{sender})", flag: "newsletter_extracted", submitted_at, submitted_subject, submitted_via }`.
+
+Categorizer prioriza `editor_submitted`. `newsletter_extracted` recebe peso menor (não bypassa filters de acessibilidade). Tracking-only URLs (TLDR, Beehiiv mail links, CDN images) são filtradas — só conteúdo real.
 
 ### 1h.6. Validar injeção (#625)
 
