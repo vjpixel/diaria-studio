@@ -27,7 +27,9 @@
  *     --edition 260506
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+// #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
+import { canonicalize, extractPastUrls, extractPastDestaqueUrls } from "./dedup.ts";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -269,6 +271,51 @@ export function applyDomainCap(
   return { kept, dropped };
 }
 
+/**
+ * Pure (#1068 phase 2): drop URLs que apareceram como secondary em edições
+ * passadas E não foram promovidas a highlight neste run (= continuam em
+ * bucket non-highlight no scored output).
+ *
+ * Phase 1 (em `scripts/dedup.ts`) bloqueia past-destaques e libera
+ * past-secondaries pra passar pelo scorer. Esta phase 2 captura o caso
+ * "past secondary + atual secondary = bloquear repetição real" depois que
+ * o scorer já decidiu o que vai virar highlight.
+ *
+ * URLs em `highlightUrls` bypassam (foram promovidas — comportamento OK
+ * conforme issue #1068). URLs com hostname inválido: passa (defensive).
+ */
+export function applyPastSecondaryFilter(
+  articles: Article[],
+  pastSecondaryUrls: Set<string>,
+  highlightUrls: Set<string>,
+): {
+  kept: Article[];
+  dropped: Array<{ url: string; title?: string; score: number | null }>;
+} {
+  const kept: Article[] = [];
+  const dropped: Array<{ url: string; title?: string; score: number | null }> = [];
+
+  for (const article of articles) {
+    const canon = canonicalize(article.url);
+    // Promovido a highlight nesta edição: bypass (Phase 1 já permitiu)
+    if (highlightUrls.has(article.url) || highlightUrls.has(canon)) {
+      kept.push(article);
+      continue;
+    }
+    if (pastSecondaryUrls.has(canon)) {
+      dropped.push({
+        url: article.url,
+        title: article.title,
+        score: (article.score as number | null | undefined) ?? null,
+      });
+      continue;
+    }
+    kept.push(article);
+  }
+
+  return { kept, dropped };
+}
+
 export function applyScoreFilter(
   articles: Article[],
   threshold: number,
@@ -342,16 +389,25 @@ export const DEFAULT_DOMAIN_CAP = 3;
 export function finalizeStage1(
   categorized: CategorizedBuckets,
   scoredOutput: ScoredOutput,
-  options: { threshold?: number; domainCap?: number } = {},
+  options: {
+    threshold?: number;
+    domainCap?: number;
+    /** #1068 phase 2: URLs em past-secondary (= apareceram como non-highlight
+     * em edições passadas). Quando fornecido, drop pós-scorer dos URLs que
+     * ficaram em bucket non-highlight neste run (= secondary→secondary). */
+    pastSecondaryUrls?: Set<string>;
+  } = {},
 ): {
   buckets: CategorizedBuckets;
   url_mismatches: Array<{ article_url: string; article_title?: string }>;
   removed_total: number;
   bypass_placeholders: Array<{ url: string; title?: string }>;
   domain_capped: Array<{ url: string; title?: string; domain: string; score: number | null }>;
+  past_secondary_dropped: Array<{ url: string; title?: string; score: number | null }>;
 } {
   const threshold = options.threshold ?? 40;
   const domainCap = options.domainCap ?? DEFAULT_DOMAIN_CAP;
+  const pastSecondaryUrls = options.pastSecondaryUrls ?? new Set<string>();
   const { scoreMap, titleIndex } = buildScoreIndexes(scoredOutput.all_scored);
 
   // URLs já em highlights e runners_up (excluídas do filtro de score)
@@ -370,6 +426,7 @@ export function finalizeStage1(
   let removedTotal = 0;
   const bypassPlaceholders: Array<{ url: string; title?: string }> = [];
   const domainCapped: Array<{ url: string; title?: string; domain: string; score: number | null }> = [];
+  const pastSecondaryDropped: Array<{ url: string; title?: string; score: number | null }> = [];
   // #1067: highlights + runners_up bypassam o cap por domínio (issue explicit).
   const protectedUrls = new Set([...highlightUrls, ...runnerUpUrls]);
 
@@ -413,6 +470,30 @@ export function finalizeStage1(
     removedTotal += removed.length;
     for (const bp of bypassed_placeholders) {
       bypassPlaceholders.push({ url: bp.url, title: bp.title });
+    }
+  }
+
+  // Step 3.4 (#1068 phase 2): drop URLs em past-secondary que não viraram
+  // highlight neste run. Phase 1 (dedup.ts) liberou todas pra passar pelo
+  // scorer; aqui retiramos as que ficaram em bucket non-highlight (=
+  // secondary→secondary, repetição real do conteúdo).
+  if (pastSecondaryUrls.size > 0) {
+    for (const bucket of bucketNames) {
+      const { kept: filtered, dropped } = applyPastSecondaryFilter(
+        enriched[bucket] ?? [],
+        pastSecondaryUrls,
+        highlightUrls,
+      );
+      enriched[bucket] = filtered;
+      pastSecondaryDropped.push(...dropped);
+    }
+    if (pastSecondaryDropped.length > 0) {
+      console.error(
+        `[finalize-stage1] past-secondary filter (#1068 phase 2): dropped ${pastSecondaryDropped.length} URL(s)`,
+      );
+      for (const d of pastSecondaryDropped) {
+        console.error(`  ${d.url} | title: ${d.title?.slice(0, 80) ?? "(sem)"}`);
+      }
     }
   }
 
@@ -490,6 +571,7 @@ export function finalizeStage1(
     removed_total: removedTotal,
     bypass_placeholders: bypassPlaceholders,
     domain_capped: domainCapped,
+    past_secondary_dropped: pastSecondaryDropped,
   };
 }
 
@@ -540,9 +622,34 @@ function main(): void {
   // categorized pode ser `{ kept: { lancamento, pesquisa, noticias } }` ou flat
   const categorized: CategorizedBuckets = raw.kept ?? raw;
 
-  const { buckets, url_mismatches, removed_total, bypass_placeholders, domain_capped } = finalizeStage1(
+  // #1068 phase 2: carrega past URLs flat - past destaque URLs = past-secondary.
+  // Caller pode override via --past-editions e --editions-dir; defaults
+  // batem com convenções do dedup.ts.
+  const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
+  const editionsDir = args["editions-dir"] ?? "data/editions";
+  const window = args["window"] ? parseInt(args["window"], 10) : 14;
+  let pastSecondaryUrls: Set<string> = new Set();
+  const pastMdAbs = resolve(ROOT, pastEditionsPath);
+  if (existsSync(pastMdAbs)) {
+    try {
+      const pastMd = readFileSync(pastMdAbs, "utf8");
+      const allPastUrls = extractPastUrls(pastMd, window);
+      const pastDestaque = extractPastDestaqueUrls(resolve(ROOT, editionsDir), window, edition ?? undefined);
+      // Set difference: past flat \ past destaques = past secondary
+      pastSecondaryUrls = new Set(
+        [...allPastUrls].filter((u) => !pastDestaque.has(u)),
+      );
+    } catch (e) {
+      console.warn(
+        `[finalize-stage1] WARN: falha ao carregar past-secondary URLs (#1068 phase 2): ${(e as Error).message}`,
+      );
+    }
+  }
+
+  const { buckets, url_mismatches, removed_total, bypass_placeholders, domain_capped, past_secondary_dropped } = finalizeStage1(
     categorized,
     scoredOutput,
+    { pastSecondaryUrls },
   );
 
   // Log warn por URL mismatches (#720)
@@ -582,6 +689,7 @@ function main(): void {
       removed_total,
       bypass_placeholders: bypass_placeholders.length,
       domain_capped: domain_capped.length,
+      past_secondary_dropped: past_secondary_dropped.length,
     }) + "\n",
   );
 }

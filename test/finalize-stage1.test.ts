@@ -13,6 +13,7 @@ import {
   checkEditorSubmittedBypass,
   applyScoreFilter,
   applyDomainCap,
+  applyPastSecondaryFilter,
   finalizeStage1,
   DEFAULT_DOMAIN_CAP,
   type Article,
@@ -599,5 +600,120 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
     const { buckets, domain_capped } = finalizeStage1(categorized, scored);
     assert.equal(buckets.noticias.length, 4);
     assert.equal(domain_capped.length, 0);
+  });
+});
+
+describe("applyPastSecondaryFilter (#1068 phase 2)", () => {
+  const mk = (url: string, score = 50): Article => ({
+    url,
+    title: url,
+    published_at: "2026-05-11T00:00:00Z",
+    score,
+  });
+
+  it("URL em past-secondary que NÃO é highlight é droppada", () => {
+    const articles = [
+      mk("https://example.com/a"),
+      mk("https://example.com/repeat"),
+    ];
+    const pastSecondary = new Set(["https://example.com/repeat"]);
+    const highlights = new Set<string>();
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].url, "https://example.com/a");
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].url, "https://example.com/repeat");
+  });
+
+  it("URL em past-secondary E em highlights = bypass (promoção válida)", () => {
+    const articles = [
+      mk("https://example.com/promoted"),
+    ];
+    const pastSecondary = new Set(["https://example.com/promoted"]);
+    const highlights = new Set(["https://example.com/promoted"]);
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+    assert.equal(dropped.length, 0);
+  });
+
+  it("URL nova (não em past) passa intacta", () => {
+    const articles = [mk("https://example.com/NEW")];
+    const pastSecondary = new Set(["https://example.com/old"]);
+    const highlights = new Set<string>();
+    const { kept } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+  });
+
+  it("canonicaliza URL antes da match (utm_*, fragment)", () => {
+    const articles = [mk("https://example.com/x?utm_source=tw")];
+    const pastSecondary = new Set(["https://example.com/x"]);
+    const highlights = new Set<string>();
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 0);
+    assert.equal(dropped.length, 1);
+  });
+});
+
+describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>, highlightUrls: string[] = []): ScoredOutput {
+    return {
+      highlights: highlightUrls.map((u) => ({ url: u, score: 90 } as any)),
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("past-secondary que não viraram highlight são droppados pós-scorer", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://example.com/new" },
+        { url: "https://example.com/past-secondary-repeat" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://example.com/new", score: 90 },
+      { url: "https://example.com/past-secondary-repeat", score: 80 },
+    ]);
+    const pastSecondaryUrls = new Set(["https://example.com/past-secondary-repeat"]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
+      pastSecondaryUrls,
+    });
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(buckets.noticias[0].url, "https://example.com/new");
+    assert.equal(past_secondary_dropped.length, 1);
+  });
+
+  it("past-secondary que VIROU highlight passa (promoção permitida)", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://example.com/promoted" },
+      ],
+    };
+    const scored = mkOutput(
+      [{ url: "https://example.com/promoted", score: 95 }],
+      ["https://example.com/promoted"],
+    );
+    const pastSecondaryUrls = new Set(["https://example.com/promoted"]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
+      pastSecondaryUrls,
+    });
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(past_secondary_dropped.length, 0);
+  });
+
+  it("sem pastSecondaryUrls (back-compat): nada é droppado por essa razão", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [{ url: "https://example.com/x" }],
+    };
+    const scored = mkOutput([{ url: "https://example.com/x", score: 80 }]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(past_secondary_dropped.length, 0);
   });
 });
