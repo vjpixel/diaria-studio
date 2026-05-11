@@ -24,7 +24,8 @@
  * Uso:
  *   npx tsx scripts/publish-linkedin.ts \
  *     --edition-dir data/editions/260504 \
- *     [--schedule]          # se presente, calcula scheduled_at e usa queue p/ posts futuros
+ *     [--fire-now]          # #1101: opt-in pra post imediato (default = agendar via Worker queue)
+ *     [--schedule]          # no-op (default já é agendar). Mantido pra compat.
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--only d1,d2,d3]     # subset de posts (default: todos)
  *     [--day-offset N]      # override de day_offset do config
@@ -82,6 +83,9 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--schedule") {
       args.schedule = true;
+    } else if (argv[i] === "--fire-now") {
+      // #1101 — opt-in pra post imediato (sem agendamento). Default é agendar.
+      args["fire-now"] = true;
     } else if (argv[i] === "--skip-existing") {
       args["skip-existing"] = true;
     } else if (argv[i] === "--test-mode") {
@@ -484,12 +488,15 @@ async function main(): Promise<void> {
   if (!editionDirRaw) {
     console.error(
       "Erro: --edition-dir obrigatório.\n" +
-        "Uso: npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/260504 [--schedule]",
+        "Uso: npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/260504 [--fire-now]",
     );
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirRaw);
-  const doSchedule = !!args.schedule;
+  // #1101: default = agendar. `--schedule` continua aceito (no-op se default já é true).
+  // Pra forçar post imediato, usar `--fire-now` (opt-in explícito).
+  const fireNow = !!args["fire-now"];
+  const doSchedule = !fireNow;
   const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
   const noComments = !!args["no-comments"]; // #1075 — pular comment_diaria + comment_pixel
   if (args["skip-existing"]) {
