@@ -60,7 +60,9 @@ export function checkResearcherCompleteness(
     } else if (r.method === "rss" || r.method === "sitemap") {
       rss++;
     } else {
-      // Sem method explícito ou method !== rss/sitemap = source-researcher
+      // Source-researcher real escreve method: "websearch" (validado em
+      // edições passadas — ex: 260508 tem 5 entries com método websearch).
+      // Default cobre também ausência de method (defensive).
       researcher++;
     }
   }

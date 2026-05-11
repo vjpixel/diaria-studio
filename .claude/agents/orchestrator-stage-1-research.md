@@ -81,7 +81,7 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 ### 1f. Dispatch de researchers e discovery
 
-**⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-tris (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
+**⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
 
 **RSS-only mode (#1055).** Se `rss_only = true` no contexto (default em `/diaria-test`, opt-in via `--full-research`), **pular** todo o dispatch de `source-researcher` e `discovery-searcher` deste passo. RSS batch (1e) e eia-composer (1d) seguem rodando normalmente. Razão: yield de researchers em runs de teste foi 12× pior por fonte (5/200 articles) consumindo ~80% do token budget de Stage 1f. Logar info: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'rss_only mode: skipping source-researchers and discovery'`. Quando `rss_only = false` (modo `/diaria-edicao` normal ou `/diaria-test --full-research`), o dispatch abaixo segue como sempre.
 

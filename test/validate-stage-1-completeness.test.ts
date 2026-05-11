@@ -61,6 +61,28 @@ describe("checkResearcherCompleteness", () => {
     assert.equal(result.stats.discovery, 1);
   });
 
+  it("aceita: method=websearch (formato real do source-researcher)", () => {
+    // Validado em data/editions/260508/_internal/researcher-results.json
+    // (5 entries com method: "websearch" quando 1f rodou).
+    const runs = [
+      { source: "G1 Tecnologia (IA)", outcome: "ok" as const, method: "websearch", articles: [] },
+    ];
+    const result = checkResearcherCompleteness(runs);
+    assert.equal(result.ok, true);
+    assert.equal(result.stats.researcher, 1);
+  });
+
+  it("aceita: method=discovery (formato real do discovery-searcher)", () => {
+    // Validado em data/editions/260508 (10 entries com method: "discovery"
+    // e source prefix "discovery:").
+    const runs = [
+      { source: "discovery:regulacao-ia-brasil", outcome: "ok" as const, method: "discovery", articles: [] },
+    ];
+    const result = checkResearcherCompleteness(runs);
+    assert.equal(result.ok, true);
+    assert.equal(result.stats.discovery, 1);
+  });
+
   it("trata sitemap como RSS (não conta como researcher)", () => {
     const runs = [
       { source: "Perplexity Research", outcome: "ok" as const, method: "sitemap", articles: [] },
