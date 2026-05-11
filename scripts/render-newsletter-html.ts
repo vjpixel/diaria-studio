@@ -85,6 +85,10 @@ interface NewsletterContent {
   destaques: RenderDestaque[];
   eia: EIA;
   sections: Section[];
+  /** #1076: bloco 🎁 SORTEIO parseado do reviewed.md (texto bruto, ou null se ausente). */
+  sorteio?: string | null;
+  /** #1076: bloco 🙋🏼‍♀️ PARA ENCERRAR parseado do reviewed.md. */
+  encerrar?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -94,6 +98,29 @@ interface NewsletterContent {
  * Uses URL-anchored parsing: each item ends at a URL line.
  * Lines between URL boundaries are grouped as title + description.
  */
+/**
+ * Pure (#1076): extrai bloco SORTEIO ou PARA ENCERRAR do reviewed.md. Retorna
+ * texto bruto pós-header (markdown), null se ausente. Caller passa o
+ * marker (ex: "🎁 SORTEIO" ou "🙋🏼‍♀️ PARA ENCERRAR").
+ *
+ * Procura `**{marker}**` como linha de header, captura tudo até o próximo
+ * `---` ou fim do MD. Aceita tanto a forma com bold (`**...**`) quanto sem.
+ */
+export function extractTemplateBlock(text: string, marker: string): string | null {
+  // Escape marker pra regex (emojis + word chars; safe)
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // JS regex não tem \Z — usa lookahead `^---$` ou fim de string via slice.
+  const headerRe = new RegExp(`^(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*$`, "m");
+  const headerMatch = headerRe.exec(text);
+  if (!headerMatch) return null;
+  const after = text.slice(headerMatch.index + headerMatch[0].length);
+  const splitRe = /^---\s*$/m;
+  const splitMatch = splitRe.exec(after);
+  const block = splitMatch ? after.slice(0, splitMatch.index) : after;
+  const trimmed = block.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
   const sections: Section[] = [];
@@ -341,6 +368,11 @@ function extractContent(editionDir: string): NewsletterContent {
     ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
     : fallbackEIA(editionDir);
 
+  // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
+  // Quando ausentes (edição antiga, ou pixel preferiu omitir), graceful skip.
+  const sorteio = extractTemplateBlock(reviewedText, "🎁 SORTEIO");
+  const encerrar = extractTemplateBlock(reviewedText, "🙋🏼‍♀️ PARA ENCERRAR");
+
   return {
     title: destaques[0].title,
     subtitle: buildSubtitle(destaques[1].title, destaques[2].title),
@@ -348,6 +380,8 @@ function extractContent(editionDir: string): NewsletterContent {
     destaques,
     eia,
     sections,
+    sorteio,
+    encerrar,
   };
 }
 
@@ -596,6 +630,93 @@ ${renderRule(true)}
 </td></tr>`;
 }
 
+/**
+ * Converte markdown inline simples (links `[text](url)`, bold `**text**`)
+ * em HTML. Cobre o que aparece em SORTEIO/PARA ENCERRAR. Não é parser
+ * markdown completo — só o subset necessário pros 2 blocos.
+ */
+function mdInlineToHtml(s: string): string {
+  // Bold primeiro pra não engolir links dentro
+  let out = s.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_m, label: string, url: string) =>
+      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
+  );
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  return out;
+}
+
+/**
+ * Pure (#1076): renderiza o bloco 🎁 SORTEIO. Texto bruto vem do reviewed.md
+ * (parágrafos + lista). Output em estilo editorial (#1085): kicker uppercase
+ * + parágrafos sem box ciano.
+ */
+function renderSorteio(text: string): string {
+  const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
+  const html = paragraphs.map((p) =>
+    `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${mdInlineToHtml(p.trim())}</p>`
+  ).join("");
+  return `<!-- 🎁 SORTEIO -->
+${renderRule(true)}
+<tr><td style="padding:24px 2px 0 2px;">
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">🎁 Sorteio</p>
+  ${html}
+</td></tr>`;
+}
+
+/**
+ * Pure (#1076): renderiza o bloco 🙋🏼‍♀️ PARA ENCERRAR. Lista `- item` no MD
+ * vira `<ul><li>...`; resto vira parágrafos.
+ */
+function renderEncerrar(text: string): string {
+  const lines = text.split("\n");
+  type Block = { type: "p" | "ul"; content: string[] };
+  const blocks: Block[] = [];
+  let current: Block | null = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      if (current) {
+        blocks.push(current);
+        current = null;
+      }
+      continue;
+    }
+    const isLi = /^[-*]\s+/.test(line);
+    if (isLi) {
+      if (current?.type !== "ul") {
+        if (current) blocks.push(current);
+        current = { type: "ul", content: [] };
+      }
+      current.content.push(line.replace(/^[-*]\s+/, ""));
+    } else {
+      if (current?.type !== "p") {
+        if (current) blocks.push(current);
+        current = { type: "p", content: [] };
+      }
+      current.content.push(line);
+    }
+  }
+  if (current) blocks.push(current);
+
+  const html = blocks.map((b) => {
+    if (b.type === "ul") {
+      const items = b.content.map((c) =>
+        `<li style="margin:0 0 4px 0;">${mdInlineToHtml(c)}</li>`
+      ).join("");
+      return `<ul style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0 0 0 20px;">${items}</ul>`;
+    }
+    return `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0;">${mdInlineToHtml(b.content.join(" "))}</p>`;
+  }).join("");
+
+  return `<!-- 🙋🏼‍♀️ PARA ENCERRAR -->
+${renderRule(true)}
+<tr><td style="padding:24px 2px 0 2px;">
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">🙋🏼‍♀️ Para encerrar</p>
+  ${html}
+</td></tr>`;
+}
+
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
    * híbrido (Stage 4 publish-newsletter): body via ClipboardEvent + È IA?
@@ -628,6 +749,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   for (const section of content.sections) {
     parts.push(renderSection(section));
   }
+
+  // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
+  // Renderer só emite quando o reviewed.md tem o bloco (graceful skip).
+  if (content.sorteio) parts.push(renderSorteio(content.sorteio));
+  if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
   return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
