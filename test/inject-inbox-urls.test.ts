@@ -7,6 +7,11 @@ import {
   validateInjection,
   isTrackingUrl,
   decodeTrackerUrl,
+  filterNewsletterBlocks,
+  extractNewsletterUrls,
+  senderDomain,
+  isSenderOwnUrl,
+  isAffiliateUrl,
 } from "../scripts/inject-inbox-urls.ts";
 
 const sampleInbox = `# Inbox Editorial — Diar.ia
@@ -292,5 +297,155 @@ describe("decodeTrackerUrl (#719 — 7min.ai tracker decoder)", () => {
     assert.equal(articles.length, 1, "deve produzir 1 artigo a partir do tracker");
     assert.equal(articles[0].url, dest, "URL deve ser a destino decodificado");
     assert.equal((articles[0] as Record<string, unknown>)["tracker_decoded"], true);
+  });
+});
+
+describe("senderDomain (#1095)", () => {
+  it("extrai domain do header 'Name <email>'", () => {
+    assert.equal(senderDomain("Cyberman <cyberman@mail.beehiiv.com>"), "beehiiv.com");
+    assert.equal(senderDomain("Superhuman – Zain Kahn <superhuman@mail.joinsuperhuman.ai>"), "joinsuperhuman.ai");
+  });
+
+  it("aceita header simples sem brackets", () => {
+    assert.equal(senderDomain("noreply@example.com"), "example.com");
+  });
+
+  it("retorna string vazia em header malformado", () => {
+    assert.equal(senderDomain(""), "");
+    assert.equal(senderDomain("sem email"), "");
+  });
+});
+
+describe("isSenderOwnUrl (#1095)", () => {
+  it("matcha URL do mesmo domínio", () => {
+    assert.equal(isSenderOwnUrl("https://cyberman.ai/subscribe", "joinsuperhuman.ai"), false);
+    assert.equal(isSenderOwnUrl("https://cyberman.ai/subscribe", "cyberman.ai"), true);
+  });
+
+  it("matcha subdomain do sender", () => {
+    assert.equal(isSenderOwnUrl("https://archive.cyberman.ai/foo", "cyberman.ai"), true);
+  });
+
+  it("não matcha URL externa", () => {
+    assert.equal(isSenderOwnUrl("https://techcrunch.com/article", "cyberman.ai"), false);
+  });
+
+  it("string vazia sender → não matcha", () => {
+    assert.equal(isSenderOwnUrl("https://example.com", ""), false);
+  });
+});
+
+describe("isAffiliateUrl (#1095)", () => {
+  it("hubspot offers", () => {
+    assert.ok(isAffiliateUrl("https://offers.hubspot.com/using-chatgpt-at-work"));
+  });
+
+  it("URL com utm_campaign=newsletter", () => {
+    assert.ok(isAffiliateUrl("https://example.com/page?utm_campaign=newsletter"));
+  });
+
+  it("beehiiv referral _bhiiv param", () => {
+    assert.ok(isAffiliateUrl("https://example.com/page?_bhiiv=opp_abc"));
+  });
+
+  it("URL editorial normal não é afiliado", () => {
+    assert.equal(isAffiliateUrl("https://techcrunch.com/article"), false);
+    assert.equal(isAffiliateUrl("https://www.theguardian.com/x"), false);
+  });
+});
+
+describe("filterNewsletterBlocks (#1095)", () => {
+  it("retorna blocks com sender ≠ editor", () => {
+    const blocks = [
+      { iso: "1", from: "Angelo Pixel <vjpixel@gmail.com>", subject: "x", urls: ["a"] },
+      { iso: "2", from: "Cyberman <cyberman@mail.beehiiv.com>", subject: "y", urls: ["b"] },
+    ];
+    const filtered = filterNewsletterBlocks(blocks, "vjpixel@gmail.com");
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].from, "Cyberman <cyberman@mail.beehiiv.com>");
+  });
+});
+
+describe("extractNewsletterUrls (#1095)", () => {
+  it("extrai URLs primárias, ignora auto-promo do sender", () => {
+    const blocks = [
+      {
+        iso: "2026-05-11T15:47:48.000Z",
+        from: "Cyberman <cyberman@mail.beehiiv.com>",
+        subject: "AI roundup",
+        urls: [
+          "https://www.cyberman.ai/subscribe", // auto-promo
+          "https://www.cyberman.ai/p/some-article", // auto-promo
+          "https://techcrunch.com/article-1", // primary
+          "https://www.theguardian.com/article-2", // primary
+        ],
+      },
+    ];
+    const articles = extractNewsletterUrls(blocks);
+    assert.equal(articles.length, 2);
+    assert.deepEqual(articles.map((a) => a.url).sort(), [
+      "https://techcrunch.com/article-1",
+      "https://www.theguardian.com/article-2",
+    ]);
+    assert.equal(articles[0].flag, "newsletter_extracted");
+    assert.match(articles[0].source as string, /inbox_newsletter:Cyberman/);
+  });
+
+  it("ignora URLs de afiliados (hubspot, sauna, granola)", () => {
+    const blocks = [
+      {
+        iso: "2026-05-11T13:05:15.000Z",
+        from: "Superhuman <superhuman@mail.joinsuperhuman.ai>",
+        subject: "ad newsletter",
+        urls: [
+          "https://offers.hubspot.com/using-chatgpt-at-work",
+          "https://go.sauna.ai/superhuman-ref",
+          "https://primeintellect.ai/blog/lab-is-open", // primary
+        ],
+      },
+    ];
+    const articles = extractNewsletterUrls(blocks);
+    assert.equal(articles.length, 1);
+    assert.equal(articles[0].url, "https://primeintellect.ai/blog/lab-is-open");
+  });
+
+  it("ignora tracking URLs (beehiiv link.*, mail.beehiiv.com)", () => {
+    const blocks = [
+      {
+        iso: "2026-05-11T15:47:48.000Z",
+        from: "Cyberman <cyberman@mail.beehiiv.com>",
+        subject: "x",
+        urls: [
+          "https://link.mail.beehiiv.com/v1/c/AAA",
+          "https://media.beehiiv.com/cdn-cgi/image/foo.png",
+          "https://www.bbc.com/news/articles/cn0pgl0vk0qo", // primary
+        ],
+      },
+    ];
+    const articles = extractNewsletterUrls(blocks);
+    assert.equal(articles.length, 1);
+    assert.equal(articles[0].url, "https://www.bbc.com/news/articles/cn0pgl0vk0qo");
+  });
+
+  it("dedup URLs entre blocks", () => {
+    const blocks = [
+      { iso: "1", from: "A <a@a.com>", subject: "x", urls: ["https://x.com/y"] },
+      { iso: "2", from: "B <b@b.com>", subject: "y", urls: ["https://x.com/y"] }, // dup
+    ];
+    const articles = extractNewsletterUrls(blocks);
+    assert.equal(articles.length, 1);
+  });
+
+  it("flag newsletter_extracted (não editor_submitted)", () => {
+    const blocks = [
+      {
+        iso: "1",
+        from: "Cyberman <cyberman@mail.beehiiv.com>",
+        subject: "x",
+        urls: ["https://techcrunch.com/foo"],
+      },
+    ];
+    const articles = extractNewsletterUrls(blocks);
+    assert.equal(articles[0].flag, "newsletter_extracted");
   });
 });

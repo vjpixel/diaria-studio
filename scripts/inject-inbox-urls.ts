@@ -94,9 +94,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface SyntheticInboxArticle {
   url: string;
-  source: "inbox";
+  source: "inbox" | string; // "inbox" pra editor-forward; "inbox_newsletter:{sender}" pra extraído de newsletter (#1095)
   title: string;
-  flag: "editor_submitted";
+  flag: "editor_submitted" | "newsletter_extracted"; // #1095
   submitted_at?: string;
   submitted_subject?: string;
   submitted_via?: string;
@@ -234,6 +234,119 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
 }
 
 /**
+ * #1095: filtra blocos de newsletters não-Pixel no inbox (Cyberman, Superhuman,
+ * AlphaSignal, etc.) — emails que chegaram direto no `diariaeditor@gmail.com`
+ * (forwards do Pixel ou subscriptions). Editor não é o `from`, mas o body tem
+ * links primários (TechCrunch, Guardian, BBC, etc) que valem a pena extrair
+ * conforme regra `feedback_aggregators.md`.
+ */
+export function filterNewsletterBlocks(blocks: InboxBlock[], editorEmail: string): InboxBlock[] {
+  const lower = editorEmail.toLowerCase();
+  return blocks.filter((b) => !b.from.toLowerCase().includes(lower));
+}
+
+/**
+ * #1095: extrai URLs primárias de newsletters não-Pixel. Filtra:
+ *   - Tracking/CDN (já feito pelo isTrackingUrl)
+ *   - URLs do próprio domínio do sender (auto-promo: cyberman.ai/subscribe, etc)
+ *   - URLs comuns de afiliados/ads em newsletters (hubspot offers, etc — heurística)
+ *
+ * O resto é candidato editorial — TechCrunch, Guardian, BBC, etc. Cada um
+ * vira artigo sintético com `flag: "newsletter_extracted"`.
+ *
+ * Como diferenciar URL primária de auto-promo do sender:
+ *   - sender = "Cyberman <cyberman@mail.beehiiv.com>" → domain do sender = "cyberman" / "beehiiv.com"
+ *   - urls do próprio cyberman.ai → skip (auto-promo)
+ *   - urls do própria infra beehiiv.com → skip (tracking, já filtrado)
+ *   - URLs externos (techcrunch.com, guardian.com, etc) → keep
+ */
+const AFFILIATE_PATH_PATTERNS: RegExp[] = [
+  /^https?:\/\/offers\.hubspot\.com\//i,
+  /^https?:\/\/resources\.belaysolutions\.com\//i,
+  /utm_campaign=[^&]*newsletter/i, // ads de newsletter parceira
+  /\?_bhiiv=/i, // beehiiv affiliate referral
+  /^https?:\/\/go\.sauna\.ai\//i,
+  /^https?:\/\/go\.granola\.ai\//i,
+  /^https?:\/\/betterpic\.link\//i,
+  /^https?:\/\/clipstory\.app\//i,
+  /^https?:\/\/try\.gamma\.app\//i,
+];
+
+/** Extrai dominio raiz do sender header ("Cyberman <foo@bar.com>" → "bar.com"). */
+export function senderDomain(from: string): string {
+  const m = from.match(/<([^@>]+@([^>]+))>/) ?? from.match(/^[^<]*\b\S+@(\S+)/);
+  if (!m) return "";
+  const host = (m[2] ?? m[1] ?? "").trim();
+  // Remove subdomínios comuns (mail., link., etc) — fica com root domain
+  return host.replace(/^(mail|link|news|hello|notify|hi)\./i, "");
+}
+
+/** True se URL pertence ao domínio do sender (auto-promo da própria newsletter).
+ * Aceita também `senderBrand` opcional (ex: "cyberman" extraído de display name)
+ * pra detectar casos onde o brand domain difere do mail provider
+ * (ex: Cyberman <cyberman@mail.beehiiv.com> mas URLs em cyberman.ai). */
+export function isSenderOwnUrl(url: string, senderDomainStr: string, senderBrand?: string): boolean {
+  if (!senderDomainStr && !senderBrand) return false;
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (senderDomainStr) {
+    const dom = senderDomainStr.toLowerCase();
+    if (host === dom || host.endsWith("." + dom)) return true;
+  }
+  if (senderBrand && senderBrand.length >= 4) {
+    const brand = senderBrand.toLowerCase();
+    // host contém o brand como substring (cyberman.ai contém "cyberman")
+    if (host.includes(brand)) return true;
+  }
+  return false;
+}
+
+export function isAffiliateUrl(url: string): boolean {
+  return AFFILIATE_PATH_PATTERNS.some((p) => p.test(url));
+}
+
+export function extractNewsletterUrls(blocks: InboxBlock[]): SyntheticInboxArticle[] {
+  const seen = new Set<string>();
+  const articles: SyntheticInboxArticle[] = [];
+
+  for (const block of blocks) {
+    const senderDom = senderDomain(block.from);
+    const senderLabel = (block.from.match(/^([^<]+?)\s*</)?.[1] ?? senderDom).trim() || "newsletter";
+    // Brand name pra dedup auto-promo quando brand domain ≠ mail provider
+    // (ex: "Cyberman" <cyberman@mail.beehiiv.com> mas URL em cyberman.ai).
+    const senderBrand = senderLabel.replace(/[^a-z0-9]/gi, "").toLowerCase();
+
+    for (const rawUrl of block.urls) {
+      const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
+      if (!trackerDecoded && isTrackingUrl(rawUrl)) continue;
+      if (isAffiliateUrl(url)) continue;
+      if (isSenderOwnUrl(url, senderDom, senderBrand)) continue; // auto-promo
+
+      const key = canonicalize(url).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      articles.push({
+        url,
+        source: `inbox_newsletter:${senderLabel}`,
+        title: `(newsletter:${senderLabel})`,
+        flag: "newsletter_extracted",
+        submitted_at: block.iso,
+        submitted_subject: block.subject,
+        submitted_via: `newsletter:${senderLabel}`,
+        tracker_decoded: trackerDecoded || undefined,
+      });
+    }
+  }
+
+  return articles;
+}
+
+/**
  * Valida que todos os URLs extraídos estão no pool. Retorna lista de URLs
  * faltantes (vazia se OK).
  */
@@ -272,7 +385,19 @@ async function main(): Promise<void> {
   const inboxText = readFileSync(inboxMdAbs, "utf8");
   const allBlocks = parseInboxMd(inboxText);
   const editorBlocks = filterEditorBlocks(allBlocks, editorEmail);
-  const injected = extractEditorUrls(editorBlocks);
+  const injectedFromEditor = extractEditorUrls(editorBlocks);
+
+  // #1095: também extrair URLs primárias de newsletters não-Pixel (Cyberman,
+  // Superhuman, etc). Opt-out via --no-newsletters pra back-compat.
+  const includeNewsletters = !flags.has("no-newsletters");
+  const newsletterBlocks = includeNewsletters
+    ? filterNewsletterBlocks(allBlocks, editorEmail)
+    : [];
+  const injectedFromNewsletters = includeNewsletters
+    ? extractNewsletterUrls(newsletterBlocks)
+    : [];
+
+  const injected = [...injectedFromEditor, ...injectedFromNewsletters];
 
   // Merge com pool existente se passado
   let pool: Array<{ url: string; [k: string]: unknown }> = [];
@@ -310,9 +435,11 @@ async function main(): Promise<void> {
     JSON.stringify({
       injected: newInjected.length,
       already_in_pool: injected.length - newInjected.length,
-      total_editor_urls: injected.length,
+      total_editor_urls: injectedFromEditor.length,
+      total_newsletter_urls: injectedFromNewsletters.length, // #1095
       total_pool_size: merged.length,
       editor_blocks: editorBlocks.length,
+      newsletter_blocks: newsletterBlocks.length, // #1095
       total_inbox_blocks: allBlocks.length,
     })
   );
