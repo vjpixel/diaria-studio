@@ -137,6 +137,16 @@ npx tsx scripts/refresh-dedup.ts
 
 **Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
+### 0d.bis Add edição corrente ao `valid_editions` do Worker (#1086)
+
+O Worker `diar-ia-poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra a edição corrente aceitar votos quando publicada, adicionar agora — idempotente, exit code 0 ou seguro de re-rodar:
+
+```bash
+npx tsx scripts/add-valid-edition.ts --edition {AAMMDD}
+```
+
+Falha (exit != 0) → logar warn mas não bloquear (Pixel pode adicionar manual via `wrangler kv key put`). O voto vai falhar com 410 "Essa edição não aceita mais votos." se chegar antes do add — mitigar com retry no Stage 4 pré-paste se warn aqui.
+
 ### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6)
 
 Os passos **0e** (merge-local-pending), **0f** (sync-eia-used), **0g** (check-dedup-freshness) e **0h** (build-link-ctr) são todos independentes entre si — alguns dependem do output do `refresh-dedup` (passo 0d) e outros de nada — mas **nenhum depende dos outros 3**. Dispará-los como uma batelada paralela: **uma única mensagem com 4 Bash calls** (não 4 mensagens sequenciais).
