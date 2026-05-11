@@ -128,7 +128,8 @@ describe("buildEiaMd (#192)", () => {
     assert.match(md, /eia_answer:/);
     assert.match(md, /A: real/);
     assert.match(md, /B: ia/);
-    assert.match(md, /---\n\nÉ IA\?\n/, "frontmatter fecha antes do header");
+    // #1100: header em negrito (consistente com LANÇAMENTOS, PESQUISAS, etc.)
+    assert.match(md, /---\n\n\*\*É IA\?\*\*\n/, "frontmatter fecha antes do header em negrito");
     assert.match(md, /Credit line\./);
   });
 

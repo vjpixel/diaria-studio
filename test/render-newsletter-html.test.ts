@@ -288,6 +288,19 @@ describe("parseEIA (#192 — frontmatter + runtime detection)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#1100: filtra linha '**É IA?**' (formato em negrito) do credit", () => {
+    const dir = makeDir();
+    try {
+      const md = "**É IA?**\n\nApenas o crédito em bold.\n";
+      const eia = parseEIA(md, dir);
+      assert.equal(eia.credit, "Apenas o crédito em bold.");
+      // Regression: o header em negrito NÃO deve vazar pro crédito
+      assert.ok(!eia.credit.includes("**"), "credit não pode conter marcação de bold do header");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("fallbackEIA (#192)", () => {

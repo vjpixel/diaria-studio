@@ -1217,8 +1217,10 @@ export function checkWhyMattersFormat(md: string): WhyMattersReport {
  * D2 e D3 (ver writer.md step 2b). Mas tem ignorado silenciosamente.
  * Este check determinístico bloqueia o gate quando a seção falta.
  *
- * Aceita as 2 formas de marcação:
- *   - "É IA?" como linha solo (formato cru do writer)
+ * Aceita as 3 formas de marcação:
+ *   - "**É IA?**" como linha solo (formato preferido #1100, em negrito como
+ *     os outros headers de seção)
+ *   - "É IA?" como linha solo (formato legacy, pré-#1100)
  *   - "## É IA?" (formato categorized embedded #371)
  *
  * #908: quando o frontmatter contém `eia_answer` (gabarito A/B), a seção
@@ -1231,6 +1233,7 @@ export function checkEaiSection(md: string): { ok: boolean; error?: string } {
   // Normalizar CRLF
   const normalized = md.replace(/\r\n/g, "\n");
   const hasEia =
+    /^\*\*É IA\?\*\*\s*$/m.test(normalized) ||
     /^É IA\?\s*$/m.test(normalized) ||
     /^##\s+É IA\?\s*$/m.test(normalized);
   if (!hasEia) {
