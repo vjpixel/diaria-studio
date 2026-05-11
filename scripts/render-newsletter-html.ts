@@ -89,6 +89,10 @@ interface NewsletterContent {
   sorteio?: string | null;
   /** #1076: bloco 🙋🏼‍♀️ PARA ENCERRAR parseado do reviewed.md. */
   encerrar?: string | null;
+  /** #1093: linha "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou
+   * outros Y artigos. Selecionamos os Z mais relevantes...". Parseada do reviewed.md, renderizada
+   * como bloco transparente no topo do email (após o título, antes do primeiro destaque). */
+  coverageLine?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -337,6 +341,19 @@ export function parseEIA(text: string, editionDir: string): EIA {
   return { credit, prevResultLine, imageA: "01-eia-real.jpg", imageB: "01-eia-ia.jpg", edition };
 }
 
+/**
+ * Pure (#1093): extrai a linha de cobertura ("Para esta edição, eu (o editor) enviei X
+ * submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes...")
+ * do reviewed.md. Retorna `null` se ausente.
+ *
+ * A linha é injetada pelo writer no topo do reviewed.md (após TÍTULO/SUBTÍTULO e
+ * antes do primeiro destaque). #1097 mantém os números sincronizados com Stage 1.
+ */
+export function extractCoverageLine(text: string): string | null {
+  const m = text.match(/^Para esta edição, eu \(o editor\) enviei[^\n]+$/m);
+  return m ? m[0].trim() : null;
+}
+
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -373,6 +390,9 @@ function extractContent(editionDir: string): NewsletterContent {
   const sorteio = extractTemplateBlock(reviewedText, "🎁 SORTEIO");
   const encerrar = extractTemplateBlock(reviewedText, "🙋🏼‍♀️ PARA ENCERRAR");
 
+  // #1093: linha de cobertura no topo da newsletter.
+  const coverageLine = extractCoverageLine(reviewedText);
+
   return {
     title: destaques[0].title,
     subtitle: buildSubtitle(destaques[1].title, destaques[2].title),
@@ -382,6 +402,7 @@ function extractContent(editionDir: string): NewsletterContent {
     sections,
     sorteio,
     encerrar,
+    coverageLine,
   };
 }
 
@@ -521,6 +542,19 @@ function renderRule(thick = false): string {
 
 function renderTopPadding(): string {
   return `<tr><td style="padding:32px 2px 0 2px;font-size:1px;line-height:1px;">&nbsp;</td></tr>`;
+}
+
+/**
+ * #1093: bloco de cobertura no topo do email. Tipograficamente discreto —
+ * cinza médio, itálico, sem box ou border — pra não competir com o primeiro
+ * destaque. Aparece logo após o header gerado pelo template Beehiiv (título +
+ * subtítulo) e antes do primeiro destaque.
+ */
+export function renderCoverage(text: string): string {
+  return `<!-- #1093 coverage line -->
+<tr><td align="left" style="padding:24px 2px 0 2px;text-align:left;word-break:break-word;">
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:15px;line-height:1.5;font-style:italic;margin:0;padding:0;">${esc(text)}</p>
+</td></tr>`;
 }
 
 function renderDestaque(d: RenderDestaque): string {
@@ -728,6 +762,12 @@ export interface RenderOpts {
 
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
+
+  // #1093: linha de cobertura no topo, antes do primeiro destaque. Graceful
+  // skip quando ausente (edições antigas pré-#1095/#1097).
+  if (content.coverageLine) {
+    parts.push(renderCoverage(content.coverageLine));
+  }
 
   // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
   // `feedback_beehiiv_sections.md` e convention pre-existente. Fallback
