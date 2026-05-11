@@ -522,6 +522,22 @@ describe("renderEaiBlock (#371, #481)", () => {
     }
   });
 
+  it("#1100: filtra header '**É IA?**' (formato em negrito) sem deixar vazar pro crédito", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
+    try {
+      // Novo formato (#1100): header em negrito no 01-eia.md
+      const eiaContent = "---\neia_answer: A\n---\n**É IA?**\n\nFoto: Linha de crédito em bold";
+      writeFileSync(join(dir, "01-eia.md"), eiaContent, "utf8");
+      const block = renderEaiBlock(dir);
+      assert.ok(block.includes("Foto: Linha de crédito em bold"));
+      // Regression: o header em bold do 01-eia.md NÃO pode aparecer como crédito
+      assert.ok(!block.includes("**É IA?**\n\nFoto"), "header em bold não deve vazar como crédito");
+      assert.ok(!block.includes("⏳"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("#481: legacy: emite apenas linha de crédito do 01-eai.md (sem paths de imagem)", () => {
     const dir = mkdtempSync(join(tmpdir(), "eai-test-"));
     try {

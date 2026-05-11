@@ -319,7 +319,8 @@ export function parseEIA(text: string, editionDir: string): EIA {
   const creditLines: string[] = [];
   let prevResultLine: string | undefined;
   for (const l of allLines) {
-    if (l.startsWith("É IA?")) continue;
+    // #1100: aceitar `É IA?` (legacy) e `**É IA?**` (novo formato em negrito)
+    if (l.startsWith("É IA?") || l.startsWith("**É IA?**")) continue;
     if (/^Resultado da última edição:/i.test(l)) {
       prevResultLine = l.trim();
     } else {

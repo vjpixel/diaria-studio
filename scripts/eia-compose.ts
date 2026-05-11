@@ -175,7 +175,12 @@ export function buildEiaMd(
     `  B: ${bMapping}`,
     "---",
     "",
-    "É IA?",
+    // #1100: header em negrito pra consistência com os outros headers de
+    // seção (LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS, ERRO INTENCIONAL,
+    // SORTEIO, PARA ENCERRAR — todos em **...**). Parsers downstream
+    // (render-newsletter-html, render-categorized-md, lint-newsletter-md)
+    // aceitam ambas as formas pra back-compat com edições antigas.
+    "**É IA?**",
     "",
     creditLine,
   ];

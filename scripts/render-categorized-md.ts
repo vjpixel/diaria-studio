@@ -550,7 +550,9 @@ export function renderEaiBlock(editionDir: string): string {
       }
       if (inFrontmatter) continue;
       if (!frontmatterDone) continue;
-      if (line.trim() === 'É IA?' || line.trim() === '') continue;
+      // #1100: aceitar 'É IA?' (legacy) e '**É IA?**' (novo formato em negrito)
+      const t = line.trim();
+      if (t === 'É IA?' || t === '**É IA?**' || t === '') continue;
       creditLine = line.trim();
       break;
     }

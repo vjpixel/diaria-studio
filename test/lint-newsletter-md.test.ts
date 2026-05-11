@@ -791,8 +791,13 @@ describe("checkWhyMattersFormat (#701)", () => {
 });
 
 describe("checkEaiSection (#588)", () => {
-  it("aceita 'É IA?' como linha solo (formato writer)", () => {
+  it("aceita 'É IA?' como linha solo (formato writer legacy)", () => {
     const md = "DESTAQUE 1\n...\n\n---\n\nÉ IA?\n\nCrédito.\n\n---\n\nDESTAQUE 3";
+    assert.equal(checkEaiSection(md).ok, true);
+  });
+
+  it("aceita '**É IA?**' como linha solo (formato preferido #1100, em negrito)", () => {
+    const md = "DESTAQUE 1\n...\n\n---\n\n**É IA?**\n\nCrédito.\n\n---\n\nDESTAQUE 3";
     assert.equal(checkEaiSection(md).ok, true);
   });
 
