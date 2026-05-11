@@ -11,6 +11,8 @@ import {
   renderHTML,
   renderEiaStandalone,
   extractTemplateBlock,
+  extractCoverageLine,
+  renderCoverage,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -706,5 +708,120 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     // próprio <p>. Match: encontra qualquer <p> com border-bottom seguido
     // pelo nome da section.
     assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>PESQUISA<\/p>/i, "kicker <p> deve ter border-bottom 1px");
+  });
+});
+
+describe("extractCoverageLine + renderCoverage (#1093)", () => {
+  it("extrai a linha 'Para esta edição, eu (o editor) enviei ...'", () => {
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline de teste",
+      "",
+      "SUBTÍTULO",
+      "",
+      "Subhead | Subhead 2",
+      "",
+      "---",
+      "Para esta edição, eu (o editor) enviei 13 submissões e a Diar.ia encontrou outros 125 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line deve ser extraída");
+    assert.match(line!, /^Para esta edição, eu \(o editor\) enviei 13 submissões/);
+    assert.match(line!, /Selecionamos os 12 mais relevantes/);
+    // Não deve incluir os separadores --- nem o header DESTAQUE 1
+    assert.doesNotMatch(line!, /---/);
+    assert.doesNotMatch(line!, /DESTAQUE/);
+  });
+
+  it("retorna null quando ausente (edição antiga sem coverage)", () => {
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(extractCoverageLine(md), null);
+  });
+
+  it("aceita números diferentes (regression — números não hardcoded)", () => {
+    const md = "Para esta edição, eu (o editor) enviei 0 submissões e a Diar.ia encontrou outros 200 artigos. Selecionamos os 9 mais relevantes para as pessoas que assinam a newsletter.";
+    const line = extractCoverageLine(md);
+    assert.ok(line);
+    assert.match(line!, /enviei 0 submissões/);
+    assert.match(line!, /outros 200 artigos/);
+    assert.match(line!, /os 9 mais relevantes/);
+  });
+
+  it("renderCoverage retorna <tr> com texto escapado", () => {
+    const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
+    const html = renderCoverage(text);
+    assert.match(html, /^<!-- #1093 coverage line -->/);
+    assert.match(html, /<tr><td/);
+    assert.match(html, /enviei 5 submissões/);
+    // HTML escape do & → &amp; (segurança contra injection de entities)
+    assert.match(html, /&amp; a Diar\.ia/);
+  });
+
+  it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {
+    const baseDestaque = {
+      n: 1 as const,
+      category: "LANÇAMENTO",
+      title: "Modelo X",
+      body: "Body.",
+      why: "Why.",
+      url: "https://example.com/x",
+      emoji: "🚀",
+      imageFile: "04-d1-2x1.jpg",
+    };
+    const fixt = {
+      title: "X",
+      subtitle: "X",
+      coverImage: "04-d1-2x1.jpg",
+      destaques: [baseDestaque],
+      eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+      sections: [],
+      coverageLine: "Para esta edição, eu (o editor) enviei 13 submissões e a Diar.ia encontrou outros 125 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
+    };
+    const html = renderHTML(fixt);
+    const coverageIdx = html.indexOf("Selecionamos os 12 mais relevantes");
+    const destaqueIdx = html.indexOf("Modelo X");
+    assert.ok(coverageIdx > 0, "coverage line presente no HTML");
+    assert.ok(destaqueIdx > 0, "destaque presente no HTML");
+    assert.ok(coverageIdx < destaqueIdx, "coverage line antes do destaque");
+    // Confirma que tem o comment marcador
+    assert.match(html, /<!-- #1093 coverage line -->/);
+  });
+
+  it("renderHTML sem coverageLine: graceful skip (edições antigas)", () => {
+    const baseDestaque = {
+      n: 1 as const,
+      category: "LANÇAMENTO",
+      title: "Modelo X",
+      body: "Body.",
+      why: "Why.",
+      url: "https://example.com/x",
+      emoji: "🚀",
+      imageFile: "04-d1-2x1.jpg",
+    };
+    const fixt = {
+      title: "X",
+      subtitle: "X",
+      coverImage: "04-d1-2x1.jpg",
+      destaques: [baseDestaque],
+      eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+      sections: [],
+    };
+    const html = renderHTML(fixt);
+    assert.doesNotMatch(html, /<!-- #1093 coverage line -->/);
+    // Destaque ainda presente
+    assert.match(html, /Modelo X/);
   });
 });
