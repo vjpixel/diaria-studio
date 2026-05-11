@@ -320,11 +320,47 @@ describe("filterByTopic (#347)", () => {
     assert.equal(filtered.length, 0);
   });
 
-  it("termos parciais também batem (substring match)", () => {
-    // "large language" deve bater em "large language model"
+  it("termos multi-palavra batem como frase com word boundary (#1066)", () => {
+    // "large language" deve bater em "large language model" (boundary nas pontas)
     const articles = [makeArticle("Large language model capabilities")];
     const filtered = filterByTopic(articles, ["large language"]);
     assert.equal(filtered.length, 1);
+  });
+
+  it("#1066: term NÃO bate como substring dentro de palavra maior", () => {
+    // Bug original: "rede" (de "rede neural") matchava substring em
+    // "rede de telefonia" → artigo não-IA passava no filter MIT Tech Review BR.
+    // Agora com \b boundary, "rede" só bate em "rede" standalone, não em "rede" embed.
+    const articles = [
+      makeArticle("Rede de telefonia bloqueia conteúdo"),
+      makeArticle("Treinamento de rede neural"),
+    ];
+    const filtered = filterByTopic(articles, ["rede neural"]);
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].title, "Treinamento de rede neural");
+  });
+
+  it("#1066: term com acento mantém word boundary funcional", () => {
+    const articles = [
+      makeArticle("Inteligência artificial avança"),
+      makeArticle("Pré-inteligência das máquinas"), // 'pré-inteligência' tem '-' como boundary
+    ];
+    // "inteligência" deve bater nos 2 (em ambos é palavra delimitada por hífen/espaço)
+    const filtered = filterByTopic(articles, ["inteligência"]);
+    assert.equal(filtered.length, 2);
+  });
+
+  it("#1066: AI/IA matcham siglas standalone, não dentro de outras palavras", () => {
+    const articles = [
+      makeArticle("AI is transforming medicine"),    // bate
+      makeArticle("Maid service expands"),            // não bate (AI dentro de "Maid")
+      makeArticle("IA brasileira ganha prêmio"),     // bate
+      makeArticle("Mais um caso de violação"),       // não bate (IA dentro de "violação")
+    ];
+    const filtered = filterByTopic(articles, ["AI", "IA"]);
+    assert.equal(filtered.length, 2);
+    assert.equal(filtered[0].title, "AI is transforming medicine");
+    assert.equal(filtered[1].title, "IA brasileira ganha prêmio");
   });
 });
 

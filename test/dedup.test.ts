@@ -10,6 +10,7 @@ import {
   extractPastUrls,
   extractPastTitles,
   extractPastEditionArticleTitles,
+  extractPastDestaqueUrls,
   jaccardSimilarity,
   subjectSimilarity,
   tokenizeForJaccard,
@@ -585,5 +586,200 @@ describe("extractPastEditionArticleTitles (#897)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("extractPastDestaqueUrls (#1068)", () => {
+  function setupDir() {
+    const dir = mkdtempSync(join(tmpdir(), "dedup-destaque-"));
+    return {
+      dir,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  }
+
+  it("retorna Set vazio quando editionsDir não existe", () => {
+    const r = extractPastDestaqueUrls("/path/que/nao/existe", 3);
+    assert.equal(r.size, 0);
+  });
+
+  it("extrai URLs do highlights[] de _internal/01-approved.json", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510", "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { rank: 1, url: "https://example.com/d1", article: { title: "D1" } },
+          { rank: 2, article: { url: "https://example.com/d2", title: "D2" } },
+        ],
+        noticias: [
+          { url: "https://other.com/secondary", title: "Secondary" },
+        ],
+      }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.equal(r.size, 2);
+      assert.ok(r.has("https://example.com/d1"));
+      assert.ok(r.has("https://example.com/d2"));
+      // Secondary NÃO entra
+      assert.ok(!r.has("https://other.com/secondary"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("aceita formato root (sem _internal/, fallback)", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ url: "https://example.com/legacy-format" }],
+      }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.ok(r.has("https://example.com/legacy-format"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("respeita window — só inclui últimas N edições", () => {
+    const { dir, cleanup } = setupDir();
+    for (const aammdd of ["260501", "260502", "260503", "260510"]) {
+      mkdirSync(join(dir, aammdd, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, aammdd, "_internal", "01-approved.json"),
+        JSON.stringify({
+          highlights: [{ url: `https://example.com/${aammdd}` }],
+        }),
+        "utf8",
+      );
+    }
+    try {
+      const r = extractPastDestaqueUrls(dir, 2); // window=2 → 2 mais recentes
+      assert.equal(r.size, 2);
+      assert.ok(r.has("https://example.com/260510"));
+      assert.ok(r.has("https://example.com/260503"));
+      assert.ok(!r.has("https://example.com/260502"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("exclui currentAammdd (self-match)", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510", "_internal"), { recursive: true });
+    mkdirSync(join(dir, "260511", "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{ url: "https://example.com/d10" }] }),
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, "260511", "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{ url: "https://example.com/d11" }] }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3, "260511");
+      assert.ok(r.has("https://example.com/d10"));
+      assert.ok(!r.has("https://example.com/d11"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("canonicaliza URLs (remove utm tracking params)", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510", "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ url: "https://example.com/d1?utm_source=newsletter" }],
+      }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      // utm_* stripped por canonicalize()
+      assert.ok(r.has("https://example.com/d1"));
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("dedup com pastDestaqueUrlsSet (#1068)", () => {
+  const mkArt = (url: string, title = `Title for ${url}`) => ({
+    url,
+    title,
+    published_at: "2026-05-11T00:00:00Z",
+  });
+
+  it("URL em past destaques é bloqueada mesmo se candidata atual", () => {
+    const pastUrls = new Set(["https://example.com/x"]);
+    const pastDestaques = new Set(["https://example.com/x"]);
+    const r = dedup(
+      [mkArt("https://example.com/x")],
+      pastUrls,
+      0.85,
+      [],
+      0.7,
+      [],
+      0.6,
+      pastDestaques,
+    );
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.removed.length, 1);
+  });
+
+  it("URL em past só como secondary é LIBERADA (promoção permitida)", () => {
+    const pastUrls = new Set(["https://example.com/promoted"]);
+    const pastDestaques = new Set<string>(); // não foi destaque
+    const r = dedup(
+      [mkArt("https://example.com/promoted")],
+      pastUrls,
+      0.85,
+      [],
+      0.7,
+      [],
+      0.6,
+      pastDestaques,
+    );
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.removed.length, 0);
+  });
+
+  it("sem pastDestaqueUrlsSet (legacy callers): bloqueia tudo de pastUrls", () => {
+    const pastUrls = new Set(["https://example.com/y"]);
+    const r = dedup(
+      [mkArt("https://example.com/y")],
+      pastUrls,
+      0.85,
+    );
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.removed[0].dedup_note, "url-match com edição anterior");
+  });
+
+  it("URL nova (não em past) passa independente do set", () => {
+    const pastUrls = new Set(["https://example.com/x"]);
+    const pastDestaques = new Set(["https://example.com/x"]);
+    const r = dedup(
+      [mkArt("https://example.com/NEW")],
+      pastUrls,
+      0.85,
+      [],
+      0.7,
+      [],
+      0.6,
+      pastDestaques,
+    );
+    assert.equal(r.kept.length, 1);
   });
 });

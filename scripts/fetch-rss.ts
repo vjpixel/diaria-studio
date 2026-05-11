@@ -54,12 +54,25 @@ export interface FetchOptions {
  * `(title + " " + summary).toLowerCase()` contenha ao menos 1 dos termos.
  * Se `terms` estiver vazio ou ausente, retorna todos os artigos sem filtro.
  */
+/** Escape regex metacharacters pra construir pattern de term arbitrário. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function filterByTopic(articles: Article[], terms: string[]): Article[] {
   if (!terms || terms.length === 0) return articles;
-  const lowerTerms = terms.map((t) => t.toLowerCase());
+  // #1066: word boundary em vez de substring. Antes "rede" matchava "rede
+  // neural" como substring em "uma nova rede de telefonia" — passava artigos
+  // não-IA. Agora cada term é regex `\bTERM\b` (case-insensitive, Unicode-aware).
+  // Termos multi-palavra ("inteligência artificial") seguem matchando como
+  // word boundary nas extremidades.
+  const patterns = terms
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => new RegExp(`\\b${escapeRegex(t)}\\b`, "iu"));
   return articles.filter((a) => {
-    const haystack = (a.title + " " + (a.summary ?? "")).toLowerCase();
-    return lowerTerms.some((t) => haystack.includes(t));
+    const haystack = a.title + " " + (a.summary ?? "");
+    return patterns.some((re) => re.test(haystack));
   });
 }
 

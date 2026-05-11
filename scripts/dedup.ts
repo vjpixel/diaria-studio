@@ -124,8 +124,9 @@ export function extractPastTitles(md: string, window: number): string[] {
 // ---------------------------------------------------------------------------
 
 interface ApprovedArticleLike {
+  url?: string;
   title?: string;
-  article?: { title?: string };
+  article?: { url?: string; title?: string };
 }
 
 interface ApprovedJsonShape {
@@ -135,6 +136,28 @@ interface ApprovedJsonShape {
   pesquisa?: ApprovedArticleLike[];
   noticias?: ApprovedArticleLike[];
   tutorial?: ApprovedArticleLike[];
+}
+
+/**
+ * Pure (#1068): lê URLs de `highlights[]` (= destaques D1/D2/D3) do
+ * `_internal/01-approved.json` de uma edição. Usado pra distinguir
+ * "URL já foi destaque" (bloquear) vs "URL foi só secondary" (permitir
+ * promoção secondary→destaque na edição corrente).
+ */
+function readApprovedDestaqueUrls(approvedPath: string): string[] {
+  if (!existsSync(approvedPath)) return [];
+  let parsed: ApprovedJsonShape;
+  try {
+    parsed = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJsonShape;
+  } catch {
+    return [];
+  }
+  const urls = new Set<string>();
+  for (const item of parsed.highlights ?? []) {
+    const u = item?.url ?? item?.article?.url;
+    if (u && typeof u === "string" && u.trim()) urls.add(u.trim());
+  }
+  return [...urls];
 }
 
 function readApprovedTitles(approvedPath: string): string[] {
@@ -174,6 +197,51 @@ function readApprovedTitles(approvedPath: string): string[] {
  *
  * Refs #897.
  */
+/**
+ * Pure (#1068): agrega URLs que **foram destaques** (highlights D1/D2/D3) nas
+ * últimas `window` edições salvas em `editionsDir`. Usado pra dedup com
+ * distinção destaque-vs-secondary: dedup.ts bloqueia se URL nesta lista,
+ * libera se URL veio só de bucket secundário em edição passada.
+ *
+ * Edição atual (`currentAammdd`) é excluída pra evitar self-match.
+ *
+ * Falha gracioso: arquivos ausentes/corrompidos viram skip silencioso. Retorna
+ * Set vazio quando editionsDir não existe ou nenhuma edição tem `highlights`.
+ */
+export function extractPastDestaqueUrls(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): Set<string> {
+  if (!existsSync(editionsDir)) return new Set();
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir).filter((d) => /^\d{6}$/.test(d));
+  } catch {
+    return new Set();
+  }
+  dirs.sort().reverse();
+  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
+  const recent = dirs.slice(0, window);
+
+  const urls = new Set<string>();
+  for (const aammdd of recent) {
+    const candidates = [
+      resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
+      resolve(editionsDir, aammdd, "01-approved.json"),
+    ];
+    for (const path of candidates) {
+      if (!existsSync(path)) continue;
+      for (const u of readApprovedDestaqueUrls(path)) {
+        // Canonicalize pra match com canonicalize(art.url) no dedup
+        urls.add(canonicalize(u));
+      }
+      break;
+    }
+  }
+  return urls;
+}
+
 export function extractPastEditionArticleTitles(
   editionsDir: string,
   window: number,
@@ -361,6 +429,13 @@ export function dedup(
   titleVsPastThreshold = 0.70,
   pastArticleTitles: string[] = [],
   subjectVsPastThreshold = 0.6,
+  // #1068: URLs que foram destaques (highlights) em edições passadas.
+  // Quando fornecido, dedup distingue:
+  //   - URL em pastDestaqueUrlsSet → bloqueia (já foi destaque, evita repetição)
+  //   - URL em pastUrlsSet mas NÃO em pastDestaqueUrlsSet → permite
+  //     (foi só secondary passado, permite promoção a destaque agora)
+  // Quando ausente (legacy callers), comportamento antigo: bloqueia tudo em pastUrlsSet.
+  pastDestaqueUrlsSet?: Set<string>,
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -381,14 +456,33 @@ export function dedup(
   }
 
   // ---- Pass 1: dedup against past editions (URL only) --------------------
+  // #1068: quando pastDestaqueUrlsSet fornecido, distingue destaque-passado
+  // (bloqueia sempre) vs só-secondary-passado (permite promoção). Quando
+  // ausente, comportamento legacy: bloqueia tudo em pastUrlsSet.
   const afterPass1: Article[] = [];
+  let promotedFromSecondary = 0;
   for (const art of afterPass0) {
     const canon = canonicalize(art.url);
-    if (pastUrlsSet.has(canon)) {
-      removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });
-    } else {
+    const wasInPast = pastUrlsSet.has(canon);
+    if (!wasInPast) {
       afterPass1.push(art);
+      continue;
     }
+    if (pastDestaqueUrlsSet && !pastDestaqueUrlsSet.has(canon)) {
+      // URL apareceu em past só como secondary — permite promoção pra destaque.
+      afterPass1.push(art);
+      promotedFromSecondary++;
+      console.error(
+        `dedup Pass-1: secondary→destaque permitido (#1068) | ${art.url}`,
+      );
+      continue;
+    }
+    removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });
+  }
+  if (promotedFromSecondary > 0) {
+    console.error(
+      `dedup Pass-1: ${promotedFromSecondary} URL(s) liberadas via promoção secondary→destaque (#1068)`,
+    );
   }
 
   // ---- Pass 1b: title similarity vs past edition headlines (#231 defense-in-depth) ---
@@ -624,6 +718,20 @@ async function main() {
     );
   }
 
+  // #1068: extrair URLs que foram destaques (highlights) em edições passadas.
+  // Dedup usa pra permitir promoção secondary→destaque (URL em past mas não
+  // como destaque → permite na edição corrente como destaque).
+  const pastDestaqueUrls = extractPastDestaqueUrls(
+    editionsDir,
+    window,
+    currentAammdd,
+  );
+  if (pastDestaqueUrls.size > 0) {
+    console.error(
+      `dedup: ${pastDestaqueUrls.size} URL(s) de destaques passados carregados (#1068)`,
+    );
+  }
+
   const result = dedup(
     articles,
     pastUrls,
@@ -632,6 +740,7 @@ async function main() {
     titleVsPastThreshold,
     pastArticleTitles,
     subjectVsPastThreshold,
+    pastDestaqueUrls,
   );
 
   console.error(
