@@ -168,7 +168,7 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     assert.match(result.stderr, /06-public-images\.json não tem URL/);
   });
 
-  it("NÃO aborta quando --no-schedule (route=make_now permite post sem imagem)", () => {
+  it("NÃO aborta com --fire-now (route=make_now permite post sem imagem) — #1101", () => {
     const tmp = mkdtempSync(resolve(tmpdir(), "no-schedule-"));
     const editionDir = resolve(tmp, "260999");
     mkdirSync(editionDir, { recursive: true });
@@ -177,10 +177,27 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
 
-    // SEM --schedule. Mesmo sem imagens, fail-fast NÃO dispara.
-    const result = runCli(["--edition-dir", editionDir]);
+    // COM --fire-now (opt-in explícito #1101). Mesmo sem imagens, fail-fast NÃO dispara.
+    // Antes do #1101: SEM --schedule também caía em make_now. Default agora = agendar.
+    const result = runCli(["--edition-dir", editionDir, "--fire-now"]);
     rmSync(tmp, { recursive: true, force: true });
     assert.notEqual(result.exitCode, 2, `não deveria fail-fast em modo make_now. stderr=${result.stderr}`);
     assert.doesNotMatch(result.stderr, /06-public-images\.json não tem URL/);
+  });
+
+  it("default = agendar (#1101) — SEM --fire-now, schedule aplicado, fail-fast dispara sem imagens", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "default-schedule-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+    // Default = agendar (sem --fire-now) → mesmo path do --schedule legado.
+    // Sem 06-public-images.json: fail-fast dispara (incident #999 protection).
+    const result = runCli(["--edition-dir", editionDir]);
+    rmSync(tmp, { recursive: true, force: true });
+    // Esperamos exit code != 0 (fail-fast por 06-public-images ausente, ou env vars worker)
+    assert.notEqual(result.exitCode, 0, `default deveria agendar e fail-fast, mas exit code = 0. stderr=${result.stderr.slice(0, 300)}`);
   });
 });
