@@ -333,12 +333,60 @@ const NON_LAUNCH_PATH_PATTERNS: RegExp[] = [
   /\/marketing\//i,
   /\/safety-report\//i, // já filtrado no openai pattern, redundante mas defensive
   /\/transparency\//i,
+  /\/on-the-issues\//i, // #1096 — Microsoft analysis blog (essays, não lançamentos)
+  /\/threat-intelligence\//i, // #1096 — Google GTIG reports (Cloud blog) são notícias
+  /\/threat-intelligence-group-report\//i, // #1096 — blog.google GTIG report path
 ];
 
 export function isNonLaunchPath(url: string): boolean {
   const { full } = hostAndPath(url);
   if (!full) return false;
   return NON_LAUNCH_PATH_PATTERNS.some((p) => p.test(full));
+}
+
+/**
+ * #1096: detecta "release de relatório" — posts editoriais em sites de
+ * fornecedor que NÃO anunciam produto/feature, e sim divulgam um relatório
+ * ou análise de mercado.
+ *
+ * Exemplos da 260512 (falsos positivos como LANÇAMENTO antes do fix):
+ *   - "Read our new report on AI-powered threats and our latest defenses"
+ *     (blog.google/.../google-threat-intelligence-group-report/)
+ *   - "The state of global AI diffusion in 2026"
+ *     (blogs.microsoft.com/on-the-issues/.../)
+ *
+ * Sinais detectados no título (case-insensitive):
+ *   - "Read our new report" / "Read our latest" / "Our X report"
+ *   - "The state of X" (snapshot/análise de mercado)
+ *   - "Annual report" / "Q1/Q2/Q3/Q4 X" / "H1/H2 X"
+ *   - "Inside the X report" / "Behind the X"
+ *   - "Insights from X" / "Lessons from X"
+ *
+ * Não dispara em títulos que combinam "release/launch" com "report" (ex:
+ * "Launching our Threat Defense Suite alongside the GTIG report") porque
+ * são genuinamente lançamentos.
+ */
+const REPORT_TITLE_PATTERNS: RegExp[] = [
+  /\b(read|see)\s+our\s+(new\s+|latest\s+)?report\b/i,
+  /\bour\s+\w+\s+report\b/i,
+  /\bthe\s+state\s+of\s+\w/i,
+  /\bannual\s+report\b/i,
+  /\b(Q[1-4]|H[12])\s+\d{4}\b/,
+  /\binside\s+(the|our)\s+\w+\s+report\b/i,
+  /\b(insights|lessons|takeaways)\s+from\s+\w/i,
+  /\bo\s+estado\s+de\s+\w/i, // pt: "O estado de IA em 2026"
+  /\brelat[óo]rio\s+(anual|trimestral|de\s+ano)/i,
+];
+
+export function isReport(article: Article): boolean {
+  const title = article.title ?? "";
+  const summary = article.summary ?? "";
+  const hay = `${title}\n${summary}`;
+  // Skip se claramente também é launch (ex: "Launching X alongside our report")
+  if (/\b(launching|launches?|announcing|unveils?|lan[çc]a)\b.{0,40}\breport\b/i.test(hay)) {
+    return false;
+  }
+  return REPORT_TITLE_PATTERNS.some((p) => p.test(title));
 }
 
 /**
@@ -556,6 +604,7 @@ export function categorize(article: Article): Category {
     if (isNonProductAnnouncement(article)) return "noticias";
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
+    if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
     // #898: as overrides acima (path-blocklist, deal, customer-story,
