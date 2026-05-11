@@ -578,30 +578,27 @@ function main(): void {
   const text = readFileSync(inPath, "utf8");
   const result = normalizeNewsletter(text);
 
-  // #744/#927: propagar eia_answer pro output (sidecar > frontmatter).
-  // Inferir edition_dir a partir do path de --in (assume que está em
-  // data/editions/{AAMMDD}/_internal/ ou data/editions/{AAMMDD}/).
-  let outputText = result.text;
-  // Detecta edition_dir tentando dois levels (--in pode vir de _internal/ ou root/).
-  const inDirAbs = dirname(resolve(ROOT, args.in));
-  const candidates = [resolve(inDirAbs, ".."), inDirAbs];
-  const editionDir = candidates.find(
-    (d) => existsSync(join(d, "01-eia.md")) || existsSync(join(d, "_internal/01-eia-answer.json")),
-  );
-  if (editionDir) {
-    const fmBlock = resolveEiaFrontmatterBlock(editionDir);
-    if (fmBlock) {
-      // Só prepend se o output ainda não tem frontmatter com eia_answer
-      const alreadyHas = /^---[\s\S]*?eia_answer[\s\S]*?---/.test(outputText);
-      if (!alreadyHas) {
-        outputText = `---\n${fmBlock}\n---\n\n${outputText}`;
-      }
-    }
-  }
+  // #1069: NÃO injetar `eia_answer:` frontmatter no output. Antes (#744/#927):
+  // o frontmatter era prepended pra propagar gabarito; mas o sidecar
+  // `_internal/01-eia-answer.json` (#927) já é canonical e sobrevive Drive
+  // round-trip. Quando 02-reviewed.md é colado manualmente no Beehiiv (#1083),
+  // qualquer frontmatter YAML residual aparece como texto literal no email.
+  // Remover a injeção evita o bug visual + simplifica fluxo.
+  const outputText = result.text;
 
   writeFileSync(outPath, outputText, "utf8");
   console.error(JSON.stringify(result.report, null, 2));
 }
+
+// Note (#1069): a injeção de frontmatter `eia_answer:` em `02-reviewed.md`
+// foi REMOVIDA. Sidecar `_internal/01-eia-answer.json` (#927) é canonical,
+// sobrevive Drive round-trip, e é precedence em `readEiaAnswer`. Lint
+// (`checkEiaAnswer` em `scripts/lint-newsletter-md.ts`) aceita sidecar como
+// source-of-truth. Frontmatter em `02-reviewed.md` aparecia como texto
+// literal no paste manual no Beehiiv — bug visual eliminado.
+// `extractEiaFrontmatter` e `resolveEiaFrontmatterBlock` permanecem exportados
+// pra backward-compat (leitura de edições antigas), mas não são mais usados
+// em runtime aqui.
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
 if (

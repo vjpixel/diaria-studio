@@ -14,6 +14,7 @@ import {
   applyStage2Caps,
   checkStage2Caps,
   capOutrasNoticias,
+  destaquesFromBucket,
   STAGE_2_CAP_LANCAMENTOS,
   STAGE_2_CAP_PESQUISAS,
   STAGE_2_MIN_OUTRAS,
@@ -293,5 +294,107 @@ describe("checkStage2Caps", () => {
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
+  });
+});
+
+describe("destaquesFromBucket (#1071)", () => {
+  it("conta highlights cujo bucket bate", () => {
+    const highlights = [
+      { url: "a", bucket: "noticias" },
+      { url: "b", bucket: "lancamento" },
+      { url: "c", bucket: "noticias" },
+    ];
+    assert.equal(destaquesFromBucket(highlights, "noticias"), 2);
+    assert.equal(destaquesFromBucket(highlights, "lancamento"), 1);
+    assert.equal(destaquesFromBucket(highlights, "pesquisa"), 0);
+  });
+
+  it("aceita bucket via article.bucket aninhado", () => {
+    const highlights = [
+      { url: "a", article: { bucket: "noticias" } },
+    ];
+    assert.equal(destaquesFromBucket(highlights, "noticias"), 1);
+  });
+
+  it("retorna 0 quando highlights undefined", () => {
+    assert.equal(destaquesFromBucket(undefined, "noticias"), 0);
+  });
+
+  it("retorna 0 quando highlights sem bucket", () => {
+    const highlights = [{ url: "a" }];
+    assert.equal(destaquesFromBucket(highlights, "noticias"), 0);
+  });
+});
+
+describe("#1071 — cap OUTRAS NOTÍCIAS desconta destaques promovidos do bucket noticias", () => {
+  it("caso 260511: dest=3, 2 vieram de noticias, L=1, P=1 → nCap = 7+2 = 9", () => {
+    // Pool: 10 noticias. Top 2 viraram destaques. Writer dropa duplicatas.
+    // Cap antigo: max(2, 12-3-1-1) = 7. Writer renderiza 5 → bug.
+    // Cap novo (#1071): 7 + 2 = 9. Writer dropa 2 → renderiza 7 outras.
+    const noticias = Array.from({ length: 10 }, (_, i) => ({
+      url: `https://example.com/n${i}`,
+      title: `News ${i}`,
+    }));
+    const approved = {
+      highlights: [
+        { url: "https://example.com/n0", bucket: "noticias" },
+        { url: "https://example.com/n1", bucket: "noticias" },
+        { url: "https://other.com/lanc", bucket: "lancamento" },
+      ],
+      lancamento: [{ url: "https://x.com/l1" }],
+      pesquisa: [{ url: "https://x.com/p1" }],
+      noticias,
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    // cap deveria ser 9 (7 + 2 promovidos)
+    assert.equal(report.caps.noticias, 9);
+    assert.equal(capped.noticias?.length, 9);
+  });
+
+  it("destaques nenhum vindo de noticias → cap mantém antigo (back-compat)", () => {
+    const noticias = Array.from({ length: 10 }, (_, i) => ({
+      url: `https://example.com/n${i}`,
+    }));
+    const approved = {
+      highlights: [
+        { url: "x", bucket: "lancamento" },
+        { url: "y", bucket: "pesquisa" },
+        { url: "z", bucket: "lancamento" },
+      ],
+      noticias,
+    };
+    const { report } = applyStage2Caps(approved);
+    // max(2, 12-3-0-0) = 9, +0 promovidos = 9
+    assert.equal(report.caps.noticias, 9);
+  });
+
+  it("highlights sem campo bucket → comportamento antigo (assume 0 vindos de noticias)", () => {
+    const noticias = Array.from({ length: 10 }, (_, i) => ({
+      url: `https://example.com/n${i}`,
+    }));
+    const approved = {
+      highlights: [{ url: "x" }, { url: "y" }, { url: "z" }],
+      noticias,
+    };
+    const { report } = applyStage2Caps(approved);
+    // max(2, 12-3-0-0) = 9, +0 promovidos = 9
+    assert.equal(report.caps.noticias, 9);
+  });
+
+  it("checkStage2Caps também desconta destaques promovidos", () => {
+    const approved = {
+      highlights: [
+        { url: "n1", bucket: "noticias" },
+        { url: "n2", bucket: "noticias" },
+        { url: "x", bucket: "lancamento" },
+      ],
+      lancamento: [{ url: "l1" }],
+      pesquisa: [{ url: "p1" }],
+      noticias: Array.from({ length: 9 }, (_, i) => ({ url: `n${i}` })),
+    };
+    const r = checkStage2Caps(approved);
+    // Cap esperado = max(2, 12-3-1-1) + 2 = 9. noticias.length = 9 → OK.
+    assert.equal(r.ok, true);
+    assert.equal(r.expectedCaps.noticias, 9);
   });
 });
