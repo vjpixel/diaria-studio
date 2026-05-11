@@ -1387,3 +1387,75 @@ describe("categorize() — #898 customer-story / path-blocklist override", () =>
     );
   });
 });
+
+describe("categorize() — relatórios/análises NÃO são lançamentos (#1096)", () => {
+  it("'Read our new report on X' em blog.google → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/innovation-and-ai/infrastructure-and-cloud/google-cloud/google-threat-intelligence-group-report/",
+        title: "Read our new report on AI-powered threats and our latest defenses.",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'The state of global AI diffusion in 2026' em blogs.microsoft.com → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.microsoft.com/on-the-issues/2026/05/07/the-state-of-global-ai-diffusion-in-2026/",
+        title: "The state of global AI diffusion in 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Microsoft '/on-the-issues/' path em geral → noticias (essays, não produtos)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.microsoft.com/on-the-issues/2026/05/07/some-essay-about-ai",
+        title: "Introducing some essay about AI policy",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'Annual report 2026' em openai.com → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/news/annual-report-2026/",
+        title: "Our Annual report 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'Inside the X report' → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/news/inside-the-ai-index",
+        title: "Inside the AI Index 2026 report",
+      }),
+      "noticias",
+    );
+  });
+
+  it("aceita lançamento que MENCIONA relatório no contexto ('Launching X alongside report')", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/something/",
+        title: "Launching Threat Defense Suite alongside the GTIG report",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("'Introducing Gemini 4' em blog.google ainda É lançamento (regression)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/gemini-4-launch/",
+        title: "Introducing Gemini 4",
+      }),
+      "lancamento",
+    );
+  });
+});
