@@ -48,11 +48,11 @@ Score: **migrar** = lógica é determinística e migração reduz custo/tempo/bu
 
 ## Resumo numérico
 
-- **Total de agentes ativos hoje:** 21 (incluindo orchestrator-stage-* que são docs, não agents dispatchables)
-- **Agents dispatchables hoje:** ~17
-- **Manter:** 12 (writer, social-linkedin, social-facebook, scorer, scorer-monthly, source-researcher, discovery-searcher, research-reviewer Filtro 2, auto-reporter, review-test-email, title-picker, publish-newsletter, analyst-monthly, writer-monthly)
-- **Migrar:** 2 (eia-composer parcial, research-reviewer Filtro 1)
-- **Remover (wrapper de script):** 5 (inbox-drainer, drive-syncer, collect-monthly-runner, social-instagram, social-twitter)
+- **Total de `.md` em `.claude/agents/`:** 26 (inclui 6 docs de orchestrator-stage-* que são playbooks, não agents dispatchables, mais o `orchestrator.md` raiz)
+- **Agents dispatchables hoje:** 20
+- **Manter:** 13 (writer, writer-monthly, social-linkedin, social-facebook, scorer, scorer-monthly, source-researcher, discovery-searcher, research-reviewer F2, auto-reporter, review-test-email, title-picker, publish-newsletter, analyst-monthly)
+- **Migrar (parcial):** 2 (eia-composer, research-reviewer F1)
+- **Remover (wrapper redundante):** 5 (inbox-drainer, drive-syncer, collect-monthly-runner, social-instagram, social-twitter)
 
 ---
 
