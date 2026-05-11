@@ -54,23 +54,35 @@ describe("findPreviousIntentionalError (#911)", () => {
   });
 });
 
-describe("composeRevealText (#911)", () => {
-  it("usa gabarito + detail quando ambos disponíveis", () => {
-    const prev: IntentionalError = {
+describe("composeRevealText (#1079)", () => {
+  it("usa narrative quando disponível (novo formato)", () => {
+    const prev = {
+      edition: "260510",
+      error_type: "count_mismatch",
+      is_feature: true,
+      narrative: "eu disse que a OpenAI lançou 4 modelos, mas listei 3",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    assert.match(text, /^Na última edição, eu disse/);
+    assert.match(text, /OpenAI lançou 4 modelos, mas listei 3/);
+  });
+
+  it("compõe a partir de detail + gabarito legados quando narrative ausente", () => {
+    const prev = {
       edition: "260506",
       error_type: "wrong_number",
       is_feature: true,
       detail: "Texto trazia '220 anos' onde deveria ser '22 anos'",
-      // @ts-expect-error — gabarito é campo extra do schema do editor
       gabarito: "22 anos",
-    };
+    } as IntentionalError & { gabarito: string };
     const text = composeRevealText(prev);
-    assert.match(text, /260506/);
+    assert.match(text, /^Na última edição, /);
     assert.match(text, /220 anos/);
+    assert.match(text, /mas o correto era/);
     assert.match(text, /22 anos/);
   });
 
-  it("usa só detail quando gabarito ausente", () => {
+  it("usa só detail quando gabarito + narrative ausentes", () => {
     const prev: IntentionalError = {
       edition: "260505",
       error_type: "version_inconsistency",
@@ -78,41 +90,40 @@ describe("composeRevealText (#911)", () => {
       detail: "V4 no título, V5/V6/V7 nos parágrafos do D2",
     };
     const text = composeRevealText(prev);
+    assert.match(text, /^Na última edição, /);
     assert.match(text, /V4/);
-    assert.match(text, /260505/);
   });
 
-  it("fallback genérico quando detail vazio", () => {
+  it("fallback genérico quando detail/gabarito/narrative todos ausentes", () => {
     const prev: IntentionalError = {
       edition: "260504",
       error_type: "factual",
       is_feature: true,
     };
     const text = composeRevealText(prev);
-    assert.match(text, /erro intencional/);
+    assert.match(text, /^Na última edição, houve um erro intencional/);
   });
 
   it("#915: strings entre aspas duplas saem em negrito", () => {
-    const prev: IntentionalError = {
+    const prev = {
       edition: "260506",
       error_type: "wrong_number",
       is_feature: true,
-      detail: 'escrevi "fundadores de 220 anos" onde deveria ser "fundadores de 22 anos"',
-    };
+      narrative: 'escrevi "fundadores de 220 anos" onde deveria ser "fundadores de 22 anos"',
+    } as IntentionalError & { narrative: string };
     const text = composeRevealText(prev);
     assert.match(text, /\*\*"fundadores de 220 anos"\*\*/);
     assert.match(text, /\*\*"fundadores de 22 anos"\*\*/);
   });
 
   it("#915: strings entre aspas simples (legacy) também saem em negrito", () => {
-    const prev: IntentionalError = {
+    const prev = {
       edition: "260506",
       error_type: "wrong_number",
       is_feature: true,
       detail: "Texto trazia '220 anos' onde deveria ser '22 anos'",
-      // @ts-expect-error — gabarito é campo extra
       gabarito: "22 anos",
-    };
+    } as IntentionalError & { gabarito: string };
     const text = composeRevealText(prev);
     assert.match(text, /\*\*'220 anos'\*\*/);
     assert.match(text, /\*\*'22 anos'\*\*/);
@@ -152,19 +163,36 @@ describe("boldQuotedStrings (#915)", () => {
   });
 });
 
-describe("renderSection (#911)", () => {
-  it("inclui header + reveal + convite quando reveal presente", () => {
-    const block = renderSection("A edição anterior (260506) tinha um erro: X.");
+describe("renderSection (#1079)", () => {
+  it("inclui header + reveal + placeholder pra declaração corrente quando ausente", () => {
+    const block = renderSection("Na última edição, X.");
     assert.match(block, /\*\*ERRO INTENCIONAL\*\*/);
-    assert.match(block, /tinha um erro: X/);
-    assert.match(block, /sorteio mensal/);
+    assert.match(block, /Na última edição, X\./);
+    assert.match(block, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
+    // Sem o convite/sorteio mensal (movido pra bloco SORTEIO separado #1079)
+    assert.doesNotMatch(block, /sorteio mensal/);
+    assert.doesNotMatch(block, /Esta edição tem um erro proposital/);
   });
 
-  it("usa fallback neutro quando reveal=null", () => {
+  it("usa fallback neutro pro reveal quando reveal=null", () => {
     const block = renderSection(null);
     assert.match(block, /\*\*ERRO INTENCIONAL\*\*/);
     assert.match(block, /não trazia erro intencional declarado/);
-    assert.match(block, /sorteio mensal/);
+    // Ainda mostra placeholder pra declaração corrente
+    assert.match(block, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
+  });
+
+  it("preserva declaração corrente passada (não usa placeholder)", () => {
+    const decl = "Nessa edição, eu disse X, mas Y é o correto.";
+    const block = renderSection("Na última edição, A.", decl);
+    assert.match(block, /Na última edição, A\./);
+    assert.match(block, /Nessa edição, eu disse X, mas Y é o correto\./);
+    assert.doesNotMatch(block, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
+  });
+
+  it("placeholder quando currentDeclaration é string vazia", () => {
+    const block = renderSection("Na última edição, A.", "");
+    assert.match(block, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
   });
 });
 
@@ -237,6 +265,57 @@ describe("insertOrUpdateSection (#911)", () => {
     assert.equal(r.action, "inserted");
     assert.match(r.md, /\*\*ERRO INTENCIONAL\*\*/);
   });
+
+  it("#1079: preserva 'Na última edição, ...' wording existente no MD (não sobrescreve)", () => {
+    // Pixel pode reescrever o reveal anterior manualmente; renderer deve
+    // preservar em vez de sobrescrever com a versão calculada do JSONL.
+    const md = [
+      "OUTRAS NOTÍCIAS",
+      "",
+      "Item.",
+      "",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, coloquei 6 de junho onde deveria ser 6 de maio.",
+      "",
+      "Nessa edição, eu disse X, mas Y é o correto.",
+      "",
+      "---",
+      "",
+      "**ASSINE**",
+      "X",
+    ].join("\n");
+    // Tenta atualizar com reveal diferente — deve preservar o existente
+    const r = insertOrUpdateSection(md, "Reveal CALCULADO DIFERENTE.");
+    assert.match(r.md, /coloquei 6 de junho onde deveria ser 6 de maio/);
+    assert.doesNotMatch(r.md, /CALCULADO DIFERENTE/);
+    // Declaração corrente também preservada
+    assert.match(r.md, /eu disse X, mas Y é o correto/);
+  });
+
+  it("#1079: idempotência com seção completa pré-existente", () => {
+    const md = [
+      "Item.",
+      "",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, A.",
+      "",
+      "Nessa edição, B.",
+      "",
+      "---",
+      "",
+      "**ASSINE**",
+      "X",
+    ].join("\n");
+    const first = insertOrUpdateSection(md, "Na última edição, A.");
+    const second = insertOrUpdateSection(first.md, "Na última edição, A.");
+    assert.equal(second.action, "no_change");
+  });
 });
 
 describe("currentHasIntentionalErrorFlag (#911)", () => {
@@ -264,17 +343,29 @@ describe("currentHasIntentionalErrorFlag (#911)", () => {
   });
 });
 
-describe("extractIntentionalErrorFromMd (#961)", () => {
-  it("extrai detail/gabarito da linha 'Nessa edição, escrevi \"X\" onde deveria ser \"Y\"' (aspas duplas)", () => {
+describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
+  it("#1079: extrai narrative livre (sem aspas)", () => {
+    const md = `Nessa edição, eu disse que a OpenAI lançou 4 modelos, mas listei 3 (que é o número correto).`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, "eu disse que a OpenAI lançou 4 modelos, mas listei 3 (que é o número correto)");
+    // detail/gabarito ficam undefined nesse caso (não bate com regex legacy)
+    assert.equal(r?.detail, undefined);
+    assert.equal(r?.gabarito, undefined);
+  });
+
+  it("extrai narrative + detail/gabarito da linha legacy 'escrevi \"X\" onde deveria ser \"Y\"' (back-compat)", () => {
     const md = `Texto.\n\nNessa edição, escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16".\n\nMais texto.`;
     const r = extractIntentionalErrorFromMd(md);
-    assert.deepEqual(r, { detail: "iPhone 5 e 6", gabarito: "iPhone 15 e 16" });
+    assert.equal(r?.detail, "iPhone 5 e 6");
+    assert.equal(r?.gabarito, "iPhone 15 e 16");
+    assert.match(r?.narrative ?? "", /escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16"/);
   });
 
   it("extrai com aspas simples (caso histórico)", () => {
     const md = `Nessa edição, escrevi 'V4' onde deveria ser 'V8'.`;
     const r = extractIntentionalErrorFromMd(md);
-    assert.deepEqual(r, { detail: "V4", gabarito: "V8" });
+    assert.equal(r?.detail, "V4");
+    assert.equal(r?.gabarito, "V8");
   });
 
   it("retorna null quando linha não existe", () => {
@@ -282,33 +373,51 @@ describe("extractIntentionalErrorFromMd (#961)", () => {
     assert.equal(extractIntentionalErrorFromMd(md), null);
   });
 
-  it("retorna null quando linha está malformada", () => {
+  it("captura narrativa parcial quando linha está malformada legacy (#1079: pega texto livre)", () => {
+    // No formato novo (#1079), qualquer linha "Nessa edição, X." vira narrative.
+    // O regex legacy de aspas só roda como sub-extração; quando falha, retorna só narrative.
     const md = `Nessa edição, escrevi "X" mas esqueci o resto.`;
-    assert.equal(extractIntentionalErrorFromMd(md), null);
-  });
-
-  it("#991: rejeita aspas cruzadas (open=\" close=' no detail)", () => {
-    const md = `Nessa edição, escrevi "X' onde deveria ser "Y".`;
-    assert.equal(
-      extractIntentionalErrorFromMd(md),
-      null,
-      "back-reference \\1 deve forçar mesma aspa abrindo e fechando",
-    );
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, `escrevi "X" mas esqueci o resto`);
+    assert.equal(r?.detail, undefined);
+    assert.equal(r?.gabarito, undefined);
   });
 
   it("#991: aceita aspas duplas em ambos os lados", () => {
     const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
-    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.detail, "X");
+    assert.equal(r?.gabarito, "Y");
   });
 
   it("#991: aceita aspas simples em ambos os lados", () => {
     const md = `Nessa edição, escrevi 'X' onde deveria ser 'Y'.`;
-    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.detail, "X");
+    assert.equal(r?.gabarito, "Y");
   });
 
   it("#991: aceita aspas mistas — duplas no detail + simples no gabarito (cada lado consistente)", () => {
     const md = `Nessa edição, escrevi "X" onde deveria ser 'Y'.`;
-    assert.deepEqual(extractIntentionalErrorFromMd(md), { detail: "X", gabarito: "Y" });
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.detail, "X");
+    assert.equal(r?.gabarito, "Y");
+  });
+
+  it("#1079: regex de narrative permite pontos internos quando tudo na mesma linha", () => {
+    // Non-greedy [^\n]+? ancorado em \.\s*(\n|$) captura até o último ponto
+    // antes da quebra. Narrativas com pontos internos cabem se tudo em 1 linha.
+    const md = `Nessa edição, eu disse X. Depois corrigi pra Y.`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, "eu disse X. Depois corrigi pra Y");
+  });
+
+  it("#1079: regex de narrative para na primeira quebra de parágrafo", () => {
+    // Em reviewed.md real, parágrafos são separados por \n\n. A regex termina
+    // no primeiro \n, então linhas subsequentes não são capturadas.
+    const md = `Nessa edição, X.\n\nOutro parágrafo. Não capturar.`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, "X");
   });
 });
 
@@ -360,7 +469,9 @@ describe("findPreviousIntentionalErrorFromMd (#961)", () => {
       writeFileSync(join(root, "260507", "02-reviewed.md"), `Outro sem.`, "utf8");
 
       const r = findPreviousIntentionalErrorFromMd(root, "260508");
-      assert.deepEqual(r, { edition: "260505", detail: "X", gabarito: "Y" });
+      assert.equal(r?.edition, "260505");
+      assert.equal(r?.detail, "X");
+      assert.equal(r?.gabarito, "Y");
     } finally {
       rmSync(root, { recursive: true });
     }
@@ -465,7 +576,11 @@ describe("render-erro-intencional CLI (#911)", () => {
       assert.equal(out.prev_revealed, true);
       const updated = readFileSync(mdPath, "utf8");
       assert.match(updated, /\*\*ERRO INTENCIONAL\*\*/);
+      // #1079: reveal agora começa com "Na última edição, ..."
+      assert.match(updated, /Na última edição/);
       assert.match(updated, /22 anos/);
+      // Placeholder pra autor escrever o erro corrente
+      assert.match(updated, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
