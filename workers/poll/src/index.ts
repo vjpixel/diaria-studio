@@ -63,10 +63,30 @@ function json(data: unknown, status = 200, env?: Env): Response {
   });
 }
 
+// ── Date formatting (#1080) ───────────────────────────────────────────────────
+
+const MONTH_NAMES_PT = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
+/** AAMMDD → "10 de maio de 2026". Memória `feedback_no_aammdd_for_subscribers.md`. */
+function formatEditionDate(edition: string): string {
+  if (!/^\d{6}$/.test(edition)) return edition;
+  const yy = parseInt(edition.slice(0, 2), 10);
+  const mm = parseInt(edition.slice(2, 4), 10);
+  const dd = parseInt(edition.slice(4, 6), 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return edition;
+  return `${dd} de ${MONTH_NAMES_PT[mm - 1]} de ${2000 + yy}`;
+}
+
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
 async function handleVote(url: URL, env: Env): Promise<Response> {
-  const email = url.searchParams.get("email")?.toLowerCase().trim();
+  // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
+  // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
+  const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
+  const email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
   const edition = url.searchParams.get("edition");
   const choice = url.searchParams.get("choice")?.toUpperCase();
   // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
@@ -84,11 +104,28 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     });
   }
 
-  // Se sig presente, verificar HMAC (backward compat com URLs assinadas via Kit).
-  // Se sig ausente, confiar no email injetado pelo Beehiiv via merge tag.
+  // #1083: gate de edições válidas. Se key `valid_editions` setada e edition
+  // não estiver no set, rejeita. Vazia/ausente → aceita qualquer (compat).
+  const validRaw = await env.POLL.get("valid_editions");
+  if (validRaw) {
+    try {
+      const arr = JSON.parse(validRaw) as string[];
+      if (arr.length > 0 && !arr.includes(edition)) {
+        return new Response(votePageHtml("Essa edição não aceita mais votos.", false), {
+          status: 410, headers: { "Content-Type": "text/html;charset=utf-8" }
+        });
+      }
+    } catch { /* corrupted → aceita pra não bloquear */ }
+  }
+
+  // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
+  // Tenta novo formato primeiro; fallback pro legacy. Ausente = merge-tag mode.
   if (sig !== null) {
-    const valid = await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
-    if (!valid) {
+    const newValid = await hmacVerify(env.POLL_SECRET, email, sig);
+    const legacyValid = newValid
+      ? true
+      : await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
+    if (!newValid && !legacyValid) {
       return new Response(votePageHtml("Link inválido ou expirado.", false), {
         status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
       });
@@ -100,7 +137,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return new Response(votePageHtml(`Você já votou na edição ${edition} (escolha: ${prev.choice}).`, false), {
+    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false), {
       status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -114,10 +151,10 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // Atualizar counter agregado (evita N+1 reads no /stats)
   await updateStatsCounter(env, edition, choice as "A" | "B", correct);
 
-  // Atualizar score individual se resposta correta já está definida
-  if (correct !== null) {
-    await updateScore(env, email, edition, correct);
-  }
+  // #1080: sempre atualizar score, mesmo sem gabarito ainda. Sem isso, votos
+  // antes do admin setar `correct:{edition}` ficam sem score → leaderboard
+  // vazio + nickname form falha com "Vote primeiro".
+  await updateScore(env, email, edition, correct);
 
   const msg = correct === true
     ? "✅ Acertou! Era a imagem gerada por IA."
@@ -125,7 +162,18 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     ? "❌ Não foi dessa vez — era a foto real."
     : "Voto registrado! O resultado sai na próxima edição.";
 
-  return new Response(votePageHtml(msg, true), {
+  // #1078 — primeiro voto: oferecer nickname pra leaderboard. Checa se já tem
+  // nickname salvo no score; se não, gera HMAC sig pra form de set-name.
+  const scoreRaw = await env.POLL.get(`score:${email}`);
+  const scoreObj = scoreRaw ? JSON.parse(scoreRaw) : null;
+  const needsNickname = !scoreObj?.nickname;
+  let nicknameForm: { email: string; sig: string } | null = null;
+  if (needsNickname) {
+    const sig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+    nicknameForm = { email, sig };
+  }
+
+  return new Response(votePageHtml(msg, true, nicknameForm), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
 }
@@ -147,19 +195,30 @@ async function updateStatsCounter(
   await env.POLL.put(statsKey, JSON.stringify(stats));
 }
 
-async function updateScore(env: Env, email: string, edition: string, correct: boolean): Promise<void> {
+async function updateScore(
+  env: Env,
+  email: string,
+  edition: string,
+  correct: boolean | null,
+): Promise<void> {
   const scoreKey = `score:${email}`;
   const raw = await env.POLL.get(scoreKey);
-  const score = raw ? JSON.parse(raw) : { total: 0, correct: 0, streak: 0, last_edition: null };
+  const score = raw
+    ? JSON.parse(raw)
+    : { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
 
   score.total += 1;
-  if (correct) {
+  // correct === null → gabarito ainda não definido: incrementa total mas não
+  // mexe em correct/streak (preserva estado pra reconciliação futura).
+  if (correct === true) {
     score.correct += 1;
     score.streak = (score.streak || 0) + 1;
-  } else {
+  } else if (correct === false) {
     score.streak = 0;
   }
   score.last_edition = edition;
+  // Preserve nickname if already set (don't overwrite)
+  if (score.nickname === undefined) score.nickname = null;
 
   await env.POLL.put(scoreKey, JSON.stringify(score));
 }
@@ -194,7 +253,7 @@ async function handleStats(url: URL, env: Env): Promise<Response> {
 
 async function handleLeaderboard(env: Env): Promise<Response> {
   const list = await env.POLL.list({ prefix: "score:" });
-  const scores: Array<{ email: string; correct: number; total: number; pct: number; streak: number }> = [];
+  const scores: Array<{ email: string; nickname: string | null; correct: number; total: number; pct: number; streak: number }> = [];
 
   for (const key of list.keys) {
     const raw = await env.POLL.get(key.name);
@@ -202,29 +261,36 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     const score = JSON.parse(raw);
     const email = key.name.replace("score:", "");
     const pct = score.total > 0 ? Math.round((score.correct / score.total) * 100) : 0;
-    scores.push({ email, correct: score.correct, total: score.total, pct, streak: score.streak || 0 });
+    scores.push({ email, nickname: score.nickname || null, correct: score.correct, total: score.total, pct, streak: score.streak || 0 });
   }
 
   scores.sort((a, b) => b.correct - a.correct || b.pct - a.pct);
 
   const rows = scores.slice(0, 50).map((s, i) => {
-    const masked = s.email.replace(/(.{2}).*(@.*)/, "$1***$2");
+    // #1078 / #1081 — usa nickname se setado; senão mostra local-part inteiro
+    // do email + "@***" (privacidade do domínio, mantém local-part legível).
+    const display = s.nickname || s.email.replace(/@.*/, "@***");
+    const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
     const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
     return `<tr>
       <td>${medal}</td>
-      <td>${masked}</td>
+      <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
       <td>${s.pct}%</td>
-      <td>${s.streak > 1 ? `🔥 ${s.streak}` : s.streak}</td>
     </tr>`;
   }).join("\n");
+
+  // #1081: período atual hardcoded como "Teste" enquanto o leaderboard estiver
+  // em validação. Voltar pra mês dinâmico (MONTH_NAMES_PT[...]) antes de
+  // divulgar pros leitores.
+  const periodLabel = "Teste";
 
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>É IA? — Leaderboard | Diar.ia</title>
+<title>Leaderboard de ${periodLabel} | Diar.ia</title>
 <style>
   body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
   h1 { font-size: 1.5rem; }
@@ -237,13 +303,14 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 </style>
 </head>
 <body>
-<h1>🤔 É IA? — Leaderboard</h1>
-<p class="sub">Quem mais acerta qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
+<h1 style="margin-bottom:4px;">Leaderboard de ${periodLabel}</h1>
+<h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
+<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
 <table>
-<thead><tr><th>#</th><th>Leitor</th><th>Acertos</th><th>%</th><th>Sequência</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=5 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<thead><tr><th>#</th><th>Leitor</th><th>Acertos</th><th>%</th></tr></thead>
+<tbody>${rows || "<tr><td colspan=4 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:#999">Atualizado em tempo real · E-mails mascarados por privacidade</p>
+<p style="margin-top:30px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
@@ -300,7 +367,23 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
 
 // ── Vote page HTML ────────────────────────────────────────────────────────────
 
-function votePageHtml(message: string, success: boolean): string {
+function votePageHtml(
+  message: string,
+  success: boolean,
+  nicknameForm?: { email: string; sig: string } | null,
+): string {
+  const formHtml = nicknameForm ? `
+<div style="margin:30px auto;padding:20px;background:#f5f5f5;border-radius:8px;max-width:380px;">
+  <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Como você quer ser chamado no ranking?</p>
+  <form action="/set-name" method="GET" style="display:flex;gap:8px;">
+    <input type="hidden" name="email" value="${nicknameForm.email}">
+    <input type="hidden" name="sig" value="${nicknameForm.sig}">
+    <input type="text" name="name" placeholder="Seu nome" maxlength="40" required style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:0.95rem;">
+    <button type="submit" style="padding:8px 16px;background:#00A0A0;color:#fff;border:none;border-radius:4px;font-weight:600;cursor:pointer;">Salvar</button>
+  </form>
+  <p style="font-size:0.75rem;color:#666;margin:10px 0 0 0;">Pode ser apelido. Mostrado publicamente no leaderboard.</p>
+</div>` : "";
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -314,11 +397,56 @@ function votePageHtml(message: string, success: boolean): string {
 </style>
 </head>
 <body>
-<p style="font-size:2rem">${success ? "✅" : "ℹ️"}</p>
 <p class="msg">${message}</p>
+${formHtml}
 <p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="/leaderboard">Ver leaderboard</a></p>
 </body>
 </html>`;
+}
+
+// ── /set-name — leitor escolhe nickname pra leaderboard (#1078) ─────────────
+
+async function handleSetName(url: URL, env: Env): Promise<Response> {
+  const email = url.searchParams.get("email")?.toLowerCase().trim();
+  const name = url.searchParams.get("name")?.trim();
+  const sig = url.searchParams.get("sig");
+
+  if (!email || !name || !sig) {
+    return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
+  if (!valid) {
+    return new Response(votePageHtml("Link inválido ou expirado.", false), {
+      status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  // Sanitize name: max 40 chars, strip HTML
+  const cleanName = name.slice(0, 40).replace(/[<>]/g, "");
+  if (!cleanName) {
+    return new Response(votePageHtml("Nome vazio — tente novamente.", false), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  const scoreKey = `score:${email}`;
+  const raw = await env.POLL.get(scoreKey);
+  if (!raw) {
+    return new Response(votePageHtml("Vote primeiro antes de definir nickname.", false), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  const score = JSON.parse(raw);
+  score.nickname = cleanName;
+  await env.POLL.put(scoreKey, JSON.stringify(score));
+
+  return new Response(votePageHtml(`Pronto, ${cleanName}! Você aparece assim no ranking.`, true), {
+    status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
+  });
 }
 
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
@@ -353,9 +481,10 @@ export default {
     if (path === "/vote" && request.method === "GET") return handleVote(url, env);
     if (path === "/stats" && request.method === "GET") return handleStats(url, env);
     if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(env);
+    if (path === "/set-name" && request.method === "GET") return handleSetName(url, env);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
 };

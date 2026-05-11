@@ -1,36 +1,34 @@
 /**
- * inject-poll-urls.ts (#1044)
+ * inject-poll-sig.ts (#1083)
  *
- * Pré-render: gera 2 URLs HMAC-assinadas (choice A, choice B) por subscriber
- * pra edição corrente, e injeta como custom fields via Beehiiv API. O template
- * Beehiiv usa `{{custom_fields.poll_a_url}}` / `{{custom_fields.poll_b_url}}`
- * no Custom HTML pra renderizar botões A/B clicáveis no email.
+ * Pré-render: gera HMAC(POLL_SECRET, email) por subscriber e armazena 1 custom
+ * field permanente `poll_sig` via Beehiiv API. Edition + choice vão no HTML
+ * literalmente; Worker valida sig contra email.
  *
- * Worker em workers/poll/ valida HMAC contra POLL_SECRET e registra voto em KV.
+ * Substitui `inject-poll-urls.ts` (#1044) pro caso permanente — o legacy
+ * permanece pra back-compat com edições já enviadas.
  *
- * Idempotente: re-rodar sobrescreve sem duplicar. Custom fields são reusados
- * entre edições — nome fixo (`poll_a_url`/`poll_b_url`), valor varia.
+ * Idempotente: lê valor atual e skipa se já bate com o calculado. Roda 1x por
+ * subscriber (na primeira edição que ele recebe); patcha apenas novos
+ * subscribers em runs subsequentes.
  *
  * Uso:
- *   npx tsx scripts/inject-poll-urls.ts --edition 260510
- *   npx tsx scripts/inject-poll-urls.ts --edition 260510 --dry-run
+ *   npx tsx scripts/inject-poll-sig.ts
+ *   npx tsx scripts/inject-poll-sig.ts --dry-run
+ *   npx tsx scripts/inject-poll-sig.ts --force      # repatch all (rotação secret)
  *
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID - ID da publicação (required)
  *   POLL_SECRET            - HMAC key (required)
- *   POLL_WORKER_URL        - default https://diar-ia-poll.diaria.workers.dev
  */
 
 import { createHmac } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 
-const POLL_WORKER_URL =
-  process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
-
-const FIELD_A = "poll_a_url";
-const FIELD_B = "poll_b_url";
-const CONCURRENCY = 8;
+const FIELD_SIG = "poll_sig";
+const CONCURRENCY = 3;
 
 interface BeehiivCustomField {
   id: string;
@@ -42,6 +40,7 @@ interface BeehiivSubscription {
   id: string;
   email: string;
   status: string;
+  custom_fields?: Array<{ name: string; value: string }>;
 }
 
 interface BeehiivPage<T> {
@@ -50,17 +49,10 @@ interface BeehiivPage<T> {
   next_cursor?: string;
 }
 
-// HMAC cobre só (email, edition) — choice é param independente. URLs A e B
-// têm sig idêntico; permite leitor mudar de ideia A↔B no client sem regenerar.
-export function generatePollUrl(
-  email: string,
-  edition: string,
-  choice: "A" | "B",
-  secret: string,
-): string {
-  const message = `${email.toLowerCase().trim()}:${edition}`;
-  const sig = createHmac("sha256", secret).update(message).digest("hex");
-  return `${POLL_WORKER_URL}/vote?email=${encodeURIComponent(email)}&edition=${edition}&choice=${choice}&sig=${sig}`;
+/** HMAC permanente do email (lowercase + trim). Edition/choice livre na URL. */
+export function generatePollSig(email: string, secret: string): string {
+  const message = email.toLowerCase().trim();
+  return createHmac("sha256", secret).update(message).digest("hex");
 }
 
 interface ApiOpts {
@@ -74,8 +66,7 @@ async function fetchJson<T>(
   apiKey: string,
   init?: RequestInit,
 ): Promise<T> {
-  // #1082: retry com backoff exponencial pra 429 (rate limit Beehiiv).
-  // Default Beehiiv: 60 req/min — 429 acontece em bursts paralelos.
+  // Retry com backoff exponencial pra 429 (rate limit Beehiiv).
   const MAX_RETRIES = 5;
   let attempt = 0;
   while (true) {
@@ -94,7 +85,6 @@ async function fetchJson<T>(
 
     if (res.status === 429 && attempt < MAX_RETRIES) {
       const retryAfter = parseFloat(res.headers.get("retry-after") ?? "");
-      // backoff: header Retry-After, ou 2^attempt segundos (1,2,4,8,16)
       const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
         ? retryAfter * 1000
         : Math.pow(2, attempt) * 1000;
@@ -106,14 +96,8 @@ async function fetchJson<T>(
   }
 }
 
-/**
- * Garante que os 2 custom fields (`poll_a_url`, `poll_b_url`) existem na
- * publicação. Idempotente — se já existem, no-op.
- *
- * Pagina via cursor pra cobrir publications com >100 fields (Diar.ia tinha 21
- * em 2026-05-09, perto do default limit de 10 que dispararia false-create).
- */
-export async function ensureCustomFields(opts: ApiOpts): Promise<void> {
+/** Cria custom field `poll_sig` se não existir. Idempotente. */
+async function ensureCustomField(opts: ApiOpts): Promise<void> {
   const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
   const baseUrl = `${base}/publications/${opts.publicationId}/custom_fields`;
   const existing = new Set<string>();
@@ -129,20 +113,15 @@ export async function ensureCustomFields(opts: ApiOpts): Promise<void> {
     if (!page.has_more || !page.next_cursor) break;
     cursor = page.next_cursor;
   }
-  for (const name of [FIELD_A, FIELD_B]) {
-    if (existing.has(name)) continue;
-    await fetchJson(baseUrl, opts.apiKey, {
-      method: "POST",
-      body: JSON.stringify({ kind: "string", display: name }),
-    });
-    console.error(`[inject-poll-urls] criado custom field "${name}"`);
-  }
+  if (existing.has(FIELD_SIG)) return;
+  await fetchJson(baseUrl, opts.apiKey, {
+    method: "POST",
+    body: JSON.stringify({ kind: "string", display: FIELD_SIG }),
+  });
+  console.error(`[inject-poll-sig] criado custom field "${FIELD_SIG}"`);
 }
 
-/**
- * Pagina por subscribers active, yielding página por página pra permitir
- * processamento incremental (não carrega ~milhares na memória).
- */
+/** Subscribers active paginados. */
 async function* iterateActiveSubscriptions(
   opts: ApiOpts,
 ): AsyncGenerator<BeehiivSubscription[]> {
@@ -152,6 +131,7 @@ async function* iterateActiveSubscriptions(
     const params = new URLSearchParams({
       status: "active",
       limit: "100",
+      "expand[]": "custom_fields",
     });
     if (cursor) params.set("cursor", cursor);
     const url = `${base}/publications/${opts.publicationId}/subscriptions?${params.toString()}`;
@@ -165,39 +145,25 @@ async function* iterateActiveSubscriptions(
   }
 }
 
-/**
- * Atualiza os 2 custom fields de 1 subscriber. Falha individual lançada pra
- * caller decidir (script principal loga e continua).
- */
-export async function patchSubscriberPollUrls(
+async function patchSubscriberSig(
   subId: string,
-  email: string,
-  edition: string,
-  secret: string,
+  sig: string,
   opts: ApiOpts,
 ): Promise<void> {
   const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
   const url = `${base}/publications/${opts.publicationId}/subscriptions/${subId}`;
-  const body = {
-    custom_fields: [
-      { name: FIELD_A, value: generatePollUrl(email, edition, "A", secret) },
-      { name: FIELD_B, value: generatePollUrl(email, edition, "B", secret) },
-    ],
-  };
   await fetchJson(url, opts.apiKey, {
     method: "PATCH",
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      custom_fields: [{ name: FIELD_SIG, value: sig }],
+    }),
   });
 }
 
-/**
- * Processa array em batches paralelos com concurrency limitada. Coleta erros
- * mas não interrompe — return de [resultados, erros].
- */
-async function processBatch<T, R>(
+async function processBatch<T>(
   items: T[],
   concurrency: number,
-  worker: (item: T) => Promise<R>,
+  worker: (item: T) => Promise<void>,
 ): Promise<{ ok: number; failed: Array<{ item: T; error: string }> }> {
   let ok = 0;
   const failed: Array<{ item: T; error: string }> = [];
@@ -218,125 +184,112 @@ async function processBatch<T, R>(
 }
 
 interface RunResult {
-  edition: string;
   total_subscribers: number;
   patched: number;
-  failed: number;
+  skipped_already_correct: number;
   skipped_no_email: number;
+  failed: number;
   dry_run: boolean;
 }
 
 export async function run(args: {
-  edition: string;
   dryRun: boolean;
+  force: boolean;
   apiOpts: ApiOpts;
   secret: string;
 }): Promise<RunResult> {
-  const { edition, dryRun, apiOpts, secret } = args;
+  const { dryRun, force, apiOpts, secret } = args;
 
   if (!dryRun) {
-    await ensureCustomFields(apiOpts);
+    await ensureCustomField(apiOpts);
   }
 
   let total = 0;
   let patched = 0;
-  let failedTotal = 0;
+  let skippedAlready = 0;
   let skippedNoEmail = 0;
+  let failedTotal = 0;
   let pageNum = 0;
 
   for await (const page of iterateActiveSubscriptions(apiOpts)) {
     pageNum++;
-    const validSubs = page.filter((s) => {
-      if (!s.email || !s.email.trim()) {
-        skippedNoEmail++;
-        return false;
-      }
-      return true;
-    });
     total += page.length;
+    const needsPatch: Array<{ id: string; email: string; sig: string }> = [];
+
+    for (const sub of page) {
+      if (!sub.email || !sub.email.trim()) {
+        skippedNoEmail++;
+        continue;
+      }
+      const expectedSig = generatePollSig(sub.email, secret);
+      if (!force) {
+        const current = sub.custom_fields?.find((f) => f.name === FIELD_SIG)?.value;
+        if (current === expectedSig) {
+          skippedAlready++;
+          continue;
+        }
+      }
+      needsPatch.push({ id: sub.id, email: sub.email, sig: expectedSig });
+    }
 
     if (dryRun) {
-      // Em dry-run, ainda mostra preview de 1 URL por página
-      if (validSubs[0]) {
-        const sampleUrl = generatePollUrl(
-          validSubs[0].email,
-          edition,
-          "A",
-          secret,
-        );
-        console.error(
-          `[inject-poll-urls] page ${pageNum} (${validSubs.length} valid): preview ${sampleUrl}`,
-        );
-      }
+      console.error(
+        `[inject-poll-sig] page ${pageNum}: ${needsPatch.length} need patch, ${skippedAlready} already correct (running)`,
+      );
       continue;
     }
 
-    const result = await processBatch(validSubs, CONCURRENCY, (sub) =>
-      patchSubscriberPollUrls(sub.id, sub.email, edition, secret, apiOpts),
+    const result = await processBatch(needsPatch, CONCURRENCY, (item) =>
+      patchSubscriberSig(item.id, item.sig, apiOpts),
     );
     patched += result.ok;
     failedTotal += result.failed.length;
     for (const f of result.failed) {
       console.error(
-        `[inject-poll-urls] FAIL ${f.item.email}: ${f.error.slice(0, 200)}`,
+        `[inject-poll-sig] FAIL ${f.item.email}: ${f.error.slice(0, 200)}`,
       );
     }
     console.error(
-      `[inject-poll-urls] page ${pageNum}: ${result.ok}/${validSubs.length} ok, running total ${patched}`,
+      `[inject-poll-sig] page ${pageNum}: patched ${result.ok}/${needsPatch.length}, skipped ${page.length - needsPatch.length - (page.filter(s => !s.email).length)} already-correct, running total patched ${patched}`,
     );
   }
 
   return {
-    edition,
     total_subscribers: total,
     patched,
-    failed: failedTotal,
+    skipped_already_correct: skippedAlready,
     skipped_no_email: skippedNoEmail,
+    failed: failedTotal,
     dry_run: dryRun,
   };
 }
 
 async function main(): Promise<void> {
-  const { values, flags } = parseArgs(process.argv.slice(2));
-  const edition = values["edition"];
+  const { flags } = parseArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
-
-  if (!edition) {
-    console.error(
-      "Uso: inject-poll-urls.ts --edition AAMMDD [--dry-run]",
-    );
-    process.exit(1);
-  }
-  if (!/^\d{6}$/.test(edition)) {
-    console.error(
-      `[inject-poll-urls] --edition deve ser AAMMDD (6 dígitos), recebido: "${edition}"`,
-    );
-    process.exit(1);
-  }
+  const force = flags.has("force");
 
   const apiKey = process.env.BEEHIIV_API_KEY;
   const publicationId = process.env.BEEHIIV_PUBLICATION_ID;
   const secret = process.env.POLL_SECRET;
-
   const missing: string[] = [];
   if (!apiKey) missing.push("BEEHIIV_API_KEY");
   if (!publicationId) missing.push("BEEHIIV_PUBLICATION_ID");
   if (!secret) missing.push("POLL_SECRET");
   if (missing.length > 0) {
     console.error(
-      `[inject-poll-urls] envs ausentes: ${missing.join(", ")} — abortando`,
+      `[inject-poll-sig] envs ausentes: ${missing.join(", ")} — abortando`,
     );
     process.exit(1);
   }
 
   const result = await run({
-    edition,
     dryRun,
-    apiOpts: { publicationId: publicationId!, apiKey: apiKey! },
+    force,
+    apiOpts: { apiKey: apiKey!, publicationId: publicationId! },
     secret: secret!,
   });
-
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  console.log(JSON.stringify(result, null, 2));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -345,7 +298,7 @@ if (
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
   main().catch((e) => {
-    console.error(`[inject-poll-urls] ${(e as Error).message}`);
-    process.exit(2);
+    console.error(`[inject-poll-sig] ${(e as Error).message}`);
+    process.exit(1);
   });
 }
