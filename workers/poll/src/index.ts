@@ -19,6 +19,8 @@
  *   ADMIN_SECRET  → HMAC key para endpoint admin
  */
 
+import { rankEntries, type LeaderboardEntry } from "./leaderboard";
+
 export interface Env {
   POLL: KVNamespace;
   POLL_SECRET: string;
@@ -243,7 +245,7 @@ async function handleStats(url: URL, env: Env): Promise<Response> {
 
 async function handleLeaderboard(env: Env): Promise<Response> {
   const list = await env.POLL.list({ prefix: "score:" });
-  const scores: Array<{ email: string; nickname: string | null; correct: number; total: number; pct: number; streak: number }> = [];
+  const scores: LeaderboardEntry[] = [];
 
   for (const key of list.keys) {
     const raw = await env.POLL.get(key.name);
@@ -254,16 +256,18 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     scores.push({ email, nickname: score.nickname || null, correct: score.correct, total: score.total, pct, streak: score.streak || 0 });
   }
 
-  scores.sort((a, b) => b.correct - a.correct || b.pct - a.pct);
+  // #1092: competition ranking — leitores com mesmo (correct, pct) ocupam o
+  // mesmo número (1, 1, 3 — não 1, 2, 3 nem dense 1, 1, 2). Tiebreaker
+  // dentro do empate: nickname/email ASC (estável).
+  const ranked = rankEntries(scores).slice(0, 50);
 
-  const rows = scores.slice(0, 50).map((s, i) => {
+  const rows = ranked.map((s) => {
     // #1078 / #1081 — usa nickname se setado; senão mostra local-part inteiro
     // do email + "@***" (privacidade do domínio, mantém local-part legível).
     const display = s.nickname || s.email.replace(/@.*/, "@***");
     const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
-    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
     return `<tr>
-      <td>${medal}</td>
+      <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
       <td>${s.pct}%</td>
