@@ -12,7 +12,9 @@ import {
   buildScoreIndexes,
   checkEditorSubmittedBypass,
   applyScoreFilter,
+  applyDomainCap,
   finalizeStage1,
+  DEFAULT_DOMAIN_CAP,
   type Article,
   type ScoredEntry,
   type ScoredOutput,
@@ -274,6 +276,115 @@ describe("#721 — applyScoreFilter", () => {
     const hlUrls = new Set([url]);
     const { kept } = applyScoreFilter([article], 40, hlUrls, empty);
     assert.equal(kept.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyDomainCap (#1067)
+// ---------------------------------------------------------------------------
+
+describe("applyDomainCap (#1067)", () => {
+  const mk = (url: string, score: number): Article => ({
+    url,
+    title: url,
+    published_at: "2026-05-11T00:00:00Z",
+    score,
+  });
+
+  it("DEFAULT_DOMAIN_CAP é 3", () => {
+    assert.equal(DEFAULT_DOMAIN_CAP, 3);
+  });
+
+  it("aplica cap top N por hostname; resto vai pra dropped", () => {
+    const articles = [
+      mk("https://exame.com/a", 90),
+      mk("https://exame.com/b", 80),
+      mk("https://exame.com/c", 70),
+      mk("https://exame.com/d", 60),
+      mk("https://exame.com/e", 50),
+      mk("https://nyt.com/x", 85),
+    ];
+    const { kept, dropped } = applyDomainCap(articles, 3, new Set());
+    assert.equal(kept.length, 4); // 3 exame + 1 nyt
+    assert.equal(dropped.length, 2);
+    assert.equal(dropped[0].domain, "exame.com");
+    assert.equal(dropped[0].score, 60);
+    assert.equal(dropped[1].score, 50);
+  });
+
+  it("www.X.com e X.com são tratados como mesmo hostname (strip www)", () => {
+    const articles = [
+      mk("https://www.exame.com/a", 90),
+      mk("https://exame.com/b", 80),
+      mk("https://www.exame.com/c", 70),
+      mk("https://exame.com/d", 60),
+    ];
+    const { kept, dropped } = applyDomainCap(articles, 3, new Set());
+    assert.equal(kept.length, 3);
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].domain, "exame.com");
+  });
+
+  it("URLs em protectedUrls bypassam o cap e não contam pro limit", () => {
+    // Highlight no domínio NÃO conta — pra deixar 3 outros também
+    const articles = [
+      mk("https://exame.com/highlight", 95),
+      mk("https://exame.com/a", 90),
+      mk("https://exame.com/b", 80),
+      mk("https://exame.com/c", 70),
+      mk("https://exame.com/d", 60),
+    ];
+    const protectedUrls = new Set(["https://exame.com/highlight"]);
+    const { kept, dropped } = applyDomainCap(articles, 3, protectedUrls);
+    // 1 highlight + 3 outros = 4 kept
+    assert.equal(kept.length, 4);
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].url, "https://exame.com/d");
+  });
+
+  it("URL inválida passa pelo defensive fallback", () => {
+    const articles = [
+      mk("not-a-url", 80),
+      mk("https://exame.com/a", 90),
+    ];
+    const { kept, dropped } = applyDomainCap(articles, 3, new Set());
+    assert.equal(kept.length, 2);
+    assert.equal(dropped.length, 0);
+  });
+
+  it("preserva ordem original do input (assumido sorted por score desc)", () => {
+    const articles = [
+      mk("https://a.com/1", 100),
+      mk("https://b.com/1", 90),
+      mk("https://a.com/2", 80),
+    ];
+    const { kept } = applyDomainCap(articles, 3, new Set());
+    assert.equal(kept[0].url, "https://a.com/1");
+    assert.equal(kept[1].url, "https://b.com/1");
+    assert.equal(kept[2].url, "https://a.com/2");
+  });
+
+  it("cap = 0 → tudo vai pra dropped (exceto protected)", () => {
+    const articles = [
+      mk("https://exame.com/a", 90),
+      mk("https://exame.com/b", 80),
+    ];
+    const { kept, dropped } = applyDomainCap(articles, 0, new Set());
+    assert.equal(kept.length, 0);
+    assert.equal(dropped.length, 2);
+  });
+
+  it("dropped entry tem url, title, domain e score", () => {
+    const articles = [
+      mk("https://exame.com/a", 90),
+      mk("https://exame.com/b", 80),
+    ];
+    articles[1].title = "Title B";
+    const { dropped } = applyDomainCap(articles, 1, new Set());
+    assert.equal(dropped[0].url, "https://exame.com/b");
+    assert.equal(dropped[0].title, "Title B");
+    assert.equal(dropped[0].domain, "exame.com");
+    assert.equal(dropped[0].score, 80);
   });
 });
 

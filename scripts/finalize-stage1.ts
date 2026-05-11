@@ -214,6 +214,61 @@ export function checkEditorSubmittedBypass(
  *
  * Artigos em highlightUrls ou runnerUpUrls são preservados sem verificação.
  */
+/**
+ * Pure (#1067): cap N URLs por domínio. Itera `articles` (assumidos ordenados
+ * por score desc) e mantém os top N por hostname. URLs em `protectedUrls`
+ * (highlights + runners_up do scorer) passam sempre — não contam pro cap nem
+ * são droppadas. URLs com hostname inválido passam (defensive, warn).
+ *
+ * Retorna `{ kept, dropped }` onde dropped tem domain + score pra audit.
+ */
+export function applyDomainCap(
+  articles: Article[],
+  capPerDomain: number,
+  protectedUrls: Set<string>,
+): {
+  kept: Article[];
+  dropped: Array<{ url: string; title?: string; domain: string; score: number | null }>;
+} {
+  const kept: Article[] = [];
+  const dropped: Array<{ url: string; title?: string; domain: string; score: number | null }> = [];
+  const countByDomain = new Map<string, number>();
+
+  for (const article of articles) {
+    // Highlights/runners_up: passam sempre (issue #1067 explicit)
+    if (protectedUrls.has(article.url)) {
+      kept.push(article);
+      continue;
+    }
+
+    let host: string | null = null;
+    try {
+      host = new URL(article.url).hostname.replace(/^www\./, "");
+    } catch {
+      // URL inválida — defensive pass-through. Outros validators downstream pegam.
+    }
+    if (!host) {
+      kept.push(article);
+      continue;
+    }
+
+    const count = countByDomain.get(host) ?? 0;
+    if (count < capPerDomain) {
+      kept.push(article);
+      countByDomain.set(host, count + 1);
+    } else {
+      dropped.push({
+        url: article.url,
+        title: article.title,
+        domain: host,
+        score: (article.score as number | null | undefined) ?? null,
+      });
+    }
+  }
+
+  return { kept, dropped };
+}
+
 export function applyScoreFilter(
   articles: Article[],
   threshold: number,
@@ -281,17 +336,22 @@ export function applyScoreFilter(
  * Aplica join de scores e filtro de score mínimo a todos os buckets.
  * Retorna os buckets enriquecidos e métricas de log.
  */
+// #1067: cap default de 3 URLs por domínio. Caller pode override via opts.
+export const DEFAULT_DOMAIN_CAP = 3;
+
 export function finalizeStage1(
   categorized: CategorizedBuckets,
   scoredOutput: ScoredOutput,
-  options: { threshold?: number } = {},
+  options: { threshold?: number; domainCap?: number } = {},
 ): {
   buckets: CategorizedBuckets;
   url_mismatches: Array<{ article_url: string; article_title?: string }>;
   removed_total: number;
   bypass_placeholders: Array<{ url: string; title?: string }>;
+  domain_capped: Array<{ url: string; title?: string; domain: string; score: number | null }>;
 } {
   const threshold = options.threshold ?? 40;
+  const domainCap = options.domainCap ?? DEFAULT_DOMAIN_CAP;
   const { scoreMap, titleIndex } = buildScoreIndexes(scoredOutput.all_scored);
 
   // URLs já em highlights e runners_up (excluídas do filtro de score)
@@ -309,6 +369,9 @@ export function finalizeStage1(
   const urlMismatches: Array<{ article_url: string; article_title?: string }> = [];
   let removedTotal = 0;
   const bypassPlaceholders: Array<{ url: string; title?: string }> = [];
+  const domainCapped: Array<{ url: string; title?: string; domain: string; score: number | null }> = [];
+  // #1067: highlights + runners_up bypassam o cap por domínio (issue explicit).
+  const protectedUrls = new Set([...highlightUrls, ...runnerUpUrls]);
 
   const bucketNames = ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const;
   const enriched: Record<string, Article[]> = {};
@@ -346,10 +409,35 @@ export function finalizeStage1(
       runnerUpUrls,
     );
 
-    enriched[bucket] = kept;
+    // Step 3.5 (#1067): cap N URLs por domínio dentro do bucket.
+    // Cap é per-bucket (não global) — simplicidade + editor enxerga buckets
+    // separados no 01-categorized.md. Highlights/runners_up bypassam via
+    // protectedUrls. Joined está sorted por score desc → top N por host.
+    const { kept: capped, dropped: capDropped } = applyDomainCap(
+      kept,
+      domainCap,
+      protectedUrls,
+    );
+    domainCapped.push(...capDropped);
+
+    enriched[bucket] = capped;
     removedTotal += removed.length;
     for (const bp of bypassed_placeholders) {
       bypassPlaceholders.push({ url: bp.url, title: bp.title });
+    }
+  }
+
+  if (domainCapped.length > 0) {
+    // Log audit summary — orchestrator pode pipear pra run-log se quiser.
+    const byDomain = new Map<string, number>();
+    for (const d of domainCapped) {
+      byDomain.set(d.domain, (byDomain.get(d.domain) ?? 0) + 1);
+    }
+    console.error(
+      `[finalize-stage1] domain cap (${domainCap}): dropped ${domainCapped.length} URLs across ${byDomain.size} domain(s)`,
+    );
+    for (const [domain, count] of byDomain) {
+      console.error(`  ${domain}: −${count}`);
     }
   }
 
@@ -361,6 +449,7 @@ export function finalizeStage1(
     url_mismatches: urlMismatches,
     removed_total: removedTotal,
     bypass_placeholders: bypassPlaceholders,
+    domain_capped: domainCapped,
   };
 }
 
@@ -411,7 +500,7 @@ function main(): void {
   // categorized pode ser `{ kept: { lancamento, pesquisa, noticias } }` ou flat
   const categorized: CategorizedBuckets = raw.kept ?? raw;
 
-  const { buckets, url_mismatches, removed_total, bypass_placeholders } = finalizeStage1(
+  const { buckets, url_mismatches, removed_total, bypass_placeholders, domain_capped } = finalizeStage1(
     categorized,
     scoredOutput,
   );
@@ -452,6 +541,7 @@ function main(): void {
       url_mismatches: url_mismatches.length,
       removed_total,
       bypass_placeholders: bypass_placeholders.length,
+      domain_capped: domain_capped.length,
     }) + "\n",
   );
 }
