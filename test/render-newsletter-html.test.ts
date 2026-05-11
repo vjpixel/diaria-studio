@@ -657,3 +657,54 @@ Agora interaja!`,
     assert.ok(sorteioIdx > 0 && encerrarIdx > sorteioIdx);
   });
 });
+
+describe("renderSection thin rule + bottom border (#1090)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "LANÇAMENTO",
+    title: "T",
+    body: "B",
+    why: "W",
+    url: "https://example.com/d1",
+    emoji: "🚀",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixt = () => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [
+      { name: "PESQUISA", items: [{ title: "Foo", description: "Bar", url: "https://example.com/p" }] },
+    ],
+    sorteio: null,
+    encerrar: null,
+  });
+
+  it("section header não usa rule grossa 2px solid (TEXT_COLOR)", () => {
+    const html = renderHTML(fixt());
+    // Encontra o BLOCO da section PESQUISA (comment + hr + tr).
+    // Ordem no output: `<!-- PESQUISA -->\n<hr ...>\n<tr>...<p>PESQUISA</p>`.
+    // Pega de "<!-- PESQUISA" até o `<p>PESQUISA</p>` pra cobrir a rule emitida
+    // logo após o comment.
+    const blockStart = html.indexOf("<!-- PESQUISA -->");
+    assert.ok(blockStart > 0, "comment PESQUISA deve aparecer");
+    const kickerIdx = html.indexOf(">PESQUISA</p>", blockStart);
+    assert.ok(kickerIdx > blockStart, "kicker <p>PESQUISA</p> deve vir após comment");
+    const sectionBlock = html.slice(blockStart, kickerIdx);
+    // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
+    // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
+    assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
+    // E o regex deve dar match na forma fina (sanity check do helper):
+    assert.match(sectionBlock, /border-top:1px solid #E5E5E5/i, "rule fina (1px solid #E5E5E5) deve estar presente");
+  });
+
+  it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
+    const html = renderHTML(fixt());
+    // O kicker é renderizado como `<p ...>PESQUISA</p>` com border-bottom no
+    // próprio <p>. Match: encontra qualquer <p> com border-bottom seguido
+    // pelo nome da section.
+    assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>PESQUISA<\/p>/i, "kicker <p> deve ter border-bottom 1px");
+  });
+});
