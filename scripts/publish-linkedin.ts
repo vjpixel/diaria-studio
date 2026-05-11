@@ -87,6 +87,9 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     } else if (argv[i] === "--test-mode") {
       // #1056 — tagar entries com is_test:true pra delete-test-schedules safety
       args["test-mode"] = true;
+    } else if (argv[i] === "--no-comments") {
+      // #1075 — skipar comment_diaria + comment_pixel (Make não suporta comments)
+      args["no-comments"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
@@ -488,6 +491,7 @@ async function main(): Promise<void> {
   const editionDir = resolve(ROOT, editionDirRaw);
   const doSchedule = !!args.schedule;
   const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
+  const noComments = !!args["no-comments"]; // #1075 — pular comment_diaria + comment_pixel
   if (args["skip-existing"]) {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
@@ -816,6 +820,14 @@ async function main(): Promise<void> {
         `linkedin/${d}: comments pulados (fire-now mode sem --schedule). ` +
           `Pra agendar 9 items por edição (main + comment_diaria + comment_pixel), passe --schedule.`,
       );
+      continue;
+    }
+
+    // #1075 — Make não suporta CreateCompanyComment nem CreateComment via API
+    // pessoal. Editor pode pular comments via --no-comments até Make adicionar
+    // suporte ou pivotarmos pra outra plataforma.
+    if (noComments) {
+      console.log(`linkedin/${d}: comments pulados (--no-comments, #1075)`);
       continue;
     }
 
