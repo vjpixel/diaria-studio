@@ -86,7 +86,30 @@ Por que isso importa:
 Na última edição, {prev_narrative}.
 
 Nessa edição, {curr_narrative}.
+
+---
+
+**🎁 SORTEIO**
+
+Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse exercício, há pelo menos um pequeno erro em cada edição.
+
+**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a [um livro sobre IA entre os que recomendamos](https://diaria.beehiiv.com/livros-sobre-ia), a ser sorteado mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe 25% de desconto com o cupom DIARIA](https://clarice.ai/?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
+
+**Acesse:**
+
+- [Melhores cursos grátis de IA](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)
+- [Curadoria de livros sobre IA](https://diaria.beehiiv.com/livros-sobre-ia)
+
+Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](https://www.linkedin.com/company/diaria/) ou no [Facebook](https://www.facebook.com/diar.ia.br)? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!
 ```
+
+**Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar no Drive entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
 
 **Seção ERRO INTENCIONAL (#911 / #1079):** cada edição contém 1 erro proposital. Esta seção fecha o loop entre edições com duas frases narrativas curtas — sem convite ao concurso, sem "Responda este e-mail...". É confissão direta:
 

@@ -10,6 +10,7 @@ import {
   fallbackEIA,
   renderHTML,
   renderEiaStandalone,
+  extractTemplateBlock,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -524,5 +525,135 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     const eia = renderEiaStandalone(fixtureComEia)!;
     assert.ok(body.length < 25_000, `body ${body.length} bytes < 25KB`);
     assert.ok(eia.length < 10_000, `eia ${eia.length} bytes < 10KB`);
+  });
+});
+
+describe("extractTemplateBlock (#1076)", () => {
+  it("extrai bloco SORTEIO entre header e separador ---", () => {
+    const md = `
+**🎁 SORTEIO**
+
+Texto parágrafo 1.
+
+**Responda e concorra** a um livro.
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Outra coisa.
+`;
+    const block = extractTemplateBlock(md, "🎁 SORTEIO");
+    assert.ok(block);
+    assert.match(block!, /Texto parágrafo 1/);
+    assert.match(block!, /Responda e concorra/);
+    // Não inclui o separator nem o próximo header
+    assert.doesNotMatch(block!, /PARA ENCERRAR/);
+  });
+
+  it("extrai PARA ENCERRAR até EOF (sem --- após)", () => {
+    const md = `
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Texto final.
+
+Mais texto.
+`;
+    const block = extractTemplateBlock(md, "🙋🏼‍♀️ PARA ENCERRAR");
+    assert.ok(block);
+    assert.match(block!, /Texto final/);
+    assert.match(block!, /Mais texto/);
+  });
+
+  it("retorna null quando bloco ausente", () => {
+    const md = "**DESTAQUE 1**\n\nTexto sem SORTEIO.";
+    assert.equal(extractTemplateBlock(md, "🎁 SORTEIO"), null);
+  });
+
+  it("aceita header sem bold (back-compat com editores que removem markdown)", () => {
+    const md = `
+🎁 SORTEIO
+
+Texto.
+
+---
+`;
+    const block = extractTemplateBlock(md, "🎁 SORTEIO");
+    assert.ok(block);
+    assert.match(block!, /Texto/);
+  });
+
+  it("retorna null pra bloco vazio (header + ---)", () => {
+    const md = "**🎁 SORTEIO**\n\n\n---\n";
+    const block = extractTemplateBlock(md, "🎁 SORTEIO");
+    assert.equal(block, null);
+  });
+});
+
+describe("renderHTML com sorteio + encerrar (#1076)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "LANÇAMENTO",
+    title: "T",
+    body: "B",
+    why: "W",
+    url: "https://example.com/d1",
+    emoji: "🚀",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixt = (extras: Partial<{ sorteio: string | null; encerrar: string | null }>) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [],
+    sorteio: extras.sorteio ?? null,
+    encerrar: extras.encerrar ?? null,
+  });
+
+  it("inclui SORTEIO no HTML quando presente", () => {
+    const html = renderHTML(fixt({
+      sorteio: "Você presta atenção ao conteúdo? **Responda** e ganhe um livro.",
+    }));
+    assert.match(html, /🎁 Sorteio/);
+    assert.match(html, /Você presta atenção/);
+    assert.match(html, /<b>Responda<\/b>/);
+  });
+
+  it("inclui PARA ENCERRAR com lista no HTML quando presente", () => {
+    const html = renderHTML(fixt({
+      encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
+
+- [Cursos](https://example.com/cursos)
+- [Livros](https://example.com/livros)
+
+Agora interaja!`,
+    }));
+    assert.match(html, /🙋🏼‍♀️ Para encerrar/);
+    assert.match(html, /<b>Diar\.ia<\/b>/);
+    assert.match(html, /<ul/);
+    assert.match(html, /href="https:\/\/example\.com\/cursos"/);
+    assert.match(html, /href="https:\/\/example\.com\/livros"/);
+    assert.match(html, /Agora interaja/);
+  });
+
+  it("graceful skip: sem sorteio nem encerrar, HTML sai sem esses blocos", () => {
+    const html = renderHTML(fixt({}));
+    assert.doesNotMatch(html, /🎁 Sorteio/);
+    assert.doesNotMatch(html, /Para encerrar/);
+  });
+
+  it("renderiza ambos quando ambos presentes", () => {
+    const html = renderHTML(fixt({
+      sorteio: "Texto sorteio.",
+      encerrar: "Texto encerrar.",
+    }));
+    assert.match(html, /🎁 Sorteio/);
+    assert.match(html, /🙋🏼‍♀️ Para encerrar/);
+    // Ordem: SORTEIO antes de ENCERRAR
+    const sorteioIdx = html.indexOf("🎁 Sorteio");
+    const encerrarIdx = html.indexOf("Para encerrar");
+    assert.ok(sorteioIdx > 0 && encerrarIdx > sorteioIdx);
   });
 });
