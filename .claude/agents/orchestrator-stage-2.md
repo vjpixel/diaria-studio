@@ -125,11 +125,11 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Heurístico conservador — só quebra quando o pattern é inequívoco (ex: 3 títulos do destaque colados no header, ou título+URL+descrição colados num item de seção). Se nenhum bug detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script → log warn + fallback usa `02-draft.md`.
 
-- **Humanizar (#308):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `context/past-editions.md` como referência:
+- **Humanizar (#308, #1072):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `context/past-editions.md` como referência:
   ```
   Skill("humanizador", "Leia data/editions/{AAMMDD}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado em data/editions/{AAMMDD}/_internal/02-humanized.md.")
   ```
-  Falha da skill **não bloqueia** — fallback usa `02-normalized.md` como input pra Clarice. Em caso de falha, logar warn: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador falhou — usando normalized'`.
+  **Retry 3x + abort se persistir (#1072).** Se a skill retornar erro OU se `02-humanized.md` for byte-idêntico a `02-normalized.md` (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** com erro claro pro editor — não usar fallback "normalized direto pra Clarice" silenciosamente. Justificativa: humanizador remove marcas IA que Clarice **não** pega; sem ele a edição sai com prosa polida-vazia (issue #1072). Logar cada tentativa: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador attempt N/3 failed'`. Após 3ª falha: `--level error --message 'humanizador esgotou retries — abortar Stage 2'` + exit do pipeline.
 
 - **Revisar com Clarice (inline — sem Agent):**
   Determinar e **persistir** `CLARICE_INPUT` em arquivo (#871) — evita drift entre o passo de leitura e o passo de diff:
@@ -187,6 +187,21 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
 
+- **Render ERRO INTENCIONAL obrigatório (#1073):** após Clarice (e antes do gate humano), rodar:
+  ```bash
+  npx tsx scripts/render-erro-intencional.ts \
+    --edition {AAMMDD} \
+    --md data/editions/{AAMMDD}/02-reviewed.md
+  ```
+  Substitui o placeholder do writer pelo reveal do erro anterior (`Na última edição, …`) + preserva ou insere placeholder pra `Nessa edição, …` (autor preenche manualmente). **Falha = abortar Stage 2** (não silenciar). Justificativa: sem o script, edição vai com `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}` literal no MD; quando colado manualmente no Beehiiv (#1083), aparece como texto bruto no email — contamina UX e mata o concurso "Ache o erro".
+
+- **Validator final Stage 2 (#1072, #1073):** antes do gate humano, rodar invariant check que detecta passos pulados silenciosamente:
+  ```bash
+  npx tsx scripts/check-stage2-invariants.ts \
+    --edition-dir data/editions/{AAMMDD}/
+  ```
+  Cobre 3 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD). Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro são todos invariantes do Stage 2.
+
 ### 2c. Processar social
 
 Após os social agents retornarem, fazer merge em `03-social.md` via script TS. Substitui o snippet inline anterior (#870) — agora com try/catch, validação de tmp files e error reporting actionable:
@@ -203,13 +218,13 @@ O script:
 
 Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
-**Humanizar social (#308):** invocar skill `humanizador` in-place no `03-social.md`:
+**Humanizar social (#308, #1072):** invocar skill `humanizador` in-place no `03-social.md`:
 ```
 Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
 ```
-Falha não bloqueia (fallback usa o arquivo original).
+**Retry 3x + abort se persistir (#1072).** Se skill retornar erro OU `03-social.md` post-humanizador for byte-idêntico ao pré (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** — não publicar social com tom corporativo de agent output. Antes da invocação, fazer snapshot: `cp data/editions/{AAMMDD}/03-social.md data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md` pra diff post-skill.
 
-**Revisar social com Clarice (inline):** ler `03-social.md`, chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar, propagar o erro.
+**Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
 
 **Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
 ```bash

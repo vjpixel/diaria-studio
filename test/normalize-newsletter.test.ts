@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   splitConcatenatedHighlightHeader,
   splitConcatenatedSectionItem,
@@ -505,5 +506,34 @@ describe("resolveEiaFrontmatterBlock (#927)", () => {
     mkdirSync(dir, { recursive: true });
     assert.equal(resolveEiaFrontmatterBlock(dir), null);
     rmSync(dir, { recursive: true });
+  });
+});
+
+describe("CLI main: #1069 — não injeta eia_answer frontmatter no output", () => {
+  const TMP = join(process.env.TEMP ?? "/tmp", "normalize-cli-1069");
+
+  it("output do CLI não contém ---\neia_answer:\n no topo", () => {
+    const dir = join(TMP, "edition");
+    mkdirSync(dir, { recursive: true });
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const inPath = join(internalDir, "input.md");
+    const outPath = join(internalDir, "output.md");
+    writeFileSync(inPath, "DESTAQUE 1 | LANÇAMENTO\nTexto.\n", "utf8");
+    // Cria sidecar (que ANTES disparava injeção do frontmatter no output)
+    writeEiaAnswerSidecar(dir, "260999", { A: "real", B: "ia" });
+
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "normalize-newsletter.ts");
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--in", inPath, "--out", outPath],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+    assert.equal(r.status, 0, r.stderr);
+
+    const out = readFileSync(outPath, "utf8");
+    assert.ok(!/^---\s*\neia_answer:/m.test(out), `output não deve ter eia_answer frontmatter — got:\n${out.slice(0, 200)}`);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

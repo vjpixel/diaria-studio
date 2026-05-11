@@ -70,6 +70,26 @@ export function capOutrasNoticias(
   );
 }
 
+/**
+ * Pure (#1071): conta quantos highlights vêm de um bucket específico.
+ * Highlights podem ser promovidos de qualquer bucket pelo scorer; saber
+ * quantos vieram de "noticias" permite o cap ajustar pra compensar.
+ *
+ * Aceita shape com `bucket` direto (legacy) ou `article.bucket` (caso
+ * scorer aninhar). Retorna 0 quando bucket ausente.
+ */
+export function destaquesFromBucket(
+  highlights: StageArticle[] | undefined,
+  bucket: string,
+): number {
+  if (!highlights) return 0;
+  return highlights.filter((h) => {
+    const b = (h as { bucket?: string }).bucket
+      ?? ((h as { article?: { bucket?: string } }).article?.bucket);
+    return b === bucket;
+  }).length;
+}
+
 export interface CapReport {
   before: { lancamento: number; pesquisa: number; noticias: number };
   after: { lancamento: number; pesquisa: number; noticias: number };
@@ -98,7 +118,12 @@ export function applyStage2Caps(
   const pCap = STAGE_2_CAP_PESQUISAS;
   const lFinal = Math.min(lOriginal, lCap);
   const pFinal = Math.min(pOriginal, pCap);
-  const nCap = capOutrasNoticias(dest, lFinal, pFinal);
+  // #1071: highlights podem ser promovidos do bucket noticias (scorer escolhe
+  // de qualquer bucket). Writer dropa duplicatas — então cap precisa
+  // "reservar" slots extras pra compensar. Sem essa correção, edição renderiza
+  // X−destaques_promovidos outras notícias em vez do target X.
+  const destFromNoticias = destaquesFromBucket(approved.highlights, "noticias");
+  const nCap = capOutrasNoticias(dest, lFinal, pFinal) + destFromNoticias;
   const nFinal = Math.min(nOriginal, nCap);
 
   const out: ApprovedJson = {
@@ -143,8 +168,11 @@ export function checkStage2Caps(
   const pCap = STAGE_2_CAP_PESQUISAS;
   const lCount = approved.lancamento?.length ?? 0;
   const pCount = approved.pesquisa?.length ?? 0;
-  // Outras: cap usa contagens REAIS (capadas) dos outros buckets
-  const nCap = capOutrasNoticias(dest, Math.min(lCount, lCap), Math.min(pCount, pCap));
+  // Outras: cap usa contagens REAIS (capadas) dos outros buckets.
+  // #1071: também soma destaques promovidos de "noticias" pra compensar
+  // drops de duplicata pelo writer.
+  const destFromNoticias = destaquesFromBucket(approved.highlights, "noticias");
+  const nCap = capOutrasNoticias(dest, Math.min(lCount, lCap), Math.min(pCount, pCap)) + destFromNoticias;
   const nCount = approved.noticias?.length ?? 0;
 
   const violations: string[] = [];
