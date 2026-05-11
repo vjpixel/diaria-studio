@@ -81,6 +81,8 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 ### 1f. Dispatch de researchers e discovery
 
+**⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
+
 **RSS-only mode (#1055).** Se `rss_only = true` no contexto (default em `/diaria-test`, opt-in via `--full-research`), **pular** todo o dispatch de `source-researcher` e `discovery-searcher` deste passo. RSS batch (1e) e eia-composer (1d) seguem rodando normalmente. Razão: yield de researchers em runs de teste foi 12× pior por fonte (5/200 articles) consumindo ~80% do token budget de Stage 1f. Logar info: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'rss_only mode: skipping source-researchers and discovery'`. Quando `rss_only = false` (modo `/diaria-edicao` normal ou `/diaria-test --full-research`), o dispatch abaixo segue como sempre.
 
 
@@ -388,6 +390,20 @@ npx tsx scripts/check-drive-push.ts --edition {AAMMDD} --file 01-categorized.md
 - Exit 2: schema inesperado no cache — logar warn e prosseguir (evita falso FATAL em refactors do drive-sync)
 
 Se `drive_sync = false` em `platform.config.json`, o script exita 0 silenciosamente.
+
+### 1w-quint. Validator anti-skip de 1f (#1091)
+
+Antes do `validate-stage-1-output.ts`, rodar:
+
+```bash
+npx tsx scripts/validate-stage-1-completeness.ts \
+  --edition-dir data/editions/{AAMMDD}/ \
+  [--allow-rss-only]
+```
+
+Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir. Pra modo `/diaria-test` com `rss_only=true`, passar `--allow-rss-only` (validator pula).
+
+Razão (#1091): incidente 2026-05-11 na edição 260512. Orchestrator pulou 1f silenciosamente após RSS batch trazer 109 artigos. Validador é defesa primária; memory `feedback_no_skip_playbook.md` é defesa secundária; warning no início da seção 1f acima é tercer layer.
 
 ### 1w-bis. Pre-gate validator (#581, #828)
 
