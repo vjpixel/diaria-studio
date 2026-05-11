@@ -63,22 +63,16 @@ function json(data: unknown, status = 200, env?: Env): Response {
   });
 }
 
-// ── Date formatting (#1080) ───────────────────────────────────────────────────
-
-const MONTH_NAMES_PT = [
-  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
-];
-
-/** AAMMDD → "10 de maio de 2026". Memória `feedback_no_aammdd_for_subscribers.md`. */
-function formatEditionDate(edition: string): string {
-  if (!/^\d{6}$/.test(edition)) return edition;
-  const yy = parseInt(edition.slice(0, 2), 10);
-  const mm = parseInt(edition.slice(2, 4), 10);
-  const dd = parseInt(edition.slice(4, 6), 10);
-  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return edition;
-  return `${dd} de ${MONTH_NAMES_PT[mm - 1]} de ${2000 + yy}`;
-}
+// #1083: helpers puros extraídos pra `./lib.ts` pra ficarem testáveis em
+// Node sem mock do Worker runtime. Re-exportados aqui pra back-compat de
+// consumers externos (se algum dia houver) e pra leitura linear do código.
+import {
+  formatEditionDate,
+  htmlEscape,
+  parseValidEditions,
+  isValidEdition,
+} from "./lib";
+export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition } from "./lib";
 
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
@@ -104,18 +98,14 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     });
   }
 
-  // #1083: gate de edições válidas. Se key `valid_editions` setada e edition
-  // não estiver no set, rejeita. Vazia/ausente → aceita qualquer (compat).
-  const validRaw = await env.POLL.get("valid_editions");
-  if (validRaw) {
-    try {
-      const arr = JSON.parse(validRaw) as string[];
-      if (arr.length > 0 && !arr.includes(edition)) {
-        return new Response(votePageHtml("Essa edição não aceita mais votos.", false), {
-          status: 410, headers: { "Content-Type": "text/html;charset=utf-8" }
-        });
-      }
-    } catch { /* corrupted → aceita pra não bloquear */ }
+  // #1083 / #1086: gate de edições válidas. Se key `valid_editions` setada e
+  // edition não estiver no set, rejeita. Vazia/ausente/corrupted → aceita
+  // qualquer (compat + fail-open). Corrupted loga console.error.
+  const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
+  if (!isValidEdition(validSet, edition)) {
+    return new Response(votePageHtml("Essa edição não aceita mais votos.", false), {
+      status: 410, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
   }
 
   // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
@@ -372,12 +362,14 @@ function votePageHtml(
   success: boolean,
   nicknameForm?: { email: string; sig: string } | null,
 ): string {
+  // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
+  // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
   const formHtml = nicknameForm ? `
 <div style="margin:30px auto;padding:20px;background:#f5f5f5;border-radius:8px;max-width:380px;">
   <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Como você quer ser chamado no ranking?</p>
   <form action="/set-name" method="GET" style="display:flex;gap:8px;">
-    <input type="hidden" name="email" value="${nicknameForm.email}">
-    <input type="hidden" name="sig" value="${nicknameForm.sig}">
+    <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
+    <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:0.95rem;">
     <button type="submit" style="padding:8px 16px;background:#00A0A0;color:#fff;border:none;border-radius:4px;font-weight:600;cursor:pointer;">Salvar</button>
   </form>
@@ -397,7 +389,7 @@ function votePageHtml(
 </style>
 </head>
 <body>
-<p class="msg">${message}</p>
+<p class="msg">${htmlEscape(message)}</p>
 ${formHtml}
 <p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="/leaderboard">Ver leaderboard</a></p>
 </body>
