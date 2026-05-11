@@ -13,6 +13,7 @@ import {
   checkEditorSubmittedBypass,
   applyScoreFilter,
   applyDomainCap,
+  applyPastSecondaryFilter,
   finalizeStage1,
   DEFAULT_DOMAIN_CAP,
   type Article,
@@ -505,5 +506,214 @@ describe("finalizeStage1", () => {
     // score = null → abaixo do threshold 40 → removido
     assert.equal(buckets.noticias.length, 0);
     assert.equal(removed_total, 1);
+  });
+});
+
+describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>): ScoredOutput {
+    return {
+      highlights: [],
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("cap aplica cross-bucket — 6 exame.com (3 em noticias + 3 em lancamento) → drop 3", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [
+        { url: "https://exame.com/l1" },
+        { url: "https://exame.com/l2" },
+        { url: "https://exame.com/l3" },
+      ],
+      pesquisa: [],
+      noticias: [
+        { url: "https://exame.com/n1" },
+        { url: "https://exame.com/n2" },
+        { url: "https://exame.com/n3" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://exame.com/l1", score: 95 },
+      { url: "https://exame.com/l2", score: 90 },
+      { url: "https://exame.com/l3", score: 85 },
+      { url: "https://exame.com/n1", score: 80 },
+      { url: "https://exame.com/n2", score: 75 },
+      { url: "https://exame.com/n3", score: 70 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    const totalKept =
+      (buckets.lancamento?.length ?? 0) + (buckets.noticias?.length ?? 0);
+    assert.equal(totalKept, 3); // só top 3 globais do domínio
+    assert.equal(domain_capped.length, 3);
+    // Os top 3 por score vencem (l1=95, l2=90, l3=85)
+    assert.equal(buckets.lancamento.length, 3);
+    assert.equal(buckets.noticias.length, 0);
+  });
+
+  it("highlights bypassam cap mesmo cross-bucket", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://exame.com/highlight" },
+        { url: "https://exame.com/a" },
+        { url: "https://exame.com/b" },
+        { url: "https://exame.com/c" },
+        { url: "https://exame.com/d" }, // 5º, deveria ser droppado pelo cap
+      ],
+    };
+    const scored: ScoredOutput = {
+      highlights: [{ url: "https://exame.com/highlight" } as any],
+      runners_up: [],
+      all_scored: [
+        { url: "https://exame.com/highlight", score: 95 },
+        { url: "https://exame.com/a", score: 90 },
+        { url: "https://exame.com/b", score: 80 },
+        { url: "https://exame.com/c", score: 70 },
+        { url: "https://exame.com/d", score: 60 },
+      ],
+    };
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    // highlight + top 3 não-highlight do domínio = 4 kept; d droppado
+    assert.equal(buckets.noticias.length, 4);
+    assert.equal(domain_capped.length, 1);
+    assert.equal(domain_capped[0].url, "https://exame.com/d");
+  });
+
+  it("domínios diferentes não competem por cap", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1" },
+        { url: "https://b.com/1" },
+        { url: "https://c.com/1" },
+        { url: "https://d.com/1" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://a.com/1", score: 90 },
+      { url: "https://b.com/1", score: 80 },
+      { url: "https://c.com/1", score: 70 },
+      { url: "https://d.com/1", score: 60 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.noticias.length, 4);
+    assert.equal(domain_capped.length, 0);
+  });
+});
+
+describe("applyPastSecondaryFilter (#1068 phase 2)", () => {
+  const mk = (url: string, score = 50): Article => ({
+    url,
+    title: url,
+    published_at: "2026-05-11T00:00:00Z",
+    score,
+  });
+
+  it("URL em past-secondary que NÃO é highlight é droppada", () => {
+    const articles = [
+      mk("https://example.com/a"),
+      mk("https://example.com/repeat"),
+    ];
+    const pastSecondary = new Set(["https://example.com/repeat"]);
+    const highlights = new Set<string>();
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].url, "https://example.com/a");
+    assert.equal(dropped.length, 1);
+    assert.equal(dropped[0].url, "https://example.com/repeat");
+  });
+
+  it("URL em past-secondary E em highlights = bypass (promoção válida)", () => {
+    const articles = [
+      mk("https://example.com/promoted"),
+    ];
+    const pastSecondary = new Set(["https://example.com/promoted"]);
+    const highlights = new Set(["https://example.com/promoted"]);
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+    assert.equal(dropped.length, 0);
+  });
+
+  it("URL nova (não em past) passa intacta", () => {
+    const articles = [mk("https://example.com/NEW")];
+    const pastSecondary = new Set(["https://example.com/old"]);
+    const highlights = new Set<string>();
+    const { kept } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 1);
+  });
+
+  it("canonicaliza URL antes da match (utm_*, fragment)", () => {
+    const articles = [mk("https://example.com/x?utm_source=tw")];
+    const pastSecondary = new Set(["https://example.com/x"]);
+    const highlights = new Set<string>();
+    const { kept, dropped } = applyPastSecondaryFilter(articles, pastSecondary, highlights);
+    assert.equal(kept.length, 0);
+    assert.equal(dropped.length, 1);
+  });
+});
+
+describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>, highlightUrls: string[] = []): ScoredOutput {
+    return {
+      highlights: highlightUrls.map((u) => ({ url: u, score: 90 } as any)),
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("past-secondary que não viraram highlight são droppados pós-scorer", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://example.com/new" },
+        { url: "https://example.com/past-secondary-repeat" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://example.com/new", score: 90 },
+      { url: "https://example.com/past-secondary-repeat", score: 80 },
+    ]);
+    const pastSecondaryUrls = new Set(["https://example.com/past-secondary-repeat"]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
+      pastSecondaryUrls,
+    });
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(buckets.noticias[0].url, "https://example.com/new");
+    assert.equal(past_secondary_dropped.length, 1);
+  });
+
+  it("past-secondary que VIROU highlight passa (promoção permitida)", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://example.com/promoted" },
+      ],
+    };
+    const scored = mkOutput(
+      [{ url: "https://example.com/promoted", score: 95 }],
+      ["https://example.com/promoted"],
+    );
+    const pastSecondaryUrls = new Set(["https://example.com/promoted"]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
+      pastSecondaryUrls,
+    });
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(past_secondary_dropped.length, 0);
+  });
+
+  it("sem pastSecondaryUrls (back-compat): nada é droppado por essa razão", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [{ url: "https://example.com/x" }],
+    };
+    const scored = mkOutput([{ url: "https://example.com/x", score: 80 }]);
+    const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.noticias.length, 1);
+    assert.equal(past_secondary_dropped.length, 0);
   });
 });
