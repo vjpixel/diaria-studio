@@ -409,21 +409,61 @@ export function finalizeStage1(
       runnerUpUrls,
     );
 
-    // Step 3.5 (#1067): cap N URLs por domínio dentro do bucket.
-    // Cap é per-bucket (não global) — simplicidade + editor enxerga buckets
-    // separados no 01-categorized.md. Highlights/runners_up bypassam via
-    // protectedUrls. Joined está sorted por score desc → top N por host.
-    const { kept: capped, dropped: capDropped } = applyDomainCap(
-      kept,
-      domainCap,
-      protectedUrls,
-    );
-    domainCapped.push(...capDropped);
-
-    enriched[bucket] = capped;
+    enriched[bucket] = kept;
     removedTotal += removed.length;
     for (const bp of bypassed_placeholders) {
       bypassPlaceholders.push({ url: bp.url, title: bp.title });
+    }
+  }
+
+  // Step 3.5 (#1067 — global): cap N URLs por domínio ATRAVÉS de todos os
+  // buckets. Antes (per-bucket) editor podia ter 3 exame.com em noticias + 3
+  // em lancamento = 6 totais do mesmo domínio. Agora cap é global: top N por
+  // hostname considerando o universo inteiro de candidatos kept.
+  //
+  // Estratégia: agregar tudo num flat sorted-by-score, aplicar cap, depois
+  // re-distribuir pelos buckets originais. Highlights/runners_up bypassam via
+  // protectedUrls (issue #1067 explicit).
+  type FlatEntry = { bucket: string; article: Article };
+  const flat: FlatEntry[] = [];
+  for (const bucket of bucketNames) {
+    for (const a of enriched[bucket] ?? []) flat.push({ bucket, article: a });
+  }
+  flat.sort((a, b) => {
+    const sa = (a.article.score as number | null | undefined) ?? -1;
+    const sb = (b.article.score as number | null | undefined) ?? -1;
+    return sb - sa;
+  });
+
+  const globalCountByDomain = new Map<string, number>();
+  const droppedUrls = new Set<string>();
+  for (const entry of flat) {
+    if (protectedUrls.has(entry.article.url)) continue;
+    let host: string | null = null;
+    try {
+      host = new URL(entry.article.url).hostname.replace(/^www\./, "");
+    } catch {
+      continue; // URL inválida passa (defensive)
+    }
+    const count = globalCountByDomain.get(host) ?? 0;
+    if (count >= domainCap) {
+      droppedUrls.add(entry.article.url);
+      domainCapped.push({
+        url: entry.article.url,
+        title: entry.article.title,
+        domain: host,
+        score: (entry.article.score as number | null | undefined) ?? null,
+      });
+    } else {
+      globalCountByDomain.set(host, count + 1);
+    }
+  }
+
+  if (droppedUrls.size > 0) {
+    for (const bucket of bucketNames) {
+      enriched[bucket] = (enriched[bucket] ?? []).filter(
+        (a) => !droppedUrls.has(a.url),
+      );
     }
   }
 

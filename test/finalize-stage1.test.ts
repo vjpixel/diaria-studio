@@ -507,3 +507,97 @@ describe("finalizeStage1", () => {
     assert.equal(removed_total, 1);
   });
 });
+
+describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
+  function mkOutput(entries: Array<{ url: string; score: number }>): ScoredOutput {
+    return {
+      highlights: [],
+      runners_up: [],
+      all_scored: entries.map((e) => ({ url: e.url, score: e.score })),
+    };
+  }
+
+  it("cap aplica cross-bucket — 6 exame.com (3 em noticias + 3 em lancamento) → drop 3", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [
+        { url: "https://exame.com/l1" },
+        { url: "https://exame.com/l2" },
+        { url: "https://exame.com/l3" },
+      ],
+      pesquisa: [],
+      noticias: [
+        { url: "https://exame.com/n1" },
+        { url: "https://exame.com/n2" },
+        { url: "https://exame.com/n3" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://exame.com/l1", score: 95 },
+      { url: "https://exame.com/l2", score: 90 },
+      { url: "https://exame.com/l3", score: 85 },
+      { url: "https://exame.com/n1", score: 80 },
+      { url: "https://exame.com/n2", score: 75 },
+      { url: "https://exame.com/n3", score: 70 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    const totalKept =
+      (buckets.lancamento?.length ?? 0) + (buckets.noticias?.length ?? 0);
+    assert.equal(totalKept, 3); // só top 3 globais do domínio
+    assert.equal(domain_capped.length, 3);
+    // Os top 3 por score vencem (l1=95, l2=90, l3=85)
+    assert.equal(buckets.lancamento.length, 3);
+    assert.equal(buckets.noticias.length, 0);
+  });
+
+  it("highlights bypassam cap mesmo cross-bucket", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://exame.com/highlight" },
+        { url: "https://exame.com/a" },
+        { url: "https://exame.com/b" },
+        { url: "https://exame.com/c" },
+        { url: "https://exame.com/d" }, // 5º, deveria ser droppado pelo cap
+      ],
+    };
+    const scored: ScoredOutput = {
+      highlights: [{ url: "https://exame.com/highlight" } as any],
+      runners_up: [],
+      all_scored: [
+        { url: "https://exame.com/highlight", score: 95 },
+        { url: "https://exame.com/a", score: 90 },
+        { url: "https://exame.com/b", score: 80 },
+        { url: "https://exame.com/c", score: 70 },
+        { url: "https://exame.com/d", score: 60 },
+      ],
+    };
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    // highlight + top 3 não-highlight do domínio = 4 kept; d droppado
+    assert.equal(buckets.noticias.length, 4);
+    assert.equal(domain_capped.length, 1);
+    assert.equal(domain_capped[0].url, "https://exame.com/d");
+  });
+
+  it("domínios diferentes não competem por cap", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1" },
+        { url: "https://b.com/1" },
+        { url: "https://c.com/1" },
+        { url: "https://d.com/1" },
+      ],
+    };
+    const scored = mkOutput([
+      { url: "https://a.com/1", score: 90 },
+      { url: "https://b.com/1", score: 80 },
+      { url: "https://c.com/1", score: 70 },
+      { url: "https://d.com/1", score: 60 },
+    ]);
+    const { buckets, domain_capped } = finalizeStage1(categorized, scored);
+    assert.equal(buckets.noticias.length, 4);
+    assert.equal(domain_capped.length, 0);
+  });
+});
