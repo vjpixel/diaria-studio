@@ -607,15 +607,22 @@ export interface RenderOpts {
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
 
-  // #1077 — É IA? entre D2 e D3 (não no fim), per memory `feedback_beehiiv_sections.md`
-  // e convention pre-existente (260508 e anteriores).
-  const includeEia = !opts.excludeEia && content.eia.credit;
+  // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
+  // `feedback_beehiiv_sections.md` e convention pre-existente. Fallback
+  // robusto (#1085): se destaques.length < 2 (test fixtures ou edições
+  // atípicas), insere no fim do loop pra garantir que È IA? não seja
+  // silenciosamente omitido.
+  const includeEia = !!(!opts.excludeEia && content.eia.credit);
+  let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
-    if (includeEia && i === 1) {
-      // Após D2, antes de D3
+    if (includeEia && !eiaInserted && i === 1) {
       parts.push(renderEIA(content.eia));
+      eiaInserted = true;
     }
+  }
+  if (includeEia && !eiaInserted) {
+    parts.push(renderEIA(content.eia));
   }
 
   for (const section of content.sections) {

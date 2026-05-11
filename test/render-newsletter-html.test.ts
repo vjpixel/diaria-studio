@@ -463,15 +463,16 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderHTML default: inclui È IA? quando eia.credit não-vazio", () => {
     const html = renderHTML(fixtureComEia);
     assert.match(html, /É IA\?/);
-    assert.match(html, /\{\{poll_a_url\}\}/);
-    assert.match(html, /\{\{poll_b_url\}\}/);
+    // #1083: merge tags Beehiiv inline (substitui {{poll_X_url}} legacy)
+    assert.match(html, /\{\{email\}\}/);
+    assert.match(html, /\{\{poll_sig\}\}/);
   });
 
   it("renderHTML excludeEia=true: omite seção È IA? mesmo quando configurada", () => {
     const html = renderHTML(fixtureComEia, { excludeEia: true });
     assert.ok(!html.includes("É IA?"), "body não deve mencionar È IA?");
-    assert.ok(!html.includes("{{poll_a_url}}"), "body não deve ter merge tags");
-    assert.ok(!html.includes("{{poll_b_url}}"));
+    assert.ok(!html.includes("{{email}}"), "body não deve ter merge tags Beehiiv");
+    assert.ok(!html.includes("{{poll_sig}}"));
     // Mas deve ter o destaque
     assert.match(html, /Modelos se replicam/);
   });
@@ -489,8 +490,9 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderEiaStandalone retorna HTML com merge tags preservadas", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html, "deve retornar HTML não-null pra eia configurada");
-    assert.match(html!, /\{\{poll_a_url\}\}/);
-    assert.match(html!, /\{\{poll_b_url\}\}/);
+    // #1083: merge tags Beehiiv inline (substitui {{poll_X_url}} legacy)
+    assert.match(html!, /\{\{email\}\}/);
+    assert.match(html!, /\{\{poll_sig\}\}/);
     assert.match(html!, /É IA\?/);
   });
 
