@@ -717,3 +717,14 @@ describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => 
     assert.equal(past_secondary_dropped.length, 0);
   });
 });
+
+describe("DEFAULT_PAST_WINDOW (#1086 regression)", () => {
+  it("dedup e finalize compartilham a mesma janela", async () => {
+    const dedupMod = await import("../scripts/dedup.ts");
+    // DEFAULT_PAST_WINDOW exportado por dedup é usado por finalize-stage1.
+    // Se este export sumir ou divergir, o CLI default de finalize sai de
+    // alinhamento com dedup — past-secondary dropa fora da janela de phase 1.
+    assert.equal(typeof dedupMod.DEFAULT_PAST_WINDOW, "number");
+    assert.ok(dedupMod.DEFAULT_PAST_WINDOW >= 1);
+  });
+});

@@ -29,7 +29,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
-import { canonicalize, extractPastUrls, extractPastDestaqueUrls } from "./dedup.ts";
+import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -627,7 +627,10 @@ function main(): void {
   // batem com convenções do dedup.ts.
   const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
   const editionsDir = args["editions-dir"] ?? "data/editions";
-  const window = args["window"] ? parseInt(args["window"], 10) : 14;
+  // Alinhar com dedup.ts (DEFAULT_PAST_WINDOW). Mismatch anterior (14) fazia
+  // phase 2 dropar past-secondary fora da janela que phase 1 já tinha
+  // permitido — comportamento incoerente entre as duas fases.
+  const window = args["window"] ? parseInt(args["window"], 10) : DEFAULT_PAST_WINDOW;
   let pastSecondaryUrls: Set<string> = new Set();
   const pastMdAbs = resolve(ROOT, pastEditionsPath);
   if (existsSync(pastMdAbs)) {
