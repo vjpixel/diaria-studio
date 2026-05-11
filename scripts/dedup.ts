@@ -72,6 +72,12 @@ export function titleSimilarity(a: string, b: string): number {
 // Format: seções ## YYYY-MM-DD — "..." com "Links usados:\n- url" dentro
 // ---------------------------------------------------------------------------
 
+/** Janela default de edições passadas usadas pra dedup (#1067/#1068).
+ * Compartilhado entre dedup.ts (phase 1) e finalize-stage1.ts (phase 2)
+ * pra evitar mismatch — phase 1 permite secondary→novo, phase 2 dropa
+ * secondary→secondary, e ambas precisam operar na mesma janela. */
+export const DEFAULT_PAST_WINDOW = 3;
+
 export function extractPastUrls(md: string, window: number): Set<string> {
   const urls = new Set<string>();
 
@@ -666,7 +672,7 @@ async function main() {
 
   const articlesPath = args["articles"];
   const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
-  const window = parseInt(args["window"] ?? "3", 10);
+  const window = parseInt(args["window"] ?? String(DEFAULT_PAST_WINDOW), 10);
   const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
   const outPath = args["out"];
 
