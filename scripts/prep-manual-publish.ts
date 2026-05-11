@@ -148,20 +148,36 @@ function checkNewsletterHtml(editionDir: string): Check {
     };
   }
   const html = readFileSync(path, "utf8");
-  const hasVotar = /Votar A/.test(html) && /Votar B/.test(html);
-  const hasMergeTag = /\{\{poll_[ab]_url\}\}/.test(html);
-  if (!hasVotar || !hasMergeTag) {
+  // Aceita 3 designs (em ordem cronológica):
+  //   (a) Legacy "Votar A/B" buttons + {{poll_X_url}} (pré-#1082)
+  //   (b) Clickable images com {{poll_X_url}} (#1082)
+  //   (c) Inline URL com {{ subscriber.email }} + {{ poll_sig }} (#1083, permanente)
+  const hasVotarButtons = /Votar A/.test(html) && /Votar B/.test(html);
+  const hasLegacyLinks =
+    /href="\{\{poll_a_url\}\}"/.test(html) && /href="\{\{poll_b_url\}\}"/.test(html);
+  // Beehiiv merge tag syntax: SEM espaços, SEM prefix (docs 2026-05-11).
+  // Sintaxe correta: {{email}} (reserved) + {{poll_sig}} (custom field).
+  const hasInlineSig =
+    /\{\{email\}\}/.test(html) && /\{\{poll_sig\}\}/.test(html);
+  const hasVoteAnchors = hasVotarButtons || hasLegacyLinks || hasInlineSig;
+  const hasMergeTag = /\{\{poll_[ab]_url\}\}/.test(html) || hasInlineSig;
+  if (!hasVoteAnchors || !hasMergeTag) {
     return {
-      name: "newsletter-final.html tem botões A/B + merge tags",
+      name: "newsletter-final.html tem ancoras A/B + merge tags",
       passed: false,
-      detail: `Votar=${hasVotar}, MergeTag=${hasMergeTag}. Re-rodar render-newsletter-html.ts.`,
+      detail: `Votar buttons=${hasVotarButtons}, legacy links=${hasLegacyLinks}, inline sig=${hasInlineSig}. Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);
+  const designLabel = hasInlineSig
+    ? "inline URL + poll_sig"
+    : hasLegacyLinks
+    ? "imagens clicáveis A/B (legacy)"
+    : "botões A/B (legacy)";
   return {
     name: "newsletter-final.html",
     passed: true,
-    detail: `${sizeKb}KB, botões A/B + merge tags presentes`,
+    detail: `${sizeKb}KB, ${designLabel}`,
   };
 }
 

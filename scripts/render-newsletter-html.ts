@@ -99,12 +99,14 @@ export function parseSections(text: string): Section[] {
   const sections: Section[] = [];
 
   for (const block of blocks) {
-    const sectionMatch = block.match(/^(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)$/m);
+    // #1077 — aceitar tanto `SECTION` quanto `**SECTION**` (writer agent sempre
+    // gera com markdown bold; regex antiga só pegava sem formatação).
+    const sectionMatch = block.match(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m);
     if (!sectionMatch) continue;
 
     const name = sectionMatch[1];
     const emoji = SECTION_EMOJI[name] || "📰";
-    const afterHeader = block.replace(/^(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)$/m, "").trim();
+    const afterHeader = block.replace(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m, "").trim();
     const items = parseListItems(afterHeader);
     if (items.length > 0) {
       sections.push({ name, emoji, items });
@@ -355,10 +357,19 @@ function extractContent(editionDir: string): NewsletterContent {
 
 const TEAL = "#00A0A0";
 const TEXT_COLOR = "#1A1A1A";
-const FONT_HEADING = "'Poppins', Helvetica, sans-serif";
+const MUTED = "#666666";
+const RULE = "#E5E5E5";
+// #1085: design "editorial-magazine" adotado como padrão (2026-05-11).
+// Fonte única Inter em todo o email — sem Poppins/serif. Hierarquia via
+// font-size + weight + uppercase kickers.
+const FONT_HEADING = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
 const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
-// POLL_WORKER_URL removido em #1044 — URLs vêm via custom fields {{poll_a_url}}/{{poll_b_url}}
-// populados por inject-poll-urls.ts (HMAC pré-computado per subscriber).
+// #1083: URL montada inline com edition literal + merge tags Beehiiv
+// (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
+// HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
+// Sintaxe Beehiiv: SEM espaços, SEM prefix `subscriber.` ou `custom_fields.`
+// (validado contra docs oficiais 2026-05-11).
+const POLL_WORKER_URL = "https://diar-ia-poll.diaria.workers.dev";
 
 function esc(s: string): string {
   return s
@@ -389,16 +400,20 @@ function renderSpacer(height = 20): string {
   return `<tr><td height="${height}px" style="line-height:1px;font-size:1px;height:${height}px;">&nbsp;</td></tr>`;
 }
 
-function renderCategoryLabel(emoji: string, category: string): string {
-  return `<tr><td align="left" valign="top" style="color:${TEXT_COLOR};font-weight:500;padding:0px 2px;text-align:left;">
-  <h6 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:500;font-size:14px;line-height:0.875;padding:0;margin:0;">${emoji} <span style="color:${TEAL};">${esc(category)}</span></h6>
+function renderCategoryLabel(_emoji: string, category: string): string {
+  // #1085: kicker minimalista — uppercase + letterspacing em vez de h6 grande.
+  // String `category` já vem com emoji prefixado (ex: "🚀 LANÇAMENTO").
+  return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
 </td></tr>`;
 }
 
 function renderTitle(title: string, url: string): string {
-  return `<tr><td align="left" valign="top" style="color:${TEXT_COLOR};font-weight:500;padding:0px 2px;text-align:left;">
-  <h1 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:500;font-size:24px;line-height:1.75;padding-bottom:4px;padding-top:16px;margin:0;">
-    <span style="text-decoration:underline;"><a href="${esc(url)}" style="color:${TEXT_COLOR} !important;font-weight:bold;text-decoration:underline;" target="_blank" rel="noopener noreferrer nofollow"><span>${esc(title)}</span></a></span>
+  // #1085: h1 30px Inter font-weight 400 + border-bottom 2px solid teal
+  // (email-safe substitute pra text-decoration-color, que Gmail strip).
+  return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
+  <h1 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:400;font-size:30px;line-height:1.2;letter-spacing:-0.5px;margin:0 0 20px 0;padding:0;">
+    <a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:2px solid ${TEAL};padding-bottom:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>
   </h1>
 </td></tr>`;
 }
@@ -420,15 +435,10 @@ function imageGeneratorCredit(): string {
 }
 
 function renderImage(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  return `<tr><td align="center" valign="top" style="padding:2px;">
-  <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
-    <tr><td align="center" valign="top" style="width:578px;">
-      <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="578" style="display:block;width:100%;height:auto;" border="0"/>
-    </td></tr>
-    <tr><td align="center" valign="top" style="width:578px;padding:4px 0;">
-      <p style="font-family:${FONT_BODY};font-size:14px;color:#666;margin:0;">${esc(caption)}</p>
-    </td></tr>
-  </table>
+  // #1085: border-radius:6px na imagem; caption italic cinza alinhada à direita.
+  return `<tr><td align="left" valign="top" style="padding:0 2px;">
+  <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 8px 0;" border="0"/>
+  <p style="font-family:${FONT_BODY};font-size:16px;color:${MUTED};font-style:italic;margin:0 0 20px 0;padding:0;text-align:right;">${esc(caption)}</p>
 </td></tr>`;
 }
 
@@ -449,159 +459,140 @@ function renderParagraphs(text: string): string {
     .map(
       (p) =>
         `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:12px 0;margin:0;">${esc(p.trim())}</p>
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${esc(p.trim())}</p>
 </td></tr>`
     )
     .join("\n");
 }
 
-function renderWhyHeading(): string {
-  // #113: "Por que isso importa:" precisa destaque visual — é o gancho
-  // editorial. Aumentei pra h3 com 20px bold (era h5 16px).
-  return `<tr><td align="left" style="padding:0px 2px;text-align:left;">
-  <h3 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:700;font-size:20px;line-height:1.3;padding-top:20px;padding-bottom:4px;margin:0;">Por que isso importa:</h3>
+function renderWhyBlock(text: string): string {
+  // #1085: "Por que isso importa" como pull-quote inline — table com
+  // border-left teal, parágrafo em itálico cinza. Em vez de h3 grande +
+  // parágrafos depois (legacy renderWhyHeading), agrega ambos em um único
+  // bloco editorial estilo magazine.
+  const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => esc(p.trim())).join("<br><br>");
+  return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
+  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="border-left:3px solid ${TEAL};padding:4px 0 4px 16px;">
+    <p style="font-family:${FONT_BODY};color:#444444;font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
+  </td></tr></table>
 </td></tr>`;
 }
 
+function renderRule(thick = false): string {
+  // #1085: separador horizontal entre blocos editoriais. `thick` = 2px (entre
+  // destaques e seções/pesquisa); fino = 1px (entre destaques).
+  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${RULE}`;
+  return `<tr><td style="padding:36px 2px 0 2px;"><hr style="border:0;border-top:${border};margin:0;"/></td></tr>`;
+}
+
+function renderTopPadding(): string {
+  return `<tr><td style="padding:32px 2px 0 2px;font-size:1px;line-height:1px;">&nbsp;</td></tr>`;
+}
+
 function renderDestaque(d: RenderDestaque): string {
-  // #113: d1 image NÃO aparece inline pra evitar duplicar com a cover do post
-  // (Beehiiv usa 04-d1-2x1.jpg como thumbnail/cover). d2 e d3 mantêm imagem
-  // inline porque não têm slot de cover.
-  const showInlineImage = d.n !== 1;
+  // #1085: sem box ciano — destaques separados por <hr> finos. Mantém
+  // imagem inline em D1 (cover) e D2/D3 sem (#1077, memory
+  // feedback_newsletter_only_d1_image.md). Estrutura "magazine" editorial:
+  // kicker → h1 → cover (se D1) → parágrafos → blockquote "Por que importa".
+  const showInlineImage = d.n === 1;
   return `<!-- Destaque ${d.n} -->
-<tr><td>
-<table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-  ${renderSpacer()}
-  <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
-    <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-      ${renderCategoryLabel(d.emoji, d.category)}
-      ${renderTitle(d.title, d.url)}
-      ${showInlineImage ? renderImage(d.imageFile) : ""}
-      ${renderParagraphs(d.body)}
-      ${renderWhyHeading()}
-      ${renderParagraphs(d.why)}
-    </table>
-  </td></tr>
-  ${renderSpacer()}
-</table>
-</td></tr>`;
+${renderTopPadding()}
+${renderCategoryLabel(d.emoji, d.category)}
+${renderTitle(d.title, d.url)}
+${showInlineImage ? renderImage(d.imageFile) : ""}
+${renderParagraphs(d.body)}
+${renderWhyBlock(d.why)}`;
 }
 
 function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
-  const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:14px;line-height:1.5;padding:12px 0;margin:0;`;
-  const cellStyle = `padding:0px 2px;text-align:left;word-break:break-word;`;
+  const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:16px;line-height:1.5;margin:0;padding:0;`;
 
-  // #107: linha "Resultado da última edição: X%..." auto-injetada pelo eia-compose
-  // vai num `<p>` próprio (visualmente separado do crédito) — caso contrário ficaria
-  // emendada no mesmo parágrafo no email final.
   const prevResultRow = eia.prevResultLine
-    ? `      <tr><td align="left" style="${cellStyle}">
+    ? `      <tr><td align="left" style="padding:8px 0 0 0;">
         <p style="${paragraphStyle}">${esc(eia.prevResultLine)}</p>
       </td></tr>`
     : "";
 
-  // #192: alt text usa A/B em vez de "Foto real"/"Foto gerada por IA" pra não
-  // revelar a resposta no HTML/accessibility tools. Mapping real↔IA fica em
-  // `01-eia.md` (frontmatter, leitura humana) e `_internal/01-eia-meta.json`.
-
-  // #1044 design v2: imagens A/B clicáveis lado a lado (link to {{poll_x_url}}).
-  // Cada imagem é wrapped em <a> com o custom_field URL — voto direto na imagem.
-  // Botão "Votar A"/"Votar B" abaixo serve como CTA backup pra leitores hesitantes.
-  // Substitui caminho legacy #465 (merge-tag forjável); Beehiiv resolve {{...}} no envio.
-  const labelStyle = `font-family:${FONT_BODY};font-weight:700;color:#FFFFFF;background:${TEAL};text-align:center;font-size:24px;padding:10px;margin:8px 0 0 0;border-radius:8px;display:block;`;
-  const imageStyle = `display:block;width:100%;height:auto;border-radius:12px;`;
+  // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
+  // interativo, sem o border ciano grosso dos destaques antigos. Padding
+  // simétrico em ambos <td> das imagens (#1085) — alinha A/B no stack mobile.
+  const imageStyle = `display:block;width:100%;height:auto;border-radius:6px;`;
+  const buildVoteUrl = (choice: "A" | "B") =>
+    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
   const eiaChoice = (choice: "A" | "B", imgFile: string) =>
-    `<td width="50%" valign="top" style="padding:0 8px;" class="mob-stack">
+    `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">
             ${eia.edition
-              ? `<a href="{{poll_${choice.toLowerCase()}_url}}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">`
+              ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">`
               : ""}
               <img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="${imageStyle}" border="0"/>
-              <p style="${labelStyle}">${choice}</p>
             ${eia.edition ? "</a>" : ""}
           </td>`;
 
-  const voteButtonsRow = eia.edition
-    ? `      <tr><td align="center" style="${cellStyle};padding:8px 2px 0 2px;">
-        <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
-          <tr>
-            <td style="padding:0 8px;">
-              <a href="{{poll_a_url}}"
-                 style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
-                 target="_blank" rel="noopener noreferrer">Votar A</a>
-            </td>
-            <td style="padding:0 8px;">
-              <a href="{{poll_b_url}}"
-                 style="display:inline-block;font-family:${FONT_BODY};font-size:14px;color:${TEAL};border:2px solid ${TEAL};border-radius:50px;padding:10px 24px;text-decoration:none;font-weight:600;"
-                 target="_blank" rel="noopener noreferrer">Votar B</a>
-            </td>
-          </tr>
-        </table>
-      </td></tr>`
-    : "";
-
   return `<!-- É IA? -->
-<tr><td>
-<table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-  ${renderSpacer()}
-  <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
-    <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-      ${renderCategoryLabel("🖼️", "É IA?")}
-      <tr><td align="center" style="padding:8px 0 16px 0;">
-        <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;margin:0;">Qual imagem é gerada por IA? Clique para votar.</p>
-      </td></tr>
-      <tr><td>
-        <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
-          ${eiaChoice("A", eia.imageA)}
-          ${eiaChoice("B", eia.imageB)}
-        </tr></table>
-      </td></tr>
-${voteButtonsRow}
-      <tr><td align="left" style="${cellStyle};padding-top:16px;">
-        <p style="${paragraphStyle}">${creditHtml}</p>
-      </td></tr>
+${renderRule()}
+<tr><td style="padding:32px 0 0 0;">
+  <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
+    <tr><td style="background-color:#FAFAFA;padding:32px 24px;border-radius:8px;">
+      <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr><td align="left" style="padding:0 0 16px 0;">
+          <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0;padding:0;">🖼️ É IA?</p>
+        </td></tr>
+        <tr><td align="center" style="padding:0 0 20px 0;">
+          <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:20px;line-height:1.3;margin:0;padding:0;">Clique na imagem que foi gerada por IA.</p>
+        </td></tr>
+        <tr><td>
+          <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
+            ${eiaChoice("A", eia.imageA)}
+            ${eiaChoice("B", eia.imageB)}
+          </tr></table>
+        </td></tr>
+        <tr><td align="left" style="padding:16px 0 0 0;">
+          <p style="${paragraphStyle}">${creditHtml}</p>
+        </td></tr>
 ${prevResultRow}
-    </table>
-  </td></tr>
-  ${renderSpacer()}
-</table>
+      </table>
+    </td></tr>
+  </table>
 </td></tr>`;
 }
 
 /** Render a single section item as its own table row(s) */
-function renderSectionItem(item: SectionItem): string {
+function renderSectionItem(item: SectionItem, last: boolean): string {
+  // #1085: título com border-bottom 1px solid teal (email-safe), descrição em
+  // cinza. Espaçamento entre items via padding-bottom no último <td>.
   const titleHtml = item.url
-    ? `<a href="${esc(item.url)}" style="color:${TEXT_COLOR} !important;text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow"><b>${esc(item.title)}</b></a>`
-    : `<b>${esc(item.title)}</b>`;
+    ? `<a href="${esc(item.url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
+    : esc(item.title);
 
-  const titleRow = `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:12px 0 ${item.description ? "4px" : "12px"};margin:0;">${titleHtml}</p>
+  const bottomPad = last ? "0" : "16px";
+  const titleRow = `<tr><td align="left" style="padding:0 0 ${item.description ? "4px" : bottomPad} 0;text-align:left;word-break:break-word;">
+  <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.4;margin:0;padding:0;">${titleHtml}</p>
 </td></tr>`;
 
   if (!item.description) return titleRow;
 
-  const descRow = `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.5;padding:4px 0 12px;margin:0;">${esc(item.description)}</p>
+  const descRow = `<tr><td align="left" style="padding:0 0 ${bottomPad} 0;text-align:left;word-break:break-word;">
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:16px;line-height:1.5;margin:0;padding:0;">${esc(item.description)}</p>
 </td></tr>`;
 
   return titleRow + "\n" + descRow;
 }
 
 function renderSection(section: Section): string {
-  const itemsHtml = section.items.map(renderSectionItem).join("\n");
+  // #1085: sem box ciano — separador 2px solid TEXT_COLOR antes pra marcar
+  // transição forte entre destaques editoriais e seções de "Pesquisa"/"Outras".
+  const itemsHtml = section.items
+    .map((item, i) => renderSectionItem(item, i === section.items.length - 1))
+    .join("\n");
 
   return `<!-- ${section.name} -->
-<tr><td>
-<table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-  ${renderSpacer()}
-  <tr><td style="background-color:transparent;border:1px solid ${TEAL};border-radius:50px;padding:40px;">
-    <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-      ${renderCategoryLabel(section.emoji, section.name)}
-      ${itemsHtml}
-    </table>
-  </td></tr>
-  ${renderSpacer()}
-</table>
+${renderRule(true)}
+<tr><td style="padding:24px 2px 0 2px;">
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">${esc(section.name)}</p>
+  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%">
+    ${itemsHtml}
+  </table>
 </td></tr>`;
 }
 
@@ -616,11 +607,21 @@ export interface RenderOpts {
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
 
-  for (const d of content.destaques) {
-    parts.push(renderDestaque(d));
+  // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
+  // `feedback_beehiiv_sections.md` e convention pre-existente. Fallback
+  // robusto (#1085): se destaques.length < 2 (test fixtures ou edições
+  // atípicas), insere no fim do loop pra garantir que È IA? não seja
+  // silenciosamente omitido.
+  const includeEia = !!(!opts.excludeEia && content.eia.credit);
+  let eiaInserted = false;
+  for (let i = 0; i < content.destaques.length; i++) {
+    parts.push(renderDestaque(content.destaques[i]));
+    if (includeEia && !eiaInserted && i === 1) {
+      parts.push(renderEIA(content.eia));
+      eiaInserted = true;
+    }
   }
-
-  if (!opts.excludeEia && content.eia.credit) {
+  if (includeEia && !eiaInserted) {
     parts.push(renderEIA(content.eia));
   }
 
@@ -629,7 +630,6 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   }
 
   return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
-<!-- Image placeholders: {{IMG:filename}} — replace with CDN URLs before pasting -->
 <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
 ${parts.join("\n")}
 </table>`;
