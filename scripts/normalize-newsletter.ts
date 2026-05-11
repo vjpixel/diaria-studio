@@ -399,13 +399,20 @@ export function addTrailingSpaces(text: string, warnings?: string[]): string {
  * Rede de segurança pós-humanizador — apanha os que escaparam da revisão contextual.
  * Preserva meia-risca (–) em intervalos numéricos (U+2013 ≠ U+2014).
  */
-function removeEmdashes(text: string): { text: string; count: number } {
+export function removeEmdashes(text: string): { text: string; count: number } {
   let count = 0;
-  // " — " (espaço + travessão + espaço) → ", "
-  const result = text.replace(/ — /g, () => { count++; return ", "; });
+  // #1098: travessão após pontuação final ("Foo. — Bar") → "Foo. Bar"
+  // Antes: " — " virava ", " cegamente, gerando ". , " (ponto + vírgula).
+  // Caso observado em 260512 (crédito do É IA?: "Paquistão. — [autor]").
+  let result = text.replace(/([.!?:;]) — /g, (_m, punct) => {
+    count++;
+    return punct + " ";
+  });
+  // " — " (espaço + travessão + espaço) sem pontuação final precedente → ", "
+  result = result.replace(/ — /g, () => { count++; return ", "; });
   // Travessão sem espaços adjacentes (raro) → ", " para manter legibilidade
-  const result2 = result.replace(/—/g, () => { count++; return ", "; });
-  return { text: result2, count };
+  result = result.replace(/—/g, () => { count++; return ", "; });
+  return { text: result, count };
 }
 
 /**
