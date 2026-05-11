@@ -68,23 +68,38 @@ export function findPreviousIntentionalError(
 }
 
 /**
- * Pure (#961): extrai o erro intencional declarado na linha "Nessa edição,
- * escrevi 'X' onde deveria ser 'Y'." de um `02-reviewed.md` publicado.
+ * Pure (#961 / #1079): extrai o erro intencional declarado na linha "Nessa
+ * edição, {narrativa}." de um `02-reviewed.md` publicado.
  *
- * Aceita aspas duplas (caso novo) e simples (caso histórico). Back-references
- * (\1, \3) garantem que aspa abrindo bate com a fechando — input malformado
- * com aspas cruzadas (`"X' onde deveria ser "Y'`) não é silenciosamente
- * aceito (#991).
+ * O novo formato (#1079) usa narrativa livre — o autor escreve a frase
+ * inteira, sem placeholders fixos. Exemplos válidos:
+ *   - "Nessa edição, eu disse que a OpenAI lançou 4 modelos, mas listei 3."
+ *   - "Nessa edição, escrevi 'X' onde deveria ser 'Y'." (formato legado)
+ *   - "Nessa edição, coloquei junho onde deveria ser maio."
  *
- * Caso a linha não exista, retorna null — o caller decide o fallback (JSONL).
+ * Captura tudo após "Nessa edição," até o primeiro ponto final no início
+ * de espaço/quebra (não pega parágrafos seguintes). Caso a linha não
+ * exista, retorna null — o caller decide o fallback (JSONL).
+ *
+ * Retorna `{ narrative }` no novo formato; campos `detail/gabarito` ficam
+ * derivados pelos consumidores que ainda precisam deles (regex legado em
+ * fallback dentro desta mesma função pra back-compat).
  */
 export function extractIntentionalErrorFromMd(
   md: string,
-): { detail: string; gabarito: string } | null {
-  const re = /Nessa\s+edi[çc][ãa]o,?\s+escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
-  const m = md.match(re);
-  if (!m) return null;
-  return { detail: m[2], gabarito: m[4] };
+): { narrative: string; detail?: string; gabarito?: string } | null {
+  // Formato novo (#1079): narrativa livre.
+  const narrativeRe = /Nessa\s+edi[çc][ãa]o,?\s+([^\n]+?)\.\s*(?:\n|$)/i;
+  const nm = md.match(narrativeRe);
+  if (!nm) return null;
+  const narrative = nm[1].trim();
+
+  // Back-compat: tenta extrair detail/gabarito do formato legado
+  // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
+  const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
+  const lm = narrative.match(legacyRe);
+  if (lm) return { narrative, detail: lm[2], gabarito: lm[4] };
+  return { narrative };
 }
 
 /**
@@ -100,7 +115,7 @@ export function extractIntentionalErrorFromMd(
 export function findPreviousIntentionalErrorFromMd(
   editionsRoot: string,
   currentEdition: string,
-): { edition: string; detail: string; gabarito: string } | null {
+): { edition: string; detail: string; gabarito: string; narrative: string } | null {
   if (!existsSync(editionsRoot)) return null;
   let entries: string[];
   try {
@@ -122,7 +137,12 @@ export function findPreviousIntentionalErrorFromMd(
     }
     const extracted = extractIntentionalErrorFromMd(md);
     if (extracted) {
-      return { edition: editionDir, ...extracted };
+      return {
+        edition: editionDir,
+        detail: extracted.detail ?? extracted.narrative,
+        gabarito: extracted.gabarito ?? "",
+        narrative: extracted.narrative,
+      };
     }
   }
   return null;
@@ -174,53 +194,69 @@ export function boldQuotedStrings(text: string): string {
 }
 
 /**
- * Pure: compõe o texto de revelação do erro anterior.
+ * Pure (#1079): compõe o texto de revelação do erro anterior no novo formato
+ * "Na última edição, {narrative}.".
  *
- * Estratégia:
- *   - Tem `gabarito` explícito: "trazia '<detail snippet>' quando o correto era '<gabarito>'"
- *   - Sem gabarito: "trazia o erro: <detail>"
- *   - Detail vazio: "tinha um erro intencional"
+ * Prioridade de fonte de narrativa:
+ *   1. Campo `narrative` (extraído do MD anterior pela regex livre)
+ *   2. Composição a partir de `detail` + `gabarito` legados:
+ *      "{detail}, mas o correto era {gabarito}"
+ *   3. Fallback genérico quando só `detail` está disponível
+ *   4. Fallback genérico sem detalhe
  *
- * Não vaza informação demais — usa o detail tal como gravado pelo editor
- * (já é redação humana). Não tenta reformatar — só envolve strings entre
- * aspas em negrito (#915).
+ * Strings entre aspas são envoltas em negrito (#915).
  */
-export function composeRevealText(prev: IntentionalError): string {
+export function composeRevealText(prev: IntentionalError & { narrative?: string }): string {
+  const narrative = (prev.narrative ?? "").trim();
   const detail = (prev.detail ?? "").trim();
   const gabarito = ((prev as { gabarito?: string }).gabarito ?? "").trim();
-  const editionFmt = formatEditionLabel(prev.edition);
 
-  let text: string;
-  if (gabarito && detail) {
-    text = `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}. O correto era ${gabarito}.`;
+  let narrativeFinal: string;
+  if (narrative) {
+    narrativeFinal = narrative;
+  } else if (gabarito && detail) {
+    narrativeFinal = `${detail}, mas o correto era ${gabarito}`;
   } else if (detail) {
-    text = `A edição anterior (${editionFmt}) tinha um erro intencional: ${detail}.`;
+    narrativeFinal = detail;
   } else {
-    text = `A edição anterior (${editionFmt}) tinha um erro intencional.`;
+    narrativeFinal = "houve um erro intencional";
   }
-  return boldQuotedStrings(text);
+
+  return boldQuotedStrings(`Na última edição, ${narrativeFinal}.`);
 }
 
 /**
- * Pure: renderiza o bloco completo da seção ERRO INTENCIONAL pra inserir
- * no MD.
+ * Pure (#1079): renderiza o bloco da seção ERRO INTENCIONAL no novo formato.
+ *
+ * Estrutura:
+ *   **ERRO INTENCIONAL**
+ *
+ *   Na última edição, {prev_narrative}.   (do reveal calculado)
+ *
+ *   {currentDeclaration ?? "Nessa edição, …"}   (preservado se já existir no MD; placeholder caso contrário)
+ *
+ * O autor escreve `Nessa edição, …` manualmente no MD. O renderer detecta a
+ * linha existente e a preserva; quando ausente, insere um placeholder pra
+ * lembrar o autor de preencher antes de publicar.
  */
-export function renderSection(reveal: string | null): string {
+export function renderSection(
+  reveal: string | null,
+  currentDeclaration: string | null = null,
+): string {
   const lines: string[] = [];
   lines.push(SECTION_HEADER);
   lines.push("");
   if (reveal) {
     lines.push(reveal);
-    lines.push("");
   } else {
-    lines.push(
-      "A edição anterior não trazia erro intencional declarado.",
-    );
-    lines.push("");
+    lines.push("A edição anterior não trazia erro intencional declarado.");
   }
-  lines.push(
-    "Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.",
-  );
+  lines.push("");
+  if (currentDeclaration && currentDeclaration.trim()) {
+    lines.push(currentDeclaration.trim());
+  } else {
+    lines.push("Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.");
+  }
   lines.push("");
   return lines.join("\n");
 }
@@ -241,7 +277,21 @@ export function insertOrUpdateSection(
   md: string,
   reveal: string | null,
 ): { md: string; action: "inserted" | "updated" | "no_change" } {
-  const block = renderSection(reveal);
+  // #1079: preserva linhas "Na última edição, …" e "Nessa edição, …" do MD da
+  // edição corrente se já existirem (autor pode ter editado wording à mão).
+  // Renderer só calcula reveal anterior quando ausente.
+  const currentExtracted = extractIntentionalErrorFromMd(md);
+  const currentDeclaration = currentExtracted
+    ? `Nessa edição, ${currentExtracted.narrative}.`
+    : null;
+
+  const existingRevealRe = /Na\s+[úu]ltima\s+edi[çc][ãa]o,?\s+([^\n]+?)\.\s*(?:\n|$)/i;
+  const existingRevealMatch = md.match(existingRevealRe);
+  const finalReveal = existingRevealMatch
+    ? `Na última edição, ${existingRevealMatch[1].trim()}.`
+    : reveal;
+
+  const block = renderSection(finalReveal, currentDeclaration);
   const headerEsc = SECTION_HEADER.replace(/\*/g, "\\*");
 
   // Existing section detection (header + body sem dependência de --- explícitos)

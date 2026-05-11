@@ -83,12 +83,19 @@ Por que isso importa:
 
 **ERRO INTENCIONAL**
 
-A edição anterior ({prev_edition}) tinha um erro intencional: {prev_detail}. O correto era {prev_gabarito}.
+Na última edição, {prev_narrative}.
 
-Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.
+Nessa edição, {curr_narrative}.
 ```
 
-**Seção ERRO INTENCIONAL (#911):** o concurso "Ache o erro" pede ao leitor identificar 1 erro proposital por edição (sorteio mensal premia com livro). Esta seção fecha o loop entre edições — revela o gabarito da edição anterior + convida pra atual. Conteúdo é renderizado pelo script `scripts/render-erro-intencional.ts` lendo `data/intentional-errors.jsonl`. Writer pode emitir o placeholder literal e o script substitui pós-Clarice.
+**Seção ERRO INTENCIONAL (#911 / #1079):** cada edição contém 1 erro proposital. Esta seção fecha o loop entre edições com duas frases narrativas curtas — sem convite ao concurso, sem "Responda este e-mail...". É confissão direta:
+
+- `Na última edição, {prev_narrative}.` — revela o erro da edição anterior em forma narrativa ("coloquei X onde deveria ser Y", "escrevi X mas o correto era Y", etc).
+- `Nessa edição, {curr_narrative}.` — declara o erro desta edição em forma narrativa ("eu disse X, mas Y é o correto", "afirmei X quando deveria ser Y", etc).
+
+**Regra HTML/Beehiiv (#1079):** **o erro da edição corrente NUNCA aparece no HTML enviado aos leitores.** O HTML só mostra `Na última edição, …` (reveal anterior) dentro do bloco 🎁 SORTEIO. A linha `Nessa edição, …` vive APENAS no `02-reviewed.md` — funciona como diário interno + source-of-truth pra próxima edição extrair. Razão: o erro precisa ser descoberto pelo leitor; revelá-lo na própria edição mata o jogo.
+
+O autor escreve `{curr_narrative}` manualmente no `02-reviewed.md` da edição corrente. O script `scripts/render-erro-intencional.ts` lê o `02-reviewed.md` da edição anterior, extrai a linha `Nessa edição, …` e renderiza como `Na última edição, …` na edição corrente. Fallback: `data/intentional-errors.jsonl` quando o MD anterior não tem a linha. Tom é de auto-zoeira editorial, não de competição — sorteio do mês ainda acontece via o bloco SORTEIO no template Beehiiv, separado dessa seção.
 
 URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2, sobrando 1 título-com-URL. Todas as 3 opções pré-gate apontam pra **mesma URL canônica** (são variantes do mesmo título do mesmo artigo).
 
