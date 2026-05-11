@@ -684,14 +684,20 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
 
   it("section header não usa rule grossa 2px solid (TEXT_COLOR)", () => {
     const html = renderHTML(fixt());
-    // Encontra o trecho ao redor de PESQUISA
-    const idx = html.indexOf("PESQUISA");
-    assert.ok(idx > 0, "PESQUISA deve aparecer");
-    const before = html.slice(Math.max(0, idx - 400), idx);
-    // Regression: rule grossa (2px solid TEXT_COLOR) não deve aparecer logo
-    // antes do header de section. Versão antiga usava `renderRule(true)`
-    // que emite `border-top:2px solid #1B1B1B` (TEXT_COLOR).
-    assert.doesNotMatch(before, /border-top:2px solid #1B1B1B/i, "rule grossa não deve aparecer antes do section header");
+    // Encontra o BLOCO da section PESQUISA (comment + hr + tr).
+    // Ordem no output: `<!-- PESQUISA -->\n<hr ...>\n<tr>...<p>PESQUISA</p>`.
+    // Pega de "<!-- PESQUISA" até o `<p>PESQUISA</p>` pra cobrir a rule emitida
+    // logo após o comment.
+    const blockStart = html.indexOf("<!-- PESQUISA -->");
+    assert.ok(blockStart > 0, "comment PESQUISA deve aparecer");
+    const kickerIdx = html.indexOf(">PESQUISA</p>", blockStart);
+    assert.ok(kickerIdx > blockStart, "kicker <p>PESQUISA</p> deve vir após comment");
+    const sectionBlock = html.slice(blockStart, kickerIdx);
+    // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
+    // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
+    assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
+    // E o regex deve dar match na forma fina (sanity check do helper):
+    assert.match(sectionBlock, /border-top:1px solid #E5E5E5/i, "rule fina (1px solid #E5E5E5) deve estar presente");
   });
 
   it("section header tem border-bottom (linha fina abaixo do kicker)", () => {

@@ -658,9 +658,9 @@ function renderSorteio(text: string): string {
     `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${mdInlineToHtml(p.trim())}</p>`
   ).join("");
   return `<!-- 🎁 SORTEIO -->
-${renderRule(true)}
+${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">🎁 Sorteio</p>
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🎁 Sorteio</p>
   ${html}
 </td></tr>`;
 }
@@ -711,9 +711,9 @@ function renderEncerrar(text: string): string {
   }).join("");
 
   return `<!-- 🙋🏼‍♀️ PARA ENCERRAR -->
-${renderRule(true)}
+${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">🙋🏼‍♀️ Para encerrar</p>
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🙋🏼‍♀️ Para encerrar</p>
   ${html}
 </td></tr>`;
 }
