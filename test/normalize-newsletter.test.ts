@@ -10,6 +10,7 @@ import {
   addTrailingSpaces,
   extractEiaFrontmatter,
   resolveEiaFrontmatterBlock,
+  removeEmdashes,
 } from "../scripts/normalize-newsletter.ts";
 import { writeEiaAnswerSidecar } from "../scripts/lib/eia-answer.ts";
 
@@ -535,5 +536,42 @@ describe("CLI main: #1069 — não injeta eia_answer frontmatter no output", () 
     const out = readFileSync(outPath, "utf8");
     assert.ok(!/^---\s*\neia_answer:/m.test(out), `output não deve ter eia_answer frontmatter — got:\n${out.slice(0, 200)}`);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("removeEmdashes — pontuação adjacente (#1098)", () => {
+  it("'. — ' vira '. ' (preserva ponto, remove travessão+vírgula duplicada)", () => {
+    const r = removeEmdashes("Foo. — Bar");
+    assert.equal(r.text, "Foo. Bar");
+  });
+
+  it("'! — ' vira '! '", () => {
+    assert.equal(removeEmdashes("Foo! — Bar").text, "Foo! Bar");
+  });
+
+  it("'? — ' vira '? '", () => {
+    assert.equal(removeEmdashes("Foo? — Bar").text, "Foo? Bar");
+  });
+
+  it("': — ' vira ': '", () => {
+    assert.equal(removeEmdashes("Foo: — Bar").text, "Foo: Bar");
+  });
+
+  it("' — ' entre cláusulas (sem pontuação antes) continua virando ', '", () => {
+    assert.equal(removeEmdashes("foo — bar").text, "foo, bar");
+  });
+
+  it("caso real da 260512 — crédito É IA?", () => {
+    const input = "norte do Paquistão. — [Muzamil](url) / CC BY-SA 4.0.";
+    const output = removeEmdashes(input).text;
+    // O texto não deve ter ".," (ponto + vírgula adjacente)
+    assert.doesNotMatch(output, /\.,/);
+    // Ponto preservado, espaço único entre Paquistão. e [Muzamil
+    assert.match(output, /Paquistão\. \[Muzamil\]/);
+  });
+
+  it("preserva meia-risca em intervalo numérico (não toca –)", () => {
+    const r = removeEmdashes("1989–2002");
+    assert.equal(r.text, "1989–2002", "meia-risca (U+2013) não deve mudar — só travessão (U+2014)");
   });
 });
