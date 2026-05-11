@@ -187,6 +187,12 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
 
+- **Sincronizar linha de cobertura (#1097):** após Clarice + validate-lancamentos, antes do render-erro-intencional, rodar:
+  ```bash
+  npx tsx scripts/sync-coverage-line.ts --edition-dir data/editions/{AAMMDD}/
+  ```
+  Auto-calcula X (editor_submitted + newsletter_extracted + source:inbox no pool inicial), Y (auto-found = total - X), Z (itens visíveis no 02-reviewed.md final). Substitui a linha "Para esta edição..." no topo do MD. Antes era chutada pelo writer LLM e ficava stale após podas. Stdout: `{ x, y, z, changed, mdPath }`. Falha não-bloqueante (log warn) — números errados são cosméticos, não bloqueiam publicação.
+
 - **Render ERRO INTENCIONAL obrigatório (#1073):** após Clarice (e antes do gate humano), rodar:
   ```bash
   npx tsx scripts/render-erro-intencional.ts \
