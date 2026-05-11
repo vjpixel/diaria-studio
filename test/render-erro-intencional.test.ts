@@ -419,6 +419,63 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
     const r = extractIntentionalErrorFromMd(md);
     assert.equal(r?.narrative, "X");
   });
+
+  it("#1099: ancorado em bloco ERRO INTENCIONAL — ignora 'Nessa edição da Diar.ia' do PARA ENCERRAR", () => {
+    const md = `Para esta edição...
+
+---
+
+**DESTAQUE 1 | 🇧🇷 BRASIL**
+
+Texto.
+
+---
+
+**ERRO INTENCIONAL**
+
+Na última edição, foo.
+
+Nessa edição, escrevi 'X' onde deveria ser 'Y'.
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Nessa edição da **Diar.ia**, usei Claude Code para automatizar...
+`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, "escrevi 'X' onde deveria ser 'Y'");
+    // Confirma que NÃO pegou o PARA ENCERRAR
+    assert.doesNotMatch(r?.narrative ?? "", /Diar\.ia|Claude Code/);
+  });
+
+  it("#1099: retorna null quando ERRO INTENCIONAL tem só placeholder (não preenchido)", () => {
+    const md = `**ERRO INTENCIONAL**
+
+Na última edição, foo.
+
+Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Nessa edição da **Diar.ia**, usei Claude Code...
+`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r, null, "deve retornar null em placeholder + ignorar PARA ENCERRAR");
+  });
+
+  it("#1099: vírgula obrigatória — 'Nessa edição da Diar.ia' (sem vírgula) não matcha", () => {
+    const md = `Texto blah.
+
+Nessa edição da **Diar.ia**, usei Claude Code para escrever.
+`;
+    // Sem header ERRO INTENCIONAL → busca global, mas vírgula é obrigatória.
+    // "Nessa edição da Diar.ia" não tem vírgula entre "edição" e "da" → não matcha.
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r, null, "frase do PARA ENCERRAR sem vírgula não deve matchar");
+  });
 });
 
 describe("findPreviousIntentionalErrorFromMd (#961)", () => {

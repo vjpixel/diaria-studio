@@ -88,11 +88,31 @@ export function findPreviousIntentionalError(
 export function extractIntentionalErrorFromMd(
   md: string,
 ): { narrative: string; detail?: string; gabarito?: string } | null {
-  // Formato novo (#1079): narrativa livre.
-  const narrativeRe = /Nessa\s+edi[çc][ãa]o,?\s+([^\n]+?)\.\s*(?:\n|$)/i;
-  const nm = md.match(narrativeRe);
+  // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
+  // dentro do bloco. Caso contrário, busca global (back-compat com testes
+  // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
+  // após "edição" pra evitar matchar "Nessa edição da Diar.ia, usei..."
+  // do bloco PARA ENCERRAR (incident 260512).
+  let block = md;
+  const headerIdx = md.indexOf("**ERRO INTENCIONAL**");
+  if (headerIdx !== -1) {
+    const afterHeader = md.slice(headerIdx);
+    // Limitar ao próximo separador `---` em linha própria, ou próximo header bold com emoji.
+    const nextSepRe = /\n---\s*\n|\n\*\*[🎁🙋📰🚀🔬🇧🇷🛠️📦📈💡🎭⚖️📊💬🏭🔐]/;
+    const nextSepMatch = afterHeader.match(nextSepRe);
+    block = nextSepMatch !== null && nextSepMatch.index !== undefined
+      ? afterHeader.slice(0, nextSepMatch.index)
+      : afterHeader;
+  }
+
+  // Formato novo (#1079): narrativa livre. Vírgula é obrigatória após
+  // "edição" — evita match em "Nessa edição da Diar.ia" do PARA ENCERRAR (#1099).
+  const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
+  const nm = block.match(narrativeRe);
   if (!nm) return null;
   const narrative = nm[1].trim();
+  // Pular placeholder não preenchido.
+  if (/^\{PREENCHER/i.test(narrative)) return null;
 
   // Back-compat: tenta extrair detail/gabarito do formato legado
   // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
