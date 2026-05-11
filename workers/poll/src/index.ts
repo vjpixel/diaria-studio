@@ -297,7 +297,7 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 <h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
 <p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
 <table>
-<thead><tr><th>#</th><th>Leitor</th><th>Acertos</th><th>%</th></tr></thead>
+<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th><th>%</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=4 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
 <p style="margin-top:30px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
