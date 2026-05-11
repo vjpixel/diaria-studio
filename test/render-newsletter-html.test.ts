@@ -657,3 +657,48 @@ Agora interaja!`,
     assert.ok(sorteioIdx > 0 && encerrarIdx > sorteioIdx);
   });
 });
+
+describe("renderSection thin rule + bottom border (#1090)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "LANÇAMENTO",
+    title: "T",
+    body: "B",
+    why: "W",
+    url: "https://example.com/d1",
+    emoji: "🚀",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixt = () => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [
+      { name: "PESQUISA", items: [{ title: "Foo", description: "Bar", url: "https://example.com/p" }] },
+    ],
+    sorteio: null,
+    encerrar: null,
+  });
+
+  it("section header não usa rule grossa 2px solid (TEXT_COLOR)", () => {
+    const html = renderHTML(fixt());
+    // Encontra o trecho ao redor de PESQUISA
+    const idx = html.indexOf("PESQUISA");
+    assert.ok(idx > 0, "PESQUISA deve aparecer");
+    const before = html.slice(Math.max(0, idx - 400), idx);
+    // Regression: rule grossa (2px solid TEXT_COLOR) não deve aparecer logo
+    // antes do header de section. Versão antiga usava `renderRule(true)`
+    // que emite `border-top:2px solid #1B1B1B` (TEXT_COLOR).
+    assert.doesNotMatch(before, /border-top:2px solid #1B1B1B/i, "rule grossa não deve aparecer antes do section header");
+  });
+
+  it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
+    const html = renderHTML(fixt());
+    // O kicker é renderizado como `<p ...>PESQUISA</p>` com border-bottom no
+    // próprio <p>. Match: encontra qualquer <p> com border-bottom seguido
+    // pelo nome da section.
+    assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>PESQUISA<\/p>/i, "kicker <p> deve ter border-bottom 1px");
+  });
+});

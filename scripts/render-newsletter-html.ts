@@ -614,16 +614,17 @@ function renderSectionItem(item: SectionItem, last: boolean): string {
 }
 
 function renderSection(section: Section): string {
-  // #1085: sem box ciano — separador 2px solid TEXT_COLOR antes pra marcar
-  // transição forte entre destaques editoriais e seções de "Pesquisa"/"Outras".
+  // #1090: rule fina (1px RULE) cima E baixo do kicker pra simetria visual —
+  // versão anterior tinha rule grossa (2px TEXT_COLOR) só em cima, ficava
+  // pesada e desbalanceada (feedback Pixel 2026-05-11).
   const itemsHtml = section.items
     .map((item, i) => renderSectionItem(item, i === section.items.length - 1))
     .join("\n");
 
   return `<!-- ${section.name} -->
-${renderRule(true)}
+${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0;">${esc(section.name)}</p>
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(section.name)}</p>
   <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%">
     ${itemsHtml}
   </table>
