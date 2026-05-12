@@ -121,7 +121,7 @@ describe("rankEntries (#1092)", () => {
 
   it("mesmo pct mas correct diferente NÃO empata (5/5 vs 1/1 ambos 100%)", () => {
     // Ambos têm 100% mas correct diferente — participação diferente.
-    // Issue: tie key é (correct, pct), não só pct.
+    // Issue: tie key é (correct, total), não só pct.
     const ranked = rankEntries([
       entry("super@x.com", 5, 5, "super"),
       entry("noob@x.com", 1, 1, "noob"),
@@ -132,6 +132,20 @@ describe("rankEntries (#1092)", () => {
     );
     // Sort: correct DESC → super primeiro
     assert.equal(ranked[0].email, "super@x.com");
+  });
+
+  it("mesmo correct, total diferente: mais tentativas vence (#1163)", () => {
+    // 2/4 vs 2/2: ambos correct=2. Critério novo (#1163): total DESC
+    // (premia participação). Antes era pct DESC (premiava taxa).
+    const ranked = rankEntries([
+      entry("participa@x.com", 2, 4, "participa"),
+      entry("preciso@x.com", 2, 2, "preciso"),
+    ]);
+    assert.deepEqual(
+      ranked.map((r) => r.rank),
+      [1, 2],
+    );
+    assert.equal(ranked[0].email, "participa@x.com");
   });
 
   it("lista vazia retorna array vazio", () => {

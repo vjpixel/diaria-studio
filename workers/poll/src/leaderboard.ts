@@ -1,18 +1,18 @@
 /**
- * leaderboard.ts (#1092)
+ * leaderboard.ts (#1092, #1163)
  *
  * Pure helper para ranking de leitores no leaderboard do É IA?. Separado
  * do index.ts (Cloudflare Worker handler) pra ser testável via node --test
  * no top-level sem dependências de @cloudflare/workers-types.
  *
  * Ranking: competition style (1, 1, 3 — não dense 1, 1, 2). Dois leitores
- * empatados em `(correct, pct)` compartilham o mesmo número. Tiebreaker
+ * empatados em `(correct, total)` compartilham o mesmo número. Tiebreaker
  * dentro do empate: nickname/email ASC (determinístico, estável).
  *
- * Por que `(correct, pct)` é a tie key (não só `pct`): dois leitores com
- * mesmo pct mas correct diferente (ex: 5/5 vs 1/1) têm participação
- * meaningfully diferente. Tratar como empate seria confuso. A sort key
- * é a mesma — então o rank reflete exatamente a ordem visual.
+ * Critério editorial (#1163): acertos absolutos primeiro; em caso de
+ * empate, mais tentativas vence (premia participação consistente). Taxa
+ * de acerto (pct) deixou de ser critério — mantida no struct só pra
+ * consumidores externos.
  */
 
 export interface LeaderboardEntry {
@@ -37,8 +37,8 @@ function displayKey(e: LeaderboardEntry): string {
 /**
  * Ordena scores e atribui rank competition-style.
  *
- * Sort key: (correct DESC, pct DESC, displayKey ASC).
- * Tie key: (correct, pct). Empate → mesmo rank.
+ * Sort key: (correct DESC, total DESC, displayKey ASC).
+ * Tie key: (correct, total). Empate → mesmo rank.
  *
  * @param scores entries crus do KV
  * @returns array ordenado com `rank` + `medal` atribuídos
@@ -46,7 +46,7 @@ function displayKey(e: LeaderboardEntry): string {
 export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
   const sorted = [...scores].sort((a, b) => {
     if (b.correct !== a.correct) return b.correct - a.correct;
-    if (b.pct !== a.pct) return b.pct - a.pct;
+    if (b.total !== a.total) return b.total - a.total;
     return displayKey(a).localeCompare(displayKey(b));
   });
 
@@ -55,8 +55,8 @@ export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
     const prev = i > 0 ? sorted[i - 1] : null;
-    // Competition rank: avança quando (correct, pct) muda; senão herda.
-    if (!prev || prev.correct !== e.correct || prev.pct !== e.pct) {
+    // Competition rank: avança quando (correct, total) muda; senão herda.
+    if (!prev || prev.correct !== e.correct || prev.total !== e.total) {
       currentRank = i + 1;
     }
     ranked.push({ ...e, rank: currentRank, medal: medalFor(currentRank) });

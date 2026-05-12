@@ -303,7 +303,8 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=3 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:#999">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
