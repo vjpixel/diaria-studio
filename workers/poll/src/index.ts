@@ -266,11 +266,11 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     // do email + "@***" (privacidade do domínio, mantém local-part legível).
     const display = s.nickname || s.email.replace(/@.*/, "@***");
     const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
-    return `<tr>
+    const trClass = s.rank === 1 ? ' class="leader"' : '';
+    return `<tr${trClass}>
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
-      <td>${s.pct}%</td>
     </tr>`;
   }).join("\n");
 
@@ -292,7 +292,7 @@ async function handleLeaderboard(env: Env): Promise<Response> {
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
   th { text-align: left; padding: 8px; border-bottom: 2px solid #eee; font-size: 0.8rem; color: #666; text-transform: uppercase; }
   td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
-  tr:first-child td { font-weight: bold; }
+  tr.leader td { font-weight: bold; }
   a { color: #0066cc; }
 </style>
 </head>
@@ -301,10 +301,11 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 <h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
 <p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
 <table>
-<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th><th>%</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=4 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
+<tbody>${rows || "<tr><td colspan=3 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:#999">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
