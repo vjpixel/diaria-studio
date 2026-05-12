@@ -266,7 +266,8 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     // do email + "@***" (privacidade do domínio, mantém local-part legível).
     const display = s.nickname || s.email.replace(/@.*/, "@***");
     const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
-    return `<tr>
+    const trClass = s.rank === 1 ? ' class="leader"' : '';
+    return `<tr${trClass}>
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
@@ -291,7 +292,7 @@ async function handleLeaderboard(env: Env): Promise<Response> {
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
   th { text-align: left; padding: 8px; border-bottom: 2px solid #eee; font-size: 0.8rem; color: #666; text-transform: uppercase; }
   td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
-  tr:first-child td { font-weight: bold; }
+  tr.leader td { font-weight: bold; }
   a { color: #0066cc; }
 </style>
 </head>
