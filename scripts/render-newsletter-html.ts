@@ -125,6 +125,35 @@ export function extractTemplateBlock(text: string, marker: string): string | nul
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * #1118: markers que terminam implicitamente uma section, mesmo sem `---`.
+ * Writer agent às vezes omite o separator entre OUTRAS NOTÍCIAS e SORTEIO
+ * (ou OUTRAS NOTÍCIAS e PARA ENCERRAR), o que fazia parseSections engolir
+ * o bloco SORTEIO como items adicionais — render saía com duplicação.
+ *
+ * Aceita header com ou sem markdown bold marker (`**...**`).
+ */
+const SECTION_TERMINATOR_MARKERS = [
+  /^(?:\*\*)?🎁 SORTEIO(?:\*\*)?\s*$/m,
+  /^(?:\*\*)?🙋🏼‍♀️ PARA ENCERRAR(?:\*\*)?\s*$/m,
+];
+
+/**
+ * #1118: trunca texto no primeiro marker de template block (SORTEIO ou
+ * PARA ENCERRAR). Retorna texto antes do marker, trimmed. Defensive contra
+ * MD sem `---` entre seções e blocos finais.
+ *
+ * Pure helper — exportado pra teste.
+ */
+export function truncateAtSectionTerminator(text: string): string {
+  let minIdx = text.length;
+  for (const re of SECTION_TERMINATOR_MARKERS) {
+    const m = re.exec(text);
+    if (m && m.index < minIdx) minIdx = m.index;
+  }
+  return text.slice(0, minIdx).trim();
+}
+
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
   const sections: Section[] = [];
@@ -137,7 +166,11 @@ export function parseSections(text: string): Section[] {
 
     const name = sectionMatch[1];
     const emoji = SECTION_EMOJI[name] || "📰";
-    const afterHeader = block.replace(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m, "").trim();
+    // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
+    // consumir esses blocos como items quando writer omitir `---`.
+    const afterHeader = truncateAtSectionTerminator(
+      block.replace(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m, "").trim(),
+    );
     const items = parseListItems(afterHeader);
     if (items.length > 0) {
       sections.push({ name, emoji, items });

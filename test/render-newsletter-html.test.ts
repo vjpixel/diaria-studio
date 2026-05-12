@@ -14,6 +14,7 @@ import {
   extractCoverageLine,
   renderCoverage,
   unescapeMd,
+  truncateAtSectionTerminator,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -922,5 +923,120 @@ describe("renderHTML + renderCoverage com escapes MD (#1117 integration)", () =>
     assert.doesNotMatch(html, /2026\\\./);
     assert.match(html, /ajuda bastante!/);
     assert.doesNotMatch(html, /bastante\\!/);
+  });
+});
+
+describe("truncateAtSectionTerminator (#1118)", () => {
+  it("trunca em **🎁 SORTEIO** (com bold)", () => {
+    const input =
+      "Texto comum\n\n[Item 1](https://x.com/1)\n\n**🎁 SORTEIO**\n\nConteúdo do sorteio.";
+    assert.equal(
+      truncateAtSectionTerminator(input),
+      "Texto comum\n\n[Item 1](https://x.com/1)",
+    );
+  });
+
+  it("trunca em 🎁 SORTEIO (sem bold)", () => {
+    const input = "Item.\n\n🎁 SORTEIO\n\nSorteio body";
+    assert.equal(truncateAtSectionTerminator(input), "Item.");
+  });
+
+  it("trunca em **🙋🏼‍♀️ PARA ENCERRAR**", () => {
+    const input = "Items aqui.\n\n**🙋🏼‍♀️ PARA ENCERRAR**\n\nEncerramento";
+    assert.equal(truncateAtSectionTerminator(input), "Items aqui.");
+  });
+
+  it("usa o primeiro marker que aparece (SORTEIO antes de PARA ENCERRAR)", () => {
+    const input =
+      "Items aqui.\n\n**🎁 SORTEIO**\n\nSorteio body\n\n**🙋🏼‍♀️ PARA ENCERRAR**\n\nEncerramento";
+    assert.equal(truncateAtSectionTerminator(input), "Items aqui.");
+  });
+
+  it("sem marker → retorna texto inalterado (trimmed)", () => {
+    const input = "Items aqui.\n\nMais items.";
+    assert.equal(truncateAtSectionTerminator(input), "Items aqui.\n\nMais items.");
+  });
+
+  it("não trunca quando marker aparece no meio de uma linha (não é header solo)", () => {
+    // Linha contém "🎁 SORTEIO" no meio — não deve truncar (só matchar header solo).
+    const input = "Eu disse 🎁 SORTEIO inline, não é header.";
+    assert.equal(
+      truncateAtSectionTerminator(input),
+      "Eu disse 🎁 SORTEIO inline, não é header.",
+    );
+  });
+
+  it("string vazia → string vazia", () => {
+    assert.equal(truncateAtSectionTerminator(""), "");
+  });
+});
+
+describe("parseSections com terminator implícito (#1118)", () => {
+  it("OUTRAS NOTÍCIAS sem --- antes de SORTEIO não engole o bloco SORTEIO", () => {
+    // Cenário do bug 260512: writer omitiu `---` entre OUTRAS NOTÍCIAS e SORTEIO.
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "[Item 1](https://x.com/1)",
+      "Descrição do item 1.",
+      "",
+      "[Item 2](https://x.com/2)",
+      "Descrição do item 2.",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "Conteúdo do sorteio que não deve virar item.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1, "deve ter 1 section (OUTRAS NOTÍCIAS)");
+    assert.equal(sections[0].name, "OUTRAS NOTÍCIAS");
+    assert.equal(sections[0].items.length, 2, "exatamente 2 items, não 3+");
+    assert.equal(sections[0].items[0].title, "Item 1");
+    assert.equal(sections[0].items[1].title, "Item 2");
+    // Nenhum item com texto de SORTEIO
+    for (const item of sections[0].items) {
+      assert.ok(!item.title.includes("SORTEIO"));
+      assert.ok(!item.description.includes("Conteúdo do sorteio"));
+    }
+  });
+
+  it("PESQUISAS sem --- antes de PARA ENCERRAR não engole o bloco", () => {
+    const md = [
+      "**PESQUISAS**",
+      "",
+      "[Paper 1](https://arxiv.org/1)",
+      "Descrição do paper.",
+      "",
+      "**🙋🏼‍♀️ PARA ENCERRAR**",
+      "",
+      "Texto final.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].name, "PESQUISAS");
+    assert.equal(sections[0].items.length, 1);
+    assert.equal(sections[0].items[0].title, "Paper 1");
+  });
+
+  it("comportamento correto preservado quando --- está presente", () => {
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "[Item 1](https://x.com/1)",
+      "Descrição.",
+      "",
+      "---",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "Body sorteio.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].items.length, 1);
+    assert.equal(sections[0].items[0].title, "Item 1");
   });
 });
