@@ -801,7 +801,18 @@ function renderEncerrar(text: string): string {
   }
   if (current) blocks.push(current);
 
-  const html = blocks.map((b) => {
+  // #1148: último parágrafo (CTA "Agora que chegou...") vai numa caixa
+  // estilo É IA? — fundo #FAFAFA, padding 32px/24px, border-radius 8px.
+  // Heurística: separar último item dos blocos se for um `<p>` começando com
+  // "Agora que chegou"; render o resto inline e o último envelopado em box.
+  const lastBlock = blocks[blocks.length - 1];
+  const isAgoraCta =
+    lastBlock?.type === "p" &&
+    /^agora que chegou/i.test(lastBlock.content.join(" ").trim());
+  const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
+  const ctaBlock = isAgoraCta ? lastBlock : null;
+
+  const renderBlock = (b: { type: "p" | "ul"; content: string[] }) => {
     if (b.type === "ul") {
       const items = b.content.map((c) =>
         `<li style="margin:0 0 4px 0;">${mdInlineToHtml(c)}</li>`
@@ -809,13 +820,24 @@ function renderEncerrar(text: string): string {
       return `<ul style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0 0 0 20px;">${items}</ul>`;
     }
     return `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0;">${mdInlineToHtml(b.content.join(" "))}</p>`;
-  }).join("");
+  };
+
+  const html = mainBlocks.map(renderBlock).join("");
+
+  const ctaBox = ctaBlock
+    ? `
+  <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
+    <tr><td style="background-color:#FAFAFA;padding:32px 24px;border-radius:8px;">
+      <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0;padding:0;">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
+    </td></tr>
+  </table>`
+    : "";
 
   return `<!-- 🙋🏼‍♀️ PARA ENCERRAR -->
 ${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
   <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🙋🏼‍♀️ Para encerrar</p>
-  ${html}
+  ${html}${ctaBox}
 </td></tr>`;
 }
 
