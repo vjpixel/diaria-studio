@@ -267,12 +267,26 @@ npx tsx scripts/filter-date-window.ts \
 ```
 Logar `removed.length`. Daqui em diante o input do research-reviewer é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial, video } }`) — extrair `kept` e usar como `categorized`.
 
-### 1p. Research-reviewer
+### 1p1. Research-review-dates (script, Filtro 1) — #1112
 
-Disparar `research-reviewer` passando `{ categorized: kept, edition_date, edition_iso, anchor_iso, edition_dir, window_days }`. O agent aplica:
-1. **Datas (verificação + flag)**: roda `verify-dates.ts` pra confirmar `published_at` via fetch, corrige `article.date`, copia `date_unverified` direto do output do script (#226 — não recalcula).
-2. **Janela**: roda `filter-date-window.ts` de novo internamente como sanity check (defesa em profundidade — depois do passo determinístico do orchestrator, o agente raramente remove algo aqui).
-3. **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`).
+Rodar `scripts/research-review-dates.ts` ANTES do agent (Filtro 1: verify-dates + filter-date-window com datas corrigidas). Determinístico, sem LLM:
+```bash
+npx tsx scripts/research-review-dates.ts \
+  --in data/editions/{AAMMDD}/_internal/tmp-filtered.json \
+  --out data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
+  --edition-dir data/editions/{AAMMDD}/ \
+  --anchor-iso {anchor_iso} \
+  --edition-iso {edition_iso} \
+  --window-days {window_days} \
+  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
+  --verify-cache data/link-verify-cache.json
+```
+Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`.
+
+### 1p2. Research-reviewer (agent Haiku, Filtro 2 — #1112)
+
+Disparar `research-reviewer` passando `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir }`. O agent aplica **apenas** o Filtro 2:
+- **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`). Critério conservador (#321).
 
 Retorna `categorized` limpo + `stats`. Logar `stats.removals[]`.
 
