@@ -1,0 +1,35 @@
+# Line ending normalization (#1132 P3.6)
+# Force LF em arquivos versionados que são lidos por scripts Node — evita
+# flakes de test entre Windows local (CRLF) e CI Linux (LF).
+
+# Default: text files normalizados pra LF
+* text=auto eol=lf
+
+# Scripts e tests sempre LF
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+
+# Configs sempre LF (Node parsers tolerantes mas ferramentas variam)
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Markdown sempre LF (renderers cross-platform esperam isso)
+*.md text eol=lf
+
+# Shell scripts SEMPRE LF (CRLF quebra shebang/heredoc)
+*.sh text eol=lf
+
+# Imagens e binários: nunca tocar
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.ico binary
+
+# Lock files: preservar como gerados
+package-lock.json -text
