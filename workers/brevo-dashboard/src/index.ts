@@ -152,9 +152,13 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
+      // #1132/dashboard: strip parênteses do nome da lista pra display
+      // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
+      // `totalSubscribers` da API, mais fiel + atualizado.
+      const cleanListName = (c.listName ?? "?").replace(/\s*\([^)]*\)\s*/g, "").trim();
       return `<tr>
         <td>${c.id}</td>
-        <td><strong>${escHtml(c.listName ?? "?")}</strong>${c.listSize ? `<br><small>${c.listSize} subs</small>` : ""}</td>
+        <td><strong>${escHtml(cleanListName)}</strong>${c.listSize ? `<br><small>${c.listSize} subs</small>` : ""}</td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${s.delivered}<br><small>${pct(s.delivered, s.sent)}</small></td>
@@ -189,7 +193,7 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
   .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; }
+  th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; cursor: help; border-bottom: 1px dotted var(--muted); }
   td.metric { font-weight: 600; color: var(--teal); }
   td small { color: var(--muted); font-weight: normal; }
   .actions { margin-bottom: 16px; }
@@ -211,7 +215,18 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 </div>
 <table>
 <thead>
-<tr><th>ID</th><th>Lista</th><th>Enviado</th><th>Sent</th><th>Delivered</th><th>Opens 👁️</th><th>Clicks 🖱️</th><th>Bounces</th><th>Unsub</th><th>Compl.</th></tr>
+<tr>
+<th title="ID interno da campaign no Brevo. Use pra referenciar suporte ou linkar dashboard interno.">ID</th>
+<th title="Lista de destinatários. Nome conforme cadastro no Brevo + número de subscribers ativos (não-blacklisted).">Lista</th>
+<th title="Data e hora do envio em horário de Brasília (BRT). Linha de baixo mostra quanto tempo decorrido.">Enviado</th>
+<th title="Total de emails que o Brevo tentou entregar (incluindo bounces). Igual ao tamanho da lista alvo.">Sent</th>
+<th title="Emails efetivamente entregues nas caixas dos destinatários (Sent - bounces - deferred). Taxa abaixo: delivered/sent.">Delivered</th>
+<th title="Unique opens — destinatários que abriram pelo menos 1×. Taxa abaixo: uniqueOpens/delivered. Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
+<th title="Unique clicks — destinatários que clicaram em qualquer link pelo menos 1×. Taxa abaixo: uniqueClicks/delivered. Bench: 1.5-3% típico B2C.">Clicks 🖱️</th>
+<th title="Hard bounces (endereço inexistente) + soft bounces (caixa cheia/temporário). Taxa abaixo: bounces/sent. Bench: <2% saudável.">Bounces</th>
+<th title="Unsubscribes — destinatários que clicaram 'Cancelar inscrição'. Caminho amigável (esperado, baixo impacto). Bench: <0.5% por envio.">Unsub</th>
+<th title="Complaints (spam) — destinatários que marcaram o email como spam. Pior que unsub: prejudica reputação do domínio. Bench: 0% ideal, <0.1% aceitável.">Compl.</th>
+</tr>
 </thead>
 <tbody>
 ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px;">Nenhuma campaign encontrada.</td></tr>'}
