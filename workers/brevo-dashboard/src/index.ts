@@ -283,7 +283,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 </head>
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
-<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT. Atualize a página (F5) pra refazer.</p>
+<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -305,7 +305,8 @@ ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px
 </tbody>
 </table>
 </div>
-<p class="footer">Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
+<p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
+Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.</p>
 </body>
 </html>`;
