@@ -43,6 +43,23 @@ interface BrevoCampaignStats {
   complaints: number;
 }
 
+interface BrevoGlobalStats {
+  sent: number;
+  delivered: number;
+  hardBounces: number;
+  softBounces: number;
+  uniqueViews: number;
+  viewed: number;
+  trackableViews: number;
+  uniqueClicks: number;
+  clickers: number;
+  unsubscriptions: number;
+  complaints: number;
+  appleMppOpens: number;
+  opensRate?: number;
+  estimatedViews?: number;
+}
+
 interface BrevoCampaign {
   id: number;
   name: string;
@@ -54,6 +71,7 @@ interface BrevoCampaign {
   recipients: { lists: number[] };
   statistics?: {
     campaignStats?: BrevoCampaignStats[];
+    globalStats?: BrevoGlobalStats;
   };
 }
 
@@ -74,7 +92,13 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** Lista as últimas N campaigns enviadas + enriquece com nome da lista. */
+/**
+ * Lista as últimas N campaigns enviadas + enriquece com nome da lista + globalStats
+ * (#1141 fix: o listing default retorna `campaignStats[0]` por lista, mas
+ * **não popula `globalStats`** — vem todo zerado. Pra ter contagem que bate
+ * com a Brevo Web UI (que inclui Apple MPP opens), tem que fazer GET
+ * individual por campanha com `?statistics=globalStats`.)
+ */
 async function fetchRecentCampaigns(
   env: Env,
   limit = 20,
@@ -92,8 +116,11 @@ async function fetchRecentCampaigns(
   }
 
   const listMap = new Map<number, BrevoList>();
-  await Promise.all(
-    [...listIds].map(async (id) => {
+  const globalStatsMap = new Map<number, BrevoGlobalStats>();
+
+  await Promise.all([
+    // Fetch lista names em paralelo
+    ...[...listIds].map(async (id) => {
       try {
         const list = await brevoFetch<BrevoList>(`/v3/contacts/lists/${id}`, env);
         listMap.set(id, list);
@@ -101,15 +128,33 @@ async function fetchRecentCampaigns(
         // Lista pode ter sido apagada — skip
       }
     }),
-  );
+    // Fetch globalStats per campaign em paralelo (inclui Apple MPP)
+    ...campaigns.map(async (c) => {
+      try {
+        const detail = await brevoFetch<BrevoCampaign>(
+          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+          env,
+        );
+        const gs = detail.statistics?.globalStats;
+        if (gs) globalStatsMap.set(c.id, gs);
+      } catch {
+        // Falha individual não bloqueia o resto — campaignStats fica como fallback
+      }
+    }),
+  ]);
 
   return campaigns.map((c) => {
     const listId = c.recipients?.lists?.[0];
     const list = listId ? listMap.get(listId) : undefined;
+    const globalStats = globalStatsMap.get(c.id);
     return {
       ...c,
       listName: list?.name,
       listSize: list?.totalSubscribers,
+      statistics: {
+        ...c.statistics,
+        globalStats: globalStats ?? c.statistics?.globalStats,
+      },
     };
   });
 }
@@ -142,16 +187,21 @@ function fmtTimeBRT(iso: string | null): string {
   });
 }
 
-function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>): string {
+export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>): string {
   const rows = campaigns
     .map((c) => {
-      const s = c.statistics?.campaignStats?.[0];
+      // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
+      // Fallback pra campaignStats[0] se globalStats fetch falhou.
+      const gs = c.statistics?.globalStats;
+      const cs = c.statistics?.campaignStats?.[0];
+      const s = gs ?? cs;
       if (!s) {
         return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:#999;font-style:italic;">sem stats</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
+      const mppOpens = gs?.appleMppOpens ?? 0;
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
@@ -161,10 +211,10 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
         <td><strong>${escHtml(cleanListName)}</strong>${c.listSize ? `<br><small>${c.listSize} subs</small>` : ""}</td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
-        <td>${s.delivered}<br><small>${pct(s.delivered, s.sent)}</small></td>
-        <td class="metric">${s.uniqueViews}<br><small>${openRate}</small></td>
-        <td class="metric">${s.uniqueClicks}<br><small>${ctr}</small></td>
-        <td>${s.hardBounces + s.softBounces}<br><small>${bounceRate}</small></td>
+        <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
+        <td class="metric">${openRate}${mppOpens > 0 ? ` · ${mppOpens} MPP` : ""}<br><small>${s.uniqueViews}</small></td>
+        <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
+        <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td>${s.unsubscriptions}</td>
         <td>${s.complaints}</td>
       </tr>`;
@@ -221,7 +271,7 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 <th title="Data e hora do envio em horário de Brasília (BRT). Linha de baixo mostra quanto tempo decorrido.">Enviado</th>
 <th title="Total de emails que o Brevo tentou entregar (incluindo bounces). Igual ao tamanho da lista alvo.">Sent</th>
 <th title="Emails efetivamente entregues nas caixas dos destinatários (Sent - bounces - deferred). Taxa abaixo: delivered/sent.">Delivered</th>
-<th title="Unique opens — destinatários que abriram pelo menos 1×. Taxa abaixo: uniqueOpens/delivered. Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
+<th title="Unique opens — destinatários que abriram pelo menos 1×. Inclui Apple MPP (Mail Privacy Protection: Apple pré-carrega imagens no servidor, conta como abertura sem ação do usuário). MPP separado em pequeno ao lado da taxa. Taxa: uniqueOpens/delivered. Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
 <th title="Unique clicks — destinatários que clicaram em qualquer link pelo menos 1×. Taxa abaixo: uniqueClicks/delivered. Bench: 1.5-3% típico B2C.">Clicks 🖱️</th>
 <th title="Hard bounces (endereço inexistente) + soft bounces (caixa cheia/temporário). Taxa abaixo: bounces/sent. Bench: <2% saudável.">Bounces</th>
 <th title="Unsubscribes — destinatários que clicaram 'Cancelar inscrição'. Caminho amigável (esperado, baixo impacto). Bench: <0.5% por envio.">Unsub</th>
@@ -232,7 +282,8 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px;">Nenhuma campaign encontrada.</td></tr>'}
 </tbody>
 </table>
-<p class="footer">Open rate / CTR calculados sobre <em>delivered</em>. Bounce rate sobre <em>sent</em>.</p>
+<p class="footer">Open rate / CTR calculados sobre <em>delivered</em>. Bounce rate sobre <em>sent</em>.<br>
+Opens inclui Apple MPP (pré-carregamento automático). MPP descontado em pequeno ao lado da taxa quando &gt; 0. Bate com a Brevo Web UI.</p>
 </body>
 </html>`;
 }
