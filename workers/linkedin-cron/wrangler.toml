@@ -10,7 +10,13 @@ workers_dev = true
 binding = "LINKEDIN_QUEUE"
 id = "4d6bb6a2bc864ea29dc15c2083806b2e"
 
-# Cron trigger — a cada 5 minutos (teste; pode subir pra */15 ou */30 em prod).
+# Cron trigger — a cada 3 minutos.
+# #1146: era */5 mas Cloudflare cron Workers free tier tem SLA "~5min" e pode
+# lagar até 10-15min em prática (observado 2× em 2026-05-12 dispatch de 260512
+# LinkedIn). */3 reduz worst-case lag de ~10min pra ~6min, dentro do limite de
+# 480/day do plano free (free tier permite ~1k cron invocations/day).
+# Real fix (item-specific scheduling sem cron) = Durable Object alarms — issue
+# de follow-up. Workaround manual existe via POST /fire-now (auth).
 # Ao disparar, lê itens com scheduled_at <= now e fira o webhook Make.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/3 * * * *"]

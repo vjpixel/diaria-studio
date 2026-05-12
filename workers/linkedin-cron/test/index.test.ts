@@ -496,6 +496,25 @@ describe("Constantes exportadas", () => {
   });
 });
 
+// #1146 — Cron interval regression. Era */5 mas cron Workers free tier lagava
+// 10-15min em prática. Mudamos pra */3 (6min worst-case, dentro do limite
+// 1k/day do free tier). Test estático guarda contra rollback acidental.
+describe("Cron config (regression #1146)", () => {
+  it("wrangler.toml usa */3 (cron a cada 3min, não */5)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve, dirname } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = dirname(fileURLToPath(import.meta.url));
+    const wranglerPath = resolve(here, "../wrangler.toml");
+    const toml = readFileSync(wranglerPath, "utf8");
+    assert.match(
+      toml,
+      /crons\s*=\s*\[\s*"\*\/3 \* \* \* \*"\s*\]/,
+      `wrangler.toml deve ter cron "*/3 * * * *" (regression #1146 — antes */5 lagava 10-15min)`,
+    );
+  });
+});
+
 // ── #894 P1-A — DLQ atomic move + #894 P1-B — DLQ TTL ─────────────────────
 
 describe("#894 P1-A DLQ move usa expirationTtl + reusa UUID", () => {
