@@ -18,8 +18,9 @@
  * Secrets:
  *   BREVO_API_KEY          → xkeysib-... da conta Clarice
  *
- * Sem KV — stats são fetch-on-demand com cache de 5min via Cache API.
- * Apropriado pra ~10 campaigns típicos (n=3-10 waves no mês).
+ * Sem KV — stats são fetch-on-demand a cada page load (sem cache, por
+ * preferência do editor 2026-05-12 — refresh manual sempre busca fresh).
+ * Volume típico baixo (~5-10 loads/dia), Brevo free tier suporta.
  */
 
 export interface Env {
@@ -62,7 +63,6 @@ interface BrevoList {
   totalSubscribers: number;
 }
 
-const CACHE_TTL_SECONDS = 300; // 5min
 
 async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
@@ -181,7 +181,7 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia — Brevo Dashboard</title>
+<title>Diar.ia Clarice Dashboard</title>
 <style>
   :root { --teal: #00A0A0; --text: #1A1A1A; --muted: #666; --rule: #E5E5E5; }
   body { font-family: -apple-system, BlinkMacSystemFont, Inter, sans-serif; max-width: 1200px; margin: 30px auto; padding: 0 20px; color: var(--text); }
@@ -204,11 +204,10 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 </style>
 </head>
 <body>
-<h1>📧 Diar.ia — Brevo Dashboard</h1>
-<p class="sub">Últimas ${campaigns.length} campaigns enviadas. Stats live (cache 5min). Atualizado: ${now} BRT.</p>
+<h1>📧 Diar.ia Clarice Dashboard</h1>
+<p class="sub">Últimas ${campaigns.length} campaigns enviadas. Atualizado: ${now} BRT.</p>
 <div class="actions">
-  <button onclick="window.location.href='?refresh=1&t='+Date.now()">↻ Refresh (live)</button>
-  <small style="margin-left:8px;color:#666;">Cache 5min — botão força fetch fresh</small>
+  <button onclick="window.location.reload()">↻ Refresh</button>
 </div>
 <table>
 <thead>
@@ -240,56 +239,36 @@ export default {
       return new Response("ok", { headers: { "Content-Type": "text/plain" } });
     }
 
-    // ?refresh=1 (ou ?fresh=1) força bypass de cache pra fetch fresh.
-    // Botão de Refresh no HTML navega com este param.
-    const wantFresh = url.searchParams.has("refresh") || url.searchParams.has("fresh");
+    // Sem cache (preferência do editor 2026-05-12): cada load fetch fresh
+    // da Brevo. Volume baixo (~5-10 loads/dia), Brevo free tier suporta.
+    // Refresh manual é necessário pra ver updates pós-carga.
+    const noCacheHeaders = "no-store, no-cache, must-revalidate, max-age=0";
 
     if (path === "/api/campaigns") {
-      const cacheKey = new Request(`https://internal/api/campaigns/${url.searchParams.get("limit") ?? "20"}`);
-      const cache = caches.default;
-      if (!wantFresh) {
-        const cached = await cache.match(cacheKey);
-        if (cached) return cached;
-      }
-
       try {
         const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
         const campaigns = await fetchRecentCampaigns(env, limit);
-        const response = new Response(JSON.stringify(campaigns, null, 2), {
+        return new Response(JSON.stringify(campaigns, null, 2), {
           headers: {
             "Content-Type": "application/json",
-            // s-maxage = edge cache 5min; browser cache curto pra refresh manual responsivo
-            "Cache-Control": `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`,
+            "Cache-Control": noCacheHeaders,
           },
         });
-        await cache.put(cacheKey, response.clone());
-        return response;
       } catch (e) {
         return new Response(`Brevo fetch error: ${(e as Error).message}`, { status: 502 });
       }
     }
 
     if (path === "/" || path === "/index.html") {
-      const cacheKey = new Request("https://internal/dashboard-html");
-      const cache = caches.default;
-      if (!wantFresh) {
-        const cached = await cache.match(cacheKey);
-        if (cached) return cached;
-      }
-
       try {
         const campaigns = await fetchRecentCampaigns(env, 20);
         const html = renderDashboardHtml(campaigns);
-        const response = new Response(html, {
+        return new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
-            // browser cache 60s + edge cache 5min — botão de refresh com ?refresh=1
-            // sempre busca fresh
-            "Cache-Control": `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`,
+            "Cache-Control": noCacheHeaders,
           },
         });
-        await cache.put(cacheKey, response.clone());
-        return response;
       } catch (e) {
         return new Response(
           `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
