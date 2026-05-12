@@ -13,6 +13,7 @@ import {
   extractTemplateBlock,
   extractCoverageLine,
   renderCoverage,
+  unescapeMd,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -836,5 +837,90 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.doesNotMatch(html, /<!-- #1093 coverage line -->/);
     // Destaque ainda presente
     assert.match(html, /Modelo X/);
+  });
+});
+
+describe("unescapeMd (#1117)", () => {
+  it("remove backslash escape de ponto", () => {
+    assert.equal(unescapeMd("primeiro trimestre de 2026\\."), "primeiro trimestre de 2026.");
+  });
+
+  it("remove backslash escape de exclamação", () => {
+    assert.equal(unescapeMd("ajuda bastante\\!"), "ajuda bastante!");
+  });
+
+  it("remove backslash escape de interrogação", () => {
+    assert.equal(unescapeMd("É isso\\?"), "É isso?");
+  });
+
+  it("remove backslash escape de vírgula, ponto-e-vírgula, dois-pontos", () => {
+    assert.equal(unescapeMd("um\\, dois\\; três\\:"), "um, dois; três:");
+  });
+
+  it("não toca backslash fora do set de pontuação", () => {
+    // \n é newline real (não escape MD)
+    assert.equal(unescapeMd("linha1\nlinha2"), "linha1\nlinha2");
+    // \\ literal não é touchado (não é escape de pontuação)
+    assert.equal(unescapeMd("path C:\\\\Users\\\\foo"), "path C:\\\\Users\\\\foo");
+  });
+
+  it("não toca backslash em letras (não é escape de pontuação)", () => {
+    assert.equal(unescapeMd("\\a\\b\\c"), "\\a\\b\\c");
+  });
+
+  it("idempotente — segunda aplicação é no-op", () => {
+    const input = "ajuda bastante\\!";
+    const once = unescapeMd(input);
+    const twice = unescapeMd(once);
+    assert.equal(once, twice);
+  });
+
+  it("string vazia → string vazia", () => {
+    assert.equal(unescapeMd(""), "");
+  });
+
+  it("string sem escapes → idêntica", () => {
+    assert.equal(unescapeMd("Texto comum sem escapes."), "Texto comum sem escapes.");
+  });
+
+  it("URLs Markdown não são modificadas (não têm backslash escape)", () => {
+    // URLs em markdown não usam \. — usam % encoding. unescapeMd sobre URL inteira é no-op.
+    const url = "https://example.com/path?a=1&b=2";
+    assert.equal(unescapeMd(url), url);
+  });
+});
+
+describe("renderHTML + renderCoverage com escapes MD (#1117 integration)", () => {
+  it("renderCoverage remove \\. e \\! do texto", () => {
+    const html = renderCoverage("Para esta edição, 2026\\. Continua bastante\\!");
+    assert.match(html, /2026\. Continua bastante!/);
+    assert.doesNotMatch(html, /2026\\\./);
+    assert.doesNotMatch(html, /bastante\\!/);
+  });
+
+  it("renderHTML aplica unescape no body do destaque", () => {
+    const fixt = {
+      title: "X",
+      subtitle: "X",
+      coverImage: "04-d1-2x1.jpg",
+      destaques: [{
+        n: 1 as const,
+        category: "BRASIL",
+        title: "Título sem escape",
+        body: "Parágrafo termina em 2026\\.",
+        why: "Importante porque ajuda bastante\\!",
+        url: "https://example.com",
+        emoji: "🇧🇷",
+        imageFile: "04-d1-2x1.jpg",
+      }],
+      eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+      sections: [],
+    };
+    const html = renderHTML(fixt);
+    // Escapes removidos
+    assert.match(html, /termina em 2026\./);
+    assert.doesNotMatch(html, /2026\\\./);
+    assert.match(html, /ajuda bastante!/);
+    assert.doesNotMatch(html, /bastante\\!/);
   });
 });

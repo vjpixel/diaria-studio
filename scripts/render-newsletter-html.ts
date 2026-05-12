@@ -435,20 +435,51 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Process markdown links [text](url) to <a> tags, escaping surrounding text */
+/**
+ * #1117: remove backslash escapes do markdown pra pontuação ASCII comum.
+ *
+ * Writer agent (Sonnet) ocasionalmente escapa `.` `!` `?` `,` `;` `:` no MD
+ * — válido em CommonMark mas desnecessário em pt-BR. Sem normalização, o
+ * backslash literal vaza pro HTML final e fica visível ao leitor
+ * (ex: "ajuda bastante\!").
+ *
+ * Aplica só a set fechado de ASCII punctuation. Não toca outros backslashes
+ * (URLs Windows-path, etc.) — não há expectativa de ter `\.` legítimo em
+ * texto editorial pt-BR.
+ *
+ * Pure helper — exportado pra teste.
+ */
+export function unescapeMd(s: string): string {
+  return s.replace(/\\([.,!?:;])/g, "$1");
+}
+
+/**
+ * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
+ * + `esc` (HTML entities). Usar em conteúdo editorial; NÃO usar em URLs
+ * (backslash em URL é literal, raro mas legítimo).
+ */
+function escText(s: string): string {
+  return esc(unescapeMd(s));
+}
+
+/** Process markdown links [text](url) to <a> tags, escaping surrounding text.
+ * Input é normalizado via `unescapeMd` antes (#1117) — remove backslash escapes
+ * de pontuação ASCII que o writer pode ter adicionado. URLs em markdown não
+ * usam backslash escape (usam % encoding), então unescape upfront é seguro. */
 function processInlineLinks(s: string): string {
+  const input = unescapeMd(s);
   const parts: string[] = [];
   let lastIdx = 0;
   const re = /\[([^\]]+)\]\(([^)]+)\)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) !== null) {
-    if (m.index > lastIdx) parts.push(esc(s.substring(lastIdx, m.index)));
+  while ((m = re.exec(input)) !== null) {
+    if (m.index > lastIdx) parts.push(esc(input.substring(lastIdx, m.index)));
     parts.push(
       `<a href="${esc(m[2])}" style="color:${TEXT_COLOR};text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
     );
     lastIdx = m.index + m[0].length;
   }
-  if (lastIdx < s.length) parts.push(esc(s.substring(lastIdx)));
+  if (lastIdx < input.length) parts.push(esc(input.substring(lastIdx)));
   return parts.join("");
 }
 
@@ -515,7 +546,7 @@ function renderParagraphs(text: string): string {
     .map(
       (p) =>
         `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${esc(p.trim())}</p>
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${escText(p.trim())}</p>
 </td></tr>`
     )
     .join("\n");
@@ -526,7 +557,7 @@ function renderWhyBlock(text: string): string {
   // border-left teal, parágrafo em itálico cinza. Em vez de h3 grande +
   // parágrafos depois (legacy renderWhyHeading), agrega ambos em um único
   // bloco editorial estilo magazine.
-  const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => esc(p.trim())).join("<br><br>");
+  const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
   <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="border-left:3px solid ${TEAL};padding:4px 0 4px 16px;">
     <p style="font-family:${FONT_BODY};color:#444444;font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
@@ -554,7 +585,7 @@ function renderTopPadding(): string {
 export function renderCoverage(text: string): string {
   return `<!-- #1093 coverage line -->
 <tr><td align="left" style="padding:24px 2px 0 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:15px;line-height:1.5;font-style:italic;margin:0;padding:0;">${esc(text)}</p>
+  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:15px;line-height:1.5;font-style:italic;margin:0;padding:0;">${escText(text)}</p>
 </td></tr>`;
 }
 
@@ -672,8 +703,10 @@ ${renderRule()}
  * markdown completo — só o subset necessário pros 2 blocos.
  */
 function mdInlineToHtml(s: string): string {
+  // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
+  let out = unescapeMd(s);
   // Bold primeiro pra não engolir links dentro
-  let out = s.replace(
+  out = out.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
     (_m, label: string, url: string) =>
       `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
