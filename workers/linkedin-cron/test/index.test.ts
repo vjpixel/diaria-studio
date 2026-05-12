@@ -496,11 +496,14 @@ describe("Constantes exportadas", () => {
   });
 });
 
-// #1146 — Cron interval regression. Era */5 mas cron Workers free tier lagava
-// 10-15min em prática. Mudamos pra */3 (6min worst-case, dentro do limite
-// 1k/day do free tier). Test estático guarda contra rollback acidental.
-describe("Cron config (regression #1146)", () => {
-  it("wrangler.toml usa */3 (cron a cada 3min, não */5)", async () => {
+// Cron config: */5. Histórico (#1146 → PR #1167 → revert):
+// - #1146 observou lag de 10-15min em 2026-05-12 (Cloudflare cron SLA "~5min")
+// - PR #1167 mudou pra */3 como mitigação parcial
+// - Decisão 2026-05-12 (revert): voltar pra */5 pra preservar margem KV list
+//   (free tier 1k/day; */3 = 480/day = ~50%, */5 = 288/day = ~30%).
+// Real fix = #1168 (Durable Object alarms — item-specific, zero polling).
+describe("Cron config", () => {
+  it("wrangler.toml usa */5 (cron a cada 5min)", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve, dirname } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
@@ -509,8 +512,8 @@ describe("Cron config (regression #1146)", () => {
     const toml = readFileSync(wranglerPath, "utf8");
     assert.match(
       toml,
-      /crons\s*=\s*\[\s*"\*\/3 \* \* \* \*"\s*\]/,
-      `wrangler.toml deve ter cron "*/3 * * * *" (regression #1146 — antes */5 lagava 10-15min)`,
+      /crons\s*=\s*\[\s*"\*\/5 \* \* \* \*"\s*\]/,
+      `wrangler.toml deve ter cron "*/5 * * * *"`,
     );
   });
 });
