@@ -334,7 +334,7 @@ export function reconcileLinkedin(
     return {
       ...base,
       verified: false,
-      reason: `fallback_used_immediate_publish: Worker falhou, Make fire-now (post foi/sera publicado IMEDIATO, ignorando scheduled_at=${entry.scheduled_at ?? "?"})`,
+      reason: `fallback_used_immediate_publish: Worker falhou, Make fire-now (post foi/sera publicado IMEDIATO, ignorando scheduled_at=${entry.scheduled_at ?? "?"}). Acao sugerida: post ja saiu — pra desfazer, deletar do LinkedIn manualmente e republicar com novo agendamento`,
       external_state: { fallback_used: true, subtype },
     };
   }

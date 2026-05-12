@@ -98,6 +98,17 @@ describe("#974 reconcileFb (via /scheduled_posts)", () => {
     assert.equal(r.verified, false);
     assert.match(r.reason ?? "", /scheduled_at_in_past/);
   });
+
+  it("#1180 boundary FB: scheduled_publish_time == now exato → verified=true (strict <)", () => {
+    // Sentinela: o predicate é `scheduledMs < now.getTime()` (strict). Empate
+    // exato fica do lado seguro (verified). Se alguém trocar pra `<=` por
+    // engano, esse teste quebra antes de chegar em prod.
+    const now = new Date("2026-05-12T10:00:00Z");
+    const nowSec = Math.floor(now.getTime() / 1000);
+    const scheduled = [{ id: "12345", scheduled_publish_time: nowSec, message: "x" }];
+    const r = reconcileFb(fbEntry(), scheduled, undefined, now);
+    assert.equal(r.verified, true);
+  });
 });
 
 describe("#974 findScheduledMatch", () => {
@@ -184,6 +195,15 @@ describe("#917 reconcileLinkedin", () => {
     assert.equal(r.verified, false);
     assert.match(r.reason ?? "", /scheduled_at_in_past/);
     assert.match(r.reason ?? "", /narrow match/);
+  });
+
+  it("#1180 boundary LinkedIn: scheduled_at == now exato → verified=true (strict <)", () => {
+    // Espelha o teste de boundary FB — predicate `ms < now.getTime()` empate
+    // exato fica do lado seguro. Defesa contra refactor que troque pra `<=`.
+    const now = new Date("2026-05-12T10:00:00Z");
+    const queue = [mkQueueItem("d1", now.toISOString())];
+    const r = reconcileLinkedin(liEntry({ scheduled_at: now.toISOString() }), queue, now);
+    assert.equal(r.verified, true);
   });
 
   it("multiplos matches por destaque: escolhe o mais proximo do scheduled_at", () => {
