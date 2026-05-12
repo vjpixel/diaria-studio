@@ -216,6 +216,22 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       // bounces), mas mantém consistência com a doc operacional.
       const unsubRate = pct(s.unsubscriptions, s.sent);
       const spamRate = pct(s.complaints, s.sent);
+
+      // Numeric versions pra comparar contra thresholds dos circuit breakers
+      // (CLAUDE.md: doc operacional 2026-05-12). Alerta visual quando crossado.
+      const openRateNum = s.delivered > 0 ? (s.uniqueViews / s.delivered) * 100 : 0;
+      const bounceRateNum = s.sent > 0 ? ((s.hardBounces + s.softBounces) / s.sent) * 100 : 0;
+      const unsubRateNum = s.sent > 0 ? (s.unsubscriptions / s.sent) * 100 : 0;
+      const spamRateNum = s.sent > 0 ? (s.complaints / s.sent) * 100 : 0;
+      // Thresholds dos circuit breakers
+      const openAlert = openRateNum > 0 && openRateNum < 15;  // taxa baixa demais
+      const bounceAlert = bounceRateNum >= 3;
+      const unsubAlert = unsubRateNum >= 3;
+      const spamAlert = spamRateNum >= 0.1;
+      const opensClasses = ["metric", openAlert ? "alert" : ""].filter(Boolean).join(" ");
+      const bounceClasses = bounceAlert ? "alert" : "";
+      const unsubClasses = unsubAlert ? "alert" : "";
+      const spamClasses = spamAlert ? "alert" : "";
       const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
       const opensNoMpp = s.uniqueViews - mppOpens;
       const openRateNoMpp = pct(opensNoMpp, s.delivered);
@@ -240,11 +256,11 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
-        <td class="metric">${opensTopLine}<br><small>${opensBottomLine}</small></td>
+        <td class="${opensClasses}">${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
-        <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
-        <td>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
-        <td>${spamRate}<br><small>${s.complaints}</small></td>
+        <td${bounceClasses ? ` class="${bounceClasses}"` : ""}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
+        <td${unsubClasses ? ` class="${unsubClasses}"` : ""}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
+        <td${spamClasses ? ` class="${spamClasses}"` : ""}>${spamRate}<br><small>${s.complaints}</small></td>
       </tr>`;
     })
     .join("\n");
@@ -266,7 +282,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Diar.ia Clarice Dashboard</title>
 <style>
-  :root { --teal: #00A0A0; --text: #1A1A1A; --muted: #666; --rule: #E5E5E5; }
+  :root { --teal: #00A0A0; --text: #1A1A1A; --muted: #666; --rule: #E5E5E5; --alert: #C00000; }
   body { font-family: -apple-system, BlinkMacSystemFont, Inter, sans-serif; max-width: 1200px; margin: 30px auto; padding: 0 20px; color: var(--text); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; }
   .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px 0; }
@@ -275,6 +291,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; cursor: help; border-bottom: 1px dotted var(--muted); }
   td.metric { font-weight: 600; color: var(--teal); }
+  td.alert { font-weight: 600; color: var(--alert); }
+  td.alert small, td.alert .rate-inline { color: var(--alert); }
   td .rate-inline { font-weight: normal; color: var(--text); }
   td small { color: var(--muted); font-weight: normal; }
   .footer { color: var(--muted); font-size: 0.75rem; margin-top: 24px; text-align: center; }
@@ -312,7 +330,8 @@ ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px
 </div>
 <p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
-Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.</p>
+Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.<br>
+Cells em <span style="color:var(--alert);font-weight:600;">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%).</p>
 </body>
 </html>`;
 }
