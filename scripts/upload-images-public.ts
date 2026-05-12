@@ -26,6 +26,9 @@
  * Credenciais: data/.credentials.json (via google-auth.ts).
  */
 
+import { loadProjectEnv } from "./lib/env-loader.ts";
+loadProjectEnv(); // #1157 — carrega .env.local + .env antes de process.env access (CLOUDFLARE_*)
+
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
