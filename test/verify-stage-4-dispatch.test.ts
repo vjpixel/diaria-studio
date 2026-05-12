@@ -89,6 +89,15 @@ describe("#974 reconcileFb (via /scheduled_posts)", () => {
     assert.equal(r.verified, false);
     assert.equal(r.reason, "no_fb_post_id");
   });
+
+  it("#1180 verified=FALSE quando scheduled_publish_time no passado", () => {
+    // Brevo/FB no próximo tick vai publicar — sai antes da hora planejada.
+    const past = Math.floor(new Date("2026-05-01T09:00:00Z").getTime() / 1000);
+    const scheduled = [{ id: "12345", scheduled_publish_time: past, message: "x" }];
+    const r = reconcileFb(fbEntry(), scheduled, undefined, NOW);
+    assert.equal(r.verified, false);
+    assert.match(r.reason ?? "", /scheduled_at_in_past/);
+  });
 });
 
 describe("#974 findScheduledMatch", () => {
@@ -129,27 +138,52 @@ describe("#917 reconcileLinkedin", () => {
     const key = "queue:2026-05-08T09:00:00.000Z:uuid-d1";
     const queue = [mkQueueItem("d1", "2026-05-08T09:00:00Z", key)];
     const entry = liEntry({ worker_queue_key: key });
-    const r = reconcileLinkedin(entry, queue);
+    const r = reconcileLinkedin(entry, queue, NOW);
     assert.equal(r.verified, true);
   });
 
   it("verified=true quando match por destaque (fallback)", () => {
     const queue = [mkQueueItem("d1", "2026-05-08T09:00:00Z")];
-    const r = reconcileLinkedin(liEntry(), queue);
+    const r = reconcileLinkedin(liEntry(), queue, NOW);
     assert.equal(r.verified, true);
   });
 
   it("verified=false quando destaque ausente no KV (silent fail)", () => {
     const queue = [mkQueueItem("d2", "2026-05-08T09:00:00Z")];
-    const r = reconcileLinkedin(liEntry(), queue);
+    const r = reconcileLinkedin(liEntry(), queue, NOW);
     assert.equal(r.verified, false);
     assert.match(r.reason ?? "", /nenhum item no Worker KV.*d1/);
   });
 
-  it("verified=true + flag quando fallback_used (Worker falhou, Make fire-now)", () => {
-    const r = reconcileLinkedin(liEntry({ fallback_used: true, status: "draft" }), []);
-    assert.equal(r.verified, true);
-    assert.match(r.reason ?? "", /fallback_used/);
+  it("#1180 verified=FALSE quando fallback_used (Make fire-now ignora scheduled_at)", () => {
+    // Antes (#917): tratava fallback_used como verified=true (post foi/sera
+    // enviado, só não enfileiravel). Mas Make IGNORA scheduled_at e publica
+    // IMEDIATO — pra wave que deveria sair no futuro, isso é falha grave.
+    const r = reconcileLinkedin(liEntry({ fallback_used: true, status: "draft" }), [], NOW);
+    assert.equal(r.verified, false);
+    assert.match(r.reason ?? "", /fallback_used_immediate_publish/);
+    assert.match(r.reason ?? "", /IMEDIATO/);
+  });
+
+  it("#1180 verified=FALSE quando item na queue mas scheduled_at no passado (matchByKey path)", () => {
+    // Worker cron dispara no próximo tick (~1min) → publica imediato.
+    const key = "queue:2026-05-01T09:00:00Z:uuid-abc";
+    const queue = [mkQueueItem("d1", "2026-05-01T09:00:00Z", key)]; // passado
+    const entry = liEntry({ worker_queue_key: key });
+    const now = new Date("2026-05-12T10:00:00Z"); // muito depois do scheduled
+    const r = reconcileLinkedin(entry, queue, now);
+    assert.equal(r.verified, false);
+    assert.match(r.reason ?? "", /scheduled_at_in_past/);
+  });
+
+  it("#1180 verified=FALSE quando past-schedule via narrow match (sem worker_queue_key)", () => {
+    const queue = [mkQueueItem("d1", "2026-05-01T09:00:00Z")]; // passado, sem key
+    const entry = liEntry(); // sem worker_queue_key → cai no narrow path
+    const now = new Date("2026-05-12T10:00:00Z");
+    const r = reconcileLinkedin(entry, queue, now);
+    assert.equal(r.verified, false);
+    assert.match(r.reason ?? "", /scheduled_at_in_past/);
+    assert.match(r.reason ?? "", /narrow match/);
   });
 
   it("multiplos matches por destaque: escolhe o mais proximo do scheduled_at", () => {
@@ -157,7 +191,7 @@ describe("#917 reconcileLinkedin", () => {
       mkQueueItem("d1", "2026-05-08T09:00:00Z"), // exact
       mkQueueItem("d1", "2026-05-15T09:00:00Z"), // longe
     ];
-    const r = reconcileLinkedin(liEntry(), queue);
+    const r = reconcileLinkedin(liEntry(), queue, NOW);
     assert.equal(r.verified, true);
     const ext = r.external_state as { scheduled_at: string };
     assert.equal(ext.scheduled_at, "2026-05-08T09:00:00Z");
@@ -188,7 +222,7 @@ describe("#917 reconcileLinkedin", () => {
       mkRichItem("d1", "2026-05-08T09:03:00Z", { action: "comment", webhook_target: "diaria" }),
       mkRichItem("d1", "2026-05-08T09:08:00Z", { action: "comment", webhook_target: "pixel" }),
     ];
-    const r = reconcileLinkedin(liEntry({ subtype: "main" }), queue);
+    const r = reconcileLinkedin(liEntry({ subtype: "main" }), queue, NOW);
     assert.equal(r.verified, true);
     const ext = r.external_state as { scheduled_at: string; action: string; subtype: string };
     assert.equal(ext.action, "post");
@@ -204,6 +238,7 @@ describe("#917 reconcileLinkedin", () => {
     const r = reconcileLinkedin(
       liEntry({ subtype: "comment_diaria", scheduled_at: "2026-05-08T09:03:00Z" }),
       queue,
+      NOW,
     );
     assert.equal(r.verified, true);
     const ext = r.external_state as { scheduled_at: string; action: string; webhook_target: string };
@@ -221,6 +256,7 @@ describe("#917 reconcileLinkedin", () => {
     const r = reconcileLinkedin(
       liEntry({ subtype: "comment_pixel", scheduled_at: "2026-05-08T09:08:00Z" }),
       queue,
+      NOW,
     );
     assert.equal(r.verified, true);
     const ext = r.external_state as { webhook_target: string; scheduled_at: string };
@@ -233,14 +269,14 @@ describe("#917 reconcileLinkedin", () => {
       mkRichItem("d1", "2026-05-08T09:00:00Z", { action: "post", webhook_target: "diaria" }),
       // sem nenhum comment_pixel
     ];
-    const r = reconcileLinkedin(liEntry({ subtype: "comment_pixel" }), queue);
+    const r = reconcileLinkedin(liEntry({ subtype: "comment_pixel" }), queue, NOW);
     assert.equal(r.verified, false);
     assert.match(r.reason ?? "", /d1.*comment_pixel/);
   });
 
   it("#595 backward-compat: entry sem subtype + queue sem fields → match como main/post/diaria", () => {
     const queue = [mkQueueItem("d1", "2026-05-08T09:00:00Z")];
-    const r = reconcileLinkedin(liEntry(), queue); // entry sem subtype
+    const r = reconcileLinkedin(liEntry(), queue, NOW); // entry sem subtype
     assert.equal(r.verified, true);
     assert.equal(r.subtype, "main");
   });
