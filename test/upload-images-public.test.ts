@@ -90,6 +90,21 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!keys.includes("eia_real"));
   });
 
+  it("newsletter mode NÃO inclui d2/d3 (#1121 — não usados pelo renderer)", () => {
+    // Renderer (render-newsletter-html.ts) só substitui placeholders pra
+    // cover D1 + È IA? A/B. D2/D3 não têm imagem inline na newsletter
+    // (memory feedback_newsletter_only_d1_image.md).
+    const specs = imageSpecsFor("newsletter");
+    const keys = specs.map((s) => s.key);
+    assert.ok(!keys.includes("d2"), "d2 não deve estar em newsletter mode");
+    assert.ok(!keys.includes("d3"), "d3 não deve estar em newsletter mode");
+    assert.deepEqual(
+      keys.sort(),
+      ["cover", "eia_a", "eia_b"].sort(),
+      "newsletter = cover + eia_a + eia_b",
+    );
+  });
+
   it("newsletter mode com editionDir + 01-eia-A.jpg + 01-eia-B.jpg → eia_a/eia_b", () => {
     const dir = makeDir();
     try {
@@ -165,12 +180,16 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       const keys = specs.map((s) => s.key);
       // social: d1, d2, d3
       assert.ok(keys.includes("d1"));
-      // newsletter: cover, d2, d3 (dedup com social), eia_a, eia_b
+      assert.ok(keys.includes("d2"));
+      assert.ok(keys.includes("d3"));
+      // newsletter: cover, eia_a, eia_b (#1121: d2/d3 não vão mais aqui)
       assert.ok(keys.includes("cover"));
       assert.ok(keys.includes("eia_a"));
       assert.ok(keys.includes("eia_b"));
-      // dedup: d2 e d3 só aparecem uma vez
+      // sem dups (d2/d3 só vêm de social agora — sem chance de dup)
       assert.equal(keys.filter((k) => k === "d2").length, 1);
+      assert.equal(keys.filter((k) => k === "d3").length, 1);
+      assert.equal(keys.length, new Set(keys).size, "sem keys duplicadas");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
