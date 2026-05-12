@@ -447,7 +447,7 @@ async function handleSetName(url: URL, env: Env): Promise<Response> {
 
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
 
-async function handleImage(path: string, env: Env): Promise<Response> {
+export async function handleImage(path: string, env: Env): Promise<Response> {
   const key = decodeURIComponent(path.slice("/img/".length));
   if (!key) return new Response("not found", { status: 404 });
 
@@ -459,6 +459,10 @@ async function handleImage(path: string, env: Env): Promise<Response> {
     headers: {
       "Content-Type": "image/jpeg",
       "Cache-Control": "public, max-age=31536000, immutable",
+      // CORS: imagens são públicas (servem pra email + web crawlers); permitir
+      // fetch cross-origin pra qualquer página (incluindo app.beehiiv.com,
+      // que precisa ler bytes pra construir paste payload — #1119 follow-up).
+      "Access-Control-Allow-Origin": "*",
     },
   });
 }
