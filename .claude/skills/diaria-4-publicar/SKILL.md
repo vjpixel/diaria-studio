@@ -28,6 +28,19 @@ Crítico: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar 
 - Bloco `publishing` em `platform.config.json` configurado
 - `FACEBOOK_PAGE_ACCESS_TOKEN` no env pra Graph API
 
+## Passo -2 — Pre-flight CORS check (#1132 P2.4)
+
+Antes de qualquer Chrome MCP work, validar que o Worker `diar-ia-poll` responde com `Access-Control-Allow-Origin: *` no endpoint `/img/{key}`. Sem isso, paste flow falha com "Failed to fetch" opaco em runtime e gasta ~30min de debug (caso 260512).
+
+```bash
+npx tsx scripts/check-worker-cors.ts --worker-url https://diar-ia-poll.diaria.workers.dev
+```
+
+Output JSON `{ ok: true/false, header?: string, status?: number, reason?: string }`.
+
+- Se `ok: true` → prosseguir normalmente.
+- Se `ok: false` → halt + sugerir: "Worker CORS faltando. Faça `cd workers/poll && npx wrangler deploy` e re-rode."
+
 ## Passo -1 — Task tracking setup (#904)
 
 **Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*` a `Stage 3*`). Em seguida, criar tasks pra esta etapa: `Stage 4a — confirm channels`, `Stage 4b — dispatch publishers (newsletter + social paralelo)`, `Stage 4c — review-test-email loop`, `Stage 4d — gate humano final`, `Stage 4e — auto-reporter`. Marcar `completed` quando cada passo retornar. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
