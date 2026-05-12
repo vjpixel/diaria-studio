@@ -283,6 +283,76 @@ function runStage3Smoke(): { passed: number; failed: string[] } {
 // Stage 4 smoke — inferIsPublished (pure logic, verify-facebook-posts.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * Wave 2 stability lib smoke (#1132 P3.7): verifica que os schemas Zod
+ * novos parseiam fixtures conhecidas + helpers libs estão importáveis
+ * sem erros de typeof. Catch regressões em schemas/lib que escapariam
+ * dos smoke stages 1-4.
+ *
+ * Async pq ESM dynamic import retorna promise. Caller deve await.
+ */
+async function runWave2LibSmoke(): Promise<{ passed: number; failed: string[] }> {
+  const passed: string[] = [];
+  const failed: string[] = [];
+
+  // Schema parsing — usar inputs sintéticos mínimos válidos
+  try {
+    const mod = await import("./lib/schemas/published-newsletter.ts");
+    mod.parsePublishedNewsletter({
+      draft_url: "https://app.beehiiv.com/posts/x/edit",
+      title: "Smoke",
+      status: "draft",
+    });
+    passed.push("published-newsletter schema");
+  } catch (e) {
+    failed.push(`published-newsletter schema: ${(e as Error).message}`);
+  }
+
+  try {
+    const mod = await import("./lib/schemas/published-social.ts");
+    mod.parsePublishedSocial({ posts: [] });
+    passed.push("published-social schema");
+  } catch (e) {
+    failed.push(`published-social schema: ${(e as Error).message}`);
+  }
+
+  // Helpers puros — só verifica que importam + executam basics
+  try {
+    const mod = await import("./lib/line-endings.ts");
+    if (mod.normalizeLF("a\r\nb") !== "a\nb") {
+      failed.push("normalizeLF: comportamento incorreto");
+    } else {
+      passed.push("line-endings normalizeLF");
+    }
+  } catch (e) {
+    failed.push(`line-endings: ${(e as Error).message}`);
+  }
+
+  try {
+    const mod = await import("./lib/atomic-write.ts");
+    if (typeof mod.writeFileAtomic !== "function") {
+      failed.push("atomic-write: writeFileAtomic não é função");
+    } else {
+      passed.push("atomic-write helper");
+    }
+  } catch (e) {
+    failed.push(`atomic-write: ${(e as Error).message}`);
+  }
+
+  try {
+    const mod = await import("./lib/mcp-guard.ts");
+    if (typeof mod.withTimeout !== "function") {
+      failed.push("mcp-guard: withTimeout não é função");
+    } else {
+      passed.push("mcp-guard helper");
+    }
+  } catch (e) {
+    failed.push(`mcp-guard: ${(e as Error).message}`);
+  }
+
+  return { passed: passed.length, failed };
+}
+
 function runStage4Smoke(): { passed: number; failed: string[] } {
   const failed: string[] = [];
   let passed = 0;
@@ -326,7 +396,7 @@ function runStage4Smoke(): { passed: number; failed: string[] } {
   return { passed, failed };
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const updateGolden = args.includes("--update-golden");
   // #1013: --summary-out <path> dumpa JSON estruturado de cada stage pra
@@ -386,6 +456,15 @@ function main() {
   }
   console.log(`✓ Stage 4: ${s4.passed} checks passaram (Facebook inferIsPublished)`);
 
+  // #1132 P3.7 — Wave 2 lib smoke (schemas + helpers)
+  const w2 = await runWave2LibSmoke();
+  if (w2.failed.length > 0) {
+    console.error("✗ Wave 2 lib smoke failures:");
+    for (const f of w2.failed) console.error(`  ${f}`);
+    process.exit(1);
+  }
+  console.log(`✓ Wave 2 lib: ${w2.passed} checks passaram (schemas + helpers)`);
+
   // #1013: dump structured summary se --summary-out passado.
   // Permite weekly-e2e capturar como artefato pra observabilidade.
   if (summaryOutPath) {
@@ -412,5 +491,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((e) => {
+    console.error(`✗ smoke fatal: ${(e as Error).message}`);
+    process.exit(1);
+  });
 }
