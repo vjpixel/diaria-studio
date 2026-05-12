@@ -56,10 +56,10 @@ Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. *
 - Se `_internal/01-categorized.json` existe mas não `_internal/01-approved.json` → Etapa 1 foi interrompida no gate humano; reapresentar o gate.
 - Caso contrário → começar do Stage 0 normalmente.
 
-**É IA? (paralelo)** — verificar em qualquer ponto de resume:
-- Se `01-eia.md` já existe → não disparar eia-composer.
-- Se `01-eia.md` **não** existe e o resume está no Stage 1 ou acima → disparar `eia-composer` em background.
-- **Pré-requisito da Etapa 4:** `01-eia.md` + imagens devem existir antes de publicar. Se o eia-composer ainda não completou quando a Etapa 4 for atingida, **bloquear e aguardar** o Agent.
+**É IA? (paralelo, #1111)** — verificar em qualquer ponto de resume:
+- Se `01-eia.md` já existe → não disparar `eia-compose`.
+- Se `01-eia.md` **não** existe e o resume está no Stage 1 ou acima → disparar `Bash(npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/, run_in_background=true)` (era Agent dispatch antes de #1111).
+- **Pré-requisito da Etapa 4:** `01-eia.md` + imagens devem existir antes de publicar. Se o background bash ainda não completou quando a Etapa 4 for atingida, **bloquear e aguardar** via file-presence check.
 
 Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar.
 

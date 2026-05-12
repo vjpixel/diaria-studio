@@ -110,17 +110,18 @@ describe("orchestrator-prompt (#634)", () => {
     );
     // root orchestrator.md ≤ 200 linhas
     assert.ok(lines["orchestrator.md"] <= 200, `orchestrator.md tem ${lines["orchestrator.md"]} linhas (target ≤200)`);
-    // sub-arquivos ≤ 555 linhas (target 250, tolerância para arquivos de pesquisa
+    // sub-arquivos ≤ 565 linhas (target 250, tolerância para arquivos de pesquisa
     // que acumulam invariantes operacionais — bumped from 450 quando
     // orchestrator-stage-1-research.md cresceu por #791/#716/#789/#790/#780;
     // 500→510 quando #903 adicionou step 1v-early; 510→525 quando #1007 Fase 1
     // adicionou pre-gate invariant checks em todos os stages; 525→540 quando
     // #1091 adicionou warning anti-skip de 1f + passo 1w-quint; 540→555
-    // quando #1095 + #1097 documentaram newsletter extraction + coverage line sync).
+    // quando #1095 + #1097 documentaram newsletter extraction + coverage line sync;
+    // 555→565 quando #1112 adicionou step 1p1 research-review-dates).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 555,
-        `${file} tem ${lines[file]} linhas (target ≤555)`,
+        lines[file] <= 565,
+        `${file} tem ${lines[file]} linhas (target ≤565)`,
       );
     }
   });

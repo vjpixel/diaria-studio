@@ -27,13 +27,15 @@ Exit code handling:
 **MCP disconnect logging (#759):** Quando detectar `<system-reminder>` de MCP disconnect (Clarice, Beehiiv, Gmail, Chrome, etc.), logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'`. Ao reconectar: mesmo comando com `--level info --message "mcp_reconnect: {server}"`. Persiste em `data/run-log.jsonl` para `collect-edition-signals.ts` (#759). **Sempre acompanhar** com halt banner pra alertar o editor: `npx tsx scripts/render-halt-banner.ts --stage "3 — Imagens" --reason "{erro específico — mcp__{server} desconectado, ou falha na API de imagem (Gemini/ComfyUI)}" --action "reconecte e responda 'retry', ou 'abort' para abortar"` (#737).
 **Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
 
-### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371)
+### 3a. É IA? (coleta do background dispatch — gate absorvido pela Etapa 1, #371, #1111)
 
-O `eia-composer` foi disparado em background durante a Etapa 1. O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
+O `scripts/eia-compose.ts` foi disparado em background bash durante a Etapa 1 (#1111). O bloco É IA? já foi embutido em `01-categorized.md` para revisão integrada no gate da Etapa 1. Aqui apenas garantimos que o resultado está disponível antes de gerar as imagens de destaque.
 
-- **Se o Agent do eia-composer ainda não completou:** aguardar até 10 minutos a partir de `eia_dispatch_ts`. Se expirar sem conclusão, reportar: `"⚠️ eia-composer não completou em 10min. Opções: (r) retry — re-disparar eia-composer agora; (s) skip — pular É IA? e continuar com imagens de destaque (será necessário adicionar É IA? manualmente antes do Stage 4)."` Em retry: re-disparar com os mesmos parâmetros e aguardar mais 10min. Em skip: logar warn (`mcp_disconnect` não se aplica — usar `eia_composer_timeout`), definir `eia_available = false`, continuar para 3b.
-- **Se o Agent já completou (ou `01-eia.md` já existe por resume):** continuar.
-- Se o eia-composer falhou, logar erro e reportar ao usuário. Oferecer retry (re-disparar `eia-composer` com os mesmos parâmetros). Após retry bem-sucedido, re-renderizar `01-categorized.md` para incluir o bloco atualizado (se o gate da Etapa 1 ainda não foi aprovado) ou informar o editor que o arquivo foi atualizado localmente.
+Detecção de conclusão por **file-presence check** (mais robusto que pollar bash status):
+
+- **Se `data/editions/{AAMMDD}/01-eia.md` existe:** script terminou. Continuar.
+- **Se ainda não existe:** aguardar até 10 minutos a partir de `eia_dispatch_ts`, pollando a cada ~10s via `existsSync`. Se expirar sem conclusão, reportar: `"⚠️ eia-compose não completou em 10min. Opções: (r) retry — re-disparar Bash; (s) skip — pular È IA? e continuar (será necessário adicionar manualmente antes do Stage 4)."` Em retry: re-disparar `npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/ --force` e aguardar mais 10min. Em skip: logar warn `eia_compose_timeout`, definir `eia_available = false`, continuar para 3b.
+- Se eia-compose falhou (exit code != 0), logar erro + reportar. Oferecer retry com `--force`. Após retry bem-sucedido, re-renderizar `01-categorized.md` se ainda não tiver passado pelo gate da Etapa 1.
 - **Sync push das imagens do É IA? para o Drive:**
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg
