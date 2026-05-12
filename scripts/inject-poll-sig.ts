@@ -15,7 +15,12 @@
  * Uso:
  *   npx tsx scripts/inject-poll-sig.ts
  *   npx tsx scripts/inject-poll-sig.ts --dry-run
- *   npx tsx scripts/inject-poll-sig.ts --force      # repatch all (rotação secret)
+ *   npx tsx scripts/inject-poll-sig.ts --force          # repatch all (rotação secret)
+ *   npx tsx scripts/inject-poll-sig.ts --since-hours 96 # só subscribers das últimas 96h
+ *
+ * `--since-hours N` filtra via Beehiiv API `subscribed_after` — evita listar 481
+ * subscribers todo dia. Usado pelo orchestrator Stage 0 pra patchear novos
+ * subscribers sem custo de full scan.
  *
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
@@ -40,6 +45,10 @@ interface BeehiivSubscription {
   id: string;
   email: string;
   status: string;
+  /** Unix timestamp (segundos) — REST API retorna esse campo */
+  created?: number;
+  /** ISO 8601 — alguns endpoints/wrappers usam esse */
+  subscribed_on?: string;
   custom_fields?: Array<{ name: string; value: string }>;
 }
 
@@ -145,6 +154,17 @@ async function* iterateActiveSubscriptions(
   }
 }
 
+/** Resolve subscriber created timestamp (Unix segundos) — REST API usa `created`,
+ *  MCP wrapper / outros usam `subscribed_on` (ISO). */
+function subscriberCreatedMs(sub: BeehiivSubscription): number | undefined {
+  if (typeof sub.created === "number") return sub.created * 1000;
+  if (sub.subscribed_on) {
+    const ms = Date.parse(sub.subscribed_on);
+    return Number.isFinite(ms) ? ms : undefined;
+  }
+  return undefined;
+}
+
 async function patchSubscriberSig(
   subId: string,
   sig: string,
@@ -190,6 +210,9 @@ interface RunResult {
   skipped_no_email: number;
   failed: number;
   dry_run: boolean;
+  since_iso?: string;
+  in_window?: number;
+  skipped_outside_window?: number;
 }
 
 export async function run(args: {
@@ -197,17 +220,25 @@ export async function run(args: {
   force: boolean;
   apiOpts: ApiOpts;
   secret: string;
+  sinceHours?: number;
 }): Promise<RunResult> {
-  const { dryRun, force, apiOpts, secret } = args;
+  const { dryRun, force, apiOpts, secret, sinceHours } = args;
 
   if (!dryRun) {
     await ensureCustomField(apiOpts);
   }
 
+  const cutoffMs = sinceHours && sinceHours > 0
+    ? Date.now() - sinceHours * 3600 * 1000
+    : undefined;
+  const sinceIso = cutoffMs ? new Date(cutoffMs).toISOString() : undefined;
+
   let total = 0;
+  let inWindow = 0;
   let patched = 0;
   let skippedAlready = 0;
   let skippedNoEmail = 0;
+  let skippedOutsideWindow = 0;
   let failedTotal = 0;
   let pageNum = 0;
 
@@ -221,6 +252,15 @@ export async function run(args: {
         skippedNoEmail++;
         continue;
       }
+      // Filter client-side por created/subscribed_on (REST API ignora subscribed_after).
+      if (cutoffMs !== undefined) {
+        const createdMs = subscriberCreatedMs(sub);
+        if (createdMs === undefined || createdMs < cutoffMs) {
+          skippedOutsideWindow++;
+          continue;
+        }
+      }
+      inWindow++;
       const expectedSig = generatePollSig(sub.email, secret);
       if (!force) {
         const current = sub.custom_fields?.find((f) => f.name === FIELD_SIG)?.value;
@@ -261,13 +301,24 @@ export async function run(args: {
     skipped_no_email: skippedNoEmail,
     failed: failedTotal,
     dry_run: dryRun,
+    since_iso: sinceIso,
+    in_window: cutoffMs !== undefined ? inWindow : undefined,
+    skipped_outside_window: cutoffMs !== undefined ? skippedOutsideWindow : undefined,
   };
 }
 
 async function main(): Promise<void> {
-  const { flags } = parseArgs(process.argv.slice(2));
+  const { flags, values } = parseArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
+  const sinceHoursRaw = values["since-hours"];
+  const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
+  if (sinceHoursRaw !== undefined && (!Number.isFinite(sinceHours) || sinceHours! <= 0)) {
+    console.error(
+      `[inject-poll-sig] --since-hours inválido: ${sinceHoursRaw} (precisa ser número > 0)`,
+    );
+    process.exit(1);
+  }
 
   const apiKey = process.env.BEEHIIV_API_KEY;
   const publicationId = process.env.BEEHIIV_PUBLICATION_ID;
@@ -288,6 +339,7 @@ async function main(): Promise<void> {
     force,
     apiOpts: { apiKey: apiKey!, publicationId: publicationId! },
     secret: secret!,
+    sinceHours,
   });
   console.log(JSON.stringify(result, null, 2));
 }

@@ -147,6 +147,24 @@ npx tsx scripts/add-valid-edition.ts --edition {AAMMDD}
 
 Falha (exit != 0) → logar warn mas não bloquear (Pixel pode adicionar manual via `wrangler kv key put`). O voto vai falhar com 410 "Essa edição não aceita mais votos." se chegar antes do add — mitigar com retry no Stage 4 pré-paste se warn aqui.
 
+### 0d.ter Patch `poll_sig` pra novos subscribers (#1175 — janela 96h)
+
+`poll_sig` (HMAC permanente do email) é o custom field Beehiiv que o HTML da newsletter usa pra construir URLs do É IA? assinadas. Subscriber sem `poll_sig` populado recebe email com `&sig=` vazio → Worker rejeita com 403 e o voto não conta.
+
+`inject-poll-sig.ts` é idempotente — só patcheaer quem está faltando. Per #1175, o legacy `inject-poll-urls.ts` faz isso de jeito errado (popula `poll_a_url/b_url` desperdiçados em todos os 481 subscribers todo dia). O fluxo correto é: listar subscribers das últimas 96h (janela cobre fim de semana com folga) e patchear apenas os faltantes.
+
+```bash
+export BEEHIIV_PUBLICATION_ID=$(node -e "console.log(require('./platform.config.json').beehiiv.publicationId)") && \
+export $(grep -E '^POLL_SECRET' .env | xargs) && \
+npx tsx scripts/inject-poll-sig.ts --since-hours 96
+```
+
+Output JSON inclui `in_window` (subs nas últimas 96h), `patched`, `skipped_already_correct`, `failed`. Logar como info; se `failed > 0`, logar warn (subscriber novo recém-cadastrado pode ficar sem `poll_sig` → email dele vai com link quebrado — não bloqueia publicação porque é minoria).
+
+**Por que 96h e não cron separado:** janela cobre 4 dias = fim de semana + folga. Editor publica diariamente, então qualquer subscriber criado pelo menos 1 dia antes da última publicação já foi patcheado. Custo: 5 páginas de listagem Beehiiv (~3-5s, 0 patches em dia normal). Quando #1175 implementar webhook real-time, esse passo vira backup defensivo.
+
+Falha (exit != 0) → logar warn mas não bloquear. `POLL_SECRET` ou `BEEHIIV_PUBLICATION_ID` ausentes no env são as causas comuns; subscriber novo sem `poll_sig` cai pro próximo run.
+
 ### 0e–0h. Refreshes paralelos pós-dedup (#717 hipótese 6)
 
 Os passos **0e** (merge-local-pending), **0f** (sync-eia-used), **0g** (check-dedup-freshness) e **0h** (build-link-ctr) são todos independentes entre si — alguns dependem do output do `refresh-dedup` (passo 0d) e outros de nada — mas **nenhum depende dos outros 3**. Dispará-los como uma batelada paralela: **uma única mensagem com 4 Bash calls** (não 4 mensagens sequenciais).

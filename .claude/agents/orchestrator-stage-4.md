@@ -75,27 +75,13 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
-### 4a-bis. Injetar URLs do poll É IA? por subscriber (#1044)
+### 4a-bis. ~~Injetar URLs do poll É IA? por subscriber~~ — removido (#1175)
 
-Antes do dispatch da newsletter, gerar URLs HMAC-assinadas A/B por subscriber e injetar como custom fields Beehiiv (`poll_a_url`, `poll_b_url`). Template do Beehiiv referencia esses fields no Custom HTML pra renderizar botões clicáveis no email — voto vai pro Cloudflare Worker `diar-ia-poll`.
+**Removido em #1175** (2026-05-12). O passo legacy `inject-poll-urls.ts` populava custom fields `poll_a_url`/`poll_b_url` em todos os 481 subscribers (~962 API calls Beehiiv por edição), mas o HTML render usa `{{poll_sig}}` + `{{email}}` desde #1083 — os custom fields populados ficavam órfãos.
 
-```bash
-npx tsx scripts/inject-poll-urls.ts --edition {AAMMDD}
-```
+O patch correto agora roda em Stage 0 §0d.ter (`inject-poll-sig.ts --since-hours 96`), que filtra pra novos subscribers nas últimas 96h. `poll_sig` é HMAC permanente do email — 1× por subscriber, vitalício.
 
-- Idempotente: re-rodar sobrescreve URLs sem duplicar custom fields.
-- Requer `BEEHIIV_API_KEY`, `BEEHIIV_PUBLICATION_ID`, `POLL_SECRET` no env. Se algum falta, exit 1.
-- Falha de subscriber individual (rate limit 429, etc) é logada mas não trava o batch — leitor sem URL injetada simplesmente não vê os botões A/B no email (degradação graciosa).
-- Stdout retorna JSON com `{ total_subscribers, patched, failed, skipped_no_email }`. Capturar e logar:
-  ```bash
-  RESULT=$(npx tsx scripts/inject-poll-urls.ts --edition {AAMMDD})
-  echo "$RESULT" | npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'poll urls injected' --details "$RESULT"
-  ```
-- **Threshold check** — se >10% subscribers falharam, pausar (provável rate limit ou auth):
-  ```bash
-  echo "$RESULT" | node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8'));if(r.failed>r.total_subscribers*0.1){process.exit(1)}"
-  ```
-  Exit 1 = halt banner: `npx tsx scripts/render-halt-banner.ts --stage "4 — Publicação" --reason "inject-poll-urls: >10% subscribers falharam ({failed}/{total})" --action "investigar via Beehiiv API status, ou re-rodar inject-poll-urls antes de seguir"`
+Se este orchestrator versão pré-#1175 ainda invocar `inject-poll-urls.ts` aqui, é seguro pular: o HTML não usa esses custom fields. Em caso de retry isolado de Stage 4, **não rodar** o script legacy — confiar no 0d.ter.
 
 ### 4b. Confirmar modo de publicação por canal (#336)
 
