@@ -7,6 +7,11 @@ import {
   timezoneOffsetIso,
 } from "../scripts/compute-social-schedule.ts";
 
+// #1140 — Suprimir logs de observabilidade durante testes (ruído). Cada teste
+// do bloco "observability + safety guards" abaixo desabilita temporariamente
+// pra capturar e validar o log.
+process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+
 const baseConfig = {
   publishing: {
     social: {
@@ -228,6 +233,109 @@ describe("computeScheduledAt (#270)", () => {
       platform: "linkedin",
     });
     assert.match(iso, /^2026-04-28T09:00:00\+05:30$/);
+  });
+
+  describe("#1140 — observability + safety guards", () => {
+    // Esses testes capturam stderr pra verificar warnings; usam DIARIA_QUIET_SCHEDULE_LOG
+    // pra habilitar/desabilitar logs determinísticos.
+    let stderrCapture: string[] = [];
+
+    function startCapture() {
+      stderrCapture = [];
+      const origConsoleError = console.error;
+      console.error = (...args: unknown[]) => {
+        stderrCapture.push(args.map(String).join(" "));
+      };
+      return () => {
+        console.error = origConsoleError;
+      };
+    }
+
+    it("logs observability quando dayOffset != 0", () => {
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const restore = startCapture();
+      try {
+        const iso = computeScheduledAt({
+          config: baseConfig,
+          editionDate: "270428", // futuro pra não trigar safety guard
+          destaque: "d1",
+          platform: "linkedin",
+          dayOffsetOverride: 1,
+        });
+        assert.match(iso, /^2027-04-29/);
+        const obs = stderrCapture.find((l) => l.includes("non-zero dayOffset=1"));
+        assert.ok(obs, `expected observability log, got: ${stderrCapture.join("|")}`);
+        assert.ok(obs.includes("edition=270428"), "log should include editionDate");
+        assert.ok(obs.includes("target=2027-04-29"), "log should include target");
+      } finally {
+        restore();
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+    });
+
+    it("NÃO loga quando dayOffset === 0 (caso normal)", () => {
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const restore = startCapture();
+      try {
+        computeScheduledAt({
+          config: baseConfig,
+          editionDate: "270428",
+          destaque: "d1",
+          platform: "linkedin",
+          dayOffsetOverride: 0,
+        });
+        assert.equal(
+          stderrCapture.length,
+          0,
+          `expected no logs for dayOffset=0, got: ${stderrCapture.join("|")}`,
+        );
+      } finally {
+        restore();
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1"; // restaurar pra suprimir nos demais
+      }
+    });
+
+    it("safety guard: warning loud quando editionDate no passado + dayOffset >= 1 (regressão 260512)", () => {
+      delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      const restore = startCapture();
+      try {
+        // editionDate "230101" claramente no passado (2023-01-01)
+        computeScheduledAt({
+          config: baseConfig,
+          editionDate: "230101",
+          destaque: "d1",
+          platform: "linkedin",
+          dayOffsetOverride: 1,
+        });
+        const warn = stderrCapture.find((l) => l.includes("WARN") && l.includes("no passado"));
+        assert.ok(
+          warn,
+          `expected safety-guard WARN, got: ${stderrCapture.join("|")}`,
+        );
+        assert.ok(warn.includes("dayOffset=1"));
+      } finally {
+        restore();
+        process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      }
+    });
+
+    it("DIARIA_QUIET_SCHEDULE_LOG=1 suprime tudo (CI/teste)", () => {
+      process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
+      const restore = startCapture();
+      try {
+        computeScheduledAt({
+          config: baseConfig,
+          editionDate: "230101",
+          destaque: "d1",
+          platform: "linkedin",
+          dayOffsetOverride: 1,
+        });
+        assert.equal(stderrCapture.length, 0, "should be silent");
+      } finally {
+        restore();
+        delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      }
+    });
   });
 
   it("LinkedIn e Facebook recebem mesmo horário d1 (config unificado)", () => {
