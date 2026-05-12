@@ -77,7 +77,7 @@ Resume-aware: re-execuções pularão imagens já no cache. Falha = **warning**,
    ```bash
    npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD} --schedule
    ```
-3. **Newsletter Beehiiv (#1054 / #207)**: você (top-level Claude Code) **lê `.claude/agents/publish-newsletter.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` incluindo `javascript_tool`. **Não dispatchar via `Agent({ subagent_type: "publish-newsletter" })`** — javascript_tool é restrito ao top-level e o paste-into-htmlSnippet vai falhar em qualquer subagent (Haiku/Sonnet/Opus). O playbook produz `_internal/newsletter-final.html` + chunks `_b64_*.txt`, navega Beehiiv via Chrome MCP, cola via execCommand insertText, salva rascunho e envia email de teste.
+3. **Newsletter Beehiiv (#1054 / #207 / #1114)**: você (top-level Claude Code) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` incluindo `javascript_tool`. **Não tente dispatchar via `Agent`** — javascript_tool é restrito ao top-level e o paste-into-htmlSnippet vai falhar em qualquer subagent (Haiku/Sonnet/Opus). O playbook produz `_internal/newsletter-final.html` + chunks `_b64_*.txt`, navega Beehiiv via Chrome MCP, cola via execCommand insertText, salva rascunho e envia email de teste.
 
 LinkedIn não usa mais Chrome — sem necessidade de tab isolada para LinkedIn.
 
