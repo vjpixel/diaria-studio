@@ -266,6 +266,22 @@ Exit codes:
 - `1` -> ao menos 1 post nao confirmado. Logar warn e PROSSEGUIR pro gate
   com o relatorio destacado (editor decide se reagenda manualmente). NAO
   bloquear automaticamente — o objetivo e visibilidade, nao gate rigido.
+
+  Subcasos (`results[].reason`) e acao sugerida pro editor (#1180):
+  - `fallback_used_immediate_publish` (LinkedIn) — Worker falhou, Make fire-now
+    publicou IMEDIATO ignorando scheduled_at. Acao: deletar o post no LinkedIn
+    manualmente e republicar com novo agendamento (re-rodar `/diaria-4-publicar
+    social {AAMMDD}` apos a delecao).
+  - `scheduled_at_in_past` (FB ou LinkedIn) — item esta na fila mas horario ja
+    passou, vai disparar no proximo tick (~1min) publicando imediato. Acao:
+    `npx tsx scripts/delete-test-schedules.ts --edition-dir data/editions/{AAMMDD}/`
+    pra limpar agendamentos com data no passado + re-rodar `/diaria-4-publicar
+    social {AAMMDD}` com `--no-skip-existing`.
+  - `post_missing` / `nenhum item no Worker KV` (silent fail) — agent retornou
+    sucesso mas o destino nao tem reflexo. Acao: re-rodar `publish-facebook` /
+    `publish-linkedin` pra esse destaque (com `--no-skip-existing`).
+  - `graph_api_error` / `missing_*_token` / `missing_worker_creds` — falha de
+    config/auth. Acao: verificar env vars + creds antes de re-rodar.
 - `2` -> erro de input (arquivo missing, env missing). Logar warn,
   prosseguir sem o bloco no gate (editor ainda revisa social manualmente).
 

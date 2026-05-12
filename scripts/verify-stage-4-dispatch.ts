@@ -215,15 +215,31 @@ export function reconcileFb(
 
   const match = findScheduledMatch(fbPostId, scheduledPosts);
   if (match) {
+    // #1180: detect "scheduled_at in past" — post ainda está em /scheduled_posts
+    // mas a hora já passou. Próximo tick do Brevo/FB publica imediato (= sai
+    // antes do horário planejado da wave). Falha grave.
+    const scheduledMs =
+      typeof match.scheduled_publish_time === "number"
+        ? match.scheduled_publish_time * 1000
+        : null;
+    if (scheduledMs !== null && scheduledMs < now.getTime()) {
+      return {
+        ...base,
+        reason: `scheduled_at_in_past: scheduled_publish_time ${new Date(scheduledMs).toISOString()} ja passou de ${now.toISOString()} — post vai publicar imediato no proximo tick`,
+        external_state: {
+          scheduled_publish_time: match.scheduled_publish_time,
+          scheduled_iso: new Date(scheduledMs).toISOString(),
+          matched_id: match.id,
+        },
+      };
+    }
     return {
       ...base,
       verified: true,
       external_state: {
         scheduled_publish_time: match.scheduled_publish_time,
         scheduled_iso:
-          typeof match.scheduled_publish_time === "number"
-            ? new Date(match.scheduled_publish_time * 1000).toISOString()
-            : null,
+          scheduledMs !== null ? new Date(scheduledMs).toISOString() : null,
         matched_id: match.id,
       },
     };
@@ -291,6 +307,7 @@ export async function fetchLinkedinQueue(
 export function reconcileLinkedin(
   entry: PostEntry,
   queueItems: WorkerListResponse["items"],
+  now: Date = new Date(),
 ): VerifyResult {
   const subtype = (entry.subtype as string | undefined) ?? "main";
   const base: VerifyResult = {
@@ -301,13 +318,23 @@ export function reconcileLinkedin(
     subtype, // #595 — sempre exposto pra desambiguar 9 entries por edição
   };
 
-  // Posts com fallback_used (Worker falhou -> Make fire-now) nao estao na
-  // queue por design. Marcamos como verified=true mas com flag pro relatorio.
+  /** #1180: helper pra detectar item na queue com scheduled_at já passado.
+   * Worker cron dispara no próximo tick (~1min) → publica imediato. */
+  const isPastSchedule = (scheduled_at: string): boolean => {
+    const ms = Date.parse(scheduled_at);
+    return Number.isFinite(ms) && ms < now.getTime();
+  };
+
+  // #1180: fallback_used significa que Worker falhou e Make foi acionado
+  // diretamente — Make IGNORA scheduled_at e publica IMEDIATO. Pra wave que
+  // deveria ser agendada pro futuro, isso é FALHA grave (post sai antes do
+  // horário planejado). Antes (#917) marcava verified=true porque "não
+  // enfileiravel" — mas isso esconde o bug do editor. Agora marca falha.
   if (entry.fallback_used) {
     return {
       ...base,
-      verified: true,
-      reason: "fallback_used (Worker falhou -> Make fire-now; nao enfileiravel)",
+      verified: false,
+      reason: `fallback_used_immediate_publish: Worker falhou, Make fire-now (post foi/sera publicado IMEDIATO, ignorando scheduled_at=${entry.scheduled_at ?? "?"}). Acao sugerida: post ja saiu — pra desfazer, deletar do LinkedIn manualmente e republicar com novo agendamento`,
       external_state: { fallback_used: true, subtype },
     };
   }
@@ -319,6 +346,21 @@ export function reconcileLinkedin(
     : null;
 
   if (matchByKey) {
+    // #1180: item está na queue MAS scheduled_at já passou → vai disparar
+    // no próximo tick do cron worker (~1min), publicação imediata.
+    if (isPastSchedule(matchByKey.scheduled_at)) {
+      return {
+        ...base,
+        reason: `scheduled_at_in_past: item esta na queue mas scheduled_at=${matchByKey.scheduled_at} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
+        external_state: {
+          key: matchByKey.key,
+          scheduled_at: matchByKey.scheduled_at,
+          subtype,
+          webhook_target: matchByKey.webhook_target,
+          action: matchByKey.action,
+        },
+      };
+    }
     return {
       ...base,
       verified: true,
@@ -362,6 +404,21 @@ export function reconcileLinkedin(
       }, matchesNarrow[0])
     : matchesNarrow[0];
 
+  // #1180: detectar past-schedule também no path narrow.
+  if (isPastSchedule(best.scheduled_at)) {
+    return {
+      ...base,
+      reason: `scheduled_at_in_past: item esta na queue (narrow match) mas scheduled_at=${best.scheduled_at} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
+      external_state: {
+        key: best.key,
+        scheduled_at: best.scheduled_at,
+        multiple_matches: matchesNarrow.length,
+        subtype,
+        webhook_target: best.webhook_target,
+        action: best.action,
+      },
+    };
+  }
   return {
     ...base,
     verified: true,
