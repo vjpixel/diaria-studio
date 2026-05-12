@@ -62,19 +62,24 @@ test("renderDashboardHtml prefers globalStats (with MPP) over campaignStats[0]",
 
   const html = renderDashboardHtml(campaigns);
 
-  // Deve mostrar 26 (do globalStats), NÃO 18 (do campaignStats)
-  assert.ok(html.includes("26"), "deveria mostrar uniqueViews=26 do globalStats");
-  assert.ok(!html.includes("<small>18</small>"), "não deve mostrar 18 como contagem de opens");
+  // 26 opens com MPP / 48 delivered = 54.2%
+  // 20 opens reais (26 - 6 MPP) / 48 = 41.7%
+  // Layout top: "54.2% (41.7%)" — com MPP primeiro, sem MPP em parens
+  // Layout bottom: "26 (20)" — total primeiro, sem MPP em parens
 
-  // Open rate sobre delivered: 26/48 = 54.2%
-  assert.ok(html.includes("54.2%"), "deveria mostrar open rate 54.2% (com MPP)");
+  // Rate com MPP no topo (bold/teal via .metric)
+  assert.ok(html.includes("54.2%"), "deveria mostrar open rate com MPP = 54.2% (26/48)");
 
-  // MPP separado quando > 0 (formato "+ N MPP" abaixo do count)
-  assert.ok(/\+\s*6\s*MPP/.test(html), "deveria anotar '+ 6 MPP' quando appleMppOpens > 0");
+  // Rate sem MPP em parens, normal-color (.rate-inline)
+  assert.ok(/54\.2% <span class="rate-inline">\(41\.7%\)<\/span>/.test(html),
+    "rate sem MPP deve aparecer em '(41.7%)' com class rate-inline");
 
-  // Rate inline entre parênteses ao lado do count, sem bold/teal
-  assert.ok(/26 <span class="rate-inline">\(54\.2%\)<\/span>/.test(html),
-    "rate deve aparecer inline em '(X%)' com class rate-inline (sem bold, cor normal)");
+  // Count na linha de baixo: total (sem MPP)
+  assert.ok(/<small>26 \(20\)<\/small>/.test(html),
+    "count deve mostrar '26 (20)' — total e (sem MPP) em parens");
+
+  // Não deve mostrar formato antigo "X + Y MPP"
+  assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve usar mais o formato 'N + N MPP'");
 });
 
 test("renderDashboardHtml fallback pra campaignStats[0] quando globalStats ausente", () => {
