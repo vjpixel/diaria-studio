@@ -312,6 +312,42 @@ test("renderDashboardHtml: alerta visual quando métrica cruza circuit breaker t
     "Spam deve ter class alert quando rate ≥ 0.1%");
 });
 
+test("renderDashboardHtml: alerta no boundary exato dos thresholds (≥3% e ≥0.1%)", () => {
+  // Cenário: cada métrica EXATAMENTE no threshold do circuit breaker.
+  // bounce 3.0%, unsub 3.0%, spam 0.1%, open 15.0%.
+  // Per regra: `≥3%` aciona, `<15%` aciona. Então:
+  // - bounce/unsub/spam EXATO no limite → alert ON
+  // - open EXATO em 15% → alert OFF (porque < 15, não ≤)
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 1000, delivered: 1000,
+        hardBounces: 15, softBounces: 15,    // 30/1000 = 3.0% exato
+        uniqueViews: 150, viewed: 150,       // 150/1000 = 15.0% exato
+        trackableViews: 130,
+        uniqueClicks: 5, clickers: 5,
+        unsubscriptions: 30,                 // 30/1000 = 3.0% exato
+        complaints: 1,                       // 1/1000 = 0.1% exato
+        appleMppOpens: 20,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+
+  // Bounce, Unsub, Spam: EXATO no threshold → alerta ON (≥)
+  assert.ok(/<td class="alert">3\.0%<br><small>30<\/small><\/td>/.test(html),
+    "Bounce 3.0% (exato no threshold) deve acionar alerta");
+  assert.ok(/<td class="alert">0\.1%<br><small>1<\/small><\/td>/.test(html),
+    "Spam 0.1% (exato no threshold) deve acionar alerta");
+
+  // Open: EXATO em 15.0% → alerta OFF (< 15, não ≤)
+  // Opens tem .metric sempre + .alert condicional. No boundary, só .metric.
+  assert.ok(/<td class="metric">/.test(html),
+    "Open 15.0% (exato no threshold) NÃO deve acionar alerta (regra é < 15, não ≤)");
+});
+
 test("renderDashboardHtml: SEM alerta quando métricas saudáveis (todas abaixo do threshold)", () => {
   // Wave 1 real: 54% open, 4% bounce... espera, 4% bounce cruzaria.
   // Vamos usar cenário totalmente limpo: bounce 1%, unsub 0%, spam 0%, open 47%.
@@ -333,10 +369,11 @@ test("renderDashboardHtml: SEM alerta quando métricas saudáveis (todas abaixo 
 
   const html = renderDashboardHtml(campaigns);
 
-  // Nenhuma cell deve ter class alert
-  assert.ok(!/class="alert"/.test(html), "nenhuma cell deve ter class alert");
-  assert.ok(!/class="[^"]*alert[^"]*"/.test(html),
-    "alert não deve aparecer em nenhuma combinação de classes (ex: 'metric alert')");
+  // Nenhum <td> deve ter class alert (em qualquer combinação).
+  // NOTA: o footer usa .alert-label num <span> — não conta. Escopo ao <td>.
+  assert.ok(!/<td class="alert">/.test(html), "nenhum <td> deve ter class='alert'");
+  assert.ok(!/<td class="metric alert">/.test(html),
+    "nenhum <td> deve ter class='metric alert'");
 
   // Opens mantém só metric
   assert.ok(/<td class="metric">/.test(html),
