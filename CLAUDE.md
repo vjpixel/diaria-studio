@@ -115,7 +115,7 @@ Model mix (definido no frontmatter de cada agente):
 - **Opus 4.7** — `orchestrator`, `title-picker` (decisão editorial pós-gate, volume baixo, alto impacto em CTR — #159)
 - **Opus 4.6** — `scorer`
 - **Sonnet 4.6** — `writer`, `publish-social`, `social-linkedin`, `social-facebook`. (`publish-newsletter` migrou pra playbook lido pelo top-level em #1054; movido pra `context/publishers/beehiiv-playbook.md` em #1114.)
-- **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`, `eia-composer`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync e inbox-drain foram migrados para scripts TS — não são mais agentes LLM.
+- **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync, inbox-drain e eia-composer (#1111) foram migrados para scripts TS — não são mais agentes LLM.
 - **Haiku 4.5 (pinned `claude-haiku-4-5-20251001`)** — `research-reviewer` (lógica de raciocínio estruturado; re-avaliar pin a cada release).
 
 ---

@@ -35,24 +35,20 @@ A aprovação do É IA? acontece no **gate integrado da Etapa 1**, onde o bloco 
 
 **Em invocação default (sem `$2`) ou com `$2 = d1|d2|d3`: pular toda a Parte 1.** Não re-apresenta gate nem re-dispara `eia-composer` — o resultado já foi aprovado na Etapa 1.
 
-### 1a. Coletar resultado do background dispatch
+### 1a. Coletar resultado do background dispatch (#1111)
 
-O `eia-composer` foi disparado em background durante a Etapa 1. Verificar se já completou:
+O `scripts/eia-compose.ts` foi disparado em background durante a Etapa 1 via `Bash(run_in_background=true)` (era Agent dispatch antes de #1111).
 
 - Se `data/editions/$1/01-eia.md` já existe → pular dispatch, ir direto ao gate do É IA? abaixo.
 - Se `01-eia.md` **não** existe:
-  - Se há Agent em background ainda rodando → aguardar.
+  - Se há background bash ainda rodando (via `eia_bash_id`) → aguardar via file-presence check (pollar `existsSync('data/editions/$1/01-eia.md')` a cada 10s).
   - Caso contrário → disparar agora:
 
-    ```
-    Agent({
-      subagent_type: "eia-composer",
-      description: "É IA? composer",
-      prompt: "Gera o bloco É IA? para a edição $1. edition_date=$1, out_dir=data/editions/$1/. Seguir as instruções completas do agente eia-composer."
-    })
+    ```bash
+    npx tsx scripts/eia-compose.ts --edition $1 --out-dir data/editions/$1/
     ```
 
-    Aguardar o Agent retornar antes de continuar.
+    Aguardar o script terminar (Bash síncrono, sem `run_in_background`) antes de continuar.
 
 ### 1b. Gate do É IA? (relevante principalmente para sub-comando `eai`)
 

@@ -43,20 +43,22 @@ fi
 
 Se `PREV_EDITION` vazio ou Worker indisponível — prosseguir silenciosamente sem stats. **Não bloquear** o pipeline.
 
-### 1d. Dispatch É IA? em paralelo (background)
+### 1d. Dispatch É IA? em paralelo (background) — #1111
 
-O `eia-composer` não depende de nenhum output do pipeline principal — disparar como `Agent` em **background** (na mesma mensagem dos researchers abaixo) passando:
-- `edition_date`
-- `out_dir = data/editions/{AAMMDD}/`
+O `scripts/eia-compose.ts` (#110 fix 2) não depende de nenhum output do pipeline principal — disparar como **Bash em background** (`run_in_background: true`, na mesma mensagem dos researchers abaixo). Antes era dispatched como Agent Haiku que apenas invocava o script — wrapper redundante, removido em #1111.
 
-Armazenar `eia_dispatch_ts` (timestamp do momento do dispatch).
+```bash
+npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/
+```
+
+Armazenar `eia_bash_id` (output do `Bash(run_in_background=true)`) e `eia_dispatch_ts` (timestamp). Stage 3 usa o bashId pra detectar conclusão ou faz file-presence check em `data/editions/{AAMMDD}/01-eia.md`.
 
 **Logging por caminho** (#110 fix 4):
-- **Dispatch normal**: logar `info 'eia dispatched (background)'`.
-- **Skip por resume** (`01-eia.md` já existir): logar `info 'eia dispatch skipped: already_exists (resume)'`.
-- **Skip por dispatch failure** (Agent tool indisponível ou retornou erro imediato): logar `warn 'eia dispatch skipped: agent_unavailable'`. Ainda assim prosseguir com a Etapa 1 — a Etapa 3 vai sinalizar a ausência e oferecer retry manual.
+- **Dispatch normal**: logar `info 'eia dispatched (background bash)'`.
+- **Skip por resume** (`01-eia.md` já existir): logar `info 'eia dispatch skipped: already_exists (resume)'`. Não dispatchar.
+- **Skip por dispatch failure** (Bash run_in_background indisponível ou erro imediato): logar `warn 'eia dispatch skipped: bash_unavailable'`. Ainda assim prosseguir com a Etapa 1 — Etapa 3 sinaliza ausência e oferece retry.
 
-**Validação no gate da Etapa 1** (#110 fix 1): antes de apresentar o gate principal, checar se `data/editions/{AAMMDD}/01-eia.md` existe OU se há Agent em background ativo. Se nenhum dos dois (skip silencioso detectado), incluir bullet no relatório do gate: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`
+**Validação no gate da Etapa 1** (#110 fix 1): antes do gate principal, checar se `data/editions/{AAMMDD}/01-eia.md` existe OU se há background bash ativo (via `eia_bash_id`). Se nenhum dos dois (skip silencioso), incluir bullet no relatório: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`
 
 ### 1e. Método de fetch por fonte (#54)
 
