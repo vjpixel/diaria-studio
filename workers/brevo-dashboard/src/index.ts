@@ -214,6 +214,17 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
       const opensNoMpp = s.uniqueViews - mppOpens;
       const openRateNoMpp = pct(opensNoMpp, s.delivered);
+
+      // Opens cell tem layout duplo quando há MPP (#1153): top mostra
+      // "taxa-com-MPP (taxa-sem-MPP)" e bottom mostra "count-total (count-sem-MPP)".
+      // Sem MPP: layout simples (taxa única + count único).
+      const opensTopLine = mppOpens > 0
+        ? `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
+        : openRate;
+      const opensBottomLine = mppOpens > 0
+        ? `${s.uniqueViews} (${opensNoMpp})`
+        : `${s.uniqueViews}`;
+
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
@@ -224,7 +235,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
-        <td class="metric">${mppOpens > 0 ? `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>` : openRate}<br><small>${mppOpens > 0 ? `${s.uniqueViews} (${opensNoMpp})` : s.uniqueViews}</small></td>
+        <td class="metric">${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td>${s.unsubscriptions}</td>

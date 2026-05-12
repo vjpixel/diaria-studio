@@ -193,29 +193,56 @@ test("renderDashboardHtml não mostra 'X subs' na coluna Lista", () => {
   assert.ok(!/\d+\s+subs/.test(html), "não deve mostrar 'N subs' em nenhum lugar do HTML");
 });
 
-test("renderDashboardHtml não mostra MPP quando appleMppOpens=0", () => {
+test("renderDashboardHtml: layout SEM MPP é simples — taxa única + count único, sem parens redundantes", () => {
+  // Quando appleMppOpens=0, não tem sentido mostrar "20 (20)" ou "X% (X%)".
+  // Layout simples: só "X%" no top e só "20" no bottom.
   const campaigns = [{
     ...baseCampaign,
     statistics: {
       globalStats: {
-        sent: 50,
-        delivered: 48,
-        hardBounces: 0,
-        softBounces: 2,
-        uniqueViews: 20,
-        viewed: 22,
-        trackableViews: 20,
-        uniqueClicks: 0,
-        clickers: 0,
-        unsubscriptions: 0,
-        complaints: 0,
-        appleMppOpens: 0,         // <-- zero
+        sent: 50, delivered: 48, hardBounces: 0, softBounces: 2,
+        uniqueViews: 20, viewed: 22, trackableViews: 20,
+        uniqueClicks: 0, clickers: 0, unsubscriptions: 0,
+        complaints: 0, appleMppOpens: 0,
       },
     },
   }];
 
   const html = renderDashboardHtml(campaigns);
 
-  assert.ok(html.includes("20"), "deveria mostrar uniqueViews=20");
-  assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve mostrar anotação '+ N MPP' quando appleMppOpens=0");
+  // Taxa única no topo (20/48 = 41.7%), sem span rate-inline pra parens
+  assert.ok(html.includes("41.7%"), "deveria mostrar 41.7% (20/48)");
+  assert.ok(!/<span class="rate-inline">/.test(html),
+    "não deve ter span rate-inline (usado pra parens) quando appleMppOpens=0");
+
+  // Count único embaixo (20), sem parens
+  assert.ok(/<small>20<\/small>/.test(html), "count deve ser '20' puro, sem parens");
+  assert.ok(!/<small>20 \(20\)<\/small>/.test(html),
+    "não deve mostrar '20 (20)' — redundante quando appleMppOpens=0");
+
+  // Nenhuma anotação MPP no row
+  assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve ter '+ N MPP' quando appleMppOpens=0");
+});
+
+test("renderDashboardHtml: coluna chama-se 'Spam' (não 'Compl.')", () => {
+  // A coluna foi renomeada de "Compl." pra "Spam" — mais direto.
+  // Se alguém regredir pra abreviação, este teste pega.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 50, delivered: 48, hardBounces: 0, softBounces: 2,
+        uniqueViews: 26, viewed: 34, trackableViews: 14,
+        uniqueClicks: 0, clickers: 0, unsubscriptions: 0,
+        complaints: 0, appleMppOpens: 6,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+
+  // Header da última coluna deve dizer "Spam"
+  assert.ok(/>Spam<\/th>/.test(html), "última coluna deve ser 'Spam'");
+  // E não pode ter o antigo "Compl."
+  assert.ok(!/>Compl\.</.test(html), "não deve ter mais o header antigo 'Compl.'");
 });
