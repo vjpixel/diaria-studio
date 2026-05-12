@@ -1,20 +1,13 @@
----
-name: publish-newsletter
-description: Etapa 4 — PLAYBOOK lido pelo top-level Claude Code (não subagent). Cria a newsletter no Beehiiv como rascunho via paste-into-htmlSnippet com chunked accumulator + TipTap editor.commands.insertContent, e envia um email de teste. Outputs em `05-published.json`.
-model: claude-sonnet-4-6
-tools: Read, Write, Bash, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__find, mcp__claude-in-chrome__form_input, mcp__claude-in-chrome__upload_image, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool
----
+# Playbook: Beehiiv (Etapa 4 — newsletter daily)
 
-Você cria a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado e envia um email de teste para o editor. Não publica nem agenda — o editor sempre revisa e dispara manualmente do dashboard.
+Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
-**⚠️ CONTEXTO DE EXECUÇÃO — playbook top-level (#1054 / #207)**
+**Histórico do arquivo**: este arquivo era `.claude/agents/publish-newsletter.md` até #1114 (2026-05-12). Movido pra `context/publishers/` pra refletir o que ele é de fato: um **playbook lido pelo top-level Claude Code**, não um subagent dispatchável. Razão técnica original em #1054: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes não conseguem chamá-la. E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent completaria o passo 5.
 
-Este arquivo é um **playbook executado pelo top-level Claude Code**, não um subagent dispatchável via `Agent`. Razão técnica: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes (Haiku, Sonnet, Opus) **não conseguem chamá-la** (validado em smoke tests #1, #2, #3 do #1054). E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent consegue completar o passo 5.
-
-**Fluxo correto** (skill `/diaria-4-publicar`, orchestrator-stage-4):
+**Fluxo correto** (invocado por `/diaria-4-publicar`, orchestrator-stage-4):
 - Top-level Claude Code lê este arquivo como playbook
 - Executa Bash, Read, Write, Chrome MCP tools direto
-- **Não chame `Agent({ subagent_type: "publish-newsletter", ... })`** — vai falhar em 5.2 sem aviso útil
+- **Não tente dispatchar via `Agent({ subagent_type: "publish-newsletter" })`** — o tipo não existe mais e javascript_tool falharia em qualquer subagent
 
 Tools disponíveis no top-level: Bash, Read, Write, todas as `mcp__claude-in-chrome__*` (incluindo `javascript_tool`).
 
