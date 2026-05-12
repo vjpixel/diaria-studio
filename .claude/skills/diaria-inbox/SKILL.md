@@ -15,9 +15,15 @@ Puxa novos e-mails enviados para `diariaeditor@gmail.com` desde o último drain 
 
 ## Execução
 
-Dispare o subagente `inbox-drainer` via `Agent` (sem argumentos).
+Rode via Bash:
+
+```bash
+npx tsx scripts/inbox-drain.ts
+```
+
+O script (#1110 — substitui o subagente legado `inbox-drainer`) detecta sozinho cursor incremental, labels Gmail, e edge cases. Usa Gmail MCP nativo quando precisa.
 
 Ao final, mostre ao usuário:
-1. O JSON de resultado do drainer (`new_entries`, `urls`, `topics`, `most_recent_iso`, `skipped`).
+1. O JSON de resultado (`new_entries`, `urls`, `topics`, `most_recent_iso`, `skipped`).
 2. Se `new_entries > 0`, as últimas entradas de `data/inbox.md` para confirmação visual.
 3. Se `skipped: true`, explique o motivo e como corrigir (ex: label não existe → orientar criação; Gmail MCP desconectado → orientar `/mcp`).
