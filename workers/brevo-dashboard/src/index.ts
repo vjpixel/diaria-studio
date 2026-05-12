@@ -218,11 +218,11 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const cleanListName = (c.listName ?? "?").replace(/\s*\([^)]*\)\s*/g, "").trim();
       return `<tr>
         <td>${c.id}</td>
-        <td><strong>${escHtml(cleanListName)}</strong>${c.listSize ? `<br><small>${c.listSize} subs</small>` : ""}</td>
+        <td><strong>${escHtml(cleanListName)}</strong></td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
-        <td class="metric">${openRate}${mppOpens > 0 ? ` · ${mppOpens} MPP` : ""}<br><small>${s.uniqueViews}</small></td>
+        <td class="metric">${s.uniqueViews} <span class="rate-inline">(${openRate})</span>${mppOpens > 0 ? `<br><small>+ ${mppOpens} MPP</small>` : ""}</td>
         <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td>${s.unsubscriptions}</td>
@@ -255,6 +255,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; cursor: help; border-bottom: 1px dotted var(--muted); }
   td.metric { font-weight: 600; color: var(--teal); }
+  td .rate-inline { font-weight: normal; color: var(--text); }
   td small { color: var(--muted); font-weight: normal; }
   .actions { margin-bottom: 16px; }
   button { background: var(--teal); color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
@@ -281,7 +282,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <th title="Data e hora do envio em horário de Brasília (BRT). Linha de baixo mostra quanto tempo decorrido.">Enviado</th>
 <th title="Total de emails que o Brevo tentou entregar (incluindo bounces). Igual ao tamanho da lista alvo.">Sent</th>
 <th title="Emails efetivamente entregues nas caixas dos destinatários (Sent - bounces - deferred). Taxa abaixo: delivered/sent.">Delivered</th>
-<th title="Unique opens — destinatários que abriram pelo menos 1×. Inclui Apple MPP (Mail Privacy Protection: Apple pré-carrega imagens no servidor, conta como abertura sem ação do usuário). MPP separado em pequeno ao lado da taxa. Taxa: uniqueOpens/delivered. Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
+<th title="Unique opens — destinatários que abriram pelo menos 1×. Inclui Apple MPP (Mail Privacy Protection: Apple pré-carrega imagens no servidor, conta como abertura sem ação do usuário). '+ N MPP' abaixo do count indica quantos dos opens são MPP. Taxa entre parênteses: uniqueOpens/delivered (com MPP). Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
 <th title="Unique clicks — destinatários que clicaram em qualquer link pelo menos 1×. Taxa abaixo: uniqueClicks/delivered. Bench: 1.5-3% típico B2C.">Clicks 🖱️</th>
 <th title="Hard bounces (endereço inexistente) + soft bounces (caixa cheia/temporário). Taxa abaixo: bounces/sent. Bench: <2% saudável.">Bounces</th>
 <th title="Unsubscribes — destinatários que clicaram 'Cancelar inscrição'. Caminho amigável (esperado, baixo impacto). Bench: <0.5% por envio.">Unsub</th>
@@ -293,7 +294,7 @@ ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px
 </tbody>
 </table>
 <p class="footer">Open rate / CTR calculados sobre <em>delivered</em>. Bounce rate sobre <em>sent</em>.<br>
-Opens inclui Apple MPP (pré-carregamento automático). MPP descontado em pequeno ao lado da taxa quando &gt; 0. Bate com a Brevo Web UI.</p>
+Opens inclui Apple MPP (pré-carregamento automático). "+ N MPP" abaixo do count indica quantos dos opens vieram do MPP. Bate com a Brevo Web UI.</p>
 </body>
 </html>`;
 }
