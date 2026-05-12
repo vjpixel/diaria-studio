@@ -1,0 +1,10 @@
+name = "diaria-brevo-dashboard"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# Secrets (via `wrangler secret put`):
+#   BREVO_API_KEY → API key da conta Brevo da Clarice (xkeysib-...)
+#
+# Dashboard é página pública (sem auth) — preferência do editor 2026-05-12.
+# Cache 5min via Cache API economiza quota Brevo.
