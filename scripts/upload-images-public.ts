@@ -158,15 +158,21 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     ];
   })();
 
+  // #1121: newsletter mode upload-a só o que o renderer de fato substitui via
+  // `{{IMG:...}}`: cover D1 + È IA? A/B. D2/D3 não têm imagem inline na
+  // newsletter (memory `feedback_newsletter_only_d1_image.md`). Histórico:
+  // antes da #1121, d2/d3 estavam aqui por histórico de quando newsletter
+  // tinha imagem em todos os destaques — não atualizado quando regra mudou.
+  // Mantê-los causava (a) upload desnecessário e (b) churn entre target=drive
+  // (social) ↔ target=cloudflare (newsletter), criando file_ids órfãos no
+  // Drive a cada flip.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
-    { key: "d2", filename: "04-d2-1x1.jpg" },
-    { key: "d3", filename: "04-d3-1x1.jpg" },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;
   if (mode === "newsletter") return newsletter;
-  // all — dedup por key (d2/d3 repeat between social e newsletter)
+  // all — dedup por key (eaiSpecs em newsletter, d1/d2/d3 em social)
   const seen = new Set<string>();
   const out: ImageSpec[] = [];
   for (const s of [...social, ...newsletter]) {
