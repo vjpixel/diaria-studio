@@ -211,6 +211,11 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
+      // Per circuit breakers doc 2026-05-12: unsub e spam sobre `sent`
+      // (não `delivered`). Pequena diferença na prática (sent ≈ delivered +
+      // bounces), mas mantém consistência com a doc operacional.
+      const unsubRate = pct(s.unsubscriptions, s.sent);
+      const spamRate = pct(s.complaints, s.sent);
       const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
       const opensNoMpp = s.uniqueViews - mppOpens;
       const openRateNoMpp = pct(opensNoMpp, s.delivered);
@@ -238,8 +243,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td class="metric">${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
-        <td>${s.unsubscriptions}</td>
-        <td>${s.complaints}</td>
+        <td>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
+        <td>${spamRate}<br><small>${s.complaints}</small></td>
       </tr>`;
     })
     .join("\n");
@@ -306,7 +311,7 @@ ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px
 </table>
 </div>
 <p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
-Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
+Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.</p>
 </body>
 </html>`;
