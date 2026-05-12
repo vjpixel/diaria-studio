@@ -207,7 +207,8 @@ function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?: strin
 <h1>📧 Diar.ia — Brevo Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns enviadas. Stats live (cache 5min). Atualizado: ${now} BRT.</p>
 <div class="actions">
-  <button onclick="window.location.reload()">↻ Refresh</button>
+  <button onclick="window.location.href='?refresh=1&t='+Date.now()">↻ Refresh (live)</button>
+  <small style="margin-left:8px;color:#666;">Cache 5min — botão força fetch fresh</small>
 </div>
 <table>
 <thead>
@@ -239,12 +240,17 @@ export default {
       return new Response("ok", { headers: { "Content-Type": "text/plain" } });
     }
 
+    // ?refresh=1 (ou ?fresh=1) força bypass de cache pra fetch fresh.
+    // Botão de Refresh no HTML navega com este param.
+    const wantFresh = url.searchParams.has("refresh") || url.searchParams.has("fresh");
+
     if (path === "/api/campaigns") {
-      // Cache na borda 5min
       const cacheKey = new Request(`https://internal/api/campaigns/${url.searchParams.get("limit") ?? "20"}`);
       const cache = caches.default;
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
+      if (!wantFresh) {
+        const cached = await cache.match(cacheKey);
+        if (cached) return cached;
+      }
 
       try {
         const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
@@ -252,7 +258,8 @@ export default {
         const response = new Response(JSON.stringify(campaigns, null, 2), {
           headers: {
             "Content-Type": "application/json",
-            "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
+            // s-maxage = edge cache 5min; browser cache curto pra refresh manual responsivo
+            "Cache-Control": `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`,
           },
         });
         await cache.put(cacheKey, response.clone());
@@ -263,11 +270,12 @@ export default {
     }
 
     if (path === "/" || path === "/index.html") {
-      // HTML também com cache 5min — economia de quota Brevo
       const cacheKey = new Request("https://internal/dashboard-html");
       const cache = caches.default;
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
+      if (!wantFresh) {
+        const cached = await cache.match(cacheKey);
+        if (cached) return cached;
+      }
 
       try {
         const campaigns = await fetchRecentCampaigns(env, 20);
@@ -275,7 +283,9 @@ export default {
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
+            // browser cache 60s + edge cache 5min — botão de refresh com ?refresh=1
+            // sempre busca fresh
+            "Cache-Control": `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`,
           },
         });
         await cache.put(cacheKey, response.clone());
