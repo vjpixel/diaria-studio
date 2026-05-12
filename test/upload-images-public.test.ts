@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   publicImageUrl,
   publicFileViewUrl,
@@ -10,6 +11,30 @@ import {
   sourceImageFor,
   imageSpecsFor,
 } from "../scripts/upload-images-public.ts";
+
+const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+describe("upload-images-public env auto-load (regression #1157)", () => {
+  it("chama loadProjectEnv() em scope top-level antes de outros imports", () => {
+    const src = readFileSync(
+      resolve(__ROOT, "scripts/upload-images-public.ts"),
+      "utf8",
+    );
+    // Verifica import + chamada — guarda contra remoção acidental do loader.
+    // Sem isso, chamada direta `npx tsx scripts/upload-images-public.ts`
+    // falha com "CLOUDFLARE_ACCOUNT_ID undefined" mesmo com `.env` populado.
+    assert.match(
+      src,
+      /import\s+\{\s*loadProjectEnv\s*\}\s+from\s+["']\.\/lib\/env-loader\.ts["']/,
+      "scripts/upload-images-public.ts deve importar loadProjectEnv de lib/env-loader",
+    );
+    assert.match(
+      src,
+      /^loadProjectEnv\(\)/m,
+      "scripts/upload-images-public.ts deve chamar loadProjectEnv() em scope top-level",
+    );
+  });
+});
 
 describe("publicImageUrl", () => {
   it("constrói URL com uc?id + export=view", () => {
