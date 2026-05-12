@@ -212,17 +212,30 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const ctr = pct(s.uniqueClicks, s.delivered);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
       const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
+      const opensNoMpp = s.uniqueViews - mppOpens;
+      const openRateNoMpp = pct(opensNoMpp, s.delivered);
+
+      // Opens cell tem layout duplo quando há MPP (#1153): top mostra
+      // "taxa-com-MPP (taxa-sem-MPP)" e bottom mostra "count-total (count-sem-MPP)".
+      // Sem MPP: layout simples (taxa única + count único).
+      const opensTopLine = mppOpens > 0
+        ? `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
+        : openRate;
+      const opensBottomLine = mppOpens > 0
+        ? `${s.uniqueViews} (${opensNoMpp})`
+        : `${s.uniqueViews}`;
+
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
       const cleanListName = (c.listName ?? "?").replace(/\s*\([^)]*\)\s*/g, "").trim();
       return `<tr>
         <td>${c.id}</td>
-        <td><strong>${escHtml(cleanListName)}</strong>${c.listSize ? `<br><small>${c.listSize} subs</small>` : ""}</td>
+        <td><strong>${escHtml(cleanListName)}</strong></td>
         <td>${fmtTimeBRT(c.sentDate)}<br><small>${hoursSince(c.sentDate)} atrás</small></td>
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
-        <td class="metric">${openRate}${mppOpens > 0 ? ` · ${mppOpens} MPP` : ""}<br><small>${s.uniqueViews}</small></td>
+        <td class="metric">${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td class="metric">${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td>${s.unsubscriptions}</td>
@@ -238,6 +251,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   });
 
   return `<!DOCTYPE html>
@@ -251,15 +265,18 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   body { font-family: -apple-system, BlinkMacSystemFont, Inter, sans-serif; max-width: 1200px; margin: 30px auto; padding: 0 20px; color: var(--text); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; }
   .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px 0; }
+  .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; cursor: help; border-bottom: 1px dotted var(--muted); }
   td.metric { font-weight: 600; color: var(--teal); }
+  td .rate-inline { font-weight: normal; color: var(--text); }
   td small { color: var(--muted); font-weight: normal; }
   .actions { margin-bottom: 16px; }
   button { background: var(--teal); color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
   button:hover { opacity: 0.85; }
   .footer { color: var(--muted); font-size: 0.75rem; margin-top: 24px; text-align: center; }
+  .footer code { background: #F5F5F5; padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
@@ -269,31 +286,33 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 </head>
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
-<p class="sub">Últimas ${campaigns.length} campaigns enviadas. Atualizado: ${now} BRT.</p>
+<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
 <div class="actions">
-  <button onclick="window.location.reload()">↻ Refresh</button>
+  <button onclick="window.location.reload()" aria-label="Recarregar dados">↻ Recarregar</button>
 </div>
+<div class="table-wrap">
 <table>
 <thead>
 <tr>
-<th title="ID interno da campaign no Brevo. Use pra referenciar suporte ou linkar dashboard interno.">ID</th>
-<th title="Lista de destinatários. Nome conforme cadastro no Brevo + número de subscribers ativos (não-blacklisted).">Lista</th>
-<th title="Data e hora do envio em horário de Brasília (BRT). Linha de baixo mostra quanto tempo decorrido.">Enviado</th>
-<th title="Total de emails que o Brevo tentou entregar (incluindo bounces). Igual ao tamanho da lista alvo.">Sent</th>
-<th title="Emails efetivamente entregues nas caixas dos destinatários (Sent - bounces - deferred). Taxa abaixo: delivered/sent.">Delivered</th>
-<th title="Unique opens — destinatários que abriram pelo menos 1×. Inclui Apple MPP (Mail Privacy Protection: Apple pré-carrega imagens no servidor, conta como abertura sem ação do usuário). MPP separado em pequeno ao lado da taxa. Taxa: uniqueOpens/delivered. Bench: 15-25% típico B2C, 30-45% em listas engajadas.">Opens 👁️</th>
-<th title="Unique clicks — destinatários que clicaram em qualquer link pelo menos 1×. Taxa abaixo: uniqueClicks/delivered. Bench: 1.5-3% típico B2C.">Clicks 🖱️</th>
-<th title="Hard bounces (endereço inexistente) + soft bounces (caixa cheia/temporário). Taxa abaixo: bounces/sent. Bench: <2% saudável.">Bounces</th>
-<th title="Unsubscribes — destinatários que clicaram 'Cancelar inscrição'. Caminho amigável (esperado, baixo impacto). Bench: <0.5% por envio.">Unsub</th>
-<th title="Complaints (spam) — destinatários que marcaram o email como spam. Pior que unsub: prejudica reputação do domínio. Bench: 0% ideal, <0.1% aceitável.">Compl.</th>
+<th title="ID da campanha no Brevo.">ID</th>
+<th title="Lista de destinatários no Brevo.">Lista</th>
+<th title="Data e hora do envio (horário de Brasília).">Enviado</th>
+<th title="Total de emails enviados (inclui bounces).">Sent</th>
+<th title="Emails entregues nas caixas dos leitores.">Delivered</th>
+<th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
+<th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
+<th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
+<th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
+<th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
 </tr>
 </thead>
 <tbody>
 ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px;">Nenhuma campaign encontrada.</td></tr>'}
 </tbody>
 </table>
-<p class="footer">Open rate / CTR calculados sobre <em>delivered</em>. Bounce rate sobre <em>sent</em>.<br>
-Opens inclui Apple MPP (pré-carregamento automático). MPP descontado em pequeno ao lado da taxa quando &gt; 0. Bate com a Brevo Web UI.</p>
+</div>
+<p class="footer">Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
+Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.</p>
 </body>
 </html>`;
 }
