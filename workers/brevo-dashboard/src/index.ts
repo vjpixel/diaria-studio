@@ -272,9 +272,6 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   td.metric { font-weight: 600; color: var(--teal); }
   td .rate-inline { font-weight: normal; color: var(--text); }
   td small { color: var(--muted); font-weight: normal; }
-  .actions { margin-bottom: 16px; }
-  button { background: var(--teal); color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
-  button:hover { opacity: 0.85; }
   .footer { color: var(--muted); font-size: 0.75rem; margin-top: 24px; text-align: center; }
   .footer code { background: #F5F5F5; padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   @media (max-width: 700px) {
@@ -287,9 +284,6 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
-<div class="actions">
-  <button onclick="window.location.reload()" aria-label="Recarregar dados">↻ Recarregar</button>
-</div>
 <div class="table-wrap">
 <table>
 <thead>
@@ -311,7 +305,8 @@ ${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px
 </tbody>
 </table>
 </div>
-<p class="footer">Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
+<p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
+Open rate e CTR calculados sobre <em>delivered</em>; bounce rate sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.</p>
 </body>
 </html>`;
