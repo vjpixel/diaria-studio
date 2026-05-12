@@ -1,17 +1,23 @@
 /**
- * inject-poll-urls.ts (#1044)
+ * inject-poll-urls.ts (#1044) — DEPRECATED em #1175 (2026-05-12)
  *
- * Pré-render: gera 2 URLs HMAC-assinadas (choice A, choice B) por subscriber
- * pra edição corrente, e injeta como custom fields via Beehiiv API. O template
- * Beehiiv usa `{{custom_fields.poll_a_url}}` / `{{custom_fields.poll_b_url}}`
- * no Custom HTML pra renderizar botões A/B clicáveis no email.
+ * ⚠️ Não use este script no orchestrator. `render-newsletter-html.ts` usa
+ * `{{poll_sig}}` + `{{email}}` desde #1083; os custom fields `poll_a_url`/
+ * `poll_b_url` populados aqui são ÓRFÃOS — gastam ~962 API calls Beehiiv por
+ * edição sem efeito no email final.
  *
- * Worker em workers/poll/ valida HMAC contra POLL_SECRET e registra voto em KV.
+ * Use `scripts/inject-poll-sig.ts` (HMAC permanente do email, 1× por
+ * subscriber, idempotente). O orchestrator Stage 0 §0d.ter já roda com
+ * `--since-hours 96` pra patchear novos subscribers.
  *
- * Idempotente: re-rodar sobrescreve sem duplicar. Custom fields são reusados
- * entre edições — nome fixo (`poll_a_url`/`poll_b_url`), valor varia.
+ * Mantido aqui apenas pra back-compat com edições antigas (pré-#1083) que
+ * ainda tinham templates referenciando `{{custom_fields.poll_a_url}}`.
  *
- * Uso:
+ * Pré-render legacy: gerava 2 URLs HMAC-assinadas (choice A, choice B) por
+ * subscriber pra edição corrente, e injetava como custom fields via Beehiiv
+ * API. Worker em workers/poll/ valida HMAC contra POLL_SECRET.
+ *
+ * Uso (não recomendado):
  *   npx tsx scripts/inject-poll-urls.ts --edition 260510
  *   npx tsx scripts/inject-poll-urls.ts --edition 260510 --dry-run
  *
