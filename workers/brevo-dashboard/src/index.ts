@@ -147,13 +147,19 @@ async function fetchRecentCampaigns(
     const listId = c.recipients?.lists?.[0];
     const list = listId ? listMap.get(listId) : undefined;
     const globalStats = globalStatsMap.get(c.id);
+    // #1141 fix: o listing retorna `globalStats: { sent: 0, ... }` (zeroed,
+    // não undefined) — verificado 2026-05-12. Por isso NÃO podemos fazer
+    // `...c.statistics` cego: se nosso fetch individual falhar (globalStats
+    // local = undefined), o zeroed do listing persistiria e mascara o
+    // fallback pra campaignStats no render. Só incluir globalStats final
+    // se o fetch individual teve sucesso.
     return {
       ...c,
       listName: list?.name,
       listSize: list?.totalSubscribers,
       statistics: {
-        ...c.statistics,
-        globalStats: globalStats ?? c.statistics?.globalStats,
+        campaignStats: c.statistics?.campaignStats,
+        ...(globalStats && { globalStats }),
       },
     };
   });
@@ -191,17 +197,21 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   const rows = campaigns
     .map((c) => {
       // #1141: prioriza globalStats (com Apple MPP, bate com Brevo Web UI).
-      // Fallback pra campaignStats[0] se globalStats fetch falhou.
+      // Fallback pra campaignStats[0] se globalStats fetch falhou OU veio
+      // zeroed (o listing retorna globalStats com todos os campos = 0 —
+      // verificado 2026-05-12. fetchRecentCampaigns filtra esse caso, mas
+      // o render é defensive-in-depth: trata sent=0 como "stats indisponível").
       const gs = c.statistics?.globalStats;
       const cs = c.statistics?.campaignStats?.[0];
-      const s = gs ?? cs;
+      const gsIsReal = gs && gs.sent > 0;
+      const s = gsIsReal ? gs : cs;
       if (!s) {
         return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:#999;font-style:italic;">sem stats</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
       const bounceRate = pct(s.hardBounces + s.softBounces, s.sent);
-      const mppOpens = gs?.appleMppOpens ?? 0;
+      const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.

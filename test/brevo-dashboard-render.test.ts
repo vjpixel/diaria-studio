@@ -109,6 +109,61 @@ test("renderDashboardHtml fallback pra campaignStats[0] quando globalStats ausen
   assert.ok(!/·\s*\d+\s*MPP/.test(html), "fallback não deve ter anotação '· N MPP' na célula");
 });
 
+test("renderDashboardHtml detecta globalStats zeroed e cai pra campaignStats (#1148 defense-in-depth)", () => {
+  // Cenário real verificado 2026-05-12: o listing /v3/emailCampaigns
+  // retorna `globalStats: { sent: 0, delivered: 0, ... }` (zeroed, não
+  // undefined) pra TODAS as campaigns. fetchRecentCampaigns filtra esse
+  // caso. Mas se zeroed escapar pro render (regressão futura, race
+  // condition, etc), o render trata `sent=0` como "stats indisponível"
+  // e cai pro campaignStats[0]. Sem isso, dashboard mostra todos zeros
+  // pra campaigns onde o GET individual falhou — exatamente o bug
+  // identificado no review do PR.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 0,
+        delivered: 0,
+        hardBounces: 0,
+        softBounces: 0,
+        uniqueViews: 0,
+        viewed: 0,
+        trackableViews: 0,
+        uniqueClicks: 0,
+        clickers: 0,
+        unsubscriptions: 0,
+        complaints: 0,
+        appleMppOpens: 0,
+      },
+      campaignStats: [{
+        listId: 9,
+        sent: 50,
+        delivered: 48,
+        hardBounces: 0,
+        softBounces: 2,
+        deferred: 0,
+        uniqueViews: 18,
+        viewed: 19,
+        trackableViews: 14,
+        uniqueClicks: 0,
+        clickers: 0,
+        unsubscriptions: 0,
+        complaints: 0,
+      }],
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+
+  // Render deve usar campaignStats[0] (18 opens, 37.5%), NÃO o zeroed globalStats.
+  assert.ok(html.includes("18"), "deveria mostrar uniqueViews=18 do campaignStats (não zeros do globalStats fake)");
+  assert.ok(html.includes("37.5%"), "deveria mostrar open rate 37.5% do campaignStats");
+
+  // Sem anotação MPP — campaignStats não tem o campo, e o gsIsReal detectou
+  // que globalStats é fake.
+  assert.ok(!/·\s*\d+\s*MPP/.test(html), "não deve anotar MPP quando o globalStats é fake (sent=0)");
+});
+
 test("renderDashboardHtml não mostra MPP quando appleMppOpens=0", () => {
   const campaigns = [{
     ...baseCampaign,
