@@ -272,9 +272,6 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   td.metric { font-weight: 600; color: var(--teal); }
   td .rate-inline { font-weight: normal; color: var(--text); }
   td small { color: var(--muted); font-weight: normal; }
-  .actions { margin-bottom: 16px; }
-  button { background: var(--teal); color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
-  button:hover { opacity: 0.85; }
   .footer { color: var(--muted); font-size: 0.75rem; margin-top: 24px; text-align: center; }
   .footer code { background: #F5F5F5; padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   @media (max-width: 700px) {
@@ -286,10 +283,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 </head>
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
-<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
-<div class="actions">
-  <button onclick="window.location.reload()" aria-label="Recarregar dados">↻ Recarregar</button>
-</div>
+<p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT. Atualize a página (F5) pra refazer.</p>
 <div class="table-wrap">
 <table>
 <thead>

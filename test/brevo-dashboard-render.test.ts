@@ -224,6 +224,29 @@ test("renderDashboardHtml: layout SEM MPP é simples — taxa única + count ún
   assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve ter '+ N MPP' quando appleMppOpens=0");
 });
 
+test("renderDashboardHtml: não renderiza botão de refresh (redundante com F5)", () => {
+  // Página tem Cache-Control no-store + F5/Ctrl+R faz o mesmo que
+  // o botão fazia. Removido em PR de polimento.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 50, delivered: 48, hardBounces: 0, softBounces: 2,
+        uniqueViews: 26, viewed: 34, trackableViews: 14,
+        uniqueClicks: 0, clickers: 0, unsubscriptions: 0,
+        complaints: 0, appleMppOpens: 6,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+
+  assert.ok(!/<button/.test(html), "não deve ter <button> na página");
+  assert.ok(!/Recarregar/.test(html), "não deve ter texto 'Recarregar'");
+  assert.ok(!/onclick=/.test(html), "não deve ter inline onclick");
+  assert.ok(!/class="actions"/.test(html), "não deve ter div .actions");
+});
+
 test("renderDashboardHtml: coluna chama-se 'Spam' (não 'Compl.')", () => {
   // A coluna foi renomeada de "Compl." pra "Spam" — mais direto.
   // Se alguém regredir pra abreviação, este teste pega.
