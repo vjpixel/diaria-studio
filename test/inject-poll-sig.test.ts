@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   MockAgent,
@@ -72,6 +72,12 @@ describe("generatePollSig HMAC", () => {
 });
 
 describe("run() with --since-hours filter (#1175)", () => {
+  // Garante que TODOS os interceptors declarados foram consumidos.
+  // Se um PATCH esperado não rolou, falha aqui (em vez do test passar silente).
+  afterEach(() => {
+    mockAgent.assertNoPendingInterceptors();
+  });
+
   /** Helper pra montar response de lista de subscribers. */
   function listResp(subs: unknown[], hasMore = false, cursor?: string) {
     return {

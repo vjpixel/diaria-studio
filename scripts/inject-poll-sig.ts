@@ -18,9 +18,12 @@
  *   npx tsx scripts/inject-poll-sig.ts --force          # repatch all (rotação secret)
  *   npx tsx scripts/inject-poll-sig.ts --since-hours 96 # só subscribers das últimas 96h
  *
- * `--since-hours N` filtra via Beehiiv API `subscribed_after` — evita listar 481
- * subscribers todo dia. Usado pelo orchestrator Stage 0 pra patchear novos
- * subscribers sem custo de full scan.
+ * `--since-hours N` filtra **client-side** por `created` (Unix segundos) ou
+ * `subscribed_on` (ISO 8601) — a REST API Beehiiv ignora `subscribed_after`,
+ * então o script lista TODOS os subscribers (mesma paginação que sem flag) e
+ * descarta os fora da janela antes do compare/PATCH. Ganho é não fazer PATCH
+ * em todos: só os recentes batem nos PATCH calls. Usado pelo orchestrator
+ * Stage 0 §0d.ter pra patchear novos subscribers.
  *
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
