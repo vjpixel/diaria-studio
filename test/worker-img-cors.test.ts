@@ -42,17 +42,25 @@ describe("handleImage CORS", () => {
     );
   });
 
-  it("404 não inclui CORS header (não é necessário em error response)", async () => {
+  it("#1132 P2.4: 404 também emite CORS header (pre-check robusto)", async () => {
     const env = makeEnv(null);
     const res = await handleImage("/img/missing.jpg", env);
     assert.equal(res.status, 404);
-    // OK se CORS não estiver presente em 404 — fetch ainda lê o status code.
-    // O importante é que GET de imagem existente tem CORS.
+    assert.equal(
+      res.headers.get("Access-Control-Allow-Origin"),
+      "*",
+      "CORS deve estar presente mesmo em 404 pra pre-check funcionar",
+    );
   });
 
-  it("key vazia retorna 404 sem fetch ao KV", async () => {
+  it("key vazia retorna 404 sem fetch ao KV, com CORS", async () => {
     const env = makeEnv();
     const res = await handleImage("/img/", env);
     assert.equal(res.status, 404);
+    assert.equal(
+      res.headers.get("Access-Control-Allow-Origin"),
+      "*",
+      "CORS deve estar presente mesmo em 404 com key vazia",
+    );
   });
 });

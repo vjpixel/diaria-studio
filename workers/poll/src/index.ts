@@ -448,21 +448,28 @@ async function handleSetName(url: URL, env: Env): Promise<Response> {
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
 
 export async function handleImage(path: string, env: Env): Promise<Response> {
+  // CORS: imagens são públicas — emitir Access-Control-Allow-Origin em todos
+  // os paths (200 e 404). #1132 P2.4: pre-check de CORS faz probe contra key
+  // que pode não existir; com CORS apenas em 200, pre-check produzia falso
+  // negativo. Padrão consistente.
+  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+
   const key = decodeURIComponent(path.slice("/img/".length));
-  if (!key) return new Response("not found", { status: 404 });
+  if (!key) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
 
   const value = await env.POLL.get(key, "arrayBuffer");
-  if (!value) return new Response("not found", { status: 404 });
+  if (!value) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
 
-  // Imagens do É IA? são sempre JPEG
+  // Imagens do È IA? são sempre JPEG
   return new Response(value, {
     headers: {
+      ...corsHeaders,
       "Content-Type": "image/jpeg",
       "Cache-Control": "public, max-age=31536000, immutable",
-      // CORS: imagens são públicas (servem pra email + web crawlers); permitir
-      // fetch cross-origin pra qualquer página (incluindo app.beehiiv.com,
-      // que precisa ler bytes pra construir paste payload — #1119 follow-up).
-      "Access-Control-Allow-Origin": "*",
     },
   });
 }
