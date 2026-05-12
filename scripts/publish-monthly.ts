@@ -35,9 +35,9 @@ dotenvConfig({ override: true });
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import https from "node:https";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
+import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -849,59 +849,27 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
 }
 
 /**
- * Faz upload de uma imagem para o KV do Worker de poll via Cloudflare API.
- * Retorna a URL pública servida pelo Worker em /img/{key}.
+ * Faz upload de uma imagem do digest mensal pro KV do Worker.
+ * Wrapper sobre `uploadImageToWorkerKV` (lib/cloudflare-kv-upload.ts) que
+ * resolve o `kvNamespaceId` de `platform.config.json` e usa key prefix
+ * `img-monthly-`.
  *
- * O Brevo não expõe endpoint de upload via API REST — usamos o KV do Worker
- * como CDN de imagens para o digest mensal.
+ * Extraído em #1119 — a função genérica agora vive em lib pra ser reutilizada
+ * pelo upload de imagens da newsletter daily (#1119).
  */
-async function uploadImageToWorkerKV(filePath: string): Promise<string> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
-  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
-
-  // Lê namespace ID de platform.config.json para evitar hardcode
+async function uploadMonthlyImage(filePath: string): Promise<string> {
   const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
 
-  if (!accountId || !token) {
-    throw new Error("CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos no .env");
-  }
-
-  const buf = readFileSync(filePath);
+  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://diar-ia-poll.diaria.workers.dev";
   const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
-  // Chave única por edição + filename para não colidir entre meses
   const key = `img-monthly-${filename}`;
 
-  // Usar https nativo para evitar problemas com chunked encoding do fetch global
-  await new Promise<void>((resolve, reject) => {
-    const req = https.request({
-      hostname: "api.cloudflare.com",
-      path: `/client/v4/accounts/${accountId}/storage/kv/namespaces/${kvNamespaceId}/values/${encodeURIComponent(key)}`,
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/octet-stream",
-        "Content-Length": buf.length,
-      },
-    }, (res) => {
-      let body = "";
-      res.on("data", (chunk: Buffer) => body += chunk.toString());
-      res.on("end", () => {
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          resolve();
-        } else {
-          reject(new Error(`KV upload ${filename} falhou (${res.statusCode}): ${body}`));
-        }
-      });
-    });
-    req.on("error", reject);
-    req.write(buf);
-    req.end();
+  return uploadImageToWorkerKV(filePath, key, {
+    kvNamespaceId,
+    workerUrl,
   });
-
-  return `${workerUrl}/img/${encodeURIComponent(key)}`;
 }
 
 async function brevoPost(
@@ -1119,8 +1087,8 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
       if (existsSync(pathA) && existsSync(pathB)) {
         try {
           process.stdout.write(`Uploading É IA? images to Cloudflare KV...\n`);
-          eiaImageUrlA = await uploadImageToWorkerKV(pathA);
-          eiaImageUrlB = await uploadImageToWorkerKV(pathB);
+          eiaImageUrlA = await uploadMonthlyImage(pathA);
+          eiaImageUrlB = await uploadMonthlyImage(pathB);
           process.stdout.write(`Imagens enviadas:\n  A: ${eiaImageUrlA}\n  B: ${eiaImageUrlB}\n`);
         } catch (e) {
           process.stderr.write(`warn: upload de imagens É IA? falhou — ${(e as Error).message}\n`);

@@ -30,15 +30,34 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
+import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 
 export interface PublicImage {
+  /** Drive file_id (target=drive) ou Cloudflare KV key (target=cloudflare). #1119 */
   file_id: string;
   url: string;
   mime_type: string;
   filename: string;
+  /** Target onde a imagem está hospedada. Default drive (compat com edições antigas). #1119 */
+  target?: "drive" | "cloudflare";
+}
+
+/** Target de hospedagem das imagens. #1119 */
+export type UploadTarget = "drive" | "cloudflare";
+
+/**
+ * Default de target por modo (#1119):
+ * - `newsletter` → cloudflare (email-stable URLs, Cache-Control imutável)
+ * - `social` → drive (LinkedIn/Facebook OG preview funciona com Drive URLs)
+ * - `all` → cloudflare (newsletter manda)
+ *
+ * Editor pode override via flag `--target drive`/`--target cloudflare`.
+ */
+export function defaultTargetFor(mode: UploadMode): UploadTarget {
+  return mode === "social" ? "drive" : "cloudflare";
 }
 
 export interface PublicImagesOutput {
@@ -223,6 +242,18 @@ export interface UploadOptions {
   /** Modo de seleção de imagens (social | newsletter | all). Default: social. */
   mode?: UploadMode;
   skipExisting?: boolean;
+  /** Target de hospedagem (#1119). Default deriva do mode via `defaultTargetFor`. */
+  target?: UploadTarget;
+}
+
+/**
+ * Constrói KV key única por edição + filename. Convenção #1119: `img-{AAMMDD}-{filename}`.
+ * Extrai AAMMDD do path da edição (ex: `data/editions/260512/` → `260512`).
+ */
+export function cloudflareKvKey(editionDir: string, filename: string): string {
+  const match = editionDir.replace(/[\\/]+$/, "").match(/(\d{6})$/);
+  const aammdd = match?.[1] ?? "unknown";
+  return `img-${aammdd}-${filename}`;
 }
 
 export async function uploadPublicImages(
@@ -230,6 +261,8 @@ export async function uploadPublicImages(
 ): Promise<PublicImagesOutput> {
   const { editionDir } = opts;
   const skipExisting = opts.skipExisting ?? true;
+  const mode = opts.mode ?? "social";
+  const target = opts.target ?? defaultTargetFor(mode);
 
   // Determinar lista de imagens a upload
   let specs: ImageSpec[];
@@ -237,34 +270,62 @@ export async function uploadPublicImages(
     // Retrocompat: destaques explícitos
     specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
   } else {
-    specs = imageSpecsFor(opts.mode ?? "social", editionDir);
+    specs = imageSpecsFor(mode, editionDir);
   }
 
   const cachePath = resolve(editionDir, "06-public-images.json");
   const cache = skipExisting ? loadCache(cachePath) : {};
   const images: Record<string, PublicImage> = { ...cache };
 
+  // Cloudflare config (lazy — só carrega se target=cloudflare).
+  let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
+  if (target === "cloudflare") {
+    const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    const kvNamespaceId = cfg?.poll?.kv_namespace_id;
+    const workerUrl = cfg?.poll?.worker_url ?? "https://diar-ia-poll.diaria.workers.dev";
+    if (!kvNamespaceId) {
+      throw new Error("platform.config.json → poll.kv_namespace_id não configurado (target=cloudflare)");
+    }
+    cfConfig = { kvNamespaceId, workerUrl };
+  }
+
   for (const spec of specs) {
-    if (skipExisting && cache[spec.key]?.file_id) {
-      continue; // já uploaded em execução anterior
+    // Cache hit: respeitar quando o entry bate com o target solicitado.
+    // Se mudou de drive↔cloudflare, re-uploadar.
+    const cached = cache[spec.key];
+    if (skipExisting && cached?.file_id && (cached.target ?? "drive") === target) {
+      continue;
     }
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
-    const content = readFileSync(imagePath);
     const mime = mimeTypeFor(spec.filename);
-    const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
 
-    const { id: fileId } = await driveUploadFile(driveName, content, mime);
-    await makeFilePublic(fileId);
-
-    images[spec.key] = {
-      file_id: fileId,
-      url: publicImageUrl(fileId),
-      mime_type: mime,
-      filename: spec.filename,
-    };
+    if (target === "cloudflare") {
+      const key = cloudflareKvKey(editionDir, spec.filename);
+      const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
+      images[spec.key] = {
+        file_id: key,
+        url,
+        mime_type: mime,
+        filename: spec.filename,
+        target: "cloudflare",
+      };
+    } else {
+      const content = readFileSync(imagePath);
+      const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
+      const { id: fileId } = await driveUploadFile(driveName, content, mime);
+      await makeFilePublic(fileId);
+      images[spec.key] = {
+        file_id: fileId,
+        url: publicImageUrl(fileId),
+        mime_type: mime,
+        filename: spec.filename,
+        target: "drive",
+      };
+    }
   }
 
   writeFileSync(
@@ -295,7 +356,9 @@ async function main(): Promise<void> {
   const editionDirArg = args["edition-dir"];
   if (typeof editionDirArg !== "string") {
     console.error(
-      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--no-cache]",
+      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache]\n" +
+        "\n" +
+        "Default target: 'cloudflare' pra mode=newsletter|all (#1119), 'drive' pra mode=social.",
     );
     process.exit(1);
   }
@@ -307,7 +370,11 @@ async function main(): Promise<void> {
       ? modeArg
       : "social";
 
-  const result = await uploadPublicImages({ editionDir, mode, skipExisting });
+  const targetArg = args.target;
+  const target: UploadTarget | undefined =
+    targetArg === "drive" || targetArg === "cloudflare" ? targetArg : undefined;
+
+  const result = await uploadPublicImages({ editionDir, mode, skipExisting, target });
   console.log(JSON.stringify(result, null, 2));
 }
 

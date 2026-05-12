@@ -120,7 +120,9 @@ issue de I/O. Logar warning e prosseguir.
 
 ### 1. Pré-render — rodar ANTES de abrir o browser
 
-**Este passo é crítico.** Gera HTML completo + sobe imagens pro Drive como shareable ANTES de qualquer interação com o browser.
+**Este passo é crítico.** Gera HTML completo + sobe imagens pro Cloudflare Worker KV ANTES de qualquer interação com o browser.
+
+> **#1119 (2026-05-11)**: Imagens pra newsletter daily agora vão pro Cloudflare Worker KV (`/img/{key}`), não pro Drive. Razão: Drive `uc?id=...` retorna HTML wrapper na 1ª request + throttle agressivo + sem Cache-Control. Cloudflare entrega JPEG direto, com `Cache-Control: public, max-age=31536000, immutable`. LinkedIn/Facebook seguem com Drive (mode `social`) — OG preview funciona melhor lá.
 
 #### 1.1 Extrair metadata
 
@@ -131,20 +133,26 @@ npx tsx scripts/extract-destaques.ts {edition_dir}/02-reviewed.md
 
 Gravar output: `title`, `subtitle` (precisam ser preenchidos no form do Beehiiv separadamente do corpo).
 
-#### 1.2 Upload imagens pro Drive (mode newsletter)
+#### 1.2 Upload imagens pro Cloudflare Worker KV (mode newsletter)
 
 ```bash
 npx tsx scripts/upload-images-public.ts --edition-dir {edition_dir} --mode newsletter
 ```
 
-Faz upload de 5 imagens pro Drive como shareable:
+Faz upload de 5 imagens pro Worker KV (default `--target cloudflare` quando `--mode newsletter`):
 - `04-d1-2x1.jpg` (cover, também usada inline no D1)
 - `04-d2-1x1.jpg`, `04-d3-1x1.jpg` (inline D2/D3)
 - `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
 
-Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
+KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://diar-ia-poll.diaria.workers.dev/img/{key}` com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
 
-Resume-aware: re-execução pula imagens já no cache.
+Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename, target: "cloudflare" } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
+
+Resume-aware: re-execução pula imagens já no cache, **respeitando target**. Se cache tem entries `target=drive` mas o run pede `target=cloudflare`, faz re-upload.
+
+**Escape hatch**: passar `--target drive` força Drive (ex: pra debug ou edições antigas que dependiam de URLs Drive específicas).
+
+**Credenciais Cloudflare**: `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` no `.env`. Namespace ID lido de `platform.config.json → poll.kv_namespace_id`.
 
 #### 1.3 Render HTML + substituir URLs
 
@@ -391,7 +399,7 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 
 - Beehiiv não renderiza preview do htmlSnippet **dentro do editor** (htmlSnippet é raw HTML armazenado como texto, não preview visual). A verificação visual completa só acontece via "Email preview" / "Web preview" do Beehiiv ou via test email recebido (passo 7).
 - **Verificação programática suficiente**: o passo 5.3 já validou via `editor.getJSON()` que merge tags + image URLs estão preservados na ProseMirror state. Se passou, o conteúdo está correto e o preview do email vai renderizar.
-- **Validação visual opcional**: editor pode clicar em "Preview" no Beehiiv após o agent completar; URLs de imagens podem demorar a propagar via Google Drive CDN (~30s primeira vez). Se imagem aparecer quebrada no preview, re-upload via `upload-images-public.ts --no-cache` resolve.
+- **Validação visual opcional**: editor pode clicar em "Preview" no Beehiiv após o agent completar; URLs de imagens vêm do Cloudflare Worker KV (#1119), disponibilidade quase imediata (KV é eventually consistent, ~1-2s). Se imagem aparecer quebrada no preview, verificar (a) que upload retornou 2xx, (b) que GET na URL retorna JPEG válido (`curl -so /tmp/test.jpg <url> && file /tmp/test.jpg`), (c) re-upload via `upload-images-public.ts --mode newsletter --no-cache` se necessário.
 - **Bugs do #39 tratados estruturalmente**:
   - ✅ Encoding Unicode: HTML gerado em build-time, caracteres preservados no arquivo.
   - ✅ Template items default: sem template slots = nada pra remover.
