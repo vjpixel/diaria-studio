@@ -153,6 +153,33 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
     "-" +
     String(target.getDate()).padStart(2, "0");
 
+  // #1140 — Observability: log quando dayOffset != 0 (caminho não-trivial).
+  // Inclui editionDate + target final pra diagnóstico de off-by-one (incident
+  // 260512 onde 3 posts foram agendados pra 13/05 com edição "260512").
+  // Suprimir com env var DIARIA_QUIET_SCHEDULE_LOG=1 (usado em CI/teste).
+  if (dayOffset !== 0 && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+    console.error(
+      `[compute-schedule] non-zero dayOffset=${dayOffset} for edition=${editionDate} ` +
+      `(${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}) ` +
+      `${platform}/${destaque} → target=${dateStr}`,
+    );
+  }
+
+  // #1140 — Safety guard: editionDate no passado + dayOffset >= 1 é fortemente
+  // suspeito de typo (editor passou --day-offset 1 em edição já passada).
+  // Avisa loud (stderr), não bloqueia — caller decide.
+  if (dayOffset >= 1 && process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const editionIso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    if (editionIso < todayIso) {
+      console.error(
+        `[compute-schedule] WARN: dayOffset=${dayOffset} aplicado a editionDate ` +
+        `${editionIso} (no passado, hoje=${todayIso}). Suspeita de typo — ` +
+        `target seria ${dateStr}. Se intencional, ignore este aviso.`,
+      );
+    }
+  }
+
   const [h, m] = time.split(":");
   const offsetStr = timezoneOffsetIso(target, tz);
   return `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
