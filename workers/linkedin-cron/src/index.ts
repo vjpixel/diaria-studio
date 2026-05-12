@@ -639,6 +639,16 @@ export default {
       const key = decodeURIComponent(path.slice("/queue/".length));
       return handleQueueDelete(request, env, key);
     }
+    // #1140 — POST /fire-now força fireDueItems imediatamente (debug/recovery).
+    // Mesma lógica do cron handler; útil quando cron está com lag ou queue
+    // tem entries adiantadas manualmente.
+    if (path === "/fire-now" && request.method === "POST") {
+      if (!isAuthorized(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      const result = await fireDueItems(env);
+      return json({ ok: true, ...result });
+    }
 
     return json(
       {
