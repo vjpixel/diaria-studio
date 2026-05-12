@@ -1,6 +1,51 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { extractPostText, validateScheduledTime, needsReschedule } from "../scripts/publish-facebook.ts";
+
+const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+describe("publish-facebook draft warning (regression #1156)", () => {
+  // Static source check pra guardar contra remoção acidental do warning loud
+  // quando --schedule ausente. Não testa runtime (envolve sleep + side effects).
+  const src = readFileSync(
+    resolve(__ROOT, "scripts/publish-facebook.ts"),
+    "utf8",
+  );
+
+  it("aceita --allow-draft em parseArgs", () => {
+    assert.match(
+      src,
+      /argv\[i\]\s*===\s*["']--allow-draft["']/,
+      "parseArgs deve aceitar flag --allow-draft",
+    );
+  });
+
+  it("emite warning quando --schedule ausente e --allow-draft não passado", () => {
+    // Warning text deve mencionar drafts + opt-in via --allow-draft
+    assert.match(
+      src,
+      /serão criados como DRAFTS/i,
+      "warning deve mencionar criação de DRAFTS",
+    );
+    assert.match(
+      src,
+      /--allow-draft.*suprimir/,
+      "warning deve apontar --allow-draft como opt-in",
+    );
+  });
+
+  it("pula delay quando isTest=true (não trava CI)", () => {
+    // O setTimeout só roda quando !isTest — confere via leitura estática.
+    assert.match(
+      src,
+      /if\s*\(!isTest\)\s*\{\s*[^}]*setTimeout/,
+      "delay deve ser pulado em test-mode",
+    );
+  });
+});
 
 const MD = "# Facebook\n\n## d1\nTexto d1.\n\n## d2\nTexto d2.\n\n## d3\nTexto d3.\n<!-- oculto -->\n\n# LinkedIn\n\n## d1\nLinkedIn d1.";
 const MDCRLF = MD.replace(/\n/g, "\r\n");

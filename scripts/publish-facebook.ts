@@ -48,6 +48,12 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     } else if (argv[i] === "--test-mode") {
       // #1056 — tag entries com is_test:true pra delete-test-schedules safety
       args["test-mode"] = true;
+    } else if (argv[i] === "--no-skip-existing") {
+      // #725 bug #2: opt-out explícito do skip default.
+      args["no-skip-existing"] = true;
+    } else if (argv[i] === "--allow-draft") {
+      // #1156 — opt-in pra criar drafts sem warn (intent claro).
+      args["allow-draft"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
@@ -372,6 +378,25 @@ async function main() {
   const doReschedule = !!args.reschedule;
   const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
   const dayOffsetOverride = args["day-offset"] ? parseInt(args["day-offset"] as string, 10) : undefined;
+  const allowDraft = !!args["allow-draft"]; // #1156 — opt-in pra suprimir warning de draft
+
+  // #1156 — Warning loud quando rodando sem --schedule (cria drafts) e sem opt-in
+  // explícito via --allow-draft. Trap recorrente: editor/orchestrator esquece
+  // `--schedule`, posts ficam como drafts não publicados em vez de scheduled.
+  // (Caso real: Stage 4 test de 260516, 2026-05-12 — 3 drafts criados sem intent,
+  // tive que deletar via delete-test-schedules + re-rodar com --schedule.)
+  // Em test-mode pula o delay (testes não precisam esperar 3s).
+  if (!doSchedule && !doReschedule && !allowDraft) {
+    console.error(
+      "⚠️  WARN: --schedule ausente. Posts serão criados como DRAFTS (não agendados).\n" +
+      "    Se intent era agendar pelo platform.config.json, adicione --schedule.\n" +
+      "    Se intent era mesmo draft, opt-in com --allow-draft pra suprimir este aviso.\n" +
+      `    (Continuando em ${isTest ? "0" : "3"}s — Ctrl+C pra abortar.)`,
+    );
+    if (!isTest) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
 
   // Load credentials — env vars com fallback para data/.fb-credentials.json (compat retroativa)
   // Migração para .env: FACEBOOK_PAGE_ID, FACEBOOK_PAGE_ACCESS_TOKEN, FACEBOOK_API_VERSION
