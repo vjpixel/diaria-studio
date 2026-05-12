@@ -247,6 +247,33 @@ test("renderDashboardHtml: não renderiza botão de refresh (redundante com F5)"
   assert.ok(!/class="actions"/.test(html), "não deve ter div .actions");
 });
 
+test("renderDashboardHtml: Unsub e Spam têm taxa em cima + count embaixo (como as outras métricas)", () => {
+  // Per circuit breakers doc: unsub e spam ÷ sent.
+  // Pra sent=100, unsubs=3, complaints=1: unsub=3.0%, spam=1.0%.
+  const campaigns = [{
+    ...baseCampaign,
+    statistics: {
+      globalStats: {
+        sent: 100, delivered: 98, hardBounces: 1, softBounces: 1,
+        uniqueViews: 30, viewed: 35, trackableViews: 18,
+        uniqueClicks: 2, clickers: 2,
+        unsubscriptions: 3, complaints: 1,
+        appleMppOpens: 4,
+      },
+    },
+  }];
+
+  const html = renderDashboardHtml(campaigns);
+
+  // Unsub: 3/100 = 3.0% em cima, "3" embaixo
+  assert.ok(/<td>3\.0%<br><small>3<\/small><\/td>/.test(html),
+    "Unsub deve mostrar '3.0%' em cima e '3' embaixo");
+
+  // Spam: 1/100 = 1.0% em cima, "1" embaixo
+  assert.ok(/<td>1\.0%<br><small>1<\/small><\/td>/.test(html),
+    "Spam deve mostrar '1.0%' em cima e '1' embaixo");
+});
+
 test("renderDashboardHtml: coluna chama-se 'Spam' (não 'Compl.')", () => {
   // A coluna foi renomeada de "Compl." pra "Spam" — mais direto.
   // Se alguém regredir pra abreviação, este teste pega.
