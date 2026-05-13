@@ -59,10 +59,11 @@ Essas entradas seguem o mesmo pipeline `fix` junto com issues detectadas pelo em
 4. Se encontrar, obter o `threadId` do resultado mais recente.
 5. Ler conteudo completo via `mcp__claude_ai_Gmail__get_thread` com `threadId` e `messageFormat: "FULL_CONTENT"`.
 6. Se o Gmail MCP falhar (erro de conexao, thread nao encontrado em ambas queries), **fallback para Chrome** (metodo secundario abaixo).
-6. Se nenhum metodo encontrar o email apos 30s, retornar:
+6. Se nenhum metodo encontrar o email apos 30s, retornar **inconclusive** (fail-closed, #1212):
    ```json
-   { "status": "email_not_found", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s" }
+   { "status": "inconclusive", "issues": [], "details": "Email de teste nao encontrado no Gmail apos 30s — review NAO foi feito. Editor deve verificar visualmente." }
    ```
+   **NUNCA retornar `status: ok` ou marcar `review_completed: true` neste caminho** (#1212): pre-fix, agent retornava `email_not_found` que o orchestrator interpretava como "review limpo", marcando `review_completed: true` com zero verificação real. Resultado: 8/8 edições recentes (260505-260513) com `review_final_issues=[]` mesmo com bugs visíveis. Fail-closed expõe a ausência de review ao editor explicitamente.
 
 ### 1b. Fallback: abrir email via Chrome (metodo secundario)
 

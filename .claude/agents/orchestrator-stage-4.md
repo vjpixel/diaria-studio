@@ -200,8 +200,8 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
      - `edition_dir`
      - `attempt`
   2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (30s × 2^(N-1), até 10 tentativas de reconexão). Após reconexão, re-disparar `review-test-email` (não `publish-newsletter`).
-  3. Se retornar `status: "email_not_found"`, logar warn e **sair do loop** (email pode ter demorado; não é um problema do rascunho).
-  4. Se `issues` estiver vazio: **sair do loop** — email aprovado automaticamente.
+  3. **Se retornar `status: "inconclusive"` (#1212 — fail-closed)**: logar warn `"review-test-email: inconclusive — email não chegou em 30s, review NÃO foi feito"` e **sair do loop**. **NÃO marcar `review_completed: true`** — gravar `review_status: "inconclusive"` em vez. Editor deve verificar visualmente no gate. Pre-#1212 o status era `email_not_found` que o orchestrator tratava como "review limpo" — falso negativo estrutural.
+  4. Se `issues` estiver vazio E `status: "ok"`: **sair do loop** — email aprovado automaticamente.
   5. Se `issues` não estiver vazio:
      - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10"`.
      - Disparar `publish-newsletter` em **modo fix** passando:
@@ -217,11 +217,12 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
   Armazenar resultado final: `test_email_check = { attempts: N, final_issues: [...], auto_fixed: true/false }`.
 
 - **Gravar resultado da revisão em `05-published.json` (obrigatório).** Ler `05-published.json`, adicionar/atualizar os campos:
-  - `review_completed: true`
+  - `review_completed: true` (apenas quando `status: "ok"` ou após fix-mode bem-sucedido)
+  - `review_status: "ok" | "inconclusive" | "issues_unfixable"` (#1212 — explicita resultado real)
   - `review_attempts: N`
   - `review_final_issues: [...]` (vazio se tudo OK)
 
-  Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** — sem ele `true`, o resume re-executa o loop de review.
+  Salvar com `Write`. O campo `review_completed` é usado na lógica de **resume** — sem ele `true`, o resume re-executa o loop de review. Em modo `inconclusive`, `review_completed` fica `false` mas pipeline continua (editor revisa no gate).
 
 - Ler `05-published.json` (pode ter sido atualizado pelo fix mode).
 
@@ -294,15 +295,21 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to`
   - Template usado (`template_used`)
-  - **Resultado da verificação do email de teste:**
-    - Se `final_issues` vazio: `"✅ Email de teste verificado ({attempts} tentativa(s)) — nenhum problema detectado."`
-    - Se `final_issues` não vazio:
+  - **Resultado da verificação do email de teste (#1212):**
+    - Se `review_status === "ok"` e `review_final_issues` vazio E `unfixed_issues` vazio: `"✅ Email de teste verificado ({attempts} tentativa(s)) — nenhum problema detectado."`
+    - Se `review_status === "inconclusive"`: `"⚠️ Review INCONCLUSIVO — email não chegou ao Gmail em 30s. Verifique visualmente no inbox antes de aprovar."` (fail-closed em vez de assumir "limpo")
+    - Se `review_final_issues` não vazio OU `unfixed_issues` não vazio (#1212 — gate agora exibe AMBOS):
       ```
       ⚠️ Problemas restantes após {attempts} tentativa(s):
-         • {issue 1}
-         • {issue 2}
+      Review issues:
+         • {review_final_issues[0]}
+         • {review_final_issues[1]}
+      Unfixed issues (publish-newsletter):
+         • {unfixed_issues[0].reason}: {unfixed_issues[0].details}
+         • {unfixed_issues[1].reason}: ...
       Corrija manualmente no rascunho antes de publicar.
       ```
+      Pre-#1212 o gate só lia `review_final_issues` — `unfixed_issues` ficava invisível pro editor descobrir manualmente. Agora ambos campos aparecem juntos.
 
   **Social (6 posts)** — tabela:
   ```
