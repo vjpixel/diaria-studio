@@ -124,15 +124,21 @@ npx tsx scripts/refresh-dedup.ts
 
 **Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
-### 0d.bis Add edição corrente ao `valid_editions` do Worker (#1086)
+### 0d.bis Maintain `valid_editions` window do Worker (#1086, #1233)
 
-O Worker `diar-ia-poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra a edição corrente aceitar votos quando publicada, adicionar agora — idempotente, exit code 0 ou seguro de re-rodar:
+O Worker `diar-ia-poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra subscribers continuarem podendo votar em edições arquivadas (clicar em emails de até 7 dias atrás), manter no set as **últimas 7 dias de edições publicadas** + edição corrente:
 
 ```bash
-npx tsx scripts/add-valid-edition.ts --edition {AAMMDD}
+npx tsx scripts/maintain-valid-editions-window.ts --current {AAMMDD} --window-days 7
 ```
 
-Falha (exit != 0) → logar warn mas não bloquear (Pixel pode adicionar manual via `wrangler kv key put`). O voto vai falhar com 410 "Essa edição não aceita mais votos." se chegar antes do add — mitigar com retry no Stage 4 pré-paste se warn aqui.
+Substitui o legacy `add-valid-edition.ts` (que só adicionava a edição corrente — em set vazio criava state degenerate `[hoje]`, ativando o gate com APENAS hoje e rejeitando todas anteriores; caso real #1233 em 2026-05-13).
+
+O script lê `data/past-editions-raw.json` (mantido por refresh-dedup no passo 0d acima), filtra por janela de 7 dias, une com `--current`, escreve set ordenado no KV via `wrangler kv key put`. Idempotente — re-rodar com mesmos parâmetros é no-op se nada mudou.
+
+Política de preservação: nunca remove entries do set (editor pode ter adicionado especiais manualmente). Só ADICIONA o que faltar da janela. `removed[]` no JSON output é informativo only.
+
+Falha (exit != 0) → logar warn mas não bloquear. Voto em edição fora da janela vai falhar com 410 "Essa edição não aceita mais votos." — Pixel pode adicionar manual via `add-valid-edition.ts --edition AAMMDD` se for caso pontual.
 
 ### 0d.ter Patch `poll_sig` pra novos subscribers (#1175 — janela 96h)
 

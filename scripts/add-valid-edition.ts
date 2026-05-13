@@ -18,61 +18,13 @@
  *   POLL_KV_NAMESPACE_ID   - default 72784da4ae39444481eb422ebac357c6
  */
 
-import { spawnSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const WORKER_DIR = resolve(ROOT, "workers", "poll");
+import { wranglerKvGet, wranglerKvPut } from "./lib/poll-kv.ts";
 
 // #1086: Node 24 introduziu mudança em spawnSync que quebra .cmd files no
-// Windows com EINVAL. shell:true contorna (chama via cmd.exe) e os argumentos
-// são seguros aqui (edition validado via regex ^\d{6}$; namespace/account são
-// constantes; value é JSON.stringify de array de strings AAMMDD).
-// Wrangler precisa rodar de `workers/poll/` pra herdar OAuth cache + wrangler.toml.
-
-const CLOUDFLARE_ACCOUNT_ID =
-  process.env.CLOUDFLARE_ACCOUNT_ID ?? "5d15d8303325211d6976d73051f4b002";
-const POLL_KV_NAMESPACE_ID =
-  process.env.POLL_KV_NAMESPACE_ID ?? "72784da4ae39444481eb422ebac357c6";
-
-function wranglerKvGet(key: string): string | null {
-  const r = spawnSync(
-    `npx wrangler kv key get "${key}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
-    {
-      cwd: WORKER_DIR,
-      encoding: "utf8",
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (r.status !== 0 || !r.stdout) return null;
-  return r.stdout.trim();
-}
-
-function wranglerKvPut(key: string, value: string): void {
-  // value é JSON.stringify de array de strings AAMMDD — não tem `"` problemático
-  // além das aspas duplas das chaves, então escapamos pra cmd.exe envolvendo
-  // em aspas duplas duplas (CMD trata `""` como aspa literal).
-  const escaped = value.replace(/"/g, '\\"');
-  const r = spawnSync(
-    `npx wrangler kv key put "${key}" "${escaped}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
-    {
-      cwd: WORKER_DIR,
-      encoding: "utf8",
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (r.status !== 0) {
-    throw new Error(
-      `wrangler kv key put failed (exit ${r.status}):\nstdout: ${r.stdout?.slice(0, 300)}\nstderr: ${r.stderr?.slice(0, 500)}`,
-    );
-  }
-}
+// Windows com EINVAL. shell:true (em poll-kv.ts) contorna (chama via cmd.exe)
+// e os argumentos são seguros aqui (edition validado via regex ^\d{6}$;
+// namespace/account são constantes; value é JSON.stringify de array de strings).
 
 export function run(args: {
   edition: string;
