@@ -19,6 +19,8 @@
  *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
  */
 
+import "dotenv/config"; // #1204 — sem isso, ADMIN_SECRET do .env nao chega no processo
+
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
