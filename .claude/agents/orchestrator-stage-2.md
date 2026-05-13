@@ -287,16 +287,28 @@ Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comm
   ```
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 
-  - **Auto-pick de título via Opus (#159).** Após aprovação, dispatch `title-picker` (Opus, Agent) passando:
+  - **Auto-pick de título via Opus (#159).** Após aprovação, **fazer snapshot do 02-reviewed.md** pra `_internal/02-pre-title-picker.md` (necessário pra validar estrutura post-#1205), depois dispatch `title-picker` (Opus, Agent) passando:
     - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
     - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
     - `audience_path = context/audience-profile.md`
     - `editorial_rules_path = context/editorial-rules.md`
     - `picks_log_path = data/editions/{AAMMDD}/_internal/02-title-picks.json`
 
+    ```bash
+    cp data/editions/{AAMMDD}/02-reviewed.md data/editions/{AAMMDD}/_internal/02-pre-title-picker.md
+    ```
+
     Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
 
     Erro do agent (ex: destaque sem título nenhum) deve ser reportado ao editor antes de prosseguir pra Etapa 3 — não há fallback automático pra título inexistente.
+
+  - **Validar estrutura preservada (#1205).** Após title-picker, comparar estrutura de seções pré/pós:
+    ```bash
+    npx tsx scripts/validate-section-structure.ts \
+      --before data/editions/{AAMMDD}/_internal/02-pre-title-picker.md \
+      --after data/editions/{AAMMDD}/02-reviewed.md
+    ```
+    Exit 1 = title-picker mexeu na estrutura (removeu `---`, moveu ERRO INTENCIONAL, etc — caso 260517). **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu estrutura — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro.
 
   - **Validar 1 título por destaque (#178).** Após o title-picker:
     ```bash
