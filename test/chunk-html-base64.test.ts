@@ -8,6 +8,7 @@ import {
   encodeHtmlBase64,
   chunkHtmlFile,
   writeChunks,
+  hashChunk,
 } from "../scripts/chunk-html-base64.ts";
 
 describe("chunkBase64 (#1054 playbook chunked paste)", () => {
@@ -157,5 +158,68 @@ describe("chunkHtmlFile — integração", () => {
     assert.ok(decoded.includes("{{poll_a_url}}"));
     assert.ok(decoded.includes("{{poll_b_url}}"));
     assert.ok(decoded.includes("{{IMG:01-eia-A.jpg}}"));
+  });
+});
+
+describe("hashChunk (#1177)", () => {
+  it("retorna 16 hex chars determinístico (SHA-256 truncado)", () => {
+    const h = hashChunk("hello world");
+    assert.equal(h.length, 16);
+    assert.match(h, /^[0-9a-f]{16}$/);
+    // Deterministic: mesmo input = mesmo hash
+    assert.equal(hashChunk("hello world"), h);
+  });
+
+  it("hashes diferentes pra inputs diferentes (incl. char-flip)", () => {
+    const a = hashChunk("hello world");
+    const b = hashChunk("hello worle"); // 1 char diff
+    assert.notEqual(a, b, "single char flip muda o hash");
+  });
+
+  it("hash conhecido pra string fixa (catch acidental refactor)", () => {
+    // SHA-256('hello world') prefix = b94d27b9934d3e08...
+    assert.equal(hashChunk("hello world"), "b94d27b9934d3e08");
+  });
+});
+
+describe("chunkHtmlFile — hashes + default chunk-size (#1177)", () => {
+  it("output inclui hashes[] de mesmo tamanho que files[]", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "chunk-test-"));
+    const internalDir = resolve(dir, "_internal");
+    mkdirSync(internalDir);
+    const html = "a".repeat(10_000); // ~13KB b64
+    const htmlPath = resolve(internalDir, "newsletter-final.html");
+    writeFileSync(htmlPath, html, "utf8");
+
+    const result = chunkHtmlFile(htmlPath, internalDir, 2500);
+    assert.ok(Array.isArray(result.hashes), "hashes[] presente");
+    assert.equal(
+      result.hashes.length,
+      result.files.length,
+      "1 hash por file",
+    );
+    // Hash bate com conteúdo escrito
+    for (let i = 0; i < result.files.length; i++) {
+      const content = readFileSync(resolve(internalDir, result.files[i]), "utf8");
+      assert.equal(result.hashes[i], hashChunk(content));
+    }
+  });
+
+  it("hashes diferentes pra chunks diferentes (uniqueness)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "chunk-test-"));
+    const internalDir = resolve(dir, "_internal");
+    mkdirSync(internalDir);
+    // Varied content pra evitar chunks iguais.
+    const html = Array.from({ length: 100 }, (_, i) => `linha-${i}-${"x".repeat(50)}`).join("\n");
+    const htmlPath = resolve(internalDir, "newsletter-final.html");
+    writeFileSync(htmlPath, html, "utf8");
+
+    const result = chunkHtmlFile(htmlPath, internalDir, 500);
+    const uniqueHashes = new Set(result.hashes);
+    assert.equal(
+      uniqueHashes.size,
+      result.hashes.length,
+      "chunks diferentes têm hashes diferentes",
+    );
   });
 });

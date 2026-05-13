@@ -269,15 +269,26 @@ Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`
 ⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter completa (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding via `scripts/chunk-html-base64.ts`.
 
 ```bash
-npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir} --chunk-size 6500
+npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}
 ```
+
+Default chunk-size = 2500 (era 6500 até #1177 — corrupção char-a-char observada em edição 260513 com 6500; com 2500 não corrompe). Override com `--chunk-size N` se quiser.
 
 Stdout (JSON):
 ```json
-{ "chunkCount": 4, "totalBase64Bytes": 21984, "htmlBytes": 16384, "files": ["_b64_0.txt","_b64_1.txt","_b64_2.txt","_b64_3.txt"], "chunkSize": 6500 }
+{
+  "chunkCount": 16,
+  "totalBase64Bytes": 37788,
+  "htmlBytes": 28341,
+  "files": ["_b64_0.txt", ..., "_b64_15.txt"],
+  "chunkSize": 2500,
+  "hashes": ["006731d021bf4c02", ...]
+}
 ```
 
 Cada chunk fica em `{edition_dir}/_internal/_b64_{i}.txt`. Helper limpa `_b64_*.txt` antigos automaticamente. Falha = abortar (HTML não foi gerado em 1.3 ou path inválido).
+
+**`hashes[]` (#1177)**: SHA-256 truncado (16 hex chars) por chunk. Usar pra validação in-browser durante o push — se o hash do chunk lá não bate, houve corrupção char-a-char na transmissão LLM → javascript_tool, e o consumer deve re-push o mesmo chunk.
 
 **Fase 3 — Inicializar accumulator + push de cada chunk:**
 
@@ -288,13 +299,21 @@ window.__b64chunks = [];
 ```
 
 Para cada `_b64_{i}.txt` (em ordem 0, 1, 2, ...):
-1. Ler arquivo via Read tool: `{edition_dir}/_internal/_b64_{i}.txt` — conteúdo é base64 puro (~6500 chars).
-2. Pushar via javascript_tool com template literal:
+1. Ler arquivo via Read tool: `{edition_dir}/_internal/_b64_{i}.txt` — conteúdo é base64 puro (~2500 chars).
+2. Pushar via javascript_tool com template literal **+ hash check**:
    ```js
-   window.__b64chunks.push(`<conteúdo-do-chunk-i>`);
-   ({chunkCount: window.__b64chunks.length, totalLen: window.__b64chunks.reduce((a,c)=>a+c.length,0)});
+   const chunk = `<conteúdo-do-chunk-i>`;
+   window.__b64chunks.push(chunk);
+   async function hashOf(s) {
+     const buf = new TextEncoder().encode(s);
+     const h = await crypto.subtle.digest('SHA-256', buf);
+     return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0, 16);
+   }
+   hashOf(chunk).then(hash => ({
+     chunkIdx: <i>, hash, match: hash === '<hashes[i] do output local>',
+   }));
    ```
-3. Validar `chunkCount` incrementou e `totalLen` aumentou em ~6500.
+3. Validar `match: true`. Se `false` (corrupção char-a-char), re-push o mesmo chunk após reler o arquivo fresh.
 
 Base64 só contém `[A-Za-z0-9+/=]` — sem caracteres especiais que precisem escape em template literal. Não usar JSON.stringify nem string concatenation com `"`.
 

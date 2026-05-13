@@ -9,16 +9,31 @@
  *
  * Uso:
  *   npx tsx scripts/chunk-html-base64.ts --edition-dir data/editions/260510/
- *   npx tsx scripts/chunk-html-base64.ts --edition-dir ... --chunk-size 6500
+ *   npx tsx scripts/chunk-html-base64.ts --edition-dir ... --chunk-size 2500
  *
  * Output stdout (JSON):
- *   { "chunkCount": 4, "totalBase64Bytes": 21984, "htmlBytes": 16384, "files": ["_b64_0.txt", ...] }
+ *   {
+ *     "chunkCount": 16,
+ *     "totalBase64Bytes": 37788,
+ *     "htmlBytes": 28341,
+ *     "files": ["_b64_0.txt", ...],
+ *     "chunkSize": 2500,
+ *     "hashes": ["006731d021bf4c02", ...]    // #1177 — SHA-256 truncado 16 hex
+ *   }
  *
  * Background: paste de 16KB completo em htmlSnippet TipTap funciona via
  * `editor.commands.insertContent({type:'text', text: html})` após decode dos
  * chunks (validação E2E #4 do #1054 — execCommand atualiza só DOM, não state).
  * Cada javascript_tool call só aceita ~7KB de string literal — daí o
  * chunked accumulator pattern.
+ *
+ * #1177 defense in depth:
+ * - Default chunk-size reduzido de 6500 → 2500 (vimos corrupção 1 char/6500
+ *   em edição 260513, com 2500 sem corrupção). Chunks menores = menos
+ *   superfície de erro durante transmissão LLM → javascript_tool string arg.
+ * - Output inclui `hashes[]` (SHA-256 truncado pra 16 hex chars por chunk).
+ *   Consumer compara hash in-browser do chunk recebido com hash local —
+ *   detecta corruption silent char-a-char ANTES de fazer decode + paste.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -27,6 +42,7 @@ loadProjectEnv();
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,6 +52,17 @@ export interface ChunkResult {
   htmlBytes: number;
   files: string[];
   chunkSize: number;
+  /** #1177: SHA-256 truncado (16 hex chars) por chunk — pro consumer detectar
+   *  corrupção char-a-char durante transmissão LLM → javascript_tool. */
+  hashes: string[];
+}
+
+/**
+ * Hash SHA-256 truncado a 16 hex chars (8 bytes). Suficiente pra detectar
+ * corrupção de transmissão (collision rate ~1 em 2^32 = aceitável p/ uso).
+ */
+export function hashChunk(chunk: string): string {
+  return createHash("sha256").update(chunk, "utf8").digest("hex").slice(0, 16);
 }
 
 export function chunkBase64(b64: string, chunkSize: number): string[] {
@@ -90,6 +117,7 @@ export function chunkHtmlFile(
     htmlBytes: Buffer.byteLength(html, "utf8"),
     files,
     chunkSize,
+    hashes: chunks.map(hashChunk),
   };
 }
 
@@ -99,7 +127,10 @@ function parseArgs(argv: string[]): {
   htmlPath: string | null;
 } {
   let editionDir: string | null = null;
-  let chunkSize = 6500;
+  // #1177: default 2500 (era 6500). Chunks menores reduzem risco de corrupção
+  // char-a-char durante transmissão LLM → javascript_tool string arg. Edição
+  // 260513 expôs corrupção 1 char/6500 (B2B → B2C); 2500 não corrompeu.
+  let chunkSize = 2500;
   let htmlPath: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
