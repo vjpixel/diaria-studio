@@ -72,6 +72,7 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     { name: "destaque-max-chars", issue: "#964" },
     { name: "intro-count", issue: "#743" },
     { name: "coverage-line-format", issue: "#1207" },
+    { name: "multiline-links", issue: "#1213" },
     { name: "eai-section", issue: "#481" },
     { name: "relative-time", issue: "#editorial-rules" },
   ];

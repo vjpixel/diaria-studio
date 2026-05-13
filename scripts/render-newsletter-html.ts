@@ -396,7 +396,7 @@ function extractContent(editionDir: string): NewsletterContent {
     throw new Error(`${reviewedPath} not found — run Stage 2 first`);
   }
 
-  const reviewedText = readFileSync(reviewedPath, "utf8");
+  const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
 
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
   const baseDestaques = parseDestaques(reviewedText);
@@ -493,6 +493,36 @@ export function unescapeMd(s: string): string {
  */
 function escText(s: string): string {
   return esc(unescapeMd(s));
+}
+
+/**
+ * Pre-processor #1213: junta links markdown quebrados em múltiplas linhas
+ * em um único `[label](url)`.
+ *
+ * Writer agent às vezes emite links no formato:
+ *
+ *   - [Melhores cursos grátis de IA](
+ *   https://diaria.beehiiv.com/cursos-gratuitos-de-ia
+ *   )
+ *
+ * O parser markdown (`processInlineLinks`) opera linha-a-linha, então
+ * esses links viram texto bruto `[Label](` + URL como parágrafo separado
+ * + `)` órfão. Caso real 260517: Pixel viu no test email do Beehiiv.
+ *
+ * Heurística: detecta `](` no fim de linha (ignorando whitespace) e procura
+ * uma URL na próxima linha não-vazia, seguida por `)` (eventualmente em
+ * outra linha). Substitui pelo `[label](url)` em linha única.
+ *
+ * Conservativa: só processa quando a estrutura é inequívoca. URLs em
+ * uma linha single mantêm-se intactas.
+ */
+export function joinMultilineLinks(md: string): string {
+  // Match `]( ... )` onde `...` pode ter newlines + whitespace ao redor da URL.
+  // [^\]]+ no label (sem `]`), depois `](\s*(URL)\s*)` onde os \s* tolera newlines.
+  return md.replace(
+    /\[([^\]]+)\]\(\s*\n\s*(https?:\/\/\S+?)\s*\n\s*\)/g,
+    "[$1]($2)",
+  );
 }
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.

@@ -15,6 +15,7 @@ import {
   renderCoverage,
   unescapeMd,
   truncateAtSectionTerminator,
+  joinMultilineLinks,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -1038,5 +1039,55 @@ describe("parseSections com terminator implícito (#1118)", () => {
     assert.equal(sections.length, 1);
     assert.equal(sections[0].items.length, 1);
     assert.equal(sections[0].items[0].title, "Item 1");
+  });
+});
+
+describe("joinMultilineLinks (#1213)", () => {
+  it("junta link em 3 linhas no formato `[label](\\nurl\\n)`", () => {
+    const md = [
+      "- [Melhores cursos grátis de IA](",
+      "https://diaria.beehiiv.com/cursos-gratuitos-de-ia",
+      ")",
+    ].join("\n");
+    const out = joinMultilineLinks(md);
+    assert.equal(out, "- [Melhores cursos grátis de IA](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)");
+  });
+
+  it("junta múltiplos links no mesmo arquivo (caso 260517)", () => {
+    const md = [
+      "- [Melhores cursos](",
+      "https://diaria.beehiiv.com/cursos",
+      ")",
+      "- [Curadoria](",
+      "https://diaria.beehiiv.com/livros",
+      ")",
+    ].join("\n");
+    const out = joinMultilineLinks(md);
+    assert.match(out, /- \[Melhores cursos\]\(https:\/\/diaria\.beehiiv\.com\/cursos\)/);
+    assert.match(out, /- \[Curadoria\]\(https:\/\/diaria\.beehiiv\.com\/livros\)/);
+    assert.ok(!out.includes("](\n"), "no remaining broken link");
+  });
+
+  it("preserva links que já estão em uma linha", () => {
+    const md = "Link [já fechado](https://x.com) inline.";
+    const out = joinMultilineLinks(md);
+    assert.equal(out, md);
+  });
+
+  it("preserva texto sem links", () => {
+    const md = "Parágrafo simples sem nenhum link markdown.\n\nOutra linha.";
+    const out = joinMultilineLinks(md);
+    assert.equal(out, md);
+  });
+
+  it("idempotente — re-aplicar não muda", () => {
+    const md = [
+      "- [Cursos](",
+      "https://example.com",
+      ")",
+    ].join("\n");
+    const first = joinMultilineLinks(md);
+    const second = joinMultilineLinks(first);
+    assert.equal(first, second);
   });
 });
