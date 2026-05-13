@@ -14,6 +14,7 @@ import {
   checkIntentionalError,
   lintIntroCount,
   lintRelativeTime,
+  checkCoverageLine,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("extractUrlsBySection", () => {
@@ -1368,6 +1369,55 @@ describe("lintIntroCount (#743)", () => {
     const r = lintIntroCount(md);
     assert.equal(r.actual, 4, `actual=${r.actual} claimed=${r.claimed}`);
     assert.equal(r.ok, true);
+  });
+});
+
+describe("checkCoverageLine standalone (--check coverage-line-format, #1207)", () => {
+  it("ok com formato canônico (plural)", () => {
+    const md = "Para esta edição, eu (o editor) enviei 4 submissões e a Diar.ia encontrou outros 15 artigos. Selecionamos os 10 mais relevantes para as pessoas que assinam a newsletter.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("ok com formato singular (1 submissão, 1 artigo, 1 selecionado)", () => {
+    const md = "Para esta edição, eu (o editor) enviei 1 submissão e a Diar.ia encontrou outros 1 artigo. Selecionamos o artigo mais relevante para as pessoas que assinam a newsletter.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("falha com formato hand-crafted errado (caso 260517)", () => {
+    // Regressão: durante /diaria-test 260517 hand-crafted line
+    // "Esta edição cobre X artigos..." passou pelo pipeline em vez do canônico
+    const md = "Esta edição cobre 19 artigos selecionados de 35 fontes (RSS).";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, false);
+    assert.match(r.firstLine, /Esta edição cobre/);
+  });
+
+  it("falha com 'Selecionamos os' standalone (sem prefix canônico)", () => {
+    const md = "Selecionamos os 10 mais relevantes para você.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, false);
+  });
+
+  it("#916: pula bloco TÍTULO/SUBTÍTULO antes de procurar coverage", () => {
+    // Insert-titulo-subtitulo.ts adiciona TÍTULO + SUBTÍTULO no topo do
+    // 02-reviewed.md pra alimentar Beehiiv. Coverage line vem depois do ---.
+    const md = [
+      "TÍTULO",
+      "",
+      "TSE cita IA como risco às eleições 2026",
+      "",
+      "SUBTÍTULO",
+      "",
+      "Austrália obriga datacenters a bancar renováveis | Como a NVIDIA usa Codex em produção",
+      "",
+      "---",
+      "Para esta edição, eu (o editor) enviei 3 submissões e a Diar.ia encontrou outros 127 artigos. Selecionamos os 10 mais relevantes para as pessoas que assinam a newsletter.",
+    ].join("\n");
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true, `firstLine extracted: "${r.firstLine}"`);
+    assert.match(r.firstLine, /^Para esta edição/);
   });
 });
 
