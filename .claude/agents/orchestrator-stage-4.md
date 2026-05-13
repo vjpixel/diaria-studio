@@ -349,10 +349,7 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
   - regenerar tudo (volta a 4b)
   - abortar
 
-- **Atualizar `_internal/cost.md`.** Append linha unificada na tabela da Etapa 4, recalcular `Total de chamadas`, gravar:
-  ```
-  | 4 | {stage_start} | {now} | publish_newsletter:1, publish_facebook:1, publish_social:1, review_test_email:{review_attempts} | 0 | {3 + review_attempts} |
-  ```
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 4 done via `update-stage-status.ts --stage 4 --status done --end ISO --duration-ms X [--cost-usd Y --models "sonnet-4-6"]`.
 
 ### 4h. Fechar poll É IA? (#465, #1044)
 
@@ -442,7 +439,7 @@ Agent faz dedup contra GitHub issues abertas, apresenta gate humano ("aprovar 1,
 
 ### 4b-5. Logar resultado
 
-Append em `_internal/cost.md` uma linha pro stage final, e gravar resumo:
+Gravar resumo (#1217 — sem cost.md):
 ```
 ✅ Auto-reporter completo.
    {reported_count}/{signals_total} sinais reportados, {issues_created} novas issues criadas, {issues_commented} issues comentadas.

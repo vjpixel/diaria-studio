@@ -550,7 +550,4 @@ Apresentar ao usuário:
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'sentinel_write_failed'`). **Não bloquear** a aprovação do gate.
 - **Arquivar o inbox** (#680): `mkdir -p data/inbox-archive` seguido de `mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md`. Recriar `data/inbox.md` vazio. Sem o mkdir, falha em checkout limpo.
-- **Atualizar `_internal/cost.md`.** Append linha na tabela de Stage 1, recalcular `Total de chamadas`, gravar com `Write`:
-  ```
-  | 1 | {stage_start} | {now} | inbox_drainer:1, refresh_dedup:1, source_researcher:{N}, discovery:{M}, link_verifier:{chunks}, categorizer:1, research_reviewer:1, scorer:1 | {soma_haiku} | 1 |
-  ```
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 1 done via `update-stage-status.ts` com `--end ISO`, `--duration-ms` e opcionalmente `--cost-usd`, `--tokens-in`, `--tokens-out`, `--models "haiku-4-5,opus-4-7"` quando o orchestrator tiver agregado token usage dos subagents.

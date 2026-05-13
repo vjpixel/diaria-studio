@@ -95,9 +95,11 @@ Aprovar e seguir para Etapa {N+1}? (sim / editar / retry)
 
 Se o usuário pedir "refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) — `sim`/`yes`/`confirmar` não valem. Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar. Nunca sobrescrever arquivos de stages anteriores sem essa dupla confirmação. Para deleção manual real (CLI fora do pipeline), o editor usa `scripts/safe-delete-edition.ts`.
 
-### Cost tracking
+### Cost + timing tracking (#1217)
 
-Manter `_internal/cost.md` atualizado ao final de cada stage. Se já existe (resume), não sobrescrever cabeçalho — apenas append novas linhas na tabela e recalcular `Total de chamadas`.
+`stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X [--cost-usd Y --tokens-in N --tokens-out N --models "haiku,opus"]`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation, visível no Drive durante runs).
+
+`_internal/cost.md` foi removido em #1217 — era redundante e nunca foi preenchido na prática.
 
 ### Task tracking — UI hygiene (#904)
 

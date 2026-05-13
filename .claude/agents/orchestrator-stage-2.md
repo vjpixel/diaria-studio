@@ -325,8 +325,5 @@ Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comm
     ```
     Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 
-  - **Atualizar `_internal/cost.md`.** Append linha na tabela da Etapa 2, recalcular `Total de chamadas`, gravar:
-    ```
-    | 2 | {stage_start} | {now} | writer:1, social_linkedin:1, social_facebook:1, humanizador:2, title_picker:?1, drive_syncer:1 | 3 | 3 |
-    ```
+  - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X [--cost-usd Y --tokens-in N --tokens-out N --models "sonnet-4-6,opus-4-7"]`.
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.
