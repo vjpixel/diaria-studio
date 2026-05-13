@@ -458,8 +458,8 @@ de 260504). Setar explicitamente evita re-envio manual.
    Encontrar input com label "Subject" ou "Subject line".
 2. **Limpar** o conteúdo existente (triple-click ou Ctrl+A + Delete).
 3. **Setar valor**: usar o `title` extraído no passo 1 (que já é o D1 title).
-   - Modo normal: `{title}`
-   - Modo test (`test_email_only: true`): prefixar com `[TEST] ` (ex: `[TEST] Falha na Lovable atinge Spotify, Uber e outros`).
+   - **Sempre** setar apenas `{title}` (igual em modo normal e test).
+   - **NUNCA prefixar `[TEST] ` manualmente** (#1215): Beehiiv auto-adiciona o prefixo `[TEST] ` em qualquer email enviado via "Send test email". Setar manualmente vira `[TEST] [TEST] {title}` no inbox do editor — bug silencioso em produção há tempo.
 4. **Confirmar**: tab away do input pra trigar save automático.
 5. **Verificar**: ler o valor de volta via `read_page` e confirmar que bate
    com o esperado. Se Beehiiv re-aplicou template default sobrescrevendo, retry 1×.
@@ -492,7 +492,7 @@ com o test email — editor pode editar manualmente.
 }
 ```
 
-`subject_set` (#610): valor que o agent setou no campo Subject (com prefix `[TEST] ` se test mode). Se passo 6.5 falhou, registrar `subject_set: null` e adicionar entry em `unfixed_issues[]`.
+`subject_set` (#610): valor que o agent setou no campo Subject. **Não inclui** o prefix `[TEST] ` mesmo em test mode (#1215) — Beehiiv auto-adiciona o prefixo no envio. Se passo 6.5 falhou, registrar `subject_set: null` e adicionar entry em `unfixed_issues[]`.
 
 `unfixed_issues[]` agrega problemas detectados no passo 5.3 (Verificação pós-paste) que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
