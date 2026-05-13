@@ -787,7 +787,13 @@ export function lintIntroCount(md: string): IntroCountResult {
   // Helper: linha é URL canônica (bare ou inline link)
   const isUrl = (s: string) =>
     /^\s*(?:\[https?:\/\/\S+\]\(https?:\/\/\S+\)|https?:\/\/\S+)\s*$/.test(s);
-  const isInlineLink = (s: string) => /^\[.+\]\(https?:\/\/.+\)\s*$/.test(s);
+  // #1206: aceitar ambos formatos de bold em inline link:
+  //   - [**Título**](url)    (canonical, usado pelas edições publicadas)
+  //   - **[Título](url)**    (gerado às vezes pelo writer agent)
+  // Pre-#1206 a regex `^\[.+\]\(...\)` falhava no formato **[...]** porque
+  // a linha começava com **. Trailing trim cobre `  ` (line-break markdown).
+  const isInlineLink = (s: string) =>
+    /^\*{0,2}\[.+\]\(https?:\/\/.+\)\*{0,2}\s*$/.test(s);
 
   for (const raw of lines) {
     const t = raw.trim();
