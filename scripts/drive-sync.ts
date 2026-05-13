@@ -39,6 +39,7 @@ import {
   parseDriveFileUploadResponse,
 } from "./lib/schemas/drive-api.ts"; // #649
 import { logEvent } from "./lib/run-log.ts"; // #612
+import { unescapeMarkdown } from "./lib/markdown-unescape.ts"; // #1188
 import type { DriveCache, FileEntry, EditionCache } from "./lib/schemas/drive-cache.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -1016,7 +1017,19 @@ export async function pullFile(
   const localPath = resolve(ROOT, editionDir, filename);
   const dir = resolve(ROOT, editionDir);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(localPath, bytes);
+
+  // #1188: arquivos exportados de Google Doc voltam com escapes de markdown
+  // adicionados pelo Drive (\#, \_, [url](url), etc). Sanitizar antes de
+  // sobrescrever local. Apenas pra CONVERT_TO_DOC + mime markdown — outros
+  // (imagens, JSON, etc) ficam intactos.
+  const pathBase = pathBasename(filename);
+  if (isGoogleDoc && CONVERT_TO_DOC.has(pathBase)) {
+    const text = bytes.toString("utf8");
+    const sanitized = unescapeMarkdown(text);
+    writeFileSync(localPath, sanitized, "utf8");
+  } else {
+    writeFileSync(localPath, bytes);
+  }
 
   const newMtime = statSync(localPath).mtimeMs;
   cache.editions[yymmdd].files[filename] = {
