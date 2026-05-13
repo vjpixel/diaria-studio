@@ -188,6 +188,8 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 - **Subtitle** = `subtitle` (se houver campo)
 - **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800)
 
+**⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. Antes de avançar pra Audience/Email steps: (a) `Tab` away pra trigar blur+autosave, (b) chamar `mcp__claude_ai_Beehiiv__get_post` e confirmar `title === expected`, (c) se stale, re-focar o campo + retype + blur. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
+
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
 **Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.
@@ -431,6 +433,8 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 - **NÃO clicar em Schedule, Publish, ou Send.**
 - Clicar em "Save draft" / "Save as draft".
 - Capturar `draft_url` da barra de endereço (deve conter `/posts/{id}/edit`).
+
+**Por que o playbook para no draft (não tenta Schedule via automação)** (#1198, 2026-05-12): testado 5 mecanismos pra clicar "Publish on..." no modal Schedule do Beehiiv — `computer.left_click` por coord, `find` + ref, `btn.click()` via JS, `PointerEvent` dispatch synthetic, `props.onClick(fakeEvent)` direto no React fiber. Todos foram silenciosamente rejeitados (modal não fecha, status permanece `draft`, `scheduled_at` null). Provável guard de user-activation (gesto humano real) no Beehiiv pra ações de blast radius alto (publicação real pra audiência). Conclusão: **Schedule é sempre manual**, mesmo se o resto do flow rodar 100% automático — não vale gastar mais ciclos tentando contornar.
 
 ### 6.5. Setar Subject line do email (#610)
 
