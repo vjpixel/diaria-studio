@@ -77,7 +77,9 @@ Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, m
   - URLs
   - Seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS
   - Bloco É IA?
-  - Formatação geral (linhas em branco, separadores `---`)
+  - **Separadores `---` entre seções — TODOS preservados. NUNCA remover.** Caso real 260517: agent removeu `---` entre OUTRAS NOTÍCIAS e SORTEIO, quebrando o intro-count lint downstream.
+  - **Ordem das seções fixas — TODAS preservadas. NUNCA reordenar.** Ordem canônica: DESTAQUE 1 → DESTAQUE 2 → É IA? → DESTAQUE 3 → LANÇAMENTOS → OUTRAS NOTÍCIAS → ERRO INTENCIONAL → SORTEIO → PARA ENCERRAR. Caso real 260517: agent moveu ERRO INTENCIONAL pro final do arquivo (depois de PARA ENCERRAR) — `scripts/validate-section-structure.ts` agora abort se isso acontecer.
+  - Formatação geral (linhas em branco)
 
 - **Se algum destaque já tem exatamente 1 título**, deixar como está. Sem reescrever.
 
