@@ -475,6 +475,81 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   });
 }
 
+// ── /html/{key} — host pra HTML de newsletter (#1178) ────────────────────────
+
+/**
+ * GET /html/{key}     → retorna HTML (text/html, CORS *, max-age curto).
+ * PUT /html/{key}     → grava HTML no KV. Auth via HMAC(ADMIN_SECRET, "html:{key}")
+ *                       no header Authorization: "Bearer {sig}". TTL 7 dias
+ *                       (suficiente pra paste de edição + retries).
+ *
+ * Motivação (#1178): paste de HTML via chunk-html-base64 + javascript_tool
+ * consome ~80K tokens (16 chunks × ~5K cada). Hospedar no Worker permite
+ * `fetch('/html/{key}')` direto do browser → ~5K tokens total.
+ *
+ * Trade-off: HTML temporariamente público (mesma audiência do email final).
+ * Mitigação: key contém edition + uuid, TTL 7d, sem listagem.
+ */
+const HTML_KV_PREFIX = "html:";
+const HTML_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 dias
+
+export async function handleHtmlGet(path: string, env: Env): Promise<Response> {
+  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+  const key = decodeURIComponent(path.slice("/html/".length));
+  if (!key) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
+  const value = await env.POLL.get(HTML_KV_PREFIX + key, "text");
+  if (!value) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
+  return new Response(value, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "text/html; charset=utf-8",
+      // Curto: o consumer (Claude top-level) busca uma vez e cola. Cache curto
+      // permite re-render no mesmo edition sobrescrever sem stale.
+      "Cache-Control": "private, max-age=60",
+    },
+  });
+}
+
+export async function handleHtmlPut(
+  path: string,
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+  const key = decodeURIComponent(path.slice("/html/".length));
+  if (!key) {
+    return json({ error: "key required" }, 400, env);
+  }
+  // Auth: Authorization: Bearer {HMAC(ADMIN_SECRET, "html:{key}")}
+  const authHeader = request.headers.get("authorization") ?? "";
+  const m = authHeader.match(/^Bearer\s+([0-9a-f]+)$/i);
+  const sig = m?.[1] ?? "";
+  if (!sig) {
+    return json({ error: "missing Bearer token" }, 401, env);
+  }
+  const valid = await hmacVerify(env.ADMIN_SECRET, `html:${key}`, sig);
+  if (!valid) {
+    return json({ error: "invalid signature" }, 403, env);
+  }
+  const body = await request.text();
+  if (!body) {
+    return json({ error: "empty body" }, 400, env);
+  }
+  // Limit: ~5MB. Maior que isso é provavelmente bug, não newsletter.
+  if (body.length > 5 * 1024 * 1024) {
+    return json({ error: "body too large (>5MB)" }, 413, env);
+  }
+  await env.POLL.put(HTML_KV_PREFIX + key, body, { expirationTtl: HTML_TTL_SECONDS });
+  return new Response(JSON.stringify({ ok: true, key, bytes: body.length, ttl_seconds: HTML_TTL_SECONDS }), {
+    status: 200,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export default {
@@ -492,7 +567,10 @@ export default {
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, env);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
+    // #1178: /html/{key} (GET serve, PUT grava com auth ADMIN_SECRET)
+    if (path.startsWith("/html/") && request.method === "GET") return handleHtmlGet(path, env);
+    if (path.startsWith("/html/") && request.method === "PUT") return handleHtmlPut(path, request, env);
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/set-name", "/admin/correct", "/img/{key}", "/html/{key}"] }, 404, env);
   },
 };

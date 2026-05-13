@@ -264,60 +264,67 @@ const node = document.querySelector('.node-htmlSnippet');
 
 Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`. Se editor for undefined, esperar 1-2s e retentar (TipTap pode estar inicializando).
 
-**Fase 2 — Gerar chunks base64 via TS helper:**
+**Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — caminho recomendado.
 
-⚠️ **JS arg limit ~7KB confirmado em #1054 (2026-05-10)**. Newsletter completa (16KB) não cabe em 1 chamada `javascript_tool`. Solução: chunked accumulator com base64 encoding via `scripts/chunk-html-base64.ts`.
+Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`diar-ia-poll.diaria.workers.dev/html/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
-npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD}
 ```
-
-Default chunk-size = 2500 (era 6500 até #1177 — corrupção char-a-char observada em edição 260513 com 6500; com 2500 não corrompe). Override com `--chunk-size N` se quiser.
 
 Stdout (JSON):
 ```json
 {
-  "chunkCount": 16,
-  "totalBase64Bytes": 37788,
-  "htmlBytes": 28341,
-  "files": ["_b64_0.txt", ..., "_b64_15.txt"],
-  "chunkSize": 2500,
-  "hashes": ["006731d021bf4c02", ...]
+  "edition": "260514",
+  "url": "https://diar-ia-poll.diaria.workers.dev/html/260514",
+  "bytes": 28341,
+  "ttl_seconds": 604800
 }
 ```
 
-Cada chunk fica em `{edition_dir}/_internal/_b64_{i}.txt`. Helper limpa `_b64_*.txt` antigos automaticamente. Falha = abortar (HTML não foi gerado em 1.3 ou path inválido).
+Pré-requisitos:
+- `ADMIN_SECRET` (ou `POLL_ADMIN_SECRET`) no env — Worker valida HMAC do PUT.
+- `_internal/newsletter-final.html` (gerado em 1.3).
 
-**`hashes[]` (#1177)**: SHA-256 truncado (16 hex chars) por chunk. Usar pra validação in-browser durante o push — se o hash do chunk lá não bate, houve corrupção char-a-char na transmissão LLM → javascript_tool, e o consumer deve re-push o mesmo chunk.
+TTL 7 dias no KV — suficiente pra paste de edição + retries. Re-rodar sobrescreve sem duplicar.
 
-**Fase 3 — Inicializar accumulator + push de cada chunk:**
+**Fallback legacy (#1177)**: se Worker indisponível ou ADMIN_SECRET ausente, ainda existe o flow chunk-html-base64 + javascript_tool push com hash check. Não recomendado (~80K tokens). Pra usar: `npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}` e seguir Fases 3/4 legacy do PR #1194 (visíveis no git log).
+
+**Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
+
+Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
 
 ```js
-// (1ª chamada javascript_tool — inicializar)
-window.__b64chunks = [];
-({initialized: true});
+// (1 chamada javascript_tool — fetch + decode + insertContent)
+(async () => {
+  const res = await fetch('https://diar-ia-poll.diaria.workers.dev/html/260514');
+  if (!res.ok) return { error: `fetch ${res.status}` };
+  const html = await res.text();
+
+  const pm = document.querySelector('.tiptap.ProseMirror');
+  const editor = pm?.editor;
+  if (!editor) return { error: 'no editor' };
+
+  let htmlSnippetPos = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'htmlSnippet') {
+      htmlSnippetPos = pos;
+      return false;
+    }
+  });
+  if (htmlSnippetPos === null) return { error: 'no htmlSnippet' };
+
+  const tr = editor.state.tr;
+  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
+  tr.setSelection(editor.state.selection.constructor.near($pos));
+  editor.view.dispatch(tr);
+
+  const ok = editor.commands.insertContent({ type: 'text', text: html });
+  return { inserted: ok, htmlBytes: html.length, docSize: editor.state.doc.content.size };
+})()
 ```
 
-Para cada `_b64_{i}.txt` (em ordem 0, 1, 2, ...):
-1. Ler arquivo via Read tool: `{edition_dir}/_internal/_b64_{i}.txt` — conteúdo é base64 puro (~2500 chars).
-2. Pushar via javascript_tool com template literal **+ hash check**:
-   ```js
-   const chunk = `<conteúdo-do-chunk-i>`;
-   window.__b64chunks.push(chunk);
-   async function hashOf(s) {
-     const buf = new TextEncoder().encode(s);
-     const h = await crypto.subtle.digest('SHA-256', buf);
-     return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0, 16);
-   }
-   hashOf(chunk).then(hash => ({
-     chunkIdx: <i>, hash, match: hash === '<hashes[i] do output local>',
-   }));
-   ```
-3. Validar `match: true`. Se `false` (corrupção char-a-char), re-push o mesmo chunk após reler o arquivo fresh.
-
-Base64 só contém `[A-Za-z0-9+/=]` — sem caracteres especiais que precisem escape em template literal. Não usar JSON.stringify nem string concatenation com `"`.
-
-**Fase 4 — Decodificar + paste via TipTap `editor.commands.insertContent`:**
+**Fallback legacy Fase 4 (chunks decode) — não recomendado:**
 
 ⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
 
