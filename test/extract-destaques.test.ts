@@ -334,19 +334,34 @@ describe("parseDestaques (#172)", () => {
   });
 });
 
-describe("buildSubtitle", () => {
-  it("junta d2 e d3 quando cabem em 80 chars", () => {
+describe("buildSubtitle (#1214)", () => {
+  it("junta d2 e d3 quando combinado cabe em 200 chars", () => {
     const r = buildSubtitle("Título curto 2", "Título curto 3");
     assert.equal(r, "Título curto 2 | Título curto 3");
   });
 
-  it("usa só d2 quando combinado passa de 80 chars", () => {
-    const long2 = "Um título mais longo que tem várias palavras";
-    const long3 = "Outro título também longo com palavras";
+  it("junta d2 e d3 quando combinado > 80 mas <= 200 (caso 260517)", () => {
+    // Regressão pra #1214: D2 + ' | ' + D3 = 86 chars caía pra só D2
+    const d2 = "Austrália obriga datacenters a bancar renováveis";   // 48
+    const d3 = "Como a NVIDIA usa Codex em produção";                  // 35
+    const r = buildSubtitle(d2, d3);
+    assert.equal(r, `${d2} | ${d3}`);
+    assert.ok(r.length > 80 && r.length <= 200);
+  });
+
+  it("usa só d2 quando combinado passa de 200 chars", () => {
+    const long2 = "X".repeat(150);
+    const long3 = "Y".repeat(100);
     const r = buildSubtitle(long2, long3);
-    // Combinado: 44 + 3 + 38 = 85 → trunca pra só d2
-    if ((`${long2} | ${long3}`).length > 80) {
-      assert.equal(r, long2);
-    }
+    // Combinado: 150 + 3 + 100 = 253 → trunca pra só d2 (150 chars, cabe em 200)
+    assert.equal(r, long2);
+  });
+
+  it("trunca d2 quando d2 sozinho passa de 200 chars", () => {
+    const huge2 = "Z".repeat(250);
+    const long3 = "Y".repeat(50);
+    const r = buildSubtitle(huge2, long3);
+    assert.equal(r.length, 200);
+    assert.ok(r.endsWith("..."));
   });
 });
