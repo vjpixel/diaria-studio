@@ -49,11 +49,15 @@ interface RawArticle {
 export function countEditorVsAuto(pool: RawArticle[]): { x: number; y: number } {
   let x = 0;
   for (const a of pool) {
-    if (
-      a.flag === "editor_submitted" ||
-      a.flag === "newsletter_extracted" ||
-      a.source === "inbox"
-    ) {
+    // #1190: newsletter_extracted = link extraído de newsletter forwarded
+    // pelo Pixel (Cyberman, AlphaSignal, etc). Pixel NÃO curou esses links
+    // individualmente — só forwarded a newsletter inteira. Semanticamente é
+    // descoberta automática assistida, não submissão editorial. Vai pra Y.
+    //
+    // editor_submitted = forward direto do Pixel com link específico → X.
+    // source: "inbox" = back-compat com runs antigos (pré-#1095, quando
+    // tudo do inbox era considerado editor submission).
+    if (a.flag === "editor_submitted" || a.source === "inbox") {
       x++;
     }
   }

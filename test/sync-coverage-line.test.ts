@@ -21,17 +21,19 @@ describe("countEditorVsAuto", () => {
     assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 1 });
   });
 
-  it("conta newsletter_extracted como X (#1095)", () => {
+  it("#1190: NÃO conta newsletter_extracted como X (descoberta auto)", () => {
+    // Reverso do comportamento original (#1095): newsletter_extracted é
+    // descoberta automática assistida, não submissão editorial.
     const pool = [
       { flag: "newsletter_extracted", url: "u1" },
       { flag: "newsletter_extracted", url: "u2" },
       { url: "u3" },
       { url: "u4" },
     ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 2 });
+    assert.deepEqual(countEditorVsAuto(pool), { x: 0, y: 4 });
   });
 
-  it("conta source: inbox como X (back-compat)", () => {
+  it("conta source: inbox como X (back-compat pré-#1095)", () => {
     const pool = [
       { source: "inbox", url: "u1" },
       { url: "u2" },
@@ -39,7 +41,7 @@ describe("countEditorVsAuto", () => {
     assert.deepEqual(countEditorVsAuto(pool), { x: 1, y: 1 });
   });
 
-  it("mix completo (editor + extracted + inbox + auto)", () => {
+  it("mix completo: só editor_submitted + source:inbox contam (#1190)", () => {
     const pool = [
       { flag: "editor_submitted", url: "1" },
       { flag: "newsletter_extracted", url: "2" },
@@ -47,7 +49,24 @@ describe("countEditorVsAuto", () => {
       { url: "4" },
       { url: "5" },
     ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 3, y: 2 });
+    // editor_submitted + source:inbox = 2 em X.
+    // newsletter_extracted (curadoria automática) + 2 auto-discovery = 3 em Y.
+    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 3 });
+  });
+
+  it("#1190: caso real edição 260513 (8 editor_submitted + 263 newsletter_extracted)", () => {
+    // Simula a edição 260513 onde:
+    //   - 8 URLs forwarded direto pelo Pixel (editor_submitted)
+    //   - 263 URLs extraídas de newsletters não-Pixel (newsletter_extracted)
+    //   - resto = auto-discovery via RSS/researchers
+    const pool: { flag?: string; source?: string; url: string }[] = [];
+    for (let i = 0; i < 8; i++) pool.push({ flag: "editor_submitted", url: `e${i}` });
+    for (let i = 0; i < 263; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
+    for (let i = 0; i < 100; i++) pool.push({ url: `a${i}` });
+
+    const { x, y } = countEditorVsAuto(pool);
+    assert.equal(x, 8, "só forwards direto do Pixel (não os 263 extraídos)");
+    assert.equal(y, 363, "newsletter_extracted (263) + auto (100) = 363");
   });
 
   it("pool vazio", () => {
