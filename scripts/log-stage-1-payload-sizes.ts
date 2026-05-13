@@ -162,19 +162,28 @@ export function buildReport(opts: {
 /**
  * #891 P3: thresholds pra detectar regressão de payload size pós-cap.
  *
- * Calibrados contra dado real (não estimativa):
- * - Baseline 260507 pós-cap = 243KB (67 sources ativas, todas no cap 30).
- * - 300KB warn: baseline + 25% de margem. Sinaliza que (a) novas sources
- *   foram adicionadas, (b) alguma fonte explodiu além do cap, ou (c)
- *   subagent retornou payload extra-grande no return string.
- * - 700KB error: território perigoso. Cenário do bug original (561KB
- *   pré-cap, ~3M tokens, 309% do limite) cai aqui — auto-reporter pega
- *   level=error e cria issue automática.
+ * Histórico de calibração:
+ * - 260507 baseline = 243KB (67 sources, cap 30, sem RSS-only mode).
+ *   Threshold original: 300KB warn / 700KB error.
+ * - 260517 (#1203): 987KB total. Não é regressão — pipeline cresceu
+ *   organicamente: RSS-only mode trouxe múltiplos checkpoints intermediários
+ *   (tmp-articles-raw, post-verify, expanded, enrich, kept, categorized,
+ *   clustered, filtered, dates-reviewed, scored, finalized = ~10 snapshots
+ *   ~90KB cada). Esses tmp files são úteis pra debug; remover seria
+ *   anti-feature.
+ *
+ * Re-calibração 2026-05-13 (#1203):
+ * - 1MB warn: baseline + margem pra growth. Captura crescimento
+ *   significativo (e.g., 80+ sources) ou regressão de cap.
+ * - 2.5MB error: território perigoso. Cenário do bug original
+ *   (561KB pré-cap, ~3M tokens) cai aqui só se subagent return strings
+ *   forem massivos. Disk usage 2.5MB+ em intermediate JSONs sinaliza
+ *   regressão real (cap quebrado, tmp não limpado entre runs, etc).
  *
  * Não bloqueia gate — só dispara warn/error level no run-log.
  */
-export const PAYLOAD_WARN_BYTES = 300 * 1024;
-export const PAYLOAD_ERROR_BYTES = 700 * 1024;
+export const PAYLOAD_WARN_BYTES = 1024 * 1024;
+export const PAYLOAD_ERROR_BYTES = 2.5 * 1024 * 1024;
 
 export function payloadLevel(bytes: number): "info" | "warn" | "error" {
   if (bytes >= PAYLOAD_ERROR_BYTES) return "error";

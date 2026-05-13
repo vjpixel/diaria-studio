@@ -226,36 +226,35 @@ describe("buildReport (#891)", () => {
   });
 });
 
-describe("payloadLevel ratchet (#891)", () => {
-  it("info quando bytes < 300KB (baseline saudável pós-cap)", () => {
+describe("payloadLevel ratchet (#891, recalibrado #1203)", () => {
+  it("info quando bytes < 1MB (baseline saudável)", () => {
     assert.equal(payloadLevel(0), "info");
     assert.equal(payloadLevel(150 * 1024), "info");
     // Baseline 260507 pós-cap (243K) cai em info — pipeline saudável.
     assert.equal(payloadLevel(243 * 1024), "info");
+    // 260517 baseline (~987K) cai em info — pipeline cresceu com checkpoints
+    // intermediários mas dentro do esperado.
+    assert.equal(payloadLevel(700 * 1024), "info");
     assert.equal(payloadLevel(PAYLOAD_WARN_BYTES - 1), "info");
   });
 
-  it("warn quando bytes >= 300KB e < 700KB", () => {
+  it("warn quando bytes >= 1MB e < 2.5MB", () => {
     assert.equal(payloadLevel(PAYLOAD_WARN_BYTES), "warn");
-    assert.equal(payloadLevel(500 * 1024), "warn");
+    assert.equal(payloadLevel(1.5 * 1024 * 1024), "warn");
     assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES - 1), "warn");
   });
 
-  it("error quando bytes >= 700KB", () => {
+  it("error quando bytes >= 2.5MB (regressão real)", () => {
     assert.equal(payloadLevel(PAYLOAD_ERROR_BYTES), "error");
-    assert.equal(payloadLevel(1024 * 1024), "error");
-    // 1M bytes — território de context overflow, dispara issue via auto-reporter.
-    assert.equal(payloadLevel(1500 * 1024), "error");
+    assert.equal(payloadLevel(3 * 1024 * 1024), "error");
+    // Cenário do bug original 561KB pré-cap não cai mais em error
+    // (era 309% do limite de 700K; agora é 22% do limite de 2.5MB).
+    // Recalibração: error = território de context overflow real,
+    // não falso-positivo de pipeline com muitos checkpoints.
   });
 
-  it("cenário do bug original (561K pré-cap em 260507) cai em warn agora", () => {
-    // Pre-cap, 561K passava sob o radar (sem alarm). Pós-cap, threshold 300/700
-    // pega esse range em warn (não bloqueia, mas sinaliza pra editor investigar).
-    assert.equal(payloadLevel(561 * 1024), "warn");
-  });
-
-  it("constants exportadas: warn=300KB, error=700KB", () => {
-    assert.equal(PAYLOAD_WARN_BYTES, 300 * 1024);
-    assert.equal(PAYLOAD_ERROR_BYTES, 700 * 1024);
+  it("constants exportadas: warn=1MB, error=2.5MB (#1203)", () => {
+    assert.equal(PAYLOAD_WARN_BYTES, 1024 * 1024);
+    assert.equal(PAYLOAD_ERROR_BYTES, 2.5 * 1024 * 1024);
   });
 });
