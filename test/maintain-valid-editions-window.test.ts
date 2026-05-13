@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   editionsInWindow,
   diffSets,
+  run,
 } from "../scripts/maintain-valid-editions-window.ts";
 
 describe("editionsInWindow (#1233)", () => {
@@ -108,5 +109,102 @@ describe("diffSets (#1233)", () => {
     assert.deepEqual(r.added, []);
     assert.deepEqual(r.removed, ["a", "b"]);
     assert.equal(r.unchanged, false);
+  });
+});
+
+describe("run (#1234 review — DI + read_failed + out_of_window)", () => {
+  const NOW = new Date("2026-05-13T00:00:00Z");
+
+  function writeRaw(editions: { published_at: string }[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "maintain-run-"));
+    const path = join(dir, "past-editions-raw.json");
+    writeFileSync(path, JSON.stringify(editions), "utf8");
+    return path;
+  }
+
+  it("read_failed=true → aborta sem escrever (preserva KV)", () => {
+    let writeCalls = 0;
+    const r = run(
+      {
+        currentEdition: "260517",
+        windowDays: 7,
+        pastEditionsRawPath: writeRaw([{ published_at: "2026-05-12T08:00:00Z" }]),
+        now: NOW,
+      },
+      {
+        readEditions: () => ({ editions: [], read_failed: true }),
+        writeEditions: () => { writeCalls++; },
+      },
+    );
+    assert.equal(r.read_failed, true);
+    assert.equal(writeCalls, 0, "NÃO deve escrever quando read falha (preserva KV)");
+    assert.equal(r.unchanged, true);
+  });
+
+  it("janela ok + current → adiciona o que falta, NÃO remove out-of-window", () => {
+    let written: string[] | null = null;
+    const r = run(
+      {
+        currentEdition: "260517",
+        windowDays: 7,
+        pastEditionsRawPath: writeRaw([
+          { published_at: "2026-05-12T08:00:00Z" }, // 260512 in window
+          { published_at: "2026-05-09T08:00:00Z" }, // 260509 in window
+        ]),
+        now: NOW,
+      },
+      {
+        // Previous tem 260400 (manual, FORA da janela) + 260512 (in window)
+        readEditions: () => ({ editions: ["260400", "260512"], read_failed: false }),
+        writeEditions: (eds) => { written = eds; },
+      },
+    );
+
+    // 260400 fica preservado (política #1233)
+    assert.deepEqual(r.current.sort(), ["260400", "260509", "260512", "260517"]);
+    // added: o que estava na janela/current mas faltava em previous
+    assert.deepEqual(r.added.sort(), ["260509", "260517"]);
+    // out_of_window: o que estava em previous mas fora da janela (mantido!)
+    assert.deepEqual(r.out_of_window, ["260400"]);
+    assert.equal(r.unchanged, false);
+    assert.deepEqual(written!.sort(), ["260400", "260509", "260512", "260517"]);
+  });
+
+  it("noop quando janela já completa", () => {
+    let writeCalls = 0;
+    const r = run(
+      {
+        currentEdition: "260517",
+        windowDays: 7,
+        pastEditionsRawPath: writeRaw([{ published_at: "2026-05-12T08:00:00Z" }]),
+        now: NOW,
+      },
+      {
+        readEditions: () => ({ editions: ["260512", "260517"], read_failed: false }),
+        writeEditions: () => { writeCalls++; },
+      },
+    );
+    assert.equal(r.unchanged, true);
+    assert.equal(writeCalls, 0, "noop não escreve");
+    assert.deepEqual(r.added, []);
+  });
+
+  it("currentEdition inválido → throw", () => {
+    assert.throws(
+      () =>
+        run(
+          {
+            currentEdition: "invalid",
+            windowDays: 7,
+            pastEditionsRawPath: writeRaw([]),
+            now: NOW,
+          },
+          {
+            readEditions: () => ({ editions: [], read_failed: false }),
+            writeEditions: () => {},
+          },
+        ),
+      /AAMMDD \(6 dígitos\)/,
+    );
   });
 });

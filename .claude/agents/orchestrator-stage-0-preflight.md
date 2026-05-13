@@ -138,7 +138,10 @@ O script lê `data/past-editions-raw.json` (mantido por refresh-dedup no passo 0
 
 Política de preservação: nunca remove entries do set (editor pode ter adicionado especiais manualmente). Só ADICIONA o que faltar da janela. `removed[]` no JSON output é informativo only.
 
-Falha (exit != 0) → logar warn mas não bloquear. Voto em edição fora da janela vai falhar com 410 "Essa edição não aceita mais votos." — Pixel pode adicionar manual via `add-valid-edition.ts --edition AAMMDD` se for caso pontual.
+Exit codes:
+- `0` → set OK ou foi atualizado (escrito no KV)
+- `2` (#1234 review) → `read_failed=true`: wrangler retornou null. Pode ser (a) KV virgem (primeira execução, raro pós-#1233) ou (b) wrangler down. Conservador: NÃO escreve pra evitar destruir entries manuais em transient failure. Editor resolve: `npx tsx scripts/add-valid-edition.ts --edition AAMMDD` (uma vez, popula KV) e re-rodar maintain.
+- `!=0` outro → logar warn mas não bloquear. Voto em edição fora da janela vai falhar com 410 "Essa edição não aceita mais votos."
 
 ### 0d.ter Patch `poll_sig` pra novos subscribers (#1175 — janela 96h)
 

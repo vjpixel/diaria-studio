@@ -48,10 +48,20 @@ export interface MaintainResult {
   previous: string[];
   current: string[];
   added: string[];
-  removed: string[];
+  /**
+   * Entries em `previous` (KV) mas FORA da janela atual. Mantidas no KV por
+   * política de preservação (#1233) — editor pode ter adicionado especiais
+   * manuais. Informativo only — não foram removidas.
+   */
+  out_of_window: string[];
   unchanged: boolean;
   window_days: number;
   current_edition: string | null;
+  /**
+   * Set quando read falha (wrangler down, OAuth expirado). run() aborta
+   * sem escrever pra evitar destruição de entries manuais. Caller checka.
+   */
+  read_failed?: boolean;
 }
 
 /**
@@ -110,17 +120,50 @@ export function diffSets(previous: string[], target: string[]): {
   return { added, removed, unchanged: added.length === 0 && removed.length === 0 };
 }
 
-export function run(opts: {
-  currentEdition: string | null;
-  windowDays: number;
-  pastEditionsRawPath: string;
-  now: Date;
-}): MaintainResult {
+/**
+ * DI shape (#1234 review) — permite teste sem wrangler real.
+ */
+export interface RunDeps {
+  readEditions: () => { editions: string[]; read_failed: boolean };
+  writeEditions: (editions: string[]) => void;
+}
+
+const defaultDeps: RunDeps = {
+  readEditions: readValidEditions,
+  writeEditions: writeValidEditions,
+};
+
+export function run(
+  opts: {
+    currentEdition: string | null;
+    windowDays: number;
+    pastEditionsRawPath: string;
+    now: Date;
+  },
+  deps: RunDeps = defaultDeps,
+): MaintainResult {
   if (opts.currentEdition !== null && !/^\d{6}$/.test(opts.currentEdition)) {
     throw new Error(`--current deve ser AAMMDD (6 dígitos): "${opts.currentEdition}"`);
   }
 
-  const previous = readValidEditions();
+  const readResult = deps.readEditions();
+
+  // #1234 review: se read falhou, ABORT em vez de tratar como []. Caso
+  // contrário, transient wrangler failure → sobrescreve KV destruindo
+  // entries manuais que estavam lá.
+  if (readResult.read_failed) {
+    return {
+      previous: [],
+      current: [],
+      added: [],
+      out_of_window: [],
+      unchanged: true,
+      window_days: opts.windowDays,
+      current_edition: opts.currentEdition,
+      read_failed: true,
+    };
+  }
+  const previous = readResult.editions;
 
   const windowEditions = editionsInWindow({
     pastEditionsRawPath: opts.pastEditionsRawPath,
@@ -132,11 +175,11 @@ export function run(opts: {
   if (opts.currentEdition) targetSet.add(opts.currentEdition);
   const target = [...targetSet].sort();
 
-  const { added, removed, unchanged } = diffSets(previous, target);
+  const { added, removed } = diffSets(previous, target);
 
   // Política de preservação (#1233): nunca remover entries do set. Editor
   // pode ter adicionado edições especiais manualmente (debug, testes). Só
-  // ADICIONAMOS o que faltar da janela — removed[] é informativo only.
+  // ADICIONAMOS o que faltar da janela — out_of_window é informativo only.
   // Resultado real escrito: união (previous ∪ target).
   const finalSet = new Set([...previous, ...target]);
   const finalArr = [...finalSet].sort();
@@ -144,14 +187,14 @@ export function run(opts: {
   // changed = added.length > 0 (porque nunca removemos)
   const changed = added.length > 0;
   if (changed) {
-    writeValidEditions(finalArr);
+    deps.writeEditions(finalArr);
   }
 
   return {
     previous,
     current: finalArr,
     added,
-    removed, // informativo: entries em previous mas não na janela (mantidas).
+    out_of_window: removed, // (#1234 review) renomeado de "removed" — entries em previous mas FORA da janela, MANTIDAS.
     unchanged: !changed,
     window_days: opts.windowDays,
     current_edition: opts.currentEdition,
@@ -176,6 +219,17 @@ function main(): void {
   });
 
   console.log(JSON.stringify(result, null, 2));
+
+  // #1234 review: read_failed = wrangler down OU KV vazia (ambiguidade
+  // intencional — conservador). Sair com exit 2 pra orchestrator detectar
+  // e logar warn. Orquestrador no playbook trata como warning (não bloqueia).
+  if (result.read_failed) {
+    console.error(
+      "\n⚠️ readValidEditions retornou read_failed=true. KV pode estar vazia (primeira execução) OU wrangler falhou. " +
+        "Pra forçar reset em KV virgem, rodar `add-valid-edition.ts --edition AAMMDD` uma vez manualmente.",
+    );
+    process.exit(2);
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
