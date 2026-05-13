@@ -1276,6 +1276,65 @@ describe("lintIntroCount (#743)", () => {
     }
   });
 
+  it("#1206: conta destaques + items no formato **[T](u)** (bold OUTSIDE)", () => {
+    // Regressão pra 260517: writer gera formato com bold OUTSIDE dos brackets.
+    // Pre-#1206 a regex `^\[.+\]\(...\)` falhava porque a linha começava com `**`.
+    const md = [
+      "Selecionamos os 4 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "**[Título D1](https://example.com/d1)**",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "",
+      "**[Item bold-outside](https://example.com/l1)**",
+      "Descrição do item.",
+      "",
+      "---",
+      "",
+      "PESQUISAS",
+      "",
+      "**[Paper bold-outside](https://example.com/p1)**",
+      "Resumo.",
+      "",
+      "---",
+      "",
+      "OUTRAS NOTÍCIAS",
+      "",
+      "**[Notícia bold-outside](https://example.com/n1)**",
+      "Desc.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    assert.equal(r.actual, 4, `actual=${r.actual} claimed=${r.claimed}`);
+    assert.equal(r.ok, true);
+  });
+
+  it("#1206: conta items com trailing line-break markdown `  ` (2 spaces)", () => {
+    // Writer adiciona trailing `  ` pra forçar line break no markdown. Lint
+    // deve aceitar isso (regex já tolera \s*$).
+    const md = [
+      "Selecionamos os 2 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "DESTAQUE 1 | PRODUTO",
+      "**[Título](https://example.com/d1)**  ",  // trailing 2 spaces (line-break)
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "LANÇAMENTOS",
+      "**[Item](https://example.com/l1)**  ",  // trailing
+      "Descrição.",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    assert.equal(r.actual, 2);
+    assert.equal(r.ok, true);
+  });
+
   it("#599: conta itens de seção no formato inline [Título](url)", () => {
     const md = [
       "Selecionamos os 4 mais relevantes para as pessoas que assinam a newsletter.",
