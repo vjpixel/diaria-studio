@@ -15,6 +15,8 @@ import {
   applyUpdate,
   renderStageStatus,
   parseStageStatus,
+  loadDoc,
+  saveDoc,
   STAGES,
   type StageStatusDoc,
 } from "../scripts/update-stage-status.ts";
@@ -224,6 +226,150 @@ describe("update-stage-status CLI (#960)", () => {
       const stage1Lines = md.split("\n").filter((l) => /^\|\s*1\s*\|/.test(l));
       assert.equal(stage1Lines.length, 1);
       assert.match(stage1Lines[0], /done/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#1216: --start preservado em update subsequente que só passa --end", () => {
+    // Regressão: pre-#1216, parseStageStatus perdia start/end ao re-ler
+    // MD, então o 2º update (--end ISO_B sem --start) sobrescrevia com
+    // undefined. Resultado: MD final mostrava "-" no Início.
+    // Com JSON sidecar, a leitura preserva todos campos.
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-1216-"));
+    try {
+      const editionDir = join(dir, "260517");
+      mkdirSync(editionDir, { recursive: true });
+      runCli(["--edition-dir", editionDir, "--init"]);
+      runCli([
+        "--edition-dir", editionDir,
+        "--stage", "1",
+        "--status", "running",
+        "--start", "2026-05-13T02:50:00Z",
+      ]);
+      runCli([
+        "--edition-dir", editionDir,
+        "--stage", "1",
+        "--status", "done",
+        "--end", "2026-05-13T03:00:00Z",
+      ]);
+      const md = readFileSync(join(editionDir, "stage-status.md"), "utf8");
+      // Início (BRT) deve ter persistido: 02:50 UTC = 23:50 BRT (dia anterior)
+      assert.match(md, /\| 1 \| Pesquisa \| done \| 23:50 \|/, "Início preservado");
+      assert.match(md, /\| 00:00 \|/, "Fim presente");
+
+      // E o JSON sidecar deve ter os ISOs canônicos
+      const jsonPath = join(editionDir, "_internal", "stage-status.json");
+      assert.ok(existsSync(jsonPath), "JSON sidecar criado");
+      const doc = JSON.parse(readFileSync(jsonPath, "utf8")) as StageStatusDoc;
+      const s1 = doc.rows.find((r) => r.stage === 1);
+      assert.equal(s1?.start, "2026-05-13T02:50:00Z");
+      assert.equal(s1?.end, "2026-05-13T03:00:00Z");
+      assert.equal(s1?.status, "done");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("loadDoc/saveDoc (#1216)", () => {
+  it("round-trip JSON sidecar preserva todos campos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-rt-"));
+    try {
+      const editionDir = join(dir, "260517");
+      mkdirSync(editionDir, { recursive: true });
+      let doc = makeInitialDoc("260517");
+      doc = applyUpdate(doc, {
+        stage: 1,
+        status: "done",
+        start: "2026-05-13T02:50:00Z",
+        end: "2026-05-13T03:00:00Z",
+        duration_ms: 10 * 60 * 1000,
+        cost_usd: 0.234,
+        tokens_in: 12000,
+        tokens_out: 850,
+        models: ["haiku-4-5", "opus-4-7"],
+      });
+      saveDoc(editionDir, doc);
+
+      const reloaded = loadDoc(editionDir, "260517");
+      const s1 = reloaded.rows.find((r) => r.stage === 1)!;
+      assert.equal(s1.status, "done");
+      assert.equal(s1.start, "2026-05-13T02:50:00Z");
+      assert.equal(s1.end, "2026-05-13T03:00:00Z");
+      assert.equal(s1.duration_ms, 10 * 60 * 1000);
+      assert.equal(s1.cost_usd, 0.234);
+      assert.equal(s1.tokens_in, 12000);
+      assert.equal(s1.tokens_out, 850);
+      assert.deepEqual(s1.models, ["haiku-4-5", "opus-4-7"]);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("loadDoc fallback: só MD existe → parseStageStatus legacy", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-fallback-"));
+    try {
+      const editionDir = join(dir, "260517");
+      mkdirSync(editionDir, { recursive: true });
+      const legacyMd = renderStageStatus(
+        applyUpdate(makeInitialDoc("260517"), { stage: 1, status: "running" })
+      );
+      writeFileSync(join(editionDir, "stage-status.md"), legacyMd, "utf8");
+
+      const reloaded = loadDoc(editionDir, "260517");
+      assert.equal(reloaded.edition, "260517");
+      assert.equal(reloaded.rows.find((r) => r.stage === 1)?.status, "running");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("loadDoc fallback: nenhum arquivo → makeInitialDoc", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-empty-"));
+    try {
+      const editionDir = join(dir, "260517");
+      mkdirSync(editionDir, { recursive: true });
+      const reloaded = loadDoc(editionDir, "260517");
+      assert.equal(reloaded.edition, "260517");
+      assert.equal(reloaded.rows.length, 5);
+      for (const r of reloaded.rows) assert.equal(r.status, "pending");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("loadDoc: JSON sidecar ganha sobre MD se ambos existem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-priority-"));
+    try {
+      const editionDir = join(dir, "260517");
+      mkdirSync(editionDir, { recursive: true });
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+
+      // JSON: stage 1 done com cost
+      const jsonDoc = applyUpdate(makeInitialDoc("260517"), {
+        stage: 1, status: "done", cost_usd: 0.45,
+      });
+      writeFileSync(
+        join(editionDir, "_internal", "stage-status.json"),
+        JSON.stringify(jsonDoc),
+        "utf8",
+      );
+
+      // MD: stage 1 running (stale)
+      const staleDoc = applyUpdate(makeInitialDoc("260517"), {
+        stage: 1, status: "running",
+      });
+      writeFileSync(
+        join(editionDir, "stage-status.md"),
+        renderStageStatus(staleDoc),
+        "utf8",
+      );
+
+      const reloaded = loadDoc(editionDir, "260517");
+      const s1 = reloaded.rows.find((r) => r.stage === 1)!;
+      assert.equal(s1.status, "done", "JSON sidecar vence (canonical)");
+      assert.equal(s1.cost_usd, 0.45, "cost_usd só está no JSON");
     } finally {
       rmSync(dir, { recursive: true });
     }

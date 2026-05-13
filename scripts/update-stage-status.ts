@@ -254,6 +254,50 @@ export function makeInitialDoc(edition: string): StageStatusDoc {
 }
 
 // ---------------------------------------------------------------------------
+// JSON sidecar (#1216) — canonical storage; MD is presentation only
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the canonical doc from `_internal/stage-status.json`. Falls back to
+ * parsing legacy `stage-status.md` if JSON sidecar missing (back-compat with
+ * pre-#1216 editions). Returns `makeInitialDoc` if neither exists.
+ *
+ * Pre-#1216, `parseStageStatus` only extracted stage+status from MD —
+ * start/end/duration/cost/tokens were lost on every re-read. JSON sidecar
+ * preserves all fields cleanly.
+ */
+export function loadDoc(editionDir: string, editionId: string): StageStatusDoc {
+  const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
+  if (existsSync(jsonPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(jsonPath, "utf8")) as StageStatusDoc;
+      if (parsed.edition && Array.isArray(parsed.rows)) return parsed;
+    } catch {
+      // corrupted JSON — fall through to MD parse
+    }
+  }
+  const mdPath = resolve(editionDir, "stage-status.md");
+  if (existsSync(mdPath)) {
+    const md = readFileSync(mdPath, "utf8");
+    return parseStageStatus(md) ?? makeInitialDoc(editionId);
+  }
+  return makeInitialDoc(editionId);
+}
+
+/**
+ * Save both JSON sidecar (canonical) and MD (rendered presentation).
+ * JSON goes in `_internal/` (not for editor consumption); MD stays at edition
+ * root (editor opens during runs).
+ */
+export function saveDoc(editionDir: string, doc: StageStatusDoc): void {
+  const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
+  const mdPath = resolve(editionDir, "stage-status.md");
+  mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+  writeFileSync(jsonPath, JSON.stringify(doc, null, 2), "utf8");
+  writeFileSync(mdPath, renderStageStatus(doc), "utf8");
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -291,12 +335,8 @@ async function main(): Promise<void> {
   if (args.init) {
     doc = makeInitialDoc(editionId);
   } else {
-    if (existsSync(statusPath)) {
-      const md = readFileSync(statusPath, "utf8");
-      doc = parseStageStatus(md) ?? makeInitialDoc(editionId);
-    } else {
-      doc = makeInitialDoc(editionId);
-    }
+    // #1216: load from JSON sidecar (canonical) — MD parse fallback for legacy.
+    doc = loadDoc(editionDir, editionId);
     const stage = parseInt(args.stage as string, 10);
     if (isNaN(stage)) {
       console.error("--stage é obrigatório (número)");
@@ -323,8 +363,8 @@ async function main(): Promise<void> {
   }
 
   try {
-    mkdirSync(editionDir, { recursive: true });
-    writeFileSync(statusPath, renderStageStatus(doc), "utf8");
+    // #1216: persist canonical JSON + rendered MD together.
+    saveDoc(editionDir, doc);
   } catch (err) {
     console.error(`falha ao gravar ${statusPath}: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

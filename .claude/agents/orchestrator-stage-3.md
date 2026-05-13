@@ -44,10 +44,7 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo já em `01-categorized.md` (#371) e `eia_answer` propagado pra `02-reviewed.md` frontmatter (#744).
 - **Sem gate separado (#371).** O editor já aprovou (ou verá) o É IA? no gate integrado da Etapa 1. Se o eia-composer completou com sucesso, prosseguir diretamente para 3b. Se `rejections[]` no output do composer não estiver vazio, informar: `"É IA?: pulei N dia(s) — motivos: vertical (X), já usada em edição anterior (Y). Imagem escolhida é de {image_date_used}."` — contexto para o editor, sem bloquear o pipeline.
 - **Opção de retry do É IA?:** se o editor precisar regenerar o É IA? isoladamente (ex: imagem insatisfatória), usar `/diaria-3-imagens {AAMMDD} eia` — o sub-skill tem gate próprio de aprovação para esse caso.
-- **Atualizar `_internal/cost.md`.** Append linha da É IA?, recalcular `Total de chamadas`, gravar:
-  ```
-  | 3a | {eia_dispatch_ts} | {now} | eia_composer:1, drive_syncer:1 | 2 | 0 |
-  ```
+- **Sub-stage 3a (É IA?) tracking** (#1217 — removed cost.md). É IA? roda em background bash e termina sem chamada explícita de update-stage-status — orchestrator pode opcionalmente registrar conclusão via `--cost-usd 0 --tokens-in 0` se quiser explicitar gratuitidade do passo (Gemini API key).
 
 ### 3b. Imagens de destaque
 
@@ -95,8 +92,4 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
-- **Atualizar `_internal/cost.md`.** Append linha da Etapa 3, atualizar `Fim` e `Total de chamadas`, gravar:
-  ```
-  | 3b | {stage_start} | {now} | drive_syncer:1 | 1 | 0 |
-  ```
-  Atualizar `Fim: {now}` no cabeçalho.
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X [--cost-usd Y --models "gemini,haiku"]`.

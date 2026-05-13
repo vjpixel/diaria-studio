@@ -63,7 +63,7 @@ Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. *
 
 Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar.
 
-### 0c. Inicialização de log e cost.md
+### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
@@ -82,20 +82,7 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
   - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode` SEM `with_publish`**, prosseguir silenciosamente.
   - **Caso especial `test_mode = true` E `with_publish = true` E `CHROME_MCP = false` (#568):** warn LOUD — imprimir bloco visível no terminal (não silenciar) e logar `level: warn` com `agent: orchestrator`, `message: "with_publish=true mas Chrome MCP indisponível — Etapa 4 vai pular"`. Editor pediu publicação explícita; merece saber que não vai acontecer. Pipeline continua mas sem Etapa 4.
   - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
-- **Inicializar `_internal/cost.md`.** Se não existe, obter timestamp via Bash e gravar:
-  ```markdown
-  # Cost — Edição {AAMMDD}
-
-  Orchestrator: claude-opus-4-7
-  Início: {ISO}
-  Fim: —
-  Total de chamadas: 0
-
-  | Stage | Início | Fim | Chamadas | Haiku | Sonnet |
-  |-------|--------|-----|----------|-------|--------|
-  ```
-  Se já existe (resume), não sobrescrever — manter `Início` e linhas de stages anteriores intactos.
-- **Inicializar `stage-status.md` (#960).** Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
+- **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
   ```bash
   npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --init
   ```
