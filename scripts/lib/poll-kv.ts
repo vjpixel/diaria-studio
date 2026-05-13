@@ -59,19 +59,51 @@ export function wranglerKvPut(key: string, value: string): void {
 }
 
 /**
- * Lê o set atual `valid_editions` e retorna array de strings AAMMDD.
- * Vazio ou corrupted → []. (Worker trata como fail-open quando vazio.)
+ * Resultado de `readValidEditions` que distingue "key vazia" (ok com
+ * editions=[]) de "wrangler falhou" (read_failed=true).
+ *
+ * Crítico (#1234 review): pre-fix, ambos casos retornavam []. Em falha
+ * transitória de wrangler, caller computava target da janela e
+ * sobrescrevia KV, destruindo entries manuais que estavam lá.
  */
-export function readValidEditions(): string[] {
+export interface ReadValidEditionsResult {
+  editions: string[];
+  read_failed: boolean;
+}
+
+/**
+ * Lê o set atual `valid_editions` do KV remoto.
+ *
+ * - `{ editions: [], read_failed: false }` → key não existe ou está vazia (fail-open Worker)
+ * - `{ editions: [...], read_failed: false }` → key tem array válido
+ * - `{ editions: [], read_failed: true }` → wrangler falhou. Caller deve abortar, não escrever.
+ */
+export function readValidEditions(): ReadValidEditionsResult {
   const raw = wranglerKvGet("valid_editions");
-  if (!raw) return [];
+  if (raw === null) {
+    // wranglerKvGet retorna null se r.status !== 0 ou !r.stdout.
+    // Key vazia gera stdout vazio que também vira null. Como distinguir?
+    // wrangler retorna "Value not found" no stderr quando key não existe vs
+    // erro de auth/rede que retorna outro status. Pra simplificar, tratamos
+    // null como "ambíguo" — read_failed=true pra ser conservador.
+    // Trade-off: primeira execução em KV virgem reporta read_failed,
+    // editor precisa forçar via flag (ou rodar add-valid-edition.ts uma vez).
+    return { editions: [], read_failed: true };
+  }
   try {
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === "string");
+    if (Array.isArray(parsed)) {
+      return {
+        editions: parsed.filter((x): x is string => typeof x === "string"),
+        read_failed: false,
+      };
+    }
+    console.warn(`[poll-kv] valid_editions not array: ${typeof parsed}`);
+    return { editions: [], read_failed: false }; // key existe mas com shape ruim — tratamos como vazia
   } catch {
-    console.warn(`[poll-kv] valid_editions corrupted: ${raw.slice(0, 100)}`);
+    console.warn(`[poll-kv] valid_editions corrupted JSON: ${raw.slice(0, 100)}`);
+    return { editions: [], read_failed: false }; // key existe mas JSON quebrado — tratamos como vazia
   }
-  return [];
 }
 
 /**
