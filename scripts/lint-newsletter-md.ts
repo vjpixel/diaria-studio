@@ -217,8 +217,29 @@ function stripFrontmatter(md: string): string {
   return md.slice(endOfClose);
 }
 
+/**
+ * Skip `TÍTULO` / `SUBTÍTULO` header block (#916) — inserido por
+ * `insert-titulo-subtitulo.ts` no topo do `02-reviewed.md` pra alimentar
+ * subject + preview text do Beehiiv. O bloco termina em `---`. Coverage
+ * line vem depois.
+ *
+ * Sem este skip, `checkCoverageLine` em 02-reviewed.md falsamente reporta
+ * "TÍTULO" como primeira linha e marca formato inválido (#1207).
+ */
+function stripTituloSubtituloBlock(md: string): string {
+  const firstLine = md.split(/\r?\n/).find((l) => l.trim().length > 0);
+  if (!firstLine || !/^T[ÍI]TULO$/i.test(firstLine.trim())) return md;
+  // Procurar primeiro `---` em linha própria — fim do bloco TÍTULO/SUBTÍTULO.
+  const dashMatch = md.match(/^---\s*$/m);
+  if (!dashMatch || dashMatch.index === undefined) return md;
+  const afterDash = md.slice(dashMatch.index + dashMatch[0].length);
+  // Pular newline depois do ---
+  return afterDash.replace(/^\r?\n+/, "");
+}
+
 export function checkCoverageLine(md: string): { ok: boolean; firstLine: string } {
-  const body = stripFrontmatter(md);
+  let body = stripFrontmatter(md);
+  body = stripTituloSubtituloBlock(body);
   const lines = body.split("\n");
   const firstNonEmpty = lines.find((l) => l.trim().length > 0) ?? "";
   return {
@@ -1596,6 +1617,32 @@ intentional_error:
     return;
   }
 
+  // Modo --check coverage-line-format (#1207) — valida formato canônico da
+  // linha de cobertura via checkCoverageLine (existing helper, #592/#609)
+  if (args.check === "coverage-line-format") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check coverage-line-format --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkCoverageLine(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ coverage-line-format: primeira linha não bate com regex canônico.`);
+      console.error(
+        `   Esperado: "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter."`,
+      );
+      console.error(`   Encontrado: "${result.firstLine.slice(0, 120)}"`);
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check relative-time (#747) — detecta referências temporais relativas
   if (args.check === "relative-time") {
     if (!args.md) {
@@ -1633,6 +1680,7 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +
         "  ou: lint-newsletter-md.ts --check intro-count --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check coverage-line-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>\n" +
