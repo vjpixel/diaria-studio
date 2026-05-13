@@ -173,4 +173,59 @@ Outro parágrafo.`;
     assert.equal(r.changed, false);
     assert.equal(r.md, md);
   });
+
+  it("#1179: tolera YAML frontmatter no topo (intentional_error declarado)", () => {
+    const md = `---
+intentional_error:
+  description: "Mythos é atribuído à OpenAI, mas o modelo é da Anthropic."
+  location: "DESTAQUE 3, parágrafo 1, segunda frase"
+  category: "attribution"
+  correct_value: "Anthropic"
+---
+
+Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+
+---
+
+Resto.`;
+    const r = rewriteCoverageLine(md, 13, 125, 12);
+    assert.ok(r.changed, "deve atualizar mesmo com frontmatter");
+    assert.match(r.md, /enviei 13 submissões/);
+    // Frontmatter preservado.
+    assert.match(r.md, /intentional_error:/);
+  });
+
+  it("#1179: tolera vírgula após 'submissões' (Clarice às vezes adiciona)", () => {
+    // Caso real edição 260513: Clarice sugeriu "submissões" → "submissões,"
+    // e o regex original não tolerava — script falhava silenciosamente.
+    const md = `Para esta edição, eu (o editor) enviei 8 submissões, e a Diar.ia encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const r = rewriteCoverageLine(md, 8, 120, 12);
+    assert.ok(r.changed, "deve normalizar pra forma canônica (sem vírgula extra)");
+    // Resultado canônico: sem vírgula entre "submissões" e "e".
+    assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
+    // Número Z atualizado de 15 → 12.
+    assert.match(r.md, /Selecionamos os 12 mais relevantes/);
+    // Vírgula extra removida.
+    assert.doesNotMatch(r.md, /submissões, e/);
+  });
+
+  it("#1179: combina frontmatter + vírgula Clarice (caso real 260513)", () => {
+    const md = `---
+intentional_error:
+  description: "..."
+  location: "..."
+  category: "attribution"
+  correct_value: "Anthropic"
+---
+
+Para esta edição, eu (o editor) enviei 8 submissões, e a Diar.ia encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const r = rewriteCoverageLine(md, 8, 120, 12);
+    assert.ok(r.changed);
+    assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
+    assert.match(r.md, /Selecionamos os 12 mais relevantes/);
+  });
 });
