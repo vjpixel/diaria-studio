@@ -30,6 +30,9 @@
 
 import { createHmac } from "node:crypto";
 import { parseArgs } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+
+loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const POLL_WORKER_URL =
   process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";

@@ -34,6 +34,9 @@
 import { createHmac } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+
+loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const FIELD_SIG = "poll_sig";
 const CONCURRENCY = 3;
