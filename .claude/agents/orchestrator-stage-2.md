@@ -113,8 +113,9 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
     --check destaque-max-chars \
     --md data/editions/{AAMMDD}/_internal/02-draft.md
   ```
-  Exit 1 do min = destaque anêmico — re-disparar writer com instruction de expandir.
-  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar.
+  Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
+  > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo; OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
+  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa'.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash
