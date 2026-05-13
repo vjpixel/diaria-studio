@@ -13,7 +13,9 @@
  * Se --answer não for passado, lê ai_side de _internal/01-eia-meta.json da edição.
  *
  * Variáveis de ambiente:
- *   POLL_SECRET        HMAC key (ver .env)
+ *   ADMIN_SECRET       HMAC key pro endpoint /admin/correct (ver .env). Worker
+ *                      valida sig contra ADMIN_SECRET (workers/poll/src/index.ts:325).
+ *                      Pode estar como `ADMIN_SECRET` ou `POLL_ADMIN_SECRET`.
  *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
  */
 
@@ -37,10 +39,13 @@ async function main(): Promise<void> {
 
   const edition = values["edition"];
   let answer = values["answer"]?.toUpperCase();
-  const secret = process.env.POLL_SECRET;
+  // #1176: Worker /admin/correct valida sig contra ADMIN_SECRET (workers/poll
+  // src/index.ts:325), não POLL_SECRET. Aceitar tanto ADMIN_SECRET (canonical)
+  // quanto POLL_ADMIN_SECRET (alias usado em alguns ambientes).
+  const secret = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET;
 
   if (!secret) {
-    console.error("[close-poll] POLL_SECRET não definido. Ver .env.");
+    console.error("[close-poll] ADMIN_SECRET não definido. Ver .env.");
     process.exit(1);
   }
   if (!edition) {
