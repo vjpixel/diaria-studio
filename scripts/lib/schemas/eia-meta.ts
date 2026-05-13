@@ -19,9 +19,15 @@ export const WikimediaInfoSchema = z.object({
   title: z.string(),
   image_url: z.string(),
   credit: z.string().optional(),
-  artist_url: z.string().optional(),
-  subject_wikipedia_url: z.string().optional(),
-  license_url: z.string().optional(),
+  // #1176: eia-compose.ts escreve `null` literal nestes 3 fields quando a API
+  // Wikimedia não fornece o dado (ex: imagem POTD sem subject_wikipedia_url
+  // ou artist_url resolvível). `.optional()` rejeita null — usar `.nullish()`
+  // (aceita null OU undefined) pra schema bater com o JSON gerado.
+  artist_url: z.string().nullish(),
+  subject_wikipedia_url: z.string().nullish(),
+  license_url: z.string().nullish(),
+  // image_date_used nunca é null no JSON real (eia-compose sempre string) —
+  // mantém .optional() pra evitar widening do type em consumers.
   image_date_used: z.string().optional(),
 }).passthrough();
 
