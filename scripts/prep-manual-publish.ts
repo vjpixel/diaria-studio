@@ -25,6 +25,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { run as injectPollUrls } from "./inject-poll-urls.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+
+loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL =
