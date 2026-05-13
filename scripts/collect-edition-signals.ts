@@ -43,12 +43,87 @@ export interface Signal {
     | "unfixed_issue"
     | "chrome_disconnects"
     | "mcp_unavailable"
-    | "test_warning";
+    | "test_warning"
+    | "runtime_fix";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
   suggested_action: string;
   related_issue?: string;
+}
+
+// ===========================================================================
+// Signal 6 (#1210): runtime fixes — correções in-flight do orchestrator
+// ===========================================================================
+
+interface RuntimeFixEntry {
+  timestamp: string;
+  edition: string;
+  stage: number;
+  fix_type: string;
+  component: string;
+  description: string;
+  severity: "P0" | "P1" | "P2" | "P3";
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Lê `_internal/runtime-fixes.jsonl` (escrito pelo `log-runtime-fix.ts`) e
+ * vira sinais pro auto-reporter. Cada fix com severity P0/P1/P2 vira um
+ * candidato a issue; P3 fica de fora (cleanup, não vale auto-reportar).
+ *
+ * Agrupa por `component` pra detectar fixes recorrentes no mesmo agent/script.
+ */
+export function signalsFromRuntimeFixes(jsonlContent: string): Signal[] {
+  if (!jsonlContent.trim()) return [];
+  const entries: RuntimeFixEntry[] = [];
+  for (const line of jsonlContent.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // ignore malformed lines
+    }
+  }
+  // Filtrar P3 fora
+  const significant = entries.filter((e) => e.severity !== "P3");
+  if (significant.length === 0) return [];
+
+  // Agrupar por (component, fix_type) pra evitar 1 issue por entrada
+  const groups = new Map<string, RuntimeFixEntry[]>();
+  for (const e of significant) {
+    const key = `${e.component}::${e.fix_type}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(e);
+    groups.set(key, arr);
+  }
+
+  const out: Signal[] = [];
+  for (const [key, group] of groups) {
+    const [component, fixType] = key.split("::");
+    const worstSeverity = group.reduce((acc, e) => {
+      const rank = (s: string) => ({ P0: 0, P1: 1, P2: 2, P3: 3 } as Record<string, number>)[s] ?? 9;
+      return rank(e.severity) < rank(acc.severity) ? e : acc;
+    }, group[0]).severity;
+    const sevLabel: Severity = worstSeverity === "P0" || worstSeverity === "P1" ? "high" : "medium";
+
+    out.push({
+      kind: "runtime_fix",
+      severity: sevLabel,
+      title: `${component}: ${group.length}× runtime fix(${fixType})`,
+      details: {
+        component,
+        fix_type: fixType,
+        count: group.length,
+        severities: group.map((e) => e.severity),
+        descriptions: group.map((e) => e.description.slice(0, 200)),
+        first_at: group[0].timestamp,
+        last_at: group[group.length - 1].timestamp,
+      },
+      suggested_action: `Investigar ${component} — orchestrator aplicou ${group.length} runtime fix(es) do tipo ${fixType}. Se for recorrente, considerar fix permanente no agent/script.`,
+    });
+  }
+  return out;
 }
 
 export interface IssuesDraft {
@@ -608,6 +683,17 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
     }
   }
 
+  // Signal 6 (#1210): runtime-fixes.jsonl — orchestrator in-flight fixes
+  const runtimeFixesPath = resolve(editionDir, "_internal/runtime-fixes.jsonl");
+  if (existsSync(runtimeFixesPath)) {
+    try {
+      const content = readFileSync(runtimeFixesPath, "utf8");
+      signals.push(...signalsFromRuntimeFixes(content));
+    } catch {
+      // ignore
+    }
+  }
+
   return {
     edition,
     collected_at: now.toISOString(),
@@ -679,6 +765,7 @@ function main(): void {
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
           mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
+          runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
         },
       },
       null,
