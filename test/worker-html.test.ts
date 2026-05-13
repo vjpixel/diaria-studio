@@ -16,22 +16,27 @@ import { createHmac } from "node:crypto";
 import {
   handleHtmlGet,
   handleHtmlPut,
+  HTML_TTL_SECONDS,
   type Env,
 } from "../workers/poll/src/index.ts";
 
 const ADMIN_SECRET = "test-admin-secret";
 
 /** Mock minimal Env com KV stub que armazena strings em memória. */
-function makeEnv(store: Map<string, string> = new Map()): Env {
+function makeEnv(
+  store: Map<string, string> = new Map(),
+  ttls: Map<string, number> = new Map(),
+): Env {
   return {
     POLL: {
       get: async (key: string, _type: string) => store.get(key) ?? null,
       put: async (
         key: string,
         value: string,
-        _opts?: { expirationTtl?: number },
+        opts?: { expirationTtl?: number },
       ) => {
         store.set(key, value);
+        if (opts?.expirationTtl !== undefined) ttls.set(key, opts.expirationTtl);
       },
     } as unknown as KVNamespace,
     POLL_SECRET: "test-poll-secret",
@@ -85,6 +90,13 @@ describe("handleHtmlGet", () => {
   });
 });
 
+describe("HTML_TTL_SECONDS", () => {
+  it("é 12h em segundos (cobre paste + retries no dia, reduz janela de leak)", () => {
+    assert.equal(HTML_TTL_SECONDS, 12 * 60 * 60);
+    assert.equal(HTML_TTL_SECONDS, 43200);
+  });
+});
+
 describe("handleHtmlPut", () => {
   function mkRequest(
     path: string,
@@ -98,9 +110,10 @@ describe("handleHtmlPut", () => {
     });
   }
 
-  it("aceita PUT com Bearer HMAC válido, grava em KV com prefix 'html:'", async () => {
+  it("aceita PUT com Bearer HMAC válido, grava em KV com prefix 'html:' + TTL 12h", async () => {
     const store = new Map<string, string>();
-    const env = makeEnv(store);
+    const ttls = new Map<string, number>();
+    const env = makeEnv(store, ttls);
     const sig = sigFor("260514");
     const res = await handleHtmlPut(
       "/html/260514",
@@ -108,12 +121,19 @@ describe("handleHtmlPut", () => {
       env,
     );
     assert.equal(res.status, 200);
-    const data = (await res.json()) as { ok: boolean; key: string; bytes: number };
+    const data = (await res.json()) as {
+      ok: boolean;
+      key: string;
+      bytes: number;
+      ttl_seconds: number;
+    };
     assert.equal(data.ok, true);
     assert.equal(data.key, "260514");
     assert.equal(data.bytes, "<p>hello</p>".length);
-    // Persiste com prefix
+    assert.equal(data.ttl_seconds, HTML_TTL_SECONDS);
+    // Persiste com prefix + expirationTtl correto
     assert.equal(store.get("html:260514"), "<p>hello</p>");
+    assert.equal(ttls.get("html:260514"), HTML_TTL_SECONDS);
   });
 
   it("rejeita 401 quando Authorization ausente", async () => {

@@ -7,10 +7,14 @@
  * por edição — Stage 4 newsletter playbook).
  *
  * Fluxo novo:
- *   1. Worker grava HTML em KV (key=html:{edition}, TTL 7d)
+ *   1. Worker grava HTML em KV (key=html:{edition}, TTL 12h)
  *   2. Stage 4 playbook usa `fetch('/html/{edition}')` direto do browser
  *   3. Insert via `editor.commands.insertContent({type:'text', text: html})`
  *   → ~5K tokens total (vs ~80K antes)
+ *
+ * URL retornada (campo `url` no stdout) também serve pra editor revisar o
+ * HTML online antes do paste — botões A/B do poll funcionam, imagens
+ * carregam. Não substitui test email do Beehiiv (CSS final não está lá).
  *
  * Uso:
  *   npx tsx scripts/upload-html-public.ts --edition 260514

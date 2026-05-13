@@ -480,18 +480,20 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
 /**
  * GET /html/{key}     → retorna HTML (text/html, CORS *, max-age curto).
  * PUT /html/{key}     → grava HTML no KV. Auth via HMAC(ADMIN_SECRET, "html:{key}")
- *                       no header Authorization: "Bearer {sig}". TTL 7 dias
- *                       (suficiente pra paste de edição + retries).
+ *                       no header Authorization: "Bearer {sig}". TTL 12h.
  *
  * Motivação (#1178): paste de HTML via chunk-html-base64 + javascript_tool
  * consome ~80K tokens (16 chunks × ~5K cada). Hospedar no Worker permite
  * `fetch('/html/{key}')` direto do browser → ~5K tokens total.
  *
  * Trade-off: HTML temporariamente público (mesma audiência do email final).
- * Mitigação: key contém edition + uuid, TTL 7d, sem listagem.
+ * Mitigação: key = edition number, TTL 12h, sem listagem. URL é predizível
+ * mas janela é curta — cobre paste + retries no mesmo dia e reduz risco de
+ * leak do gabarito É IA? se alguém chutar /html/{próxima-edition} antes do
+ * envio.
  */
 const HTML_KV_PREFIX = "html:";
-const HTML_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 dias
+export const HTML_TTL_SECONDS = 12 * 60 * 60; // 12h
 
 export async function handleHtmlGet(path: string, env: Env): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };

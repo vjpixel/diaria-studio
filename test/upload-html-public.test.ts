@@ -68,7 +68,7 @@ describe("uploadHtml — real PUT", () => {
       capturedAuth = (init?.headers as Record<string, string>)?.Authorization ?? null;
       capturedBody = init?.body as string;
       return Promise.resolve(
-        new Response(JSON.stringify({ ok: true, key: "260514", bytes: html.length, ttl_seconds: 604800 }), {
+        new Response(JSON.stringify({ ok: true, key: "260514", bytes: html.length, ttl_seconds: 43200 }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
@@ -87,7 +87,7 @@ describe("uploadHtml — real PUT", () => {
     assert.equal(capturedAuth, `Bearer ${htmlPutSig(SECRET, "260514")}`);
     assert.equal(capturedBody, html);
     assert.equal(r.bytes, html.length);
-    assert.equal(r.ttl_seconds, 604800);
+    assert.equal(r.ttl_seconds, 43200);
   });
 
   it("propaga erro quando Worker retorna não-2xx", async () => {
@@ -122,7 +122,7 @@ describe("uploadHtml — real PUT", () => {
     const fetchStub = (url: string | URL): Promise<Response> => {
       capturedUrl = String(url);
       return Promise.resolve(
-        new Response('{"bytes":3,"ttl_seconds":604800}', { status: 200 }),
+        new Response('{"bytes":3,"ttl_seconds":43200}', { status: 200 }),
       );
     };
 
