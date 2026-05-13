@@ -187,12 +187,18 @@ export function parseDestaques(raw: string): Destaque[] {
 /**
  * Build subtitle from D2 and D3 titles.
  * Exported so render-newsletter-html.ts uses the same logic.
+ *
+ * #1214 (2026-05-13): threshold subido de 80 → 200. Beehiiv subtitle/preview
+ * aceita 200 chars (verificado live no UI: indicador "90/200"). 80 era
+ * excessivamente conservador — em 260517 (86 chars combined), o D3 caiu
+ * fora silenciosamente. Memory `feedback_beehiiv_sections.md` declara que
+ * subtitle DEVE ser "{D2} | {D3}".
  */
 export function buildSubtitle(d2title: string, d3title: string): string {
   const combined = `${d2title} | ${d3title}`;
-  if (combined.length <= 80) return combined;
-  if (d2title.length <= 80) return d2title;
-  return d2title.slice(0, 77) + '...';
+  if (combined.length <= 200) return combined;
+  if (d2title.length <= 200) return d2title;
+  return d2title.slice(0, 197) + '...';
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────
