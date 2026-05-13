@@ -15,6 +15,7 @@ import {
   lintIntroCount,
   lintRelativeTime,
   checkCoverageLine,
+  lintMultilineLinks,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("extractUrlsBySection", () => {
@@ -1418,6 +1419,63 @@ describe("checkCoverageLine standalone (--check coverage-line-format, #1207)", (
     const r = checkCoverageLine(md);
     assert.equal(r.ok, true, `firstLine extracted: "${r.firstLine}"`);
     assert.match(r.firstLine, /^Para esta edição/);
+  });
+});
+
+describe("lintMultilineLinks (#1213)", () => {
+  it("ok quando todos os links estão em uma linha", () => {
+    const md = [
+      "- [Melhores cursos](https://example.com/cursos)",
+      "- [Curadoria](https://example.com/livros)",
+    ].join("\n");
+    const r = lintMultilineLinks(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("detecta link quebrado em 3 linhas (caso 260517)", () => {
+    const md = [
+      "- [Melhores cursos grátis de IA](",
+      "https://diaria.beehiiv.com/cursos-gratuitos-de-ia",
+      ")",
+      "- [Curadoria de livros sobre IA](",
+      "https://diaria.beehiiv.com/livros-sobre-ia",
+      ")",
+    ].join("\n");
+    const r = lintMultilineLinks(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 2);
+    assert.equal(r.matches[0].line, 1);
+    assert.equal(r.matches[1].line, 4);
+  });
+
+  it("detecta link no SORTEIO block (caso 260517)", () => {
+    const md = [
+      "**Responda indicando qual é o erro... concorrer a [um livro sobre IA entre os que recomendamos](",
+      "https://diaria.beehiiv.com/livros-sobre-ia",
+      "), a ser sorteado mês que vem.**",
+    ].join("\n");
+    const r = lintMultilineLinks(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+  });
+
+  it("ignora link em uma linha que apenas termina com URL+ )", () => {
+    // Edge: linha pode terminar com `)` natural (parênteses no texto),
+    // não deve confundir o detector. Só dispara se HÁ `](` antes da URL órfã.
+    const md = [
+      "Esta frase tem um parêntese (importante) e [link](url) inline.",
+      "https://outra-url.com",
+    ].join("\n");
+    const r = lintMultilineLinks(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("normaliza CRLF antes de testar", () => {
+    const md = "- [Cursos](\r\nhttps://example.com\r\n)";
+    const r = lintMultilineLinks(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
   });
 });
 

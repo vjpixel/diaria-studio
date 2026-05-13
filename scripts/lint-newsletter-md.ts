@@ -900,6 +900,55 @@ export function lintIntroCount(md: string): IntroCountResult {
 }
 
 /**
+ * Detecta links markdown quebrados em múltiplas linhas (#1213).
+ *
+ * Writer agent às vezes emite:
+ *
+ *   - [Label](
+ *   https://example.com
+ *   )
+ *
+ * O renderer não parseia esses links (regex linha-a-linha), produzindo
+ * texto bruto `[Label](` + URL + `)` órfão no HTML final. Caso real
+ * 260517: Pixel viu no test email.
+ *
+ * Lint detecta `\\](` no fim de linha (com whitespace). Re-disparar o
+ * writer ou auto-fix via `joinMultilineLinks` no renderer.
+ *
+ * Retorna `{ ok, matches }` onde `matches[]` traz linha + contexto.
+ */
+export interface MultilineLinkMatch {
+  line: number;
+  context: string;
+}
+export interface MultilineLinkResult {
+  ok: boolean;
+  matches: MultilineLinkMatch[];
+}
+
+export function lintMultilineLinks(md: string): MultilineLinkResult {
+  const normalized = md.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const matches: MultilineLinkMatch[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    // Linha termina com `](` (com whitespace antes do final) e a próxima
+    // linha não-vazia começa com `http(s)://` — assinatura inequívoca.
+    if (/\]\(\s*$/.test(lines[i])) {
+      // Lookahead: próxima linha não-vazia começa com URL?
+      let j = i + 1;
+      while (j < lines.length && lines[j].trim() === "") j++;
+      if (j < lines.length && /^\s*https?:\/\//.test(lines[j])) {
+        matches.push({
+          line: i + 1,
+          context: `${lines[i].slice(-40)} ↵ ${lines[j].slice(0, 40)}`,
+        });
+      }
+    }
+  }
+  return { ok: matches.length === 0, matches };
+}
+
+/**
  * Detecta referências temporais relativas banidas no MD da newsletter (#747).
  *
  * Edições publicam D+1: "hoje" / "ontem" / "esta semana" são ambíguos no
@@ -1638,6 +1687,35 @@ intentional_error:
         `   Esperado: "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter."`,
       );
       console.error(`   Encontrado: "${result.firstLine.slice(0, 120)}"`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check multiline-links (#1213) — detecta links markdown quebrados
+  if (args.check === "multiline-links") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check multiline-links --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = lintMultilineLinks(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} link(s) markdown quebrado(s) em múltiplas linhas:`,
+      );
+      for (const m of result.matches) {
+        console.error(`  linha ${m.line}: "${m.context}"`);
+      }
+      console.error(
+        `\n   Fix: junte cada link em uma única linha — [Label](url) sem newline entre os elementos.`,
+      );
       process.exit(1);
     }
     return;
