@@ -98,6 +98,15 @@ describe("unescapeMarkdown — edge cases", () => {
     assert.equal(unescapeMarkdown(input), input);
   });
 
+  it("dupla backslash + canon: \\\\# → \\# (documenta trade-off, ver source comment)", () => {
+    // Input `\\#` (literal backslash + escaped hashtag). Regex matcheia o segundo
+    // pair `\#` → `#`, deixando primeira backslash sozinha. Resultado `\#`.
+    // Em prática o pipeline não gera `\\#` source, então isso é informativo.
+    const input = "\\\\#tag";
+    const expected = "\\#tag";
+    assert.equal(unescapeMarkdown(input), expected);
+  });
+
   it("autolink multi-linha: [text\\n](url) NÃO bate (proteção)", () => {
     // Regex AUTOLINK_RE exclui \n no character class — links não atravessam linhas.
     const input = "[texto\nquebrado](url)";
