@@ -222,14 +222,33 @@ export function reconcileFb(
       typeof match.scheduled_publish_time === "number"
         ? match.scheduled_publish_time * 1000
         : null;
-    if (scheduledMs !== null && scheduledMs < now.getTime()) {
+
+    // #1183: fallback pra entry.scheduled_at quando o Graph API omite o campo
+    // scheduled_publish_time (mudança de schema, post em estado transitório,
+    // bug de paginação). Sem isso, o silent-fail mesma classe que #1180 queria
+    // fechar volta. Defesa em profundidade per invariante #573.
+    let effectiveMs = scheduledMs;
+    let viaEntry = false;
+    if (effectiveMs === null && typeof entry.scheduled_at === "string") {
+      const localMs = Date.parse(entry.scheduled_at);
+      if (Number.isFinite(localMs)) {
+        effectiveMs = localMs;
+        viaEntry = true;
+      }
+    }
+
+    if (effectiveMs !== null && effectiveMs < now.getTime()) {
+      const source = viaEntry
+        ? "via entry.scheduled_at (FB omitiu scheduled_publish_time)"
+        : "scheduled_publish_time";
       return {
         ...base,
-        reason: `scheduled_at_in_past: scheduled_publish_time ${new Date(scheduledMs).toISOString()} ja passou de ${now.toISOString()} — post vai publicar imediato no proximo tick`,
+        reason: `scheduled_at_in_past: ${source} ${new Date(effectiveMs).toISOString()} ja passou de ${now.toISOString()} — post vai publicar imediato no proximo tick`,
         external_state: {
           scheduled_publish_time: match.scheduled_publish_time,
-          scheduled_iso: new Date(scheduledMs).toISOString(),
+          scheduled_iso: new Date(effectiveMs).toISOString(),
           matched_id: match.id,
+          ...(viaEntry ? { fallback_source: "entry.scheduled_at" } : {}),
         },
       };
     }
@@ -239,8 +258,9 @@ export function reconcileFb(
       external_state: {
         scheduled_publish_time: match.scheduled_publish_time,
         scheduled_iso:
-          scheduledMs !== null ? new Date(scheduledMs).toISOString() : null,
+          effectiveMs !== null ? new Date(effectiveMs).toISOString() : null,
         matched_id: match.id,
+        ...(viaEntry ? { fallback_source: "entry.scheduled_at" } : {}),
       },
     };
   }
@@ -318,11 +338,34 @@ export function reconcileLinkedin(
     subtype, // #595 — sempre exposto pra desambiguar 9 entries por edição
   };
 
-  /** #1180: helper pra detectar item na queue com scheduled_at já passado.
-   * Worker cron dispara no próximo tick (~1min) → publica imediato. */
-  const isPastSchedule = (scheduled_at: string): boolean => {
-    const ms = Date.parse(scheduled_at);
-    return Number.isFinite(ms) && ms < now.getTime();
+  /** #1180/#1183: detect past-schedule. Worker cron dispara no próximo tick
+   * (~1min) → publica imediato. Se queue item omitir scheduled_at (#1183 —
+   * silent-fail observado em FB equivalente), cai pra entry.scheduled_at como
+   * fallback determinístico em vez de retornar false (= não-past) silente.
+   * Retorna { past: boolean; viaEntry: boolean; effective: string|null }. */
+  const evaluateSchedule = (
+    queueScheduledAt: string | undefined,
+  ): { past: boolean; viaEntry: boolean; effective: string | null } => {
+    const tryParse = (s: string | undefined): number | null => {
+      if (typeof s !== "string" || s.length === 0) return null;
+      const ms = Date.parse(s);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    let ms = tryParse(queueScheduledAt);
+    let viaEntry = false;
+    if (ms === null) {
+      const entryMs = tryParse(entry.scheduled_at as string | undefined);
+      if (entryMs !== null) {
+        ms = entryMs;
+        viaEntry = true;
+      }
+    }
+    if (ms === null) return { past: false, viaEntry: false, effective: null };
+    return {
+      past: ms < now.getTime(),
+      viaEntry,
+      effective: new Date(ms).toISOString(),
+    };
   };
 
   // #1180: fallback_used significa que Worker falhou e Make foi acionado
@@ -346,18 +389,24 @@ export function reconcileLinkedin(
     : null;
 
   if (matchByKey) {
-    // #1180: item está na queue MAS scheduled_at já passou → vai disparar
-    // no próximo tick do cron worker (~1min), publicação imediata.
-    if (isPastSchedule(matchByKey.scheduled_at)) {
+    // #1180/#1183: item está na queue MAS scheduled_at já passou → vai disparar
+    // no próximo tick do cron worker (~1min), publicação imediata. Inclui
+    // fallback pra entry.scheduled_at quando Worker omite o campo (#1183).
+    const sched = evaluateSchedule(matchByKey.scheduled_at);
+    if (sched.past) {
+      const source = sched.viaEntry
+        ? "via entry.scheduled_at (Worker omitiu scheduled_at)"
+        : "queue item";
       return {
         ...base,
-        reason: `scheduled_at_in_past: item esta na queue mas scheduled_at=${matchByKey.scheduled_at} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
+        reason: `scheduled_at_in_past: ${source} ${sched.effective} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
         external_state: {
           key: matchByKey.key,
           scheduled_at: matchByKey.scheduled_at,
           subtype,
           webhook_target: matchByKey.webhook_target,
           action: matchByKey.action,
+          ...(sched.viaEntry ? { fallback_source: "entry.scheduled_at" } : {}),
         },
       };
     }
@@ -404,11 +453,15 @@ export function reconcileLinkedin(
       }, matchesNarrow[0])
     : matchesNarrow[0];
 
-  // #1180: detectar past-schedule também no path narrow.
-  if (isPastSchedule(best.scheduled_at)) {
+  // #1180/#1183: detectar past-schedule também no path narrow, com fallback.
+  const narrowSched = evaluateSchedule(best.scheduled_at);
+  if (narrowSched.past) {
+    const source = narrowSched.viaEntry
+      ? "via entry.scheduled_at (Worker omitiu scheduled_at)"
+      : "queue item (narrow match)";
     return {
       ...base,
-      reason: `scheduled_at_in_past: item esta na queue (narrow match) mas scheduled_at=${best.scheduled_at} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
+      reason: `scheduled_at_in_past: ${source} ${narrowSched.effective} ja passou de ${now.toISOString()} — worker vai disparar imediato no proximo tick`,
       external_state: {
         key: best.key,
         scheduled_at: best.scheduled_at,
@@ -416,6 +469,7 @@ export function reconcileLinkedin(
         subtype,
         webhook_target: best.webhook_target,
         action: best.action,
+        ...(narrowSched.viaEntry ? { fallback_source: "entry.scheduled_at" } : {}),
       },
     };
   }

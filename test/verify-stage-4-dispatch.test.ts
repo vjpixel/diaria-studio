@@ -313,3 +313,98 @@ describe("#917 reconcileLinkedin", () => {
     assert.equal(r.subtype, "comment_diaria");
   });
 });
+
+describe("#1183 silent-fail quando schedule field omitido", () => {
+  const PAST_NOW = new Date("2026-05-08T10:00:00Z");
+
+  describe("FB: match sem scheduled_publish_time", () => {
+    it("entry.scheduled_at no passado + match sem scheduled_publish_time → verified=false (via fallback)", () => {
+      // FB retornou match mas omitiu o campo. Sem o fallback, viraria
+      // verified=true silenciosamente.
+      const scheduled = [
+        { id: "12345", message: "x" } as { id: string; message: string; scheduled_publish_time?: number },
+      ];
+      const r = reconcileFb(
+        fbEntry({ scheduled_at: "2026-05-08T09:00:00Z" }),
+        scheduled,
+        undefined,
+        PAST_NOW,
+      );
+      assert.equal(r.verified, false, "deve falhar pq entry.scheduled_at passou");
+      assert.match(r.reason ?? "", /scheduled_at_in_past/);
+      assert.match(r.reason ?? "", /FB omitiu scheduled_publish_time/);
+      const ext = r.external_state as { fallback_source?: string };
+      assert.equal(ext.fallback_source, "entry.scheduled_at");
+    });
+
+    it("entry.scheduled_at no futuro + match sem scheduled_publish_time → verified=true (comportamento atual)", () => {
+      const scheduled = [
+        { id: "12345", message: "x" } as { id: string; message: string; scheduled_publish_time?: number },
+      ];
+      const r = reconcileFb(
+        fbEntry({ scheduled_at: "2026-05-08T15:00:00Z" }), // 5h no futuro vs NOW=10
+        scheduled,
+        undefined,
+        PAST_NOW,
+      );
+      assert.equal(r.verified, true);
+    });
+
+    it("entry.scheduled_at ausente + match sem scheduled_publish_time → verified=true (nada pra checar)", () => {
+      const scheduled = [
+        { id: "12345", message: "x" } as { id: string; message: string; scheduled_publish_time?: number },
+      ];
+      const r = reconcileFb(
+        fbEntry({ scheduled_at: undefined }),
+        scheduled,
+        undefined,
+        PAST_NOW,
+      );
+      assert.equal(r.verified, true, "sem nenhum source de schedule, não falha");
+    });
+  });
+
+  describe("LinkedIn: queue item com scheduled_at vazio", () => {
+    it("queue.scheduled_at vazio + entry.scheduled_at no passado → verified=false (via fallback)", () => {
+      const key = "queue:2026-05-08T09:00:00.000Z:uuid-1";
+      const queue = [
+        {
+          key,
+          destaque: "d1",
+          scheduled_at: "", // omitido / vazio
+          action: "post",
+          webhook_target: "diaria",
+        } as unknown as Parameters<typeof reconcileLinkedin>[1][number],
+      ];
+      const entry = liEntry({
+        worker_queue_key: key,
+        scheduled_at: "2026-05-08T09:00:00Z", // já passou em PAST_NOW
+      });
+      const r = reconcileLinkedin(entry, queue, PAST_NOW);
+      assert.equal(r.verified, false);
+      assert.match(r.reason ?? "", /scheduled_at_in_past/);
+      assert.match(r.reason ?? "", /Worker omitiu scheduled_at/);
+      const ext = r.external_state as { fallback_source?: string };
+      assert.equal(ext.fallback_source, "entry.scheduled_at");
+    });
+
+    it("queue.scheduled_at vazio + entry.scheduled_at futuro → verified=true", () => {
+      const key = "queue:future:uuid-2";
+      const queue = [
+        {
+          key,
+          destaque: "d1",
+          scheduled_at: "",
+          action: "post",
+          webhook_target: "diaria",
+        } as unknown as Parameters<typeof reconcileLinkedin>[1][number],
+      ];
+      const entry = liEntry({
+        worker_queue_key: key,
+        scheduled_at: "2026-05-08T15:00:00Z",
+      });
+      const r = reconcileLinkedin(entry, queue, PAST_NOW);
+      assert.equal(r.verified, true);
+    });
+  });
+});
