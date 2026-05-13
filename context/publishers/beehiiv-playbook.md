@@ -278,7 +278,7 @@ Stdout (JSON):
   "edition": "260514",
   "url": "https://diar-ia-poll.diaria.workers.dev/html/260514",
   "bytes": 28341,
-  "ttl_seconds": 604800
+  "ttl_seconds": 43200
 }
 ```
 
@@ -286,9 +286,19 @@ Pré-requisitos:
 - `ADMIN_SECRET` (ou `POLL_ADMIN_SECRET`) no env — Worker valida HMAC do PUT.
 - `_internal/newsletter-final.html` (gerado em 1.3).
 
-TTL 7 dias no KV — suficiente pra paste de edição + retries. Re-rodar sobrescreve sem duplicar.
+TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescreve sem duplicar. Janela curta reduz risco de leak do gabarito É IA? se alguém chutar `/html/{próxima-edition}` antes do envio.
 
-**Fallback legacy (#1177)**: se Worker indisponível ou ADMIN_SECRET ausente, ainda existe o flow chunk-html-base64 + javascript_tool push com hash check. Não recomendado (~80K tokens). Pra usar: `npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}` e seguir Fases 3/4 legacy do PR #1194 (visíveis no git log).
+**Revisão online antes do paste**: a URL retornada (`url` no JSON) renderiza o HTML cru no browser. Use pra revisar o conteúdo final no celular/desktop antes de colar no Beehiiv — botões A/B do poll funcionam, imagens carregam. **Não substitui o test email do Beehiiv** (CSS específico do email client não está aplicado), mas é suficiente pra revisão de conteúdo. Apresentar a URL ao editor explicitamente: "Newsletter pronta pra revisão: {url} — confirme paste no Beehiiv?".
+
+**Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra Fase 2-legacy abaixo sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk.
+
+**Fase 2-legacy — Chunk-and-push (fallback, #1177)**:
+
+```bash
+npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}
+```
+
+Gera `_internal/_b64_NN.txt` (16 arquivos de 2500 chars + hashes) + push de cada chunk via `javascript_tool` acumulando em `window.__b64chunks[]`. Após push final, Fase 3 muda — em vez de fetch, decodifica `window.__b64chunks` antes do `insertContent` (ver Fase 4 abaixo).
 
 **Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
 

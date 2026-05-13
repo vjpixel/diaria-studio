@@ -491,7 +491,10 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
  * Mitigação: key contém edition + uuid, TTL 7d, sem listagem.
  */
 const HTML_KV_PREFIX = "html:";
-const HTML_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 dias
+// 12h. URL é predizível (key = edition number, público depois). Janela curta
+// cobre paste + retries no mesmo dia mas reduz risco de leak do gabarito É IA?
+// se alguém chutar /html/{próxima-edition} antes do envio.
+const HTML_TTL_SECONDS = 12 * 60 * 60; // 12h
 
 export async function handleHtmlGet(path: string, env: Env): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
