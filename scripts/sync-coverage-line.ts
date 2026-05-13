@@ -115,11 +115,21 @@ export function countSelectedItems(md: string): number {
   return count;
 }
 
+/**
+ * Match a linha de cobertura. Tolerante a:
+ *   - YAML frontmatter no topo (#1179): /m flag matches qualquer linha
+ *   - Vírgulas opcionais após "submissões" e "artigos" (Clarice às vezes adiciona
+ *     vírgula antes de "e" / conjunção). Ver edição 260513.
+ *   - Whitespace trailing.
+ */
 const COVERAGE_LINE_RE =
-  /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões e a Diar\.ia encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/m;
+  /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões,?\s+e a Diar\.ia encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/m;
 
 /**
  * Pure: substitui a linha de cobertura no MD. Se ausente, retorna `{ md, changed: false }`.
+ *
+ * Normaliza pra forma canônica (sem vírgula extra após "submissões") quando
+ * encontra variantes — ou seja, reverte adições não-padrão de pontuação.
  */
 export function rewriteCoverageLine(
   md: string,
