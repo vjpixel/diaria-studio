@@ -48,7 +48,6 @@
 ### Meta AI Blog
 - URL: https://ai.meta.com/blog/
 - Site query: `site:ai.meta.com/blog`
-- RSS: https://ai.meta.com/feed/
 
 ### Google
 - URL: https://blog.google/
@@ -58,7 +57,6 @@
 ### Cohere Blog
 - URL: https://cohere.com/blog
 - Site query: `site:cohere.com/blog`
-- RSS: https://cohere.com/blog/rss
 
 ### DeepMind
 - URL: https://deepmind.google/research/publications/
@@ -73,22 +71,20 @@
 ### Apple Machine Learning Research
 - URL: https://machinelearning.apple.com/
 - Site query: `site:machinelearning.apple.com`
-- RSS: https://machinelearning.apple.com/rss-feed.rss
+- RSS: https://machinelearning.apple.com/rss.xml
 
 ### Microsoft
 - URL: https://microsoft.ai/news/
 - Site query: `site:microsoft.ai/news`
-- RSS: https://blogs.microsoft.com/ai/feed/
 
 ### Mistral AI News
 - URL: https://mistral.ai/news/
 - Site query: `site:mistral.ai/news`
-- RSS: https://mistral.ai/news/feed/
 
 ### Nvidia
-- URL: https://nvidianews.nvidia.com/
-- Site query: `site:nvidianews.nvidia.com`
-- RSS: https://nvidianews.nvidia.com/rss
+- URL: https://blogs.nvidia.com/
+- Site query: `site:blogs.nvidia.com`
+- RSS: https://blogs.nvidia.com/feed/
 
 ### OpenAI
 - URL: https://openai.com/news/company-announcements/
@@ -98,14 +94,12 @@
 ### Anthropic
 - URL: https://www.anthropic.com/news/
 - Site query: `site:anthropic.com/news`
-- RSS: https://www.anthropic.com/rss.xml
 
 ## Secundária
 
 ### Agent Pulse
 - URL: https://agentpulse.beehiiv.com/
 - Site query: `site:agentpulse.beehiiv.com`
-- RSS: https://agentpulse.beehiiv.com/feed
 
 ### AI Breakfast
 - URL: https://aibreakfast.beehiiv.com/
