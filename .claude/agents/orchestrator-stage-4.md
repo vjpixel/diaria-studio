@@ -83,11 +83,27 @@ O patch correto agora roda em Stage 0 §0d.ter (`inject-poll-sig.ts --since-hour
 
 Se este orchestrator versão pré-#1175 ainda invocar `inject-poll-urls.ts` aqui, é seguro pular: o HTML não usa esses custom fields. Em caso de retry isolado de Stage 4, **não rodar** o script legacy — confiar no 0d.ter.
 
-### 4b. Confirmar modo de publicação por canal (#336)
+### 4b. Confirmar modo de publicação por canal (#336, #1238)
 
-**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log (`"Etapa 4 auto-approved: publish dispatch sem confirmação explícita"`).
+**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log e usar consent default `all-auto` (newsletter+linkedin+facebook todos auto — #1238).
 
-Antes do dispatch, perguntar ao editor (a menos que `auto_approve = true`):
+**Auto-approve path (#1238 — `auto_approve = true`):**
+
+```bash
+# Gravar consent default = all auto
+echo '{"newsletter":"auto","linkedin":"auto","facebook":"auto","source":"auto_approve_default"}' \
+  > data/editions/{AAMMDD}/_internal/05-publish-consent.json
+# Log warn (auditoria)
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn \
+  --message "Etapa 4 auto-approved via --no-gates: 3 canais dispatchados sem confirmacao por canal" \
+  --details '{"channels":["newsletter","linkedin","facebook"]}'
+```
+
+Prosseguir direto pra 4c-pre. NÃO perguntar.
+
+**Gate path interativo (`auto_approve = false`, default):**
+
+Antes do dispatch, perguntar ao editor:
 
 ```
 Modo de publicação para a edição {AAMMDD}:
@@ -106,6 +122,8 @@ Default se não responder = manual em tudo.
 
 Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`.
 Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Etapa 4.
+
+**#1238 trade-off documentado**: Beehiiv path (publish-newsletter playbook) pode falhar no click programático de "Send test email" por causa do user-activation guard do Beehiiv (#1211 — mesmo bug que afeta Schedule). Quando isso acontece em auto_approve mode, capturar via API timestamp check e gravar `05-published.json` com `review_completed: false`, `review_status: "pending_manual_send"`, `note: "Click programatico rejeitado. Editor precisa clicar Send test email em {draft_url}"`. Halt banner após gate 4g listará o passo manual restante. Pipeline ainda automatiza ~90% (draft created, HTML pasted, title/subject set, social agendado) — só o último click escapa.
 
 ### 4c-pre. Upload de imagens públicas (#999 fix — pré-requisito do dispatch)
 
