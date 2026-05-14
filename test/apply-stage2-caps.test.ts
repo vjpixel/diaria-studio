@@ -14,7 +14,6 @@ import {
   applyStage2Caps,
   checkStage2Caps,
   capOutrasNoticias,
-  destaquesFromBucket,
   STAGE_2_CAP_LANCAMENTOS,
   STAGE_2_CAP_PESQUISAS,
   STAGE_2_MIN_OUTRAS,
@@ -297,35 +296,6 @@ describe("checkStage2Caps", () => {
   });
 });
 
-describe("destaquesFromBucket (#1071)", () => {
-  it("conta highlights cujo bucket bate", () => {
-    const highlights = [
-      { url: "a", bucket: "noticias" },
-      { url: "b", bucket: "lancamento" },
-      { url: "c", bucket: "noticias" },
-    ];
-    assert.equal(destaquesFromBucket(highlights, "noticias"), 2);
-    assert.equal(destaquesFromBucket(highlights, "lancamento"), 1);
-    assert.equal(destaquesFromBucket(highlights, "pesquisa"), 0);
-  });
-
-  it("aceita bucket via article.bucket aninhado", () => {
-    const highlights = [
-      { url: "a", article: { bucket: "noticias" } },
-    ];
-    assert.equal(destaquesFromBucket(highlights, "noticias"), 1);
-  });
-
-  it("retorna 0 quando highlights undefined", () => {
-    assert.equal(destaquesFromBucket(undefined, "noticias"), 0);
-  });
-
-  it("retorna 0 quando highlights sem bucket", () => {
-    const highlights = [{ url: "a" }];
-    assert.equal(destaquesFromBucket(highlights, "noticias"), 0);
-  });
-});
-
 describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes do cap)", () => {
   it("caso 260514: D2=Claude promovido de lancamento, e tambem listado em lancamento → removido", () => {
     // Cenario real edicao 260514: Claude for SB virou D2 (destaque) e tambem
@@ -429,9 +399,8 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
   });
 });
 
-describe("destaquesFromBucket (#1071) — utilitário preservado pós-#1240", () => {
-  // Funcao ainda exportada caso callers externos usem; nao mais usada
-  // no cap calculation interno (substituida por dedup direto).
+describe("cap calculation pós-#1240 (sem inflacao do #1071)", () => {
+  // #1071 destaquesFromBucket foi removida pos-#1240 (dedup direto substitui).
   it("destaques nenhum vindo de noticias → cap calculado sem inflacao", () => {
     const noticias = Array.from({ length: 10 }, (_, i) => ({
       url: `https://example.com/n${i}`,

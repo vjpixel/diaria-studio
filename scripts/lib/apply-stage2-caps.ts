@@ -78,26 +78,6 @@ export function capOutrasNoticias(
   );
 }
 
-/**
- * Pure (#1071): conta quantos highlights vêm de um bucket específico.
- * Highlights podem ser promovidos de qualquer bucket pelo scorer; saber
- * quantos vieram de "noticias" permite o cap ajustar pra compensar.
- *
- * Aceita shape com `bucket` direto (legacy) ou `article.bucket` (caso
- * scorer aninhar). Retorna 0 quando bucket ausente.
- */
-export function destaquesFromBucket(
-  highlights: StageArticle[] | undefined,
-  bucket: string,
-): number {
-  if (!highlights) return 0;
-  return highlights.filter((h) => {
-    const b = (h as { bucket?: string }).bucket
-      ?? ((h as { article?: { bucket?: string } }).article?.bucket);
-    return b === bucket;
-  }).length;
-}
-
 export interface CapReport {
   before: { lancamento: number; pesquisa: number; noticias: number };
   after: { lancamento: number; pesquisa: number; noticias: number };
