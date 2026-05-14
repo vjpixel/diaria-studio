@@ -93,7 +93,9 @@ Verificar cada item e registrar como `ok` ou `issue`:
 4. **Secoes nao duplicadas.** Cada secao (Lancamentos, Pesquisas, Outras Noticias) deve aparecer no maximo 1 vez. Se duplicada:
    `"section_duplicated: Secao '{nome}' aparece {X} vezes"`
 
-5. **Imagens — IGNORAR.** O editor sobe as imagens manualmente no Beehiiv **depois** desta revisao. E esperado que o email de teste tenha placeholders (URLs `localhost`, texto "Ver imagem:", ou imagens ausentes). **Nao registrar nenhum issue relacionado a imagens.** A verificacao de imagens acontece visualmente pelo editor apos o upload manual.
+5. **Imagens — IGNORAR placeholders + delegar freshness pra lint script (#1212).** O editor sobe as imagens manualmente no Beehiiv **depois** desta revisao. E esperado que o email de teste tenha placeholders (URLs `localhost`, texto "Ver imagem:", ou imagens ausentes). **Nao registrar issue por placeholders.** A verificacao de imagens acontece visualmente pelo editor apos o upload manual.
+
+   **MAS** quando o email JA tem URLs de imagem reais (Worker `/img/` ou Drive `uc?id=`), verificar freshness via lint determinístico — captura cache stale do Gmail Image Proxy / Beehiiv preview (caso real edição 260514: editor regenerou D1 sem texto, URL servia versão antiga por 1 ano). Ver passo 16.
 
 6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal esta faltando:
    `"section_missing: Secao '{nome}' esperada mas nao encontrada"`
@@ -198,6 +200,57 @@ Verificar cada item e registrar como `ok` ou `issue`:
        bloqueia o loop fix.
 
 Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Visual formatting checks (#753) usam `email:formatting:` (blocker) ou `info:formatting:` (não-blocker). Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
+
+### 3b. Image freshness via lint determinístico (#1212)
+
+**Procedimento (passo 16):**
+
+```bash
+# 1. Salvar conteúdo do email em arquivo temp (já feito em passo 8-9 se rodou)
+echo "$EMAIL_CONTENT" > /tmp/test-email-{AAMMDD}.txt
+
+# 2. Rodar lint de freshness
+npx tsx scripts/lint-test-email-image-freshness.ts \
+  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --edition-dir {edition_dir} \
+  --out /tmp/lint-image-freshness-{AAMMDD}.json
+# Exit 0 = todas as imagens batem com arquivo local. Exit 1 = ao menos 1 stale.
+```
+
+3. Ler `/tmp/lint-image-freshness-{AAMMDD}.json` — formato:
+   ```json
+   {
+     "edition_dir": "...",
+     "total_urls_extracted": N,
+     "total_urls_checked": M,
+     "issues": [
+       { "type": "image_stale"|"image_unreachable",
+         "url": "...",
+         "expected_local_file": "04-d1-2x1.jpg",
+         "remote_hash": "...",
+         "expected_hash": "...",
+         "details": "..." }
+     ],
+     "passed": K,
+     "skipped": L
+   }
+   ```
+
+4. Mapear cada `issues[]` pra string compatível com o output:
+   - `type:image_stale` → `"email:image_stale: {expected_local_file} — {details}"`
+   - `type:image_unreachable` → `"email:image_unreachable: {expected_local_file} — {url} retornou erro"`
+
+   Anexar ao `issues[]` final do agent.
+
+**Casos comuns que dispara:**
+- Editor regenerou imagem (image-generate.ts --force) mas Worker KV serve versão antiga por TTL longo (#1242 fix: TTL agora 1h, então cache stale só persiste por 1h max).
+- Gmail Image Proxy cacheou URL por dias após primeiro acesso.
+
+**Caso comum que NÃO dispara (skipped):**
+- URL é placeholder localhost ou texto "Ver imagem:" — não é URL fetchável (não bate `extractImageUrls`).
+- URL é canônica mas arquivo local não existe (skipped — agent ignora).
+
+**Fallback:** se o lint falhar (exit 2, arquivo não criado), logar `info:lint_image_freshness_failed: {detalhe}` no `issues[]` e seguir. Não bloqueia.
 
 ### 3a. Cross-reference com intentional-errors.jsonl
 
