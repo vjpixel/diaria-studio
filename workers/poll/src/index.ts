@@ -256,9 +256,9 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     scores.push({ email, nickname: score.nickname || null, correct: score.correct, total: score.total, pct, streak: score.streak || 0 });
   }
 
-  // #1092: competition ranking — leitores com mesmo (correct, pct) ocupam o
-  // mesmo número (1, 1, 3 — não 1, 2, 3 nem dense 1, 1, 2). Tiebreaker
-  // dentro do empate: nickname/email ASC (estável).
+  // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
+  // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
+  // Tiebreaker dentro do empate: nickname/email ASC (estável).
   const ranked = rankEntries(scores).slice(0, 50);
 
   const rows = ranked.map((s) => {

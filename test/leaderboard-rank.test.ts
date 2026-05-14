@@ -1,8 +1,11 @@
 /**
- * leaderboard-rank.test.ts (#1092)
+ * leaderboard-rank.test.ts (#1092, #1256)
  *
  * Testes do helper de ranking do leaderboard do É IA?. Cobre os 4 cenários
  * do issue: sem empate, empate parcial, todos empatados, tiebreaker estável.
+ *
+ * #1256: migrado de competition rank (1, 1, 3) pra dense rank (1, 1, 2) —
+ * empate herda, próximo grupo é só +1 (não pula).
  */
 
 import { describe, it } from "node:test";
@@ -46,26 +49,26 @@ describe("rankEntries (#1092)", () => {
     );
   });
 
-  it("empate parcial no topo: 1, 1, 3 (competition rank, não dense)", () => {
+  it("#1256 empate parcial no topo: 1, 1, 2 (dense rank, não competition)", () => {
     const ranked = rankEntries([
       entry("ana@x.com", 5, 5, "ana"),
       entry("bruno@x.com", 5, 5, "bruno"),
       entry("carla@x.com", 1, 2, "carla"),
     ]);
     // Ana e Bruno empatados em (5, 100%) → ambos rank 1
-    // Carla em 3º (pula o 2)
+    // Carla em rank 2 (dense — sem pular)
     assert.deepEqual(
       ranked.map((r) => r.rank),
-      [1, 1, 3],
+      [1, 1, 2],
     );
-    // Ambos os tops recebem ouro; carla recebe bronze (pula prata)
+    // Ambos os tops recebem ouro; carla recebe prata (rank 2)
     assert.deepEqual(
       ranked.map((r) => r.medal),
-      ["🥇", "🥇", "🥉"],
+      ["🥇", "🥇", "🥈"],
     );
   });
 
-  it("empate parcial no meio: 1, 2, 2, 4", () => {
+  it("#1256 empate parcial no meio: 1, 2, 2, 3 (dense rank)", () => {
     const ranked = rankEntries([
       entry("a@x.com", 10, 10, "a"),
       entry("b@x.com", 5, 10, "b"),
@@ -74,8 +77,35 @@ describe("rankEntries (#1092)", () => {
     ]);
     assert.deepEqual(
       ranked.map((r) => r.rank),
-      [1, 2, 2, 4],
+      [1, 2, 2, 3],
     );
+  });
+
+  it("#1256 cenário real (screenshot): 6 empatados em rank 3 → próximo é 4 (não 9)", () => {
+    // Reproduz o leaderboard reportado em #1256:
+    //   1 pessoa rank 1 (2/3), 1 rank 2 (1/2),
+    //   6 rank 3 (1/1) → próximo grupo deve ser rank 4 (não 9)
+    //   3 rank 4 (0/1)
+    const ranked = rankEntries([
+      entry("bruna@x.com", 2, 3, "Bruna"),
+      entry("joshu@x.com", 1, 2, "Joshu"),
+      entry("edson@x.com", 1, 1, "edsonesilva"),
+      entry("fumaca@x.com", 1, 1, "fumaca-cachorro"),
+      entry("lucas@x.com", 1, 1, "lucasd11"),
+      entry("luisao@x.com", 1, 1, "Luisao P"),
+      entry("renato@x.com", 1, 1, "renatobergallo"),
+      entry("vanessa@x.com", 1, 1, "Vanessa"),
+      entry("celeji@x.com", 0, 1, "celejinha"),
+      entry("cristina@x.com", 0, 1, "cristina.moreira"),
+      entry("roberto@x.com", 0, 1, "robertoabreu"),
+    ]);
+    assert.deepEqual(
+      ranked.map((r) => r.rank),
+      [1, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4],
+    );
+    // Última pessoa do empate-bronze tem medal 🥉; primeiro do próximo grupo é "4."
+    assert.equal(ranked[7].medal, "🥉");
+    assert.equal(ranked[8].medal, "4.");
   });
 
   it("todos empatados: 1, 1, 1, 1", () => {
