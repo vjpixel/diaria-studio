@@ -41,7 +41,7 @@ describe("research-reviewer out_path requirement (#1271)", () => {
     // E deve avisar que confirma file existe pós-dispatch
     assert.match(
       f2section![0],
-      /Confirmar que arquivo existe|confirmar que arquivo/i,
+      /Confirmar.*arquivo existe|arquivo existe.*scorer/i,
       "playbook deve sanity-check post-dispatch",
     );
   });
