@@ -32,14 +32,11 @@ describe("handleImage CORS", () => {
     assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
   });
 
-  it("retorna Content-Type image/jpeg + Cache-Control immutable", async () => {
+  it("retorna Content-Type image/jpeg + Cache-Control TTL 1h (#1242)", async () => {
     const env = makeEnv();
     const res = await handleImage("/img/img-260512-cover.jpg", env);
     assert.equal(res.headers.get("Content-Type"), "image/jpeg");
-    assert.equal(
-      res.headers.get("Cache-Control"),
-      "public, max-age=31536000, immutable",
-    );
+    assert.equal(res.headers.get("Cache-Control"), "public, max-age=3600");
   });
 
   it("#1132 P2.4: 404 também emite CORS header (pre-check robusto)", async () => {
