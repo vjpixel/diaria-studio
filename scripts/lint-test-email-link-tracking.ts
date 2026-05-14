@@ -68,8 +68,17 @@ const AUTH_REQUIRED_DOMAINS = new Set([
   "x.com",
 ]);
 
-const MAX_REDIRECTS = 3;
-const HEAD_TIMEOUT_MS = 5000;
+// Override via env pra ajuste sem rebuild. Defaults conservadores.
+const MAX_REDIRECTS = parseIntEnv("LINK_TRACKING_MAX_REDIRECTS", 3);
+const HEAD_TIMEOUT_MS = parseIntEnv("LINK_TRACKING_TIMEOUT_MS", 5000);
+const DEFAULT_CONCURRENCY = parseIntEnv("LINK_TRACKING_CONCURRENCY", 5);
+
+function parseIntEnv(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (!v) return fallback;
+  const n = parseInt(v, 10);
+  return isNaN(n) || n < 1 ? fallback : n;
+}
 
 /**
  * Extrai todos URLs de hrefs no HTML/text do email.
@@ -185,7 +194,7 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
 export async function checkLinkTracking(
   emailContent: string,
   fetchImpl: typeof fetch = fetch,
-  concurrency = 5,
+  concurrency = DEFAULT_CONCURRENCY,
 ): Promise<LinkTrackingResult> {
   const rawUrls = extractEmailUrls(emailContent);
   const issues: LinkIssue[] = [];
