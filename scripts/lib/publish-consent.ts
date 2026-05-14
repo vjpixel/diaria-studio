@@ -10,7 +10,6 @@
  *   - "default_manual"       → editor não respondeu, fallback manual
  */
 
-export type Channel = "newsletter" | "linkedin" | "facebook";
 export type Mode = "auto" | "manual" | "skipped";
 
 export interface PublishConsent {
