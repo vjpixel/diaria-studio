@@ -24,8 +24,11 @@
 import { readFileSync } from "node:fs";
 import {
   findForbiddenPhrases,
+  findTextTriggers,
   formatIssues,
+  formatTriggerWarnings,
   CATEGORY_RULES,
+  TRIGGER_RULES,
   type ForbiddenIssue,
 } from "./lib/lint-image-prompt.ts";
 
@@ -89,9 +92,19 @@ function main(): number {
   }
 
   const issues = findForbiddenPhrases(prompt);
+  // #1241: triggers de texto são WARNINGS — não bloqueiam.
+  const triggers = findTextTriggers(prompt);
+
+  if (triggers.length > 0) {
+    process.stderr.write(formatTriggerWarnings(prompt, triggers) + "\n");
+    process.stderr.write(`    Regra: ${TRIGGER_RULES.text_trigger_words}\n`);
+  }
+
   if (issues.length === 0) {
     // Limpo — orchestrator pode prosseguir pra image-generate
-    process.stdout.write(JSON.stringify({ ok: true, issues: [] }, null, 2) + "\n");
+    process.stdout.write(
+      JSON.stringify({ ok: true, issues: [], triggers }, null, 2) + "\n",
+    );
     return 0;
   }
 
@@ -101,7 +114,7 @@ function main(): number {
 
   // Stdout: JSON estruturado pra orchestrator parsear
   process.stdout.write(
-    JSON.stringify({ ok: false, issues }, null, 2) + "\n",
+    JSON.stringify({ ok: false, issues, triggers }, null, 2) + "\n",
   );
   return 1;
 }

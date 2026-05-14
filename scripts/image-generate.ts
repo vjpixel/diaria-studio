@@ -26,11 +26,21 @@ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Estilo fixo Van Gogh impasto — ver context/editorial-rules.md para a regra editorial.
+// #1241: instrução anti-texto movida pro positive prompt com fraseado afirmativo.
+// Gemini Flash Image respeita melhor instruções positivas que negative prompt
+// (que ele interpreta como descrição geral, às vezes induzindo o oposto).
 const STYLE_SUFFIX =
-  ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast";
+  ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
+  "Purely visual scene with absolutely no written characters, no letters, no digits, no symbols on any surface; " +
+  "all signage, papers, screens, books and labels rendered as abstract shapes or solid color blocks without any text or numbers.";
 
+// #1241: NEGATIVE_PROMPT enxuto — termos texto-related removidos porque
+// Gemini não respeita negative prompts como Stable Diffusion (pode até induzir
+// geração quando palavras texto aparecem). Anti-texto agora vive no positive.
+// Mantidos: filtros de estilo (photorealistic, blurry), proibições editoriais
+// (Starry Night), e objetos visuais não relacionados a texto.
 const NEGATIVE_PROMPT =
-  "photorealistic, photography, pixel art, blurry, text, watermark, signature, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting, letters, words, writing, signs, labels, captions, banners, posters, billboards, readable text, typography, font, digits, numbers on screen";
+  "photorealistic, photography, pixel art, blurry, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting";
 
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description

@@ -26,11 +26,25 @@ export type ForbiddenCategory =
   | "pixel_count"
   | "dpi";
 
+/**
+ * Categoria de WARNING — palavras-gatilho que tendem a fazer Gemini renderizar
+ * texto na cena (livro aberto, placa, tela com código, petição, documento).
+ * Não bloqueiam geração (exit 0), mas avisam no stderr pra editor considerar
+ * reframe pra reduzir risco de letras distorcidas. #1241.
+ */
+export type TriggerCategory = "text_trigger_words";
+
 export interface ForbiddenIssue {
   category: ForbiddenCategory;
   /** Trecho exato que casou — usado no warn message. */
   match: string;
   /** Posição (índice) no input pra contexto opcional. */
+  index: number;
+}
+
+export interface TriggerIssue {
+  category: TriggerCategory;
+  match: string;
   index: number;
 }
 
@@ -53,6 +67,35 @@ export const FORBIDDEN_PATTERNS: ReadonlyArray<{
   { category: "pixel_count", pattern: /\b\d+\s*(?:pixels?|px)\b/gi },
   // DPI mentions — "300 dpi", "150DPI".
   { category: "dpi", pattern: /\b\d+\s*dpi\b/gi },
+];
+
+/**
+ * Palavras-gatilho que tendem a fazer Gemini renderizar texto na cena.
+ * Caso real edição 260514 D1: prompt mencionava "petição com texto" → Gemini
+ * desenhou letras distorcidas na petição. #1241.
+ *
+ * Não bloqueia — só avisa. Editor decide se reframe (substituir "petição"
+ * por "documento abstrato", "tela com código" por "monitor com formas
+ * geométricas", etc).
+ */
+export const TEXT_TRIGGER_PATTERNS: ReadonlyArray<{
+  category: TriggerCategory;
+  pattern: RegExp;
+}> = [
+  // PT-BR
+  { category: "text_trigger_words", pattern: /\bpeti[çc][ãa]o\b/gi },
+  { category: "text_trigger_words", pattern: /\blivro\s+aberto\b/gi },
+  { category: "text_trigger_words", pattern: /\bplaca\b/gi },
+  { category: "text_trigger_words", pattern: /\bjornal\b/gi },
+  { category: "text_trigger_words", pattern: /\bdocumento\b/gi },
+  { category: "text_trigger_words", pattern: /\bc[oó]digo\b/gi },
+  { category: "text_trigger_words", pattern: /\btela\s+(?:de|com)\s+/gi },
+  { category: "text_trigger_words", pattern: /\bcarta\b/gi },
+  { category: "text_trigger_words", pattern: /\bcartaz\b/gi },
+  // EN
+  { category: "text_trigger_words", pattern: /\bopen\s+book\b/gi },
+  { category: "text_trigger_words", pattern: /\bnewspaper\b/gi },
+  { category: "text_trigger_words", pattern: /\bsign\s+(?:that|with|saying)/gi },
 ];
 
 /**
@@ -117,3 +160,39 @@ export const CATEGORY_RULES: Record<ForbiddenCategory, string> = {
     "Regra editorial proíbe especificar contagem de pixels — Gemini decide tamanho.",
   dpi: "Regra editorial proíbe especificar DPI — irrelevante pro pipeline editorial.",
 };
+
+export const TRIGGER_RULES: Record<TriggerCategory, string> = {
+  text_trigger_words:
+    "Palavra(s) que tendem a induzir Gemini a renderizar texto/letras na cena (#1241). Considere reframe: substituir por elemento abstrato equivalente (ex: 'petição' → 'documento estilizado', 'tela de código' → 'monitor com formas geométricas').",
+};
+
+/**
+ * Detecta palavras-gatilho de texto (#1241). Não bloqueia — só avisa.
+ */
+export function findTextTriggers(prompt: string): TriggerIssue[] {
+  if (typeof prompt !== "string" || prompt.length === 0) return [];
+  const issues: TriggerIssue[] = [];
+  for (const { category, pattern } of TEXT_TRIGGER_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(prompt)) !== null) {
+      issues.push({ category, match: match[0], index: match.index });
+      if (match.index === pattern.lastIndex) pattern.lastIndex++;
+    }
+  }
+  issues.sort((a, b) => a.index - b.index);
+  return issues;
+}
+
+export function formatTriggerWarnings(prompt: string, issues: TriggerIssue[]): string {
+  if (issues.length === 0) return "";
+  const lines: string[] = [];
+  lines.push(`[lint-image-prompt] ${issues.length} aviso(s) de gatilho de texto (#1241):`);
+  for (const issue of issues) {
+    const start = Math.max(0, issue.index - 25);
+    const end = Math.min(prompt.length, issue.index + issue.match.length + 25);
+    const context = prompt.slice(start, end).replace(/\s+/g, " ").trim();
+    lines.push(`  - [${issue.category}] match=${JSON.stringify(issue.match)} contexto: "…${context}…"`);
+  }
+  return lines.join("\n");
+}
