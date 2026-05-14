@@ -2,9 +2,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   findForbiddenPhrases,
+  findTextTriggers,
   formatIssues,
+  formatTriggerWarnings,
   CATEGORY_RULES,
+  TRIGGER_RULES,
   FORBIDDEN_PATTERNS,
+  TEXT_TRIGGER_PATTERNS,
 } from "../scripts/lib/lint-image-prompt.ts";
 
 describe("findForbiddenPhrases — detecção de violações (#810)", () => {
@@ -171,6 +175,86 @@ describe("CATEGORY_RULES — descritivos pra cada categoria (#810)", () => {
         patternCategories.has(key as never),
         `CATEGORY_RULES tem '${key}' mas FORBIDDEN_PATTERNS não — drift`,
       );
+    }
+  });
+});
+
+describe("findTextTriggers — palavras-gatilho de texto (#1241)", () => {
+  it("retorna [] pra prompt limpo (sem trigger words)", () => {
+    const r = findTextTriggers("Pintura impasto Van Gogh de servidores no datacenter");
+    assert.deepEqual(r, []);
+  });
+
+  it("detecta 'petição' (PT-BR) — caso real edição 260514 D1", () => {
+    const r = findTextTriggers("petição com texto sobre o chão");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].category, "text_trigger_words");
+    assert.match(r[0].match, /peti[çc][ãa]o/i);
+  });
+
+  it("detecta 'petiçao' sem cedilha (defensive)", () => {
+    const r = findTextTriggers("uma peticao impressa");
+    assert.equal(r.length, 1);
+  });
+
+  it("detecta 'livro aberto'", () => {
+    const r = findTextTriggers("Um livro aberto na mesa");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].match.toLowerCase(), "livro aberto");
+  });
+
+  it("detecta 'placa'", () => {
+    const r = findTextTriggers("Uma placa indicativa no fundo");
+    assert.equal(r.length, 1);
+  });
+
+  it("detecta 'documento'", () => {
+    const r = findTextTriggers("documento jurídico sobre a mesa");
+    assert.equal(r.length, 1);
+  });
+
+  it("detecta 'código' (PT)", () => {
+    const r = findTextTriggers("linhas de código fluindo na tela");
+    // 'tela de'/'tela com' pattern e 'código' pattern podem ambos casar
+    assert.ok(r.length >= 1);
+    assert.ok(r.some((i) => /c[oó]digo/i.test(i.match)));
+  });
+
+  it("detecta 'tela de' (gatilho contextual)", () => {
+    const r = findTextTriggers("Tela de computador exibindo dashboard");
+    assert.ok(r.some((i) => /tela\s+de/i.test(i.match)));
+  });
+
+  it("detecta 'open book' (EN)", () => {
+    const r = findTextTriggers("An open book on the table");
+    assert.equal(r.length, 1);
+  });
+
+  it("detecta múltiplas trigger words ordenadas por posição", () => {
+    const r = findTextTriggers("uma petição e um livro aberto na mesa com um documento");
+    assert.equal(r.length, 3);
+    // Ordenado por index
+    for (let i = 1; i < r.length; i++) {
+      assert.ok(r[i].index > r[i - 1].index);
+    }
+  });
+
+  it("formatTriggerWarnings inclui contexto pra cada trigger", () => {
+    const prompt = "uma petição na mesa";
+    const triggers = findTextTriggers(prompt);
+    const formatted = formatTriggerWarnings(prompt, triggers);
+    assert.match(formatted, /aviso\(s\) de gatilho de texto/);
+    assert.match(formatted, /text_trigger_words/);
+  });
+
+  it("formatTriggerWarnings retorna '' quando vazio", () => {
+    assert.equal(formatTriggerWarnings("prompt limpo", []), "");
+  });
+
+  it("TRIGGER_RULES tem entry pra cada categoria de TEXT_TRIGGER_PATTERNS", () => {
+    const patternCategories = new Set(TEXT_TRIGGER_PATTERNS.map((p) => p.category));
+    for (const key of Object.keys(TRIGGER_RULES)) {
+      assert.ok(patternCategories.has(key as never));
     }
   });
 });
