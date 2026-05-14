@@ -57,21 +57,32 @@ export function wranglerKvGet(key: string): string | null {
  * Cleanup do tmpfile via finally — `mkdtempSync` cria diretório dedicado
  * pra evitar collision em writes paralelos.
  */
+/**
+ * Pure: constrói o command string do wrangler kv put.
+ * Exported pra testes (#1245 follow-up — valida quoting com paths
+ * problemáticos: espaços, UTF-8, parênteses).
+ */
+export function buildKvPutCommand(args: {
+  key: string;
+  tmpFile: string;
+  namespaceId: string;
+}): string {
+  return `npx wrangler kv key put "${args.key}" --path="${args.tmpFile}" --namespace-id=${args.namespaceId} --remote`;
+}
+
 export function wranglerKvPut(key: string, value: string): void {
   const tmpDir = mkdtempSync(join(tmpdir(), "diaria-kv-put-"));
   const tmpFile = join(tmpDir, "value");
   try {
     writeFileSync(tmpFile, value, "utf8");
-    const r = spawnSync(
-      `npx wrangler kv key put "${key}" --path="${tmpFile}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
-      {
-        cwd: WORKER_DIR,
-        encoding: "utf8",
-        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const cmd = buildKvPutCommand({ key, tmpFile, namespaceId: POLL_KV_NAMESPACE_ID });
+    const r = spawnSync(cmd, {
+      cwd: WORKER_DIR,
+      encoding: "utf8",
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     if (r.status !== 0) {
       throw new Error(
         `wrangler kv key put failed (exit ${r.status}):\nstdout: ${r.stdout?.slice(0, 300)}\nstderr: ${r.stderr?.slice(0, 500)}`,
