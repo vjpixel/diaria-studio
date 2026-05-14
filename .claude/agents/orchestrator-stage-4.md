@@ -90,9 +90,8 @@ Se este orchestrator versão pré-#1175 ainda invocar `inject-poll-urls.ts` aqui
 **Auto-approve path (#1238 — `auto_approve = true`):**
 
 ```bash
-# Gravar consent default = all auto
-echo '{"newsletter":"auto","linkedin":"auto","facebook":"auto","source":"auto_approve_default"}' \
-  > data/editions/{AAMMDD}/_internal/05-publish-consent.json
+# Gravar consent default = all auto (via helper TS — schema validado)
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
 # Log warn (auditoria)
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn \
   --message "Etapa 4 auto-approved via --no-gates: 3 canais dispatchados sem confirmacao por canal" \
