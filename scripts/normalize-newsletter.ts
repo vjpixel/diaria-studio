@@ -491,6 +491,10 @@ export function normalizeNewsletter(text: string): {
 
     if (line.trim() === "---") {
       // Reset section tracking em separadores (evita inferência cross-section).
+      // #1264: bug histórico — comentário existia desde #157 mas o reset
+      // nunca acontecia. inSection ficava "section" após PESQUISAS e o
+      // splitter quebrava links inline em SORTEIO/PARA ENCERRAR.
+      inSection = null;
       out.push(line);
       continue;
     }

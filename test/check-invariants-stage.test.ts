@@ -148,6 +148,20 @@ describe("Stage 1 invariants", () => {
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
+
+  // #1260: render-categorized-md.ts insere placeholder com sufixo quando
+  // 01-eia.md não existe ainda: "## É IA? ⏳ (ainda processando...)". Antes
+  // a regex strict /^## É IA\?\s*$/m rejeitava esse caso e bloqueava o gate
+  // mesmo com a seção corretamente presente.
+  it("categorized-has-eia-section passa com placeholder '## É IA? ⏳ (...)' (#1260)", () => {
+    writeFileSync(
+      join(fixture, "01-categorized.md"),
+      "## É IA? ⏳ (ainda processando — será revisado quando disponível)\n\n",
+    );
+    const v = checkCategorizedHasEiaSection(fixture);
+    assert.equal(v.length, 0, "placeholder header com sufixo deve passar");
+    rmSync(fixture, { recursive: true, force: true });
+  });
 });
 
 describe("Stage 2 invariants", () => {

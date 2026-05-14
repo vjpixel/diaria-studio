@@ -207,6 +207,41 @@ describe("normalizeNewsletter — integração", () => {
     assert.equal(r.report.section_items_split, 0);
     assert.ok(r.text.includes("link inline https://example.com/x no meio."));
   });
+
+  // #1264: separador `---` deve resetar inSection. Antes da fix, inSection
+  // ficava "section" após PESQUISAS e o splitter quebrava o link inline no
+  // SORTEIO (linha 99 do draft 260516) em 3 linhas, corrompendo o markdown.
+  it("`---` reseta inSection — link inline em SORTEIO/ENCERRAR pós-PESQUISAS NÃO é quebrado (#1264)", () => {
+    const input = [
+      "PESQUISAS",
+      "**[Item de pesquisa](https://arxiv.org/abs/123)**",
+      "Descrição da pesquisa.",
+      "",
+      "---",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "**Responda com a correção para concorrer a [um livro sobre IA entre os que recomendamos](https://example.com/livros), a ser sorteado mês que vem.**",
+      "",
+      "---",
+      "",
+      "**PARA ENCERRAR**",
+      "",
+      "- [Cursos grátis de IA](https://example.com/cursos)",
+      "- [Livros sobre IA](https://example.com/livros)",
+    ].join("\n");
+
+    const r = normalizeNewsletter(input);
+    // Não deve quebrar nenhum item nas seções pós-`---`.
+    assert.equal(r.report.section_items_split, 0, "splitter não deve disparar em SORTEIO/PARA ENCERRAR");
+    // Links inline permanecem em 1 linha.
+    assert.ok(r.text.includes("[um livro sobre IA entre os que recomendamos](https://example.com/livros)"));
+    assert.ok(r.text.includes("- [Cursos grátis de IA](https://example.com/cursos)"));
+    assert.ok(r.text.includes("- [Livros sobre IA](https://example.com/livros)"));
+    // Sanity: separador `---` preservado.
+    const dashes = r.text.split("\n").filter((l) => l.trim() === "---").length;
+    assert.equal(dashes, 2, "2 separadores --- preservados");
+  });
 });
 
 describe("addTrailingSpaces (#382)", () => {
