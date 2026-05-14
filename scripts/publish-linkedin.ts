@@ -648,40 +648,71 @@ async function main(): Promise<void> {
   // (evita race com publish-facebook.ts paralelo). appendSocialPosts faz upsert
   // por platform+destaque sob .lock — não precisamos de buffer local.
 
-  // #999 fail-fast: se 06-public-images.json não existe ou tem destaque
-  // sem URL, abortar quando --schedule passado. Make scenario LinkedIn
+  // #999/#1275 fail-fast: se 06-public-images.json não existe ou tem destaque
+  // sem URL, abortar SEMPRE. Make scenario LinkedIn (tanto main quanto comments)
   // exige Image URL — sem ela, post falha 5× e vai pra DLQ silenciosamente.
-  // Caso real edição 260508: image_url=null causou 5 retries → 3 posts perdidos
-  // até editor manual intervir. Sem --schedule (route=make_now), continua
-  // permitindo post sem imagem como safety net.
-  if (doSchedule) {
+  //
+  // Histórico:
+  // - #999 (260508): primeira incidência, fail-fast adicionado mas só ativo com --schedule
+  // - #1275 (260513+260514): regressão — 12 comments foram pra DLQ. Cache tinha apenas
+  //   {cover, eia_a, eia_b} (mode newsletter) sem {d1, d2, d3} (mode social). Provável
+  //   causa: orchestrator pulou 4c-pre OU --fire-now bypass acidental. Fix: remover o
+  //   `if (doSchedule)` guard — fail-fast roda SEMPRE, inclusive em --fire-now.
+  //   Rationale: post sem imagem cria post LinkedIn quebrado (text-only mas Make scenario
+  //   espera image post) → erro do Make → editor recebe spam de email. Safety net pior
+  //   que abort claro.
+  {
     const imgCachePath = resolve(editionDir, "06-public-images.json");
-    let allDestaquesHaveImage = false;
+    const imgCacheState: {
+      exists: boolean;
+      keys: string[];
+      missing: string[];
+      destaques_with_url: string[];
+    } = { exists: false, keys: [], missing: [...destaques], destaques_with_url: [] };
+
     if (existsSync(imgCachePath)) {
+      imgCacheState.exists = true;
       try {
         const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
           images?: Record<string, { url?: string }>;
         };
-        allDestaquesHaveImage = destaques.every((d) => {
+        imgCacheState.keys = Object.keys(imgCache.images ?? {});
+        imgCacheState.destaques_with_url = destaques.filter((d) => {
           const url = imgCache.images?.[d]?.url ?? null;
           return typeof url === "string" && url.length > 0;
         });
+        imgCacheState.missing = destaques.filter(
+          (d) => !imgCacheState.destaques_with_url.includes(d),
+        );
       } catch {
-        allDestaquesHaveImage = false;
+        imgCacheState.missing = [...destaques];
       }
     }
-    if (!allDestaquesHaveImage) {
+
+    // Logar SEMPRE o state do cache (audit pra debug futuro de regressões #1275)
+    logEvent({
+      edition: editionDate,
+      stage: 4,
+      agent: "publish-linkedin",
+      level: imgCacheState.missing.length === 0 ? "info" : "warn",
+      message: `image_cache_state: ${imgCacheState.destaques_with_url.length}/${destaques.length} destaques com URL`,
+      details: { ...imgCacheState, cache_path: imgCachePath },
+    });
+
+    if (imgCacheState.missing.length > 0) {
       console.error(
         [
-          "ERRO: --schedule passado mas 06-public-images.json não tem URL pra todos os destaques.",
+          `ERRO (#1275 fail-fast): 06-public-images.json não tem URL pra destaque(s): ${imgCacheState.missing.join(", ")}`,
           `  Path: ${imgCachePath}`,
+          `  Keys presentes: ${imgCacheState.keys.join(", ") || "<arquivo ausente>"}`,
           "  Make scenario LinkedIn (Create Company Image Post) exige Image URL — sem ela,",
           "  webhook retorna BundleValidationError e post entra em retry loop até DLQ.",
+          "  Comments (comment_diaria + comment_pixel) também falham mesmo herdando URL do main.",
           "",
           "Resolução: rodar antes do dispatch:",
           "  npx tsx scripts/upload-images-public.ts --edition-dir " + editionDir + " --mode social",
           "",
-          "Ou rodar SEM --schedule (route=make_now) pra postar sem imagem.",
+          "  (--mode all também serve — uploada cover/eai_a/eia_b + d1/d2/d3 em uma chamada)",
         ].join("\n"),
       );
       process.exit(2);

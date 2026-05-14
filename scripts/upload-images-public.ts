@@ -346,11 +346,41 @@ export async function uploadPublicImages(
   return { out_path: cachePath, images };
 }
 
+/**
+ * Verifica que o cache final contém todas as keys esperadas pro mode.
+ * (#1275) — defesa contra cache misto entre modes onde upload-images-public
+ * é chamado várias vezes mas cache fica parcial (ex: mode newsletter rodou,
+ * mode social não, mas publish-linkedin lê cache assumindo d1/d2/d3 presentes).
+ *
+ * Throw com erro claro se alguma key estiver faltando.
+ */
+export function assertCacheCompleteness(
+  images: Record<string, PublicImage>,
+  mode: UploadMode,
+): void {
+  const expectedKeys = (() => {
+    if (mode === "social") return ["d1", "d2", "d3"];
+    if (mode === "newsletter") return ["cover", "eia_a", "eia_b"];
+    // mode === "all"
+    return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
+  })();
+  const missing = expectedKeys.filter((k) => !images[k]?.url);
+  if (missing.length > 0) {
+    throw new Error(
+      `upload-images-public: cache final não tem todas as keys esperadas pro mode=${mode}. ` +
+      `Missing: ${missing.join(", ")}. Presentes: ${Object.keys(images).join(", ") || "<none>"}. ` +
+      `Verifique platform.config.json + se imagens locais existem em data/editions/{AAMMDD}/.`,
+    );
+  }
+}
+
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
+  // Flags booleanas (sem valor após). #1275: --no-require-keys opt-out de validação.
+  const BOOL_FLAGS = new Set(["--no-cache", "--no-require-keys"]);
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--no-cache") {
-      out["no-cache"] = true;
+    if (BOOL_FLAGS.has(argv[i])) {
+      out[argv[i].slice(2)] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length) {
       out[argv[i].slice(2)] = argv[i + 1];
       i++;
@@ -385,6 +415,18 @@ async function main(): Promise<void> {
 
   const result = await uploadPublicImages({ editionDir, mode, skipExisting, target });
   console.log(JSON.stringify(result, null, 2));
+
+  // #1275: validate cache completeness por default. Opt-out via --no-require-keys
+  // pra casos onde caller sabe que cache final é parcial (raro).
+  const requireKeys = !args["no-require-keys"];
+  if (requireKeys) {
+    try {
+      assertCacheCompleteness(result.images, mode);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(2);
+    }
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
