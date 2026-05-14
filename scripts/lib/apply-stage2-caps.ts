@@ -1,5 +1,5 @@
 /**
- * apply-stage2-caps.ts (#358, #907)
+ * apply-stage2-caps.ts (#358, #907, #1240)
  *
  * Helper puro pra aplicar os caps editoriais de Stage 2 no `01-approved.json`
  * antes de passar pro writer agent. Caps definidos em #358:
@@ -20,7 +20,15 @@
  * 260507: writer publicou 9 itens de Outras Notícias quando cap esperado
  * era 4. Esse helper agora é chamado antes do dispatch do writer + lint
  * pós-writer valida que o output respeitou.
+ *
+ * #1240 (2026-05-14): além de aplicar caps, agora REMOVE URLs de
+ * `highlights[]` dos buckets antes de truncar. Sem isso, um artigo
+ * promovido a destaque (ex: Claude for Small Business como D2) também
+ * aparecia em LANÇAMENTOS — o leitor via o mesmo artigo 2× na edição.
+ * Slot liberado é preenchido pelo próximo de score mais alto no bucket.
  */
+
+import { canonicalize } from "./url-utils.ts";
 
 export interface StageArticle {
   url?: string;
@@ -95,6 +103,31 @@ export interface CapReport {
   after: { lancamento: number; pesquisa: number; noticias: number };
   caps: { lancamento: number; pesquisa: number; noticias: number };
   truncated: { lancamento: number; pesquisa: number; noticias: number };
+  /** #1240: artigos removidos de cada bucket por já estarem em highlights[]. */
+  removed_overlap: { lancamento: number; pesquisa: number; noticias: number };
+}
+
+/**
+ * #1240: remove de `bucket` todos artigos cuja URL canonicalizada bate
+ * com alguma URL em `highlightUrlsCanon`. Retorna { kept, removed }.
+ */
+function dedupAgainstHighlights(
+  bucket: StageArticle[] | undefined,
+  highlightUrlsCanon: Set<string>,
+): { kept: StageArticle[]; removed: number } {
+  if (!bucket || bucket.length === 0) return { kept: [], removed: 0 };
+  if (highlightUrlsCanon.size === 0) return { kept: [...bucket], removed: 0 };
+  const kept: StageArticle[] = [];
+  let removed = 0;
+  for (const a of bucket) {
+    const url = typeof a.url === "string" ? a.url : "";
+    if (url && highlightUrlsCanon.has(canonicalize(url))) {
+      removed++;
+      continue;
+    }
+    kept.push(a);
+  }
+  return { kept, removed };
 }
 
 /**
@@ -114,23 +147,31 @@ export function applyStage2Caps(
   const pOriginal = approved.pesquisa?.length ?? 0;
   const nOriginal = approved.noticias?.length ?? 0;
 
+  // #1240: build set de URLs já em highlights (canonicalizadas) pra
+  // remover overlap dos buckets ANTES de truncar.
+  const highlightUrlsCanon = new Set<string>();
+  for (const h of approved.highlights ?? []) {
+    const url = typeof h.url === "string" ? h.url : "";
+    if (url) highlightUrlsCanon.add(canonicalize(url));
+  }
+  const lDeduped = dedupAgainstHighlights(approved.lancamento, highlightUrlsCanon);
+  const pDeduped = dedupAgainstHighlights(approved.pesquisa, highlightUrlsCanon);
+  const nDeduped = dedupAgainstHighlights(approved.noticias, highlightUrlsCanon);
+
   const lCap = STAGE_2_CAP_LANCAMENTOS;
   const pCap = STAGE_2_CAP_PESQUISAS;
-  const lFinal = Math.min(lOriginal, lCap);
-  const pFinal = Math.min(pOriginal, pCap);
-  // #1071: highlights podem ser promovidos do bucket noticias (scorer escolhe
-  // de qualquer bucket). Writer dropa duplicatas — então cap precisa
-  // "reservar" slots extras pra compensar. Sem essa correção, edição renderiza
-  // X−destaques_promovidos outras notícias em vez do target X.
-  const destFromNoticias = destaquesFromBucket(approved.highlights, "noticias");
-  const nCap = capOutrasNoticias(dest, lFinal, pFinal) + destFromNoticias;
-  const nFinal = Math.min(nOriginal, nCap);
+  const lFinal = Math.min(lDeduped.kept.length, lCap);
+  const pFinal = Math.min(pDeduped.kept.length, pCap);
+  // #1240: com dedup contra highlights aplicado antes do cap, não precisa mais
+  // do `+ destFromNoticias` (#1071) — não há duplicatas pro writer dropar.
+  const nCap = capOutrasNoticias(dest, lFinal, pFinal);
+  const nFinal = Math.min(nDeduped.kept.length, nCap);
 
   const out: ApprovedJson = {
     ...approved,
-    lancamento: (approved.lancamento ?? []).slice(0, lFinal),
-    pesquisa: (approved.pesquisa ?? []).slice(0, pFinal),
-    noticias: (approved.noticias ?? []).slice(0, nFinal),
+    lancamento: lDeduped.kept.slice(0, lFinal),
+    pesquisa: pDeduped.kept.slice(0, pFinal),
+    noticias: nDeduped.kept.slice(0, nFinal),
   };
 
   return {
@@ -148,9 +189,14 @@ export function applyStage2Caps(
       },
       caps: { lancamento: lCap, pesquisa: pCap, noticias: nCap },
       truncated: {
-        lancamento: lOriginal - lFinal,
-        pesquisa: pOriginal - pFinal,
-        noticias: nOriginal - nFinal,
+        lancamento: lDeduped.kept.length - lFinal,
+        pesquisa: pDeduped.kept.length - pFinal,
+        noticias: nDeduped.kept.length - nFinal,
+      },
+      removed_overlap: {
+        lancamento: lDeduped.removed,
+        pesquisa: pDeduped.removed,
+        noticias: nDeduped.removed,
       },
     },
   };
@@ -169,10 +215,9 @@ export function checkStage2Caps(
   const lCount = approved.lancamento?.length ?? 0;
   const pCount = approved.pesquisa?.length ?? 0;
   // Outras: cap usa contagens REAIS (capadas) dos outros buckets.
-  // #1071: também soma destaques promovidos de "noticias" pra compensar
-  // drops de duplicata pelo writer.
-  const destFromNoticias = destaquesFromBucket(approved.highlights, "noticias");
-  const nCap = capOutrasNoticias(dest, Math.min(lCount, lCap), Math.min(pCount, pCap)) + destFromNoticias;
+  // #1240: com dedup contra highlights aplicado em applyStage2Caps, cap não
+  // precisa mais inflar pra compensar (#1071) — writer nunca vê duplicatas.
+  const nCap = capOutrasNoticias(dest, Math.min(lCount, lCap), Math.min(pCount, pCap));
   const nCount = approved.noticias?.length ?? 0;
 
   const violations: string[] = [];
