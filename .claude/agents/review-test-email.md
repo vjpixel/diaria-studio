@@ -201,6 +201,68 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Visual formatting checks (#753) usam `email:formatting:` (blocker) ou `info:formatting:` (não-blocker). Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
+### 3c. Link tracking via HEAD (#1248)
+
+**Procedimento (passo 17):**
+
+```bash
+npx tsx scripts/lint-test-email-link-tracking.ts \
+  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --out /tmp/lint-link-tracking-{AAMMDD}.json
+# Exit 0 = todos URLs respondem 200 (auth-required skipped não conta).
+# Exit 1 = ao menos 1 link_dead OU link_timeout.
+```
+
+Output JSON: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`.
+
+Mapear `issues[]` pra strings do output do agent:
+- `type:link_dead` → `"email:link_dead: {url} → HTTP {status}"`
+- `type:link_timeout` → `"email:link_timeout: {url} (>5s)"`
+- `type:link_redirect_chain_long` → `"email:link_redirect_chain_long: {url} → {hops} hops"`
+
+Skipped (auth_required + non_http) ficam no JSON pra debug mas não viram issue.
+
+Decoda Gmail Image Proxy (`google.com/url?q=...`) e respeita whitelist de
+domínios que retornam 4xx pra bots (linkedin/facebook). Concurrency 5
+pra não saturar rede; timeout 5s por URL.
+
+### 3d. Structural diff (#1248)
+
+```bash
+npx tsx scripts/lint-test-email-structure.ts \
+  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --source-md {edition_dir}/02-reviewed.md \
+  --out /tmp/lint-structure-{AAMMDD}.json
+# Exit 0 = estrutura bate. Exit 1 = ao menos 1 mismatch.
+```
+
+Mapear `issues[]`:
+- `type:eia_section_missing` → `"email:eia_section_missing: source tem É IA? mas email não"`
+- `type:section_missing` → `"email:section_missing: '{section}' presente no source com {N} itens, ausente no email"`
+- `type:destaque_count_mismatch` → `"email:destaque_count_mismatch: source {N}, email {M}"`
+
+Detecção heurística (regex/keyword) — falsos-positivos aceitáveis. Editor
+revisa visualmente quando lint apita.
+
+### 3e. Encoding / caracteres especiais (#1248)
+
+```bash
+npx tsx scripts/lint-test-email-encoding.ts \
+  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --source-md {edition_dir}/02-reviewed.md \
+  --out /tmp/lint-encoding-{AAMMDD}.json
+# Exit 0 = sem char_dropped (warnings de char_substituted são ok).
+# Exit 1 = char_dropped detectado (acentos/emojis sumiram sem substituto ASCII).
+```
+
+Mapear `issues[]`:
+- `type:char_dropped` → `"email:encoding_drop: {codepoint} '{char}' em '…{source_context}…'"`
+- `type:char_substituted` → `"info:encoding_subst: {codepoint} '{char}' → '{email_substitute}' (ASCII fallback aceitável)"`
+
+ASCII substituições conhecidas (ã→a, ç→c, smart quotes→ASCII) ficam como
+warning `info:` (não blocker). Drop sem substituto vira blocker — provável
+charset mismatch (latin1 vs UTF-8) no template.
+
 ### 3b. Image freshness via lint determinístico (#1212)
 
 **Procedimento (passo 16):**
