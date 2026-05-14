@@ -92,7 +92,9 @@ function checkCategorizedHasEiaSection(editionDir: string): InvariantViolation[]
     ];
   }
   const md = readFileSync(path, "utf8");
-  if (!/^## É IA\?\s*$/m.test(md)) {
+  // #1260: aceitar header strict (`## É IA?`) ou placeholder com sufixo (`## É IA? ⏳ (...)`).
+  // Placeholder é inserido por render-categorized-md.ts quando 01-eia.md não existe ainda.
+  if (!/^## É IA\?(\s|$)/m.test(md)) {
     return [
       {
         rule: "categorized-has-eia-section",

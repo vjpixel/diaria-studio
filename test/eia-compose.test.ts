@@ -98,6 +98,36 @@ describe("findEligiblePotd", () => {
     const r = await findEligiblePotd("2026-04-26", used, 7, fetcher);
     assert.equal(r.image.title, "File:Square.jpg");
   });
+
+  // #1259: cap default subido de 7 para 14. Cenário do incidente 260516:
+  // dias 1-5 rejeitados por already_used, 6-7 verticais — 7 tentativas
+  // se exauriam. Com cap 14, dias 8+ entram no pool e desbloqueiam.
+  it("encontra imagem elegível além de 7 dias quando window curto exaure (#1259)", async () => {
+    // 7 dias rejeitados (5 used + 2 vertical), 8º elegível
+    const responses: Record<string, MockImage> = {
+      "2026-05-16": makeImage(1600, 900, "File:UsedA.jpg"),
+      "2026-05-15": makeImage(800, 1200, "File:VerticalA.jpg"),
+      "2026-05-14": makeImage(900, 1400, "File:VerticalB.jpg"),
+      "2026-05-13": makeImage(1600, 900, "File:UsedB.jpg"),
+      "2026-05-12": makeImage(1600, 900, "File:UsedC.jpg"),
+      "2026-05-11": makeImage(1600, 900, "File:UsedD.jpg"),
+      "2026-05-10": makeImage(1600, 900, "File:UsedE.jpg"),
+      "2026-05-09": makeImage(1600, 900, "File:Fresh.jpg"), // dia 8 — elegível
+    };
+    const fetcher = async (iso: string) => (responses[iso] ?? null) as never;
+    const used = new Set([
+      "file:useda.jpg",
+      "file:usedb.jpg",
+      "file:usedc.jpg",
+      "file:usedd.jpg",
+      "file:usede.jpg",
+    ]);
+    // Cap=7 falharia; cap=14 (default novo) acha no dia 8.
+    const r = await findEligiblePotd("2026-05-16", used, 14, fetcher);
+    assert.equal(r.image.title, "File:Fresh.jpg");
+    assert.equal(r.imageDate, "2026-05-09");
+    assert.equal(r.rejections.length, 7);
+  });
 });
 
 describe("chooseSides (#192)", () => {
