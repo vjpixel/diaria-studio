@@ -140,7 +140,7 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     const result = runCli(["--edition-dir", editionDir, "--schedule"]);
     rmSync(tmp, { recursive: true, force: true });
     assert.equal(result.exitCode, 2);
-    assert.match(result.stderr, /06-public-images\.json não tem URL pra todos os destaques/);
+    assert.match(result.stderr, /06-public-images\.json não tem URL pra destaque/);
     assert.match(result.stderr, /upload-images-public\.ts/);
   });
 
@@ -165,11 +165,15 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     const result = runCli(["--edition-dir", editionDir, "--schedule"]);
     rmSync(tmp, { recursive: true, force: true });
     assert.equal(result.exitCode, 2);
-    assert.match(result.stderr, /06-public-images\.json não tem URL/);
+    assert.match(result.stderr, /06-public-images\.json não tem URL pra destaque/);
+    assert.match(result.stderr, /d2/);
   });
 
-  it("NÃO aborta com --fire-now (route=make_now permite post sem imagem) — #1101", () => {
-    const tmp = mkdtempSync(resolve(tmpdir(), "no-schedule-"));
+  // #1275: fail-fast roda SEMPRE (inclusive --fire-now). Antes do #1275, --fire-now
+  // bypassava o check com a justificativa de "safety net pra post sem imagem".
+  // Na prática gerou 12 comments na DLQ em 260513+260514 — safety net pior que abort.
+  it("ABORTA também com --fire-now quando imagens missing (#1275 — antes bypassava)", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "fire-now-no-img-"));
     const editionDir = resolve(tmp, "260999");
     mkdirSync(editionDir, { recursive: true });
     writeFileSync(
@@ -177,12 +181,40 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
       "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
     );
 
-    // COM --fire-now (opt-in explícito #1101). Mesmo sem imagens, fail-fast NÃO dispara.
-    // Antes do #1101: SEM --schedule também caía em make_now. Default agora = agendar.
     const result = runCli(["--edition-dir", editionDir, "--fire-now"]);
     rmSync(tmp, { recursive: true, force: true });
-    assert.notEqual(result.exitCode, 2, `não deveria fail-fast em modo make_now. stderr=${result.stderr}`);
-    assert.doesNotMatch(result.stderr, /06-public-images\.json não tem URL/);
+    assert.equal(result.exitCode, 2, "fail-fast deveria disparar em --fire-now (#1275)");
+    assert.match(result.stderr, /#1275 fail-fast|06-public-images\.json não tem URL/);
+  });
+
+  // #1275: cenário do incidente real — cache só com keys de newsletter mode (cover/eia)
+  // sem keys de social mode (d1/d2/d3). Fail-fast deve disparar mesmo cache existindo.
+  it("ABORTA com cache só de newsletter mode (cover/eia, sem d1/d2/d3) — repro #1275", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "newsletter-only-cache-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+    // Cache estado real do bug — só keys de newsletter mode
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          cover: { url: "https://example.com/cover.jpg" },
+          eia_a: { url: "https://example.com/eia_a.jpg" },
+          eia_b: { url: "https://example.com/eia_b.jpg" },
+        },
+      }),
+    );
+
+    const result = runCli(["--edition-dir", editionDir, "--schedule"]);
+    rmSync(tmp, { recursive: true, force: true });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /d1|d2|d3/);
+    // Mensagem deve mencionar as keys presentes (audit visível)
+    assert.match(result.stderr, /Keys presentes.*cover.*eia/);
   });
 
   it("default = agendar (#1101) — SEM --fire-now, schedule aplicado, fail-fast dispara sem imagens", () => {
