@@ -10,7 +10,7 @@ workers_dev = true
 # Substituir o `id` abaixo pelo ID retornado.
 [[kv_namespaces]]
 binding = "DRAFT"
-id = "REPLACE_WITH_NAMESPACE_ID"
+id = "2e0d0417f6734075b2225b616747afda"
 
 # ADMIN_SECRET: usar mesmo secret do diar-ia-poll pra compat de assinatura
 # HMAC. Setar via:
