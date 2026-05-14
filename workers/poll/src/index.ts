@@ -465,12 +465,14 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
-  // Imagens do È IA? são sempre JPEG
+  // Imagens do È IA? são sempre JPEG. TTL 1h (#1242): permite regenerar imagem
+  // com mesmo key sem ficar presa em cache do Gmail Image Proxy / Beehiiv preview
+  // por 1 ano. Volume baixo (~6 imgs × ~500 subs/edição) sustenta cache miss.
   return new Response(value, {
     headers: {
       ...corsHeaders,
       "Content-Type": "image/jpeg",
-      "Cache-Control": "public, max-age=31536000, immutable",
+      "Cache-Control": "public, max-age=3600",
     },
   });
 }
