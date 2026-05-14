@@ -69,6 +69,22 @@ Variáveis pra alimentar o playbook:
 
 **Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
 
+#### 2.1 INVARIANTE: `--with-publish` exige Beehiiv playbook completo (#1267)
+
+Quando `with_publish = true`, o **playbook newsletter Beehiiv é OBRIGATÓRIO** (passos completos de `context/publishers/beehiiv-playbook.md` — pre-render, criar draft, paste HTML via TipTap, set title/subtitle/subject). NÃO é opcional, mesmo achando que "playbook é complexo" ou "tem muitos passos".
+
+A única razão legítima pra skip Beehiiv é **falha upstream real** que quebraria o HTML (caso documentado: `01-eia.md` ausente, pré-fix #1259). Razões NÃO-aceitas:
+- "playbook complexo" / "muitos passos"
+- "ia gastar muito token"
+- "Chrome MCP requer interação manual" (passo "Send test email" e cover upload são manuais por design — pipeline automatiza ~90% do resto)
+- Qualquer rationalização de scope
+
+Editor opt-in via `--with-publish` significa "rode até onde der; o que escapar é manual". Pipeline deve produzir `_internal/05-published.json` com `status: "draft"` + `draft_url` populado + merge tags verificadas no editor.
+
+**Quando skipar legitimamente**: gravar `05-published.json` com `status: "skipped"` + `skip_reason: "upstream_eia_missing"` (ou outro motivo concreto verificável). Skips com motivo genérico tipo `"playbook_complexity"` são **regressão** — auto-reporter pega isso (validator post-run em §4).
+
+Stage final §4 valida automaticamente este invariante via `scripts/validate-test-with-publish.ts` (próximo PR — quando existe, exit 1 = abort com erro claro).
+
 ### 3. Ao completar
 
 1. Rodar `stage-timing.ts` no diretório da edição:
@@ -91,6 +107,19 @@ Variáveis pra alimentar o playbook:
 ### 4. Stage final — Coleta de erros e auto-reporter (#519)
 
 **Roda independente de sucesso/falha dos stages anteriores** — captura tudo o que merece virar issue. O `/diaria-test` existe pra surfar regressões; este stage fecha o loop.
+
+0. **Validar invariante `--with-publish` (#1267)** — antes do auto-reporter:
+
+   ```bash
+   npx tsx scripts/validate-test-with-publish.ts \
+     --edition-dir data/editions/{AAMMDD}/ \
+     --with-publish {true|false}
+   ```
+
+   Exit codes:
+   - `0` — OK (Beehiiv rodou OU skip legítimo). Prosseguir.
+   - `1` — **REGRESSÃO**: with_publish=true mas Beehiiv foi skippado com motivo inválido. Logar warn loud no run-log + incluir no relatório final como erro destacado. Auto-reporter pega como issue. **NÃO bloquear o stage final** — o run já completou, queremos surfar o gap.
+   - `2` — erro de input (file missing). Logar warn e prosseguir (raro).
 
 1. Coletar sinais com a flag `--include-test-warnings` (capta também error/warn genéricos do run-log da edição):
 

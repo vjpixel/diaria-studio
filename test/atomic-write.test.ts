@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { writeFileAtomic, writeFileAtomicAsync } from "../scripts/lib/atomic-write.ts";
+import { writeFileAtomic, writeFileAtomicAsync, renameWithRetry } from "../scripts/lib/atomic-write.ts";
 
 function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "diaria-atomic-test-"));
@@ -160,5 +160,79 @@ describe("writeFileAtomicAsync (#1132 P2.3)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #1269: retry em EPERM/EBUSY/EACCES (Windows + OneDrive race)
+import { renameSync as realRenameSync } from "node:fs";
+
+describe("renameWithRetry (#1269)", () => {
+  it("retry quando primeira tentativa falha EPERM e segunda passa", () => {
+    const dir = makeDir();
+    try {
+      const src = join(dir, "src.txt");
+      const dst = join(dir, "dst.txt");
+      writeFileSync(src, "test", "utf8");
+
+      let calls = 0;
+      const fakeRename = (s: string, d: string) => {
+        calls++;
+        if (calls === 1) {
+          const e = new Error("EPERM: operation not permitted") as NodeJS.ErrnoException;
+          e.code = "EPERM";
+          throw e;
+        }
+        realRenameSync(s, d);
+      };
+
+      renameWithRetry(src, dst, [0, 10], fakeRename);
+
+      assert.equal(calls, 2, "deveria ter tentado 2x");
+      assert.equal(readFileSync(dst, "utf8"), "test");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("propaga imediato erros não-transientes (ENOENT)", () => {
+    const fakeRename = () => {
+      const e = new Error("ENOENT") as NodeJS.ErrnoException;
+      e.code = "ENOENT";
+      throw e;
+    };
+    assert.throws(
+      () => renameWithRetry("x", "y", [0, 10], fakeRename),
+      (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+    );
+  });
+
+  it("propaga última falha após esgotar tentativas", () => {
+    let calls = 0;
+    const fakeRename = () => {
+      calls++;
+      const e = new Error("EPERM persistent") as NodeJS.ErrnoException;
+      e.code = "EPERM";
+      throw e;
+    };
+    assert.throws(
+      () => renameWithRetry("x", "y", [0, 5, 10], fakeRename),
+      /EPERM/,
+    );
+    assert.equal(calls, 3, "deveria ter tentado todas as N=3 attempts");
+  });
+
+  it("aceita EBUSY como retryable também", () => {
+    let calls = 0;
+    const fakeRename = () => {
+      calls++;
+      if (calls === 1) {
+        const e = new Error("EBUSY") as NodeJS.ErrnoException;
+        e.code = "EBUSY";
+        throw e;
+      }
+      // 2ª passa
+    };
+    renameWithRetry("x", "y", [0, 5], fakeRename);
+    assert.equal(calls, 2);
   });
 });

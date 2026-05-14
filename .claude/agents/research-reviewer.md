@@ -15,6 +15,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 - `edition_date`: data da edição no formato `AAMMDD` (ex: `260423`). Para Date math, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}`.
 - `edition_iso`: data da edição no formato ISO (ex: `2026-04-23`).
 - `edition_dir`: diretório da edição (ex: `data/editions/260421/`).
+- `out_path` (**obrigatório, #1271**): caminho exato onde gravar o JSON de output. Ex: `data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json`. **Use literalmente o valor passado** — NÃO inventar nome "mais semântico" tipo `tmp-reviewed.json`. O orchestrator depende deste path pra resume + scorer.
 
 ## Processo
 
@@ -29,6 +30,8 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 3. Marcar artigos removidos com razão (`topic_covered`).
 
 ## Output
+
+Gravar em `{out_path}` exato (input arg, #1271). Schema:
 
 ```json
 {
@@ -49,6 +52,8 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
   }
 }
 ```
+
+⚠️ **Path obrigatório** (#1271): use `{out_path}` literalmente. Antes (pré-#1271) o agent gravava em path próprio (`tmp-reviewed.json`) ignorando arg do orchestrator → scorer subsequente dava ENOENT em qualquer caminho que não fosse o ad-hoc. Não fazer mais isso.
 
 ## Regras
 
