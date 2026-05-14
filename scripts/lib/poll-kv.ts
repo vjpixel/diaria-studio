@@ -1,16 +1,25 @@
 /**
- * scripts/lib/poll-kv.ts (#1233)
+ * scripts/lib/poll-kv.ts (#1233, #1237)
  *
- * Wrangler KV helpers compartilhados entre `add-valid-edition.ts` e
- * `maintain-valid-editions-window.ts`. Extraído de add-valid-edition.ts
- * pra evitar duplicação.
+ * Wrangler KV helpers compartilhados entre `add-valid-edition.ts`,
+ * `maintain-valid-editions-window.ts`, `poll-kv-put.ts` (CLI), etc.
  *
  * Lê/escreve KV remoto do Worker `diar-ia-poll` via `npx wrangler` no
  * diretório `workers/poll/` (herda OAuth cache + wrangler.toml).
+ *
+ * #1237: `wranglerKvPut` agora usa `--path=<tmpfile>` em vez de passar
+ * value inline. Wrangler lê o arquivo como bytes raw, eliminando shell
+ * escape problem que corrompia JSON com aspas duplas aninhadas.
  */
 
 import { spawnSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -36,25 +45,44 @@ export function wranglerKvGet(key: string): string | null {
   return r.stdout.trim();
 }
 
+/**
+ * Escreve `value` no KV sob `key`. Usa `--path=<tmpfile>` (#1237) pra
+ * eliminar shell escape problem com JSON contendo aspas duplas — wrangler
+ * lê arquivo como bytes raw, sem interpolação.
+ *
+ * Funciona com qualquer string: JSON arbitrário, payload binário base64,
+ * texto puro. Caller é responsável pelo conteúdo (incluindo serialização
+ * JSON.stringify).
+ *
+ * Cleanup do tmpfile via finally — `mkdtempSync` cria diretório dedicado
+ * pra evitar collision em writes paralelos.
+ */
 export function wranglerKvPut(key: string, value: string): void {
-  // value é JSON.stringify de array de strings AAMMDD — não tem `"` problemático
-  // além das aspas duplas das chaves, então escapamos pra cmd.exe envolvendo
-  // em aspas duplas duplas (CMD trata `""` como aspa literal).
-  const escaped = value.replace(/"/g, '\\"');
-  const r = spawnSync(
-    `npx wrangler kv key put "${key}" "${escaped}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
-    {
-      cwd: WORKER_DIR,
-      encoding: "utf8",
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (r.status !== 0) {
-    throw new Error(
-      `wrangler kv key put failed (exit ${r.status}):\nstdout: ${r.stdout?.slice(0, 300)}\nstderr: ${r.stderr?.slice(0, 500)}`,
+  const tmpDir = mkdtempSync(join(tmpdir(), "diaria-kv-put-"));
+  const tmpFile = join(tmpDir, "value");
+  try {
+    writeFileSync(tmpFile, value, "utf8");
+    const r = spawnSync(
+      `npx wrangler kv key put "${key}" --path="${tmpFile}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
+      {
+        cwd: WORKER_DIR,
+        encoding: "utf8",
+        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID },
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
+    if (r.status !== 0) {
+      throw new Error(
+        `wrangler kv key put failed (exit ${r.status}):\nstdout: ${r.stdout?.slice(0, 300)}\nstderr: ${r.stderr?.slice(0, 500)}`,
+      );
+    }
+  } finally {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup; ENOENT/EBUSY não bloqueia retorno
+    }
   }
 }
 
