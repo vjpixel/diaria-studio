@@ -681,7 +681,22 @@ async function main() {
     process.exit(1);
   }
 
-  const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
+  // #1268: aceitar array raw OU objeto wrapped `{articles, expanded?, warnings?}`
+  // (output do expand-inbox-aggregators.ts e propagado por enrich-inbox-articles.ts).
+  // Sem este guard, dedup crashava com "articles.filter is not a function" — erro
+  // confuso quando o caller passa output direto de expand-inbox sem unwrap.
+  const parsedInput = JSON.parse(readFileSync(articlesPath, "utf8"));
+  const articles: Article[] = Array.isArray(parsedInput)
+    ? parsedInput
+    : Array.isArray(parsedInput?.articles)
+      ? parsedInput.articles
+      : (() => {
+          console.error(
+            `dedup: input ${articlesPath} não é array nem tem campo 'articles[]' — ` +
+            `shape inesperado. Keys: ${Object.keys(parsedInput || {}).join(',') || '<none>'}`,
+          );
+          process.exit(1);
+        })();
 
   // Pre-pass (#485): resolve placeholder titles for inbox articles before dedup
   // so "(inbox)" doesn't cause false-positive title similarity matches.

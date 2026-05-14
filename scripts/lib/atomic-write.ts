@@ -92,7 +92,12 @@ export function writeFileAtomic(
       }
     }
 
-    renameSync(tmpPath, absTarget);
+    // #1269: retry rename em EPERM (Windows + OneDrive race). OneDrive sync
+    // segura o target file por ~100-500ms durante operações de sync; rename
+    // atômico falha com EPERM nesse window. 3 tentativas com exponential
+    // backoff (100/500/2000ms) cobrem a maioria dos casos sem afetar perf
+    // no caminho feliz (1ª tentativa quase sempre passa).
+    renameWithRetry(tmpPath, absTarget);
   } catch (err) {
     // Cleanup temp file em caso de falha
     if (existsSync(tmpPath)) {
@@ -104,6 +109,44 @@ export function writeFileAtomic(
     }
     throw err;
   }
+}
+
+/**
+ * Rename com retry em EPERM (#1269). Outros erros propagam imediato — só
+ * EPERM/EBUSY/EACCES têm evidência empírica de serem transientes
+ * (OneDrive sync race).
+ *
+ * `renameFn` é injetável pra testabilidade — default é `renameSync` de
+ * node:fs. Tests passam mocks que falham N vezes antes de passar.
+ */
+export function renameWithRetry(
+  src: string,
+  dst: string,
+  attempts: number[] = [0, 100, 500, 2000],
+  renameFn: (s: string, d: string) => void = renameSync,
+): void {
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts.length; i++) {
+    if (attempts[i] > 0) {
+      // Busy-wait sync (Atomics.wait não disponível em main thread).
+      const deadline = Date.now() + attempts[i];
+      while (Date.now() < deadline) { /* spin */ }
+    }
+    try {
+      renameFn(src, dst);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        // Não é race transiente — propaga imediato
+        throw err;
+      }
+      // Última tentativa? propaga
+      if (i === attempts.length - 1) throw err;
+    }
+  }
+  throw lastErr; // unreachable mas TS feliz
 }
 
 /**

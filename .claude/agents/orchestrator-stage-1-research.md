@@ -66,7 +66,14 @@ Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinís
 
 1. Fontes com RSS têm linha `- RSS: {url}` em `context/sources.md`. Fontes com filtro de tópico (#347) têm linha `- Topic filter: {term1,term2,...}` logo abaixo.
 
-**Preferido (#1209):** `npx tsx scripts/fetch-rss-batch.ts --sources <rss-batch.json> --out <researcher-results.json> --days {window_days}` — single call, detecta sitemap.xml automático, output shape compatível com `record-source-runs.ts`. 35 fontes em ~9s.
+**Preferido (#1209, #1270):** 2 passos curtos — `list-active-sources` gera batch, `fetch-rss-batch` dispara:
+
+```bash
+npx tsx scripts/list-active-sources.ts --format json --rss-only --out data/editions/{AAMMDD}/_internal/rss-batch.json
+npx tsx scripts/fetch-rss-batch.ts --sources data/editions/{AAMMDD}/_internal/rss-batch.json --out data/editions/{AAMMDD}/_internal/researcher-results.json --days {window_days}
+```
+
+35 fontes em ~9s. **Não construir `rss-batch.json` via parser inline** — `list-active-sources.ts` é canônico (#1270).
 
 **Opção manual (legado):** se preferir dispatch individual:
 
@@ -292,10 +299,7 @@ Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_fai
 
 ### 1p2. Research-reviewer (agent Haiku, Filtro 2 — #1112)
 
-Disparar `research-reviewer` passando `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir }`. O agent aplica **apenas** o Filtro 2:
-- **Temas recentes**: remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias (lê `context/past-editions.md`). Critério conservador (#321).
-
-Retorna `categorized` limpo + `stats`. Logar `stats.removals[]`.
+Disparar `research-reviewer` com `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir, out_path: "data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json" }`. O agent aplica **apenas** Filtro 2 (Temas recentes — remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, lendo `context/past-editions.md`; critério conservador #321). Output gravado em `out_path` exato (#1271 — agent não inventa nome). Confirmar arquivo existe antes do scorer; ausente = regressão #1271, re-disparar.
 
 ### 1q. Scorer
 

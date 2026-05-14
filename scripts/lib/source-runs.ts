@@ -11,10 +11,9 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.ts";
 
 export type Outcome = "ok" | "fail" | "timeout";
 
@@ -153,9 +152,9 @@ export function loadHealth(healthPath: string): HealthFile {
 
 export function saveHealth(healthPath: string, health: HealthFile): void {
   mkdirSync(dirname(healthPath), { recursive: true });
-  const tmp = `${healthPath}.tmp`;
-  writeFileSync(tmp, JSON.stringify(health, null, 2) + "\n", "utf8");
-  renameSync(tmp, healthPath);
+  // #1269: usar writeFileAtomic (com retry em EPERM no Windows + OneDrive
+  // race). Antes usava renameSync direto, crashava intermitente em test runs.
+  writeFileAtomic(healthPath, JSON.stringify(health, null, 2) + "\n");
 }
 
 export function appendSourceLog(
