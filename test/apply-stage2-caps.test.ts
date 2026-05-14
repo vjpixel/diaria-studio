@@ -326,11 +326,36 @@ describe("destaquesFromBucket (#1071)", () => {
   });
 });
 
-describe("#1071 — cap OUTRAS NOTÍCIAS desconta destaques promovidos do bucket noticias", () => {
-  it("caso 260511: dest=3, 2 vieram de noticias, L=1, P=1 → nCap = 7+2 = 9", () => {
-    // Pool: 10 noticias. Top 2 viraram destaques. Writer dropa duplicatas.
-    // Cap antigo: max(2, 12-3-1-1) = 7. Writer renderiza 5 → bug.
-    // Cap novo (#1071): 7 + 2 = 9. Writer dropa 2 → renderiza 7 outras.
+describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes do cap)", () => {
+  it("caso 260514: D2=Claude promovido de lancamento, e tambem listado em lancamento → removido", () => {
+    // Cenario real edicao 260514: Claude for SB virou D2 (destaque) e tambem
+    // estava em LANCAMENTOS como item secundario. Editor pediu remocao manual.
+    // #1240: agora aplicado automaticamente em apply-stage2-caps.
+    const approved = {
+      highlights: [
+        { url: "https://anthropic.com/news/claude-sb", bucket: "lancamento" },
+        { url: "https://example.com/d1" },
+        { url: "https://example.com/d3" },
+      ],
+      lancamento: [
+        { url: "https://anthropic.com/news/claude-sb" }, // overlap
+        { url: "https://google.com/blog/fraud" },
+      ],
+      pesquisa: [],
+      noticias: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(capped.lancamento?.length, 1, "claude-sb removido, sobra google");
+    assert.equal(capped.lancamento?.[0].url, "https://google.com/blog/fraud");
+    assert.equal(report.removed_overlap.lancamento, 1);
+    assert.equal(report.removed_overlap.pesquisa, 0);
+    assert.equal(report.removed_overlap.noticias, 0);
+  });
+
+  it("caso 260511: 2 highlights de noticias E noticias bucket tem os mesmos → removidos", () => {
+    // Pool: 10 noticias. Top 2 (n0, n1) viraram destaques.
+    // #1240: dedup remove n0, n1 do bucket antes do cap. nCap = max(2, 12-3-1-1) = 7.
+    // Bucket apos dedup tem 8 (n2..n9). Slice pra 7. Renderiza 7 outras = target ok.
     const noticias = Array.from({ length: 10 }, (_, i) => ({
       url: `https://example.com/n${i}`,
       title: `News ${i}`,
@@ -346,12 +371,68 @@ describe("#1071 — cap OUTRAS NOTÍCIAS desconta destaques promovidos do bucket
       noticias,
     };
     const { approved: capped, report } = applyStage2Caps(approved);
-    // cap deveria ser 9 (7 + 2 promovidos)
-    assert.equal(report.caps.noticias, 9);
-    assert.equal(capped.noticias?.length, 9);
+    assert.equal(report.removed_overlap.noticias, 2, "n0 e n1 removidos do bucket");
+    assert.equal(report.caps.noticias, 7, "cap sem inflacao (#1071 obsoleto pos-#1240)");
+    assert.equal(capped.noticias?.length, 7, "7 renderizadas = target editorial");
+    // Confirma que n0 e n1 nao estao no output
+    const outputUrls = (capped.noticias ?? []).map((n) => n.url);
+    assert.ok(!outputUrls.includes("https://example.com/n0"));
+    assert.ok(!outputUrls.includes("https://example.com/n1"));
   });
 
-  it("destaques nenhum vindo de noticias → cap mantém antigo (back-compat)", () => {
+  it("URLs com tracking params canonicalizadas batem (utm_source ignorado)", () => {
+    const approved = {
+      highlights: [
+        { url: "https://example.com/news?utm_source=newsletter" },
+      ],
+      noticias: [
+        { url: "https://example.com/news" }, // mesma URL sem utm — overlap
+        { url: "https://example.com/other" },
+      ],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(report.removed_overlap.noticias, 1, "canonicalize remove utm");
+    assert.equal(capped.noticias?.length, 1);
+    assert.equal(capped.noticias?.[0].url, "https://example.com/other");
+  });
+
+  it("sem overlap → buckets intactos, removed_overlap zerado", () => {
+    const approved = {
+      highlights: [
+        { url: "https://example.com/dest1" },
+        { url: "https://example.com/dest2" },
+        { url: "https://example.com/dest3" },
+      ],
+      lancamento: [{ url: "https://example.com/l1" }],
+      pesquisa: [{ url: "https://example.com/p1" }],
+      noticias: [{ url: "https://example.com/n1" }, { url: "https://example.com/n2" }],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(report.removed_overlap.lancamento, 0);
+    assert.equal(report.removed_overlap.pesquisa, 0);
+    assert.equal(report.removed_overlap.noticias, 0);
+    assert.equal(capped.lancamento?.length, 1);
+    assert.equal(capped.pesquisa?.length, 1);
+    assert.equal(capped.noticias?.length, 2);
+  });
+
+  it("highlights vazio → buckets intactos", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [{ url: "https://example.com/l1" }],
+      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `https://example.com/n${i}` })),
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(report.removed_overlap.lancamento, 0);
+    assert.equal(report.removed_overlap.noticias, 0);
+    assert.equal(capped.noticias?.length, 5);
+  });
+});
+
+describe("destaquesFromBucket (#1071) — utilitário preservado pós-#1240", () => {
+  // Funcao ainda exportada caso callers externos usem; nao mais usada
+  // no cap calculation interno (substituida por dedup direto).
+  it("destaques nenhum vindo de noticias → cap calculado sem inflacao", () => {
     const noticias = Array.from({ length: 10 }, (_, i) => ({
       url: `https://example.com/n${i}`,
     }));
@@ -364,37 +445,24 @@ describe("#1071 — cap OUTRAS NOTÍCIAS desconta destaques promovidos do bucket
       noticias,
     };
     const { report } = applyStage2Caps(approved);
-    // max(2, 12-3-0-0) = 9, +0 promovidos = 9
+    // max(2, 12-3-0-0) = 9 (cap direto, sem inflacao)
     assert.equal(report.caps.noticias, 9);
   });
 
-  it("highlights sem campo bucket → comportamento antigo (assume 0 vindos de noticias)", () => {
-    const noticias = Array.from({ length: 10 }, (_, i) => ({
-      url: `https://example.com/n${i}`,
-    }));
-    const approved = {
-      highlights: [{ url: "x" }, { url: "y" }, { url: "z" }],
-      noticias,
-    };
-    const { report } = applyStage2Caps(approved);
-    // max(2, 12-3-0-0) = 9, +0 promovidos = 9
-    assert.equal(report.caps.noticias, 9);
-  });
-
-  it("checkStage2Caps também desconta destaques promovidos", () => {
+  it("checkStage2Caps com noticias dentro do cap → ok=true", () => {
     const approved = {
       highlights: [
-        { url: "n1", bucket: "noticias" },
-        { url: "n2", bucket: "noticias" },
         { url: "x", bucket: "lancamento" },
+        { url: "y", bucket: "lancamento" },
+        { url: "z", bucket: "lancamento" },
       ],
       lancamento: [{ url: "l1" }],
       pesquisa: [{ url: "p1" }],
-      noticias: Array.from({ length: 9 }, (_, i) => ({ url: `n${i}` })),
+      // 7 noticias <= max(2, 12-3-1-1) = 7
+      noticias: Array.from({ length: 7 }, (_, i) => ({ url: `n${i}` })),
     };
     const r = checkStage2Caps(approved);
-    // Cap esperado = max(2, 12-3-1-1) + 2 = 9. noticias.length = 9 → OK.
     assert.equal(r.ok, true);
-    assert.equal(r.expectedCaps.noticias, 9);
+    assert.equal(r.expectedCaps.noticias, 7);
   });
 });
