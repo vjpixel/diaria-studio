@@ -66,6 +66,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    ### 3c. Comment Pixel pessoal (`### comment_pixel`)
 
+   **⚠️ POSTAGEM MANUAL (#1075)**: Make.com LinkedIn module só suporta operações em company page — não tem `Create Comment` pra conta pessoal. Sem caminho viável de automação. Texto é gerado e fica em `03-social.md` pra Pixel copiar e postar manualmente T+8min após o main do Diar.ia.
+
    Postado **8 min após** o main post pela conta pessoal `vjpixel`. Amplifica via 2ª conta.
 
    - **Voz**: opinião editorial direta, **sem pergunta no fim** (Pixel falando como autor curador que viu algo interessante — não como Diar.ia).
