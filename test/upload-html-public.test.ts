@@ -14,6 +14,7 @@ import {
   uploadHtml,
   htmlPutSig,
   buildDraftUrl,
+  findUnresolvedImgPlaceholders,
 } from "../scripts/upload-html-public.ts";
 
 const SECRET = "test-admin";
@@ -135,5 +136,90 @@ describe("uploadHtml — real PUT", () => {
         }),
       /Worker PUT 403/,
     );
+  });
+});
+
+describe("findUnresolvedImgPlaceholders (#1277)", () => {
+  it("retorna lista vazia quando HTML não tem placeholders", () => {
+    const html = '<img src="https://example.com/img.jpg" alt=""/>';
+    assert.deepEqual(findUnresolvedImgPlaceholders(html), []);
+  });
+
+  it("detecta placeholders {{IMG:...}} unresolved", () => {
+    const html = '<img src="{{IMG:04-d1-2x1.jpg}}"/><img src="{{IMG:01-eia-A.jpg}}"/>';
+    const found = findUnresolvedImgPlaceholders(html).sort();
+    assert.deepEqual(found, ["{{IMG:01-eia-A.jpg}}", "{{IMG:04-d1-2x1.jpg}}"]);
+  });
+
+  it("dedup quando mesma placeholder aparece múltiplas vezes", () => {
+    const html =
+      '<img src="{{IMG:cover.jpg}}"/><img src="{{IMG:cover.jpg}}"/>';
+    assert.deepEqual(findUnresolvedImgPlaceholders(html), ["{{IMG:cover.jpg}}"]);
+  });
+});
+
+describe("uploadHtml — fail-loud em placeholders {{IMG:...}} (#1277)", () => {
+  it("aborta com erro útil quando HTML tem placeholders unresolved", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "upload-html-"));
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    writeFileSync(
+      htmlPath,
+      '<img src="{{IMG:04-d1-2x1.jpg}}"/><img src="{{IMG:01-eia-A.jpg}}"/>',
+      "utf8",
+    );
+
+    const fetchStub = (): Promise<Response> => {
+      throw new Error("fetch should not be called when placeholders unresolved");
+    };
+
+    await assert.rejects(
+      () =>
+        uploadHtml({
+          edition: "260515",
+          htmlPath,
+          secret: SECRET,
+          fetchImpl: fetchStub as unknown as typeof fetch,
+        }),
+      (e) => {
+        const msg = (e as Error).message;
+        return (
+          /placeholder/i.test(msg) &&
+          /substitute-image-urls/.test(msg) &&
+          /upload-images-public/.test(msg) &&
+          /04-d1-2x1\.jpg/.test(msg)
+        );
+      },
+    );
+  });
+
+  it("aborta antes mesmo de testar dry-run (placeholder check é eager)", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "upload-html-"));
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    writeFileSync(htmlPath, '<img src="{{IMG:cover.jpg}}"/>', "utf8");
+
+    await assert.rejects(
+      () =>
+        uploadHtml({
+          edition: "260515",
+          htmlPath,
+          secret: SECRET,
+          dryRun: true,
+        }),
+      /placeholder/i,
+    );
+  });
+
+  it("permite upload quando HTML sem placeholders", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "upload-html-"));
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    writeFileSync(htmlPath, '<img src="https://cdn.example/img.jpg"/>', "utf8");
+
+    const r = await uploadHtml({
+      edition: "260515",
+      htmlPath,
+      secret: SECRET,
+      dryRun: true,
+    });
+    assert.equal(r.dry_run, true);
   });
 });

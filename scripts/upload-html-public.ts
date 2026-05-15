@@ -66,6 +66,20 @@ export function buildDraftUrl(workerBaseUrl: string, edition: string): string {
   return `${base}/${encodeURIComponent(edition)}`;
 }
 
+/**
+ * Pure (#1277): valida que HTML não tem placeholders {{IMG:...}} não-resolvidas.
+ * Retorna lista de placeholders únicos encontrados (vazia = ok).
+ *
+ * Bug #1277: Stage 4 do orchestrator pulava `substitute-image-urls.ts` antes
+ * de chamar este script — placeholders chegavam intactos no Cloudflare draft,
+ * editor via HTML quebrado com alt="" no lugar das imagens. Fail-loud aqui
+ * impede o upload silencioso.
+ */
+export function findUnresolvedImgPlaceholders(html: string): string[] {
+  const matches = html.match(/\{\{IMG:[^}]+\}\}/g) ?? [];
+  return Array.from(new Set(matches));
+}
+
 export async function uploadHtml(args: {
   edition: string;
   htmlPath: string;
@@ -77,6 +91,16 @@ export async function uploadHtml(args: {
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
   const url = buildDraftUrl(workerUrl, args.edition);
   const html = readFileSync(args.htmlPath, "utf8");
+
+  // #1277: fail-loud se HTML ainda tem placeholders {{IMG:...}} não-substituídas.
+  // Editor já viu draft com imagens quebradas em 260515 — invariant defensivo
+  // garante que o passo `substitute-image-urls.ts` rodou antes do upload.
+  const unresolved = findUnresolvedImgPlaceholders(html);
+  if (unresolved.length > 0) {
+    throw new Error(
+      `HTML tem ${unresolved.length} placeholder(s) {{IMG:...}} não-resolvida(s): ${unresolved.slice(0, 5).join(", ")}${unresolved.length > 5 ? ` (+${unresolved.length - 5} mais)` : ""}. Rode 'npx tsx scripts/substitute-image-urls.ts --html ${args.htmlPath} --images data/editions/${args.edition}/06-public-images.json --out ${args.htmlPath}' antes de re-upload. Se o cache de imagens não está populado, rode primeiro 'npx tsx scripts/upload-images-public.ts --edition-dir data/editions/${args.edition}/ --mode all'.`,
+    );
+  }
 
   if (args.dryRun) {
     return {
