@@ -51,7 +51,8 @@ async function findFolderInParent(name: string, parentId: string): Promise<strin
 }
 
 async function findFileInParent(name: string, parentId: string): Promise<DriveFile | null> {
-  const q = `name='${escapeQ(name)}' and '${parentId}' in parents and trashed=false`;
+  // Excluir folders pra evitar match espúrio se houver pasta com mesmo nome do report
+  const q = `name='${escapeQ(name)}' and '${parentId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`;
   const r = await driveList(q);
   return r[0] ?? null;
 }
