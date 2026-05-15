@@ -274,10 +274,10 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     </tr>`;
   }).join("\n");
 
-  // #1081: período atual hardcoded como "Teste" enquanto o leaderboard estiver
-  // em validação. Voltar pra mês dinâmico (MONTH_NAMES_PT[...]) antes de
-  // divulgar pros leitores.
-  const periodLabel = "Teste";
+  // #1081: período atual hardcoded como "Maio (Teste)" enquanto o leaderboard
+  // estiver em validação. Voltar pra mês dinâmico (MONTH_NAMES_PT[...]) antes
+  // de divulgar pros leitores.
+  const periodLabel = "Maio (Teste)";
 
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
