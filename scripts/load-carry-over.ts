@@ -132,6 +132,13 @@ interface FilterOpts {
   windowStart: string; // YYYY-MM-DD
   windowEnd: string;   // YYYY-MM-DD
   scoreMin: number;
+  /**
+   * #1278: bypassa scoreMin para artigos com flag `editor_submitted`. Caso
+   * de uso: vídeo curta_animacao na 260514 entrou no pool mas foi filtrado
+   * por score baixo (bucket video sem seção); editor pediu pra recuperar
+   * em 260515. Default false (back-compat).
+   */
+  includeEditorSubmitted?: boolean;
 }
 
 /**
@@ -171,7 +178,14 @@ export function filterCarryOver(
       continue;
     }
     const score = typeof a.score === "number" ? a.score : -Infinity;
-    if (score < opts.scoreMin) {
+    // #1278: editor_submitted bypassa scoreMin quando flag opt-in ativo.
+    // Mantém todas validações (already_in_pool, window) — só pula score.
+    const isEditorSubmitted =
+      opts.includeEditorSubmitted &&
+      (a.flag === "editor_submitted" ||
+        a.source === "inbox" ||
+        a.flag === "newsletter_extracted");
+    if (!isEditorSubmitted && score < opts.scoreMin) {
       skipped.push({ url: a.url, reason: `score<${opts.scoreMin}` });
       continue;
     }
@@ -236,13 +250,19 @@ function main(): void {
   const windowStart = args["window-start"];
   const windowEnd = args["window-end"];
   const scoreMin = args["score-min"] ? Number(args["score-min"]) : 60;
+  // #1278: --include-editor-submitted bypassa scoreMin pra editor_submitted /
+  // newsletter_extracted / source:inbox. Permite recuperar submissões do
+  // editor que foram filtradas por score baixo na edição anterior.
+  const includeEditorSubmitted = process.argv.includes(
+    "--include-editor-submitted",
+  );
   const editionsDir = args["editions-dir"]
     ? resolve(ROOT, args["editions-dir"])
     : resolve(ROOT, "data", "editions");
 
   if (!editionDir || !poolPath || !windowStart || !windowEnd) {
     console.error(
-      "Uso: load-carry-over.ts --edition-dir <dir> --pool <path> --window-start YYYY-MM-DD --window-end YYYY-MM-DD [--score-min 60] [--editions-dir <dir>]",
+      "Uso: load-carry-over.ts --edition-dir <dir> --pool <path> --window-start YYYY-MM-DD --window-end YYYY-MM-DD [--score-min 60] [--include-editor-submitted] [--editions-dir <dir>]",
     );
     process.exit(1);
   }
@@ -315,6 +335,7 @@ function main(): void {
     windowStart,
     windowEnd,
     scoreMin,
+    includeEditorSubmitted,
   });
 
   const carryArticles: PoolArticle[] = annotateCarryOver(kept, prev);
