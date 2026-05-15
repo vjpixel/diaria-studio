@@ -92,8 +92,13 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
       // #1056 — tagar entries com is_test:true pra delete-test-schedules safety
       args["test-mode"] = true;
     } else if (argv[i] === "--no-comments") {
-      // #1075 — skipar comment_diaria + comment_pixel (Make não suporta comments)
+      // #1075 — skipar comment_diaria + comment_pixel (Make não suporta comments).
+      // #1310 — agora é no-op (comments já são skip default).
       args["no-comments"] = true;
+    } else if (argv[i] === "--with-comments") {
+      // #1310 — opt-in raro pra forçar enqueue de comments (caso Make adicione
+      // suporte futuro). Default é skipar.
+      args["with-comments"] = true;
     } else if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
       // #725 bug #4: não consumir flag boolean seguinte como valor de outro arg
       args[argv[i].slice(2)] = argv[i + 1];
@@ -498,7 +503,17 @@ async function main(): Promise<void> {
   const fireNow = !!args["fire-now"];
   const doSchedule = !fireNow;
   const isTest = !!args["test-mode"]; // #1056 — tag is_test:true em entries
-  const noComments = !!args["no-comments"]; // #1075 — pular comment_diaria + comment_pixel
+  // #1310 — comments skipped por DEFAULT. Make.com LinkedIn module não suporta
+  // `Create Comment` (nem company nem personal). Enfileirar items com
+  // action:"comment" gera "Missing value of required parameter 'url'" no Make,
+  // 5 retries, DLQ, e spam de email pro editor. Posts comments manualmente
+  // pelo Pixel (~T+3min e T+8min após main). Use `--with-comments` pra forçar
+  // se Make adicionar suporte futuro. Legacy `--no-comments` ainda aceito por
+  // back-compat (no-op — comments já são skip default).
+  const noComments = !args["with-comments"]; // inverteu em #1310
+  if (args["no-comments"]) {
+    console.warn("AVISO: --no-comments é no-op em #1310+ (comments já são skip default). Use --with-comments pra forçar.");
+  }
   if (args["skip-existing"]) {
     console.warn("AVISO: --skip-existing não tem efeito (flag legada). Use --no-skip-existing pra desligar o skip.");
   }
