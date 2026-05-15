@@ -152,6 +152,106 @@ describe("filterCarryOver", () => {
     assert.equal(kept.length, 1);
     assert.equal(kept[0].flag, "editor_submitted");
   });
+
+  it("#1278: includeEditorSubmitted=true bypassa scoreMin pra editor_submitted", () => {
+    // Caso real curta animação 260514: score baixo mas editor mandou.
+    const { kept, skipped } = filterCarryOver(
+      [
+        {
+          url: "https://youtube.com/watch?v=abc",
+          score: 30,
+          published_at: "2026-04-27",
+          flag: "editor_submitted",
+        },
+      ],
+      { ...baseOpts, includeEditorSubmitted: true },
+    );
+    assert.equal(kept.length, 1, "editor_submitted bypassa scoreMin");
+    assert.equal(skipped.length, 0);
+  });
+
+  it("#1278: includeEditorSubmitted=true bypassa scoreMin pra newsletter_extracted", () => {
+    const { kept } = filterCarryOver(
+      [
+        {
+          url: "https://example.com/x",
+          score: 25,
+          published_at: "2026-04-27",
+          flag: "newsletter_extracted",
+        },
+      ],
+      { ...baseOpts, includeEditorSubmitted: true },
+    );
+    assert.equal(kept.length, 1);
+  });
+
+  it("#1278: includeEditorSubmitted=true bypassa scoreMin pra source:inbox", () => {
+    const { kept } = filterCarryOver(
+      [
+        {
+          url: "https://example.com/x",
+          score: 0,
+          published_at: "2026-04-27",
+          source: "inbox",
+        },
+      ],
+      { ...baseOpts, includeEditorSubmitted: true },
+    );
+    assert.equal(kept.length, 1);
+  });
+
+  it("#1278: includeEditorSubmitted NÃO bypassa janela de publicação", () => {
+    // Editor pode mandar URL antiga — mantém filtro de janela.
+    const { kept, skipped } = filterCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 30,
+          published_at: "2026-04-15", // fora da window 2026-04-25 a 2026-04-29
+          flag: "editor_submitted",
+        },
+      ],
+      { ...baseOpts, includeEditorSubmitted: true },
+    );
+    assert.equal(kept.length, 0);
+    assert.equal(skipped[0].reason, "outside_window");
+  });
+
+  it("#1278: includeEditorSubmitted NÃO bypassa already_in_pool", () => {
+    const { kept, skipped } = filterCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 30,
+          published_at: "2026-04-27",
+          flag: "editor_submitted",
+        },
+      ],
+      {
+        ...baseOpts,
+        includeEditorSubmitted: true,
+        poolUrls: new Set(["https://a.com"]),
+      },
+    );
+    assert.equal(kept.length, 0);
+    assert.equal(skipped[0].reason, "already_in_pool");
+  });
+
+  it("#1278: sem opt-in (default false), editor_submitted segue filtro normal", () => {
+    const { kept, skipped } = filterCarryOver(
+      [
+        {
+          url: "https://a.com",
+          score: 30,
+          published_at: "2026-04-27",
+          flag: "editor_submitted",
+        },
+      ],
+      baseOpts, // includeEditorSubmitted não setado
+    );
+    assert.equal(kept.length, 0);
+    assert.equal(skipped[0].reason, "score<60");
+  });
 });
 
 describe("annotateCarryOver (#658 review B)", () => {
