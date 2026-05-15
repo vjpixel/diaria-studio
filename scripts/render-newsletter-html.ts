@@ -746,6 +746,23 @@ function renderSectionItem(item: SectionItem, last: boolean): string {
   return titleRow + "\n" + descRow;
 }
 
+/**
+ * Pure (#1070): retorna o nome da seção no singular quando N=1.
+ * Plurais permanecem inalterados quando N≠1.
+ *
+ * Mapping pt-BR:
+ *   - LANÇAMENTOS → LANÇAMENTO
+ *   - PESQUISAS → PESQUISA
+ *   - OUTRAS NOTÍCIAS → OUTRA NOTÍCIA
+ */
+export function singularizeSectionName(name: string, count: number): string {
+  if (count !== 1) return name;
+  if (name === "LANÇAMENTOS") return "LANÇAMENTO";
+  if (name === "PESQUISAS") return "PESQUISA";
+  if (name === "OUTRAS NOTÍCIAS") return "OUTRA NOTÍCIA";
+  return name;
+}
+
 function renderSection(section: Section): string {
   // #1090: rule fina (1px RULE) cima E baixo do kicker pra simetria visual —
   // versão anterior tinha rule grossa (2px TEXT_COLOR) só em cima, ficava
@@ -754,10 +771,13 @@ function renderSection(section: Section): string {
     .map((item, i) => renderSectionItem(item, i === section.items.length - 1))
     .join("\n");
 
+  // #1070: singular quando só tem 1 item (LANÇAMENTO em vez de LANÇAMENTOS)
+  const displayName = singularizeSectionName(section.name, section.items.length);
+
   return `<!-- ${section.name} -->
 ${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(section.name)}</p>
+  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(displayName)}</p>
   <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%">
     ${itemsHtml}
   </table>

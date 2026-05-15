@@ -16,6 +16,7 @@ import {
   unescapeMd,
   truncateAtSectionTerminator,
   joinMultilineLinks,
+  singularizeSectionName,
 } from "../scripts/render-newsletter-html.ts";
 
 describe("parseListItems (#172)", () => {
@@ -1156,5 +1157,81 @@ describe("joinMultilineLinks (#1213)", () => {
     const first = joinMultilineLinks(md);
     const second = joinMultilineLinks(first);
     assert.equal(first, second);
+  });
+});
+
+describe("singularizeSectionName (#1070)", () => {
+  it("LANÇAMENTOS → LANÇAMENTO quando N=1", () => {
+    assert.equal(singularizeSectionName("LANÇAMENTOS", 1), "LANÇAMENTO");
+  });
+
+  it("PESQUISAS → PESQUISA quando N=1", () => {
+    assert.equal(singularizeSectionName("PESQUISAS", 1), "PESQUISA");
+  });
+
+  it("OUTRAS NOTÍCIAS → OUTRA NOTÍCIA quando N=1", () => {
+    assert.equal(singularizeSectionName("OUTRAS NOTÍCIAS", 1), "OUTRA NOTÍCIA");
+  });
+
+  it("mantém plural quando N=0", () => {
+    assert.equal(singularizeSectionName("LANÇAMENTOS", 0), "LANÇAMENTOS");
+  });
+
+  it("mantém plural quando N=2", () => {
+    assert.equal(singularizeSectionName("PESQUISAS", 2), "PESQUISAS");
+    assert.equal(singularizeSectionName("OUTRAS NOTÍCIAS", 5), "OUTRAS NOTÍCIAS");
+  });
+
+  it("nome desconhecido passa unchanged", () => {
+    assert.equal(singularizeSectionName("FOO", 1), "FOO");
+  });
+});
+
+describe("renderHTML — singular nas seções quando N=1 (#1070)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "LANÇAMENTO",
+    title: "T",
+    body: "B",
+    why: "W",
+    url: "https://example.com/d1",
+    emoji: "🚀",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixt = (sections: { name: string; emoji?: string; items: { title: string; description: string; url: string }[] }[]) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections,
+    sorteio: null,
+    encerrar: null,
+  });
+
+  it("renderiza LANÇAMENTO singular quando seção tem 1 item", () => {
+    const html = renderHTML(fixt([
+      { name: "LANÇAMENTOS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
+    ]));
+    assert.match(html, />LANÇAMENTO</);
+    assert.doesNotMatch(html, />LANÇAMENTOS</);
+  });
+
+  it("mantém LANÇAMENTOS plural quando seção tem 2 items", () => {
+    const html = renderHTML(fixt([
+      { name: "LANÇAMENTOS", items: [
+        { title: "A", description: "x", url: "https://example.com/a" },
+        { title: "B", description: "y", url: "https://example.com/b" },
+      ] },
+    ]));
+    assert.match(html, />LANÇAMENTOS</);
+  });
+
+  it("renderiza OUTRA NOTÍCIA singular quando seção tem 1 item", () => {
+    const html = renderHTML(fixt([
+      { name: "OUTRAS NOTÍCIAS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
+    ]));
+    assert.match(html, />OUTRA NOTÍCIA</);
+    assert.doesNotMatch(html, />OUTRAS NOTÍCIAS</);
   });
 });
