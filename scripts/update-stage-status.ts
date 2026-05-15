@@ -56,6 +56,14 @@ export interface StageStatusDoc {
   edition: string;
   rows: StageRow[];
   generated_at: string;
+  /**
+   * ISO timestamp do início da run atual (#1304). Setado em `--init` e
+   * preservado em todos `applyUpdate` subsequentes. Usado por
+   * `collect-edition-signals.ts` pra filtrar log entries de runs anteriores
+   * da mesma edition ID (caso de teste: `/diaria-test` re-executado).
+   * Opcional pra back-compat — docs pré-#1304 não tinham esse campo.
+   */
+  run_started_at?: string;
 }
 
 export const STAGES = [0, 1, 2, 3, 4] as const;
@@ -242,14 +250,20 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusD
       models: opts.models ?? r.models,
     } as StageRow;
   });
-  return { ...doc, rows: newRows, generated_at: new Date().toISOString() };
+  return {
+    ...doc,
+    rows: newRows,
+    generated_at: new Date().toISOString(),
+    run_started_at: doc.run_started_at,
+  };
 }
 
-export function makeInitialDoc(edition: string): StageStatusDoc {
+export function makeInitialDoc(edition: string, runStartedAt?: string): StageStatusDoc {
   return {
     edition,
     rows: STAGES.map((s) => ({ stage: s, status: "pending" as StageStatus })),
     generated_at: new Date().toISOString(),
+    run_started_at: runStartedAt ?? new Date().toISOString(),
   };
 }
 

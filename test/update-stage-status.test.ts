@@ -34,6 +34,31 @@ describe("makeInitialDoc (#960)", () => {
       [0, 1, 2, 3, 4],
     );
   });
+
+  it("#1304: seta run_started_at automaticamente quando não passado", () => {
+    const before = Date.now();
+    const doc = makeInitialDoc("260508");
+    const after = Date.now();
+    assert.ok(doc.run_started_at, "run_started_at deve estar setado");
+    const ms = new Date(doc.run_started_at!).getTime();
+    assert.ok(ms >= before && ms <= after, "timestamp dentro da janela de chamada");
+  });
+
+  it("#1304: respeita run_started_at explícito quando passado", () => {
+    const explicit = "2026-05-15T14:00:00Z";
+    const doc = makeInitialDoc("260516", explicit);
+    assert.equal(doc.run_started_at, explicit);
+  });
+});
+
+describe("applyUpdate run_started_at preservation (#1304)", () => {
+  it("preserva run_started_at em updates subsequentes", () => {
+    const initial = "2026-05-15T14:00:00Z";
+    let doc = makeInitialDoc("260516", initial);
+    doc = applyUpdate(doc, { stage: 1, status: "done" });
+    doc = applyUpdate(doc, { stage: 2, status: "done", duration_ms: 100 });
+    assert.equal(doc.run_started_at, initial, "run_started_at sobrevive múltiplos updates");
+  });
 });
 
 describe("applyUpdate (#960)", () => {

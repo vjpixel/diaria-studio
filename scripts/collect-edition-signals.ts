@@ -629,6 +629,56 @@ export interface CollectOptions {
    *  de qualquer error/warn no run-log da edição que não casa com signals
    *  1-4. Ativado por `--include-test-warnings` no CLI. */
   includeTestWarnings?: boolean;
+  /**
+   * #1304 — filtro por timestamp do início da run. Quando setado, descarta
+   * entries de `data/run-log.jsonl` cujo `timestamp < since` antes de virar
+   * signals. Cobre o caso de edition ID reutilizada (ex: `/diaria-test`
+   * re-executado, ou backup/restore) onde signals stale poluem o auto-reporter.
+   *
+   * Quando não setado, `collectSignals` tenta auto-detectar via
+   * `_internal/stage-status.json > run_started_at`. Sem filtro disponível,
+   * mantém comportamento histórico (todos os signals com edition match).
+   */
+  since?: string;
+}
+
+/**
+ * #1304 — filtra linhas do run-log mantendo só entries com timestamp >= since.
+ * Entries malformadas ou sem timestamp passam (conservador: na dúvida, manter).
+ */
+export function filterLinesSince(lines: string[], since: string | undefined): string[] {
+  if (!since) return lines;
+  const sinceMs = new Date(since).getTime();
+  if (!Number.isFinite(sinceMs)) return lines;
+  return lines.filter((line) => {
+    if (!line.trim()) return false;
+    try {
+      const parsed = JSON.parse(line) as { timestamp?: string };
+      if (typeof parsed.timestamp !== "string") return true;
+      const ms = new Date(parsed.timestamp).getTime();
+      if (!Number.isFinite(ms)) return true;
+      return ms >= sinceMs;
+    } catch {
+      return false; // malformed line — drop
+    }
+  });
+}
+
+/**
+ * #1304 — lê `_internal/stage-status.json` e extrai `run_started_at` se
+ * existir. Usado pra auto-detect quando `--since` não é passado explicitamente.
+ */
+export function readRunStartedAt(editionDir: string): string | undefined {
+  const statusPath = resolve(editionDir, "_internal/stage-status.json");
+  if (!existsSync(statusPath)) return undefined;
+  try {
+    const doc = JSON.parse(readFileSync(statusPath, "utf8")) as {
+      run_started_at?: string;
+    };
+    return typeof doc.run_started_at === "string" ? doc.run_started_at : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function collectSignals(opts: CollectOptions): IssuesDraft {
@@ -670,7 +720,11 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   const runLogPath = resolve(rootDir, "data/run-log.jsonl");
   if (existsSync(runLogPath)) {
     try {
-      const lines = readFileSync(runLogPath, "utf8").split("\n");
+      const rawLines = readFileSync(runLogPath, "utf8").split("\n");
+      // #1304 — filter por run_started_at: descarta signals stale de runs
+      // anteriores quando edition ID é reutilizada.
+      const since = opts.since ?? readRunStartedAt(editionDir);
+      const lines = filterLinesSince(rawLines, since);
       signals.push(
         ...signalsFromRunLog(lines, edition, opts.chromeThreshold ?? 3),
       );
@@ -746,10 +800,14 @@ function main(): void {
   }
   const editionDir = resolve(ROOT, editionDirArg);
   const includeTestWarnings = flags.has("include-test-warnings");
+  // #1304 — `--since ISO` força filter por timestamp; sem flag, auto-detect
+  // via `_internal/stage-status.json > run_started_at`.
+  const since = values["since"];
   const draft = collectSignals({
     rootDir: ROOT,
     editionDir,
     includeTestWarnings,
+    since,
   });
   const outPath = writeDraft(draft, editionDir);
   console.log(
