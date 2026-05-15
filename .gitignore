@@ -30,6 +30,7 @@ data/archive/
 # Dados pessoais Clarice — exports Stripe (emails, pagamentos) e outputs scored
 data/clarice-subscribers/*.csv
 data/clarice-subscribers/*.md
+data/clarice-subscribers/*.bak*
 # Scheduling lockfile (ephemeral por execução)
 .claude/scheduled_tasks.lock
 # Logs append-only por fonte (crescem indefinidamente, valor analítico só local)
