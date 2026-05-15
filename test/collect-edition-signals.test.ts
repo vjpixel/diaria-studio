@@ -14,6 +14,8 @@ import {
   writeDraft,
   pairDisconnectReconnect,
   severityFromDuration,
+  filterLinesSince,
+  readRunStartedAt,
 } from "../scripts/collect-edition-signals.ts";
 
 describe("signalsFromSourceHealth", () => {
@@ -882,6 +884,136 @@ describe("collectSignals + writeDraft — integração", () => {
       const draft = collectSignals({ rootDir: root, editionDir });
       assert.equal(draft.signals.length, 0);
       assert.equal(draft.edition, "260424");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1304: filterLinesSince descarta entries com timestamp anterior", () => {
+    const lines = [
+      JSON.stringify({ timestamp: "2026-05-15T10:00:00Z", message: "stale" }),
+      JSON.stringify({ timestamp: "2026-05-15T14:30:00Z", message: "current" }),
+      JSON.stringify({ timestamp: "2026-05-15T15:00:00Z", message: "current2" }),
+    ];
+    const filtered = filterLinesSince(lines, "2026-05-15T14:00:00Z");
+    assert.equal(filtered.length, 2);
+    assert.ok(filtered.every((l) => !l.includes("stale")));
+  });
+
+  it("#1304: filterLinesSince retorna entries malformadas (conservador)", () => {
+    // Sem since → passa todas
+    const lines = ["not-json", JSON.stringify({ timestamp: "2026-05-15T14:00:00Z" })];
+    assert.equal(filterLinesSince(lines, undefined).length, 2);
+    // Com since e linha sem timestamp → mantém (na dúvida, manter)
+    const linesNoTs = [JSON.stringify({ message: "no-ts" })];
+    assert.equal(filterLinesSince(linesNoTs, "2026-05-15T00:00:00Z").length, 1);
+    // Com since e linha malformada → descarta
+    assert.equal(filterLinesSince(["not-json"], "2026-05-15T00:00:00Z").length, 0);
+  });
+
+  it("#1304: readRunStartedAt lê de _internal/stage-status.json", () => {
+    const { root, editionDir } = setup();
+    try {
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal/stage-status.json"),
+        JSON.stringify({
+          edition: "260424",
+          rows: [],
+          generated_at: "2026-05-15T14:30:00Z",
+          run_started_at: "2026-05-15T14:00:00Z",
+        }),
+      );
+      assert.equal(readRunStartedAt(editionDir), "2026-05-15T14:00:00Z");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1304: readRunStartedAt retorna undefined quando arquivo ausente", () => {
+    const { root, editionDir } = setup();
+    try {
+      assert.equal(readRunStartedAt(editionDir), undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1304: collectSignals filtra signals de runs anteriores via stage-status.json", () => {
+    const { root, editionDir } = setup();
+    try {
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      // Run anterior (10:00) + run atual (14:30)
+      writeFileSync(
+        join(root, "data/run-log.jsonl"),
+        [
+          { edition: "260424", agent: "eai-composer", level: "error", message: "stale failure from earlier run", timestamp: "2026-05-15T10:00:00Z" },
+          { edition: "260424", agent: "drive-sync", level: "warn", message: "fresh warning current run", timestamp: "2026-05-15T14:35:00Z" },
+        ].map((o) => JSON.stringify(o)).join("\n"),
+      );
+      // stage-status.json marca run atual começou às 14:30
+      writeFileSync(
+        join(editionDir, "_internal/stage-status.json"),
+        JSON.stringify({
+          edition: "260424",
+          rows: [],
+          generated_at: "2026-05-15T14:30:00Z",
+          run_started_at: "2026-05-15T14:30:00Z",
+        }),
+      );
+
+      const draft = collectSignals({ rootDir: root, editionDir, includeTestWarnings: true });
+      const testSignals = draft.signals.filter((s) => s.kind === "test_warning");
+      assert.equal(testSignals.length, 1, "só 1 signal (run atual) — stale descartado");
+      assert.match(JSON.stringify(testSignals[0]), /fresh warning/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1304: --since explícito override stage-status.json", () => {
+    const { root, editionDir } = setup();
+    try {
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(root, "data/run-log.jsonl"),
+        [
+          { edition: "260424", agent: "x", level: "warn", message: "old", timestamp: "2026-05-15T08:00:00Z" },
+          { edition: "260424", agent: "x", level: "warn", message: "newer", timestamp: "2026-05-15T12:00:00Z" },
+        ].map((o) => JSON.stringify(o)).join("\n"),
+      );
+      // stage-status diz 14:00, mas --since explicit 06:00 inclui ambos
+      writeFileSync(
+        join(editionDir, "_internal/stage-status.json"),
+        JSON.stringify({ edition: "260424", rows: [], generated_at: "x", run_started_at: "2026-05-15T14:00:00Z" }),
+      );
+      const draft = collectSignals({
+        rootDir: root,
+        editionDir,
+        includeTestWarnings: true,
+        since: "2026-05-15T06:00:00Z",
+      });
+      const testSignals = draft.signals.filter((s) => s.kind === "test_warning");
+      assert.equal(testSignals.length, 2, "--since override traz ambos");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1304: sem stage-status.json e sem --since, comportamento mantém all-edition (back-compat)", () => {
+    const { root, editionDir } = setup();
+    try {
+      writeFileSync(
+        join(root, "data/run-log.jsonl"),
+        [
+          { edition: "260424", agent: "x", level: "warn", message: "msg1", timestamp: "2026-05-15T08:00:00Z" },
+          { edition: "260424", agent: "x", level: "warn", message: "msg2", timestamp: "2026-05-15T12:00:00Z" },
+        ].map((o) => JSON.stringify(o)).join("\n"),
+      );
+      // Sem stage-status.json
+      const draft = collectSignals({ rootDir: root, editionDir, includeTestWarnings: true });
+      const testSignals = draft.signals.filter((s) => s.kind === "test_warning");
+      assert.equal(testSignals.length, 2, "ambos passam quando filter não disponível");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
