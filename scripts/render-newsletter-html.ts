@@ -783,7 +783,6 @@ function mdInlineToHtml(s: string): string {
 }
 
 /**
-/**
  * #1279: renderiza o reveal "Na última edição, ..." como callout box bordered
  * (1px solid #1a1a1a, border-radius 10px) — formato histórico usado em todas
  * edições publicadas no Beehiiv. Posicionado entre SORTEIO e PARA ENCERRAR.
