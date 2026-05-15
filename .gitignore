@@ -31,6 +31,9 @@ data/archive/
 data/clarice-subscribers/*.csv
 data/clarice-subscribers/*.md
 data/clarice-subscribers/*.bak*
+# Relatórios internos — vão pro Drive, não pro repo (conteudo business-sensitive)
+# Inclui .snapshots/ de sync-report.ts (3-way merge base)
+data/reports/
 # Scheduling lockfile (ephemeral por execução)
 .claude/scheduled_tasks.lock
 # Logs append-only por fonte (crescem indefinidamente, valor analítico só local)
