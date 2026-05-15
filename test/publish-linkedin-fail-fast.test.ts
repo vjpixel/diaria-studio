@@ -9,7 +9,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
@@ -231,5 +231,136 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     rmSync(tmp, { recursive: true, force: true });
     // Esperamos exit code != 0 (fail-fast por 06-public-images ausente, ou env vars worker)
     assert.notEqual(result.exitCode, 0, `default deveria agendar e fail-fast, mas exit code = 0. stderr=${result.stderr.slice(0, 300)}`);
+  });
+});
+
+// #1310 — comments são manuais por default. Make não suporta CreateComment,
+// e enfileirar items com action:"comment" gera DLQ + spam de email no editor.
+describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
+  function runCli(args: string[], extraEnv: Record<string, string> = {}) {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const scriptPath = resolve(projectRoot, "scripts", "publish-linkedin.ts");
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      MAKE_LINKEDIN_WEBHOOK_URL: "https://hook.example.com/test",
+      DIARIA_LINKEDIN_CRON_URL: "https://test.workers.dev",
+      DIARIA_LINKEDIN_CRON_TOKEN: "test-token",
+      ...extraEnv,
+    };
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, ...args],
+      { cwd: projectRoot, encoding: "utf8", env },
+    );
+    return {
+      exitCode: result.status ?? -1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  }
+
+  function setupEditionDir(): { tmp: string; editionDir: string } {
+    const tmp = mkdtempSync(resolve(tmpdir(), "comments-default-"));
+    const editionDir = resolve(tmp, "261201");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n### comment_diaria\nCD d1.\n\n### comment_pixel\nCP d1.\n\n## d2\nLI d2.\n\n### comment_diaria\nCD d2.\n\n### comment_pixel\nCP d2.\n\n## d3\nLI d3.\n\n### comment_diaria\nCD d3.\n\n### comment_pixel\nCP d3.\n",
+    );
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://example.com/d1.jpg" },
+          d2: { url: "https://example.com/d2.jpg" },
+          d3: { url: "https://example.com/d3.jpg" },
+        },
+      }),
+    );
+    return { tmp, editionDir };
+  }
+
+  it("default (sem flag): comments d1/d2/d3 são pulados — só mains enfileirados", () => {
+    const { tmp, editionDir } = setupEditionDir();
+    const result = runCli(["--edition-dir", editionDir, "--only", "d1"]);
+    rmSync(tmp, { recursive: true, force: true });
+    // Não deve enqueueing comments
+    assert.match(
+      result.stdout,
+      /linkedin\/d1: comments pulados/,
+      "default deveria pular comments, stdout=" + result.stdout.slice(0, 400),
+    );
+  });
+
+  it("legacy --no-comments emite warn mas mantém comments skipped (back-compat)", () => {
+    const { tmp, editionDir } = setupEditionDir();
+    const result = runCli([
+      "--edition-dir", editionDir, "--only", "d1", "--no-comments",
+    ]);
+    rmSync(tmp, { recursive: true, force: true });
+    assert.match(
+      result.stderr,
+      /--no-comments é no-op em #1310/,
+      "warn deveria aparecer no stderr, stderr=" + result.stderr.slice(0, 400),
+    );
+    assert.match(result.stdout, /linkedin\/d1: comments pulados/);
+  });
+
+  it("--with-comments força enqueue de comments (opt-in raro)", () => {
+    const { tmp, editionDir } = setupEditionDir();
+    const result = runCli([
+      "--edition-dir", editionDir, "--only", "d1", "--with-comments",
+    ]);
+    // Ler o output JSON gravado pra confirmação positiva
+    const pubPath = resolve(editionDir, "_internal/06-social-published.json");
+    const pub = JSON.parse(readFileSync(pubPath, "utf8")) as { posts: Array<{ subtype: string }> };
+    rmSync(tmp, { recursive: true, force: true });
+
+    // Com flag explícito, NÃO deve aparecer "comments pulados"
+    assert.doesNotMatch(
+      result.stdout,
+      /linkedin\/d1: comments pulados/,
+      "--with-comments NÃO deveria pular comments, stdout=" + result.stdout.slice(0, 400),
+    );
+    // E positivamente: 3 entries pra d1 (main + comment_diaria + comment_pixel)
+    const subtypes = pub.posts.map((p) => p.subtype).sort();
+    assert.deepEqual(
+      subtypes,
+      ["comment_diaria", "comment_pixel", "main"],
+      "--with-comments deveria gerar 3 entries (main + 2 comments) pra d1, recebeu " + JSON.stringify(subtypes),
+    );
+  });
+
+  it("--no-comments + --with-comments simultâneos: --with-comments vence + warn dispara", () => {
+    // Edge case: ambos flags presentes. Comportamento esperado: --with-comments
+    // tem precedência (noComments = !args["with-comments"] = false), comments
+    // são enqueueados normalmente, mas warn do --no-comments legacy ainda dispara
+    // pra alertar o caller que está usando flag deprecated.
+    const { tmp, editionDir } = setupEditionDir();
+    const result = runCli([
+      "--edition-dir", editionDir, "--only", "d1",
+      "--no-comments", "--with-comments",
+    ]);
+    const pubPath = resolve(editionDir, "_internal/06-social-published.json");
+    const pub = JSON.parse(readFileSync(pubPath, "utf8")) as { posts: Array<{ subtype: string }> };
+    rmSync(tmp, { recursive: true, force: true });
+
+    // Warn do legacy --no-comments ainda dispara
+    assert.match(
+      result.stderr,
+      /--no-comments é no-op em #1310/,
+      "warn deveria aparecer mesmo com --with-comments junto",
+    );
+    // Mas --with-comments venceu — comments processados
+    assert.doesNotMatch(
+      result.stdout,
+      /linkedin\/d1: comments pulados/,
+      "--with-comments deveria vencer --no-comments",
+    );
+    assert.equal(
+      pub.posts.length,
+      3,
+      "--with-comments venceu — 3 entries (main + 2 comments) gravadas",
+    );
   });
 });

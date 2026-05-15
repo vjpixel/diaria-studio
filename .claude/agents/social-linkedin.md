@@ -51,6 +51,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    ### 3b. Comment Diar.ia (`### comment_diaria`)
 
+   **⚠️ POSTAGEM MANUAL (#1310)**: Make.com LinkedIn module também não suporta `Create Comment` em company page (não só personal — confirmado em prod 2026-05-15 após emails Make rejeitando com "Missing required parameter 'url'"). `publish-linkedin.ts` agora skipa comments por default (#1310 inverteu o flag). Texto é gerado e fica em `03-social.md` pra Pixel copiar e postar manualmente T+3min após o main do Diar.ia.
+
    Postado **3 min após** o main post pela própria conta Diar.ia. Driver de tráfego — o link vai aqui, não no main.
 
    - Tom: curto, CTA claro.
