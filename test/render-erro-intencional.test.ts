@@ -266,9 +266,10 @@ describe("insertOrUpdateSection (#911)", () => {
     assert.match(r.md, /\*\*ERRO INTENCIONAL\*\*/);
   });
 
-  it("#1079: preserva 'Na última edição, ...' wording existente no MD (não sobrescreve)", () => {
-    // Pixel pode reescrever o reveal anterior manualmente; renderer deve
-    // preservar em vez de sobrescrever com a versão calculada do JSONL.
+  it("#1279: por default, reveal computado SOBRESCREVE existente (evita stale herdado)", () => {
+    // Bug recorrente em 260513-260515: template MD da nova edição herdava
+    // "Na última edição..." stale da edição anterior, e #1079 preservava
+    // silenciosamente. Agora freshly-computed wins por default.
     const md = [
       "OUTRAS NOTÍCIAS",
       "",
@@ -278,7 +279,7 @@ describe("insertOrUpdateSection (#911)", () => {
       "",
       "**ERRO INTENCIONAL**",
       "",
-      "Na última edição, coloquei 6 de junho onde deveria ser 6 de maio.",
+      "Na última edição, texto STALE herdado de N-2.",
       "",
       "Nessa edição, eu disse X, mas Y é o correto.",
       "",
@@ -287,12 +288,36 @@ describe("insertOrUpdateSection (#911)", () => {
       "**ASSINE**",
       "X",
     ].join("\n");
-    // Tenta atualizar com reveal diferente — deve preservar o existente
-    const r = insertOrUpdateSection(md, "Reveal CALCULADO DIFERENTE.");
-    assert.match(r.md, /coloquei 6 de junho onde deveria ser 6 de maio/);
-    assert.doesNotMatch(r.md, /CALCULADO DIFERENTE/);
-    // Declaração corrente também preservada
+    const r = insertOrUpdateSection(md, "Na última edição, reveal FRESH computado de N-1.");
+    assert.match(r.md, /reveal FRESH computado de N-1/);
+    assert.doesNotMatch(r.md, /STALE herdado de N-2/);
+    // Declaração corrente "Nessa edição..." continua preservada (é tracking do editor)
     assert.match(r.md, /eu disse X, mas Y é o correto/);
+  });
+
+  it("#1279: --preserve-existing-reveal opt-in mantém wording manual do editor", () => {
+    // Editor pode opt-in pra preservar reveal editado manualmente.
+    const md = [
+      "Item.",
+      "",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, wording manual editado pelo Pixel.",
+      "",
+      "Nessa edição, X.",
+      "",
+      "---",
+      "",
+      "**ASSINE**",
+      "X",
+    ].join("\n");
+    const r = insertOrUpdateSection(md, "Reveal CALCULADO DIFERENTE.", {
+      preserveExistingReveal: true,
+    });
+    assert.match(r.md, /wording manual editado pelo Pixel/);
+    assert.doesNotMatch(r.md, /CALCULADO DIFERENTE/);
   });
 
   it("#1079: idempotência com seção completa pré-existente", () => {

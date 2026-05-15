@@ -296,10 +296,17 @@ export function renderSection(
 export function insertOrUpdateSection(
   md: string,
   reveal: string | null,
+  opts: { preserveExistingReveal?: boolean } = {},
 ): { md: string; action: "inserted" | "updated" | "no_change" } {
   // #1079: preserva linhas "Na última edição, …" e "Nessa edição, …" do MD da
   // edição corrente se já existirem (autor pode ter editado wording à mão).
   // Renderer só calcula reveal anterior quando ausente.
+  //
+  // #1279: default mudou pra "fresh wins". Bug recorrente em 260513-260515:
+  // template MD da nova edição herda "Na última edição..." stale da edição
+  // anterior, e o preserve mantinha o stale silenciosamente, repetindo o
+  // mesmo reveal por 3 edições seguidas. Agora reveal computado SEMPRE
+  // sobrescreve a menos que `opts.preserveExistingReveal=true`.
   const currentExtracted = extractIntentionalErrorFromMd(md);
   const currentDeclaration = currentExtracted
     ? `Nessa edição, ${currentExtracted.narrative}.`
@@ -307,7 +314,8 @@ export function insertOrUpdateSection(
 
   const existingRevealRe = /Na\s+[úu]ltima\s+edi[çc][ãa]o,?\s+([^\n]+?)\.\s*(?:\n|$)/i;
   const existingRevealMatch = md.match(existingRevealRe);
-  const finalReveal = existingRevealMatch
+  // #1279: só preserva existing se opt-in explícito; default = fresh wins.
+  const finalReveal = opts.preserveExistingReveal && existingRevealMatch
     ? `Na última edição, ${existingRevealMatch[1].trim()}.`
     : reveal;
 
@@ -428,7 +436,12 @@ function main(): void {
   }
 
   const md = readFileSync(mdPath, "utf8");
-  const { md: updated, action } = insertOrUpdateSection(md, reveal);
+  // #1279: --preserve-existing-reveal opt-in; default = fresh reveal sobrescreve
+  // existente pra evitar bug de stale text herdado de edições anteriores.
+  const preserveExistingReveal = process.argv.includes("--preserve-existing-reveal");
+  const { md: updated, action } = insertOrUpdateSection(md, reveal, {
+    preserveExistingReveal,
+  });
   if (action !== "no_change") {
     writeFileSync(mdPath, updated, "utf8");
   }
