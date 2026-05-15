@@ -299,7 +299,16 @@ Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_fai
 
 ### 1p2. Research-reviewer (agent Haiku, Filtro 2 — #1112)
 
-Disparar `research-reviewer` com `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir, out_path: "data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json" }`. O agent aplica **apenas** Filtro 2 (Temas recentes — remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, lendo `context/past-editions.md`; critério conservador #321). Output gravado em `out_path` exato (#1271 — agent não inventa nome). Confirmar arquivo existe antes do scorer; ausente = regressão #1271, re-disparar.
+Disparar `research-reviewer` com `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir, out_path: "data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json" }`. O agent aplica **apenas** Filtro 2 (Temas recentes — remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, lendo `context/past-editions.md`; critério conservador #321). Output gravado em `out_path` exato (#1271 — agent não inventa nome).
+
+**Pós-dispatch enforcement (#1273)**: rodar wrapper que renomeia automático se agent escreveu em path alternativo conhecido (`tmp-reviewed.json`, `tmp-reviewer.json`, etc.):
+
+```bash
+npx tsx scripts/ensure-research-reviewer-output.ts \
+  --canonical data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json
+```
+
+Stdout JSON: `{ canonical, action: "ok" | "renamed_from" | "missing", source? }`. Se exit 1 (`action: "missing"`), agent não escreveu em nenhum path conhecido — re-dispatch. Se `action: "renamed_from"`, log info no run-log: agent ignorou out_path (regressão #1271 detectada e auto-corrigida).
 
 ### 1q. Scorer
 
