@@ -38,10 +38,11 @@ describe("research-reviewer out_path requirement (#1271)", () => {
       /out_path.*tmp-reviewer-output\.json/,
       "playbook deve passar out_path explícito pro agent",
     );
-    // E deve avisar que confirma file existe pós-dispatch
+    // E deve avisar que confirma file existe pós-dispatch (#1273:
+    // wrapper ensure-research-reviewer-output.ts substitui Confirmar manual)
     assert.match(
       f2section![0],
-      /Confirmar.*arquivo existe|arquivo existe.*scorer/i,
+      /Confirmar.*arquivo existe|arquivo existe.*scorer|ensure-research-reviewer-output|Pós-dispatch enforcement/i,
       "playbook deve sanity-check post-dispatch",
     );
   });
