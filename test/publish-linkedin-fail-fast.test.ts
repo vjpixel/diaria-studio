@@ -9,7 +9,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
@@ -311,12 +311,56 @@ describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
     const result = runCli([
       "--edition-dir", editionDir, "--only", "d1", "--with-comments",
     ]);
+    // Ler o output JSON gravado pra confirmação positiva
+    const pubPath = resolve(editionDir, "_internal/06-social-published.json");
+    const pub = JSON.parse(readFileSync(pubPath, "utf8")) as { posts: Array<{ subtype: string }> };
     rmSync(tmp, { recursive: true, force: true });
+
     // Com flag explícito, NÃO deve aparecer "comments pulados"
     assert.doesNotMatch(
       result.stdout,
       /linkedin\/d1: comments pulados/,
       "--with-comments NÃO deveria pular comments, stdout=" + result.stdout.slice(0, 400),
+    );
+    // E positivamente: 3 entries pra d1 (main + comment_diaria + comment_pixel)
+    const subtypes = pub.posts.map((p) => p.subtype).sort();
+    assert.deepEqual(
+      subtypes,
+      ["comment_diaria", "comment_pixel", "main"],
+      "--with-comments deveria gerar 3 entries (main + 2 comments) pra d1, recebeu " + JSON.stringify(subtypes),
+    );
+  });
+
+  it("--no-comments + --with-comments simultâneos: --with-comments vence + warn dispara", () => {
+    // Edge case: ambos flags presentes. Comportamento esperado: --with-comments
+    // tem precedência (noComments = !args["with-comments"] = false), comments
+    // são enqueueados normalmente, mas warn do --no-comments legacy ainda dispara
+    // pra alertar o caller que está usando flag deprecated.
+    const { tmp, editionDir } = setupEditionDir();
+    const result = runCli([
+      "--edition-dir", editionDir, "--only", "d1",
+      "--no-comments", "--with-comments",
+    ]);
+    const pubPath = resolve(editionDir, "_internal/06-social-published.json");
+    const pub = JSON.parse(readFileSync(pubPath, "utf8")) as { posts: Array<{ subtype: string }> };
+    rmSync(tmp, { recursive: true, force: true });
+
+    // Warn do legacy --no-comments ainda dispara
+    assert.match(
+      result.stderr,
+      /--no-comments é no-op em #1310/,
+      "warn deveria aparecer mesmo com --with-comments junto",
+    );
+    // Mas --with-comments venceu — comments processados
+    assert.doesNotMatch(
+      result.stdout,
+      /linkedin\/d1: comments pulados/,
+      "--with-comments deveria vencer --no-comments",
+    );
+    assert.equal(
+      pub.posts.length,
+      3,
+      "--with-comments venceu — 3 entries (main + 2 comments) gravadas",
     );
   });
 });
