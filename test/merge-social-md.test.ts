@@ -113,6 +113,9 @@ describe("merge-social-md CLI", () => {
     assert.ok(out.includes("LinkedIn d1 content"));
     assert.ok(out.includes("# Facebook\n\n"));
     assert.ok(out.includes("Facebook d1 content"));
+    // #1075: banner explica postagem manual de comment_pixel
+    assert.ok(out.includes("Postagem semi-automática"));
+    assert.ok(out.includes("comment_pixel"));
 
     // Tmps deletados após sucesso
     assert.equal(

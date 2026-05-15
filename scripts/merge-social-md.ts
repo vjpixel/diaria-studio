@@ -212,7 +212,11 @@ function main(): void {
     process.exit(1);
   }
 
-  const merged = `# LinkedIn\n\n${liStripped}\n\n# Facebook\n\n${fbStripped}\n`;
+  // #1075: comment_pixel é postagem manual — Make.com LinkedIn module não
+  // suporta Create Comment pra conta pessoal. Banner explicativo no topo
+  // do LinkedIn merged pra Pixel saber que essa parte fica fora da automação.
+  const linkedinHeader = `# LinkedIn\n\n> **Postagem semi-automática (#1075):** \`main\` + \`comment_diaria\` agendam via Worker→Make. \`comment_pixel\` precisa ser postado manualmente na sua conta pessoal LinkedIn ~8min após o main do Diar.ia (Make.com não suporta Create Comment em contas pessoais). Copy-paste do texto abaixo.\n`;
+  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}\n`;
   const outPath = resolve(editionDir, "03-social.md");
 
   try {
