@@ -59,6 +59,25 @@ describe("applyUpdate run_started_at preservation (#1304)", () => {
     doc = applyUpdate(doc, { stage: 2, status: "done", duration_ms: 100 });
     assert.equal(doc.run_started_at, initial, "run_started_at sobrevive múltiplos updates");
   });
+
+  it("#1306-followup: applyUpdate em doc legado (sem run_started_at) preserva ausência", () => {
+    // Doc estilo pré-#1304 — não tem o campo run_started_at. Forçando o tipo
+    // pra simular state pós-load de um stage-status.json antigo no disco.
+    const legacyDoc: StageStatusDoc = {
+      edition: "260424",
+      rows: STAGES.map((s) => ({ stage: s, status: "pending" })),
+      generated_at: "2026-04-24T12:00:00Z",
+      // run_started_at intencionalmente ausente
+    };
+    const updated = applyUpdate(legacyDoc, { stage: 1, status: "done" });
+    assert.equal(
+      updated.run_started_at,
+      undefined,
+      "doc legado mantém ausência do field após update",
+    );
+    // E confirma que o update do stage funcionou normalmente
+    assert.equal(updated.rows.find((r) => r.stage === 1)?.status, "done");
+  });
 });
 
 describe("applyUpdate (#960)", () => {
