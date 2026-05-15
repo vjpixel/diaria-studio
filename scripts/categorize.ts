@@ -607,6 +607,19 @@ export function categorize(article: Article): Category {
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
+    // #1173 (híbrido): type_hint do source-researcher/discovery (Haiku) é
+    // sinal upstream de classificação por conteúdo (não só URL). Quando ele
+    // diz "noticia" ou "pesquisa" pra URL que normalmente seria lançamento
+    // (ex: openai.com/index/introducing-trusted-contact ou
+    // deepmind.google/blog/ai-co-clinician), respeitar — Pixel confirmou
+    // que esses casos vão pra seção errada com regras só de URL.
+    //
+    // type_hint vem do agent que LEU o conteúdo da página (não só URL).
+    // Optimize-for-precision: precisão no LANÇAMENTOS é alta porque
+    // remover falso-positivo é editorialmente importante (LANÇAMENTO sugere
+    // novidade de produto, não feature/research/análise).
+    if (article.type_hint === "pesquisa") return "pesquisa";
+    if (article.type_hint === "noticia" || article.type_hint === "opiniao" || article.type_hint === "analise") return "noticias";
     // #898: as overrides acima (path-blocklist, deal, customer-story,
     // non-product-announcement, update) cobrem os falso-positivos comuns.
     // `hasLaunchVerb` continua exposta como helper pra callers que queiram

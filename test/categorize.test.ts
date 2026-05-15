@@ -1459,3 +1459,76 @@ describe("categorize() — relatórios/análises NÃO são lançamentos (#1096)"
     );
   });
 });
+
+describe("categorize() — type_hint override em lançamento (#1173)", () => {
+  it("openai.com/index/introducing-X COM type_hint='noticia' → noticias", () => {
+    // Bug confirmado: openai.com/index/introducing-trusted-contact-in-chatgpt
+    // foi pra Lançamentos quando deveria ser Notícias (feature/safety, não
+    // produto novo). type_hint do source-researcher reflete leitura do conteúdo.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-trusted-contact-in-chatgpt",
+        title: "Introducing Trusted Contact in ChatGPT",
+        type_hint: "noticia",
+      }),
+      "noticias",
+    );
+  });
+
+  it("deepmind.google/blog/X COM type_hint='pesquisa' → pesquisa", () => {
+    // Bug confirmado: deepmind.google/blog/ai-co-clinician foi pra Lançamentos
+    // quando deveria ser Pesquisas.
+    assert.equal(
+      categorize({
+        url: "https://deepmind.google/blog/ai-co-clinician",
+        title: "AI Co-Clinician",
+        type_hint: "pesquisa",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("type_hint='opiniao' em domínio oficial → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/innovation-and-ai/some-essay/",
+        title: "Reflections on AI safety",
+        type_hint: "opiniao",
+      }),
+      "noticias",
+    );
+  });
+
+  it("type_hint='analise' em domínio oficial → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/analise-x",
+        title: "Analysis: agent reliability",
+        type_hint: "analise",
+      }),
+      "noticias",
+    );
+  });
+
+  it("regression: type_hint='ferramenta' em domínio oficial NÃO override → mantém lancamento", () => {
+    // type_hint=ferramenta é genérico — não força override. URL official manda.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-5",
+        title: "Introducing GPT-5",
+        type_hint: "ferramenta",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("regression: sem type_hint, regra default mantém lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-5",
+        title: "Introducing Claude 4.5",
+      }),
+      "lancamento",
+    );
+  });
+});
