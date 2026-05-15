@@ -70,6 +70,31 @@ export function todayUtcIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * #1155: janela adaptativa por bucket. Cada tipo de conteúdo tem ciclo de vida
+ * editorial diferente:
+ *   - Lançamentos: notícias frescas, perdem relevância rápido (até 7 dias)
+ *   - Pesquisas: papers/posts duram mais (até 5 dias)
+ *   - Notícias: notícias gerais, prazo médio (3-4 dias = default windowDays)
+ *   - Tutorial: evergreen mas raro — segue default
+ *
+ * Tradeoff: lançamentos com janela maior aumenta recall (não perdemos product
+ * launches que demoram 1-2 dias pra aparecer no RSS). Notícias mais curta
+ * aumenta precisão (só o que é REALMENTE recente vai pra leitor).
+ */
+export function bucketWindowDays(bucket: string, defaultDays: number): number {
+  switch (bucket) {
+    case "lancamento":
+      return Math.max(defaultDays, 7);
+    case "pesquisa":
+      return Math.max(defaultDays, 5);
+    case "noticias":
+    case "tutorial":
+    default:
+      return defaultDays;
+  }
+}
+
 export function filterDateWindow(
   input: CategorizedInput,
   anchorDate: string,
@@ -81,9 +106,12 @@ export function filterDateWindow(
   cutoff: string;
   anchor: string;
 } {
-  const anDate = new Date(anchorDate + "T00:00:00Z");
-  anDate.setUTCDate(anDate.getUTCDate() - windowDays);
-  const cutoff = anDate.toISOString().split("T")[0];
+  // Cutoff "global" calculado a partir do windowDays default (usado como
+  // fallback no return + logging). Cada bucket tem cutoff próprio via
+  // bucketWindowDays (#1155).
+  const anDateGlobal = new Date(anchorDate + "T00:00:00Z");
+  anDateGlobal.setUTCDate(anDateGlobal.getUTCDate() - windowDays);
+  const cutoff = anDateGlobal.toISOString().split("T")[0];
 
   const removed: RemovedEntry[] = [];
   // Passthrough de campos extras (#247): `clusters[]` do topic-cluster, ou
@@ -99,25 +127,30 @@ export function filterDateWindow(
     tutorial: [],
   };
 
-  const detailSuffix = editionDate
-    ? ` (anchor ${anchorDate} - ${windowDays}d; edition ${editionDate})`
-    : ` (anchor ${anchorDate} - ${windowDays}d)`;
-
   for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial"] as const) {
+    // #1155: cada bucket tem seu próprio windowDays
+    const bucketDays = bucketWindowDays(bucket, windowDays);
+    const bucketAnchor = new Date(anchorDate + "T00:00:00Z");
+    bucketAnchor.setUTCDate(bucketAnchor.getUTCDate() - bucketDays);
+    const bucketCutoff = bucketAnchor.toISOString().split("T")[0];
+    const bucketDetailSuffix = editionDate
+      ? ` (anchor ${anchorDate} - ${bucketDays}d; edition ${editionDate}; bucket-window=${bucketDays}d)`
+      : ` (anchor ${anchorDate} - ${bucketDays}d; bucket-window=${bucketDays}d)`;
+
     for (const article of input[bucket] || []) {
       if (article.date == null) {
         kept[bucket].push({ ...article, date_unverified: true });
         continue;
       }
       const normDate = article.date.slice(0, 10);
-      if (normDate < cutoff) {
+      if (normDate < bucketCutoff) {
         removed.push({
           url: article.url,
           title: article.title,
           date: article.date,
           bucket,
           reason: "date_window",
-          detail: `date ${normDate} < cutoff ${cutoff}${detailSuffix}`,
+          detail: `date ${normDate} < cutoff ${bucketCutoff}${bucketDetailSuffix}`,
         });
       } else {
         kept[bucket].push(article);
