@@ -676,6 +676,73 @@ Agora interaja!`,
   });
 });
 
+describe("renderHTML erroIntencional reveal (#1279)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "LANÇAMENTO",
+    title: "T",
+    body: "B",
+    why: "W",
+    url: "https://example.com/d1",
+    emoji: "🚀",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixt = (extras: Partial<{ erroIntencional: string | null; sorteio: string | null; encerrar: string | null }>) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [],
+    sorteio: extras.sorteio ?? null,
+    encerrar: extras.encerrar ?? null,
+    erroIntencional: extras.erroIntencional ?? null,
+  });
+
+  it("inclui callout box bordered com 'Na última edição...' quando erroIntencional presente", () => {
+    const html = renderHTML(fixt({
+      erroIntencional: "Na última edição, disse X mas o correto era Y.\n\nNessa edição, {placeholder}.",
+      sorteio: "Sorteio.",
+      encerrar: "Encerrar.",
+    }));
+    assert.match(html, /Na última edição, disse X mas o correto era Y/);
+    // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
+    assert.doesNotMatch(html, /\{placeholder\}/);
+    // Estilo callout box (#1a1a1a border + radius)
+    assert.match(html, /border:1px solid #1a1a1a/);
+    assert.match(html, /border-radius:10px/);
+  });
+
+  it("posicionamento: entre SORTEIO e PARA ENCERRAR", () => {
+    const html = renderHTML(fixt({
+      erroIntencional: "Na última edição, disse Z.",
+      sorteio: "Sorteio.",
+      encerrar: "Encerrar.",
+    }));
+    const sorteioIdx = html.indexOf("🎁 Sorteio");
+    const revealIdx = html.indexOf("Na última edição");
+    const encerrarIdx = html.indexOf("Para encerrar");
+    assert.ok(sorteioIdx > 0, "sorteio renderizou");
+    assert.ok(revealIdx > sorteioIdx, "reveal vem após sorteio");
+    assert.ok(encerrarIdx > revealIdx, "encerrar vem após reveal");
+  });
+
+  it("graceful skip: sem erroIntencional, HTML não inclui o callout", () => {
+    const html = renderHTML(fixt({ sorteio: "S.", encerrar: "E." }));
+    assert.doesNotMatch(html, /Na última edição/);
+    assert.doesNotMatch(html, /border:1px solid #1a1a1a/);
+  });
+
+  it("graceful skip: erroIntencional presente mas sem 'Na última edição', HTML não inclui callout", () => {
+    const html = renderHTML(fixt({
+      erroIntencional: "Nessa edição, {PREENCHER_NARRATIVA}.\n\nApenas placeholder do editor.",
+      sorteio: "S.",
+      encerrar: "E.",
+    }));
+    assert.doesNotMatch(html, /border:1px solid #1a1a1a/);
+  });
+});
+
 describe("renderSection thin rule + bottom border (#1090)", () => {
   const baseDestaque = {
     n: 1 as const,
