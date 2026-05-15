@@ -49,15 +49,24 @@ interface RawArticle {
 export function countEditorVsAuto(pool: RawArticle[]): { x: number; y: number } {
   let x = 0;
   for (const a of pool) {
-    // #1190: newsletter_extracted = link extraído de newsletter forwarded
-    // pelo Pixel (Cyberman, AlphaSignal, etc). Pixel NÃO curou esses links
-    // individualmente — só forwarded a newsletter inteira. Semanticamente é
-    // descoberta automática assistida, não submissão editorial. Vai pra Y.
+    // #1280 (revert parcial de #1190): newsletter_extracted volta a contar
+    // como X (submissão do editor). O ato editorial é a curadoria da fonte
+    // (Pixel escolheu encaminhar a newsletter Cyberman/AlphaSignal/etc), não
+    // URL-por-URL dentro dela. Pra leitor, distinção é invisível e
+    // contraintuitiva — caso 260515: Pixel encaminhou 12 emails (1 link
+    // direto + 11 newsletters), inject extraiu 36 URLs primárias, e
+    // sync-coverage escrevia "1 submissão" quando devia ser ~37.
     //
     // editor_submitted = forward direto do Pixel com link específico → X.
+    // newsletter_extracted = link primário extraído de newsletter forwarded
+    //   pelo Pixel (#1095 fluxo) → X.
     // source: "inbox" = back-compat com runs antigos (pré-#1095, quando
-    // tudo do inbox era considerado editor submission).
-    if (a.flag === "editor_submitted" || a.source === "inbox") {
+    //   tudo do inbox era considerado editor submission).
+    if (
+      a.flag === "editor_submitted" ||
+      a.flag === "newsletter_extracted" ||
+      a.source === "inbox"
+    ) {
       x++;
     }
   }

@@ -21,16 +21,17 @@ describe("countEditorVsAuto", () => {
     assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 1 });
   });
 
-  it("#1190: NÃO conta newsletter_extracted como X (descoberta auto)", () => {
-    // Reverso do comportamento original (#1095): newsletter_extracted é
-    // descoberta automática assistida, não submissão editorial.
+  it("#1280 (revert #1190): conta newsletter_extracted como X — editor escolheu a fonte", () => {
+    // Editor encaminhar uma newsletter (Cyberman/AlphaSignal/etc) é ato
+    // editorial — escolha de fonte. URLs primárias extraídas dessa fonte
+    // contam como submissões do editor pra fins de cobertura.
     const pool = [
       { flag: "newsletter_extracted", url: "u1" },
       { flag: "newsletter_extracted", url: "u2" },
       { url: "u3" },
       { url: "u4" },
     ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 0, y: 4 });
+    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 2 });
   });
 
   it("conta source: inbox como X (back-compat pré-#1095)", () => {
@@ -41,7 +42,7 @@ describe("countEditorVsAuto", () => {
     assert.deepEqual(countEditorVsAuto(pool), { x: 1, y: 1 });
   });
 
-  it("mix completo: só editor_submitted + source:inbox contam (#1190)", () => {
+  it("#1280: mix completo conta editor_submitted + newsletter_extracted + source:inbox", () => {
     const pool = [
       { flag: "editor_submitted", url: "1" },
       { flag: "newsletter_extracted", url: "2" },
@@ -49,24 +50,23 @@ describe("countEditorVsAuto", () => {
       { url: "4" },
       { url: "5" },
     ];
-    // editor_submitted + source:inbox = 2 em X.
-    // newsletter_extracted (curadoria automática) + 2 auto-discovery = 3 em Y.
-    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 3 });
+    // editor_submitted + newsletter_extracted + source:inbox = 3 em X.
+    // 2 auto-discovery em Y.
+    assert.deepEqual(countEditorVsAuto(pool), { x: 3, y: 2 });
   });
 
-  it("#1190: caso real edição 260513 (8 editor_submitted + 263 newsletter_extracted)", () => {
-    // Simula a edição 260513 onde:
-    //   - 8 URLs forwarded direto pelo Pixel (editor_submitted)
-    //   - 263 URLs extraídas de newsletters não-Pixel (newsletter_extracted)
-    //   - resto = auto-discovery via RSS/researchers
+  it("#1280: caso real edição 260515 (1 editor_submitted + 35 newsletter_extracted + ~120 auto)", () => {
+    // Replicar o caso que motivou o revert: Pixel encaminhou 12 emails
+    // (1 link direto + 11 newsletters), inject extraiu 35 URLs primárias.
+    // Coverage devia mostrar ~36 submissões, não 1.
     const pool: { flag?: string; source?: string; url: string }[] = [];
-    for (let i = 0; i < 8; i++) pool.push({ flag: "editor_submitted", url: `e${i}` });
-    for (let i = 0; i < 263; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
-    for (let i = 0; i < 100; i++) pool.push({ url: `a${i}` });
+    for (let i = 0; i < 1; i++) pool.push({ flag: "editor_submitted", url: `e${i}` });
+    for (let i = 0; i < 35; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
+    for (let i = 0; i < 120; i++) pool.push({ url: `a${i}` });
 
     const { x, y } = countEditorVsAuto(pool);
-    assert.equal(x, 8, "só forwards direto do Pixel (não os 263 extraídos)");
-    assert.equal(y, 363, "newsletter_extracted (263) + auto (100) = 363");
+    assert.equal(x, 36, "1 forward direto + 35 URLs extraídas das newsletters do Pixel");
+    assert.equal(y, 120, "auto-discovery via RSS/researchers");
   });
 
   it("pool vazio", () => {
