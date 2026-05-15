@@ -645,6 +645,11 @@ export interface CollectOptions {
 /**
  * #1304 — filtra linhas do run-log mantendo só entries com timestamp >= since.
  * Entries malformadas ou sem timestamp passam (conservador: na dúvida, manter).
+ *
+ * Quando `since` não é setado ou é inválido, retorna `lines` sem mexer —
+ * mantém comportamento histórico (entries vazias/malformadas são tratadas
+ * pelos downstream signal functions com try/catch próprio). Filtragem só
+ * acontece quando há um cutoff timestamp válido pra aplicar.
  */
 export function filterLinesSince(lines: string[], since: string | undefined): string[] {
   if (!since) return lines;

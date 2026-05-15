@@ -250,12 +250,9 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusD
       models: opts.models ?? r.models,
     } as StageRow;
   });
-  return {
-    ...doc,
-    rows: newRows,
-    generated_at: new Date().toISOString(),
-    run_started_at: doc.run_started_at,
-  };
+  // `...doc` já preserva `run_started_at` (#1304) — não precisa repetir
+  // explicitamente. Mantido só o que muda neste update.
+  return { ...doc, rows: newRows, generated_at: new Date().toISOString() };
 }
 
 export function makeInitialDoc(edition: string, runStartedAt?: string): StageStatusDoc {
