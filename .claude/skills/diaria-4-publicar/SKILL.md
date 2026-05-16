@@ -30,10 +30,10 @@ Crítico: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar 
 
 ## Passo -2 — Pre-flight CORS check (#1132 P2.4)
 
-Antes de qualquer Chrome MCP work, validar que o Worker `diar-ia-poll` responde com `Access-Control-Allow-Origin: *` no endpoint `/img/{key}`. Sem isso, paste flow falha com "Failed to fetch" opaco em runtime e gasta ~30min de debug (caso 260512).
+Antes de qualquer Chrome MCP work, validar que o Worker `poll` responde com `Access-Control-Allow-Origin: *` no endpoint `/img/{key}`. Sem isso, paste flow falha com "Failed to fetch" opaco em runtime e gasta ~30min de debug (caso 260512).
 
 ```bash
-npx tsx scripts/check-worker-cors.ts --worker-url https://diar-ia-poll.diaria.workers.dev
+npx tsx scripts/check-worker-cors.ts --worker-url https://poll.diaria.workers.dev
 ```
 
 Output JSON `{ ok: true/false, header?: string, status?: number, reason?: string }`.

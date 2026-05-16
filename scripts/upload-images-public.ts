@@ -292,7 +292,7 @@ export async function uploadPublicImages(
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const kvNamespaceId = cfg?.poll?.kv_namespace_id;
-    const workerUrl = cfg?.poll?.worker_url ?? "https://diar-ia-poll.diaria.workers.dev";
+    const workerUrl = cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
     if (!kvNamespaceId) {
       throw new Error("platform.config.json → poll.kv_namespace_id não configurado (target=cloudflare)");
     }

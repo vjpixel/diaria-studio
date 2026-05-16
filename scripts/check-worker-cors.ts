@@ -2,7 +2,7 @@
 /**
  * check-worker-cors.ts (#1132 P2.4)
  *
- * Pre-flight check: verifica que o Worker `diar-ia-poll` (ou outro)
+ * Pre-flight check: verifica que o Worker `poll` (ou outro)
  * responde no endpoint `/img/{key}` com header `Access-Control-Allow-Origin: *`.
  *
  * Razão: paste flow do publish-newsletter fetch-a imagens do Worker de
@@ -13,7 +13,7 @@
  * em qualquer response do `/img/` endpoint.
  *
  * Uso:
- *   npx tsx scripts/check-worker-cors.ts --worker-url https://diar-ia-poll.diaria.workers.dev
+ *   npx tsx scripts/check-worker-cors.ts --worker-url https://poll.diaria.workers.dev
  *   npx tsx scripts/check-worker-cors.ts (lê de platform.config.json → poll.worker_url)
  *
  * Exit codes:
@@ -102,7 +102,7 @@ function resolveWorkerUrl(cliArg: string | null): string {
       /* fallback */
     }
   }
-  return "https://diar-ia-poll.diaria.workers.dev";
+  return "https://poll.diaria.workers.dev";
 }
 
 function parseArgs(argv: string[]): { workerUrl: string | null } {

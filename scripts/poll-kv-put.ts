@@ -3,7 +3,7 @@
  * scripts/poll-kv-put.ts (#1237)
  *
  * CLI wrapper pra `wranglerKvPut` em `scripts/lib/poll-kv.ts`. Útil pra
- * edição interativa de keys no KV do Worker `diar-ia-poll` sem cair na
+ * edição interativa de keys no KV do Worker `poll` sem cair na
  * armadilha de shell escape do `wrangler kv key put` direto.
  *
  * Uso:

@@ -137,7 +137,7 @@ Faz upload de 5 imagens pro Worker KV (default `--target cloudflare` quando `--m
 - `04-d2-1x1.jpg`, `04-d3-1x1.jpg` (inline D2/D3)
 - `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
 
-KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://diar-ia-poll.diaria.workers.dev/img/{key}` com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
+KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://poll.diaria.workers.dev/img/{key}` com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
 
 Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename, target: "cloudflare" } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
 
@@ -268,7 +268,7 @@ Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — caminho recomendado.
 
-Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`diar-ia-poll.diaria.workers.dev/html/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
+Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`poll.diaria.workers.dev/html/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD}
@@ -278,7 +278,7 @@ Stdout (JSON):
 ```json
 {
   "edition": "260514",
-  "url": "https://diar-ia-poll.diaria.workers.dev/html/260514",
+  "url": "https://poll.diaria.workers.dev/html/260514",
   "bytes": 28341,
   "ttl_seconds": 43200
 }
@@ -309,7 +309,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 ```js
 // (1 chamada javascript_tool — fetch + decode + insertContent)
 (async () => {
-  const res = await fetch('https://diar-ia-poll.diaria.workers.dev/html/260514');
+  const res = await fetch('https://poll.diaria.workers.dev/html/260514');
   if (!res.ok) return { error: `fetch ${res.status}` };
   const html = await res.text();
 

@@ -32,7 +32,7 @@ Lê novos e-mails de `diariaeditor@gmail.com` via Gmail API e anexa entradas em 
 
 ### 1c. Fetch poll stats da edição anterior (#201, #1044)
 
-O `eia-compose.ts` auto-preenche "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Buscar do Cloudflare Worker `diar-ia-poll` (compatível com `eia-compose.ts` — `pct_correct`/`below_threshold`/`total_responses`; sem step intermediário `compute-eia-poll-stats.ts`):
+O `eia-compose.ts` auto-preenche "Resultado da última edição" se `_internal/04-eia-poll-stats.json` existir. Buscar do Cloudflare Worker `poll` (compatível com `eia-compose.ts` — `pct_correct`/`below_threshold`/`total_responses`; sem step intermediário `compute-eia-poll-stats.ts`):
 
 ```bash
 PREV_EDITION=$(node -e "const r=require('fs').existsSync('data/past-editions-raw.json')?JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8')):[];const p=r[0];if(!p||!p.published_at){process.exit(0)}const d=new Date(p.published_at);process.stdout.write(String(d.getUTCFullYear()).slice(-2)+String(d.getUTCMonth()+1).padStart(2,'0')+String(d.getUTCDate()).padStart(2,'0'))")

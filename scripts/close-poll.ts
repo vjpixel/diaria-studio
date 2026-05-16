@@ -16,7 +16,7 @@
  *   ADMIN_SECRET       HMAC key pro endpoint /admin/correct (ver .env). Worker
  *                      valida sig contra ADMIN_SECRET (workers/poll/src/index.ts:325).
  *                      Pode estar como `ADMIN_SECRET` ou `POLL_ADMIN_SECRET`.
- *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
+ *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
  */
 
 import "dotenv/config"; // #1204 — sem isso, ADMIN_SECRET do .env nao chega no processo
@@ -29,7 +29,7 @@ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 
 function adminSig(secret: string, edition: string, answer: string): string {
   return createHmac("sha256", secret).update(`${edition}:${answer}`).digest("hex");

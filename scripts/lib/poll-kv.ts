@@ -4,7 +4,7 @@
  * Wrangler KV helpers compartilhados entre `add-valid-edition.ts`,
  * `maintain-valid-editions-window.ts`, `poll-kv-put.ts` (CLI), etc.
  *
- * Lê/escreve KV remoto do Worker `diar-ia-poll` via `npx wrangler` no
+ * Lê/escreve KV remoto do Worker `poll` via `npx wrangler` no
  * diretório `workers/poll/` (herda OAuth cache + wrangler.toml).
  *
  * #1237: `wranglerKvPut` agora usa `--path=<tmpfile>` em vez de passar

@@ -1,7 +1,7 @@
 /**
  * test/worker-poll.test.ts (#1083 / #1086)
  *
- * Cobre helpers puros do Worker `diar-ia-poll`:
+ * Cobre helpers puros do Worker `poll`:
  *   - formatEditionDate (AAMMDD → "10 de maio de 2026")
  *   - htmlEscape (XSS prevention no votePageHtml)
  *   - parseValidEditions (KV value → string[] | null)
