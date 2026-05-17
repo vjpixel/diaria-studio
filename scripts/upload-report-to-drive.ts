@@ -23,49 +23,16 @@ import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { GOOGLE_DOC_MIME } from "./drive-sync.ts";
 import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
-import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
+import { DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
+import {
+  driveCreateFolder,
+  driveFindFileInParent,
+  driveFindFolderInParent,
+  driveFindFolderInRoot,
+  buildMultipartBody,
+} from "./lib/drive-helpers.ts"; // #1308 itens 2, 4
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-interface DriveFile { id: string; name: string; mimeType: string; modifiedTime: string; }
-
-function escapeQ(s: string): string { return s.replace(/'/g, "\\'"); }
-
-async function driveList(q: string): Promise<DriveFile[]> {
-  const params = new URLSearchParams({ q, fields: "files(id,name,mimeType,modifiedTime)", spaces: "drive" });
-  const res = await gFetch(`${DRIVE_API}/files?${params}`);
-  const data = await res.json() as { files: DriveFile[] };
-  return data.files ?? [];
-}
-
-async function findFolderInRoot(name: string): Promise<string | null> {
-  const q = `name='${escapeQ(name)}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`;
-  const r = await driveList(q);
-  return r[0]?.id ?? null;
-}
-
-async function findFolderInParent(name: string, parentId: string): Promise<string | null> {
-  const q = `name='${escapeQ(name)}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
-  const r = await driveList(q);
-  return r[0]?.id ?? null;
-}
-
-async function findFileInParent(name: string, parentId: string): Promise<DriveFile | null> {
-  // Excluir folders pra evitar match espúrio se houver pasta com mesmo nome do report
-  const q = `name='${escapeQ(name)}' and '${parentId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`;
-  const r = await driveList(q);
-  return r[0] ?? null;
-}
-
-async function createFolder(name: string, parentId: string): Promise<string> {
-  const res = await gFetch(`${DRIVE_API}/files`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] }),
-  });
-  const data = await res.json() as { id: string };
-  return data.id;
-}
 
 async function uploadOrUpdateMarkdownAsDoc(
   localPath: string,
@@ -74,19 +41,15 @@ async function uploadOrUpdateMarkdownAsDoc(
   existingId: string | null,
 ): Promise<{ id: string; webViewLink: string }> {
   const content = readFileSync(localPath, "utf8");
-  const boundary = "boundary" + Math.random().toString(36).slice(2);
   const metadata: Record<string, unknown> = existingId
     ? { name: driveName }
     : { name: driveName, mimeType: GOOGLE_DOC_MIME, parents: [parentId] };
 
-  const body =
-    `--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify(metadata) + `\r\n` +
-    `--${boundary}\r\n` +
-    `Content-Type: text/markdown; charset=UTF-8\r\n\r\n` +
-    content + `\r\n` +
-    `--${boundary}--`;
+  const mp = buildMultipartBody({
+    metadata,
+    contentType: "text/markdown; charset=UTF-8",
+    content,
+  });
 
   const url = existingId
     ? `${DRIVE_UPLOAD}/files/${existingId}?uploadType=multipart&fields=id,webViewLink`
@@ -95,8 +58,8 @@ async function uploadOrUpdateMarkdownAsDoc(
 
   const res = await gFetch(url, {
     method,
-    headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-    body,
+    headers: { "Content-Type": mp.contentType },
+    body: mp.body,
   });
   if (!res.ok) throw new Error(`Drive upload ${res.status}: ${await res.text()}`);
   return await res.json() as { id: string; webViewLink: string };
@@ -113,16 +76,16 @@ async function main() {
 
   // Resolve folder: Work/Startups/diar.ia/{subFolder}
   console.error(`[1/4] Resolvendo path no Drive: Work/Startups/diar.ia/${subFolder}/`);
-  const workId = await findFolderInRoot("Work");
+  const workId = await driveFindFolderInRoot("Work");
   if (!workId) throw new Error("Work folder not found at My Drive root");
-  const startupsId = await findFolderInParent("Startups", workId);
+  const startupsId = await driveFindFolderInParent("Startups", workId);
   if (!startupsId) throw new Error("Startups folder not found in Work");
-  const diariaId = await findFolderInParent("diar.ia", startupsId);
+  const diariaId = await driveFindFolderInParent("diar.ia", startupsId);
   if (!diariaId) throw new Error("diar.ia folder not found in Startups");
-  let subId = await findFolderInParent(subFolder, diariaId);
+  let subId = await driveFindFolderInParent(subFolder, diariaId);
   if (!subId) {
     console.error(`[2/4] Pasta ${subFolder} não existe — criando...`);
-    subId = await createFolder(subFolder, diariaId);
+    subId = await driveCreateFolder(subFolder, diariaId);
   } else {
     console.error(`[2/4] Pasta ${subFolder} encontrada: ${subId}`);
   }
@@ -130,7 +93,7 @@ async function main() {
   // Determine target name (strip .md extension for Doc title)
   const fileName = basename(localFile).replace(/\.md$/, "");
   console.error(`[3/4] Procurando arquivo existente com nome "${fileName}"...`);
-  const existing = await findFileInParent(fileName, subId);
+  const existing = await driveFindFileInParent(fileName, subId);
   if (existing && !force) {
     console.error(`\n❌ ABORT: arquivo já existe (id ${existing.id}).`);
     console.error(`Este script é create-only por safety — não sobrescreve pra preservar`);

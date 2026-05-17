@@ -4,10 +4,7 @@ import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, mkdtemp
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  isRetryableStatus,
-  backoffMs,
   splitFilePath,
-  escapeDriveQueryString,
   resolveSubfolder,
   CONVERT_TO_DOC,
   GOOGLE_DOC_MIME,
@@ -23,6 +20,11 @@ import {
   type DriveCache,
   type SyncResult,
 } from "../scripts/drive-sync.ts";
+import {
+  isRetryableStatus,
+  backoffMs,
+  escapeDriveQueryString,
+} from "../scripts/lib/drive-helpers.ts"; // #1308 item 2 — extraído de drive-sync.ts
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");

@@ -36,6 +36,17 @@ import { gFetch } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 import {
+  gFetchRetry,
+  isRetryableStatus,
+  backoffMs,
+  driveList,
+  driveCreateFolder,
+  driveFindFolderInParent,
+  driveFindFolderInRoot,
+  escapeDriveQueryString,
+  buildMultipartBody,
+} from "./lib/drive-helpers.ts"; // #1308 itens 2, 4
+import {
   parseDriveFileMetadata,
   parseDriveFileUploadResponse,
 } from "./lib/schemas/drive-api.ts"; // #649
@@ -96,13 +107,10 @@ export const CONVERT_TO_DOC = new Set<string>([
 export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
 // ---------------------------------------------------------------------------
-// Retry com backoff exponencial — Drive API sob carga rejeita com 429/5xx
-// silenciosamente. gFetch base já trata 401 (refresh token). Aqui adicionamos
-// retry pra erros transientes que de outra forma bagunçam o sync (#121).
+// Retry, helpers de listagem e escape de query agora vivem em
+// scripts/lib/drive-helpers.ts (#1308 itens 2 + 4 — compartilhado com
+// sync-report.ts e upload-report-to-drive.ts).
 // ---------------------------------------------------------------------------
-
-const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-const MAX_RETRIES = 3;
 
 /**
  * Tolerância em segundos pra ignorar conflicts falso-positivos causados pela
@@ -131,72 +139,11 @@ const CONFLICT_TOLERANCE_SECONDS = loadConflictToleranceSeconds(
   resolve(ROOT, "platform.config.json"),
 );
 
-/** Pure: decide se um status code merece retry. Exportado pra tests. */
-export function isRetryableStatus(status: number): boolean {
-  return RETRYABLE_STATUS.has(status);
-}
-
-/** Pure: backoff em ms baseado na tentativa (0-indexed). 1s, 2s, 4s + jitter. */
-export function backoffMs(attempt: number, randomSource: () => number = Math.random): number {
-  const base = 1000 * Math.pow(2, attempt);
-  const jitter = randomSource() * 250;
-  return base + jitter;
-}
-
-async function gFetchRetry(
-  url: string,
-  options: RequestInit = {},
-  attempts = MAX_RETRIES,
-): Promise<Response> {
-  let lastError: unknown = null;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const res = await gFetch(url, options);
-      if (!isRetryableStatus(res.status)) return res;
-      lastError = new Error(`Drive transient ${res.status}: ${await res.text().catch(() => "(body unread)")}`);
-    } catch (err) {
-      // Network failures: ECONNRESET, ETIMEDOUT, etc.
-      lastError = err;
-    }
-    if (i < attempts - 1) {
-      await new Promise((r) => setTimeout(r, backoffMs(i)));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-// ---------------------------------------------------------------------------
-// Drive API helpers
-// ---------------------------------------------------------------------------
-
-async function driveList(q: string, fields = "files(id,name,mimeType,modifiedTime,parents)"): Promise<Array<{ id: string; name: string; mimeType: string; modifiedTime: string; parents?: string[] }>> {
-  const params = new URLSearchParams({ q, fields, pageSize: "20" });
-  const res = await gFetchRetry(`${DRIVE_API}/files?${params}`);
-  if (!res.ok) throw new Error(`Drive list error (${res.status}): ${await res.text()}`);
-  const data = (await res.json()) as { files: Array<{ id: string; name: string; mimeType: string; modifiedTime: string; parents?: string[] }> };
-  return data.files ?? [];
-}
-
 async function driveGetMetadata(fileId: string): Promise<{ id: string; name: string; modifiedTime: string; parents?: string[] }> {
   const res = await gFetchRetry(`${DRIVE_API}/files/${fileId}?fields=id,name,modifiedTime,parents`);
   if (!res.ok) throw new Error(`Drive metadata error (${res.status}): ${await res.text()}`);
   // #649 (#496): valida modifiedTime parseable antes de comparações de timestamp
   return parseDriveFileMetadata(await res.json());
-}
-
-async function driveCreateFolder(name: string, parentId: string): Promise<string> {
-  const res = await gFetchRetry(`${DRIVE_API}/files`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [parentId],
-    }),
-  });
-  if (!res.ok) throw new Error(`Drive createFolder error (${res.status}): ${await res.text()}`);
-  const data = (await res.json()) as { id: string };
-  return data.id;
 }
 
 function mimeTypeFor(filename: string): string {
@@ -239,34 +186,17 @@ async function driveUploadFile(
   // (Content-Type do body) e converte pra Doc nativo automaticamente.
   // O mimeType final do arquivo vira Doc, não markdown.
   const targetMimeType = convertToDoc ? GOOGLE_DOC_MIME : mimeType;
-  const bodyMimeType = mimeType; // sempre o original (text/markdown) no body
   const metadata: Record<string, unknown> = { name, parents: [parentId] };
   if (convertToDoc) {
     metadata.mimeType = GOOGLE_DOC_MIME;
   }
-  const boundary = "diaria_boundary_" + Date.now();
-  const metadataPart =
-    `--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify(metadata) +
-    `\r\n`;
-  const contentPart =
-    `--${boundary}\r\n` +
-    `Content-Type: ${bodyMimeType}\r\n\r\n`;
-  const closingBoundary = `\r\n--${boundary}--`;
-
-  const body = Buffer.concat([
-    Buffer.from(metadataPart, "utf8"),
-    Buffer.from(contentPart, "utf8"),
-    content,
-    Buffer.from(closingBoundary, "utf8"),
-  ]);
+  const { body, contentType } = buildMultipartBody({ metadata, contentType: mimeType, content });
 
   const res = await gFetchRetry(
     `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime,mimeType`,
     {
       method: "POST",
-      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      headers: { "Content-Type": contentType },
       body,
     }
   );
@@ -289,33 +219,15 @@ async function driveUpdateFile(
   convertToDoc = false,
 ): Promise<{ id: string; modifiedTime: string; mimeType: string }> {
   const targetMimeType = convertToDoc ? GOOGLE_DOC_MIME : mimeType;
-  const bodyMimeType = mimeType;
   const metadata: Record<string, unknown> = {};
   if (convertToDoc) metadata.mimeType = GOOGLE_DOC_MIME;
-
-  const boundary = "diaria_update_" + Date.now();
-  const metadataPart =
-    `--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify(metadata) +
-    `\r\n`;
-  const contentPart =
-    `--${boundary}\r\n` +
-    `Content-Type: ${bodyMimeType}\r\n\r\n`;
-  const closingBoundary = `\r\n--${boundary}--`;
-
-  const body = Buffer.concat([
-    Buffer.from(metadataPart, "utf8"),
-    Buffer.from(contentPart, "utf8"),
-    content,
-    Buffer.from(closingBoundary, "utf8"),
-  ]);
+  const { body, contentType } = buildMultipartBody({ metadata, contentType: mimeType, content });
 
   const res = await gFetchRetry(
     `${DRIVE_UPLOAD}/files/${fileId}?uploadType=multipart&fields=id,modifiedTime,mimeType`,
     {
       method: "PATCH",
-      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      headers: { "Content-Type": contentType },
       body,
     }
   );
@@ -621,43 +533,22 @@ function saveCache(cache: DriveCache): void {
 // ---------------------------------------------------------------------------
 // Folder resolution
 // ---------------------------------------------------------------------------
-
-// Escapa aspas simples em nomes de arquivo/pasta pra uso em queries Drive API (#282).
-// Drive API usa SQL-like syntax: aspas simples são escapadas como \\'
-export function escapeDriveQueryString(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-async function findFolderInParent(name: string, parentId: string): Promise<string | null> {
-  const safeName = escapeDriveQueryString(name);
-  const files = await driveList(
-    `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`
-  );
-  return files[0]?.id ?? null;
-}
-
-async function findFolderInMyDriveRoot(name: string): Promise<string | null> {
-  // Ancora no My Drive do usuário — evita matches em Shared Drives ou compartilhamentos homônimos
-  const safeName = escapeDriveQueryString(name);
-  const files = await driveList(
-    `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`
-  );
-  return files[0]?.id ?? null;
-}
+// escapeDriveQueryString, driveFindFolderInParent, driveFindFolderInRoot
+// agora vivem em lib/drive-helpers.ts (#1308 item 2).
 
 async function resolveEdicoesFolder(cache: DriveCache): Promise<string> {
   if (cache.edicoes_folder_id) return cache.edicoes_folder_id;
 
-  const workId = await findFolderInMyDriveRoot("Work");
+  const workId = await driveFindFolderInRoot("Work");
   if (!workId) throw new Error("drive_path_missing:Work — pasta 'Work' não encontrada no root do My Drive");
 
-  const startupsId = await findFolderInParent("Startups", workId);
+  const startupsId = await driveFindFolderInParent("Startups", workId);
   if (!startupsId) throw new Error("drive_path_missing:Startups — pasta 'Startups' não encontrada em Work");
 
-  const diaria = await findFolderInParent("diar.ia", startupsId);
+  const diaria = await driveFindFolderInParent("diar.ia", startupsId);
   if (!diaria) throw new Error("drive_path_missing:diar.ia — pasta 'diar.ia' não encontrada em Startups");
 
-  const edicoes = await findFolderInParent("edicoes", diaria);
+  const edicoes = await driveFindFolderInParent("edicoes", diaria);
   if (!edicoes) throw new Error("drive_path_missing:edicoes — pasta 'edicoes' não encontrada em diar.ia");
 
   cache.edicoes_folder_id = edicoes;
@@ -699,7 +590,7 @@ export async function resolveSubfolder(
       currentParent = cached;
       continue;
     }
-    let folder = await findFolderInParent(seg, currentParent);
+    let folder = await driveFindFolderInParent(seg, currentParent);
     if (!folder) folder = await driveCreateFolder(seg, currentParent);
     edCache.subfolder_ids[accumulated] = folder;
     currentParent = folder;
@@ -718,12 +609,12 @@ async function resolveDayFolder(
   if (edCache.day_folder_id) return edCache.day_folder_id;
 
   // Resolver ou criar pasta YYMM
-  let yymmFolder = await findFolderInParent(yymm, edicoesId);
+  let yymmFolder = await driveFindFolderInParent(yymm, edicoesId);
   if (!yymmFolder) yymmFolder = await driveCreateFolder(yymm, edicoesId);
 
   // Resolver ou criar pasta YYMMDD (ou "mensal" para edições mensais)
   const dayFolderName = isMonthly ? "mensal" : yymmdd;
-  let dayFolder = await findFolderInParent(dayFolderName, yymmFolder);
+  let dayFolder = await driveFindFolderInParent(dayFolderName, yymmFolder);
   if (!dayFolder) dayFolder = await driveCreateFolder(dayFolderName, yymmFolder);
 
   edCache.day_folder_id = dayFolder;

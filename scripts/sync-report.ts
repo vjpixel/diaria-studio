@@ -35,6 +35,7 @@ import { attemptThreeWayMerge } from "./drive-sync.ts";
 import { unescapeMarkdown } from "./lib/markdown-unescape.ts";
 import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
 import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
+import { buildMultipartBody } from "./lib/drive-helpers.ts"; // #1308 item 4
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -62,21 +63,16 @@ async function exportDocAsMarkdown(fileId: string): Promise<string> {
 }
 
 async function pushMarkdownToDoc(fileId: string, content: string): Promise<void> {
-  const boundary = "boundary" + Math.random().toString(36).slice(2);
-  const metadata = {}; // PATCH: keep current metadata
-  const body =
-    `--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify(metadata) + `\r\n` +
-    `--${boundary}\r\n` +
-    `Content-Type: text/markdown; charset=UTF-8\r\n\r\n` +
-    content + `\r\n` +
-    `--${boundary}--`;
+  const mp = buildMultipartBody({
+    metadata: {}, // PATCH: keep current metadata
+    contentType: "text/markdown; charset=UTF-8",
+    content,
+  });
   const url = `${DRIVE_UPLOAD}/files/${fileId}?uploadType=multipart`;
   const res = await gFetch(url, {
     method: "PATCH",
-    headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-    body,
+    headers: { "Content-Type": mp.contentType },
+    body: mp.body,
   });
   if (!res.ok) throw new Error(`PATCH Drive file ${fileId}: ${res.status} ${await res.text()}`);
 }
