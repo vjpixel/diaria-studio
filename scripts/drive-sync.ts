@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { gFetch } from "./google-auth.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 import {
   parseDriveFileMetadata,
   parseDriveFileUploadResponse,
@@ -44,8 +45,6 @@ import type { DriveCache, FileEntry, EditionCache } from "./lib/schemas/drive-ca
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CACHE_PATH = resolve(ROOT, "data", "drive-cache.json");
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 
 // ---------------------------------------------------------------------------
 // Tipos locais (não existem em drive-cache.ts)

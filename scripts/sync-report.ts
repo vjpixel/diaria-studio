@@ -33,24 +33,10 @@ import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { attemptThreeWayMerge } from "./drive-sync.ts";
 import { unescapeMarkdown } from "./lib/markdown-unescape.ts";
+import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
+import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
-
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) { out[key] = next; i++; }
-      else { out[key] = true; }
-    }
-  }
-  return out;
-}
 
 function snapshotPathFor(localPath: string): string {
   const dir = dirname(localPath);
@@ -97,10 +83,10 @@ async function pushMarkdownToDoc(fileId: string, content: string): Promise<void>
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const localFile = args.file as string;
-  const fileId = args["file-id"] as string;
-  const initSnapshot = !!args["init-snapshot"];
-  const dryRun = !!args["dry-run"];
+  const localFile = args.values.file ?? "";
+  const fileId = args.values["file-id"] ?? "";
+  const initSnapshot = args.flags.has("init-snapshot");
+  const dryRun = args.flags.has("dry-run");
   if (!localFile || !fileId) { console.error("usage: --file <path> --file-id <drive_id> [--init-snapshot] [--dry-run]"); process.exit(2); }
 
   const localPath = resolve(ROOT, localFile);
