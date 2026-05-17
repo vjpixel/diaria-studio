@@ -54,6 +54,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 **Sync com Google Drive (entre etapas):** **antes de cada gate** (etapas 1–3), `scripts/drive-sync.ts` sobe os outputs da etapa para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada etapa** que consome inputs que podem ter sido editados no Drive (2, 3, 4), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 
+**Reports Drive sync (fora do fluxo de edição):** `scripts/upload-report-to-drive.ts` cria novo Google Doc em `Work/Startups/diar.ia/relatorios/` (create-only — `--force` pra overwrite destrutivo). `scripts/sync-report.ts` faz 3-way merge entre local + snapshot + Drive Doc preservando edições do editor; salva snapshots em `.snapshots/{basename}.snapshot.md` ao lado do arquivo local. Usar `sync-report` pra updates subsequentes; `upload-report` só pra criação inicial.
+
 ---
 
 ## Regras invariáveis (consultar `context/editorial-rules.md`)

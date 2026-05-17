@@ -22,10 +22,10 @@ import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { GOOGLE_DOC_MIME } from "./drive-sync.ts";
+import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
+import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 
 interface DriveFile { id: string; name: string; mimeType: string; modifiedTime: string; }
 
@@ -102,26 +102,12 @@ async function uploadOrUpdateMarkdownAsDoc(
   return await res.json() as { id: string; webViewLink: string };
 }
 
-function parseArgs(argv: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) { out[key] = next; i++; }
-      else { out[key] = true; }
-    }
-  }
-  return out;
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const localFile = args.file as string;
+  const localFile = args.values.file ?? "";
   if (!localFile) { console.error("usage: --file <path> [--folder relatorios] [--force]"); process.exit(2); }
-  const subFolder = (args.folder as string) ?? "relatorios";
-  const force = !!args.force;
+  const subFolder = args.values.folder ?? "relatorios";
+  const force = args.flags.has("force");
   const localPath = resolve(ROOT, localFile);
   if (!existsSync(localPath)) throw new Error(`local file not found: ${localPath}`);
 
