@@ -16,6 +16,19 @@
  *   npx tsx scripts/upload-report-to-drive.ts --file data/reports/foo.md
  *   npx tsx scripts/upload-report-to-drive.ts --file data/reports/foo.md --folder relatorios
  *   npx tsx scripts/upload-report-to-drive.ts --file data/reports/foo.md --force  # sobrescreve (perigoso)
+ *
+ * Exit codes (#1308 #11):
+ *   0  — success (JSON em stdout com action: created|updated)
+ *   1  — fatal (any thrown error)
+ *   2  — usage error (--file ausente)
+ *   4  — arquivo já existe (sem --force; pra atualizar use sync-report.ts)
+ *
+ * Limitações conhecidas:
+ *   - createFolder race (#1308 #7): duas execuções simultâneas que precisem
+ *     criar a mesma pasta (ex: `relatorios/` na primeira vez) resultam em
+ *     2 pastas com mesmo nome — Drive permite duplicatas. Mitigação: rodar
+ *     manualmente apenas 1 vez quando a pasta não existe (fluxo editorial
+ *     normalmente sequencial, raro em prática).
  */
 import { readFileSync, existsSync } from "node:fs";
 import { basename, resolve, dirname } from "node:path";
@@ -34,7 +47,12 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-async function uploadOrUpdateMarkdownAsDoc(
+/**
+ * Cria novo Google Doc (POST) ou força overwrite de um existente (PATCH).
+ * Renomeado de `uploadOrUpdateMarkdownAsDoc` (#1308 #12) pra deixar claro
+ * que update só roda com --force — não é dual-mode default.
+ */
+async function createOrForceUpdateMarkdownAsDoc(
   localPath: string,
   driveName: string,
   parentId: string,
@@ -111,7 +129,7 @@ async function main() {
   }
 
   console.error(`[4/4] Uploading ${localFile} → Drive...`);
-  const result = await uploadOrUpdateMarkdownAsDoc(localPath, fileName, subId, existing?.id ?? null);
+  const result = await createOrForceUpdateMarkdownAsDoc(localPath, fileName, subId, existing?.id ?? null);
   console.log(JSON.stringify({
     ok: true,
     action: existing ? "updated" : "created",
