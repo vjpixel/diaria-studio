@@ -11,7 +11,9 @@
  *   3. attemptThreeWayMerge(local, snapshot, remote)
  *      - sem conflito: push merged
  *      - com conflito: salva .merged-{ts}.md, aborta, instrui editor
- *   4. Save new snapshot pós-push
+ *   4. Verifica modifiedTime do Drive não mudou desde o pull (#1308 #5)
+ *   5. Push merged
+ *   6. Save new snapshot
  *
  * Uso:
  *   npx tsx scripts/sync-report.ts --file <local> --file-id <drive_id>
@@ -20,14 +22,24 @@
  *   npx tsx scripts/sync-report.ts --file <local> --file-id <drive_id> --dry-run
  *     (mostra o merge proposto sem fazer push)
  *
+ * Exit codes (#1308 #11):
+ *   0  — success (action emitido como JSON em stdout)
+ *   1  — conflict no merge (`.merged-{ts}.md` salvo pro editor resolver)
+ *   2  — usage error (args ausentes)
+ *   3  — snapshot baseline não existe (rodar com --init-snapshot)
+ *   4  — drive edited mid-sync (modifiedTime guard, #1308 #5)
+ *   5  — sanity check failed (remote << base, possível Doc corrompido)
+ *
  * Limitações conhecidas:
- *   - Race window: se usuário edita Drive entre o export (pull) e o push, essas
- *     edições são silenciosamente perdidas. Janela típica < 30s, mas vale evitar
- *     rodar enquanto o usuário está ativamente editando.
+ *   - Race window pull→push (#1308 #5): mitigado por modifiedTime guard antes
+ *     do push. Não elimina (janela entre fetch metadata e PATCH ainda existe ~1s),
+ *     mas detecta edits realizados durante o merge. Drive-sync.ts tem
+ *     `conflict_tolerance_seconds` (#605) pra ignorar bump de auto-conversion;
+ *     sync-report não porta porque o push aqui é PATCH (não cria Doc).
  *   - Round-trip MD→Doc→MD: Google Docs reformata o markdown. Pequenas mudanças
  *     de whitespace/lista podem virar "diff" entre runs. Tolerado pelo merge.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
@@ -36,22 +48,35 @@ import { unescapeMarkdown } from "./lib/markdown-unescape.ts";
 import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
 import { DRIVE_API, DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
 import { buildMultipartBody } from "./lib/drive-helpers.ts"; // #1308 item 4
+import { writeFileAtomic } from "./lib/atomic-write.ts"; // #1308 item 9
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function snapshotPathFor(localPath: string): string {
+/** Resolve path do snapshot baseado no path local. Exportado pra tests (#1308 #13). */
+export function snapshotPathFor(localPath: string): string {
   const dir = dirname(localPath);
   const base = basename(localPath).replace(/\.md$/, ".snapshot.md");
   return join(dir, ".snapshots", base);
 }
 
-/** Cria path-variant seguro mesmo se localPath não termina em .md (evita
- * overwrite acidental do original quando replace(/\.md$/) é no-op). */
-function makeVariantPath(originalPath: string, variant: string): string {
+/**
+ * Cria path-variant seguro mesmo se localPath não termina em .md (evita
+ * overwrite acidental do original quando replace(/\.md$/) é no-op).
+ * Exportado pra tests (#1308 #13).
+ */
+export function makeVariantPath(originalPath: string, variant: string): string {
   if (originalPath.endsWith(".md")) {
     return originalPath.slice(0, -3) + `.${variant}.md`;
   }
   return `${originalPath}.${variant}.md`;
+}
+
+/** Lê só `modifiedTime` do Drive — usado pelo race guard (#1308 #5). */
+async function fetchModifiedTime(fileId: string): Promise<string> {
+  const res = await gFetch(`${DRIVE_API}/files/${fileId}?fields=modifiedTime`);
+  if (!res.ok) throw new Error(`fetchModifiedTime ${fileId}: ${res.status} ${await res.text()}`);
+  const data = await res.json() as { modifiedTime: string };
+  return data.modifiedTime;
 }
 
 async function exportDocAsMarkdown(fileId: string): Promise<string> {
@@ -105,14 +130,17 @@ async function main() {
     process.exit(3);
   }
 
-  console.error(`[1/5] Lendo local: ${localFile}`);
+  console.error(`[1/6] Lendo local: ${localFile}`);
   const local = readFileSync(localPath, "utf8");
 
-  console.error(`[2/5] Lendo snapshot (base do merge): ${snapshotPath}`);
+  console.error(`[2/6] Lendo snapshot (base do merge): ${snapshotPath}`);
   const base = readFileSync(snapshotPath, "utf8");
 
-  console.error(`[3/5] Exportando Doc do Drive (id=${fileId})...`);
+  console.error(`[3/6] Exportando Doc do Drive (id=${fileId})...`);
   const remote = await exportDocAsMarkdown(fileId);
+  // #1308 #5 — captura baseline pra comparar antes do push e detectar
+  // edits do editor durante a janela merge.
+  const baselineModifiedTime = await fetchModifiedTime(fileId);
 
   // Sanity check: se remote << base, provavelmente API problem ou Doc apagado.
   // Aborta pra não propagar deleção via merge.
@@ -123,12 +151,12 @@ async function main() {
     process.exit(5);
   }
 
-  console.error(`[4/5] 3-way merge (local + base + remote)...`);
+  console.error(`[4/6] 3-way merge (local + base + remote)...`);
   const m = attemptThreeWayMerge(local, base, remote);
 
   if (m.hasConflicts) {
     const conflictPath = makeVariantPath(localPath, `merged-${Date.now()}`);
-    writeFileSync(conflictPath, m.merged, "utf8");
+    writeFileAtomic(conflictPath, m.merged); // #1308 #9
     console.error(`\n⚠️ CONFLITO: ${m.conflictCount} conflito(s) detectado(s).`);
     console.error(`Salvo em: ${conflictPath}`);
     console.error(`Inspecione manualmente (procure por '<<<<<<<' / '>>>>>>>'), resolva os conflitos,`);
@@ -138,8 +166,8 @@ async function main() {
 
   if (dryRun) {
     const previewPath = makeVariantPath(localPath, `dryrun-${Date.now()}`);
-    writeFileSync(previewPath, m.merged, "utf8");
-    console.error(`\n[5/5] DRY-RUN: merge preview salvo em ${previewPath}`);
+    writeFileAtomic(previewPath, m.merged); // #1308 #9
+    console.error(`\n[5/6] DRY-RUN: merge preview salvo em ${previewPath}`);
     console.error(`Drive não foi modificado. Compare com Drive Doc pra decidir se vale push.`);
     console.log(JSON.stringify({
       ok: true, action: "dry_run_only",
@@ -150,10 +178,23 @@ async function main() {
     return;
   }
 
-  console.error(`[5/5] Push merged para Drive + atualiza snapshot...`);
+  // #1308 #5 — race guard: se editor editou Drive durante o merge, aborta
+  // pra evitar overwrite das edições. Janela residual ~1s entre esse check e
+  // o PATCH (não eliminável sem locking server-side que Drive não expõe).
+  console.error(`[5/6] Verificando que Drive não foi editado durante o merge...`);
+  const currentModifiedTime = await fetchModifiedTime(fileId);
+  if (currentModifiedTime !== baselineModifiedTime) {
+    console.error(`\n⚠️ ABORT: Drive Doc foi editado durante o merge.`);
+    console.error(`  baseline modifiedTime: ${baselineModifiedTime}`);
+    console.error(`  current modifiedTime:  ${currentModifiedTime}`);
+    console.error(`Re-rode o sync — as edições novas do Drive serão capturadas no próximo merge.`);
+    process.exit(4);
+  }
+
+  console.error(`[6/6] Push merged para Drive + atualiza snapshot...`);
   await pushMarkdownToDoc(fileId, m.merged);
-  writeFileSync(localPath, m.merged, "utf8");
-  writeFileSync(snapshotPath, m.merged, "utf8");
+  writeFileAtomic(localPath, m.merged); // #1308 #9 — crítico (merged result)
+  writeFileAtomic(snapshotPath, m.merged); // #1308 #9 — crítico (próximo merge depende)
 
   // Stats
   const localBytes = local.length;
@@ -171,4 +212,11 @@ async function main() {
     snapshot_updated: snapshotPath,
   }, null, 2));
 }
-main().catch((e) => { console.error("Fatal:", e); process.exit(1); });
+// Roda só quando invocado direto via CLI — não quando importado por tests (#1308 #13)
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((e) => { console.error("Fatal:", e); process.exit(1); });
+}
