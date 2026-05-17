@@ -19,6 +19,7 @@ import {
   htmlEscape,
   parseValidEditions,
   isValidEdition,
+  redirectTargetForTrailingSlash,
 } from "../workers/poll/src/lib.ts";
 
 describe("formatEditionDate (#1080)", () => {
@@ -147,5 +148,35 @@ describe("isValidEdition (#1086)", () => {
   it("case-sensitive (AAMMDD é numérico, não tem case mas defensive)", () => {
     // edition vem sempre de URL param trim+upper-no-op pra AAMMDD numérico
     assert.equal(isValidEdition(["260511"], "260511"), true);
+  });
+});
+
+describe("redirectTargetForTrailingSlash (#1319)", () => {
+  it("/leaderboard/ → /leaderboard (regressão do bug original)", () => {
+    assert.equal(redirectTargetForTrailingSlash("/leaderboard/"), "/leaderboard");
+  });
+  it("/vote/ → /vote", () => {
+    assert.equal(redirectTargetForTrailingSlash("/vote/"), "/vote");
+  });
+  it("/stats/ → /stats", () => {
+    assert.equal(redirectTargetForTrailingSlash("/stats/"), "/stats");
+  });
+  it("/admin/correct/ → /admin/correct", () => {
+    assert.equal(redirectTargetForTrailingSlash("/admin/correct/"), "/admin/correct");
+  });
+
+  it("retorna null pra paths sem trailing slash (canonical já)", () => {
+    assert.equal(redirectTargetForTrailingSlash("/leaderboard"), null);
+    assert.equal(redirectTargetForTrailingSlash("/vote"), null);
+    assert.equal(redirectTargetForTrailingSlash("/stats"), null);
+  });
+
+  it("preserva raiz '/' (não é trailing slash redundante)", () => {
+    assert.equal(redirectTargetForTrailingSlash("/"), null);
+  });
+
+  it("preserva /img/{key} mesmo com trailing slash (key pode terminar em /)", () => {
+    assert.equal(redirectTargetForTrailingSlash("/img/key/"), null);
+    assert.equal(redirectTargetForTrailingSlash("/img/foo.jpg/"), null);
   });
 });
