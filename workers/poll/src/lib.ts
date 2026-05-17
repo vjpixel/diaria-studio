@@ -6,6 +6,25 @@
  * Worker runtime (#1083).
  */
 
+// ── Trailing slash normalization (#1319) ────────────────────────────────────
+
+/**
+ * Retorna o path sem trailing slash se redirect for necessário, ou null se
+ * o path original já está canonical. Usado pra emitir 301 → versão sem slash
+ * antes do router que faz strict equality match.
+ *
+ * Regras:
+ * - Raiz "/" preservada (não é trailing-slash redundante)
+ * - /img/{key} preservado (prefix match, key pode terminar em "/" raro)
+ * - Tudo mais com trailing slash redireciona pra versão sem
+ */
+export function redirectTargetForTrailingSlash(path: string): string | null {
+  if (path.length > 1 && path.endsWith("/") && !path.startsWith("/img/")) {
+    return path.slice(0, -1);
+  }
+  return null;
+}
+
 // ── Date formatting (#1080) ──────────────────────────────────────────────────
 
 export const MONTH_NAMES_PT = [

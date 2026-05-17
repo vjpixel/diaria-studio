@@ -73,8 +73,9 @@ import {
   htmlEscape,
   parseValidEditions,
   isValidEdition,
+  redirectTargetForTrailingSlash,
 } from "./lib";
-export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition } from "./lib";
+export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, redirectTargetForTrailingSlash } from "./lib";
 
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
@@ -490,6 +491,16 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(env) });
+    }
+
+    // #1319: trailing slash → 301 redirect pra versão canonical.
+    // Router usa strict equality, então `/leaderboard/` dava 404. Lógica pura
+    // em lib.ts pra ser testável.
+    const stripped = redirectTargetForTrailingSlash(path);
+    if (stripped !== null) {
+      const target = new URL(request.url);
+      target.pathname = stripped;
+      return Response.redirect(target.toString(), 301);
     }
 
     if (path === "/vote" && request.method === "GET") return handleVote(url, env);
