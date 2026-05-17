@@ -1,5 +1,5 @@
 /**
- * workers/poll/src/lib.ts — helpers puros do Worker `diar-ia-poll`.
+ * workers/poll/src/lib.ts — helpers puros do Worker `poll`.
  *
  * Funções aqui não dependem de Cloudflare runtime (KV, env, crypto.subtle,
  * fetch). Extraído de `index.ts` pra permitir testes Node sem mock do

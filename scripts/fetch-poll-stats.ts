@@ -16,13 +16,13 @@
  * counter no /vote — não precisa middle step.
  *
  * Variáveis de ambiente:
- *   POLL_WORKER_URL    URL base do Worker (default: https://diar-ia-poll.diaria.workers.dev)
+ *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 const MIN_RESPONSES = 5;
 
 async function main(): Promise<void> {

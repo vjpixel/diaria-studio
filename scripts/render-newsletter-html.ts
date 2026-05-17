@@ -462,7 +462,7 @@ const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-seri
 // HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
 // Sintaxe Beehiiv: SEM espaços, SEM prefix `subscriber.` ou `custom_fields.`
 // (validado contra docs oficiais 2026-05-11).
-const POLL_WORKER_URL = "https://diar-ia-poll.diaria.workers.dev";
+const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 
 function esc(s: string): string {
   return s

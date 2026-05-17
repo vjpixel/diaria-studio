@@ -176,7 +176,7 @@ describe("PublicImagesSchema (#1132 P2.5)", () => {
       images: {
         cover: {
           file_id: "img-260512-04-d1-2x1.jpg",
-          url: "https://diar-ia-poll.diaria.workers.dev/img/img-260512-04-d1-2x1.jpg",
+          url: "https://poll.diaria.workers.dev/img/img-260512-04-d1-2x1.jpg",
           mime_type: "image/jpeg",
           filename: "04-d1-2x1.jpg",
           target: "cloudflare" as const,

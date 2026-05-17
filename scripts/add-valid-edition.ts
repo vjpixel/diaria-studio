@@ -2,7 +2,7 @@
  * add-valid-edition.ts (#1086)
  *
  * Adiciona uma edição AAMMDD ao set `valid_editions` no KV do Worker
- * `diar-ia-poll`. Idempotente — se já estiver, no-op. Sem essa entrada o
+ * `poll`. Idempotente — se já estiver, no-op. Sem essa entrada o
  * Worker rejeita votos da edição com 410 "Essa edição não aceita mais votos."
  *
  * Uso: chamar no pipeline quando o `newsletter-final.html` da edição corrente

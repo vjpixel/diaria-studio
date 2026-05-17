@@ -155,7 +155,7 @@ Pra desbloquear o auto-fill do "Resultado da última edição" (#107), gravar ar
 
 ### 6. (Opcional, #107, #1044) Stats do poll da edição anterior
 
-Desde #1044, o orchestrator-stage-1 1c chama `scripts/fetch-poll-stats.ts` direto contra o Cloudflare Worker `diar-ia-poll`, que grava `{out_dir}/_internal/04-eia-poll-stats.json` no shape esperado pelo writer do Stage 2 (`pct_correct`, `below_threshold`, `total_responses`).
+Desde #1044, o orchestrator-stage-1 1c chama `scripts/fetch-poll-stats.ts` direto contra o Cloudflare Worker `poll`, que grava `{out_dir}/_internal/04-eia-poll-stats.json` no shape esperado pelo writer do Stage 2 (`pct_correct`, `below_threshold`, `total_responses`).
 
 O eia-composer não precisa fazer nada aqui — o arquivo já existe quando o composer roda, ou não existe (Worker indisponível, edição anterior sem stats) e o writer trata como "Aguardando respostas".
 

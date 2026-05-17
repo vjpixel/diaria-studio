@@ -25,7 +25,7 @@
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID - ID da publicação (required)
  *   POLL_SECRET            - HMAC key (required)
- *   POLL_WORKER_URL        - default https://diar-ia-poll.diaria.workers.dev
+ *   POLL_WORKER_URL        - default https://poll.diaria.workers.dev
  */
 
 import { createHmac } from "node:crypto";
@@ -35,7 +35,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const POLL_WORKER_URL =
-  process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 
 const FIELD_A = "poll_a_url";
 const FIELD_B = "poll_b_url";

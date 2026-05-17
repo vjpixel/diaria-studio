@@ -1,7 +1,7 @@
 /**
  * cloudflare-kv-upload.ts (#1119)
  *
- * Upload de imagens pro KV do Worker `diar-ia-poll` via Cloudflare API.
+ * Upload de imagens pro KV do Worker `poll` via Cloudflare API.
  * Worker serve via `/img/{key}` com Content-Type: image/jpeg e Cache-Control
  * imutável — apropriado pra hotlink em email (Beehiiv, Brevo).
  *
@@ -28,7 +28,7 @@ export interface CloudflareKVConfig {
   token?: string;
   /** Namespace ID do KV (do wrangler.toml `[[kv_namespaces]] id`). */
   kvNamespaceId: string;
-  /** URL pública do Worker (sem trailing slash). Default: https://diar-ia-poll.diaria.workers.dev */
+  /** URL pública do Worker (sem trailing slash). Default: https://poll.diaria.workers.dev */
   workerUrl?: string;
 }
 
@@ -51,7 +51,7 @@ export async function uploadImageToWorkerKV(
 ): Promise<string> {
   const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
-  const workerUrl = cfg.workerUrl ?? "https://diar-ia-poll.diaria.workers.dev";
+  const workerUrl = cfg.workerUrl ?? "https://poll.diaria.workers.dev";
 
   if (!accountId || !token) {
     throw new Error(

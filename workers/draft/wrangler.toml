@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# KV namespace dedicado pro draft Worker (separado do diar-ia-poll).
+# KV namespace dedicado pro draft Worker (separado do poll).
 # IMPORTANTE: criar o namespace antes do primeiro deploy:
 #   cd workers/draft && npx wrangler kv namespace create DRAFT --remote
 # Substituir o `id` abaixo pelo ID retornado.
@@ -12,6 +12,6 @@ workers_dev = true
 binding = "DRAFT"
 id = "2e0d0417f6734075b2225b616747afda"
 
-# ADMIN_SECRET: usar mesmo secret do diar-ia-poll pra compat de assinatura
+# ADMIN_SECRET: usar mesmo secret do poll pra compat de assinatura
 # HMAC. Setar via:
 #   cd workers/draft && npx wrangler secret put ADMIN_SECRET

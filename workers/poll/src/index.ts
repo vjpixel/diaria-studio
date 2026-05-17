@@ -1,5 +1,5 @@
 /**
- * diar-ia-poll — Cloudflare Worker (#469)
+ * poll — Cloudflare Worker (#469)
  *
  * Sistema de votação É IA? com leaderboard.
  *

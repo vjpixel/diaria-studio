@@ -5,8 +5,8 @@ Worker dedicado pra hospedar HTML preview da newsletter Diar.ia.
 URL: `https://draft.diaria.workers.dev/{edition}`
 
 Substitui (em conjunto com migração no `upload-html-public.ts`) a rota legada
-`https://diar-ia-poll.diaria.workers.dev/html/{edition}` que ficava no Worker
-`diar-ia-poll`. Separação de responsabilidade — poll faz voto/imagem/stats,
+`https://poll.diaria.workers.dev/html/{edition}` que ficava no Worker
+`poll`. Separação de responsabilidade — poll faz voto/imagem/stats,
 draft faz HTML preview.
 
 ## Rotas
@@ -24,7 +24,7 @@ cd workers/draft
 npx wrangler kv namespace create DRAFT --remote
 # → copia o id retornado e cola em wrangler.toml (substitui REPLACE_WITH_NAMESPACE_ID)
 
-# 2. Setar ADMIN_SECRET (mesmo valor do diar-ia-poll pra compat de assinaturas)
+# 2. Setar ADMIN_SECRET (mesmo valor do poll pra compat de assinaturas)
 npx wrangler secret put ADMIN_SECRET
 # → cola o valor quando solicitado
 
@@ -40,15 +40,15 @@ Plano:
 1. **Deploy** este Worker (acima)
 2. **Atualizar** `scripts/upload-html-public.ts` pra apontar pra
    `https://draft.diaria.workers.dev/{edition}` em vez de
-   `https://diar-ia-poll.diaria.workers.dev/html/{edition}`
+   `https://poll.diaria.workers.dev/html/{edition}`
 3. **Grace period** (~1 semana): manter rota `/html/{key}` no Worker
-   `diar-ia-poll` ativa pra emails antigos
+   `poll` ativa pra emails antigos
 4. **Cleanup**: remover handlers HTML do `workers/poll/src/index.ts`
 
 ## Update do `upload-html-public.ts`
 
 Já foi feito em conjunto com este PR — script tenta nova URL primeiro,
-faz fallback pra `diar-ia-poll` se nova retorna erro. Esse comportamento
+faz fallback pra `poll` se nova retorna erro. Esse comportamento
 permite o PR mergear antes do deploy do novo Worker (sem quebrar fluxo
 atual).
 

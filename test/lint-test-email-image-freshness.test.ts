@@ -55,21 +55,21 @@ describe("extractImageUrls (#1212)", () => {
 describe("resolveExpectedLocalFile (#1212)", () => {
   it("Worker URL padrão → strip img-{AAMMDD}- prefix", () => {
     const r = resolveExpectedLocalFile(
-      "https://diar-ia-poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg",
+      "https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg",
     );
     assert.equal(r, "04-d1-2x1.jpg");
   });
 
   it("Worker URL com cache-bust suffix -v2 → strip", () => {
     const r = resolveExpectedLocalFile(
-      "https://diar-ia-poll.diaria.workers.dev/img/img-260514-04-d1-2x1-v2.jpg",
+      "https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1-v2.jpg",
     );
     assert.equal(r, "04-d1-2x1.jpg");
   });
 
   it("Worker URL eia → strip prefix", () => {
     const r = resolveExpectedLocalFile(
-      "https://diar-ia-poll.diaria.workers.dev/img/img-260514-01-eia-A.jpg",
+      "https://poll.diaria.workers.dev/img/img-260514-01-eia-A.jpg",
     );
     assert.equal(r, "01-eia-A.jpg");
   });
@@ -97,7 +97,7 @@ describe("resolveExpectedLocalFile (#1212)", () => {
 
   it("aceita variante de extensão", () => {
     assert.equal(
-      resolveExpectedLocalFile("https://diar-ia-poll.diaria.workers.dev/img/img-260514-04-d2-1x1.jpeg"),
+      resolveExpectedLocalFile("https://poll.diaria.workers.dev/img/img-260514-04-d2-1x1.jpeg"),
       "04-d2-1x1.jpeg",
     );
   });

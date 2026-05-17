@@ -470,7 +470,7 @@ export function eiaEditionFromYymm(yymm: string): string {
 export function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
-  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
   const edition = eiaEditionFromYymm(yymm);
   const TEAL = "#00A0A0";
   const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A`;
@@ -790,7 +790,7 @@ export function draftToEmail(
  *   3. data/monthly/{YYMM}/01-eia.md — frontmatter eia_answer
  */
 async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<void> {
-  const workerUrl = process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
   const secret = process.env.POLL_SECRET;
   if (!secret) {
     process.stderr.write("warn: POLL_SECRET não definido — gabarito É IA? não pré-registrado\n");
@@ -862,7 +862,7 @@ async function uploadMonthlyImage(filePath: string): Promise<string> {
   const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
 
-  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://diar-ia-poll.diaria.workers.dev";
+  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
   const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
   const key = `img-monthly-${filename}`;
 

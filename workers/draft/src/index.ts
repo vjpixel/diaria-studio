@@ -2,11 +2,11 @@
  * workers/draft/src/index.ts (#1239)
  *
  * Worker dedicado pra hospedar HTML preview da newsletter Diar.ia.
- * Extraído do Worker `diar-ia-poll` (rotas `/html/{key}` legados).
+ * Extraído do Worker `poll` (rotas `/html/{key}` legados).
  *
  * Vantagens vs estar no poll Worker:
  * - URL mais curta e memorável: `draft.diaria.workers.dev/260514`
- *   (vs `diar-ia-poll.diaria.workers.dev/html/260514`)
+ *   (vs `poll.diaria.workers.dev/html/260514`)
  * - Separação de responsabilidade — poll faz voto/imagem/stats, draft faz HTML
  * - Namespace KV separado evita conflito de keys
  * - TTL/policy independente do poll

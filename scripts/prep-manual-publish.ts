@@ -17,7 +17,7 @@
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID - ID da publicação (required)
  *   POLL_SECRET            - HMAC key (required)
- *   POLL_WORKER_URL        - default https://diar-ia-poll.diaria.workers.dev
+ *   POLL_WORKER_URL        - default https://poll.diaria.workers.dev
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -31,7 +31,7 @@ loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL =
-  process.env.POLL_WORKER_URL ?? "https://diar-ia-poll.diaria.workers.dev";
+  process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 
 interface Check {
   name: string;
@@ -217,7 +217,7 @@ async function checkWorker(edition: string): Promise<Check> {
   const result = await pingWorker(edition);
   if (!result.ok) {
     return {
-      name: "Worker diar-ia-poll",
+      name: "Worker poll",
       passed: false,
       detail: `${POLL_WORKER_URL} não responde — verificar deploy`,
     };

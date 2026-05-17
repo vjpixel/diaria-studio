@@ -126,7 +126,7 @@ npx tsx scripts/refresh-dedup.ts
 
 ### 0d.bis Maintain `valid_editions` window do Worker (#1086, #1233)
 
-O Worker `diar-ia-poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra subscribers continuarem podendo votar em edições arquivadas (clicar em emails de até 7 dias atrás), manter no set as **últimas 7 dias de edições publicadas** + edição corrente:
+O Worker `poll` rejeita votos pra editions que **não estão** no set `valid_editions` (KV). Pra subscribers continuarem podendo votar em edições arquivadas (clicar em emails de até 7 dias atrás), manter no set as **últimas 7 dias de edições publicadas** + edição corrente:
 
 ```bash
 npx tsx scripts/maintain-valid-editions-window.ts --current {AAMMDD} --window-days 7

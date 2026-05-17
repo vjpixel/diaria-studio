@@ -2,7 +2,7 @@
 /**
  * maintain-valid-editions-window.ts (#1233)
  *
- * Mantém o set `valid_editions` no KV do Worker `diar-ia-poll` cobrindo
+ * Mantém o set `valid_editions` no KV do Worker `poll` cobrindo
  * **últimas N dias de edições publicadas** + edição corrente. Substitui
  * o uso direto de `add-valid-edition.ts` em Stage 0 (orchestrator-stage-0
  * §0d.bis).

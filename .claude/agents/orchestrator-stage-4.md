@@ -387,7 +387,7 @@ npx tsx scripts/close-poll.ts --edition {AAMMDD}
 
 - `POLL_SECRET` deve estar em `.env`. Se não estiver definido, o script emite warn e encerra graciosamente — não bloqueia o pipeline.
 - Logar resultado: se exit 0, `"poll fechado para edição {AAMMDD}"`. Se exit != 0, `warn: "close-poll falhou (POLL_SECRET ausente ou erro de rede) — fechar manualmente via /admin/correct"`.
-- **Sanity check pós-close:** após exit 0, hit `https://diar-ia-poll.diaria.workers.dev/stats?edition={AAMMDD}` e logar `correct_answer` retornado. Se `null`, algo deu errado mesmo com exit 0 — investigar.
+- **Sanity check pós-close:** após exit 0, hit `https://poll.diaria.workers.dev/stats?edition={AAMMDD}` e logar `correct_answer` retornado. Se `null`, algo deu errado mesmo com exit 0 — investigar.
 
 **⚠️ Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, `close-poll.ts` deve ser invocado manualmente após cada publicação:
 
@@ -395,7 +395,7 @@ npx tsx scripts/close-poll.ts --edition {AAMMDD}
 npx tsx scripts/close-poll.ts --edition {AAMMDD}
 ```
 
-Sem isso, gabarito permanece `null` no Worker e a próxima edição não consegue mostrar "Resultado da última edição: X% acertaram" (`compute-eia-poll-stats` retorna null pra `pct_correct`). Verificável via `curl https://diar-ia-poll.diaria.workers.dev/stats?edition={AAMMDD}` — campo `correct_answer` deve ser "A" ou "B", nunca `null` após edição publicada.
+Sem isso, gabarito permanece `null` no Worker e a próxima edição não consegue mostrar "Resultado da última edição: X% acertaram" (`compute-eia-poll-stats` retorna null pra `pct_correct`). Verificável via `curl https://poll.diaria.workers.dev/stats?edition={AAMMDD}` — campo `correct_answer` deve ser "A" ou "B", nunca `null` após edição publicada.
 
 ### 4i. Escrever sentinel de conclusão (#978)
 
