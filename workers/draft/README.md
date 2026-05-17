@@ -4,10 +4,9 @@ Worker dedicado pra hospedar HTML preview da newsletter Diar.ia.
 
 URL: `https://draft.diaria.workers.dev/{edition}`
 
-Substitui (em conjunto com migração no `upload-html-public.ts`) a rota legada
-`https://poll.diaria.workers.dev/html/{edition}` que ficava no Worker
-`poll`. Separação de responsabilidade — poll faz voto/imagem/stats,
-draft faz HTML preview.
+## Por que existe
+
+Separação de responsabilidade — o Worker `poll` (`https://poll.diaria.workers.dev`) faz voto/imagem/stats do É IA?; o Worker `draft` faz HTML preview pra paste no Beehiiv via Chrome MCP. Namespaces KV separados evitam conflito de keys e permitem TTL/policy independentes.
 
 ## Rotas
 
@@ -24,7 +23,7 @@ cd workers/draft
 npx wrangler kv namespace create DRAFT --remote
 # → copia o id retornado e cola em wrangler.toml (substitui REPLACE_WITH_NAMESPACE_ID)
 
-# 2. Setar ADMIN_SECRET (mesmo valor do poll pra compat de assinaturas)
+# 2. Setar ADMIN_SECRET (mesmo valor do poll pra compat de assinaturas HMAC)
 npx wrangler secret put ADMIN_SECRET
 # → cola o valor quando solicitado
 
@@ -32,28 +31,6 @@ npx wrangler secret put ADMIN_SECRET
 npx wrangler deploy
 # → confirma URL no output: https://draft.diaria.workers.dev
 ```
-
-## Migração
-
-Plano:
-
-1. **Deploy** este Worker (acima)
-2. **Atualizar** `scripts/upload-html-public.ts` pra apontar pra
-   `https://draft.diaria.workers.dev/{edition}` em vez de
-   `https://poll.diaria.workers.dev/html/{edition}`
-3. **Grace period** (~1 semana): manter rota `/html/{key}` no Worker
-   `poll` ativa pra emails antigos
-4. **Cleanup**: remover handlers HTML do `workers/poll/src/index.ts`
-
-## Update do `upload-html-public.ts`
-
-Já foi feito em conjunto com este PR — script tenta nova URL primeiro,
-faz fallback pra `poll` se nova retorna erro. Esse comportamento
-permite o PR mergear antes do deploy do novo Worker (sem quebrar fluxo
-atual).
-
-Depois do deploy do novo Worker, abrir issue follow-up pra remover o
-fallback.
 
 ## Tests
 
@@ -63,3 +40,8 @@ node --import tsx --test test/workers-draft.test.ts
 
 Cobre handlers GET/PUT, auth HMAC, validação de input, CORS preflight.
 Não testa KV real (mock interno) — smoke test via curl post-deploy.
+
+## Histórico
+
+- **#1239** — Extraído do antigo Worker `diar-ia-poll` (rotas `/html/{key}`). Após grace period, os handlers `/html/{key}` foram removidos do Worker irmão (ver `workers/poll/src/index.ts:481-484`); este Worker é o único caminho ativo pra HTML preview.
+- **#1312** — Worker irmão renomeado de `diar-ia-poll` → `poll` (subdomínio público `https://poll.diaria.workers.dev`). Comentários neste pacote referem-se ao nome novo.
