@@ -24,6 +24,7 @@ import {
   previousPeriodLabelBrt,
   archiveKeyForReset,
 } from "../workers/poll/src/lib.ts";
+import { computeTop1 } from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -241,5 +242,61 @@ describe("archiveKeyForReset (#1077)", () => {
   it("email com + preserva como é (Beehiiv merge tag)", () => {
     const k = archiveKeyForReset("subscriber+tag@example.com", new Date("2026-06-01T03:01:00Z"));
     assert.equal(k, "score-archive:2026-05:subscriber+tag@example.com");
+  });
+});
+
+describe("computeTop1 (#1160)", () => {
+  it("retorna apenas o(s) líder(es) por pct + correct", () => {
+    const r = computeTop1([
+      { email: "a@x.com", nickname: "Alice", correct: 12, total: 12 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 12 },
+      { email: "c@x.com", nickname: "Carol", correct: 11, total: 11 },
+    ]);
+    // Alice + Carol têm 100%. Tiebreaker correct: Alice 12 > Carol 11 → só Alice.
+    assert.equal(r.length, 1);
+    assert.equal(r[0].nickname, "Alice");
+    assert.equal(r[0].pct, 100);
+    assert.equal(r[0].correct, 12);
+  });
+
+  it("empate completo (mesmo pct + correct) → múltiplos no top1", () => {
+    const r = computeTop1([
+      { email: "a@x.com", nickname: "Alice", correct: 10, total: 10 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
+      { email: "c@x.com", nickname: "Carol", correct: 5, total: 10 },
+    ]);
+    assert.equal(r.length, 2);
+    assert.deepEqual(r.map((s) => s.nickname).sort(), ["Alice", "Bob"]);
+  });
+
+  it("scores sem nickname são excluídos (privacy)", () => {
+    const r = computeTop1([
+      { email: "a@x.com", nickname: null, correct: 12, total: 12 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
+    ]);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].nickname, "Bob");
+  });
+
+  it("scores com total=0 excluídos", () => {
+    const r = computeTop1([
+      { email: "a@x.com", nickname: "Alice", correct: 0, total: 0 },
+      { email: "b@x.com", nickname: "Bob", correct: 5, total: 5 },
+    ]);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].nickname, "Bob");
+  });
+
+  it("array vazio retorna []", () => {
+    assert.deepEqual(computeTop1([]), []);
+  });
+
+  it("ordenação determinística — nickname ASC quando completamente empatado", () => {
+    const r = computeTop1([
+      { email: "z@x.com", nickname: "Zoe", correct: 10, total: 10 },
+      { email: "a@x.com", nickname: "Alice", correct: 10, total: 10 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
+    ]);
+    assert.deepEqual(r.map((s) => s.nickname), ["Alice", "Bob", "Zoe"]);
   });
 });
