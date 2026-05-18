@@ -387,14 +387,13 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
   }
 
   const prefix = `score-by-month:${monthSlug}:`;
-  const list = await env.POLL.list({ prefix });
   const scores: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
-  for (const key of list.keys) {
-    const raw = await env.POLL.get(key.name);
+  for await (const key of listAllKeys(env, prefix)) {
+    const raw = await env.POLL.get(key);
     if (!raw) continue;
     const entry = JSON.parse(raw);
     scores.push({
-      email: key.name.replace(prefix, ""),
+      email: key.replace(prefix, ""),
       nickname: entry.nickname ?? null,
       correct: entry.correct ?? 0,
       total: entry.total ?? 0,
@@ -403,6 +402,23 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
   const top1 = computeTop1(scores);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   return json({ top1, period: periodLabel, period_slug: monthSlug }, 200, env);
+}
+
+/**
+ * #1345 followup: iterator paginado de KV list. Cloudflare KV list retorna
+ * no máximo 1000 keys por call — sem cursor handling, entries silenciosamente
+ * desaparecem em escala. Yield names um por um pra caller iterar.
+ *
+ * Exported pra ser testável (#1347): caller passa mock env com `POLL.list`
+ * que simula resposta multi-page.
+ */
+export async function* listAllKeys(env: Env, prefix: string): AsyncGenerator<string> {
+  let cursor: string | undefined;
+  do {
+    const result: KVNamespaceListResult<unknown, string> = await env.POLL.list({ prefix, cursor });
+    for (const key of result.keys) yield key.name;
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
 }
 
 // ── /leaderboard/{YYYY-MM} (#1345) ───────────────────────────────────────────
@@ -459,14 +475,13 @@ async function handleLeaderboardByMonth(
   }
 
   const prefix = `score-by-month:${monthSlug}:`;
-  const list = await env.POLL.list({ prefix });
   const entries: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
-  for (const key of list.keys) {
-    const raw = await env.POLL.get(key.name);
+  for await (const keyName of listAllKeys(env, prefix)) {
+    const raw = await env.POLL.get(keyName);
     if (!raw) continue;
     const entry = JSON.parse(raw);
     entries.push({
-      email: key.name.replace(prefix, ""),
+      email: keyName.replace(prefix, ""),
       nickname: entry.nickname ?? null,
       correct: entry.correct ?? 0,
       total: entry.total ?? 0,
@@ -476,11 +491,14 @@ async function handleLeaderboardByMonth(
   const scores = scoreByMonthEntriesToLeaderboard(entries);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   const isPast = slugCmp < 0;
+  // #1345 followup: cache curto pro mês corrente — votos atualizam em real-time
+  // e cache de 1h fazia leitor ver leaderboard stale por ~1h após votar.
+  // 60s é suficiente pra absorver pico de tráfego sem mascarar updates.
   const cacheControl = isPast
     ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
-    : "public, max-age=3600"; // 1h pro mês corrente
+    : "public, max-age=60"; // 60s pro mês corrente
 
-  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, env);
+  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl);
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -489,7 +507,6 @@ function renderLeaderboardHtml(
   periodLabel: string,
   year: number,
   cacheControl: string,
-  _env: Env,
 ): Response {
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
@@ -565,20 +582,21 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
 
   await env.POLL.put(`correct:${edition}`, answer);
 
-  // Retroativamente atualizar scores dos votos já gravados
+  // Retroativamente atualizar scores dos votos já gravados.
+  // #1345 followup: paginado via listAllKeys — em edição com >1000 votos,
+  // sem cursor entries silenciosamente ficavam fora do backfill.
   const prefix = `vote:${edition}:`;
-  const list = await env.POLL.list({ prefix });
   let updated = 0;
   let correctCount = 0;
 
-  for (const key of list.keys) {
-    const raw = await env.POLL.get(key.name);
+  for await (const keyName of listAllKeys(env, prefix)) {
+    const raw = await env.POLL.get(keyName);
     if (!raw) continue;
     const vote = JSON.parse(raw);
     if (vote.correct === null || vote.correct === undefined) {
       const correct = vote.choice === answer;
-      await env.POLL.put(key.name, JSON.stringify({ ...vote, correct }));
-      const email = key.name.replace(prefix, "");
+      await env.POLL.put(keyName, JSON.stringify({ ...vote, correct }));
+      const email = keyName.replace(prefix, "");
       await updateScore(env, email, edition, correct);
       // #1345: adjust correct count em score-by-month sem re-incrementar total
       // (total já foi contado quando handleVote chamou updateScoreByMonth com
@@ -705,16 +723,16 @@ async function propagateNicknameByMonth(
 ): Promise<void> {
   // KV não suporta suffix filter; precisa listar todas as score-by-month:*
   // e filtrar pelo email. Em escala pequena (≤12 meses × 1 email) é OK.
-  const list = await env.POLL.list({ prefix: "score-by-month:" });
+  // #1345 followup: list paginado via listAllKeys pra cobrir caso >1000 keys.
   const suffix = `:${email}`;
-  for (const key of list.keys) {
-    if (!key.name.endsWith(suffix)) continue;
-    const raw = await env.POLL.get(key.name);
+  for await (const keyName of listAllKeys(env, "score-by-month:")) {
+    if (!keyName.endsWith(suffix)) continue;
+    const raw = await env.POLL.get(keyName);
     if (!raw) continue;
     const entry = JSON.parse(raw);
     if (entry.nickname === nickname) continue; // no-op
     entry.nickname = nickname;
-    await env.POLL.put(key.name, JSON.stringify(entry));
+    await env.POLL.put(keyName, JSON.stringify(entry));
   }
 }
 
