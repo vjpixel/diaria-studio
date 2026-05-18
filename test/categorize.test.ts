@@ -1256,6 +1256,38 @@ describe("isCustomerStory (#898) — patterns de customer story / parceria", () 
     assert.equal(isCustomerStory({ url: "x", title: "" }), false);
     assert.equal(isCustomerStory({ url: "x" }), false);
   });
+
+  describe("#1321: integração em workflow/produto = customer story", () => {
+    it("integração PT 'X integra Y em workflows' → true", () => {
+      assert.equal(
+        isCustomerStory({ url: "x", title: "Databricks adota GPT-5.5 em workflows empresariais" }),
+        true,
+      );
+      assert.equal(
+        isCustomerStory({ url: "x", title: "Empresa integra Claude em produtos" }),
+        true,
+      );
+    });
+
+    it("integração EN 'X integrates Y into workflows' → true", () => {
+      assert.equal(
+        isCustomerStory({ url: "x", title: "Snowflake integrates ChatGPT into workflows" }),
+        true,
+      );
+      assert.equal(
+        isCustomerStory({ url: "x", title: "Acme adopts Gemini in product stack" }),
+        true,
+      );
+    });
+
+    it("'Introducing X' não dispara mesmo com palavra 'in product'", () => {
+      // Garante que verbos de anúncio ainda passam
+      assert.equal(
+        isCustomerStory({ url: "x", title: "Introducing new feature in product" }),
+        false,
+      );
+    });
+  });
 });
 
 describe("isNonLaunchPath (#898) — paths de programa/customer/marketing", () => {

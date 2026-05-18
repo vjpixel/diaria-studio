@@ -213,6 +213,10 @@ const CUSTOMER_STORY_PATTERNS: RegExp[] = [
   // "X + Y" pattern em título oficial — quase sempre parceria
   // Ex: "Flow Music and Believe bring next-gen tools"
   /\b(\w+\s+and\s+\w+\s+bring|jointly\s+(announce|launch|introduce))\b/i,
+  // #1321: "X integra Y em workflows/produtos" — integração com SaaS/empresa
+  // Ex: "Databricks adota GPT-5.5 em workflows empresariais" (caso 260518)
+  /\b(integra(m|r|mos)?|adota(m|r|mos)?|incorpora(m|r|mos)?|integrate[sd]?|adopt[sed]?|incorporate[sd]?)\s+.{0,40}\bem\s+(workflow|produto|sistema|plataforma|stack)/i,
+  /\b(integrates?|adopts?|incorporates?)\s+.{0,40}\bin(to)?\s+(workflow|product|platform|system|stack)/i,
 ];
 
 /**
@@ -284,11 +288,21 @@ function isTutorialByTitleExtra(article: Article): boolean {
 /**
  * Anúncios de programa / bolsa / iniciativa não-produto. Cobrem blogs
  * oficiais que falam de scholarships, fellowships, grants, etc.
+ *
+ * #1321: adiciona accelerator/acelerador, estudo de caso PT, partnership
+ * standalone (sem "expands"), program standalone.
  */
 const NON_PRODUCT_ANNOUNCEMENT_PATTERNS: RegExp[] = [
   /\b(announc(ing|es|ed)|launches?)\s+.{0,40}\b(scholar(s|ship)?|fellowship|grant(s)?|bolsa(s)?|program(a)?|residenc(y|ia)|competi[çc][ãa]o)\b/i,
   /\b(apple|google|meta|microsoft|openai|anthropic)\s+scholars?\b/i,
   /\b(research|compute)\s+grants?\b/i,
+  // #1321: acelerador/accelerator standalone — caso 260518 (programa Databricks)
+  /\b(accelerator|acelerador(a|es)?|incubadora|incubator)\b/i,
+  // #1321: programa de IA / programa de pesquisa — não produto
+  /\bprograma\s+de\s+(ia|inteligência\s+artificial|pesquisa|treinamento|desenvolvimento)\b/i,
+  /\bai\s+program(me)?\b/i,
+  // #1321: estudo de caso PT
+  /\bestudos?\s+de\s+caso\b/i,
 ];
 
 function isNonProductAnnouncement(article: Article): boolean {
