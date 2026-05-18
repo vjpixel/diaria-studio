@@ -23,8 +23,12 @@ import {
   currentPeriodLabelBrt,
   previousPeriodLabelBrt,
   archiveKeyForReset,
+  editionToMonthSlug,
+  parseMonthSlug,
+  currentMonthSlugBrt,
+  monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1 } from "../workers/poll/src/index.ts";
+import { computeTop1, scoreByMonthEntriesToLeaderboard } from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -298,5 +302,102 @@ describe("computeTop1 (#1160)", () => {
       { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
     ]);
     assert.deepEqual(r.map((s) => s.nickname), ["Alice", "Bob", "Zoe"]);
+  });
+});
+
+describe("editionToMonthSlug (#1345)", () => {
+  it("AAMMDD → YYYY-MM", () => {
+    assert.equal(editionToMonthSlug("260518"), "2026-05");
+    assert.equal(editionToMonthSlug("260101"), "2026-01");
+    assert.equal(editionToMonthSlug("251231"), "2025-12");
+  });
+
+  it("formato inválido → null", () => {
+    assert.equal(editionToMonthSlug("12345"), null);
+    assert.equal(editionToMonthSlug("1234567"), null);
+    assert.equal(editionToMonthSlug("invalid"), null);
+    assert.equal(editionToMonthSlug(""), null);
+  });
+
+  it("mês fora de range → null", () => {
+    assert.equal(editionToMonthSlug("261301"), null);
+    assert.equal(editionToMonthSlug("260001"), null);
+  });
+});
+
+describe("parseMonthSlug (#1345)", () => {
+  it("YYYY-MM válido", () => {
+    assert.deepEqual(parseMonthSlug("2026-05"), { year: 2026, month: 5 });
+    assert.deepEqual(parseMonthSlug("2025-12"), { year: 2025, month: 12 });
+  });
+
+  it("formato inválido → null", () => {
+    assert.equal(parseMonthSlug("2026-5"), null); // mês não zero-padded
+    assert.equal(parseMonthSlug("26-05"), null); // ano abreviado
+    assert.equal(parseMonthSlug("2026/05"), null);
+    assert.equal(parseMonthSlug("maio-2026"), null);
+  });
+
+  it("range inválido → null", () => {
+    assert.equal(parseMonthSlug("2026-13"), null);
+    assert.equal(parseMonthSlug("2026-00"), null);
+    assert.equal(parseMonthSlug("1999-05"), null); // antes 2000
+    assert.equal(parseMonthSlug("2100-05"), null); // depois 2099
+  });
+});
+
+describe("currentMonthSlugBrt (#1345)", () => {
+  it("12:00 UTC do meio do mês → slug correto", () => {
+    assert.equal(currentMonthSlugBrt(new Date("2026-05-15T12:00:00Z")), "2026-05");
+  });
+
+  it("BRT compensation — 02:00 UTC do dia 1 ainda é mês anterior", () => {
+    // 02:00 UTC dia 1 jun = 23:00 BRT dia 31 mai → slug = 2026-05
+    assert.equal(currentMonthSlugBrt(new Date("2026-06-01T02:00:00Z")), "2026-05");
+  });
+
+  it("após 03:00 UTC do dia 1 = mês novo em BRT", () => {
+    assert.equal(currentMonthSlugBrt(new Date("2026-06-01T04:00:00Z")), "2026-06");
+  });
+});
+
+describe("monthSlugCompare (#1345)", () => {
+  it("string compare funciona pra slugs zero-padded", () => {
+    assert.equal(monthSlugCompare("2026-05", "2026-06"), -1);
+    assert.equal(monthSlugCompare("2026-06", "2026-05"), 1);
+    assert.equal(monthSlugCompare("2026-05", "2026-05"), 0);
+    assert.equal(monthSlugCompare("2025-12", "2026-01"), -1);
+  });
+});
+
+describe("scoreByMonthEntriesToLeaderboard (#1345)", () => {
+  it("computa pct + preserva nickname", () => {
+    const r = scoreByMonthEntriesToLeaderboard([
+      { email: "a@x.com", nickname: "Alice", correct: 8, total: 10 },
+      { email: "b@x.com", nickname: null, correct: 5, total: 5 },
+    ]);
+    assert.equal(r.length, 2);
+    assert.equal(r[0].pct, 80);
+    assert.equal(r[1].pct, 100);
+    assert.equal(r[0].nickname, "Alice");
+    assert.equal(r[1].nickname, null);
+  });
+
+  it("total=0 → pct=0 (não NaN)", () => {
+    const r = scoreByMonthEntriesToLeaderboard([
+      { email: "a@x.com", nickname: "Alice", correct: 0, total: 0 },
+    ]);
+    assert.equal(r[0].pct, 0);
+  });
+
+  it("array vazio → []", () => {
+    assert.deepEqual(scoreByMonthEntriesToLeaderboard([]), []);
+  });
+
+  it("streak sempre 0 (out of scope no índice mensal)", () => {
+    const r = scoreByMonthEntriesToLeaderboard([
+      { email: "a@x.com", nickname: "Alice", correct: 5, total: 5 },
+    ]);
+    assert.equal(r[0].streak, 0);
   });
 });

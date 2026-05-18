@@ -11,7 +11,6 @@ id = "72784da4ae39444481eb422ebac357c6"
 [vars]
 ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
 
-# #1077: reset mensal do leaderboard — dia 1 às 03:01 UTC (= 00:01 BRT)
-# Score keys arquivados como score-archive:{YYYY-MM}:{email} antes de delete.
-[triggers]
-crons = ["1 3 1 * *"]
+# #1077 superseded por #1345: cron de reset removido. Leaderboard agora é
+# indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
+# não é mais necessário — meses são naturalmente isolados.

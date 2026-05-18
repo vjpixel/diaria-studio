@@ -21,9 +21,11 @@
 
 import { rankEntries, type LeaderboardEntry } from "./leaderboard";
 import {
-  archiveKeyForReset,
-  currentPeriodLabelBrt,
-  previousPeriodLabelBrt,
+  currentMonthSlugBrt,
+  editionToMonthSlug,
+  monthSlugCompare,
+  parseMonthSlug,
+  MONTH_NAMES_PT,
 } from "./lib";
 
 export interface Env {
@@ -171,6 +173,11 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // vazio + nickname form falha com "Vote primeiro".
   await updateScore(env, email, edition, correct);
 
+  // #1345: também atualizar score-by-month, indexado pela publication date
+  // da edição (não pela data do vote). Voto na edição 260531 conta em Maio
+  // 2026 mesmo se chegou em 02/jun.
+  await updateScoreByMonth(env, email, edition, correct);
+
   const msg = correct === true
     ? "✅ Acertou! Era a imagem gerada por IA."
     : correct === false
@@ -208,6 +215,66 @@ async function updateStatsCounter(
   if (choice === "B") stats.voted_b += 1;
   if (correct === true) stats.correct_count += 1;
   await env.POLL.put(statsKey, JSON.stringify(stats));
+}
+
+/**
+ * #1345: corrige score-by-month quando admin define gabarito retroativamente.
+ * Apenas incrementa `correct` — `total` já foi contado em updateScoreByMonth
+ * quando o vote chegou. Chamado de handleAdminCorrect.
+ */
+async function adjustScoreByMonthCorrect(
+  env: Env,
+  email: string,
+  edition: string,
+): Promise<void> {
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return;
+  const key = `score-by-month:${monthSlug}:${email}`;
+  const raw = await env.POLL.get(key);
+  if (!raw) return; // sem entry, vote era pré-#1345 — ignore
+  const entry = JSON.parse(raw);
+  entry.correct = (entry.correct ?? 0) + 1;
+  await env.POLL.put(key, JSON.stringify(entry));
+}
+
+/**
+ * #1345: incrementa `score-by-month:{YYYY-MM}:{email}` onde YYYY-MM vem da
+ * publication date da edição. Esse é o índice canônico do leaderboard
+ * mensal — `/leaderboard/{YYYY-MM}` lê só este prefix.
+ *
+ * Nickname é copiado de `score:{email}` (source-of-truth global). Pode ficar
+ * stale se nickname mudar pós-vote — handleSetName propaga (#1345).
+ */
+async function updateScoreByMonth(
+  env: Env,
+  email: string,
+  edition: string,
+  correct: boolean | null,
+): Promise<void> {
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return; // edition malformado — não corrompe schema
+
+  const key = `score-by-month:${monthSlug}:${email}`;
+  const raw = await env.POLL.get(key);
+  const entry = raw
+    ? JSON.parse(raw)
+    : { total: 0, correct: 0, last_edition: null, nickname: null };
+
+  entry.total += 1;
+  if (correct === true) entry.correct += 1;
+  entry.last_edition = edition;
+
+  // Pull nickname from global score key. handleSetName propaga em writes
+  // subsequentes, mas o snapshot no momento do vote já é capturado aqui.
+  if (entry.nickname === null) {
+    const scoreRaw = await env.POLL.get(`score:${email}`);
+    if (scoreRaw) {
+      const scoreObj = JSON.parse(scoreRaw);
+      entry.nickname = scoreObj.nickname ?? null;
+    }
+  }
+
+  await env.POLL.put(key, JSON.stringify(entry));
 }
 
 async function updateScore(
@@ -309,47 +376,126 @@ export function computeTop1(
   return withNickname.filter((s) => s.pct === top.pct && s.correct === top.correct);
 }
 
-async function handleLeaderboardTop1(env: Env): Promise<Response> {
-  const list = await env.POLL.list({ prefix: "score:" });
+async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
+  // #1345: ?period=YYYY-MM filtra mês específico via score-by-month index;
+  // omitted = mês corrente. Default mantém compat com clientes existentes.
+  const periodParam = url.searchParams.get("period");
+  const monthSlug = periodParam ?? currentMonthSlugBrt(new Date());
+  const parsed = parseMonthSlug(monthSlug);
+  if (!parsed) {
+    return json({ error: "period inválido — use YYYY-MM" }, 400, env);
+  }
+
+  const prefix = `score-by-month:${monthSlug}:`;
+  const list = await env.POLL.list({ prefix });
   const scores: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
   for (const key of list.keys) {
     const raw = await env.POLL.get(key.name);
     if (!raw) continue;
-    const score = JSON.parse(raw);
+    const entry = JSON.parse(raw);
     scores.push({
-      email: key.name.replace("score:", ""),
-      nickname: score.nickname || null,
-      correct: score.correct ?? 0,
-      total: score.total ?? 0,
+      email: key.name.replace(prefix, ""),
+      nickname: entry.nickname ?? null,
+      correct: entry.correct ?? 0,
+      total: entry.total ?? 0,
     });
   }
   const top1 = computeTop1(scores);
-  return json({ top1, period: currentPeriodLabelBrt(new Date()) }, 200, env);
+  const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
+  return json({ top1, period: periodLabel, period_slug: monthSlug }, 200, env);
 }
 
-// ── /leaderboard ──────────────────────────────────────────────────────────────
+// ── /leaderboard/{YYYY-MM} (#1345) ───────────────────────────────────────────
 
-async function handleLeaderboard(env: Env): Promise<Response> {
-  const list = await env.POLL.list({ prefix: "score:" });
-  const scores: LeaderboardEntry[] = [];
+/**
+ * Pure (#1345): extrai entries de `score-by-month:{slug}:*` em
+ * shape LeaderboardEntry pra alimentar rankEntries + render.
+ *
+ * Caller fornece o array já materializado (pra ser testável sem KV mock).
+ * Entries sem `total` (corrompidas) viram pct=0; entries sem nickname
+ * caem no fallback de email masked igual ao /leaderboard atual.
+ */
+export function scoreByMonthEntriesToLeaderboard(
+  entries: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+): LeaderboardEntry[] {
+  return entries.map((e) => {
+    const pct = e.total > 0 ? Math.round((e.correct / e.total) * 100) : 0;
+    return {
+      email: e.email,
+      nickname: e.nickname,
+      correct: e.correct,
+      total: e.total,
+      pct,
+      streak: 0, // streak é per-edition; não tracked no índice mensal (out of scope)
+    };
+  });
+}
 
+/**
+ * Handler `/leaderboard/{YYYY-MM}` — lê apenas score-by-month:{slug}:* e
+ * renderiza o mesmo HTML do leaderboard atual. Cache header diferente
+ * conforme mês passado (immutable) vs corrente (1h).
+ */
+async function handleLeaderboardByMonth(
+  monthSlug: string,
+  env: Env,
+): Promise<Response> {
+  const parsed = parseMonthSlug(monthSlug);
+  if (!parsed) {
+    return new Response(votePageHtml("Mês inválido. Use formato YYYY-MM (ex: 2026-05).", false), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  const currentSlug = currentMonthSlugBrt(new Date());
+  const slugCmp = monthSlugCompare(monthSlug, currentSlug);
+  if (slugCmp > 0) {
+    return new Response(votePageHtml(
+      `O leaderboard de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
+      false,
+    ), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
+  const prefix = `score-by-month:${monthSlug}:`;
+  const list = await env.POLL.list({ prefix });
+  const entries: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
   for (const key of list.keys) {
     const raw = await env.POLL.get(key.name);
     if (!raw) continue;
-    const score = JSON.parse(raw);
-    const email = key.name.replace("score:", "");
-    const pct = score.total > 0 ? Math.round((score.correct / score.total) * 100) : 0;
-    scores.push({ email, nickname: score.nickname || null, correct: score.correct, total: score.total, pct, streak: score.streak || 0 });
+    const entry = JSON.parse(raw);
+    entries.push({
+      email: key.name.replace(prefix, ""),
+      nickname: entry.nickname ?? null,
+      correct: entry.correct ?? 0,
+      total: entry.total ?? 0,
+    });
   }
 
+  const scores = scoreByMonthEntriesToLeaderboard(entries);
+  const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
+  const isPast = slugCmp < 0;
+  const cacheControl = isPast
+    ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
+    : "public, max-age=3600"; // 1h pro mês corrente
+
+  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, env);
+}
+
+/** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
+function renderLeaderboardHtml(
+  scores: LeaderboardEntry[],
+  periodLabel: string,
+  year: number,
+  cacheControl: string,
+  _env: Env,
+): Response {
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
-  // Tiebreaker dentro do empate: nickname/email ASC (estável).
   const ranked = rankEntries(scores).slice(0, 50);
 
   const rows = ranked.map((s) => {
-    // #1078 / #1081 — usa nickname se setado; senão mostra local-part inteiro
-    // do email + "@***" (privacidade do domínio, mantém local-part legível).
     const display = s.nickname || s.email.replace(/@.*/, "@***");
     const escaped = display.replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;" }[c] as string));
     const trClass = s.rank === 1 ? ' class="leader"' : '';
@@ -360,17 +506,12 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     </tr>`;
   }).join("\n");
 
-  // #1083: período dinâmico em pt-BR baseado no mês atual em BRT (UTC-3).
-  // Resets ocorrem no dia 1 às 00:01 BRT (= 03:01 UTC, #1077) — score keys
-  // arquivados e zerados a cada mudança de mês.
-  const periodLabel = currentPeriodLabelBrt(new Date());
-
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Leaderboard de ${periodLabel} | Diar.ia</title>
+<title>Leaderboard de ${periodLabel} de ${year} | Diar.ia</title>
 <style>
   body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
   h1 { font-size: 1.5rem; }
@@ -383,7 +524,7 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 </style>
 </head>
 <body>
-<h1 style="margin-bottom:4px;">Leaderboard de ${periodLabel}</h1>
+<h1 style="margin-bottom:4px;">Leaderboard de ${periodLabel} de ${year}</h1>
 <h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
 <p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
 <table>
@@ -395,7 +536,18 @@ async function handleLeaderboard(env: Env): Promise<Response> {
 </body>
 </html>`;
 
-  return new Response(html, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+  return new Response(html, {
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": cacheControl }
+  });
+}
+
+// ── /leaderboard ──────────────────────────────────────────────────────────────
+
+async function handleLeaderboard(env: Env): Promise<Response> {
+  // #1345: /leaderboard agora delega pro slug do mês corrente. Schema único
+  // (`score-by-month:*`) — `score:*` global continua mantido pra all-time
+  // potencial mas não é mais lido pelo leaderboard.
+  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env);
 }
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
@@ -428,6 +580,10 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
       await env.POLL.put(key.name, JSON.stringify({ ...vote, correct }));
       const email = key.name.replace(prefix, "");
       await updateScore(env, email, edition, correct);
+      // #1345: adjust correct count em score-by-month sem re-incrementar total
+      // (total já foi contado quando handleVote chamou updateScoreByMonth com
+      // correct=null). Só incrementa correct quando vote virou correct.
+      if (correct) await adjustScoreByMonthCorrect(env, email, edition);
       if (correct) correctCount++;
       updated++;
     } else if (vote.correct === true) {
@@ -527,9 +683,39 @@ async function handleSetName(url: URL, env: Env): Promise<Response> {
   score.nickname = cleanName;
   await env.POLL.put(scoreKey, JSON.stringify(score));
 
+  // #1345: propaga nickname em todas as `score-by-month:*:{email}` keys.
+  // Sem isso, leaderboard mensal mostra nickname antigo (ou null) até nova
+  // vote criar entry com nickname atualizado.
+  await propagateNicknameByMonth(env, email, cleanName);
+
   return new Response(votePageHtml(`Pronto, ${cleanName}! Você aparece assim no ranking.`, true), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
+}
+
+/**
+ * #1345: lista todas as `score-by-month:*:{email}` keys do subscriber e
+ * atualiza nickname em cada. Costo: 1 list + N gets + N puts (N = meses
+ * em que o subscriber votou). Volume baixo na prática (~12 meses/ano).
+ */
+async function propagateNicknameByMonth(
+  env: Env,
+  email: string,
+  nickname: string,
+): Promise<void> {
+  // KV não suporta suffix filter; precisa listar todas as score-by-month:*
+  // e filtrar pelo email. Em escala pequena (≤12 meses × 1 email) é OK.
+  const list = await env.POLL.list({ prefix: "score-by-month:" });
+  const suffix = `:${email}`;
+  for (const key of list.keys) {
+    if (!key.name.endsWith(suffix)) continue;
+    const raw = await env.POLL.get(key.name);
+    if (!raw) continue;
+    const entry = JSON.parse(raw);
+    if (entry.nickname === nickname) continue; // no-op
+    entry.nickname = nickname;
+    await env.POLL.put(key.name, JSON.stringify(entry));
+  }
 }
 
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
@@ -591,60 +777,20 @@ export default {
     if (path === "/vote" && request.method === "GET") return handleVote(url, env);
     if (path === "/stats" && request.method === "GET") return handleStats(url, env);
     if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(env);
-    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(env);
+    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, env);
+    // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
+    if (path.startsWith("/leaderboard/") && request.method === "GET") {
+      const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
+      if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], env);
+    }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, env);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
-
-  // #1077: reset mensal do leaderboard. Cron `1 3 1 * *` (UTC) = 00:01 BRT
-  // do dia 1 de cada mês. Arquiva todos os `score:*` em
-  // `score-archive:{YYYY-MM}:{email}` e deleta as keys originais. `stats:*`
-  // ficam intocados (são por-edição, não cumulativos).
-  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
-    await runMonthlyReset(env, new Date());
-  },
+  // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
+  // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
+  // não é mais necessário — meses são naturalmente isolados.
 };
-
-/**
- * Reset handler — exported pra ser testável sem mock de scheduled event.
- * Itera score:* via list, arquiva em score-archive:{YYYY-MM}:{email}, deleta.
- * Loga sumário em reset-log:{YYYY-MM}.
- */
-export async function runMonthlyReset(env: Env, now: Date): Promise<{ archived: number; deleted: number; period: string }> {
-  const periodMonth = previousPeriodLabelBrt(now);
-  console.log(`[reset] iniciando reset mensal — período ${periodMonth}`);
-  let cursor: string | undefined = undefined;
-  let archived = 0;
-  let deleted = 0;
-  do {
-    const list: KVNamespaceListResult<unknown, string> = await env.POLL.list({ prefix: "score:", cursor });
-    cursor = list.list_complete ? undefined : list.cursor;
-    for (const key of list.keys) {
-      const raw = await env.POLL.get(key.name);
-      if (!raw) continue;
-      const email = key.name.replace("score:", "");
-      const archiveKey = archiveKeyForReset(email, now);
-      await env.POLL.put(archiveKey, raw);
-      await env.POLL.delete(key.name);
-      archived++;
-      deleted++;
-    }
-  } while (cursor);
-
-  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-  brt.setUTCDate(0);
-  const logKey = `reset-log:${brt.getUTCFullYear()}-${String(brt.getUTCMonth() + 1).padStart(2, "0")}`;
-  await env.POLL.put(logKey, JSON.stringify({
-    period: periodMonth,
-    archived,
-    deleted,
-    ran_at: new Date(now).toISOString(),
-  }));
-
-  console.log(`[reset] concluído — ${archived} arquivados, ${deleted} deletados`);
-  return { archived, deleted, period: periodMonth };
-}

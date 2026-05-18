@@ -81,6 +81,57 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
   return set.includes(edition);
 }
 
+// ── Per-publication-month leaderboard (#1345) ───────────────────────────────
+
+/**
+ * Pure: AAMMDD → "YYYY-MM" (mês de publicação). Usado pra computar a key
+ * `score-by-month:{slug}:{email}` no write path (#1345). Assume `20YY`
+ * (consistente com formatEditionDate). Retorna null se input mal-formado.
+ */
+export function editionToMonthSlug(edition: string): string | null {
+  if (!/^\d{6}$/.test(edition)) return null;
+  const yy = edition.slice(0, 2);
+  const mm = edition.slice(2, 4);
+  const mmNum = parseInt(mm, 10);
+  if (mmNum < 1 || mmNum > 12) return null;
+  return `20${yy}-${mm}`;
+}
+
+/**
+ * Pure: parseia slug "YYYY-MM" → {year, month}. Retorna null em formato
+ * ou range inválido (mês 0, 13, ano fora 2000-2099).
+ */
+export function parseMonthSlug(slug: string): { year: number; month: number } | null {
+  const m = slug.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  if (month < 1 || month > 12) return null;
+  if (year < 2000 || year > 2099) return null;
+  return { year, month };
+}
+
+/**
+ * Pure: slug "YYYY-MM" do mês corrente em BRT. Análogo a
+ * `currentPeriodLabelBrt` mas formato slug ao invés de label legível.
+ */
+export function currentMonthSlugBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const year = brt.getUTCFullYear();
+  const month = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+/**
+ * Pure: -1 se a<b, 0 se igual, 1 se a>b. Slugs "YYYY-MM" zero-padded
+ * comparam lexicograficamente bem — string compare basta.
+ */
+export function monthSlugCompare(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 // ── Period label (#1083) ─────────────────────────────────────────────────────
 
 /**
