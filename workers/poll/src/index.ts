@@ -443,7 +443,10 @@ async function getOrComputeSnapshot(
     entries,
     computed_at: new Date().toISOString(),
   };
-  await env.POLL.put(snapKey, JSON.stringify(payload));
+  // #1349 review fix D: TTL 24h como safety net. Se algum write path
+  // futuro esquecer de invalidar, snapshot reseta sozinho em 24h ao invés
+  // de ficar stale forever. Custo: re-compute diário mesmo sem invalidação.
+  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 86400 });
   return entries;
 }
 
@@ -484,7 +487,15 @@ export async function computeSnapshotEntries(
     for (let j = 0; j < batch.length; j++) {
       const raw = values[j];
       if (!raw) continue;
-      const entry = JSON.parse(raw);
+      // #1349 review fix A: try/catch evita que 1 entry corrompida derrube
+      // o compute inteiro. Entry malformada é skipada e logada.
+      let entry: { nickname?: string | null; correct?: number; total?: number };
+      try {
+        entry = JSON.parse(raw);
+      } catch {
+        console.error(`[snapshot] skip corrupted entry: ${batch[j]}`);
+        continue;
+      }
       entries.push({
         email: batch[j].replace(prefix, ""),
         nickname: entry.nickname ?? null,

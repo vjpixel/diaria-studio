@@ -537,13 +537,59 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     assert.equal(byEmail["bob@x.com"].nickname, "Bob");
   });
 
-  it("filtra entries com raw null/missing", async () => {
-    const data = new Map([
-      ["score-by-month:2026-05:alice@x.com", JSON.stringify({ nickname: "Alice", correct: 5, total: 5 })],
-    ]);
-    const env = makeMockEnvWithGets(data);
+  it("filtra entries com raw null (key listada mas get retorna null)", async () => {
+    // Mock customizado: list inclui key fantasma que get retorna null
+    // (cenário real: list eventual-consistent, key foi deletada após list)
+    const env = {
+      POLL: {
+        async list(opts: { prefix: string; cursor?: string }) {
+          return {
+            keys: [
+              { name: "score-by-month:2026-05:alice@x.com" },
+              { name: "score-by-month:2026-05:ghost@x.com" }, // get vai retornar null
+            ],
+            list_complete: true,
+            cursor: undefined,
+          };
+        },
+        async get(key: string) {
+          if (key === "score-by-month:2026-05:alice@x.com") {
+            return JSON.stringify({ nickname: "Alice", correct: 5, total: 5 });
+          }
+          return null; // ghost retorna null
+        },
+      },
+    };
     const entries = await computeSnapshotEntries(env as never, "2026-05");
+    assert.equal(entries.length, 1, "ghost entry filtrada — apenas Alice no resultado");
+    assert.equal(entries[0].email, "alice@x.com");
+  });
+
+  it("skip entry com JSON corrupted (review fix A)", async () => {
+    const env = {
+      POLL: {
+        async list(_opts: { prefix: string; cursor?: string }) {
+          return {
+            keys: [
+              { name: "score-by-month:2026-05:alice@x.com" },
+              { name: "score-by-month:2026-05:corrupt@x.com" },
+            ],
+            list_complete: true,
+            cursor: undefined,
+          };
+        },
+        async get(key: string) {
+          if (key === "score-by-month:2026-05:alice@x.com") {
+            return JSON.stringify({ nickname: "Alice", correct: 5, total: 5 });
+          }
+          return "{invalid json"; // JSON.parse throws
+        },
+      },
+    };
+    const entries = await computeSnapshotEntries(env as never, "2026-05");
+    // Corrupted entry skipada, Alice preservada — compute não morre.
     assert.equal(entries.length, 1);
+    assert.equal(entries[0].email, "alice@x.com");
   });
 
   it("defaults pra correct/total/nickname ausentes na entry", async () => {
@@ -556,18 +602,41 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     assert.equal(entries[0].total, 0);
   });
 
-  it("batch parallel — 40 gets devem rodar em ~2 batches (5ms × 2 = ~10ms)", async () => {
+  it("batch parallel — gets concorrentes dentro do batch (review fix C: call-count em vez de timing)", async () => {
+    // Substituiu assertion temporal (flaky em CI) por call-count: verificar
+    // que dentro de um batch, todos os gets disparam ANTES do primeiro
+    // resolver. Isso prova paralelização sem depender de wall-clock.
+    let inFlight = 0;
+    let maxConcurrent = 0;
     const data = new Map<string, string>();
     for (let i = 0; i < 40; i++) {
       data.set(`score-by-month:2026-05:user${i}@x.com`, JSON.stringify({ correct: 1, total: 1 }));
     }
-    const env = makeMockEnvWithGets(data);
-    const start = Date.now();
+    const env = {
+      POLL: {
+        async list(_opts: { prefix: string; cursor?: string }) {
+          return {
+            keys: [...data.keys()].map((name) => ({ name })),
+            list_complete: true,
+            cursor: undefined,
+          };
+        },
+        async get(key: string) {
+          inFlight++;
+          if (inFlight > maxConcurrent) maxConcurrent = inFlight;
+          await new Promise((r) => setTimeout(r, 1));
+          inFlight--;
+          return data.get(key) ?? null;
+        },
+      },
+    };
     await computeSnapshotEntries(env as never, "2026-05");
-    const duration = Date.now() - start;
-    // Sequential seria 40 × 5ms = 200ms. Parallel em batches de 20 = 2 × 5ms = 10ms.
-    // Margem ampla pra Windows timer resolution: < 100ms.
-    assert.ok(duration < 100, `paralelização deveria ficar < 100ms, ficou ${duration}ms`);
+    // Batch size = 20 — dentro de cada batch, gets concorrentes ⇒ peak >= 20.
+    // Se fosse sequencial, peak seria 1.
+    assert.ok(
+      maxConcurrent >= 20,
+      `paralelização: esperado peak >= 20 in-flight, observado ${maxConcurrent}`,
+    );
   });
 
   it("empty prefix retorna []", async () => {
