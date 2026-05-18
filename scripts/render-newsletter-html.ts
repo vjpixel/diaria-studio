@@ -752,29 +752,29 @@ ${leaderboardRow}
  * Retorna string vazia quando ausente ou top1 vazio — renderer principal
  * concatena sem afetar layout.
  *
- * Formato:
- *   - Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
- *   - Tie ≤3: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
- *   - Tie >3: "🏆 Liderança de Maio: 5 leitores empatados em 100%"
+ * Formato (só nomes — sem percentual, decisão editorial pós-#1160):
+ *   - 1 leader: "🏆 Liderança de Maio: Davyd Wilkerson"
+ *   - 2 tied: "🏆 Liderança de Maio: Davyd e Luisao P"
+ *   - 3-5 tied: "🏆 Liderança de Maio: Davyd, Luisao P, Vanessa, Alice e Bob"
+ *   - 6+ tied: "🏆 Liderança de Maio: 8 leitores empatados"
  */
+const LEADERBOARD_NAMES_CAP = 5;
+
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
   if (!eia.leaderboardTop1 || eia.leaderboardTop1.length === 0) return "";
   const top1 = eia.leaderboardTop1;
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
-  const pct = top1[0].pct;
-  const single = top1[0];
 
   let phrase: string;
   if (top1.length === 1) {
-    phrase = `${single.nickname} — ${pct}% (${single.correct}/${single.total})`;
-  } else if (top1.length <= 3) {
+    phrase = top1[0].nickname;
+  } else if (top1.length <= LEADERBOARD_NAMES_CAP) {
     const names = top1.map((e) => e.nickname);
-    const joined = names.length === 2
+    phrase = names.length === 2
       ? `${names[0]} e ${names[1]}`
       : `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
-    phrase = `${joined} — ${pct}%`;
   } else {
-    phrase = `${top1.length} leitores empatados em ${pct}%`;
+    phrase = `${top1.length} leitores empatados`;
   }
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
