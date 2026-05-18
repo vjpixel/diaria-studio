@@ -49,7 +49,7 @@ Por que isso importa:
 
 ---
 
-**LANÇAMENTOS**
+**🚀 LANÇAMENTOS**
 
 **[Título do item](URL)**
 
@@ -61,13 +61,13 @@ Por que isso importa:
 
 ---
 
-**PESQUISAS**
+**🔬 PESQUISAS**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento]
 
 ---
 
-**OUTRAS NOTÍCIAS**
+**📰 OUTRAS NOTÍCIAS**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento]
 

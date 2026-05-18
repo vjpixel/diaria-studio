@@ -165,6 +165,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Heurístico conservador — só quebra quando o pattern é inequívoco (ex: 3 títulos do destaque colados no header, ou título+URL+descrição colados num item de seção). Se nenhum bug detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script → log warn + fallback usa `02-draft.md`.
 
+- **Singularizar + adicionar emoji nos headers de seção (#1324, #1328):** writer escreve sempre plural (`**LANÇAMENTOS**`); script normaliza pra singular quando N=1 + adiciona emoji prefix (`**🚀 LANÇAMENTO**`):
+  ```bash
+  npx tsx scripts/singularize-md-sections.ts \
+    --md data/editions/{AAMMDD}/_internal/02-normalized.md
+  ```
+  Idempotente. Stdout: JSON `{changed, sections}`. Falha não-bloqueante (log warn) — render-newsletter-html.ts em Stage 4 também aplica a normalização, então pior caso o gate MD mostra plural mas o HTML final fica correto.
+
 - **Humanizar (#308, #1072):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `context/past-editions.md` como referência:
   ```
   Skill("humanizador", "Leia data/editions/{AAMMDD}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado em data/editions/{AAMMDD}/_internal/02-humanized.md.")
