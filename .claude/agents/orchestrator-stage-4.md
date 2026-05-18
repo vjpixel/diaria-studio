@@ -83,16 +83,19 @@ O patch correto agora roda em Stage 0 §0d.ter (`inject-poll-sig.ts --since-hour
 
 Se este orchestrator versão pré-#1175 ainda invocar `inject-poll-urls.ts` aqui, é seguro pular: o HTML não usa esses custom fields. Em caso de retry isolado de Stage 4, **não rodar** o script legacy — confiar no 0d.ter.
 
-### 4b. Confirmar modo de publicação por canal (#336, #1238)
+### 4b. Confirmar modo de publicação por canal (#336 — invertido em #1326)
 
-**INVARIANTE: NUNCA dispatch publish-* agent ou script sem confirmação explícita do editor no turno atual.** Se em `auto_approve = true`, pular o gate mas registrar warn no run-log e usar consent default `all-auto` (newsletter+linkedin+facebook todos auto — #1238).
+**INVARIANTE (#1326): Default = tudo automático.** Stage 4 é dispatch, editor já revisou nos gates 1-3. Editor pode opt-out por canal via flag `--skip` no comando ou respondendo no gate interativo.
 
-**Auto-approve path (#1238 — `auto_approve = true`):**
+Casos:
+- `auto_approve = true` (skill chamada com `--no-gates`) → tudo auto, sem perguntar.
+- Skill chamada com `--skip {canal[,canal...]}` → canais listados ficam manual, resto auto.
+- Sem flags, modo interativo → mostrar gate abaixo. **Default se editor não responder = tudo auto.**
+
+**Auto-approve path (`auto_approve = true`):**
 
 ```bash
-# Gravar consent default = all auto (via helper TS — schema validado)
 npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
-# Log warn (auditoria)
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level warn \
   --message "Etapa 4 auto-approved via --no-gates: 3 canais dispatchados sem confirmacao por canal" \
   --details '{"channels":["newsletter","linkedin","facebook"]}'
@@ -100,26 +103,37 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator -
 
 Prosseguir direto pra 4c-pre. NÃO perguntar.
 
-**Gate path interativo (`auto_approve = false`, default):**
+**Skip flag path (`--skip newsletter,facebook`, etc):**
+
+```bash
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista-de-canais}"
+```
+
+Parser aceita `newsletter`, `linkedin`, `facebook` (case-insensitive). Canais não-listados ficam auto.
+
+**Gate path interativo (sem `auto_approve` e sem `--skip`):**
 
 Antes do dispatch, perguntar ao editor:
 
 ```
-Modo de publicação para a edição {AAMMDD}:
+Modo de publicação para a edição {AAMMDD} (default = tudo automático):
 
-  [1] Beehiiv automático  — Claude in Chrome cria rascunho + envia email de teste
+  [1] Beehiiv automático  — top-level segue context/publishers/beehiiv-playbook.md (Worker-hosted)
   [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo: data/editions/{AAMMDD}/02-reviewed.md
-  [3] LinkedIn automático — Claude in Chrome cria 3 rascunhos
+  [3] LinkedIn automático — Worker queue + Make webhook (agenda 17:00 BRT)
   [4] LinkedIn manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
   [5] Facebook automático — Graph API agenda os 3 posts
   [6] Facebook manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
 
 Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
 ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar.
-Default se não responder = manual em tudo.
+Default se não responder = TUDO AUTOMÁTICO (#1326).
 ```
 
-Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`.
+Aguardar resposta antes de prosseguir. Registrar a escolha em `_internal/05-publish-consent.json`. Se editor não responder no turno (linha em branco ou desistir do gate), invocar:
+```bash
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
+```
 Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Etapa 4.
 
 **#1238 trade-off documentado**: Beehiiv path (publish-newsletter playbook) pode falhar no click programático de "Send test email" por causa do user-activation guard do Beehiiv (#1211 — mesmo bug que afeta Schedule). Quando isso acontece em auto_approve mode, capturar via API timestamp check e gravar `05-published.json` com `review_completed: false`, `review_status: "pending_manual_send"`, `note: "Click programatico rejeitado. Editor precisa clicar Send test email em {draft_url}"`. Halt banner após gate 4g listará o passo manual restante. Pipeline ainda automatiza ~90% (draft created, HTML pasted, title/subject set, social agendado) — só o último click escapa.
@@ -150,7 +164,7 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b
 
 **Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
-2. **Newsletter Beehiiv (#1054 / #207 / #1114)**: você (top-level) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`. Em paralelo aos scripts (1) e (3) — só não há dispatch separado, é execução inline pelo top-level.
+2. **Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: você (top-level) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** — o caminho chunked-base64 vive só como fallback automático no apêndice do playbook (#1327). Nunca propor manualmente "vou chunkar" ou "vou fazer paste manual" antes de tentar Worker-hosted. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`. Em paralelo aos scripts (1) e (3) — só não há dispatch separado, é execução inline pelo top-level.
 3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
 
 **`--test-mode` flag (#1056)**: quando `test_mode = true`, scripts publish-facebook e publish-linkedin tagam todas as entries gravadas em `06-social-published.json` com `is_test: true`. `delete-test-schedules.ts` honra esse flag por default (`--require-is-test` true) — só deleta entries explicitamente marcadas. Safety: rodar `delete-test-schedules.ts` em pasta de produção real é no-op porque entries de produção não têm `is_test: true`.

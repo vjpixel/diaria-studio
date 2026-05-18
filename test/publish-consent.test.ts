@@ -2,8 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   autoApproveConsent,
+  defaultAutoConsent,
   defaultManualConsent,
   parseEditorResponse,
+  parseSkipFlag,
   hasAnyAutoChannel,
   allChannelsSkipped,
 } from "../scripts/lib/publish-consent.ts";
@@ -25,6 +27,79 @@ describe("defaultManualConsent", () => {
     assert.equal(c.linkedin, "manual");
     assert.equal(c.facebook, "manual");
     assert.equal(c.source, "default_manual");
+  });
+});
+
+describe("defaultAutoConsent (#1326)", () => {
+  it("retorna tudo auto com source 'default_auto'", () => {
+    const c = defaultAutoConsent();
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.equal(c.source, "default_auto");
+  });
+});
+
+describe("parseSkipFlag (#1326)", () => {
+  it("input vazio → tudo auto", () => {
+    const c = parseSkipFlag("");
+    assert.ok(c);
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.equal(c.source, "skip_flag_empty");
+  });
+
+  it("'newsletter' → só newsletter manual", () => {
+    const c = parseSkipFlag("newsletter");
+    assert.ok(c);
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "auto");
+    assert.equal(c.facebook, "auto");
+    assert.ok(c.source.includes("newsletter"));
+  });
+
+  it("'linkedin,facebook' → linkedin + facebook manual", () => {
+    const c = parseSkipFlag("linkedin,facebook");
+    assert.ok(c);
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.facebook, "manual");
+  });
+
+  it("'newsletter,linkedin,facebook' → tudo manual", () => {
+    const c = parseSkipFlag("newsletter,linkedin,facebook");
+    assert.ok(c);
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.facebook, "manual");
+  });
+
+  it("case-insensitive", () => {
+    const c = parseSkipFlag("NEWSLETTER,LinkedIn");
+    assert.ok(c);
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "manual");
+    assert.equal(c.facebook, "auto");
+  });
+
+  it("token inválido → null", () => {
+    assert.equal(parseSkipFlag("invalid"), null);
+    assert.equal(parseSkipFlag("newsletter,invalid"), null);
+    assert.equal(parseSkipFlag("123"), null);
+  });
+
+  it("aceita whitespace separators", () => {
+    const c = parseSkipFlag("newsletter linkedin");
+    assert.ok(c);
+    assert.equal(c.newsletter, "manual");
+    assert.equal(c.linkedin, "manual");
+  });
+
+  it("source ordena canais alfabeticamente pra hash estável", () => {
+    const a = parseSkipFlag("facebook,linkedin");
+    const b = parseSkipFlag("linkedin,facebook");
+    assert.equal(a?.source, b?.source);
   });
 });
 

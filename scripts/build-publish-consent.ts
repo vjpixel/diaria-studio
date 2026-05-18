@@ -32,8 +32,10 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   autoApproveConsent,
+  defaultAutoConsent,
   defaultManualConsent,
   parseEditorResponse,
+  parseSkipFlag,
   type PublishConsent,
 } from "./lib/publish-consent.ts";
 
@@ -42,8 +44,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 interface CliArgs {
   edition?: string;
   autoApprove?: boolean;
+  defaultAuto?: boolean;
   defaultManual?: boolean;
   editorResponse?: string;
+  skip?: string;
   outPath?: string;
   help?: boolean;
 }
@@ -54,8 +58,10 @@ function parseArgs(argv: string[]): CliArgs {
     const a = argv[i];
     if (a === "--edition") out.edition = argv[++i];
     else if (a === "--auto-approve") out.autoApprove = true;
+    else if (a === "--default-auto") out.defaultAuto = true;
     else if (a === "--default-manual") out.defaultManual = true;
     else if (a === "--editor-response") out.editorResponse = argv[++i];
+    else if (a === "--skip") out.skip = argv[++i];
     else if (a === "--out") out.outPath = argv[++i];
     else if (a === "--help" || a === "-h") out.help = true;
   }
@@ -69,7 +75,10 @@ function usage(): string {
     "",
     "Modes (exatamente um):",
     "  --auto-approve              auto em todos os canais (source: auto_approve_default)",
-    "  --default-manual            manual em todos os canais (source: default_manual)",
+    "  --default-auto              tudo auto, default de Stage 4 (#1326) — source: default_auto",
+    "  --default-manual            manual em todos os canais (LEGACY — source: default_manual)",
+    "  --skip <channels>           tudo auto exceto canais listados (--skip newsletter,linkedin)",
+    "                              canais válidos: newsletter, linkedin, facebook",
     "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5')",
     "",
     "Opcional:",
@@ -88,10 +97,17 @@ export function mainCli(argv: string[]): number {
     console.error(usage());
     return 2;
   }
-  const modeFlags = [args.autoApprove, args.defaultManual, args.editorResponse != null]
-    .filter(Boolean).length;
+  const modeFlags = [
+    args.autoApprove,
+    args.defaultAuto,
+    args.defaultManual,
+    args.editorResponse != null,
+    args.skip != null,
+  ].filter(Boolean).length;
   if (modeFlags !== 1) {
-    console.error("Erro: exatamente UM de --auto-approve / --default-manual / --editor-response.\n");
+    console.error(
+      "Erro: exatamente UM de --auto-approve / --default-auto / --default-manual / --editor-response / --skip.\n",
+    );
     console.error(usage());
     return 2;
   }
@@ -99,8 +115,19 @@ export function mainCli(argv: string[]): number {
   let consent: PublishConsent;
   if (args.autoApprove) {
     consent = autoApproveConsent();
+  } else if (args.defaultAuto) {
+    consent = defaultAutoConsent();
   } else if (args.defaultManual) {
     consent = defaultManualConsent();
+  } else if (args.skip != null) {
+    const parsed = parseSkipFlag(args.skip);
+    if (!parsed) {
+      console.error(
+        `Erro: --skip inválido: ${JSON.stringify(args.skip)}. Use lista CSV de canais: newsletter, linkedin, facebook.`,
+      );
+      return 1;
+    }
+    consent = parsed;
   } else {
     const parsed = parseEditorResponse(args.editorResponse!);
     if (!parsed) {
