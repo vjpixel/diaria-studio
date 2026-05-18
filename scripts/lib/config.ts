@@ -30,8 +30,8 @@ export const CONFIG = {
     titleResolutionConcurrency: 15,
   },
   eiaCompose: {
-    /** Máximo de tentativas de POTD no eligibility loop. Subido de 7 para 14 em #1259: janela de 7 dias se exauriu quando 5 datas tinham `already_used` e 2 eram vertical, sobrando 0 elegíveis. 14 dias dá ~2x mais candidatos em pools quentes. */
-    maxWikiAttempts: 14,
+    /** Máximo de tentativas de POTD no eligibility loop. Subido de 7 para 14 em #1259: janela de 7 dias se exauriu quando 5 datas tinham `already_used` e 2 eram vertical, sobrando 0 elegíveis. 14 dias dá ~2x mais candidatos em pools quentes. Bumped to 60 in 260518 — cache exhausted (11 already_used + 3 vertical). */
+    maxWikiAttempts: 60,
   },
   inboxAggregator: {
     /** Máximo de links primários extraídos por agregador */
