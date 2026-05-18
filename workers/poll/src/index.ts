@@ -88,6 +88,9 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const choice = url.searchParams.get("choice")?.toUpperCase();
   // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
   const sig = url.searchParams.get("sig");
+  // #1236: ?test=1 valida tudo (gate + sig + dedup) mas NÃO escreve em KV.
+  // Útil pra smoke test / debug em prod sem poluir leaderboard.
+  const testMode = url.searchParams.get("test") === "1";
 
   if (!email || !edition || !choice) {
     return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false), {
@@ -138,6 +141,20 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // Gravar voto
   const correctRaw = await env.POLL.get(`correct:${edition}`);
   const correct = correctRaw ? choice === correctRaw : null;
+
+  // #1236: test mode — short-circuit antes de qualquer KV write. Mantém
+  // validação completa (gate, sig, dedup) acima pra que o test reflita
+  // request real. Resposta indica claramente que não foi gravado.
+  if (testMode) {
+    const testMsg = correct === true
+      ? "✅ [TEST] Acertou! Era a imagem gerada por IA. (não gravado em KV)"
+      : correct === false
+      ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
+      : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
+    return new Response(votePageHtml(testMsg, true), {
+      status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
 
   await env.POLL.put(voteKey, JSON.stringify({ choice, ts: new Date().toISOString(), correct }));
 
