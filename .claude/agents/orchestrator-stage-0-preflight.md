@@ -78,6 +78,11 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
   > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
 
   Se editor responder `n`, abortar. Se `y`, setar `DRIVE_SYNC = false` em sessão pra resto do pipeline.
+- **Pre-flight Clarice REST (#1329).** Pinga `https://cortex.clarice.ai/api-correction` antes do Stage 2 saber se o fallback REST está saudável. Não bloqueia — só armazena `CLARICE_REST` (`true`/`false`) em sessão:
+  ```bash
+  npx tsx scripts/clarice-healthcheck.ts
+  ```
+  Output JSON: `{ ok, latency_ms?, error? }`. Exit 0 = saudável (`CLARICE_REST = true`); exit 2 = degradado (`CLARICE_REST = false`, logar warn com `error` e seguir). Stage 2 §3b consulta `CLARICE_REST` antes de tentar o fallback quando o MCP falha. Sem essa flag, Stage 2 ainda tenta o fallback — só perde a chance de pre-warn o editor.
 - **Pre-flight Claude in Chrome MCP (#143, #568).** Se `test_mode = true` E `with_publish !== true`, setar `CHROME_MCP = false` diretamente (sem probe). Caso contrário (incluindo `test_mode = true` com `with_publish = true`), tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
   - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode` SEM `with_publish`**, prosseguir silenciosamente.
   - **Caso especial `test_mode = true` E `with_publish = true` E `CHROME_MCP = false` (#568):** warn LOUD — imprimir bloco visível no terminal (não silenciar) e logar `level: warn` com `agent: orchestrator`, `message: "with_publish=true mas Chrome MCP indisponível — Etapa 4 vai pular"`. Editor pediu publicação explícita; merece saber que não vai acontecer. Pipeline continua mas sem Etapa 4.

@@ -195,6 +195,14 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
 
   1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
   2. Chamar `mcp__clarice__correct_text` passando o texto completo. A ferramenta retorna uma lista de sugestões (cada uma com trecho original → corrigido). Salvar a resposta crua em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume).
+
+     **Fallback REST (#1329).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST que escreve no mesmo path:
+     ```bash
+     npx tsx scripts/clarice-correct.ts \
+       --in data/editions/{AAMMDD}/_internal/{FILENAME} \
+       --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+     ```
+     Exit 0 = sucesso (segue pro passo 3). Exit 3 = HTTP non-2xx (logar `level: error` + halt banner pra editor decidir retry vs skip). Exit 2 = `CLARICE_API_KEY` ausente (halt). Logar warn no run-log: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "clarice MCP failed — REST fallback" --details '{"server":"clarice","kind":"mcp_to_rest_fallback"}'`. Se `CLARICE_REST = false` (do Stage 0 healthcheck), pular direto pro halt banner — sem chance de fallback bem-sucedido.
   3. Aplicar **todas** as sugestões ao texto original, produzindo o texto revisado. Gravar esse texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
   4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash
@@ -203,7 +211,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
        data/editions/{AAMMDD}/02-reviewed.md \
        data/editions/{AAMMDD}/_internal/02-clarice-diff.md
      ```
-  Se a Clarice falhar, propagar o erro — **não** usar o rascunho sem revisão.
+  Se a Clarice falhar (MCP + REST), propagar o erro — **não** usar o rascunho sem revisão.
 
 - **Verificar estabilidade de URLs em LANÇAMENTOS (#873).** Clarice pode "limpar" URLs (remover query params, normalizar paths, adicionar trailing slash) — isso quebra a regra "LANÇAMENTOS só com link oficial" (#160) silenciosamente, porque a URL pós-Clarice pode não bater mais com a whitelist. Comparar URLs pré/pós-Clarice **antes** de `validate-lancamentos.ts`:
   ```bash
