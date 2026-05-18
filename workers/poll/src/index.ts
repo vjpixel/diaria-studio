@@ -235,6 +235,8 @@ async function adjustScoreByMonthCorrect(
   const entry = JSON.parse(raw);
   entry.correct = (entry.correct ?? 0) + 1;
   await env.POLL.put(key, JSON.stringify(entry));
+  // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
+  await invalidateSnapshot(env, monthSlug);
 }
 
 /**
@@ -275,6 +277,8 @@ async function updateScoreByMonth(
   }
 
   await env.POLL.put(key, JSON.stringify(entry));
+  // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
+  await invalidateSnapshot(env, monthSlug);
 }
 
 async function updateScore(
@@ -386,22 +390,121 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
     return json({ error: "period inválido — use YYYY-MM" }, 400, env);
   }
 
-  const prefix = `score-by-month:${monthSlug}:`;
-  const scores: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
-  for await (const key of listAllKeys(env, prefix)) {
-    const raw = await env.POLL.get(key);
-    if (!raw) continue;
-    const entry = JSON.parse(raw);
-    scores.push({
-      email: key.replace(prefix, ""),
-      nickname: entry.nickname ?? null,
-      correct: entry.correct ?? 0,
-      total: entry.total ?? 0,
-    });
-  }
+  // #1348: usa snapshot pré-computado em vez de list+gets inline.
+  const scores = await getOrComputeSnapshot(env, monthSlug);
   const top1 = computeTop1(scores);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   return json({ top1, period: periodLabel, period_slug: monthSlug }, 200, env);
+}
+
+// ── Snapshot key (#1348) ──────────────────────────────────────────────────
+
+/**
+ * Entry shape no snapshot — mesma estrutura usada em handlers e em
+ * scoreByMonthEntriesToLeaderboard. Persistido como JSON em
+ * `leaderboard-snapshot:{slug}`.
+ */
+export interface SnapshotEntry {
+  email: string;
+  nickname: string | null;
+  correct: number;
+  total: number;
+}
+
+interface SnapshotPayload {
+  entries: SnapshotEntry[];
+  computed_at: string;
+}
+
+/**
+ * #1348: lê snapshot pré-computado de `leaderboard-snapshot:{slug}` se existir,
+ * senão recompute via `computeSnapshotEntries` (list + parallel gets) e
+ * persiste. Lazy compute pattern — write-time invalidate, read-time refresh.
+ *
+ * Reduz subrequest budget de ~500 (1 list + N gets) pra 1 KV get no hot path.
+ * Cold path (após invalidate) paga compute uma vez, próximos reads hit cache.
+ */
+async function getOrComputeSnapshot(
+  env: Env,
+  slug: string,
+): Promise<SnapshotEntry[]> {
+  const snapKey = `leaderboard-snapshot:${slug}`;
+  const cached = await env.POLL.get(snapKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as SnapshotPayload;
+      if (Array.isArray(parsed.entries)) return parsed.entries;
+    } catch {
+      // Corrupted snapshot — fall through pra recompute
+    }
+  }
+  const entries = await computeSnapshotEntries(env, slug);
+  const payload: SnapshotPayload = {
+    entries,
+    computed_at: new Date().toISOString(),
+  };
+  // #1349 review fix D: TTL 24h como safety net. Se algum write path
+  // futuro esquecer de invalidar, snapshot reseta sozinho em 24h ao invés
+  // de ficar stale forever. Custo: re-compute diário mesmo sem invalidação.
+  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 86400 });
+  return entries;
+}
+
+/**
+ * #1348: deleta snapshot do slug. Chamado de write-paths
+ * (updateScoreByMonth, adjustScoreByMonthCorrect, propagateNicknameByMonth).
+ *
+ * Race: 2 votes concorrentes ambos deletam, ambos vão computar no próximo
+ * read. Idempotent — última escrita do snapshot é a correta no momento.
+ */
+async function invalidateSnapshot(env: Env, slug: string): Promise<void> {
+  await env.POLL.delete(`leaderboard-snapshot:${slug}`);
+}
+
+/**
+ * #1348 (C): compute path — lista todas as `score-by-month:{slug}:*` keys
+ * e fetcha values em batches paralelos. Reduz latência cold-path de ~15s
+ * (500 gets sequenciais) pra ~750ms (25 batches × 30ms).
+ *
+ * batchSize=20 escolhido pra ficar dentro do limite subrequest do Worker
+ * (free tier 50/req; paid 1000/req). Conservador — pode subir pra 50
+ * se necessário.
+ */
+const SNAPSHOT_GET_BATCH_SIZE = 20;
+
+export async function computeSnapshotEntries(
+  env: Env,
+  slug: string,
+): Promise<SnapshotEntry[]> {
+  const prefix = `score-by-month:${slug}:`;
+  const keys: string[] = [];
+  for await (const k of listAllKeys(env, prefix)) keys.push(k);
+
+  const entries: SnapshotEntry[] = [];
+  for (let i = 0; i < keys.length; i += SNAPSHOT_GET_BATCH_SIZE) {
+    const batch = keys.slice(i, i + SNAPSHOT_GET_BATCH_SIZE);
+    const values = await Promise.all(batch.map((k) => env.POLL.get(k)));
+    for (let j = 0; j < batch.length; j++) {
+      const raw = values[j];
+      if (!raw) continue;
+      // #1349 review fix A: try/catch evita que 1 entry corrompida derrube
+      // o compute inteiro. Entry malformada é skipada e logada.
+      let entry: { nickname?: string | null; correct?: number; total?: number };
+      try {
+        entry = JSON.parse(raw);
+      } catch {
+        console.error(`[snapshot] skip corrupted entry: ${batch[j]}`);
+        continue;
+      }
+      entries.push({
+        email: batch[j].replace(prefix, ""),
+        nickname: entry.nickname ?? null,
+        correct: entry.correct ?? 0,
+        total: entry.total ?? 0,
+      });
+    }
+  }
+  return entries;
 }
 
 /**
@@ -474,20 +577,8 @@ async function handleLeaderboardByMonth(
     });
   }
 
-  const prefix = `score-by-month:${monthSlug}:`;
-  const entries: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
-  for await (const keyName of listAllKeys(env, prefix)) {
-    const raw = await env.POLL.get(keyName);
-    if (!raw) continue;
-    const entry = JSON.parse(raw);
-    entries.push({
-      email: keyName.replace(prefix, ""),
-      nickname: entry.nickname ?? null,
-      correct: entry.correct ?? 0,
-      total: entry.total ?? 0,
-    });
-  }
-
+  // #1348: usa snapshot pré-computado em vez de list+gets inline.
+  const entries = await getOrComputeSnapshot(env, monthSlug);
   const scores = scoreByMonthEntriesToLeaderboard(entries);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   const isPast = slugCmp < 0;
@@ -725,6 +816,7 @@ async function propagateNicknameByMonth(
   // e filtrar pelo email. Em escala pequena (≤12 meses × 1 email) é OK.
   // #1345 followup: list paginado via listAllKeys pra cobrir caso >1000 keys.
   const suffix = `:${email}`;
+  const slugsTouched = new Set<string>();
   for await (const keyName of listAllKeys(env, "score-by-month:")) {
     if (!keyName.endsWith(suffix)) continue;
     const raw = await env.POLL.get(keyName);
@@ -733,6 +825,15 @@ async function propagateNicknameByMonth(
     if (entry.nickname === nickname) continue; // no-op
     entry.nickname = nickname;
     await env.POLL.put(keyName, JSON.stringify(entry));
+    // Extrair slug pra invalidar snapshot correspondente. Key formato:
+    // "score-by-month:{slug}:{email}" — split em 3 partes (limit não
+    // confiável pq email pode ter ":").
+    const slugMatch = keyName.match(/^score-by-month:(\d{4}-\d{2}):/);
+    if (slugMatch) slugsTouched.add(slugMatch[1]);
+  }
+  // #1348: invalidate snapshot de cada slug afetado. Próximo read recompute fresh.
+  for (const slug of slugsTouched) {
+    await invalidateSnapshot(env, slug);
   }
 }
 
