@@ -2,41 +2,16 @@ node_modules/
 dist/
 .env
 .env.local
-data/editions/**
-!data/editions/
-!data/editions/*/
-!data/editions/*/01-categorized.md
-!data/editions/*/01-categorized.json
-!data/editions/*/01-approved.json
-data/editions/*-backup-*/
-data/monthly/**
-!data/monthly/
-!data/monthly/*/
-!data/monthly/*/prioritized.md
-!data/monthly/*/raw-destaques.json
-data/*-raw.json
-data/drive-cache.json
-data/link-verify-cache.json
-data/.credentials.json
-data/.fb-credentials.json
-data/run-log.jsonl
-data/ci-failures.jsonl
-data/inbox-drainer-result.json
-data/push-*-plan.json
-data/inbox-archive/
-data/inbox.md
-data/inbox-cursor.json
-data/archive/
-# Dados pessoais Clarice — exports Stripe (emails, pagamentos) e outputs scored
-data/clarice-subscribers/*.csv
-data/clarice-subscribers/*.md
-data/clarice-subscribers/*.bak*
-# Relatórios internos — vão pro Drive, não pro repo (conteudo business-sensitive)
-# Inclui .snapshots/ de sync-report.ts (3-way merge base)
-data/reports/
+# data/ inteira mora no OneDrive (junction local) — nada vai pro repo.
+# Antes do PR #1355 havia exceções intencionais aqui pra versionar audit
+# trail editorial (data/editions/*/01-categorized.{md,json}, 01-approved.json
+# e data/monthly/*/{prioritized.md,raw-destaques.json}). Foram removidas
+# conscientemente — OneDrive sync + Drive sync cobrem reprodutibilidade
+# entre máquinas. Não reverter pra exceções sem revisar essa decisão.
+# Logs append-only por fonte (data/sources/*.jsonl) também moram aqui:
+# crescem indefinidamente, valor analítico só local.
+data/
 # Scheduling lockfile (ephemeral por execução)
 .claude/scheduled_tasks.lock
-# Logs append-only por fonte (crescem indefinidamente, valor analítico só local)
-data/sources/*.jsonl
 .DS_Store
 .tmp/
