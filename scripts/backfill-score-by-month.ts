@@ -17,8 +17,20 @@
  *   # Dry-run (não escreve):
  *   npx tsx scripts/backfill-score-by-month.ts --dry-run
  *
+ *   # Clear-first (#1347 followup) — deleta score-by-month:* existentes
+ *   # antes de recomputar. Garante idempotência se rodar 2x:
+ *   npx tsx scripts/backfill-score-by-month.ts --clear-first
+ *
+ *   # Combinar:
+ *   npx tsx scripts/backfill-score-by-month.ts --dry-run --clear-first
+ *
  * Pre-req: Worker já deployed com /vote registrando em score-by-month.
  * Pos-condição: todos os votes existentes refletidos nas keys mensais.
+ *
+ * Idempotência (#1347): rodar sem --clear-first é seguro só se NENHUM vote
+ * chegou desde a run anterior. Se houver votos intermediários, eles serão
+ * sobrescritos com o estado recomputado (~equivale a perda). Use --clear-first
+ * em re-runs de produção.
  */
 
 import "dotenv/config";
@@ -33,6 +45,7 @@ if (!ACCOUNT_ID || !API_TOKEN) {
 }
 
 const dryRun = process.argv.includes("--dry-run");
+const clearFirst = process.argv.includes("--clear-first");
 
 interface VoteRecord {
   choice: "A" | "B";
@@ -93,6 +106,20 @@ async function kvPut(key: string, value: string): Promise<void> {
   if (!res.ok) throw new Error(`KV put ${key} failed: ${res.status} ${await res.text()}`);
 }
 
+async function kvDelete(key: string): Promise<void> {
+  if (dryRun) {
+    console.log(`[dry-run] DELETE ${key}`);
+    return;
+  }
+  const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+    headers: { "Authorization": `Bearer ${API_TOKEN}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`KV delete ${key} failed: ${res.status} ${await res.text()}`);
+  }
+}
+
 function editionToMonthSlug(edition: string): string | null {
   if (!/^\d{6}$/.test(edition)) return null;
   const yy = edition.slice(0, 2);
@@ -103,7 +130,26 @@ function editionToMonthSlug(edition: string): string | null {
 }
 
 async function main(): Promise<void> {
-  console.log(`[backfill] mode: ${dryRun ? "DRY-RUN" : "WRITE"}`);
+  console.log(`[backfill] mode: ${dryRun ? "DRY-RUN" : "WRITE"}${clearFirst ? " (with --clear-first)" : ""}`);
+
+  // #1347 followup: opcional clear de score-by-month:* antes de re-popular.
+  // Sem isso, rodar 2x não é totalmente idempotente — votes que chegaram
+  // entre run 1 e run 2 são sobrescritos pelo estado pré-incremento.
+  // Com --clear-first: deleta tudo, depois recomputa do zero — garantia
+  // de consistência com o source-of-truth (vote:*).
+  if (clearFirst) {
+    console.log("[backfill] --clear-first: listando score-by-month:* pra delete...");
+    const existing = await kvList("score-by-month:");
+    console.log(`[backfill] deletando ${existing.length} score-by-month:* keys existentes`);
+    for (let i = 0; i < existing.length; i++) {
+      await kvDelete(existing[i]);
+      if ((i + 1) % 100 === 0) {
+        console.log(`[backfill] deleted ${i + 1}/${existing.length}`);
+      }
+    }
+    console.log("[backfill] --clear-first: limpeza completa");
+  }
+
   console.log("[backfill] listando vote:* keys...");
   const voteKeys = await kvList("vote:");
   console.log(`[backfill] ${voteKeys.length} votes pra processar`);

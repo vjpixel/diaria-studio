@@ -498,7 +498,7 @@ async function handleLeaderboardByMonth(
     ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
     : "public, max-age=60"; // 60s pro mês corrente
 
-  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, env);
+  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl);
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -507,7 +507,6 @@ function renderLeaderboardHtml(
   periodLabel: string,
   year: number,
   cacheControl: string,
-  _env: Env,
 ): Response {
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
