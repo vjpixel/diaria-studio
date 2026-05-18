@@ -5,72 +5,138 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   countEditorVsAuto,
+  countForwardedEmailsFromInbox,
   countSelectedItems,
   rewriteCoverageLine,
 } from "../scripts/sync-coverage-line.ts";
 
-describe("countEditorVsAuto", () => {
-  it("conta editor_submitted como X", () => {
+describe("countEditorVsAuto (#1323)", () => {
+  it("X = forwarded emails count (não URL count)", () => {
     const pool = [
       { flag: "editor_submitted", url: "u1" },
       { flag: "editor_submitted", url: "u2" },
       { url: "u3" },
     ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 1 });
+    // 2 editor emails forwardados → X=2, Y=pool-X=1
+    assert.deepEqual(countEditorVsAuto(pool, 2), { x: 2, y: 1 });
   });
 
-  it("#1280 (revert #1190): conta newsletter_extracted como X — editor escolheu a fonte", () => {
-    // Editor encaminhar uma newsletter (Cyberman/AlphaSignal/etc) é ato
-    // editorial — escolha de fonte. URLs primárias extraídas dessa fonte
-    // contam como submissões do editor pra fins de cobertura.
-    const pool = [
-      { flag: "newsletter_extracted", url: "u1" },
-      { flag: "newsletter_extracted", url: "u2" },
-      { url: "u3" },
-      { url: "u4" },
-    ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 2, y: 2 });
+  it("#1323: forward de newsletter com 30 URLs = 1 submissão (não 30)", () => {
+    // Replicar caso 260518: 1 newsletter forwardada com 30 URLs primárias.
+    // Antes (#1280) → X=30 (cada URL contava). Agora → X=1 (cada email).
+    const pool: { flag?: string; url: string }[] = [];
+    for (let i = 0; i < 30; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
+    for (let i = 0; i < 100; i++) pool.push({ url: `auto${i}` });
+
+    // 1 newsletter encaminhada = 1 email = X=1
+    const { x, y } = countEditorVsAuto(pool, 1);
+    assert.equal(x, 1, "1 forward de newsletter = 1 submissão");
+    assert.equal(y, 129, "29 URLs extras + 100 auto = 129 encontradas pela Diar.ia");
   });
 
-  it("conta source: inbox como X (back-compat pré-#1095)", () => {
-    const pool = [
-      { source: "inbox", url: "u1" },
-      { url: "u2" },
-    ];
-    assert.deepEqual(countEditorVsAuto(pool), { x: 1, y: 1 });
-  });
+  it("#1323: 3 forwards diretos + 1 newsletter forward = X=4", () => {
+    // Editor: 3 emails com 1 URL direto + 1 email com newsletter de 30 URLs.
+    const pool: { flag?: string; url: string }[] = [];
+    for (let i = 0; i < 3; i++) pool.push({ flag: "editor_submitted", url: `e${i}` });
+    for (let i = 0; i < 30; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
+    for (let i = 0; i < 80; i++) pool.push({ url: `auto${i}` });
 
-  it("#1280: mix completo conta editor_submitted + newsletter_extracted + source:inbox", () => {
-    const pool = [
-      { flag: "editor_submitted", url: "1" },
-      { flag: "newsletter_extracted", url: "2" },
-      { source: "inbox", url: "3" },
-      { url: "4" },
-      { url: "5" },
-    ];
-    // editor_submitted + newsletter_extracted + source:inbox = 3 em X.
-    // 2 auto-discovery em Y.
-    assert.deepEqual(countEditorVsAuto(pool), { x: 3, y: 2 });
-  });
-
-  it("#1280: caso real edição 260515 (1 editor_submitted + 35 newsletter_extracted + ~120 auto)", () => {
-    // Replicar o caso que motivou o revert: Pixel encaminhou 12 emails
-    // (1 link direto + 11 newsletters), inject extraiu 35 URLs primárias.
-    // Coverage devia mostrar ~36 submissões, não 1.
-    const pool: { flag?: string; source?: string; url: string }[] = [];
-    for (let i = 0; i < 1; i++) pool.push({ flag: "editor_submitted", url: `e${i}` });
-    for (let i = 0; i < 35; i++) pool.push({ flag: "newsletter_extracted", url: `n${i}` });
-    for (let i = 0; i < 120; i++) pool.push({ url: `a${i}` });
-
-    const { x, y } = countEditorVsAuto(pool);
-    assert.equal(x, 36, "1 forward direto + 35 URLs extraídas das newsletters do Pixel");
-    assert.equal(y, 120, "auto-discovery via RSS/researchers");
+    // 4 emails forwardados → X=4
+    const { x, y } = countEditorVsAuto(pool, 4);
+    assert.equal(x, 4);
+    assert.equal(y, 113 - 4, "pool total 113 - X 4 = 109");
   });
 
   it("pool vazio", () => {
-    assert.deepEqual(countEditorVsAuto([]), { x: 0, y: 0 });
+    assert.deepEqual(countEditorVsAuto([], 0), { x: 0, y: 0 });
+  });
+
+  it("Y nunca fica negativo (defensive)", () => {
+    // Se forwardedEmails > pool (impossível em prod mas defensive)
+    assert.deepEqual(countEditorVsAuto([{ url: "u" }], 5), { x: 5, y: 0 });
+  });
+});
+
+describe("countForwardedEmailsFromInbox (#1323)", () => {
+  function withTmpInbox(content: string, test: (path: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-inbox-"));
+    const path = join(dir, "inbox.md");
+    try {
+      writeFileSync(path, content, "utf8");
+      test(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("conta 3 emails distintos do editor", () => {
+    const content = `## 2026-05-15T10:00:00Z
+- **from:** pixel@example.com
+- **subject:** Forward 1
+
+http://example.com/1
+
+## 2026-05-15T11:00:00Z
+- **from:** pixel@example.com
+- **subject:** Forward 2
+
+http://example.com/2
+
+## 2026-05-15T12:00:00Z
+- **from:** pixel@example.com
+- **subject:** Forward 3
+
+http://example.com/3
+`;
+    withTmpInbox(content, (path) => {
+      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 3);
+    });
+  });
+
+  it("ignora emails de outros senders (newsletters subscribed)", () => {
+    const content = `## 2026-05-15T10:00:00Z
+- **from:** pixel@example.com
+- **subject:** Forward direto
+
+http://example.com/1
+
+## 2026-05-15T11:00:00Z
+- **from:** cyberman@feeds.io
+- **subject:** Cyberman daily
+
+http://item1.com http://item2.com http://item3.com
+`;
+    withTmpInbox(content, (path) => {
+      // 1 forward + 1 newsletter de outro sender → conta só 1 (do editor)
+      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 1);
+    });
+  });
+
+  it("retorna 0 se arquivo ausente", () => {
+    assert.equal(countForwardedEmailsFromInbox("/nonexistent/path.md", "pixel@example.com"), 0);
+  });
+
+  it("inbox vazio retorna 0", () => {
+    withTmpInbox("", (path) => {
+      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 0);
+    });
+  });
+
+  it("case-insensitive match no email do editor", () => {
+    const content = `## 2026-05-15T10:00:00Z
+- **from:** Pixel@Example.com
+- **subject:** Test
+
+http://example.com/1
+`;
+    withTmpInbox(content, (path) => {
+      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 1);
+    });
   });
 });
 
