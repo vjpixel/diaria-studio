@@ -80,3 +80,47 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
   if (!set || set.length === 0) return true;
   return set.includes(edition);
 }
+
+// ── Period label (#1083) ─────────────────────────────────────────────────────
+
+/**
+ * Retorna o nome do mês em pt-BR (capitalizado) baseado em `now` interpretado
+ * em BRT (UTC-3). Usado como `periodLabel` no leaderboard.
+ *
+ * Pure pra testabilidade — caller passa Date determinístico em testes.
+ *
+ * Exemplo: `currentPeriodLabelBrt(new Date('2026-06-01T02:30:00Z'))` → "Maio"
+ * (UTC-3 ainda é 31 de maio às 23:30 BRT).
+ */
+export function currentPeriodLabelBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const monthName = MONTH_NAMES_PT[brt.getUTCMonth()];
+  return monthName.charAt(0).toUpperCase() + monthName.slice(1);
+}
+
+// ── Reset mensal do leaderboard (#1077) ─────────────────────────────────────
+
+/**
+ * Retorna a chave de archive `score-archive:{YYYY-MM}:{email}` pra arquivar
+ * o score antes do reset. YYYY-MM é o mês **anterior** (acabou de fechar) em
+ * BRT — quando o cron roda no dia 1 às 03:01 UTC (00:01 BRT), o mês a arquivar
+ * é o mês prévio.
+ *
+ * Pure — caller passa `now` determinístico em testes.
+ */
+export function archiveKeyForReset(email: string, now: Date): string {
+  // Subtrair 1 dia pra cair no mês anterior (cron roda no dia 1 do novo mês)
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  brt.setUTCDate(0); // dia 0 do mês atual = último dia do mês anterior
+  const year = brt.getUTCFullYear();
+  const month = String(brt.getUTCMonth() + 1).padStart(2, "0");
+  return `score-archive:${year}-${month}:${email}`;
+}
+
+/** Retorna a label do mês que acabou de fechar (usado no reset-log). */
+export function previousPeriodLabelBrt(now: Date): string {
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  brt.setUTCDate(0); // dia 0 do mês atual = último dia do mês anterior
+  const monthName = MONTH_NAMES_PT[brt.getUTCMonth()];
+  return monthName.charAt(0).toUpperCase() + monthName.slice(1);
+}

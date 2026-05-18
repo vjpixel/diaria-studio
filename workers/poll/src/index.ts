@@ -20,6 +20,11 @@
  */
 
 import { rankEntries, type LeaderboardEntry } from "./leaderboard";
+import {
+  archiveKeyForReset,
+  currentPeriodLabelBrt,
+  previousPeriodLabelBrt,
+} from "./lib";
 
 export interface Env {
   POLL: KVNamespace;
@@ -292,10 +297,10 @@ async function handleLeaderboard(env: Env): Promise<Response> {
     </tr>`;
   }).join("\n");
 
-  // #1081: período atual hardcoded como "Maio (Teste)" enquanto o leaderboard
-  // estiver em validação. Voltar pra mês dinâmico (MONTH_NAMES_PT[...]) antes
-  // de divulgar pros leitores.
-  const periodLabel = "Maio (Teste)";
+  // #1083: período dinâmico em pt-BR baseado no mês atual em BRT (UTC-3).
+  // Resets ocorrem no dia 1 às 00:01 BRT (= 03:01 UTC, #1077) — score keys
+  // arquivados e zerados a cada mudança de mês.
+  const periodLabel = currentPeriodLabelBrt(new Date());
 
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -530,4 +535,52 @@ export default {
 
     return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
+
+  // #1077: reset mensal do leaderboard. Cron `1 3 1 * *` (UTC) = 00:01 BRT
+  // do dia 1 de cada mês. Arquiva todos os `score:*` em
+  // `score-archive:{YYYY-MM}:{email}` e deleta as keys originais. `stats:*`
+  // ficam intocados (são por-edição, não cumulativos).
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    await runMonthlyReset(env, new Date());
+  },
 };
+
+/**
+ * Reset handler — exported pra ser testável sem mock de scheduled event.
+ * Itera score:* via list, arquiva em score-archive:{YYYY-MM}:{email}, deleta.
+ * Loga sumário em reset-log:{YYYY-MM}.
+ */
+export async function runMonthlyReset(env: Env, now: Date): Promise<{ archived: number; deleted: number; period: string }> {
+  const periodMonth = previousPeriodLabelBrt(now);
+  console.log(`[reset] iniciando reset mensal — período ${periodMonth}`);
+  let cursor: string | undefined = undefined;
+  let archived = 0;
+  let deleted = 0;
+  do {
+    const list: KVNamespaceListResult<unknown, string> = await env.POLL.list({ prefix: "score:", cursor });
+    cursor = list.list_complete ? undefined : list.cursor;
+    for (const key of list.keys) {
+      const raw = await env.POLL.get(key.name);
+      if (!raw) continue;
+      const email = key.name.replace("score:", "");
+      const archiveKey = archiveKeyForReset(email, now);
+      await env.POLL.put(archiveKey, raw);
+      await env.POLL.delete(key.name);
+      archived++;
+      deleted++;
+    }
+  } while (cursor);
+
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  brt.setUTCDate(0);
+  const logKey = `reset-log:${brt.getUTCFullYear()}-${String(brt.getUTCMonth() + 1).padStart(2, "0")}`;
+  await env.POLL.put(logKey, JSON.stringify({
+    period: periodMonth,
+    archived,
+    deleted,
+    ran_at: new Date(now).toISOString(),
+  }));
+
+  console.log(`[reset] concluído — ${archived} arquivados, ${deleted} deletados`);
+  return { archived, deleted, period: periodMonth };
+}

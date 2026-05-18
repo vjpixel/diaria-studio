@@ -20,6 +20,9 @@ import {
   parseValidEditions,
   isValidEdition,
   redirectTargetForTrailingSlash,
+  currentPeriodLabelBrt,
+  previousPeriodLabelBrt,
+  archiveKeyForReset,
 } from "../workers/poll/src/lib.ts";
 
 describe("formatEditionDate (#1080)", () => {
@@ -178,5 +181,65 @@ describe("redirectTargetForTrailingSlash (#1319)", () => {
   it("preserva /img/{key} mesmo com trailing slash (key pode terminar em /)", () => {
     assert.equal(redirectTargetForTrailingSlash("/img/key/"), null);
     assert.equal(redirectTargetForTrailingSlash("/img/foo.jpg/"), null);
+  });
+});
+
+describe("currentPeriodLabelBrt (#1083)", () => {
+  it("retorna nome do mês em pt-BR capitalizado pra UTC bem dentro do mês", () => {
+    // Meio do mês de Maio em UTC — BRT também é Maio
+    assert.equal(currentPeriodLabelBrt(new Date("2026-05-15T12:00:00Z")), "Maio");
+  });
+
+  it("BRT compensation — 02:00 UTC do dia 1 = 23:00 BRT do mês anterior", () => {
+    // 2026-06-01T02:00:00Z = 2026-05-31T23:00:00 BRT
+    assert.equal(currentPeriodLabelBrt(new Date("2026-06-01T02:00:00Z")), "Maio");
+  });
+
+  it("após 03:00 UTC do dia 1, BRT também já é dia 1 do novo mês", () => {
+    // 2026-06-01T04:00:00Z = 2026-06-01T01:00:00 BRT
+    assert.equal(currentPeriodLabelBrt(new Date("2026-06-01T04:00:00Z")), "Junho");
+  });
+
+  it("cobre todos os 12 meses do ano", () => {
+    const months = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    for (let m = 0; m < 12; m++) {
+      const date = new Date(Date.UTC(2026, m, 15, 12, 0, 0));
+      assert.equal(currentPeriodLabelBrt(date), months[m]);
+    }
+  });
+});
+
+describe("previousPeriodLabelBrt (#1077)", () => {
+  it("dia 1 às 03:01 UTC (cron trigger) → mês anterior", () => {
+    // Cron roda dia 1 às 03:01 UTC. BRT: 00:01 do dia 1.
+    // setUTCDate(0) → último dia do mês anterior = 2026-05-31
+    assert.equal(previousPeriodLabelBrt(new Date("2026-06-01T03:01:00Z")), "Maio");
+  });
+
+  it("dia 15 às 12:00 UTC (no meio do mês) → mês anterior pra reset retroativo", () => {
+    // Cenário: reset rodado manualmente fora do horário do cron. BRT = dia 15.
+    // setUTCDate(0) volta pro último dia do mês anterior em relação ao mês de BRT.
+    assert.equal(previousPeriodLabelBrt(new Date("2026-06-15T12:00:00Z")), "Maio");
+  });
+
+  it("janeiro → dezembro do ano anterior", () => {
+    assert.equal(previousPeriodLabelBrt(new Date("2027-01-01T03:01:00Z")), "Dezembro");
+  });
+});
+
+describe("archiveKeyForReset (#1077)", () => {
+  it("formato score-archive:YYYY-MM:email com mês anterior", () => {
+    const k = archiveKeyForReset("user@x.com", new Date("2026-06-01T03:01:00Z"));
+    assert.equal(k, "score-archive:2026-05:user@x.com");
+  });
+
+  it("janeiro arquiva como dezembro do ano anterior", () => {
+    const k = archiveKeyForReset("user@x.com", new Date("2027-01-01T03:01:00Z"));
+    assert.equal(k, "score-archive:2026-12:user@x.com");
+  });
+
+  it("email com + preserva como é (Beehiiv merge tag)", () => {
+    const k = archiveKeyForReset("subscriber+tag@example.com", new Date("2026-06-01T03:01:00Z"));
+    assert.equal(k, "score-archive:2026-05:subscriber+tag@example.com");
   });
 });
