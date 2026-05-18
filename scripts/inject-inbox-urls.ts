@@ -35,9 +35,10 @@
 
 import "dotenv/config";
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
+import { writeMarker } from "./lib/pipeline-state.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
@@ -416,6 +417,29 @@ async function main(): Promise<void> {
   const tmpPath = targetPath + ".tmp";
   writeFileSync(tmpPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpPath, targetPath);
+
+  // #1330: marker pra step 1h. Próximo step (1j dedup) checa via
+  // `pipeline-sentinel.ts assert-marker --name inject-inbox-urls`. Garante
+  // que o passo não foi pulado silenciosamente (caso 260518/260505/#594).
+  // Edition dir é o diretório que contém o pool (outPath é normalmente
+  // `data/editions/{AAMMDD}/_internal/tmp-articles-raw.json`).
+  try {
+    const internalDir = dirname(targetPath);
+    const editionDir = dirname(internalDir); // .../{AAMMDD}/
+    // Só grava marker se a estrutura bate (não em uso ad-hoc fora de edição).
+    if (basename(internalDir) === "_internal" && /^\d{6}$/.test(basename(editionDir))) {
+      writeMarker(editionDir, "inject-inbox-urls", {
+        injected: newInjected.length,
+        total_editor_urls: injectedFromEditor.length,
+        total_newsletter_urls: injectedFromNewsletters.length,
+        total_pool_size: merged.length,
+      });
+    }
+  } catch (e) {
+    // Marker write falha não bloqueia o injetor — só perde a guarantee
+    // anti-skip do step seguinte.
+    console.error(`[inject-inbox-urls] warn: marker write falhou: ${(e as Error).message}`);
+  }
 
   // Validate-pool mode: sanity check do merge interno (não anti-skip externo).
   // Como o merge é feito acima, falha aqui só em bug do script.

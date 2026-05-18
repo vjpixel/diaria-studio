@@ -189,6 +189,10 @@ Se exit 1: step 1h foi skipado ou falhou silenciosamente. Re-executar step 1h e 
 
 Logar resultado como info no run-log. **Não prosseguir para 1i se exit 1.**
 
+### 1h.7. Marker check determinístico (#1330)
+
+`inject-inbox-urls.ts` grava `_internal/.marker-inject-inbox-urls.json` ao final. Antes de 1i, assertar o marker — pega o cenário "orchestrator skipou 1h+1h.6 inteiros" (#594 260505, 260518) que a validação 1h.6 não captura sozinha porque também é skipada. `npx tsx scripts/pipeline-sentinel.ts assert-marker --edition {AAMMDD} --name inject-inbox-urls` — exit 0 prossegue; exit 1 **HALT** via `render-halt-banner.ts` com motivo "marker inject-inbox-urls ausente".
+
 ### 1i. Link verification (script direto)
 
 Gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tmp-urls-all.json` (array de strings) e rodar:
