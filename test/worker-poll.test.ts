@@ -28,7 +28,7 @@ import {
   currentMonthSlugBrt,
   monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1, scoreByMonthEntriesToLeaderboard, listAllKeys, computeSnapshotEntries } from "../workers/poll/src/index.ts";
+import { computeTop1, computePodium, scoreByMonthEntriesToLeaderboard, listAllKeys, computeSnapshotEntries } from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -302,6 +302,66 @@ describe("computeTop1 (#1160)", () => {
       { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
     ]);
     assert.deepEqual(r.map((s) => s.nickname), ["Alice", "Bob", "Zoe"]);
+  });
+});
+
+describe("computePodium (#1160 followup — masked email fallback)", () => {
+  it("retorna ranks 1-3 com nicknames quando todos têm", () => {
+    const r = computePodium([
+      { email: "a@x.com", nickname: "Alice", correct: 12, total: 12 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 12 },
+      { email: "c@x.com", nickname: "Carol", correct: 8, total: 12 },
+      { email: "d@x.com", nickname: "Dave", correct: 6, total: 12 },
+    ]);
+    assert.equal(r.length, 3);
+    assert.deepEqual(r.map((e) => e.nickname), ["Alice", "Bob", "Carol"]);
+    assert.deepEqual(r.map((e) => e.rank), [1, 2, 3]);
+  });
+
+  it("entries sem nickname incluídas com email mascarado", () => {
+    const r = computePodium([
+      { email: "alice@example.com", nickname: "Alice", correct: 10, total: 10 },
+      { email: "becker.anacandida@example.com", nickname: null, correct: 9, total: 10 },
+      { email: "carol@example.com", nickname: "Carol", correct: 8, total: 10 },
+    ]);
+    assert.equal(r.length, 3);
+    assert.deepEqual(r.map((e) => e.nickname), [
+      "Alice",
+      "becker.anacandida@***",
+      "Carol",
+    ]);
+    assert.deepEqual(r.map((e) => e.rank), [1, 2, 3]);
+  });
+
+  it("nickname vazio/whitespace cai pra masked email", () => {
+    const r = computePodium([
+      { email: "a@x.com", nickname: "   ", correct: 10, total: 10 },
+      { email: "b@x.com", nickname: "", correct: 10, total: 10 },
+    ]);
+    assert.equal(r.length, 2);
+    assert.deepEqual(r.map((e) => e.nickname).sort(), ["a@***", "b@***"]);
+  });
+
+  it("filtra entries com total=0", () => {
+    const r = computePodium([
+      { email: "a@x.com", nickname: "Alice", correct: 0, total: 0 },
+      { email: "b@x.com", nickname: "Bob", correct: 5, total: 5 },
+    ]);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].nickname, "Bob");
+  });
+
+  it("array vazio → []", () => {
+    assert.deepEqual(computePodium([]), []);
+  });
+
+  it("dense rank com empate em rank 1 (2 ouros, 1 prata)", () => {
+    const r = computePodium([
+      { email: "a@x.com", nickname: "Alice", correct: 10, total: 10 },
+      { email: "b@x.com", nickname: "Bob", correct: 10, total: 10 },
+      { email: "c@x.com", nickname: "Carol", correct: 9, total: 10 },
+    ]);
+    assert.deepEqual(r.map((e) => e.rank), [1, 1, 2]);
   });
 });
 
