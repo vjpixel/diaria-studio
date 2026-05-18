@@ -1,0 +1,433 @@
+/**
+ * beehiiv-sync.ts (#1357)
+ *
+ * Popula `data/beehiiv-cache/posts/` com 1 JSON por post (detalhes + stats +
+ * clicks), e `data/beehiiv-cache/publication.json` (info + stats da publicação).
+ * Esses arquivos são consumidos por:
+ *   - `scripts/build-link-ctr.ts` (lê posts/*.json pra construir CTR table)
+ *   - `scripts/update-audience.ts` (lê publication.json pra subscriber count)
+ *
+ * Histórico: `beehiiv-sync.ts` foi adicionado no commit `20023ba` (2026-04-22)
+ * junto com `build-link-ctr.ts`, mas o squash-merge de PR #24 só trouxe
+ * `build-link-ctr.ts`. Resultado: build-link-ctr ficou órfão, dependendo de
+ * cache que nenhum script populava. Sem este sync, `data/link-ctr-table.csv`
+ * fica vazio (só header) → `update-audience.ts` não vê CTR comportamental →
+ * `context/audience-profile.md` fica sem seção comportamental → scorer roda
+ * só com sinal de survey. Regressão silenciosa (Stage 0 é warn-only).
+ *
+ * Uso:
+ *   npx tsx scripts/beehiiv-sync.ts              # incremental (default)
+ *   npx tsx scripts/beehiiv-sync.ts --full       # re-fetch todos (ignora cache)
+ *   npx tsx scripts/beehiiv-sync.ts --no-clicks  # pula /clicks (mais rápido,
+ *                                                  CTR table fica vazia)
+ *   npx tsx scripts/beehiiv-sync.ts --dry-run    # só lista o que faria
+ *   npx tsx scripts/beehiiv-sync.ts --posts-only # pula publication.json
+ *
+ * Env:
+ *   BEEHIIV_API_KEY           obrigatório
+ *   BEEHIIV_PUBLICATION_ID    opcional — fallback p/ platform.config.json
+ *   BEEHIIV_API_URL           opcional — override para tests
+ *
+ * Output (stdout): JSON `{ mode, posts_fetched, posts_skipped, posts_total,
+ *   publication_synced, dry_run }`. Stderr: progresso humano.
+ *
+ * Exit codes: 0=sucesso, 1=erro API/IO, 2=config inválida.
+ */
+
+import "dotenv/config";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CONFIG_PATH = resolve(ROOT, "platform.config.json");
+const CACHE_DIR = resolve(ROOT, "data/beehiiv-cache");
+const POSTS_DIR = resolve(CACHE_DIR, "posts");
+const POSTS_INDEX = resolve(POSTS_DIR, "index.json");
+const PUBLICATION_JSON = resolve(CACHE_DIR, "publication.json");
+const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+
+const RATE_LIMIT_DELAY_MS = 300;
+const MAX_RETRIES = 5;
+
+interface Config {
+  apiKey: string;
+  publicationId: string;
+}
+
+interface PostIndexEntry {
+  id: string;
+  title: string;
+  status: string;
+  publish_date: number | null;
+  updated_at: string | null;
+  web_url?: string;
+}
+
+export interface SyncResult {
+  mode: "bootstrap" | "incremental" | "full";
+  posts_fetched: number;
+  posts_skipped: number;
+  posts_total: number;
+  publication_synced: boolean;
+  dry_run: boolean;
+}
+
+function loadConfig(): Config {
+  const apiKey = process.env.BEEHIIV_API_KEY;
+  if (!apiKey) {
+    console.error("BEEHIIV_API_KEY não definida. Configure no .env (veja .env.example).");
+    process.exit(2);
+  }
+  if (!existsSync(CONFIG_PATH)) {
+    console.error(`platform.config.json não encontrado em ${CONFIG_PATH}`);
+    process.exit(2);
+  }
+  let cfg: { beehiiv?: { publicationId?: string } };
+  try {
+    cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+  } catch (e) {
+    console.error(`platform.config.json inválido: ${(e as Error).message}`);
+    process.exit(2);
+  }
+  const publicationId = process.env.BEEHIIV_PUBLICATION_ID ?? cfg.beehiiv?.publicationId ?? "";
+  if (!publicationId) {
+    console.error(
+      "publicationId ausente — adicione `beehiiv.publicationId` em platform.config.json ou exporte BEEHIIV_PUBLICATION_ID.",
+    );
+    process.exit(2);
+  }
+  return { apiKey, publicationId };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<T> {
+  await sleep(RATE_LIMIT_DELAY_MS);
+  const res = await fetch(`${BEEHIIV_API}${path}`, {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+  });
+
+  if (res.status === 429 && retries < MAX_RETRIES) {
+    const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
+    const wait = Math.max(retryAfter * 1000, 30_000);
+    process.stderr.write(
+      `[beehiiv-sync] rate-limited — esperando ${Math.round(wait / 1000)}s (tentativa ${retries + 1}/${MAX_RETRIES})\n`,
+    );
+    await sleep(wait);
+    return apiFetch<T>(path, apiKey, retries + 1);
+  }
+
+  if (!res.ok) {
+    throw new Error(`Beehiiv API ${res.status} ${path}: ${await res.text()}`);
+  }
+
+  return (await res.json()) as T;
+}
+
+function ensureDirs(): void {
+  mkdirSync(POSTS_DIR, { recursive: true });
+}
+
+function loadIndex(): PostIndexEntry[] {
+  if (!existsSync(POSTS_INDEX)) return [];
+  try {
+    return JSON.parse(readFileSync(POSTS_INDEX, "utf8")) as PostIndexEntry[];
+  } catch {
+    return [];
+  }
+}
+
+function atomicWrite(target: string, content: string): void {
+  const tmp = `${target}.tmp`;
+  writeFileSync(tmp, content, "utf8");
+  renameSync(tmp, target);
+}
+
+export interface NeedsUpdateOpts {
+  full?: boolean;
+}
+
+/**
+ * Decide se precisa re-fetch o detalhe de um post.
+ *
+ * Pure function — separada pra testes unitários (#1357).
+ */
+export function needsUpdate(
+  summary: { id: string; updated_at?: string | null },
+  cachedIndex: Map<string, PostIndexEntry>,
+  postFileExists: (id: string) => boolean,
+  opts: NeedsUpdateOpts = {},
+): boolean {
+  if (opts.full) return true;
+  const cached = cachedIndex.get(summary.id);
+  if (!cached) return true;
+  if (summary.updated_at && cached.updated_at !== summary.updated_at) return true;
+  if (!postFileExists(summary.id)) return true;
+  return false;
+}
+
+interface ListPostsPage {
+  data: Array<{
+    id: string;
+    title?: string;
+    subject?: string;
+    status?: string;
+    publish_date?: number | null;
+    updated_at?: string | null;
+    web_url?: string;
+  }>;
+  page?: number;
+  total_pages?: number;
+}
+
+interface PostDetailResponse {
+  data: {
+    id: string;
+    status?: string;
+    publish_date?: number | null;
+    stats?: { email?: Record<string, unknown>; web?: Record<string, unknown>; clicks?: unknown[] };
+    content?: { free?: { web?: string; email?: string } };
+    [k: string]: unknown;
+  };
+}
+
+interface ClicksResponse {
+  data: unknown[];
+  page?: number;
+  total_pages?: number;
+}
+
+async function fetchAllClicks(postId: string, cfg: Config): Promise<unknown[]> {
+  const all: unknown[] = [];
+  let page = 1;
+  let totalPages = 1;
+  while (page <= totalPages) {
+    const params = new URLSearchParams({ per_page: "100", page: String(page) });
+    let resp: ClicksResponse;
+    try {
+      resp = await apiFetch<ClicksResponse>(
+        `/publications/${cfg.publicationId}/posts/${postId}/clicks?${params}`,
+        cfg.apiKey,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("404")) return all;
+      throw e;
+    }
+    all.push(...(resp.data ?? []));
+    totalPages = resp.total_pages ?? 1;
+    if (!resp.data || resp.data.length === 0) break;
+    page++;
+  }
+  return all;
+}
+
+export interface SyncOpts {
+  full: boolean;
+  noClicks: boolean;
+  postsOnly: boolean;
+  dryRun: boolean;
+  /** Override config carregada — para tests. */
+  configOverride?: Config;
+}
+
+export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
+  const cfg = opts.configOverride ?? loadConfig();
+  ensureDirs();
+
+  const cachedIndex = new Map(loadIndex().map((e) => [e.id, e]));
+  const isBootstrap = cachedIndex.size === 0;
+  const mode: SyncResult["mode"] = opts.full ? "full" : isBootstrap ? "bootstrap" : "incremental";
+
+  process.stderr.write(`[beehiiv-sync] mode=${mode} pub=${cfg.publicationId}\n`);
+
+  const newIndex: PostIndexEntry[] = [];
+  let fetched = 0;
+  let skipped = 0;
+  let page = 1;
+  let totalPages = 1;
+
+  while (page <= totalPages) {
+    const params = new URLSearchParams({
+      per_page: "50",
+      order_by: "publish_date",
+      direction: "desc",
+      page: String(page),
+    });
+    process.stderr.write(`[beehiiv-sync] listing page ${page}\n`);
+    const raw = await apiFetch<unknown>(
+      `/publications/${cfg.publicationId}/posts?${params}`,
+      cfg.apiKey,
+    );
+    const parsed = parseListPostsResponse(raw);
+    const summaries = (parsed.data ?? []) as ListPostsPage["data"];
+    totalPages = parsed.total_pages ?? 1;
+
+    let allCached = true;
+    for (const s of summaries) {
+      if (needsUpdate(s, cachedIndex, (id) => existsSync(resolve(POSTS_DIR, `${id}.json`)), { full: opts.full })) {
+        allCached = false;
+        break;
+      }
+    }
+
+    for (const s of summaries) {
+      const indexEntry: PostIndexEntry = {
+        id: s.id,
+        title: s.title ?? s.subject ?? "",
+        status: s.status ?? "",
+        publish_date: s.publish_date ?? null,
+        updated_at: s.updated_at ?? null,
+        web_url: s.web_url,
+      };
+      newIndex.push(indexEntry);
+
+      if (!needsUpdate(s, cachedIndex, (id) => existsSync(resolve(POSTS_DIR, `${id}.json`)), { full: opts.full })) {
+        skipped++;
+        continue;
+      }
+
+      if (opts.dryRun) {
+        process.stderr.write(`  [dry-run] would fetch ${s.id} — ${indexEntry.title}\n`);
+        fetched++;
+        continue;
+      }
+
+      // Fetch detail (content + stats)
+      const expandParams = new URLSearchParams();
+      expandParams.append("expand[]", "free_web_content");
+      expandParams.append("expand[]", "free_email_content");
+      expandParams.append("expand[]", "stats");
+      let detail: PostDetailResponse["data"];
+      try {
+        const resp = await apiFetch<PostDetailResponse>(
+          `/publications/${cfg.publicationId}/posts/${s.id}?${expandParams}`,
+          cfg.apiKey,
+        );
+        detail = resp.data;
+      } catch (e) {
+        process.stderr.write(`  ! detail failed for ${s.id}: ${e instanceof Error ? e.message : e}\n`);
+        skipped++;
+        continue;
+      }
+
+      // Fetch clicks (link-level CTR data) — merge into stats.clicks for
+      // build-link-ctr.ts compatibility (lê post.stats?.clicks).
+      let clicks: unknown[] = [];
+      if (!opts.noClicks) {
+        try {
+          clicks = await fetchAllClicks(s.id, cfg);
+        } catch (e) {
+          process.stderr.write(`  ! clicks failed for ${s.id}: ${e instanceof Error ? e.message : e}\n`);
+        }
+      }
+      detail.stats = { ...(detail.stats ?? {}), clicks };
+
+      // Also expose content.free.{web,email} layout que build-link-ctr lê
+      // — alguns posts retornam `free_web_content`/`free_email_content` no top
+      // level em vez de `content.free.*`. Normalizar.
+      const detailAny = detail as Record<string, unknown>;
+      const freeWeb = detailAny["free_web_content"] as string | undefined;
+      const freeEmail = detailAny["free_email_content"] as string | undefined;
+      if (freeWeb || freeEmail) {
+        const existingContent = (detail.content ?? {}) as { free?: { web?: string; email?: string } };
+        const existingFree = existingContent.free ?? {};
+        detail.content = {
+          ...existingContent,
+          free: {
+            web: existingFree.web ?? freeWeb,
+            email: existingFree.email ?? freeEmail,
+          },
+        };
+      }
+
+      atomicWrite(
+        resolve(POSTS_DIR, `${s.id}.json`),
+        JSON.stringify({ ...detail, _synced_at: new Date().toISOString() }, null, 2),
+      );
+      fetched++;
+      process.stderr.write(`  ↓ ${s.id} — ${indexEntry.title.slice(0, 60)}\n`);
+    }
+
+    // Incremental shortcut: se a página inteira já está cached, parar de paginar.
+    if (!opts.full && allCached && page > 1) {
+      process.stderr.write(`[beehiiv-sync] página ${page} toda cached — parando incremental\n`);
+      // Preservar entradas do índice antigo que ainda não vimos.
+      for (const [id, entry] of cachedIndex) {
+        if (!newIndex.find((p) => p.id === id)) newIndex.push(entry);
+      }
+      break;
+    }
+
+    page++;
+  }
+
+  // Ordenar por publish_date desc (mais recentes primeiro).
+  newIndex.sort((a, b) => (b.publish_date ?? 0) - (a.publish_date ?? 0));
+
+  if (!opts.dryRun) {
+    atomicWrite(POSTS_INDEX, JSON.stringify(newIndex, null, 2));
+  }
+
+  // Publication info + stats (subscriber count usado por update-audience).
+  let publicationSynced = false;
+  if (!opts.postsOnly) {
+    if (opts.dryRun) {
+      process.stderr.write(`[beehiiv-sync] [dry-run] would fetch publication\n`);
+      publicationSynced = true;
+    } else {
+      try {
+        const pubResp = await apiFetch<{ data: unknown }>(
+          `/publications/${cfg.publicationId}?expand[]=stats`,
+          cfg.apiKey,
+        );
+        if (pubResp.data) {
+          atomicWrite(
+            PUBLICATION_JSON,
+            JSON.stringify({ ...(pubResp.data as object), _synced_at: new Date().toISOString() }, null, 2),
+          );
+          publicationSynced = true;
+          process.stderr.write(`[beehiiv-sync] publication.json saved\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`[beehiiv-sync] publication fetch failed: ${e instanceof Error ? e.message : e}\n`);
+      }
+    }
+  }
+
+  return {
+    mode,
+    posts_fetched: fetched,
+    posts_skipped: skipped,
+    posts_total: newIndex.length,
+    publication_synced: publicationSynced,
+    dry_run: opts.dryRun,
+  };
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const opts: SyncOpts = {
+    full: argv.includes("--full"),
+    noClicks: argv.includes("--no-clicks"),
+    postsOnly: argv.includes("--posts-only"),
+    dryRun: argv.includes("--dry-run"),
+  };
+  const result = await syncBeehiiv(opts);
+  console.log(JSON.stringify(result));
+}
+
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  });
+}
