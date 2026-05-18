@@ -78,11 +78,13 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     company: "Google (blog)",
     // blog.google/products|technology = produto; cloud.google.com/blog = dev blog;
     // blog.research.google = pesquisa aplicada;
-    // innovation-and-ai = re-org Google blog post-2025 (anúncios Gemini, infra AI)
+    // innovation-and-ai = re-org Google blog post-2025 (anúncios Gemini, infra AI);
+    // developers.googleblog.com = dev tools/SDK announcements (Genkit, AI Studio, Android dev)
     path_patterns: [
       /^blog\.google\/(products|technology|outreach-initiatives|innovation-and-ai)\//,
       /^cloud\.google\.com\/blog\//,
       /^blog\.research\.google\//,
+      /^developers\.googleblog\.com\//,
     ],
     detection_keywords: /\b(google ai|gemma)\b/i,
     primary_domain: "blog.google",
