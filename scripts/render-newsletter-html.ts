@@ -79,6 +79,12 @@ export interface EIA {
   prevResultLine?: string;
   /** Código da edição (AAMMDD), usado nos botões de votação (#465). */
   edition: string;
+  /** Leaderboard top1 do mês corrente (#1160). Renderiza no rodapé do È IA?
+   * — bloco omitido se ausente ou top1 vazio. Populado por
+   * `scripts/fetch-leaderboard-top1.ts` em `_internal/04-leaderboard-top1.json`. */
+  leaderboardTop1?: { nickname: string; pct: number; correct: number; total: number }[];
+  /** Label do período pro título do bloco (ex: "Maio"). */
+  leaderboardPeriod?: string;
 }
 
 interface NewsletterContent {
@@ -424,6 +430,21 @@ function extractContent(editionDir: string): NewsletterContent {
     ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
     : fallbackEIA(editionDir);
 
+  // #1160: leaderboard top1 do mês corrente. Arquivo populado por
+  // fetch-leaderboard-top1.ts pré-render; ausente → bloco omitido.
+  const leaderboardPath = resolve(editionDir, "_internal", "04-leaderboard-top1.json");
+  if (existsSync(leaderboardPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(leaderboardPath, "utf8"));
+      if (Array.isArray(parsed.top1) && parsed.top1.length > 0) {
+        eia.leaderboardTop1 = parsed.top1;
+        eia.leaderboardPeriod = parsed.period || undefined;
+      }
+    } catch {
+      // Corrupted → skip, bloco omitido
+    }
+  }
+
   // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
   // Quando ausentes (edição antiga, ou pixel preferiu omitir), graceful skip.
   const sorteio = extractTemplateBlock(reviewedText, "🎁 SORTEIO");
@@ -684,6 +705,11 @@ function renderEIA(eia: EIA): string {
       </td></tr>`
     : "";
 
+  // #1160: bloco leaderboard top1 no rodapé do È IA?. Omitido quando ausente.
+  // Formato: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
+  // Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
+  const leaderboardRow = renderLeaderboardTop1Row(eia, paragraphStyle);
+
   // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
   // interativo, sem o border ciano grosso dos destaques antigos. Padding
   // simétrico em ambos <td> das imagens (#1085) — alinha A/B no stack mobile.
@@ -721,10 +747,46 @@ ${renderRule()}
           <p style="${paragraphStyle}">${creditHtml}</p>
         </td></tr>
 ${prevResultRow}
+${leaderboardRow}
       </table>
     </td></tr>
   </table>
 </td></tr>`;
+}
+
+/**
+ * Pure (#1160): renderiza linha do leaderboard top1 no rodapé do È IA?.
+ * Retorna string vazia quando ausente ou top1 vazio — renderer principal
+ * concatena sem afetar layout.
+ *
+ * Formato:
+ *   - Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
+ *   - Tie ≤3: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
+ *   - Tie >3: "🏆 Liderança de Maio: 5 leitores empatados em 100%"
+ */
+export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
+  if (!eia.leaderboardTop1 || eia.leaderboardTop1.length === 0) return "";
+  const top1 = eia.leaderboardTop1;
+  const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+  const pct = top1[0].pct;
+  const single = top1[0];
+
+  let phrase: string;
+  if (top1.length === 1) {
+    phrase = `${single.nickname} — ${pct}% (${single.correct}/${single.total})`;
+  } else if (top1.length <= 3) {
+    const names = top1.map((e) => e.nickname);
+    const joined = names.length === 2
+      ? `${names[0]} e ${names[1]}`
+      : `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
+    phrase = `${joined} — ${pct}%`;
+  } else {
+    phrase = `${top1.length} leitores empatados em ${pct}%`;
+  }
+
+  return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">🏆 <strong>Liderança${period}:</strong> ${esc(phrase)}</p>
+      </td></tr>`;
 }
 
 /** Render a single section item as its own table row(s) */
