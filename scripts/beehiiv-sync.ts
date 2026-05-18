@@ -15,11 +15,17 @@
  * `context/audience-profile.md` fica sem seção comportamental → scorer roda
  * só com sinal de survey. Regressão silenciosa (Stage 0 é warn-only).
  *
+ * **Click data:** Beehiiv removeu o endpoint REST `/posts/{id}/clicks` da API
+ * pública em algum momento após 2026-04-22. Hoje só dá pra buscar per-link
+ * clicks via MCP `mcp__claude_ai_Beehiiv__list_post_clicks` — que **só é
+ * chamável do top-level Claude** (não de scripts ou subagents). Este sync,
+ * por isso, **não busca clicks**; só popula metadata + content + aggregate
+ * stats. Emite `posts_needing_clicks` no resultado pra orchestrator
+ * top-level enriquecer via MCP + `scripts/apply-mcp-clicks.ts`.
+ *
  * Uso:
  *   npx tsx scripts/beehiiv-sync.ts              # incremental (default)
  *   npx tsx scripts/beehiiv-sync.ts --full       # re-fetch todos (ignora cache)
- *   npx tsx scripts/beehiiv-sync.ts --no-clicks  # pula /clicks (mais rápido,
- *                                                  CTR table fica vazia)
  *   npx tsx scripts/beehiiv-sync.ts --dry-run    # só lista o que faria
  *   npx tsx scripts/beehiiv-sync.ts --posts-only # pula publication.json
  *
@@ -35,7 +41,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
@@ -65,6 +71,12 @@ interface PostIndexEntry {
   web_url?: string;
 }
 
+export interface PostNeedingClicks {
+  id: string;
+  title: string;
+  email_clicks: number;
+}
+
 export interface SyncResult {
   mode: "bootstrap" | "incremental" | "full";
   posts_fetched: number;
@@ -72,7 +84,23 @@ export interface SyncResult {
   posts_total: number;
   publication_synced: boolean;
   dry_run: boolean;
+  /**
+   * Posts publicados há > MIN_AGE_DAYS_FOR_CLICKS dias, com aggregate
+   * `email.clicks > 0` mas `stats.clicks` vazio no cache. Orchestrator
+   * top-level deve enriquecê-los via MCP `list_post_clicks` + pipe pra
+   * `apply-mcp-clicks.ts`. Cap em CLICKS_FETCH_BUDGET pra evitar bursts
+   * grandes em runs incrementais.
+   */
+  posts_needing_clicks: PostNeedingClicks[];
 }
+
+/** Posts mais novos que isso ainda têm CTR não-estabilizado — mesmo filtro
+ *  do build-link-ctr.ts (linha ~1180). */
+const MIN_AGE_DAYS_FOR_CLICKS = 7;
+
+/** Cap defensivo no manifest pra incremental runs. Bootstrap pode exceder
+ *  porque há muito histórico — orchestrator decide quanto processar. */
+const CLICKS_FETCH_BUDGET_INCREMENTAL = 5;
 
 function loadConfig(): Config {
   const apiKey = process.env.BEEHIIV_API_KEY;
@@ -195,42 +223,54 @@ interface PostDetailResponse {
   };
 }
 
-interface ClicksResponse {
-  data: unknown[];
-  page?: number;
-  total_pages?: number;
-}
-
-async function fetchAllClicks(postId: string, cfg: Config): Promise<unknown[]> {
-  const all: unknown[] = [];
-  let page = 1;
-  let totalPages = 1;
-  while (page <= totalPages) {
-    const params = new URLSearchParams({ per_page: "100", page: String(page) });
-    let resp: ClicksResponse;
-    try {
-      resp = await apiFetch<ClicksResponse>(
-        `/publications/${cfg.publicationId}/posts/${postId}/clicks?${params}`,
-        cfg.apiKey,
-      );
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("404")) return all;
-      throw e;
-    }
-    all.push(...(resp.data ?? []));
-    totalPages = resp.total_pages ?? 1;
-    if (!resp.data || resp.data.length === 0) break;
-    page++;
+/**
+ * Identifica posts que precisam de enrichment de clicks via MCP.
+ *
+ * Pure function — separada pra testes (#1357 followup). Retorna posts que:
+ *   1. Status confirmed
+ *   2. Publicados há > MIN_AGE_DAYS_FOR_CLICKS dias (mesmo cutoff do build-link-ctr)
+ *   3. Aggregate `email.clicks > 0` (vale a pena buscar)
+ *   4. `stats.clicks` vazio no cache local (ainda não foi enriquecido)
+ *
+ * Ordena por publish_date desc (mais recentes primeiro — orchestrator
+ * processa em ordem de relevância) e respeita o budget passado.
+ */
+export function identifyPostsNeedingClicks(
+  posts: Array<{
+    id: string;
+    title?: string;
+    status?: string;
+    publish_date?: number | null;
+    stats?: { email?: { clicks?: number }; clicks?: unknown[] };
+  }>,
+  now: Date = new Date(),
+  budget: number = Number.POSITIVE_INFINITY,
+): PostNeedingClicks[] {
+  const cutoffMs = now.getTime() - MIN_AGE_DAYS_FOR_CLICKS * 24 * 60 * 60 * 1000;
+  const eligible: Array<PostNeedingClicks & { _publish_date: number }> = [];
+  for (const p of posts) {
+    if (p.status !== "confirmed") continue;
+    if (!p.publish_date || p.publish_date * 1000 > cutoffMs) continue;
+    const emailClicks = p.stats?.email?.clicks ?? 0;
+    if (emailClicks <= 0) continue;
+    if ((p.stats?.clicks?.length ?? 0) > 0) continue;
+    eligible.push({
+      id: p.id,
+      title: p.title ?? "",
+      email_clicks: emailClicks,
+      _publish_date: p.publish_date,
+    });
   }
-  return all;
+  eligible.sort((a, b) => b._publish_date - a._publish_date);
+  return eligible.slice(0, budget).map(({ _publish_date: _, ...rest }) => rest);
 }
 
 export interface SyncOpts {
   full: boolean;
-  noClicks: boolean;
   postsOnly: boolean;
   dryRun: boolean;
+  /** Sem cap no manifest — usado em bootstrap quando orchestrator quer ver tudo. */
+  unboundedClicksManifest?: boolean;
   /** Override config carregada — para tests. */
   configOverride?: Config;
 }
@@ -315,17 +355,20 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
         continue;
       }
 
-      // Fetch clicks (link-level CTR data) — merge into stats.clicks for
-      // build-link-ctr.ts compatibility (lê post.stats?.clicks).
-      let clicks: unknown[] = [];
-      if (!opts.noClicks) {
+      // Per-link clicks NÃO são buscadas aqui — endpoint REST `/posts/{id}/clicks`
+      // não existe mais na API pública. Preservar clicks enriquecidos via
+      // MCP em runs anteriores (sobrescrever só perde dado caro de buscar).
+      const cachedPath = resolve(POSTS_DIR, `${s.id}.json`);
+      let preservedClicks: unknown[] = [];
+      if (existsSync(cachedPath)) {
         try {
-          clicks = await fetchAllClicks(s.id, cfg);
-        } catch (e) {
-          process.stderr.write(`  ! clicks failed for ${s.id}: ${e instanceof Error ? e.message : e}\n`);
+          const cached = JSON.parse(readFileSync(cachedPath, "utf8"));
+          preservedClicks = cached?.stats?.clicks ?? [];
+        } catch {
+          // cache corrompido — ignora, vai sobrescrever com array vazio
         }
       }
-      detail.stats = { ...(detail.stats ?? {}), clicks };
+      detail.stats = { ...(detail.stats ?? {}), clicks: preservedClicks };
 
       // Also expose content.free.{web,email} layout que build-link-ctr lê
       // — alguns posts retornam `free_web_content`/`free_email_content` no top
@@ -399,6 +442,33 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
     }
   }
 
+  // Build needs-clicks manifest scanning the cache (não os summaries da lista,
+  // que não têm `stats` populado). Bootstrap pode emitir centenas; incremental
+  // só os mais recentes (cap CLICKS_FETCH_BUDGET_INCREMENTAL).
+  const postsNeedingClicks: PostNeedingClicks[] = [];
+  if (!opts.dryRun) {
+    const cachedPosts: Array<{
+      id: string;
+      title?: string;
+      status?: string;
+      publish_date?: number | null;
+      stats?: { email?: { clicks?: number }; clicks?: unknown[] };
+    }> = [];
+    for (const f of readdirSync(POSTS_DIR)) {
+      if (f === "index.json" || !f.endsWith(".json")) continue;
+      try {
+        const obj = JSON.parse(readFileSync(resolve(POSTS_DIR, f), "utf8"));
+        cachedPosts.push(obj);
+      } catch {
+        // skip corrupt
+      }
+    }
+    const budget = opts.unboundedClicksManifest
+      ? Number.POSITIVE_INFINITY
+      : (mode === "bootstrap" || mode === "full" ? Number.POSITIVE_INFINITY : CLICKS_FETCH_BUDGET_INCREMENTAL);
+    postsNeedingClicks.push(...identifyPostsNeedingClicks(cachedPosts, new Date(), budget));
+  }
+
   return {
     mode,
     posts_fetched: fetched,
@@ -406,6 +476,7 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
     posts_total: newIndex.length,
     publication_synced: publicationSynced,
     dry_run: opts.dryRun,
+    posts_needing_clicks: postsNeedingClicks,
   };
 }
 
@@ -413,9 +484,9 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const opts: SyncOpts = {
     full: argv.includes("--full"),
-    noClicks: argv.includes("--no-clicks"),
     postsOnly: argv.includes("--posts-only"),
     dryRun: argv.includes("--dry-run"),
+    unboundedClicksManifest: argv.includes("--unbounded-clicks-manifest"),
   };
   const result = await syncBeehiiv(opts);
   console.log(JSON.stringify(result));

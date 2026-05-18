@@ -22,6 +22,7 @@
     "refresh-past-editions": "tsx scripts/refresh-past-editions.ts",
     "verify-accessibility": "tsx scripts/verify-accessibility.ts",
     "beehiiv-sync": "tsx scripts/beehiiv-sync.ts",
+    "apply-mcp-clicks": "tsx scripts/apply-mcp-clicks.ts",
     "build-link-ctr": "tsx scripts/build-link-ctr.ts",
     "validate-agents": "tsx scripts/validate-agent-frontmatter.ts",
     "lint-agents": "tsx scripts/lint-agent-md.ts",

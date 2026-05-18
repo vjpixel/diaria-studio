@@ -224,13 +224,45 @@ Se o script falhar:
 
 Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`).
 
-### 0h. Link CTR refresh
+### 0h. Link CTR refresh (3 sub-passos: sync, enrich-via-MCP, build)
 
-Roda em paralelo com 0e/0f/0g (per nota da seção 0e–0h acima). Sequencial INTERNAMENTE — `beehiiv-sync` precisa popular `data/beehiiv-cache/posts/*.json` antes de `build-link-ctr` lê-los:
+Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequência de 3 sub-passos.
+
+**0h.1 — Sync metadata + stats agregados (REST)**
+
 ```bash
-npx tsx scripts/beehiiv-sync.ts && npx tsx scripts/build-link-ctr.ts
+npx tsx scripts/beehiiv-sync.ts
 ```
-`beehiiv-sync.ts` (#1357) sincroniza posts + clicks + publication.json da Beehiiv API pro cache local; é incremental (só busca posts novos ou modificados). `build-link-ctr.ts` lê do cache e regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Quando `beehiiv-sync` falha (rate limit, API down), `build-link-ctr` ainda roda com o cache existente — só não pega posts novos.
+
+`beehiiv-sync.ts` (#1357) sincroniza posts + content + aggregate stats + `publication.json` via REST. **Não busca per-link clicks** — o endpoint `/posts/{id}/clicks` foi removido da API pública do Beehiiv (confirmado via OpenAPI spec; 50 endpoints, zero menção a "click"). Em vez disso, emite no resultado JSON um campo `posts_needing_clicks: [{id, title, email_clicks}]` com posts que precisam de enriquecimento (>7d, status=confirmed, `email.clicks>0`, `stats.clicks` vazio). Default: cap em 5 posts/run incremental; bootstrap/full emite tudo.
+
+**0h.2 — Enriquece clicks via MCP (top-level, sequencial por post)**
+
+Para cada `{id}` em `posts_needing_clicks` do output anterior, o **top-level Claude** chama:
+
+```
+mcp__claude_ai_Beehiiv__list_post_clicks(post_id, per_page=100)
+```
+
+Pagina via `per_page=100, page=N` até `pagination.total_pages`. Pra cada página, pipa o JSON resposta pra:
+
+```bash
+echo '<MCP_JSON>' | npx tsx scripts/apply-mcp-clicks.ts --post-id {id} [--append]
+```
+
+Primeira página: sem `--append` (substitui `stats.clicks`). Páginas 2+: `--append` (acumula com dedup por url). O script mapeia os field names modernos da API (`total_clicked_verified`, etc.) pros legacy (`verified_clicks`, `unique_verified_clicks`, etc.) que `build-link-ctr.ts` espera.
+
+**Por que MCP em vez de REST**: a MCP é a única forma de obter per-link clicks hoje, e MCPs só rodam no top-level Claude (não em scripts nem subagents). Bootstrap inicial pode ter ~150+ posts no manifest — orchestrator decide se processa tudo de uma vez ou descarta o excesso pra próximo run (`posts_needing_clicks` é determinístico — re-aparece até ser enriquecido).
+
+**0h.3 — Build CTR table**
+
+```bash
+npx tsx scripts/build-link-ctr.ts
+```
+
+Lê o cache enriquecido e regenera `data/link-ctr-table.csv`.
+
+**Logging**: 0h.1 e 0h.3 silenciosos (warn-only). 0h.2 loga `info` quando processa posts, `warn` se MCP timeout/error em algum post (continua nos próximos). Falha de qualquer sub-passo não aborta pipeline.
 
 ### 0i. Audience profile refresh
 
