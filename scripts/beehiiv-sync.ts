@@ -98,9 +98,12 @@ export interface SyncResult {
  *  do build-link-ctr.ts (linha ~1180). */
 const MIN_AGE_DAYS_FOR_CLICKS = 7;
 
-/** Cap defensivo no manifest pra incremental runs. Bootstrap pode exceder
- *  porque há muito histórico — orchestrator decide quanto processar. */
-const CLICKS_FETCH_BUDGET_INCREMENTAL = 5;
+/** Cap defensivo no manifest pra incremental runs. Mantido como sanity check
+ *  caso o agent enricher fique indisponível e cair fallback no top-level —
+ *  antes (#1357 followup) este cap protegia o contexto da conversa parent;
+ *  com o agent `beehiiv-clicks-enricher` (#1361) o cap virou apenas safety
+ *  net pra casos de erro. Pode subir significativamente sem custo. */
+const CLICKS_FETCH_BUDGET_INCREMENTAL = 50;
 
 function loadConfig(): Config {
   const apiKey = process.env.BEEHIIV_API_KEY;

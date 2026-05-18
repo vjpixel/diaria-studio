@@ -236,23 +236,21 @@ npx tsx scripts/beehiiv-sync.ts
 
 `beehiiv-sync.ts` (#1357) sincroniza posts + content + aggregate stats + `publication.json` via REST. **Não busca per-link clicks** — o endpoint `/posts/{id}/clicks` foi removido da API pública do Beehiiv (confirmado via OpenAPI spec; 50 endpoints, zero menção a "click"). Em vez disso, emite no resultado JSON um campo `posts_needing_clicks: [{id, title, email_clicks}]` com posts que precisam de enriquecimento (>7d, status=confirmed, `email.clicks>0`, `stats.clicks` vazio). Default: cap em 5 posts/run incremental; bootstrap/full emite tudo.
 
-**0h.2 — Enriquece clicks via MCP (top-level, sequencial por post)**
+**0h.2 — Enriquece clicks via subagent (delegação pro `beehiiv-clicks-enricher`)**
 
-Para cada `{id}` em `posts_needing_clicks` do output anterior, o **top-level Claude** chama:
+Se `posts_needing_clicks` é não-vazio no output anterior, **delegue** pro subagent dedicado em vez de chamar a MCP do top-level:
 
 ```
-mcp__claude_ai_Beehiiv__list_post_clicks(post_id, per_page=100)
+Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
 ```
 
-Pagina via `per_page=100, page=N` até `pagination.total_pages`. Pra cada página, pipa o JSON resposta pra:
+Cada item do prompt no formato `post_id=<id> title=<title>`. O agent itera, chama `mcp__claude_ai_Beehiiv__list_post_clicks` por post, pagina, e pipa cada response pro `scripts/apply-mcp-clicks.ts`. Retorna JSON summary `{processed, ok, fail, total_clicks_applied, failed_posts}`.
 
-```bash
-echo '<MCP_JSON>' | npx tsx scripts/apply-mcp-clicks.ts --post-id {id} [--append]
-```
+**Por que delegar pra subagent em vez de loop no top-level (mudou em #1361)**: tentamos a loop no top-level com `posts_needing_clicks` de 162 entries e o custo de contexto da conversa do editor foi insustentável (~200kb por batch de 20 posts). Subagents com MCP scope não consomem contexto da conversa parent — o pai só vê o summary final. Resolve backlog de 100+ posts em 1 invocação sem sacrificar usabilidade.
 
-Primeira página: sem `--append` (substitui `stats.clicks`). Páginas 2+: `--append` (acumula com dedup por url). O script mapeia os field names modernos da API (`total_clicked_verified`, etc.) pros legacy (`verified_clicks`, `unique_verified_clicks`, etc.) que `build-link-ctr.ts` espera.
+**Field mapping**: `apply-mcp-clicks.ts` (chamado pelo agent) mapeia os field names modernos da API (`total_clicked_verified`, etc.) pros legacy (`verified_clicks`, `unique_verified_clicks`, etc.) que `build-link-ctr.ts` espera.
 
-**Por que MCP em vez de REST**: a MCP é a única forma de obter per-link clicks hoje, e MCPs só rodam no top-level Claude (não em scripts nem subagents). Bootstrap inicial pode ter ~150+ posts no manifest — orchestrator decide se processa tudo de uma vez ou descarta o excesso pra próximo run (`posts_needing_clicks` é determinístico — re-aparece até ser enriquecido).
+**Manifest vazio**: skip 0h.2 inteiro. Apenas log info "no posts need clicks enrichment".
 
 **0h.3 — Build CTR table**
 
