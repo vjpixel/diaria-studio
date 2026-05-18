@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * sync-coverage-line.ts (#1097)
+ * sync-coverage-line.ts (#1097, refined em #1323)
  *
  * Auto-calcula e sincroniza a linha de cobertura no `02-reviewed.md`:
  *
@@ -8,21 +8,23 @@
  *    encontrou outros Y artigos. Selecionamos os Z mais relevantes para
  *    as pessoas que assinam a newsletter."
  *
- * X = artigos no pool inicial (`tmp-articles-raw.json`) com flag
- *     `editor_submitted` OU `newsletter_extracted` OU `source: "inbox"`.
- *     Forwards do Pixel + links extraídos de newsletters encaminhadas.
+ * X = número de **e-mails encaminhados pelo editor** (cada thread/forward = 1,
+ *     independente de quantas URLs ele contém). Forward direto com 1 URL = 1;
+ *     forward de newsletter com 30 URLs = 1. Lê de `data/inbox.md`.
  *
- * Y = `total_pool_initial - X`. Artigos que vieram de RSS, source-researchers
- *     ou discovery-searchers (não-inbox).
+ * Y = `total_pool_initial - X`. Artigos que vieram de RSS, source-researchers,
+ *     discovery-searchers, OU URLs extras dos forwards do editor (newsletter
+ *     com 30 URLs = 29 entram em Y após subtrair 1 da própria submissão).
  *
  * Z = itens visíveis no `02-reviewed.md` final — destaques + itens nas
  *     seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS / VÍDEOS. Excluímos
  *     links de afiliados e blocos editoriais fixos (SORTEIO / PARA ENCERRAR
  *     / ERRO INTENCIONAL / É IA?).
  *
- * Antes (incident 260512): números chutados pelo writer LLM ficavam stale
- * após edições do pipeline (caps, podas, score-filter). Editor publicou com
- * "5 submissões / 130 artigos / 34 selecionados" quando o real era 13/125/12.
+ * Histórico:
+ * - 260512: pipeline trocou número chutado pelo LLM por sync auto via flag.
+ * - 260518: editor flagou que count "5 submissões" estava inflado — 1 forward
+ *   de newsletter Cyberman com 30 URLs contava como 30 submissões.
  *
  * Uso:
  *   npx tsx scripts/sync-coverage-line.ts --edition-dir data/editions/260512
@@ -35,6 +37,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
+import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 
 interface RawArticle {
   url?: string;
@@ -43,34 +47,44 @@ interface RawArticle {
 }
 
 /**
- * Pure: dado o pool inicial, conta editor_submitted + newsletter_extracted
- * + source:inbox como X (do editor); o restante é Y (auto-found).
+ * Pure (#1323): X = número de e-mails encaminhados pelo editor (1 por
+ * thread/email, independente de URL count). Y = pool_total - X.
+ *
+ * Trocou heurística por-URL (#1280) por por-email — o editor flagou em
+ * 260518 que forward de newsletter Cyberman com 30 URLs era contado como
+ * 30 submissões. Cada email-forward é 1 ato editorial, não 30.
+ *
+ * Caller passa pool_total + forwarded_emails_count (ambos calculados externamente
+ * pra manter função pura/testável).
  */
-export function countEditorVsAuto(pool: RawArticle[]): { x: number; y: number } {
-  let x = 0;
-  for (const a of pool) {
-    // #1280 (revert parcial de #1190): newsletter_extracted volta a contar
-    // como X (submissão do editor). O ato editorial é a curadoria da fonte
-    // (Pixel escolheu encaminhar a newsletter Cyberman/AlphaSignal/etc), não
-    // URL-por-URL dentro dela. Pra leitor, distinção é invisível e
-    // contraintuitiva — caso 260515: Pixel encaminhou 12 emails (1 link
-    // direto + 11 newsletters), inject extraiu 36 URLs primárias, e
-    // sync-coverage escrevia "1 submissão" quando devia ser ~37.
-    //
-    // editor_submitted = forward direto do Pixel com link específico → X.
-    // newsletter_extracted = link primário extraído de newsletter forwarded
-    //   pelo Pixel (#1095 fluxo) → X.
-    // source: "inbox" = back-compat com runs antigos (pré-#1095, quando
-    //   tudo do inbox era considerado editor submission).
-    if (
-      a.flag === "editor_submitted" ||
-      a.flag === "newsletter_extracted" ||
-      a.source === "inbox"
-    ) {
-      x++;
-    }
+export function countEditorVsAuto(
+  pool: RawArticle[],
+  forwardedEmailsCount: number,
+): { x: number; y: number } {
+  const x = forwardedEmailsCount;
+  return { x, y: Math.max(0, pool.length - x) };
+}
+
+/**
+ * Helper: conta e-mails distintos do editor lendo `data/inbox.md`.
+ * Cada bloco do inbox com `from: editor` conta como 1 submission.
+ *
+ * Retorna 0 se inbox.md não existir ou parse falhar (defensive — pipeline
+ * continua sem coverage line precisa).
+ */
+export function countForwardedEmailsFromInbox(
+  inboxMdPath: string,
+  editorEmail: string,
+): number {
+  if (!existsSync(inboxMdPath)) return 0;
+  try {
+    const text = readFileSync(inboxMdPath, "utf8");
+    const blocks = parseInboxMd(text);
+    const editorBlocks = filterEditorBlocks(blocks, editorEmail);
+    return editorBlocks.length;
+  } catch {
+    return 0;
   }
-  return { x, y: pool.length - x };
 }
 
 /**
@@ -189,7 +203,10 @@ function main(): void {
 
   const md = readFileSync(mdPath, "utf8");
   const pool: RawArticle[] = JSON.parse(readFileSync(poolPath, "utf8"));
-  const { x, y } = countEditorVsAuto(pool);
+  const editorEmail = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(process.cwd(), "platform.config.json"));
+  const inboxMdPath = resolve(process.cwd(), args["inbox-md"] ?? "data/inbox.md");
+  const forwardedEmails = countForwardedEmailsFromInbox(inboxMdPath, editorEmail);
+  const { x, y } = countEditorVsAuto(pool, forwardedEmails);
   const z = countSelectedItems(md);
 
   const { md: updatedMd, changed } = rewriteCoverageLine(md, x, y, z);
