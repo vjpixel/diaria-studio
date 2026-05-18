@@ -206,9 +206,15 @@ npx tsx scripts/lint-newsletter-md.ts \
 
 ### 3b. Clarice (inline)
 
-**⚠️ Fail-fast obrigatório (#738):** Se qualquer `<system-reminder>` do runtime indicar que o MCP Clarice ficou offline, ou se a chamada `mcp__clarice__correct_text` retornar erro de disconnect/unavailable, **parar imediatamente** e reportar ao editor:
-> `BLOQUEADO: MCP Clarice indisponível. Reconecte (verifique CLARICE_API_KEY e reinicie o MCP local) e responda "retry" para continuar, ou "skip" para pular Clarice nesta edição.`
-Nunca aguardar passivamente. O MCP pode cair mid-session sem aviso do usuário — o `<system-reminder>` é o sinal de detecção. Tratar como mensagem de erro de alta prioridade.
+**⚠️ Fallback REST automático (#1329, substitui fail-fast de #738):** Se `<system-reminder>` indicar que o MCP Clarice ficou offline OU a chamada `mcp__clarice__correct_text` falhar com disconnect/unavailable, **não fazer halt** — cair direto no fallback REST:
+```bash
+npx tsx scripts/clarice-correct.ts \
+  --in data/editions/$1/_internal/02-humanized.md \
+  --out data/editions/$1/_internal/02-clarice-suggestions.json
+```
+(Substitua `02-humanized.md` pelo arquivo resolvido em §3b, normalmente o que sai do humanizador.)
+Exit 0 = sucesso (seguir pro `clarice-apply.ts`). Exit 3 = HTTP non-2xx (token revogado, endpoint down) = **halt** + halt banner pro editor. Exit 2 = `CLARICE_API_KEY` ausente = halt.
+Sempre logar warn no run-log quando cair no fallback (não silenciar — o editor precisa saber que o caminho normal falhou, mesmo que o fallback tenha funcionado).
 
 Snapshot pré-Clarice (path canonical único — review #889 P3). `02-pre-clarice.md` serve simultaneamente como (a) sinal pra resume mid-Clarice (#874), (b) input do `clarice-diff.ts` (3d), (c) input do `verify-clarice-url-stability.ts` (#873). `clarice-diff.ts` aceita qualquer path posicional, então não precisa de alias.
 
