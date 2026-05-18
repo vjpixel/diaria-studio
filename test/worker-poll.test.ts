@@ -28,7 +28,7 @@ import {
   currentMonthSlugBrt,
   monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1, scoreByMonthEntriesToLeaderboard, listAllKeys } from "../workers/poll/src/index.ts";
+import { computeTop1, scoreByMonthEntriesToLeaderboard, listAllKeys, computeSnapshotEntries } from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -487,5 +487,92 @@ describe("listAllKeys — KV pagination (#1347)", () => {
     const env = makeMockEnv(allKeys, 1000); // simula limit real do KV
     const r = await collect(listAllKeys(env as never, "vote:260518:"));
     assert.equal(r.length, 1500, "todas as 1500 keys devem ser yielded — sem cursor, perdíamos 500");
+  });
+});
+
+describe("computeSnapshotEntries — parallel gets (#1348)", () => {
+  /**
+   * Mock KV que conta calls. Verifica que gets acontecem em batches paralelos
+   * (Promise.all) e não sequencialmente.
+   */
+  function makeMockEnvWithGets(
+    keyValueMap: Map<string, string>,
+  ): {
+    POLL: {
+      list: (opts: { prefix: string; cursor?: string }) => Promise<{ keys: Array<{ name: string }>; list_complete: boolean; cursor?: string }>;
+      get: (key: string) => Promise<string | null>;
+    };
+    getCallTimes: number[];
+  } {
+    const keys = [...keyValueMap.keys()];
+    const getCallTimes: number[] = [];
+    return {
+      getCallTimes,
+      POLL: {
+        async list(opts: { prefix: string; cursor?: string }) {
+          const filtered = keys.filter((k) => k.startsWith(opts.prefix));
+          return { keys: filtered.map((name) => ({ name })), list_complete: true, cursor: undefined };
+        },
+        async get(key: string) {
+          getCallTimes.push(Date.now());
+          // Simula latência KV ~5ms
+          await new Promise((r) => setTimeout(r, 5));
+          return keyValueMap.get(key) ?? null;
+        },
+      },
+    };
+  }
+
+  it("retorna entries de todas as keys do prefix", async () => {
+    const data = new Map([
+      ["score-by-month:2026-05:alice@x.com", JSON.stringify({ nickname: "Alice", correct: 5, total: 5 })],
+      ["score-by-month:2026-05:bob@x.com", JSON.stringify({ nickname: "Bob", correct: 3, total: 5 })],
+    ]);
+    const env = makeMockEnvWithGets(data);
+    const entries = await computeSnapshotEntries(env as never, "2026-05");
+    assert.equal(entries.length, 2);
+    const byEmail = Object.fromEntries(entries.map((e) => [e.email, e]));
+    assert.equal(byEmail["alice@x.com"].nickname, "Alice");
+    assert.equal(byEmail["alice@x.com"].correct, 5);
+    assert.equal(byEmail["bob@x.com"].nickname, "Bob");
+  });
+
+  it("filtra entries com raw null/missing", async () => {
+    const data = new Map([
+      ["score-by-month:2026-05:alice@x.com", JSON.stringify({ nickname: "Alice", correct: 5, total: 5 })],
+    ]);
+    const env = makeMockEnvWithGets(data);
+    const entries = await computeSnapshotEntries(env as never, "2026-05");
+    assert.equal(entries.length, 1);
+  });
+
+  it("defaults pra correct/total/nickname ausentes na entry", async () => {
+    const data = new Map([
+      ["score-by-month:2026-05:partial@x.com", JSON.stringify({ nickname: "Partial" })],
+    ]);
+    const env = makeMockEnvWithGets(data);
+    const entries = await computeSnapshotEntries(env as never, "2026-05");
+    assert.equal(entries[0].correct, 0);
+    assert.equal(entries[0].total, 0);
+  });
+
+  it("batch parallel — 40 gets devem rodar em ~2 batches (5ms × 2 = ~10ms)", async () => {
+    const data = new Map<string, string>();
+    for (let i = 0; i < 40; i++) {
+      data.set(`score-by-month:2026-05:user${i}@x.com`, JSON.stringify({ correct: 1, total: 1 }));
+    }
+    const env = makeMockEnvWithGets(data);
+    const start = Date.now();
+    await computeSnapshotEntries(env as never, "2026-05");
+    const duration = Date.now() - start;
+    // Sequential seria 40 × 5ms = 200ms. Parallel em batches de 20 = 2 × 5ms = 10ms.
+    // Margem ampla pra Windows timer resolution: < 100ms.
+    assert.ok(duration < 100, `paralelização deveria ficar < 100ms, ficou ${duration}ms`);
+  });
+
+  it("empty prefix retorna []", async () => {
+    const env = makeMockEnvWithGets(new Map());
+    const entries = await computeSnapshotEntries(env as never, "2026-05");
+    assert.deepEqual(entries, []);
   });
 });
