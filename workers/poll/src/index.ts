@@ -264,6 +264,69 @@ async function handleStats(url: URL, env: Env): Promise<Response> {
   }, 200, env);
 }
 
+// ── /leaderboard/top1 (#1160) ────────────────────────────────────────────────
+
+/**
+ * Pure (#1160): retorna apenas os subscribers em 1º lugar (com tie support).
+ * Empates compartilham a posição 1 (dense rank). Sem entries = []. Sem score
+ * com nickname = []. Privacy: só nickname, nunca email cru.
+ *
+ * Threshold mínimo: pelo menos 1 voto. Subscribers que ainda não votaram
+ * (mesmo que tenham nickname seedado) não aparecem.
+ *
+ * Output shape compatível com `render-newsletter-html.ts` integration plan
+ * (#1160 follow-up).
+ */
+export interface LeaderTop1Entry {
+  nickname: string;
+  pct: number;
+  correct: number;
+  total: number;
+}
+
+export function computeTop1(
+  scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+): LeaderTop1Entry[] {
+  const withNickname = scores
+    .filter((s) => s.nickname && s.nickname.trim().length > 0)
+    .filter((s) => s.total > 0)
+    .map((s) => ({
+      nickname: s.nickname!,
+      correct: s.correct,
+      total: s.total,
+      pct: Math.round((s.correct / s.total) * 100),
+    }));
+  if (withNickname.length === 0) return [];
+
+  // Tiebreaker: nickname ASC (estável + previsível pra cache)
+  withNickname.sort((a, b) => {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    if (b.correct !== a.correct) return b.correct - a.correct;
+    return a.nickname.localeCompare(b.nickname);
+  });
+
+  const top = withNickname[0];
+  return withNickname.filter((s) => s.pct === top.pct && s.correct === top.correct);
+}
+
+async function handleLeaderboardTop1(env: Env): Promise<Response> {
+  const list = await env.POLL.list({ prefix: "score:" });
+  const scores: Array<{ email: string; nickname: string | null; correct: number; total: number }> = [];
+  for (const key of list.keys) {
+    const raw = await env.POLL.get(key.name);
+    if (!raw) continue;
+    const score = JSON.parse(raw);
+    scores.push({
+      email: key.name.replace("score:", ""),
+      nickname: score.nickname || null,
+      correct: score.correct ?? 0,
+      total: score.total ?? 0,
+    });
+  }
+  const top1 = computeTop1(scores);
+  return json({ top1, period: currentPeriodLabelBrt(new Date()) }, 200, env);
+}
+
 // ── /leaderboard ──────────────────────────────────────────────────────────────
 
 async function handleLeaderboard(env: Env): Promise<Response> {
@@ -528,12 +591,13 @@ export default {
     if (path === "/vote" && request.method === "GET") return handleVote(url, env);
     if (path === "/stats" && request.method === "GET") return handleStats(url, env);
     if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(env);
+    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(env);
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, env);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/vote", "/stats", "/leaderboard", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
 
   // #1077: reset mensal do leaderboard. Cron `1 3 1 * *` (UTC) = 00:01 BRT
