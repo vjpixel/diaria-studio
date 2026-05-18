@@ -28,7 +28,7 @@ import {
   currentMonthSlugBrt,
   monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1, scoreByMonthEntriesToLeaderboard } from "../workers/poll/src/index.ts";
+import { computeTop1, scoreByMonthEntriesToLeaderboard, listAllKeys } from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -399,5 +399,93 @@ describe("scoreByMonthEntriesToLeaderboard (#1345)", () => {
       { email: "a@x.com", nickname: "Alice", correct: 5, total: 5 },
     ]);
     assert.equal(r[0].streak, 0);
+  });
+});
+
+describe("listAllKeys — KV pagination (#1347)", () => {
+  /**
+   * Mock KV: simula resposta paginada via cursor. Cloudflare KV retorna max
+   * 1000 keys/call e indica continuação via `cursor` + `list_complete: false`.
+   * Mock fake aceita prefix e devolve páginas de tamanho fixo.
+   */
+  function makeMockEnv(allKeys: string[], pageSize = 3): { POLL: { list: (opts: { prefix: string; cursor?: string }) => Promise<{ keys: Array<{ name: string }>; list_complete: boolean; cursor?: string }> } } {
+    return {
+      POLL: {
+        async list(opts: { prefix: string; cursor?: string }) {
+          const filtered = allKeys.filter((k) => k.startsWith(opts.prefix));
+          // cursor é o index do próximo item — number stringified pra realismo
+          const startIdx = opts.cursor ? parseInt(opts.cursor, 10) : 0;
+          const pageKeys = filtered.slice(startIdx, startIdx + pageSize);
+          const nextIdx = startIdx + pageKeys.length;
+          const isComplete = nextIdx >= filtered.length;
+          return {
+            keys: pageKeys.map((name) => ({ name })),
+            list_complete: isComplete,
+            cursor: isComplete ? undefined : String(nextIdx),
+          };
+        },
+      },
+    };
+  }
+
+  async function collect(gen: AsyncGenerator<string>): Promise<string[]> {
+    const out: string[] = [];
+    for await (const k of gen) out.push(k);
+    return out;
+  }
+
+  it("itera todas as keys quando só 1 página", async () => {
+    const env = makeMockEnv(["a:1", "a:2", "b:1"], 3);
+    const r = await collect(listAllKeys(env as never, "a:"));
+    assert.deepEqual(r, ["a:1", "a:2"]);
+  });
+
+  it("itera através de múltiplas páginas via cursor", async () => {
+    // 7 keys, pageSize 3 → 3 páginas (3, 3, 1)
+    const allKeys = ["k:1", "k:2", "k:3", "k:4", "k:5", "k:6", "k:7"];
+    const env = makeMockEnv(allKeys, 3);
+    const r = await collect(listAllKeys(env as never, "k:"));
+    assert.deepEqual(r, allKeys);
+  });
+
+  it("para no list_complete sem cursor extra", async () => {
+    let calls = 0;
+    const env = {
+      POLL: {
+        async list(_opts: { prefix: string; cursor?: string }) {
+          calls++;
+          return {
+            keys: [{ name: "only:1" }],
+            list_complete: true,
+            cursor: undefined,
+          };
+        },
+      },
+    };
+    const r = await collect(listAllKeys(env as never, "only:"));
+    assert.deepEqual(r, ["only:1"]);
+    assert.equal(calls, 1, "deve fazer apenas 1 list call quando complete=true");
+  });
+
+  it("filtra por prefix mesmo em multi-page", async () => {
+    const allKeys = ["a:1", "b:1", "a:2", "b:2", "a:3", "b:3"];
+    const env = makeMockEnv(allKeys, 2);
+    const r = await collect(listAllKeys(env as never, "a:"));
+    assert.deepEqual(r, ["a:1", "a:2", "a:3"]);
+  });
+
+  it("retorna [] quando nenhuma key bate prefix", async () => {
+    const env = makeMockEnv(["a:1", "b:1"], 10);
+    const r = await collect(listAllKeys(env as never, "z:"));
+    assert.deepEqual(r, []);
+  });
+
+  it("cobre 1500 keys (> 1 página real de 1000 — regression test do bug #1347)", async () => {
+    // Simula o cenário que motivou o PR: >1000 keys silenciosamente truncadas
+    // pelo list call único. Com listAllKeys, todas viram.
+    const allKeys = Array.from({ length: 1500 }, (_, i) => `vote:260518:user${i}@x.com`);
+    const env = makeMockEnv(allKeys, 1000); // simula limit real do KV
+    const r = await collect(listAllKeys(env as never, "vote:260518:"));
+    assert.equal(r.length, 1500, "todas as 1500 keys devem ser yielded — sem cursor, perdíamos 500");
   });
 });

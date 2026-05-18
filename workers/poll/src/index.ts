@@ -408,8 +408,11 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
  * #1345 followup: iterator paginado de KV list. Cloudflare KV list retorna
  * no máximo 1000 keys por call — sem cursor handling, entries silenciosamente
  * desaparecem em escala. Yield names um por um pra caller iterar.
+ *
+ * Exported pra ser testável (#1347): caller passa mock env com `POLL.list`
+ * que simula resposta multi-page.
  */
-async function* listAllKeys(env: Env, prefix: string): AsyncGenerator<string> {
+export async function* listAllKeys(env: Env, prefix: string): AsyncGenerator<string> {
   let cursor: string | undefined;
   do {
     const result: KVNamespaceListResult<unknown, string> = await env.POLL.list({ prefix, cursor });
