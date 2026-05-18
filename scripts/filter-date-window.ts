@@ -38,9 +38,37 @@ import { readFileSync, writeFileSync } from "node:fs";
 interface Article {
   url: string;
   title?: string;
+  /**
+   * Data canônica (YYYY-MM-DD) extraída por `verify-dates.ts` lendo o HTML
+   * da página. `null` quando fetch falhou (`fetch_failed`) e a verificação
+   * não rolou.
+   */
   date: string | null;
+  /**
+   * Data crua do RSS feed (formato ISO ou YYYY-MM-DD). Fallback usado quando
+   * `date` é null mas o RSS já trouxe data confiável (#1322). Preferimos
+   * `date` (verificado) sobre `published_at` (não-verificado) quando os dois
+   * existem.
+   */
+  published_at?: string | null;
   date_unverified?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * Resolve effective date: prefer verified `date`, fallback to `published_at`
+ * from RSS. Returns YYYY-MM-DD slice or null if both are missing/invalid
+ * (#1322).
+ */
+export function effectiveDate(article: {
+  date?: string | null;
+  published_at?: string | null;
+}): { value: string | null; source: "date" | "published_at" | null } {
+  if (article.date) return { value: article.date.slice(0, 10), source: "date" };
+  if (article.published_at) {
+    return { value: article.published_at.slice(0, 10), source: "published_at" };
+  }
+  return { value: null, source: null };
 }
 
 interface CategorizedInput {
@@ -63,6 +91,12 @@ interface RemovedEntry {
   date: string | null;
   bucket: string;
   reason: "date_window";
+  /**
+   * Qual campo a decisão usou — `date` (verificado por verify-dates) ou
+   * `published_at` (fallback do RSS, #1322). Vai pro log pra editor saber
+   * por que um artigo caiu.
+   */
+  source_field: "date" | "published_at";
   detail: string;
 }
 
@@ -138,11 +172,15 @@ export function filterDateWindow(
       : ` (anchor ${anchorDate} - ${bucketDays}d; bucket-window=${bucketDays}d)`;
 
     for (const article of input[bucket] || []) {
-      if (article.date == null) {
+      const eff = effectiveDate(article);
+      // Sem date nem published_at = mantém com benefício da dúvida (#1322
+      // preserva regra antiga). Editor-submitted normalmente cai aqui e está
+      // OK — fluxo manual já tem outro tratamento.
+      if (eff.value == null) {
         kept[bucket].push({ ...article, date_unverified: true });
         continue;
       }
-      const normDate = article.date.slice(0, 10);
+      const normDate = eff.value;
       if (normDate < bucketCutoff) {
         removed.push({
           url: article.url,
@@ -150,8 +188,13 @@ export function filterDateWindow(
           date: article.date,
           bucket,
           reason: "date_window",
-          detail: `date ${normDate} < cutoff ${bucketCutoff}${bucketDetailSuffix}`,
+          source_field: eff.source!,
+          detail: `${eff.source} ${normDate} < cutoff ${bucketCutoff}${bucketDetailSuffix}`,
         });
+      } else if (eff.source === "published_at") {
+        // Caiu no fallback de published_at — date verificado nunca rolou,
+        // marcar como unverified pra editor reconsiderar no gate (#1322).
+        kept[bucket].push({ ...article, date_unverified: true });
       } else {
         kept[bucket].push(article);
       }

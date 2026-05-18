@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { filterDateWindow, bucketWindowDays } from "../scripts/filter-date-window.ts";
+import { filterDateWindow, bucketWindowDays, effectiveDate } from "../scripts/filter-date-window.ts";
 
 describe("filterDateWindow", () => {
   it("remove artigos antes da janela", () => {
@@ -234,6 +234,106 @@ describe("filterDateWindow", () => {
       assert.ok(r2[0].detail.includes("anchor 2026-04-24"));
       assert.ok(r2[0].detail.includes("edition 2026-04-25"));
     });
+  });
+});
+
+describe("effectiveDate fallback chain (#1322)", () => {
+  it("prefere date (verificado) quando ambos existem", () => {
+    const r = effectiveDate({ date: "2026-05-10", published_at: "2026-05-15" });
+    assert.equal(r.value, "2026-05-10");
+    assert.equal(r.source, "date");
+  });
+
+  it("cai pro published_at quando date é null", () => {
+    const r = effectiveDate({ date: null, published_at: "2026-05-12" });
+    assert.equal(r.value, "2026-05-12");
+    assert.equal(r.source, "published_at");
+  });
+
+  it("retorna null com source=null quando ambos faltam", () => {
+    const r = effectiveDate({ date: null, published_at: null });
+    assert.equal(r.value, null);
+    assert.equal(r.source, null);
+  });
+
+  it("normaliza ISO completo de published_at pra YYYY-MM-DD", () => {
+    const r = effectiveDate({ date: null, published_at: "2026-05-12T08:30:00Z" });
+    assert.equal(r.value, "2026-05-12");
+  });
+});
+
+describe("filterDateWindow — fallback published_at (#1322)", () => {
+  // Caso 260518: SINDPD article com date=null mas published_at=2026-05-12 deveria
+  // cair (cutoff 2026-05-13) e estava sendo mantido com benefício da dúvida.
+  it("remove artigo com date=null mas published_at fora da janela", () => {
+    const input = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1", title: "Recente", date: "2026-05-15" },
+        { url: "https://sindpd.org.br/1", title: "SINDPD 12/05", date: null, published_at: "2026-05-12" },
+        { url: "https://iblnews.com/1", title: "IBL 11/05", date: null, published_at: "2026-05-11" },
+      ],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-05-17", 4);
+    assert.equal(kept.noticias.length, 1);
+    assert.equal(kept.noticias[0].title, "Recente");
+    assert.equal(removed.length, 2);
+    assert.equal(removed[0].source_field, "published_at");
+    assert.equal(removed[1].source_field, "published_at");
+  });
+
+  it("mantém artigo com date=null mas published_at dentro da janela", () => {
+    const input = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1", title: "RSS recente", date: null, published_at: "2026-05-15" },
+      ],
+    };
+    const { kept } = filterDateWindow(input, "2026-05-17", 4);
+    assert.equal(kept.noticias.length, 1);
+    // Mantido mas com date_unverified=true (verify-dates não rodou)
+    assert.equal(kept.noticias[0].date_unverified, true);
+  });
+
+  it("artigo com date dentro mas published_at fora — usa date (verificado)", () => {
+    const input = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1", title: "Conflitante", date: "2026-05-15", published_at: "2026-05-10" },
+      ],
+    };
+    const { kept } = filterDateWindow(input, "2026-05-17", 4);
+    assert.equal(kept.noticias.length, 1, "date verified vence published_at");
+  });
+
+  it("artigo sem date nem published_at continua kept com date_unverified", () => {
+    const input = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [{ url: "https://a.com/1", title: "Sem nada", date: null }],
+    };
+    const { kept } = filterDateWindow(input, "2026-05-17", 4);
+    assert.equal(kept.noticias.length, 1);
+    assert.equal(kept.noticias[0].date_unverified, true);
+  });
+
+  it("source_field aparece no removed[]", () => {
+    const input = {
+      lancamento: [],
+      pesquisa: [],
+      noticias: [
+        { url: "https://a.com/1", title: "Antigo via date", date: "2026-05-08" },
+        { url: "https://a.com/2", title: "Antigo via published_at", date: null, published_at: "2026-05-09" },
+      ],
+    };
+    const { removed } = filterDateWindow(input, "2026-05-17", 4);
+    assert.equal(removed.length, 2);
+    const byTitle = Object.fromEntries(removed.map((r) => [r.title, r.source_field]));
+    assert.equal(byTitle["Antigo via date"], "date");
+    assert.equal(byTitle["Antigo via published_at"], "published_at");
   });
 });
 
