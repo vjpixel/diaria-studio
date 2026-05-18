@@ -326,6 +326,98 @@ export function subjectSimilarity(a: string, b: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// #1331: Named entity extraction
+//
+// O caso real: dois artigos diferentes cobrindo o mesmo evento usam
+// vocabulário divergente (ex: "Juiz multa advogadas..." vs "Advogadas
+// paraenses multadas") — Jaccard puro fica abaixo do threshold (0.6).
+//
+// Ideia: extrair entidades nomeadas (palavras com inicial maiúscula que não
+// estão no início da sentença) e, quando há ≥1 entidade compartilhada entre
+// candidato e past, abaixar o threshold pra 0.55. Não é silver bullet — pega
+// casos onde entidades aparecem em ambos (cidades, empresas, sobrenomes).
+// Casos onde NENHUM dos títulos tem entidade nomeada relevante continuam
+// dependendo do Jaccard normal (0.6).
+//
+// Filtra termos genéricos do domínio IA ("IA", "AI", "ChatGPT", etc.) pra
+// não disparar overlap espúrio em todo título.
+// ---------------------------------------------------------------------------
+
+/** Termos comuns no domínio IA que NÃO contam como entidade discriminante. */
+const ENTITY_STOPWORDS = new Set([
+  "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini", "openai",
+  "inteligencia", "artificial", "machine", "learning",
+  "diaria", "newsletter", "edicao",
+  // dias da semana / meses comuns
+  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
+  "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]);
+
+/**
+ * Extrai "entidades nomeadas" de um título. Heurística: palavras de 4+ chars
+ * que começam com letra maiúscula no original, normalizadas (lowercase,
+ * sem acentos), excluindo:
+ *  - A primeira palavra (sentence-start capitalization)
+ *  - Termos do `ENTITY_STOPWORDS` (vocabulário comum do domínio)
+ *
+ * Não é NER de verdade — só captura proper nouns prováveis. Falsos positivos
+ * existem (substantivos comuns capitalizados em headlines tipo "Como"); são
+ * raros o suficiente pra não ferir.
+ */
+export function extractNamedEntities(title: string): Set<string> {
+  const entities = new Set<string>();
+  // Quebrar no whitespace ANTES de normalizar — preciso checar a inicial
+  // maiúscula no original.
+  const words = title.split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].replace(/[^\p{L}\p{N}]/gu, "");
+    if (word.length < 4) continue;
+    // Sentence-start: pular a primeira palavra que não é grudada em pontuação.
+    // Implementação simples: pular índice 0.
+    if (i === 0) continue;
+    const firstChar = word.charAt(0);
+    if (firstChar !== firstChar.toUpperCase()) continue;
+    if (firstChar === firstChar.toLowerCase()) continue; // não é letra
+    // Normalizar (lowercase, sem acentos) pra match cross-edition consistente.
+    // Combining Diacritical Marks (̀-ͯ) cobre todos os acentos PT-BR.
+    const normalized = word
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+    if (ENTITY_STOPWORDS.has(normalized)) continue;
+    entities.add(normalized);
+  }
+  return entities;
+}
+
+/**
+ * Threshold dinâmico (#1331): quando candidato e past compartilham ≥1
+ * entidade nomeada, baixa pra `loweredThreshold`. Caso contrário, mantém
+ * `defaultThreshold` original (0.6).
+ *
+ * Retorna o threshold que o caller deve usar no Jaccard de tokens — o caller
+ * separa lookup de threshold do match em si pra logging por par.
+ */
+export function thresholdForPair(
+  candidateTitle: string,
+  pastTitle: string,
+  defaultThreshold: number,
+  loweredThreshold: number,
+): { threshold: number; sharedEntities: string[] } {
+  const candEnts = extractNamedEntities(candidateTitle);
+  const pastEnts = extractNamedEntities(pastTitle);
+  const shared: string[] = [];
+  for (const e of candEnts) {
+    if (pastEnts.has(e)) shared.push(e);
+  }
+  return {
+    threshold: shared.length > 0 ? loweredThreshold : defaultThreshold,
+    sharedEntities: shared,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Inbox title resolution (#485)
 // ---------------------------------------------------------------------------
 
@@ -442,6 +534,10 @@ export function dedup(
   //     (foi só secondary passado, permite promoção a destaque agora)
   // Quando ausente (legacy callers), comportamento antigo: bloqueia tudo em pastUrlsSet.
   pastDestaqueUrlsSet?: Set<string>,
+  // #1331: threshold mais permissivo quando candidato e past compartilham
+  // entidades nomeadas (default 0.55 vs 0.6 do baseline). Cobre cross-domain
+  // duplicates onde vocabulário diverge mas entidades coincidem.
+  subjectVsPastThresholdLowered = 0.55,
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -554,18 +650,34 @@ export function dedup(
         continue;
       }
       let isDupVsPastSubject = false;
-      let bestMatch: { title: string; sim: number } | null = null;
+      let bestMatch: { title: string; sim: number; entitiesShared: string[]; effectiveThreshold: number } | null = null;
       for (const pt of pastTokens) {
         const sim = jaccardSimilarity(candidateTokens, pt.tokens);
-        if (sim >= subjectVsPastThreshold && (bestMatch === null || sim > bestMatch.sim)) {
-          bestMatch = { title: pt.title, sim };
+        // #1331: lower threshold (default 0.55) quando candidato e past
+        // compartilham entidades nomeadas. Sem entity overlap, mantém 0.6.
+        const { threshold: effThreshold, sharedEntities } = thresholdForPair(
+          art.title,
+          pt.title,
+          subjectVsPastThreshold,
+          subjectVsPastThresholdLowered,
+        );
+        if (sim >= effThreshold && (bestMatch === null || sim > bestMatch.sim)) {
+          bestMatch = {
+            title: pt.title,
+            sim,
+            entitiesShared: sharedEntities,
+            effectiveThreshold: effThreshold,
+          };
         }
       }
       if (bestMatch !== null) {
+        const entitiesNote = bestMatch.entitiesShared.length > 0
+          ? ` [entidade compartilhada: ${bestMatch.entitiesShared.join(", ")}]`
+          : "";
         removed.push({
           url: art.url,
           title: art.title,
-          dedup_note: `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard) a artigo de edição anterior "${bestMatch.title}"`,
+          dedup_note: `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}`,
         });
         isDupVsPastSubject = true;
       }
@@ -727,6 +839,12 @@ async function main() {
   const subjectVsPastThreshold = parseFloat(
     args["subject-vs-past-threshold"] ?? "0.6",
   );
+  // #1331: threshold mais permissivo quando candidato e past compartilham
+  // entidades nomeadas. Default 0.55 — entre 0.5 (muito agressivo, false
+  // positives em vocabulário coincidente) e 0.6 (baseline).
+  const subjectVsPastThresholdLowered = parseFloat(
+    args["subject-vs-past-threshold-lowered"] ?? "0.55",
+  );
   const currentAammdd = args["current-edition"]; // optional, exclude self
   const pastArticleTitles = extractPastEditionArticleTitles(
     editionsDir,
@@ -762,10 +880,11 @@ async function main() {
     pastArticleTitles,
     subjectVsPastThreshold,
     pastDestaqueUrls,
+    subjectVsPastThresholdLowered,
   );
 
   console.error(
-    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold})`
+    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold}, subject-vs-past-lowered=${subjectVsPastThresholdLowered})`
   );
 
   const removed = result.removed.length;
