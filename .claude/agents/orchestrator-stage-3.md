@@ -81,6 +81,13 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   ```
   Anotar em `sync_results[3]`; ignorar falhas.
+- **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json` com a liderança do mês corrente. Renderer lê automaticamente:
+  ```bash
+  npx tsx scripts/fetch-leaderboard-top1.ts \
+    --edition {AAMMDD} \
+    --out data/editions/{AAMMDD}/_internal/04-leaderboard-top1.json
+  ```
+  Falha do fetch (Worker offline, timeout) escreve `top1: []` — renderer detecta e omite bloco. **Não-bloqueante** — newsletter funciona sem leaderboard.
 - **Pre-gate invariants (#1007 Fase 1).** Validar que as 6 imagens existem e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
   ```bash
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/
