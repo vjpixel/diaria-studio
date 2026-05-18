@@ -79,10 +79,14 @@ export interface EIA {
   prevResultLine?: string;
   /** Código da edição (AAMMDD), usado nos botões de votação (#465). */
   edition: string;
-  /** Leaderboard top1 do mês corrente (#1160). Renderiza no rodapé do È IA?
-   * — bloco omitido se ausente ou top1 vazio. Populado por
-   * `scripts/fetch-leaderboard-top1.ts` em `_internal/04-leaderboard-top1.json`. */
+  /** Leaderboard top1 do mês corrente (#1160 legacy). Mantido pra back-compat
+   * mas renderer agora usa `leaderboardPodium` (ranks 1-3, mais informativo). */
   leaderboardTop1?: { nickname: string; pct: number; correct: number; total: number }[];
+  /** Leaderboard podium ranks 1-3 (#1160 followup). Lista ordenada na ordem
+   * do leaderboard público (dense rank, nickname ASC tiebreaker). Renderiza
+   * no rodapé do È IA?. Populado por `scripts/fetch-leaderboard-top1.ts` em
+   * `_internal/04-leaderboard-top1.json`. */
+  leaderboardPodium?: { nickname: string; rank: number }[];
   /** Label do período pro título do bloco (ex: "Maio"). */
   leaderboardPeriod?: string;
 }
@@ -430,16 +434,20 @@ function extractContent(editionDir: string): NewsletterContent {
     ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
     : fallbackEIA(editionDir);
 
-  // #1160: leaderboard top1 do mês corrente. Arquivo populado por
+  // #1160: leaderboard do mês corrente. Arquivo populado por
   // fetch-leaderboard-top1.ts pré-render; ausente → bloco omitido.
+  // Renderer prefere `podium` (ranks 1-3) e cai em `top1` (rank 1 only) só
+  // pra compat com arquivos legacy pré-#1160-followup.
   const leaderboardPath = resolve(editionDir, "_internal", "04-leaderboard-top1.json");
   if (existsSync(leaderboardPath)) {
     try {
       const parsed = JSON.parse(readFileSync(leaderboardPath, "utf8"));
-      if (Array.isArray(parsed.top1) && parsed.top1.length > 0) {
+      if (Array.isArray(parsed.podium) && parsed.podium.length > 0) {
+        eia.leaderboardPodium = parsed.podium;
+      } else if (Array.isArray(parsed.top1) && parsed.top1.length > 0) {
         eia.leaderboardTop1 = parsed.top1;
-        eia.leaderboardPeriod = parsed.period || undefined;
       }
+      eia.leaderboardPeriod = parsed.period || undefined;
     } catch {
       // Corrupted → skip, bloco omitido
     }
@@ -748,33 +756,36 @@ ${leaderboardRow}
 }
 
 /**
- * Pure (#1160): renderiza linha do leaderboard top1 no rodapé do È IA?.
- * Retorna string vazia quando ausente ou top1 vazio — renderer principal
- * concatena sem afetar layout.
+ * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
+ * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
+ * público. Só nomes — sem percentual nem placement (decisão editorial pós-#1160).
  *
  * Formato:
- *   - Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
- *   - Tie ≤3: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
- *   - Tie >3: "🏆 Liderança de Maio: 5 leitores empatados em 100%"
+ *   - 1 leader: "🏆 Liderança de Maio: Davyd Wilkerson"
+ *   - 2 leitores: "🏆 Liderança de Maio: Davyd e Luisao P"
+ *   - 3+ leitores: "🏆 Liderança de Maio: Davyd, Luisao P, Vanessa, Alice e Bob"
+ *   - Vazio: retorna ""
+ *
+ * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
+ * only) pra compat com arquivos legacy.
  */
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
-  if (!eia.leaderboardTop1 || eia.leaderboardTop1.length === 0) return "";
-  const top1 = eia.leaderboardTop1;
+  // Source: prefere podium (#1160 followup), cai em top1 legacy.
+  const names: string[] = eia.leaderboardPodium && eia.leaderboardPodium.length > 0
+    ? eia.leaderboardPodium.map((e) => e.nickname)
+    : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
+      ? eia.leaderboardTop1.map((e) => e.nickname)
+      : [];
+  if (names.length === 0) return "";
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
-  const pct = top1[0].pct;
-  const single = top1[0];
 
   let phrase: string;
-  if (top1.length === 1) {
-    phrase = `${single.nickname} — ${pct}% (${single.correct}/${single.total})`;
-  } else if (top1.length <= 3) {
-    const names = top1.map((e) => e.nickname);
-    const joined = names.length === 2
-      ? `${names[0]} e ${names[1]}`
-      : `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
-    phrase = `${joined} — ${pct}%`;
+  if (names.length === 1) {
+    phrase = names[0];
+  } else if (names.length === 2) {
+    phrase = `${names[0]} e ${names[1]}`;
   } else {
-    phrase = `${top1.length} leitores empatados em ${pct}%`;
+    phrase = `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
   }
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">

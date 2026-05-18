@@ -380,6 +380,56 @@ export function computeTop1(
   return withNickname.filter((s) => s.pct === top.pct && s.correct === top.correct);
 }
 
+/**
+ * Pure (#1160 followup): retorna leitores nos ranks 1, 2 e 3 do leaderboard
+ * mensal, na mesma ordem do leaderboard público (dense rank, tiebreaker
+ * nickname ASC). Critério de rank: `rankEntries` em ./leaderboard (correct
+ * DESC, total DESC, nickname ASC).
+ *
+ * Entries sem nickname são incluídas com email mascarado (`user@***`) —
+ * mesma política do leaderboard público (renderLeaderboardHtml). Issue #1353
+ * é o follow-up pra incentivar leitores a definir nickname.
+ *
+ * Output: array de `{ nickname, rank }` em ordem de exibição. Campo
+ * `nickname` é o display final (nickname real OU email mascarado).
+ * Ranks empatados compartilham número (dense): 1, 1, 2, 3, 3 é válido.
+ *
+ * Caso 6+ pessoas em rank 1: retorna todas (renderer decide cap visual).
+ */
+export interface PodiumEntry {
+  nickname: string;
+  rank: number;
+}
+
+function maskEmail(email: string): string {
+  return email.replace(/@.*/, "@***");
+}
+
+export function computePodium(
+  scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+): PodiumEntry[] {
+  // Reusa rankEntries com shape LeaderboardEntry (precisa pct + streak).
+  const eligible = scores
+    .filter((s) => s.total > 0)
+    .map((s) => {
+      const hasNickname = s.nickname && s.nickname.trim().length > 0;
+      const display = hasNickname ? s.nickname!.trim() : maskEmail(s.email);
+      return {
+        email: s.email,
+        nickname: display,
+        correct: s.correct,
+        total: s.total,
+        pct: s.total > 0 ? Math.round((s.correct / s.total) * 100) : 0,
+        streak: 0,
+      };
+    });
+  if (eligible.length === 0) return [];
+  const ranked = rankEntries(eligible);
+  return ranked
+    .filter((e) => e.rank <= 3)
+    .map((e) => ({ nickname: e.nickname!, rank: e.rank }));
+}
+
 async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
   // #1345: ?period=YYYY-MM filtra mês específico via score-by-month index;
   // omitted = mês corrente. Default mantém compat com clientes existentes.
@@ -393,8 +443,11 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
   // #1348: usa snapshot pré-computado em vez de list+gets inline.
   const scores = await getOrComputeSnapshot(env, monthSlug);
   const top1 = computeTop1(scores);
+  // #1160 followup: podium (ranks 1-3) pra newsletter. Mantém top1 pra
+  // back-compat com clientes existentes; podium é o campo novo recomendado.
+  const podium = computePodium(scores);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
-  return json({ top1, period: periodLabel, period_slug: monthSlug }, 200, env);
+  return json({ top1, podium, period: periodLabel, period_slug: monthSlug }, 200, env);
 }
 
 // ── Snapshot key (#1348) ──────────────────────────────────────────────────

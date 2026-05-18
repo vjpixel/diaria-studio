@@ -41,8 +41,14 @@ interface Top1Entry {
   pct: number;
 }
 
+interface PodiumEntry {
+  nickname: string;
+  rank: number;
+}
+
 interface Top1Response {
   top1: Top1Entry[];
+  podium?: PodiumEntry[]; // #1160 followup — rank 1-3 ordered
   period: string;
   period_slug: string;
 }
@@ -109,16 +115,17 @@ async function main(): Promise<void> {
   let payload: Top1Response;
   try {
     payload = await fetchTop1ForPeriod(slug);
+    const podiumCount = payload.podium?.length ?? 0;
     console.log(
-      `[fetch-leaderboard-top1] ${payload.top1.length} líder(es) em ${payload.period_slug}`,
+      `[fetch-leaderboard-top1] ${payload.top1.length} líder(es) em rank 1, ${podiumCount} no podium (1-3), período ${payload.period_slug}`,
     );
   } catch (e) {
     // Graceful: persist payload vazio. Renderer omite bloco.
     console.error(
       `[fetch-leaderboard-top1] WARN: fetch falhou (${(e as Error).message}); ` +
-        "gravando top1 vazio — bloco será omitido da newsletter.",
+        "gravando vazio — bloco será omitido da newsletter.",
     );
-    payload = { top1: [], period: "", period_slug: slug };
+    payload = { top1: [], podium: [], period: "", period_slug: slug };
   }
 
   const outPath = resolve(process.cwd(), args.out);

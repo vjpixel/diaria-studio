@@ -15,83 +15,97 @@ function makeEia(overrides: Partial<EIA>): EIA {
   };
 }
 
-describe("renderLeaderboardTop1Row (#1160)", () => {
+describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () => {
   it("retorna '' quando leaderboard ausente", () => {
     const r = renderLeaderboardTop1Row(makeEia({}), PSTYLE);
     assert.equal(r, "");
   });
 
-  it("retorna '' quando top1 array vazio", () => {
+  it("retorna '' quando podium array vazio", () => {
     const r = renderLeaderboardTop1Row(
-      makeEia({ leaderboardTop1: [], leaderboardPeriod: "Maio" }),
+      makeEia({ leaderboardPodium: [], leaderboardPeriod: "Maio" }),
       PSTYLE,
     );
     assert.equal(r, "");
   });
 
-  it("single leader: nickname — pct% (correct/total)", () => {
+  it("single leader (rank 1 só): apenas o nome", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: [{ nickname: "Alice", pct: 100, correct: 12, total: 12 }],
+        leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
         leaderboardPeriod: "Maio",
       }),
       PSTYLE,
     );
-    assert.match(r, /Liderança de Maio/);
-    assert.match(r, /Alice — 100% \(12\/12\)/);
+    assert.match(r, />🏆 <strong>Liderança de Maio:<\/strong> Alice<\/p>/);
+    assert.doesNotMatch(r, /100%/);
   });
 
-  it("tie de 2: 'X e Y'", () => {
+  it("2 leitores no podium: 'X e Y'", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: [
-          { nickname: "Alice", pct: 100, correct: 5, total: 5 },
-          { nickname: "Bob", pct: 100, correct: 5, total: 5 },
+        leaderboardPodium: [
+          { nickname: "Alice", rank: 1 },
+          { nickname: "Bob", rank: 2 },
         ],
         leaderboardPeriod: "Maio",
       }),
       PSTYLE,
     );
-    assert.match(r, /Alice e Bob — 100%/);
+    assert.match(r, /Alice e Bob/);
   });
 
-  it("tie de 3: 'X, Y e Z' (Oxford comma editorial — vírgula sem 'e' antes)", () => {
+  it("3 leitores no podium (1+1+1): 'X, Y e Z' na ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: [
-          { nickname: "Alice", pct: 100, correct: 5, total: 5 },
-          { nickname: "Bob", pct: 100, correct: 5, total: 5 },
-          { nickname: "Carol", pct: 100, correct: 5, total: 5 },
+        leaderboardPodium: [
+          { nickname: "Alice", rank: 1 },
+          { nickname: "Bob", rank: 2 },
+          { nickname: "Carol", rank: 3 },
         ],
         leaderboardPeriod: "Maio",
       }),
       PSTYLE,
     );
-    assert.match(r, /Alice, Bob e Carol — 100%/);
+    assert.match(r, /Alice, Bob e Carol/);
   });
 
-  it("tie de 4+: fallback 'N leitores empatados em pct%'", () => {
+  it("3 empatados em rank 1: lista todos os 3 na mesma ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: Array.from({ length: 5 }, (_, i) => ({
-          nickname: `User${i}`,
-          pct: 100,
-          correct: 1,
-          total: 1,
-        })),
+        leaderboardPodium: [
+          { nickname: "Davyd", rank: 1 },
+          { nickname: "Luisao P", rank: 1 },
+          { nickname: "Vanessa", rank: 1 },
+        ],
         leaderboardPeriod: "Maio",
       }),
       PSTYLE,
     );
-    assert.match(r, /5 leitores empatados em 100%/);
-    // Não deve listar nomes nesse caso
-    assert.doesNotMatch(r, /User0/);
+    assert.match(r, /Davyd, Luisao P e Vanessa/);
+  });
+
+  it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): lista todos em ordem", () => {
+    const r = renderLeaderboardTop1Row(
+      makeEia({
+        leaderboardPodium: [
+          { nickname: "Alice", rank: 1 },
+          { nickname: "Bob", rank: 1 },
+          { nickname: "Carol", rank: 2 },
+          { nickname: "Dave", rank: 3 },
+          { nickname: "Eve", rank: 3 },
+        ],
+        leaderboardPeriod: "Maio",
+      }),
+      PSTYLE,
+    );
+    assert.match(r, /Alice, Bob, Carol, Dave e Eve/);
   });
 
   it("período ausente: omite ' de {mês}'", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: [{ nickname: "Alice", pct: 75, correct: 3, total: 4 }],
+        leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
       }),
       PSTYLE,
     );
@@ -102,14 +116,25 @@ describe("renderLeaderboardTop1Row (#1160)", () => {
   it("HTML escape em nickname com caracteres especiais", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
-        leaderboardTop1: [{ nickname: "<script>", pct: 100, correct: 1, total: 1 }],
+        leaderboardPodium: [{ nickname: "<script>", rank: 1 }],
         leaderboardPeriod: "Maio",
       }),
       PSTYLE,
     );
-    // esc() converte < > → &lt; &gt;
     assert.match(r, /&lt;script&gt;/);
     assert.doesNotMatch(r, /<script>/i);
+  });
+
+  it("back-compat: cai em leaderboardTop1 quando podium ausente", () => {
+    // Arquivo legacy sem campo podium
+    const r = renderLeaderboardTop1Row(
+      makeEia({
+        leaderboardTop1: [{ nickname: "Legacy", pct: 100, correct: 1, total: 1 }],
+        leaderboardPeriod: "Maio",
+      }),
+      PSTYLE,
+    );
+    assert.match(r, /Legacy/);
   });
 });
 
