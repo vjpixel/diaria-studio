@@ -34,8 +34,23 @@ export function autoApproveConsent(): PublishConsent {
 }
 
 /**
- * Consent default quando editor não responde no gate interativo.
- * Manual em tudo (conservador).
+ * Consent default quando editor não responde no gate interativo (#1326).
+ * Tudo auto — Stage 4 é dispatch, editor já revisou nos gates 1-3.
+ * `defaultManualConsent` (legacy) mantido pra retro-compat.
+ */
+export function defaultAutoConsent(): PublishConsent {
+  return {
+    newsletter: "auto",
+    linkedin: "auto",
+    facebook: "auto",
+    source: "default_auto",
+  };
+}
+
+/**
+ * @deprecated Use `defaultAutoConsent` (#1326 invertu o default).
+ * Mantido pra callers legacy + caso editor queira pedir manual explicitamente
+ * (`--skip newsletter,linkedin,facebook` é equivalente).
  */
 export function defaultManualConsent(): PublishConsent {
   return {
@@ -43,6 +58,37 @@ export function defaultManualConsent(): PublishConsent {
     linkedin: "manual",
     facebook: "manual",
     source: "default_manual",
+  };
+}
+
+/**
+ * Parseia lista de canais via flag `--skip` (#1326). Cada canal listado
+ * fica `manual` no consent; canais não-listados ficam `auto`.
+ *
+ * Aceita:
+ *   - "" / "all" → todos auto (no-op)
+ *   - "newsletter" → só newsletter manual
+ *   - "linkedin,facebook" → linkedin + facebook manual
+ *   - "newsletter,linkedin,facebook" → tudo manual
+ *
+ * Retorna null pra input inválido (tokens não reconhecidos).
+ */
+export function parseSkipFlag(input: string): PublishConsent | null {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed) {
+    return { ...defaultAutoConsent(), source: "skip_flag_empty" };
+  }
+  const VALID = new Set(["newsletter", "linkedin", "facebook"]);
+  const tokens = trimmed
+    .split(/[,\s]+/)
+    .filter(Boolean);
+  if (tokens.some((t) => !VALID.has(t))) return null;
+  const skipped = new Set(tokens);
+  return {
+    newsletter: skipped.has("newsletter") ? "manual" : "auto",
+    linkedin: skipped.has("linkedin") ? "manual" : "auto",
+    facebook: skipped.has("facebook") ? "manual" : "auto",
+    source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
 

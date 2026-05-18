@@ -13,6 +13,11 @@ Dispara a Etapa 4 unificada (publicação paralela: Beehiiv + Facebook + LinkedI
 - `/diaria-4-publicar newsletter AAMMDD` — re-dispara só `publish-newsletter` (Beehiiv); útil pra fix isolado após template errado
 - `/diaria-4-publicar social AAMMDD` — re-dispara só `publish-facebook` + `publish-linkedin`; útil pra retry de social falhado sem regerar Beehiiv
 
+**Opt-out por canal (#1326):** flag `--skip {newsletter,linkedin,facebook}` (CSV) ignora dispatch dos canais listados. Default = tudo auto. Exemplos:
+- `/diaria-4-publicar AAMMDD --skip newsletter` — só social automático, newsletter manual
+- `/diaria-4-publicar AAMMDD --skip linkedin,facebook` — só newsletter automático
+- `/diaria-4-publicar AAMMDD --skip newsletter,linkedin,facebook` — tudo manual (equivalente ao default antigo)
+
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 4` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.
   - **Se `candidates.length === 0`**: erro. `Nenhuma edição com Stage 3 aprovado e Stage 4 incompleto. Rode /diaria-3-imagens primeiro ou passe AAMMDD explicitamente.`
@@ -45,27 +50,40 @@ Output JSON `{ ok: true/false, header?: string, status?: number, reason?: string
 
 **Defensive cleanup**: varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*` a `Stage 3*`). Em seguida, criar tasks pra esta etapa: `Stage 4a — confirm channels`, `Stage 4b — dispatch publishers (newsletter + social paralelo)`, `Stage 4c — review-test-email loop`, `Stage 4d — gate humano final`, `Stage 4e — auto-reporter`. Marcar `completed` quando cada passo retornar. Detalhe completo em `.claude/agents/orchestrator.md` § "Task tracking — UI hygiene". **No-op se TaskCreate/TaskUpdate não estiver disponível**.
 
-## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336)
+## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336, invertido em #1326)
 
-**OBRIGATÓRIO — executar antes de qualquer Agent ou Bash de publicação.** Perguntar explicitamente ao editor por canal:
+**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` ou via gate interativo.
+
+**Path 1 — flag `--skip` foi passado:**
+```bash
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --skip "{lista}"
+```
+Canais listados ficam `manual`, resto fica `auto`. Skip de todos os 3 canais = comportamento "manual em tudo" antigo.
+
+**Path 2 — `auto_approve = true` (via `/diaria-edicao --no-gates`):**
+```bash
+npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --auto-approve
+```
+Tudo auto, sem gate.
+
+**Path 3 — gate interativo (sem `--skip` e sem `auto_approve`):**
 
 ```
-Modo de publicação para esta edição:
+Modo de publicação para esta edição (default = tudo automático):
 
-  [1] Beehiiv automático  — Claude in Chrome cria rascunho + envia email de teste
-  [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo está em data/editions/{AAMMDD}/02-reviewed.md
-  [3] LinkedIn automático — Make.com webhook agenda/posta 3 posts (#506)
-  [4] LinkedIn manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
+  [1] Beehiiv automático  — top-level segue context/publishers/beehiiv-playbook.md (Worker-hosted)
+  [2] Beehiiv manual      — você faz o paste no Beehiiv; arquivo: data/editions/{AAMMDD}/02-reviewed.md
+  [3] LinkedIn automático — Worker queue + Make webhook (agenda 17:00 BRT)
+  [4] LinkedIn manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
   [5] Facebook automático — Graph API agenda os 3 posts
-  [6] Facebook manual     — você posta; copy em data/editions/{AAMMDD}/03-social.md
+  [6] Facebook manual     — você posta; copy: data/editions/{AAMMDD}/03-social.md
 
 Digite os números separados por vírgula (ex: "1,3,5" pra tudo automático)
-ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar:
+ou "all" pra automático em tudo, ou "none" pra encerrar sem publicar.
+Default se não responder = TUDO AUTOMÁTICO (#1326).
 ```
 
-Default se o editor não responder explicitamente = **manual em tudo** (não publicar nada automaticamente).
-
-Aguardar resposta antes de prosseguir. Só dispatchar os agents/scripts que o editor autorizou.
+Aguardar resposta. Se editor pular o gate (linha em branco / desistir) → `--default-auto`. Se "none" → grava `status: skipped_by_editor` e encerra.
 
 ## O que faz
 

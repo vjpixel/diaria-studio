@@ -2,6 +2,17 @@
 
 Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
+## TLDR (#1327)
+
+Beehiiv newsletter = 1 comando + 1 paste JS:
+
+1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker (`draft.diaria.workers.dev/{edition}`).
+2. Single `javascript_tool` no Chrome (fetch + `editor.commands.insertContent({type:'text', text:html})`) — ver §5.2 Fase 3.
+
+Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
+
+**Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe só como fallback automático se o Worker falhar — não usar como default mesmo se parecer "mais simples".
+
 **Histórico do arquivo**: este arquivo era `.claude/agents/publish-newsletter.md` até #1114 (2026-05-12). Movido pra `context/publishers/` pra refletir o que ele é de fato: um **playbook lido pelo top-level Claude Code**, não um subagent dispatchável. Razão técnica original em #1054: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes não conseguem chamá-la. E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent completaria o passo 5.
 
 **Fluxo correto** (invocado por `/diaria-4-publicar`, orchestrator-stage-4):
@@ -266,7 +277,7 @@ const node = document.querySelector('.node-htmlSnippet');
 
 Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`. Se editor for undefined, esperar 1-2s e retentar (TipTap pode estar inicializando).
 
-**Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — caminho recomendado.
+**Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`poll.diaria.workers.dev/html/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
@@ -292,15 +303,7 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 
 **Revisão online antes do paste**: a URL retornada (`url` no JSON) renderiza o HTML cru no browser. Use pra revisar o conteúdo final no celular/desktop antes de colar no Beehiiv — botões A/B do poll funcionam, imagens carregam. **Não substitui o test email do Beehiiv** (CSS específico do email client não está aplicado), mas é suficiente pra revisão de conteúdo. Apresentar a URL ao editor explicitamente: "Newsletter pronta pra revisão: {url} — confirme paste no Beehiiv?".
 
-**Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra Fase 2-legacy abaixo sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk.
-
-**Fase 2-legacy — Chunk-and-push (fallback, #1177)**:
-
-```bash
-npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}
-```
-
-Gera `_internal/_b64_NN.txt` (16 arquivos de 2500 chars + hashes) + push de cada chunk via `javascript_tool` acumulando em `window.__b64chunks[]`. Após push final, Fase 3 muda — em vez de fetch, decodifica `window.__b64chunks` antes do `insertContent` (ver Fase 4 abaixo).
+**Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
 
 **Fase 3 — Fetch + paste via TipTap `editor.commands.insertContent` (#1178)**:
 
@@ -336,7 +339,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 })()
 ```
 
-**Fallback legacy Fase 4 (chunks decode) — não recomendado:**
+**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
 
 ⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
 
@@ -344,65 +347,9 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 - ❌ `document.execCommand('insertText', false, html)` — atualiza DOM (codeLen=16K) mas NÃO atualiza ProseMirror state. Autosave captura state → reload mostra apenas 78 chars (estado pré-paste)
 - ❌ `editor.commands.insertContent(htmlString)` — TipTap parseia como HTML, falha em `RangeError: Invalid content for node tableCell` por causa do schema
 
-A solução validada: passar como **text node literal** (`{ type: 'text', text: ... }`) — TipTap não parseia, htmlSnippet armazena raw HTML como texto puro:
+A solução validada: passar como **text node literal** (`{ type: 'text', text: ... }`) — TipTap não parseia, htmlSnippet armazena raw HTML como texto puro.
 
-```js
-(() => {
-  // Decodificar base64 → HTML (UTF-8 safe)
-  const b64 = window.__b64chunks.join('');
-  const binStr = atob(b64);
-  const bytes = new Uint8Array(binStr.length);
-  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
-  const html = new TextDecoder('utf-8').decode(bytes);
-
-  const pm = document.querySelector('.tiptap.ProseMirror');
-  const editor = pm?.editor;
-  if (!editor) return { error: 'no editor' };
-
-  // Achar posição do htmlSnippet no doc + posicionar cursor dentro dele
-  let htmlSnippetPos = null;
-  editor.state.doc.descendants((node, pos) => {
-    if (node.type.name === 'htmlSnippet') {
-      htmlSnippetPos = pos;
-      return false;
-    }
-  });
-  if (htmlSnippetPos === null) return { error: 'no htmlSnippet in doc' };
-
-  const tr = editor.state.tr;
-  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
-  tr.setSelection(editor.state.selection.constructor.near($pos));
-  editor.view.dispatch(tr);
-
-  // Insert como TEXT NODE (NÃO como HTML parseado)
-  const ok = editor.commands.insertContent({ type: 'text', text: html });
-
-  // Cleanup
-  delete window.__b64chunks;
-
-  const newJSON = JSON.stringify(editor.getJSON());
-  return {
-    inserted: ok,
-    htmlBytes: html.length,
-    docSize: editor.state.doc.content.size,
-    hasPollA: newJSON.includes('{{poll_a_url}}'),
-    hasPollB: newJSON.includes('{{poll_b_url}}'),
-    hasImgA: newJSON.includes('14e0Acht-c0wRH7geqSBZ_kkYtQdlL3aK'),
-    hasImgB: newJSON.includes('1NHj3Mlb0WEwtngfhZ3S9ycLKK2ZkQb55'),
-  };
-})()
-```
-
-Resultado esperado (validado em #1054):
-- `inserted: true`
-- `docSize` ≈ `htmlBytes + 4` (overhead do nó)
-- Todos os markers críticos = `true`
-
-Se `inserted: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save (passo 6).
-
-**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
-
-**Custo realista (medido em #1054)**: newsletter 16KB = b64 22KB = 4 chunks = ~30K tokens só pra paste. Otimização via Cloudflare Worker host (~5K tokens) tracked em #1054 — não bloqueia produção.
+Detalhes do caminho chunked-base64 (fallback legacy) estão no apêndice no fim deste arquivo.
 
 **`window.editor` global NÃO existe no Beehiiv** (`window.editor`, `window.tiptapEditor`, `window.__tiptapEditor` todos undefined). O editor TipTap está acessível diretamente em `document.querySelector('.tiptap.ProseMirror').editor` — esse path foi validado em E2E #1054.
 
@@ -520,3 +467,79 @@ com o test email — editor pode editar manualmente.
 - **Upload de imagem**: aguardar conclusão antes do próximo bloco.
 - **JS direto via `javascript_tool` é obrigatório no passo 5** (cursor positioning + chunked paste + verify). Use `find`/`read_page` apenas pra elementos React-padrão (Title, Subtitle inputs, botões "Save draft").
 - **Não fechar a aba do Chrome ao final** — o editor pode querer revisar diretamente.
+
+---
+
+## Apêndice: Fallback chunked (legacy — não usar como default)
+
+⚠️ **Atenção (#1327):** este caminho consome ~80K tokens vs ~5K do Worker-hosted (Fase 2). Só usar quando `upload-html-public.ts` falhar e o fallback automático ativar — nunca como primeira opção em runtime.
+
+**Por que existe:** se o Cloudflare Worker estiver offline (deploy quebrado, 5xx, KV down), precisamos de um caminho que não dependa de fetch externo. Chunked base64 transmite o HTML via `javascript_tool` em pedaços de 2500 chars acumulados em `window.__b64chunks[]`.
+
+**Quando ativa:** automaticamente via `Fallback automático Worker→chunked` (§5.2). Nunca proponha manualmente.
+
+### Geração dos chunks
+
+```bash
+npx tsx scripts/chunk-html-base64.ts --edition-dir {edition_dir}
+```
+
+Gera `_internal/_b64_NN.txt` (~16 arquivos de 2500 chars + hashes). Cada chunk é pushado via `javascript_tool` separado acumulando em `window.__b64chunks[]`.
+
+### Paste após acumular chunks
+
+Em vez do `fetch + insertContent` da Fase 3 (Worker), decodifica `window.__b64chunks` antes de inserir:
+
+```js
+(() => {
+  // Decodificar base64 → HTML (UTF-8 safe)
+  const b64 = window.__b64chunks.join('');
+  const binStr = atob(b64);
+  const bytes = new Uint8Array(binStr.length);
+  for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+  const html = new TextDecoder('utf-8').decode(bytes);
+
+  const pm = document.querySelector('.tiptap.ProseMirror');
+  const editor = pm?.editor;
+  if (!editor) return { error: 'no editor' };
+
+  // Achar posição do htmlSnippet no doc + posicionar cursor dentro dele
+  let htmlSnippetPos = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'htmlSnippet') {
+      htmlSnippetPos = pos;
+      return false;
+    }
+  });
+  if (htmlSnippetPos === null) return { error: 'no htmlSnippet in doc' };
+
+  const tr = editor.state.tr;
+  const $pos = editor.state.doc.resolve(htmlSnippetPos + 1);
+  tr.setSelection(editor.state.selection.constructor.near($pos));
+  editor.view.dispatch(tr);
+
+  // Insert como TEXT NODE (NÃO como HTML parseado)
+  const ok = editor.commands.insertContent({ type: 'text', text: html });
+
+  // Cleanup
+  delete window.__b64chunks;
+
+  const newJSON = JSON.stringify(editor.getJSON());
+  return {
+    inserted: ok,
+    htmlBytes: html.length,
+    docSize: editor.state.doc.content.size,
+    hasPollA: newJSON.includes('{{poll_a_url}}'),
+    hasPollB: newJSON.includes('{{poll_b_url}}'),
+  };
+})()
+```
+
+Resultado esperado:
+- `inserted: true`
+- `docSize` ≈ `htmlBytes + 4` (overhead do nó)
+- Markers críticos = `true`
+
+Se `inserted: false` ou markers críticos forem `false`, registrar em `unfixed_issues[]` com `reason: "paste_failed"` e abortar antes do save.
+
+**Custo medido**: newsletter 16KB = b64 22KB ≈ 4 chunks ≈ ~30K tokens (paste só), 16+ passos sequenciais. Worker-hosted (Fase 2 recomendada) faz tudo em ~5K tokens e 1 javascript_tool call.
