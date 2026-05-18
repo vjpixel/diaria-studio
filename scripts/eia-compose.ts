@@ -192,6 +192,28 @@ export function buildEiaMd(
 }
 
 /**
+ * Pure (#1325): detecta partial state — algum output presente mas não todos.
+ * Diferente de `isStage4Complete` (que retorna true só se TUDO presente),
+ * `isStage4Partial` retorna true se algum subset existe sem ser completo.
+ *
+ * Em partial state, regenerar = perder o trabalho parcial + mudar POTD se A
+ * existe mas B falhou. Caller (main()) deve halt + pedir confirmação explícita
+ * ao invés de regenerar silenciosamente.
+ */
+export function isStage4Partial(outDir: string): boolean {
+  const md = existsSync(resolve(outDir, "01-eia.md"));
+  const meta = existsSync(resolve(outDir, "_internal/01-eia-meta.json"));
+  const aJpg = existsSync(resolve(outDir, "01-eia-A.jpg"));
+  const bJpg = existsSync(resolve(outDir, "01-eia-B.jpg"));
+  const realJpg = existsSync(resolve(outDir, "01-eia-real.jpg"));
+  const iaJpg = existsSync(resolve(outDir, "01-eia-ia.jpg"));
+  const presentCount = [md, meta, aJpg, bJpg, realJpg, iaJpg].filter(Boolean).length;
+  // Partial = pelo menos 1 existe mas Stage 4 não está completo
+  if (presentCount === 0) return false;
+  return !isStage4Complete(outDir);
+}
+
+/**
  * Detecta se o Stage 4 está completo num outDir (resume-aware): os 4 outputs
  * precisam existir em conjunto — `01-eia.md`, `_internal/01-eia-meta.json`, e
  * o par de imagens (A/B novo padrão #192 OU legacy real/ia).
@@ -823,6 +845,25 @@ async function main(): Promise<void> {
       }),
     );
     process.exit(0);
+  }
+
+  // Partial state guard (#1325): se algum output existe mas Stage 4 não está
+  // completo, NÃO regenerar silenciosamente (regeneration trocaria POTD e
+  // perdería trabalho parcial). Halt + pedir --force explícito.
+  if (!force && isStage4Partial(outDir)) {
+    console.error(
+      `[eia-compose] Partial state detected em ${outDir} — alguns outputs existem mas não todos.\n` +
+        `Re-rodar sem --force perdería trabalho parcial e potencialmente mudaria POTD.\n` +
+        `Use --force pra regenerar do zero (vai escolher nova POTD).`,
+    );
+    console.log(
+      JSON.stringify({
+        skipped: true,
+        reason: "stage4_partial_state",
+        out_dir: outDir,
+      }),
+    );
+    process.exit(2);
   }
 
   // 1. Fetch POTD com eligibility
