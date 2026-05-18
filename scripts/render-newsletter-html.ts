@@ -44,11 +44,14 @@ const CATEGORY_EMOJI: Record<string, string> = {
   NOTÍCIA: "📰",
 };
 
-const SECTION_EMOJI: Record<string, string> = {
-  PESQUISAS: "🧪",
-  LANÇAMENTOS: "🚀",
-  "OUTRAS NOTÍCIAS": "📰",
-};
+// #1328: SECTION_EMOJI movido pra scripts/lib/section-naming.ts (compartilhado
+// com singularize-md-sections + writer template). PESQUISAS mudou de 🧪 → 🔬
+// pra match com destaque label D3 PESQUISA (🔬), confirmado pelo editor em
+// 260518.
+import {
+  sectionEmojiPrefix,
+  displaySectionName,
+} from "./lib/section-naming.ts";
 
 // ── Interfaces ────────────────────────────────────────────────────────
 interface RenderDestaque extends BaseDestaque {
@@ -167,7 +170,7 @@ export function parseSections(text: string): Section[] {
     if (!sectionMatch) continue;
 
     const name = sectionMatch[1];
-    const emoji = SECTION_EMOJI[name] || "📰";
+    const emoji = sectionEmojiPrefix(name).trim() || "📰";
     // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
     // consumir esses blocos como items quando writer omitir `---`.
     const afterHeader = truncateAtSectionTerminator(
@@ -746,22 +749,9 @@ function renderSectionItem(item: SectionItem, last: boolean): string {
   return titleRow + "\n" + descRow;
 }
 
-/**
- * Pure (#1070): retorna o nome da seção no singular quando N=1.
- * Plurais permanecem inalterados quando N≠1.
- *
- * Mapping pt-BR:
- *   - LANÇAMENTOS → LANÇAMENTO
- *   - PESQUISAS → PESQUISA
- *   - OUTRAS NOTÍCIAS → OUTRA NOTÍCIA
- */
-export function singularizeSectionName(name: string, count: number): string {
-  if (count !== 1) return name;
-  if (name === "LANÇAMENTOS") return "LANÇAMENTO";
-  if (name === "PESQUISAS") return "PESQUISA";
-  if (name === "OUTRAS NOTÍCIAS") return "OUTRA NOTÍCIA";
-  return name;
-}
+// #1324: singularizeSectionName movido pra scripts/lib/section-naming.ts.
+// Re-export pra retrocompat caller importando direto deste módulo.
+export { singularizeSectionName } from "./lib/section-naming.ts";
 
 function renderSection(section: Section): string {
   // #1090: rule fina (1px RULE) cima E baixo do kicker pra simetria visual —
@@ -771,8 +761,9 @@ function renderSection(section: Section): string {
     .map((item, i) => renderSectionItem(item, i === section.items.length - 1))
     .join("\n");
 
-  // #1070: singular quando só tem 1 item (LANÇAMENTO em vez de LANÇAMENTOS)
-  const displayName = singularizeSectionName(section.name, section.items.length);
+  // #1070 + #1328: emoji prefix + singular quando só tem 1 item
+  // (🚀 LANÇAMENTO em vez de 🚀 LANÇAMENTOS)
+  const displayName = displaySectionName(section.name, section.items.length);
 
   return `<!-- ${section.name} -->
 ${renderRule()}

@@ -771,13 +771,11 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
   it("section header não usa rule grossa 2px solid (TEXT_COLOR)", () => {
     const html = renderHTML(fixt());
     // Encontra o BLOCO da section PESQUISA (comment + hr + tr).
-    // Ordem no output: `<!-- PESQUISA -->\n<hr ...>\n<tr>...<p>PESQUISA</p>`.
-    // Pega de "<!-- PESQUISA" até o `<p>PESQUISA</p>` pra cobrir a rule emitida
-    // logo após o comment.
+    // #1328: kicker agora vem com emoji prefix — `<p>🔬 PESQUISA</p>`.
     const blockStart = html.indexOf("<!-- PESQUISA -->");
     assert.ok(blockStart > 0, "comment PESQUISA deve aparecer");
-    const kickerIdx = html.indexOf(">PESQUISA</p>", blockStart);
-    assert.ok(kickerIdx > blockStart, "kicker <p>PESQUISA</p> deve vir após comment");
+    const kickerIdx = html.indexOf("PESQUISA</p>", blockStart);
+    assert.ok(kickerIdx > blockStart, "kicker contendo PESQUISA</p> deve vir após comment");
     const sectionBlock = html.slice(blockStart, kickerIdx);
     // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
     // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
@@ -788,10 +786,9 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
 
   it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
     const html = renderHTML(fixt());
-    // O kicker é renderizado como `<p ...>PESQUISA</p>` com border-bottom no
-    // próprio <p>. Match: encontra qualquer <p> com border-bottom seguido
-    // pelo nome da section.
-    assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>PESQUISA<\/p>/i, "kicker <p> deve ter border-bottom 1px");
+    // O kicker é renderizado como `<p ...>🔬 PESQUISA</p>` com border-bottom no
+    // próprio <p>. #1328: emoji prefix obrigatório.
+    assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>🔬 PESQUISA<\/p>/u, "kicker <p> deve ter border-bottom 1px + emoji 🔬");
   });
 });
 
@@ -1209,29 +1206,29 @@ describe("renderHTML — singular nas seções quando N=1 (#1070)", () => {
     encerrar: null,
   });
 
-  it("renderiza LANÇAMENTO singular quando seção tem 1 item", () => {
+  it("renderiza 🚀 LANÇAMENTO singular quando seção tem 1 item (#1324, #1328)", () => {
     const html = renderHTML(fixt([
       { name: "LANÇAMENTOS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
     ]));
-    assert.match(html, />LANÇAMENTO</);
-    assert.doesNotMatch(html, />LANÇAMENTOS</);
+    assert.match(html, />🚀 LANÇAMENTO</u);
+    assert.doesNotMatch(html, />🚀 LANÇAMENTOS</u);
   });
 
-  it("mantém LANÇAMENTOS plural quando seção tem 2 items", () => {
+  it("mantém 🚀 LANÇAMENTOS plural quando seção tem 2 items (#1328)", () => {
     const html = renderHTML(fixt([
       { name: "LANÇAMENTOS", items: [
         { title: "A", description: "x", url: "https://example.com/a" },
         { title: "B", description: "y", url: "https://example.com/b" },
       ] },
     ]));
-    assert.match(html, />LANÇAMENTOS</);
+    assert.match(html, />🚀 LANÇAMENTOS</u);
   });
 
-  it("renderiza OUTRA NOTÍCIA singular quando seção tem 1 item", () => {
+  it("renderiza 📰 OUTRA NOTÍCIA singular quando seção tem 1 item (#1324, #1328)", () => {
     const html = renderHTML(fixt([
       { name: "OUTRAS NOTÍCIAS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
     ]));
-    assert.match(html, />OUTRA NOTÍCIA</);
-    assert.doesNotMatch(html, />OUTRAS NOTÍCIAS</);
+    assert.match(html, />📰 OUTRA NOTÍCIA</u);
+    assert.doesNotMatch(html, />📰 OUTRAS NOTÍCIAS</u);
   });
 });

@@ -90,12 +90,12 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 
    Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
 
-3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções também em negrito (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`). Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
+3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**🔬 PESQUISAS**`, `**📰 OUTRAS NOTÍCIAS**`. Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita. Singular vs plural é normalizado pós-write por `singularize-md-sections.ts` (#1324) — writer pode emitir sempre plural.
 
    **Exemplo literal (#909) — copiar formato exato:**
 
    ```
-   **LANÇAMENTOS**
+   **🚀 LANÇAMENTOS**
 
    **[Agentes Claude para serviços financeiros](https://www.anthropic.com/news/finance-agents)**
    Anthropic lança dez novos plugins para Cowork e Claude Code, integrações com Microsoft 365 e conectores específicos para serviços financeiros.
