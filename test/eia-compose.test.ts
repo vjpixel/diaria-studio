@@ -8,6 +8,7 @@ import {
   chooseSides,
   buildEiaMd,
   isStage4Complete,
+  isStage4Partial,
   buildPrevResultLine,
   readPrevPollStats,
   firstSentence,
@@ -244,6 +245,75 @@ describe("isStage4Complete (#192 resume-aware)", () => {
       touch(join(dir, "01-eia-B.jpg"));
       // sem _internal/01-eia-meta.json
       assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isStage4Partial (#1325)", () => {
+  function makeDir(): string {
+    const d = mkdtempSync(join(tmpdir(), "eia-partial-"));
+    mkdirSync(join(d, "_internal"), { recursive: true });
+    return d;
+  }
+  function touch(p: string): void {
+    writeFileSync(p, "");
+  }
+
+  it("false quando nada existe", () => {
+    const dir = makeDir();
+    try {
+      assert.equal(isStage4Partial(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando tudo existe (não partial — completo)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      assert.equal(isStage4Partial(dir), false);
+      assert.equal(isStage4Complete(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true quando só A existe (B falhou — caso 260518)", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia.md"));
+      touch(join(dir, "01-eia-A.jpg"));
+      // B faltando
+      assert.equal(isStage4Partial(dir), true);
+      assert.equal(isStage4Complete(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true quando só MD existe", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia.md"));
+      assert.equal(isStage4Partial(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true quando meta + imgs existem mas MD falta", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "_internal/01-eia-meta.json"));
+      touch(join(dir, "01-eia-A.jpg"));
+      touch(join(dir, "01-eia-B.jpg"));
+      assert.equal(isStage4Partial(dir), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
