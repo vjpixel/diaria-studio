@@ -226,11 +226,11 @@ Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`)
 
 ### 0h. Link CTR refresh
 
-Roda em paralelo com 0e/0f/0g (per nota da seção 0e–0h acima):
+Roda em paralelo com 0e/0f/0g (per nota da seção 0e–0h acima). Sequencial INTERNAMENTE — `beehiiv-sync` precisa popular `data/beehiiv-cache/posts/*.json` antes de `build-link-ctr` lê-los:
 ```bash
-npx tsx scripts/build-link-ctr.ts
+npx tsx scripts/beehiiv-sync.ts && npx tsx scripts/build-link-ctr.ts
 ```
-Regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline).
+`beehiiv-sync.ts` (#1357) sincroniza posts + clicks + publication.json da Beehiiv API pro cache local; é incremental (só busca posts novos ou modificados). `build-link-ctr.ts` lê do cache e regenera `data/link-ctr-table.csv` com CTR por link de todas as edições publicadas há mais de 7 dias. Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Quando `beehiiv-sync` falha (rate limit, API down), `build-link-ctr` ainda roda com o cache existente — só não pega posts novos.
 
 ### 0i. Audience profile refresh
 
