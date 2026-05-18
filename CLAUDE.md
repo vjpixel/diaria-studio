@@ -16,6 +16,11 @@ O fluxo editorial é modelado como 4 etapas com gate humano em cada uma. A execu
    Use o mesmo token do `claude_desktop_config.json`. Veja `.env.example`.
 2. `npm install` no diretório.
 2a. `npm run setup-hooks` — instala hook que regenera `context/sources.md` automaticamente ao editar `seed/sources.csv`.
+2b. **`data/` mora no OneDrive, não no repo.** A pasta `data/` é uma *directory junction* local apontando para `~/OneDrive/Documentos/diaria-studio-data` (sync entre máquinas, business-sensitive não vai pro GH). Criar 1x por máquina, após o `git clone`:
+   ```powershell
+   New-Item -ItemType Junction -Path "data" -Target "$env:USERPROFILE\OneDrive\Documentos\diaria-studio-data"
+   ```
+   Em macOS/Linux equivalente: `ln -s ~/OneDrive/Documentos/diaria-studio-data data`. A pasta-alvo no OneDrive precisa existir antes (criar manualmente na 1ª máquina; nas demais, o OneDrive já sincronizou). Toda `data/` está em `.gitignore` blanket — nada lá dentro vai pro repo.
 3. `npm run sync-sources` para gerar `context/sources.md`.
 4. Abrir Claude Code neste diretório: `cd diaria-studio && claude`.
 5. Confirmar que os MCPs estão ativos: `/mcp` deve listar `clarice` (local), `claude.ai Beehiiv` e `claude.ai Gmail` (conectores nativos). Para Fase 2 (imagens), instalar ComfyUI local (ver `docs/comfyui-setup.md`). Para Fase 3 (publicação), instalar e logar a extensão `Claude in Chrome` em Beehiiv/LinkedIn/Facebook (ver `docs/browser-publish-setup.md`).
