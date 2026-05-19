@@ -28,7 +28,16 @@ import {
   currentMonthSlugBrt,
   monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1, computePodium, scoreByMonthEntriesToLeaderboard, listAllKeys, computeSnapshotEntries } from "../workers/poll/src/index.ts";
+import {
+  computeTop1,
+  computePodium,
+  scoreByMonthEntriesToLeaderboard,
+  listAllKeys,
+  computeSnapshotEntries,
+  requiredSecretsForPath,
+  missingSecretsForPath,
+  type Env,
+} from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -705,3 +714,69 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     assert.deepEqual(entries, []);
   });
 });
+
+describe("requiredSecretsForPath (#1420)", () => {
+  it("/vote → POLL_SECRET", () => {
+    assert.deepEqual(requiredSecretsForPath("/vote"), ["POLL_SECRET"]);
+  });
+
+  it("/set-name → POLL_SECRET", () => {
+    assert.deepEqual(requiredSecretsForPath("/set-name"), ["POLL_SECRET"]);
+  });
+
+  it("/admin/correct → ADMIN_SECRET", () => {
+    assert.deepEqual(requiredSecretsForPath("/admin/correct"), ["ADMIN_SECRET"]);
+  });
+
+  it("rotas públicas (img/stats/leaderboard) → []", () => {
+    assert.deepEqual(requiredSecretsForPath("/img/abc.jpg"), []);
+    assert.deepEqual(requiredSecretsForPath("/stats"), []);
+    assert.deepEqual(requiredSecretsForPath("/leaderboard"), []);
+    assert.deepEqual(requiredSecretsForPath("/leaderboard/2026-05"), []);
+    assert.deepEqual(requiredSecretsForPath("/"), []);
+  });
+});
+
+describe("missingSecretsForPath (#1420)", () => {
+  function makeEnv(overrides: Partial<Env> = {}): Env {
+    return {
+      POLL: {} as KVNamespace,
+      POLL_SECRET: "pollsecret",
+      ADMIN_SECRET: "adminsecret",
+      ALLOWED_ORIGINS: "*",
+      ...overrides,
+    };
+  }
+
+  it("retorna [] quando todos os secrets necessários estão presentes", () => {
+    const env = makeEnv();
+    assert.deepEqual(missingSecretsForPath(env, "/vote"), []);
+    assert.deepEqual(missingSecretsForPath(env, "/admin/correct"), []);
+  });
+
+  it("#1420: retorna [POLL_SECRET] quando /vote chamado sem POLL_SECRET", () => {
+    const env = makeEnv({ POLL_SECRET: undefined as unknown as string });
+    assert.deepEqual(missingSecretsForPath(env, "/vote"), ["POLL_SECRET"]);
+  });
+
+  it("#1420: retorna [ADMIN_SECRET] quando /admin/correct chamado sem ADMIN_SECRET", () => {
+    const env = makeEnv({ ADMIN_SECRET: undefined as unknown as string });
+    assert.deepEqual(missingSecretsForPath(env, "/admin/correct"), ["ADMIN_SECRET"]);
+  });
+
+  it("string vazia é tratada como missing (deploy seteou secret como \"\")", () => {
+    const env = makeEnv({ POLL_SECRET: "" });
+    assert.deepEqual(missingSecretsForPath(env, "/vote"), ["POLL_SECRET"]);
+  });
+
+  it("rotas públicas nunca falham por falta de secret (mesmo com env vazio)", () => {
+    const env = makeEnv({
+      POLL_SECRET: undefined as unknown as string,
+      ADMIN_SECRET: undefined as unknown as string,
+    });
+    assert.deepEqual(missingSecretsForPath(env, "/img/foo.jpg"), []);
+    assert.deepEqual(missingSecretsForPath(env, "/stats"), []);
+    assert.deepEqual(missingSecretsForPath(env, "/leaderboard"), []);
+  });
+});
+
