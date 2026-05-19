@@ -570,6 +570,39 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html!, /<\/table>$/);
   });
 
+  it("#1422: caption do POTD em font-style:italic (legenda de foto)", () => {
+    const html = renderHTML(fixtureComEia);
+    // Localiza o <p> que envolve o credit ("Foto: Author / CC BY-SA 4.0.") e
+    // valida que o style attribute inclui font-style:italic. Não pode validar
+    // só substring "font-style:italic" no HTML inteiro porque renderImage
+    // (line 662) já injeta italic em captions de destaques.
+    const creditMatch = html.match(/<p style="([^"]+)">Foto: Author[^<]*<\/p>/);
+    assert.ok(creditMatch, "credit <p> deve existir no HTML renderizado");
+    assert.match(creditMatch![1], /font-style:italic/, "caption do POTD precisa de italic");
+  });
+
+  it("#1422: leaderboard row NÃO é italicizada (semântica de label, não caption)", () => {
+    const fixtureWithLeaderboard = {
+      ...fixtureComEia,
+      eia: {
+        ...fixtureComEia.eia,
+        leaderboardPeriod: "Maio",
+        leaderboardPodium: [
+          { nickname: "Davyd Wilkerson", correct_pct: 100 },
+          { nickname: "Luisao P", correct_pct: 100 },
+        ],
+      },
+    };
+    const html = renderHTML(fixtureWithLeaderboard);
+    // Linha "🏆 Liderança de Maio: Davyd Wilkerson e Luisao P" não pode ter italic.
+    const leaderboardMatch = html.match(/<p style="([^"]+)">🏆 <strong>Liderança/);
+    assert.ok(leaderboardMatch, "leaderboard <p> deve existir");
+    assert.ok(
+      !/font-style:italic/.test(leaderboardMatch![1]),
+      "leaderboard não pode ser italic — só caption do POTD"
+    );
+  });
+
   it("split: body + standalone juntos têm os mesmos destaques que renderHTML default", () => {
     // Soma das partes ≈ todo: garantia que split não perde conteúdo.
     const fullDefault = renderHTML(fixtureComEia);

@@ -741,6 +741,10 @@ ${renderWhyBlock(d.why)}`;
 function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
   const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:16px;line-height:1.5;margin:0;padding:0;`;
+  // #1422: caption do POTD em itálico (convenção de legenda de foto). Mantém
+  // paragraphStyle separado pra não italicizar a leaderboard row (#1160), que
+  // tem semântica de label, não de caption.
+  const captionStyle = paragraphStyle + "font-style:italic;";
 
   // #1160: bloco leaderboard top1 no rodapé do È IA?. Omitido quando ausente.
   // Formato: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
@@ -781,7 +785,7 @@ ${renderRule()}
           </tr></table>
         </td></tr>
         <tr><td align="left" style="padding:16px 0 0 0;">
-          <p style="${paragraphStyle}">${creditHtml}</p>
+          <p style="${captionStyle}">${creditHtml}</p>
         </td></tr>
 ${leaderboardRow}
       </table>
