@@ -11,6 +11,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { assertHumanized } from "../assert-humanized.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -145,6 +146,30 @@ function checkPorQueIssoImportaSeparate(editionDir: string): InvariantViolation[
   return violations;
 }
 
+/**
+ * #1385: assert humanizador rodou em 02-reviewed.md + 03-social.md.
+ * Critério mecânico: snapshot pre-humanizer (_internal/02-humanized.md +
+ * _internal/03-social-pre-humanizador.md) presente com mtime >= final
+ * (com tolerance 1h pra edições leves manuais).
+ *
+ * Caso real 260519: editor pulou humanizer no social por timeout Clarice.
+ * Sem este gate, padrões IA no copy ficam invisíveis ao orchestrator.
+ */
+function checkHumanizerRan(editionDir: string): InvariantViolation[] {
+  const result = assertHumanized(editionDir);
+  if (result.ok) return [];
+  return result.missing.map((m) => ({
+    rule: "humanizer-ran",
+    message:
+      `${m.final}: snapshot ${m.snapshot} ${m.reason === "snapshot_missing" ? "ausente" : "stale (mtime < final)"} — ` +
+      `humanizer foi pulado. Rodar Skill("humanizador", "Leia ${m.final}, humanize..., salve em ${m.final}.") ` +
+      `e re-commitar snapshot.`,
+    source_issue: "#1385",
+    severity: "error" as const,
+    file: m.final,
+  }));
+}
+
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
@@ -167,10 +192,18 @@ export const STAGE_2_RULES: InvariantRule[] = [
     stage: 2,
     run: checkPorQueIssoImportaSeparate,
   },
+  {
+    id: "humanizer-ran",
+    description: "humanizer rodou em 02-reviewed.md + 03-social.md (#1385)",
+    source_issue: "#1385",
+    stage: 2,
+    run: checkHumanizerRan,
+  },
 ];
 
 export {
   checkReviewedPassesAllLints,
   checkSocialPassesLints,
   checkPorQueIssoImportaSeparate,
+  checkHumanizerRan,
 };
