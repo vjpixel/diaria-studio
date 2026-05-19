@@ -31,6 +31,7 @@
  * Idempotente: re-rodar com mesmo window é no-op se o set já bate.
  */
 
+import "dotenv/config"; // #1379 — carrega CLOUDFLARE_API_TOKEN do .env pra wrangler
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -1,11 +1,3 @@
 {
-  "mcpServers": {
-    "clarice": {
-      "type": "stdio",
-      "command": "node",
-      "args": [
-        "C:\\Users\\vjpix\\OneDrive\\Documentos\\Clarice\\dist\\index.js"
-      ]
-    }
-  }
+  "mcpServers": {}
 }

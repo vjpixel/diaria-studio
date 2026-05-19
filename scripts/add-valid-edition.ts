@@ -18,6 +18,7 @@
  *   POLL_KV_NAMESPACE_ID   - default 72784da4ae39444481eb422ebac357c6
  */
 
+import "dotenv/config"; // #1379 — carrega CLOUDFLARE_API_TOKEN do .env pra wrangler
 import { parseArgs } from "./lib/cli-args.ts";
 import { wranglerKvGet, wranglerKvPut } from "./lib/poll-kv.ts";
 
