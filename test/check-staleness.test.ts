@@ -111,15 +111,18 @@ describe("evaluateStaleness — orchestration (#120)", () => {
     assert.deepEqual(stale, []);
   });
 
-  it("Stage 4: só checa imagens vs 02-reviewed", () => {
+  it("#1413: Stage 4 checa imagens + 03-social.md vs 02-reviewed", () => {
     const get = mkGetter({
       "04-d1-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
       "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"),
-      "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // não checado em S4
+      "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // stale (#1413)
     });
     const stale = evaluateStaleness(STAGE_CHECKS["4"], get);
-    assert.equal(stale.length, 1);
-    assert.equal(stale[0].downstream, "04-d1-2x1.jpg");
+    // Esperado: 04-d1-2x1.jpg (stale) + 03-social.md (stale) = 2
+    assert.equal(stale.length, 2);
+    const downstreams = stale.map((s) => s.downstream);
+    assert.ok(downstreams.includes("04-d1-2x1.jpg"));
+    assert.ok(downstreams.includes("03-social.md"));
   });
 
   it("Stage não-mapeado: vazio", () => {
@@ -166,10 +169,11 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     }
   });
 
-  it("Stage 4 só checa imagens, não 03-social", () => {
+  it("#1413: Stage 4 cobre imagens + 03-social.md", () => {
     const downstreams = STAGE_CHECKS["4"].map((c) => c.downstream);
-    assert.ok(!downstreams.includes("03-social.md"));
+    assert.ok(downstreams.includes("03-social.md"), "social staleness deve estar coberto em S4");
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
+    assert.ok(downstreams.includes("04-d2-1x1.jpg"));
   });
 
   it("Stage 3 checa só 03-social.md", () => {

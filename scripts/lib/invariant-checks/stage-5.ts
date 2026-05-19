@@ -99,6 +99,60 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
 }
 
 /**
+ * #1410: enforcement do loop verify→fix do Stage 4 §4f.
+ *
+ * Se `05-published.json.review_status === "issues_unfixable"`, então o
+ * orchestrator declarou que o test email tem issues e foi tentado fix-mode
+ * pelo menos 1×. Pra essa declaração ser válida:
+ *   - `review_attempts >= 2` (1 review + ao menos 1 fix-mode dispatch)
+ *
+ * Sem esse guard, orchestrator pode pular fix-mode silenciosamente quando
+ * agent retorna issues que ele acha falso-positivo. Caso 260520: review_status
+ * marcado `issues_unfixable` com `review_attempts: 1` — fix-mode nunca rodou,
+ * issues foram só descartadas por julgamento.
+ *
+ * Em 260520, após #1421 (filter de falso-positivos no orchestrator), issues
+ * legítimas chegam até fix-mode automaticamente. Esse guard serve de safety
+ * net pra caso filter falhe ou novo tipo de issue apareça.
+ */
+function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "05-published.json");
+  if (!existsSync(path)) {
+    // Outro check (#272/#780) já reporta ausência do file — não dup.
+    return [];
+  }
+  let data: {
+    review_status?: string;
+    review_attempts?: number;
+  };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    // checkSocialPublishedComplete já reportaria JSON corrupted; não dup.
+    return [];
+  }
+  if (data.review_status !== "issues_unfixable") return [];
+
+  const attempts = typeof data.review_attempts === "number" ? data.review_attempts : 0;
+  if (attempts < 2) {
+    return [
+      {
+        rule: "stage-4-review-loop-enforced",
+        message:
+          `05-published.json marca review_status="issues_unfixable" mas review_attempts=${attempts} ` +
+          `(esperado >= 2 — 1 review + ao menos 1 fix-mode dispatch). ` +
+          `Orchestrator pulou o loop verify→fix silenciosamente. ` +
+          `Re-rode publish-newsletter em modo fix antes de declarar unfixable.`,
+        source_issue: "#1410",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
+/**
  * #1367: `_internal/.close-poll-done.json` deve existir após Stage 4 §4h.
  * Marker é escrito por close-poll.ts apenas se: (a) /admin/correct retornou
  * ok, (b) sanity check /stats confirmou correct_answer registrado.
@@ -184,6 +238,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkSocialPublishedComplete,
   },
   {
+    id: "stage-4-review-loop-enforced",
+    description:
+      "review_status=issues_unfixable exige review_attempts>=2 (#1410)",
+    source_issue: "#1410",
+    stage: 5,
+    run: checkStage4ReviewLoop,
+  },
+  {
     id: "close-poll-marker-exists",
     description: "_internal/.close-poll-done.json escrito (#1367)",
     source_issue: "#1367",
@@ -192,4 +254,9 @@ export const STAGE_5_RULES: InvariantRule[] = [
   },
 ];
 
-export { checkStep4Sentinel, checkSocialPublishedComplete, checkClosePollMarker };
+export {
+  checkStep4Sentinel,
+  checkSocialPublishedComplete,
+  checkStage4ReviewLoop,
+  checkClosePollMarker,
+};

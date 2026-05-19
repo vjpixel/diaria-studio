@@ -1,0 +1,156 @@
+/**
+ * agent-issue-validator.ts (#1421)
+ *
+ * Cross-check determinístico dos issues retornados por `review-test-email`
+ * agent (Haiku). O agent tem viés de encoding em ambientes WSL/locale —
+ * vê acentos em URL slugs (Beehiiv normaliza pra ASCII) ou entities HTML
+ * encoded como corruption do email body. Caso 260520: 4 iterações do
+ * loop verify→fix, ~16 falso-positivos investigados manualmente.
+ *
+ * Estratégia: pra cada issue de tipo conhecido, validar contra o HTML local
+ * (autoritativo). Se ground truth confirma OK, drop como falso-positivo.
+ *
+ * Tipos validados:
+ *   - `email:encoding_drop` — match texto "X" no HTML local; se presente
+ *     com acentos corretos, é falso-positivo.
+ *   - `email:poll_sig_missing` — verifica se `{{poll_sig}}` ou `sig=` está
+ *     no HTML local.
+ *   - `email:vote_edition_malformed` — checa se `&edition={AAMMDD}` ou
+ *     `?edition={AAMMDD}` aparecem corretamente no HTML.
+ *
+ * Outros tipos passam através (caller decide o que fazer).
+ *
+ * Não cobre: `unexpected_content`, `formatting` etc — esses precisam
+ * julgamento editorial, não validation determinística.
+ */
+
+export interface FilterResult {
+  kept: string[];
+  dropped: Array<{ issue: string; reason: string }>;
+}
+
+/**
+ * Extrai os termos entre aspas (\`'X'\`) numa string de issue. Usado pra
+ * pegar a string que o agent acha estar corrompida em encoding_drop.
+ * Retorna [] quando não há aspas.
+ */
+export function extractQuotedTerms(issue: string): string[] {
+  const out: string[] = [];
+  const re = /'([^']+)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(issue)) !== null) {
+    out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * Pure: decide se uma issue `email:encoding_drop` é falso-positivo
+ * cruzando os termos quoted contra o HTML local.
+ *
+ * Retorna `{ falsePositive: true, reason }` quando todos os termos quoted
+ * aparecem no HTML local com acentos preservados (= encoding está OK,
+ * agent leu mal). Retorna `{ falsePositive: false }` quando algum termo
+ * falta no HTML (= corruption real OU termo não-validável).
+ *
+ * Quando não há termos extraíveis, retorna `{ falsePositive: false }`
+ * pra preservar a issue (não dá pra validar sem termo).
+ */
+export function isEncodingDropFalsePositive(
+  issue: string,
+  htmlLocal: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  const terms = extractQuotedTerms(issue);
+  if (terms.length === 0) return { falsePositive: false };
+  const missing = terms.filter((t) => !htmlLocal.includes(t));
+  if (missing.length === 0) {
+    return {
+      falsePositive: true,
+      reason: `encoding_drop falso-positivo: termo(s) [${terms.join(", ")}] presentes no HTML com acentos corretos`,
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * Pure: decide se uma issue `email:poll_sig_missing` é falso-positivo
+ * verificando que `{{poll_sig}}` (merge tag) OU `sig=` (URL param) está
+ * no HTML local.
+ */
+export function isPollSigMissingFalsePositive(
+  htmlLocal: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (htmlLocal.includes("{{poll_sig}}") || htmlLocal.includes("&sig=") || htmlLocal.includes("?sig=")) {
+    return {
+      falsePositive: true,
+      reason: "poll_sig_missing falso-positivo: {{poll_sig}} ou sig= presente no HTML local",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * Pure: decide se uma issue `email:vote_edition_malformed` é falso-positivo
+ * verificando que `edition={AAMMDD}` aparece corretamente no HTML.
+ *
+ * Tipicamente o agent vê `&amp;edition=` (HTML-encoded) e interpreta como
+ * `&edition&` (separador errado). Se `edition={AAMMDD}` está literalmente
+ * no HTML (mesmo HTML-escaped), o agent leu mal.
+ */
+export function isVoteEditionMalformedFalsePositive(
+  htmlLocal: string,
+  editionDate: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  const expected = `edition=${editionDate}`;
+  if (htmlLocal.includes(expected) || htmlLocal.includes(`edition=${editionDate.padStart(6, "0")}`)) {
+    return {
+      falsePositive: true,
+      reason: `vote_edition_malformed falso-positivo: ${expected} presente no HTML`,
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * Cross-check de uma lista de issues contra o HTML local. Drop os que são
+ * falso-positivos verificáveis; mantém os outros (incluindo tipos não
+ * conhecidos — caller decide).
+ *
+ * @param issues   array de strings no formato `email:tipo: detalhe`
+ * @param htmlLocal HTML renderizado localmente — fonte de verdade
+ * @param editionDate AAMMDD da edição (necessário pra vote_edition validation)
+ */
+export function filterAgentIssues(
+  issues: string[],
+  htmlLocal: string,
+  editionDate: string,
+): FilterResult {
+  const kept: string[] = [];
+  const dropped: Array<{ issue: string; reason: string }> = [];
+
+  for (const issue of issues) {
+    if (issue.startsWith("email:encoding_drop")) {
+      const r = isEncodingDropFalsePositive(issue, htmlLocal);
+      if (r.falsePositive) {
+        dropped.push({ issue, reason: r.reason });
+        continue;
+      }
+    } else if (issue.startsWith("email:poll_sig_missing")) {
+      const r = isPollSigMissingFalsePositive(htmlLocal);
+      if (r.falsePositive) {
+        dropped.push({ issue, reason: r.reason });
+        continue;
+      }
+    } else if (issue.startsWith("email:vote_edition_malformed")) {
+      const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
+      if (r.falsePositive) {
+        dropped.push({ issue, reason: r.reason });
+        continue;
+      }
+    }
+    // Tipos não validáveis (unexpected_content, formatting, etc) passam.
+    kept.push(issue);
+  }
+
+  return { kept, dropped };
+}
