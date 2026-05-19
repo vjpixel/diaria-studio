@@ -157,6 +157,59 @@ export function saveHealth(healthPath: string, health: HealthFile): void {
   writeFileAtomic(healthPath, JSON.stringify(health, null, 2) + "\n");
 }
 
+/**
+ * #1374: retry-with-backoff em appendFileSync. Windows + OneDrive Files
+ * On-Demand pode retornar UNKNOWN (errno=-4094) ou EPERM/EBUSY quando o
+ * sync agent tem o arquivo locked durante hidratação. Caso real 260519:
+ * 22 de 49 slugs falharam no primeiro run; passaram após probe que forçou
+ * download.
+ *
+ * Retry só em codes transientes do Windows. Outros erros (ENOENT, EACCES
+ * permanente, etc) propagam imediato.
+ *
+ * Backoff: [0, 200, 500, 1500]ms — busy-wait sync (mesma pattern do
+ * renameWithRetry em atomic-write.ts:122).
+ *
+ * Helper exportado pra teste de injection.
+ */
+export function appendFileWithRetry(
+  filePath: string,
+  data: string,
+  attempts: number[] = [0, 200, 500, 1500],
+  appendFn: (p: string, d: string, enc: "utf8") => void = (p, d, enc) =>
+    appendFileSync(p, d, enc),
+): void {
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts.length; i++) {
+    if (attempts[i] > 0) {
+      const deadline = Date.now() + attempts[i];
+      while (Date.now() < deadline) {
+        /* spin */
+      }
+    }
+    try {
+      appendFn(filePath, data, "utf8");
+      return;
+    } catch (err) {
+      lastErr = err;
+      const e = err as NodeJS.ErrnoException;
+      const code = e?.code;
+      const errno = e?.errno;
+      // UNKNOWN errno=-4094 (OneDrive race), EPERM, EBUSY, EACCES → retry.
+      // Outros codes propagam imediato.
+      const isTransient =
+        code === "UNKNOWN" ||
+        code === "EPERM" ||
+        code === "EBUSY" ||
+        code === "EACCES" ||
+        errno === -4094;
+      if (!isTransient) throw err;
+      if (i === attempts.length - 1) throw err;
+    }
+  }
+  throw lastErr; // unreachable mas TS feliz
+}
+
 export function appendSourceLog(
   rootDir: string,
   slug: string,
@@ -164,7 +217,8 @@ export function appendSourceLog(
 ): string {
   const sourceLogPath = resolve(rootDir, `data/sources/${slug}.jsonl`);
   mkdirSync(dirname(sourceLogPath), { recursive: true });
-  appendFileSync(sourceLogPath, JSON.stringify(logEntry) + "\n", "utf8");
+  // #1374: retry-with-backoff cobre OneDrive Files On-Demand race
+  appendFileWithRetry(sourceLogPath, JSON.stringify(logEntry) + "\n");
   return sourceLogPath;
 }
 

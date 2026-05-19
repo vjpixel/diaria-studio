@@ -7,6 +7,7 @@ import {
   computeFailureStreak,
   recordRun,
   recordRunsBatch,
+  appendFileWithRetry,
   type SourceEntry,
   type RunRecord,
 } from "../scripts/lib/source-runs.ts";
@@ -193,5 +194,88 @@ describe("recordRun / recordRunsBatch — I/O", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("appendFileWithRetry (#1374)", () => {
+  it("retorna sucesso na 1a tentativa (caminho feliz)", () => {
+    let called = 0;
+    appendFileWithRetry("/tmp/x", "data\n", [0, 200], (_p, _d, _enc) => {
+      called++;
+    });
+    assert.equal(called, 1);
+  });
+
+  it("retry em UNKNOWN errno=-4094 (OneDrive Files On-Demand)", () => {
+    let attempt = 0;
+    appendFileWithRetry("/tmp/x", "data\n", [0, 50, 100], (_p, _d, _enc) => {
+      attempt++;
+      if (attempt < 2) {
+        const err = new Error("UNKNOWN: unknown error, write") as NodeJS.ErrnoException;
+        err.code = "UNKNOWN";
+        err.errno = -4094;
+        throw err;
+      }
+    });
+    assert.equal(attempt, 2);
+  });
+
+  it("retry em EPERM (Windows + lock)", () => {
+    let attempt = 0;
+    appendFileWithRetry("/tmp/x", "data\n", [0, 50], (_p, _d, _enc) => {
+      attempt++;
+      if (attempt < 2) {
+        const err = new Error("EPERM") as NodeJS.ErrnoException;
+        err.code = "EPERM";
+        throw err;
+      }
+    });
+    assert.equal(attempt, 2);
+  });
+
+  it("não retry em ENOENT (não-transiente — propaga imediato)", () => {
+    let attempt = 0;
+    assert.throws(
+      () => {
+        appendFileWithRetry("/tmp/x", "data\n", [0, 50, 100], (_p, _d, _enc) => {
+          attempt++;
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        });
+      },
+      /ENOENT/,
+    );
+    assert.equal(attempt, 1, "ENOENT é permanente, não deve retry");
+  });
+
+  it("propaga último erro após esgotar attempts", () => {
+    let attempt = 0;
+    assert.throws(
+      () => {
+        appendFileWithRetry("/tmp/x", "data\n", [0, 50, 100], (_p, _d, _enc) => {
+          attempt++;
+          const err = new Error("UNKNOWN") as NodeJS.ErrnoException;
+          err.code = "UNKNOWN";
+          err.errno = -4094;
+          throw err;
+        });
+      },
+      /UNKNOWN/,
+    );
+    assert.equal(attempt, 3); // 3 attempts da lista [0, 50, 100]
+  });
+
+  it("retry em errno=-4094 sem code=UNKNOWN (fallback errno-only)", () => {
+    let attempt = 0;
+    appendFileWithRetry("/tmp/x", "data\n", [0, 50], (_p, _d, _enc) => {
+      attempt++;
+      if (attempt < 2) {
+        const err = new Error("custom") as NodeJS.ErrnoException;
+        err.errno = -4094;
+        throw err;
+      }
+    });
+    assert.equal(attempt, 2);
   });
 });
