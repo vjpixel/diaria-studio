@@ -146,6 +146,20 @@ describe("Stage 0 invariants", () => {
     // .mcp.json atual deve ter mcpServers: {} (clarice movido pra user scope)
     assert.equal(v.length, 0, `Esperava 0 violations com .mcp.json limpo, achei: ${v.map((x) => x.message).join("|")}`);
   });
+
+  // #1396 — gemini-model-valid
+  it("gemini-model-valid skipa silently quando GEMINI_API_KEY ausente (#1396)", () => {
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const rule = STAGE_0_RULES.find((r) => r.id === "gemini-model-valid")!;
+      const v = rule.run("");
+      // sem key, outro rule (image-generator-key-set) cobre — não duplicar
+      assert.equal(v.length, 0);
+    } finally {
+      if (original !== undefined) process.env.GEMINI_API_KEY = original;
+    }
+  });
 });
 
 describe("Stage 1 invariants", () => {

@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 
@@ -190,6 +191,68 @@ function checkPollSecretsSet(): InvariantViolation[] {
 }
 
 /**
+ * #1396: valida que `gemini.model` em platform.config.json resolve em
+ * /v1beta/models da Gemini API. Pega config drift silently (caso real:
+ * Bundle 6 PR #1391 mudou pra `gemini-2.5-flash-image-preview` que não
+ * existe — só `gemini-2.5-flash-image` sem `-preview` suffix existe).
+ *
+ * Skip silencioso quando `image_generator !== gemini` (cloudflare/openai
+ * têm catálogos próprios) ou GEMINI_API_KEY ausente (outro rule cobre).
+ * Network failure também skip — não bloqueia pipeline em outage Gemini.
+ *
+ * Implementação: invariant chama spawnSync no script TS (similar a
+ * stage-2 lints). Network fetch fica isolado no subprocess.
+ */
+function checkGeminiModelValid(): InvariantViolation[] {
+  const configPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return [];
+  let cfg: { image_generator?: string };
+  try {
+    cfg = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return [];
+  }
+  if ((cfg.image_generator ?? "gemini") !== "gemini") return [];
+  if (!process.env.GEMINI_API_KEY) return []; // outro rule cobre key ausente
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", resolve(ROOT, "scripts", "validate-gemini-config.ts")],
+    { encoding: "utf8", env: process.env },
+  );
+  if (result.status === 0) return [];
+  if (result.status === 3) {
+    // network failure — skip silencioso (não queremos quebrar pipeline em
+    // outage transient da Gemini API)
+    return [];
+  }
+  // status 1 = model not found
+  let parsed: { configured_model?: string; available_models?: string[]; suggestion?: string } = {};
+  try {
+    parsed = JSON.parse(result.stdout || "{}");
+  } catch {
+    /* ignore */
+  }
+  const suggestionMsg = parsed.suggestion
+    ? ` Sugestão: \`gemini.model = "${parsed.suggestion}"\`.`
+    : "";
+  const availableMsg =
+    parsed.available_models && parsed.available_models.length > 0
+      ? ` Models image-capable disponíveis: ${parsed.available_models.slice(0, 5).join(", ")}.`
+      : "";
+  return [
+    {
+      rule: "gemini-model-valid",
+      message:
+        `gemini.model="${parsed.configured_model ?? "?"}" não está no catálogo /v1beta/models da Gemini API.` +
+        suggestionMsg +
+        availableMsg,
+      source_issue: "#1396",
+      severity: "error",
+    },
+  ];
+}
+
+/**
  * #1382: stdio MCPs declarados em .mcp.json têm `args[0]` (path do binário)
  * que precisa existir no filesystem. Path stale silently no MCP — Claude Code
  * tenta iniciar, falha, MCP vira indisponível, scripts caem no fallback (ou
@@ -349,6 +412,13 @@ export const STAGE_0_RULES: InvariantRule[] = [
     stage: 0,
     run: () => checkMcpBinariesExist(),
   },
+  {
+    id: "gemini-model-valid",
+    description: "platform.config.json > gemini.model resolve em /v1beta/models (#1396)",
+    source_issue: "#1396",
+    stage: 0,
+    run: () => checkGeminiModelValid(),
+  },
 ];
 
 export {
@@ -360,4 +430,5 @@ export {
   checkLinkedinCronCredsSet,
   checkPollSecretsSet,
   checkMcpBinariesExist,
+  checkGeminiModelValid,
 };
