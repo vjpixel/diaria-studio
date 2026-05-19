@@ -14,7 +14,54 @@ import {
   countSelectedItems,
   rewriteCoverageLine,
   readEditorBlocksFromMarker,
+  parsePoolArticles,
 } from "../scripts/sync-coverage-line.ts";
+
+describe("parsePoolArticles (#1404)", () => {
+  it("aceita flat array (shape legado)", () => {
+    const raw = [{ url: "a" }, { url: "b" }];
+    const result = parsePoolArticles(raw);
+    assert.deepEqual(result, raw);
+    assert.equal(result?.length, 2);
+  });
+
+  it("aceita wrapped object {articles: [...]} (shape atual pós enrich)", () => {
+    // Replicar shape real de tmp-articles-raw.json em /diaria-test 260520
+    const raw = {
+      articles: [{ url: "a" }, { url: "b" }, { url: "c" }],
+      expanded: [],
+      warnings: [],
+    };
+    const result = parsePoolArticles(raw);
+    assert.equal(result?.length, 3);
+    assert.equal(result?.[0].url, "a");
+  });
+
+  it("retorna null em shape desconhecida (não fabrica array vazio)", () => {
+    // Antes do fix, JSON.parse direto deixava pool.length === undefined,
+    // gerando NaN silenciosamente. Agora retorna null pra abort explícito.
+    assert.equal(parsePoolArticles({ foo: "bar" }), null);
+    assert.equal(parsePoolArticles(null), null);
+    assert.equal(parsePoolArticles("string"), null);
+    assert.equal(parsePoolArticles(42), null);
+  });
+
+  it("rejeita objeto onde articles não é array", () => {
+    assert.equal(parsePoolArticles({ articles: "not an array" }), null);
+    assert.equal(parsePoolArticles({ articles: null }), null);
+  });
+
+  it("regressão #1404: pool.length é numérico (não NaN) com wrapped shape", () => {
+    // Caso real 260520: countEditorVsAuto recebia pool com .length undefined
+    // pq input era {articles:[...]} sem unwrap → Y = undefined - 9 = NaN.
+    const raw = { articles: Array.from({ length: 100 }, (_, i) => ({ url: `u${i}` })) };
+    const pool = parsePoolArticles(raw)!;
+    const { y } = countEditorVsAuto(pool, 9);
+    assert.equal(typeof y, "number");
+    assert.ok(!Number.isNaN(y), `Y deve ser numérico, got ${y}`);
+    assert.equal(y, 91);
+  });
+});
 
 describe("countEditorVsAuto (#1323)", () => {
   it("X = forwarded emails count (não URL count)", () => {
