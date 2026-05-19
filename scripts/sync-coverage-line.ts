@@ -8,9 +8,12 @@
  *    encontrou outros Y artigos. Selecionamos os Z mais relevantes para
  *    as pessoas que assinam a newsletter."
  *
- * X = número de **e-mails encaminhados pelo editor** (cada thread/forward = 1,
- *     independente de quantas URLs ele contém). Forward direto com 1 URL = 1;
- *     forward de newsletter com 30 URLs = 1. Lê de `data/inbox.md`.
+ * X = número de **e-mails recebidos em diariaeditor@gmail.com** (cada
+ *     thread/forward = 1, independente de quantas URLs ele contém). Conta
+ *     tanto forwards diretos do editor (From: editor) quanto forwards de
+ *     newsletters cujo sender foi preservado pelo cliente (From: brand).
+ *     Fonte preferida: marker da Stage 1 (soma editor_blocks +
+ *     newsletter_blocks); fallback: inbox-archive; last resort: inbox.md.
  *
  * Y = `total_pool_initial - X`. Artigos que vieram de RSS, source-researchers,
  *     discovery-searchers, OU URLs extras dos forwards do editor (newsletter
@@ -24,7 +27,10 @@
  * Histórico:
  * - 260512: pipeline trocou número chutado pelo LLM por sync auto via flag.
  * - 260518: editor flagou que count "5 submissões" estava inflado — 1 forward
- *   de newsletter Cyberman com 30 URLs contava como 30 submissões.
+ *   de newsletter Cyberman com 30 URLs contava como 30 submissões. Fix: 1
+ *   forward = 1 submissão, não URL-multiplicado.
+ * - 260520 (#1414): editor enviou 9 diretos + 4 forwards de newsletters, mas
+ *   só os 9 contavam (newsletter_blocks excluído). Fix: somar ambos.
  *
  * Uso:
  *   npx tsx scripts/sync-coverage-line.ts --edition-dir data/editions/260512
@@ -113,24 +119,83 @@ export function countForwardedEmailsFromInbox(
 }
 
 /**
- * #1368: lê `editor_blocks` do marker `.marker-inject-inbox-urls.json` —
- * fonte autoritativa porque foi escrita no Stage 1 antes do inbox.md ser
- * arquivado (§1y `mv data/inbox.md data/inbox-archive/...`).
+ * #1368, refined em #1414: lê total de submissões do marker
+ * `.marker-inject-inbox-urls.json`. Submissão = 1 email recebido em
+ * `diariaeditor@gmail.com` — independente do `From:` ser o editor diretamente
+ * (`editor_blocks`) ou um forward de newsletter preservando o sender original
+ * (`newsletter_blocks`). Ambos são atos editoriais de envio.
  *
- * Caso real 260519: sync-coverage-line.ts lia `data/inbox.md` que já tinha
- * sido arquivado → forwardedEmails = 0 → intro saía "0 submissões" mesmo o
- * editor tendo enviado 4.
+ * Caso real 260520: editor enviou 9 emails diretos + 4 forwards de newsletters
+ * (Cyberman/Superhuman/AlphaSignal/etc) = 13 blocos no inbox archive. Antes
+ * de #1414 o script retornava só 9 (editor_blocks), undercounting as
+ * submissões pra leitor.
  *
- * Retorna null se marker não existir (caller faz fallback pra inbox.md).
+ * Caso real 260519 (#1368): sync-coverage-line.ts lia `data/inbox.md` que já
+ * tinha sido arquivado → forwardedEmails = 0 → intro saía "0 submissões"
+ * mesmo o editor tendo enviado 4.
+ *
+ * Retorna null se marker ausente OU sem `editor_blocks` (caller faz fallback
+ * pro archive ou inbox.md). `newsletter_blocks` ausente conta como 0
+ * (markers pre-#1095 não tinham o campo).
  */
-export function readEditorBlocksFromMarker(editionDir: string): number | null {
+export function readSubmissionsCountFromMarker(editionDir: string): number | null {
   const markerPath = join(editionDir, "_internal", ".marker-inject-inbox-urls.json");
   if (!existsSync(markerPath)) return null;
   try {
     const data = JSON.parse(readFileSync(markerPath, "utf8")) as {
       editor_blocks?: number;
+      newsletter_blocks?: number;
     };
-    return typeof data.editor_blocks === "number" ? data.editor_blocks : null;
+    if (typeof data.editor_blocks !== "number") return null;
+    const newsletter = typeof data.newsletter_blocks === "number" ? data.newsletter_blocks : 0;
+    return data.editor_blocks + newsletter;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1414: deriva data ISO (YYYY-MM-DD) da data de pesquisa de uma edição.
+ * Edition AAMMDD publica em YYYY-MM-DD; a pesquisa rodou D-1 (CLAUDE.md
+ * "Edição é sempre D+1"). Inbox archive é nomeado pela data de pesquisa.
+ *
+ * Exemplo: edition_dir `data/editions/260520/` → research date `2026-05-19`.
+ *
+ * Retorna null se o basename do editionDir não bater no formato AAMMDD.
+ */
+export function deriveResearchDateISO(editionDir: string): string | null {
+  const base = editionDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  const m = base.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const [, yy, mm, dd] = m;
+  const date = new Date(Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd)));
+  date.setUTCDate(date.getUTCDate() - 1);
+  const iso = date.toISOString().slice(0, 10);
+  return iso;
+}
+
+/**
+ * #1414: fallback pra contar submissões direto do inbox archive
+ * (`data/inbox-archive/{YYYY-MM-DD}.md`) quando o marker está ausente.
+ * Cada bloco `^## ` é 1 email recebido — independente do sender. Match
+ * o mesmo semantic do `readSubmissionsCountFromMarker` (soma editor +
+ * newsletter blocks).
+ *
+ * Retorna null se archive não existir (caller faz fallback final pra
+ * inbox.md, ou aceita 0 se nada mais sobrou).
+ */
+export function countSubmissionsFromArchive(
+  editionDir: string,
+  archiveRoot = "data/inbox-archive",
+): number | null {
+  const iso = deriveResearchDateISO(editionDir);
+  if (!iso) return null;
+  const archivePath = join(archiveRoot, `${iso}.md`);
+  if (!existsSync(archivePath)) return null;
+  try {
+    const text = readFileSync(archivePath, "utf8");
+    const matches = text.match(/^## /gm);
+    return matches ? matches.length : 0;
   } catch {
     return null;
   }
@@ -262,11 +327,19 @@ function main(): void {
     process.exit(1);
   }
 
-  // #1368: prefer marker (escrito no Stage 1 inject-inbox-urls, antes do
-  // archive de inbox.md em §1y). Fallback pra inbox.md pra retrocompat com
-  // edições antigas sem marker.
-  let forwardedEmails = readEditorBlocksFromMarker(root);
-  let source: "marker" | "inbox_md" = "marker";
+  // Preference order (#1368, refined em #1414):
+  // 1. marker `.marker-inject-inbox-urls.json` — escrito em Stage 1 antes do
+  //    archive (§1y `mv data/inbox.md ...`); soma editor_blocks + newsletter_blocks.
+  // 2. inbox archive `data/inbox-archive/{YYYY-MM-DD}.md` — autoritativo do
+  //    que entrou no inbox naquele dia; sobrevive a marker missing.
+  // 3. inbox.md ao vivo — last resort, falha se já foi arquivado.
+  let forwardedEmails: number | null = readSubmissionsCountFromMarker(root);
+  let source: "marker" | "archive" | "inbox_md" = "marker";
+  if (forwardedEmails === null) {
+    const archiveRoot = resolve(process.cwd(), args["archive-root"] ?? "data/inbox-archive");
+    forwardedEmails = countSubmissionsFromArchive(root, archiveRoot);
+    source = "archive";
+  }
   if (forwardedEmails === null) {
     const editorEmail = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(process.cwd(), "platform.config.json"));
     const inboxMdPath = resolve(process.cwd(), args["inbox-md"] ?? "data/inbox.md");

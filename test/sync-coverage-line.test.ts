@@ -12,8 +12,10 @@ import {
   countEditorVsAuto,
   countForwardedEmailsFromInbox,
   countSelectedItems,
+  countSubmissionsFromArchive,
+  deriveResearchDateISO,
   rewriteCoverageLine,
-  readEditorBlocksFromMarker,
+  readSubmissionsCountFromMarker,
   parsePoolArticles,
 } from "../scripts/sync-coverage-line.ts";
 
@@ -363,26 +365,36 @@ Resto.`;
   });
 });
 
-describe("readEditorBlocksFromMarker (#1368)", () => {
+describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
   function makeFixtureEdition(): string {
     const dir = mkdtempSync(join(tmpdir(), "diaria-sync-coverage-"));
     mkdirSync(join(dir, "_internal"), { recursive: true });
     return dir;
   }
 
-  it("retorna editor_blocks do marker quando presente", () => {
+  it("#1414: soma editor_blocks + newsletter_blocks (caso 260520: 9 + 4 = 13)", () => {
     const dir = makeFixtureEdition();
     writeFileSync(
       join(dir, "_internal", ".marker-inject-inbox-urls.json"),
-      JSON.stringify({ editor_blocks: 4, newsletter_blocks: 26 }),
+      JSON.stringify({ editor_blocks: 9, newsletter_blocks: 4 }),
     );
-    assert.equal(readEditorBlocksFromMarker(dir), 4);
+    assert.equal(readSubmissionsCountFromMarker(dir), 13);
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("retorna null quando marker ausente — caller faz fallback inbox.md", () => {
+  it("retorna só editor_blocks quando newsletter_blocks ausente (marker pre-#1095)", () => {
     const dir = makeFixtureEdition();
-    assert.equal(readEditorBlocksFromMarker(dir), null);
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ editor_blocks: 4 }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 4);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna null quando marker ausente — caller faz fallback archive/inbox.md", () => {
+    const dir = makeFixtureEdition();
+    assert.equal(readSubmissionsCountFromMarker(dir), null);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -390,9 +402,9 @@ describe("readEditorBlocksFromMarker (#1368)", () => {
     const dir = makeFixtureEdition();
     writeFileSync(
       join(dir, "_internal", ".marker-inject-inbox-urls.json"),
-      JSON.stringify({ editor_blocks: "4" }), // string em vez de number
+      JSON.stringify({ editor_blocks: "4" }),
     );
-    assert.equal(readEditorBlocksFromMarker(dir), null);
+    assert.equal(readSubmissionsCountFromMarker(dir), null);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -400,9 +412,9 @@ describe("readEditorBlocksFromMarker (#1368)", () => {
     const dir = makeFixtureEdition();
     writeFileSync(
       join(dir, "_internal", ".marker-inject-inbox-urls.json"),
-      JSON.stringify({ injected: 5 }), // sem editor_blocks
+      JSON.stringify({ injected: 5 }),
     );
-    assert.equal(readEditorBlocksFromMarker(dir), null);
+    assert.equal(readSubmissionsCountFromMarker(dir), null);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -412,18 +424,95 @@ describe("readEditorBlocksFromMarker (#1368)", () => {
       join(dir, "_internal", ".marker-inject-inbox-urls.json"),
       "not-json-{{{",
     );
-    assert.equal(readEditorBlocksFromMarker(dir), null);
+    assert.equal(readSubmissionsCountFromMarker(dir), null);
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("retorna 0 quando marker explicitamente diz editor_blocks: 0", () => {
+  it("retorna 0 quando marker explicitamente diz editor_blocks: 0, newsletter_blocks: 0", () => {
     const dir = makeFixtureEdition();
     writeFileSync(
       join(dir, "_internal", ".marker-inject-inbox-urls.json"),
-      JSON.stringify({ editor_blocks: 0 }),
+      JSON.stringify({ editor_blocks: 0, newsletter_blocks: 0 }),
     );
-    // 0 é valor válido (edição sem editor submissions) — não cair em fallback
-    assert.equal(readEditorBlocksFromMarker(dir), 0);
+    assert.equal(readSubmissionsCountFromMarker(dir), 0);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ignora newsletter_blocks corrupto (não-número) — soma 0 ao invés de NaN", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ editor_blocks: 5, newsletter_blocks: "x" }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 5);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("deriveResearchDateISO (#1414)", () => {
+  it("deriva D-1 da edição AAMMDD (260520 → 2026-05-19)", () => {
+    assert.equal(deriveResearchDateISO("data/editions/260520"), "2026-05-19");
+  });
+
+  it("lida com trailing slash", () => {
+    assert.equal(deriveResearchDateISO("data/editions/260520/"), "2026-05-19");
+  });
+
+  it("lida com transição de mês (260501 → 2026-04-30)", () => {
+    assert.equal(deriveResearchDateISO("data/editions/260501"), "2026-04-30");
+  });
+
+  it("lida com transição de ano (260101 → 2025-12-31)", () => {
+    assert.equal(deriveResearchDateISO("data/editions/260101"), "2025-12-31");
+  });
+
+  it("retorna null pra basename inválido", () => {
+    assert.equal(deriveResearchDateISO("data/editions/not-a-date"), null);
+    assert.equal(deriveResearchDateISO("data/editions/2605201"), null);
+  });
+});
+
+describe("countSubmissionsFromArchive (#1414)", () => {
+  function makeArchiveFixture(isoDate: string, content: string): { dir: string; root: string } {
+    const root = mkdtempSync(join(tmpdir(), "diaria-archive-"));
+    writeFileSync(join(root, `${isoDate}.md`), content, "utf8");
+    return { dir: root, root };
+  }
+
+  it("conta blocos ^## no archive da data de pesquisa (caso 260520: 13)", () => {
+    const content =
+      "## 2026-05-19T10:00:00.000Z\n- **from:** Editor\n\n" +
+      "## 2026-05-19T11:00:00.000Z\n- **from:** Newsletter A\n\n" +
+      "## 2026-05-19T12:00:00.000Z\n- **from:** Newsletter B\n";
+    const { root } = makeArchiveFixture("2026-05-19", content);
+    assert.equal(countSubmissionsFromArchive("data/editions/260520", root), 3);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("retorna 0 quando archive existe mas está vazio", () => {
+    const { root } = makeArchiveFixture("2026-05-19", "");
+    assert.equal(countSubmissionsFromArchive("data/editions/260520", root), 0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("retorna null quando archive da data não existe", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-archive-empty-"));
+    assert.equal(countSubmissionsFromArchive("data/editions/260520", root), null);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("retorna null pra edition_dir inválido", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-archive-"));
+    assert.equal(countSubmissionsFromArchive("data/editions/not-a-date", root), null);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("não conta '##' inline (só linhas começando com '## ')", () => {
+    const content =
+      "## 2026-05-19T10:00:00.000Z\n- **subject:** ## not a heading inline\n\n" +
+      "## 2026-05-19T11:00:00.000Z\n- **subject:** another\n";
+    const { root } = makeArchiveFixture("2026-05-19", content);
+    assert.equal(countSubmissionsFromArchive("data/editions/260520", root), 2);
+    rmSync(root, { recursive: true, force: true });
   });
 });
