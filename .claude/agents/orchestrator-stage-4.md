@@ -389,7 +389,7 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
 
 - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 4 done via `update-stage-status.ts --stage 4 --status done --end ISO --duration-ms X [--cost-usd Y --models "sonnet-4-6"]`.
 
-### 4h. Fechar poll É IA? (#465, #1044)
+### 4h. Fechar poll É IA? (#465, #1044, #1367)
 
 Após o editor aprovar o gate da Etapa 4 (publicação confirmada), registrar a resposta correta no Worker de votação:
 
@@ -399,17 +399,50 @@ Após o editor aprovar o gate da Etapa 4 (publicação confirmada), registrar a 
 npx tsx scripts/close-poll.ts --edition {AAMMDD}
 ```
 
-- `POLL_SECRET` deve estar em `.env`. Se não estiver definido, o script emite warn e encerra graciosamente — não bloqueia o pipeline.
-- Logar resultado: se exit 0, `"poll fechado para edição {AAMMDD}"`. Se exit != 0, `warn: "close-poll falhou (POLL_SECRET ausente ou erro de rede) — fechar manualmente via /admin/correct"`.
-- **Sanity check pós-close:** após exit 0, hit `https://poll.diaria.workers.dev/stats?edition={AAMMDD}` e logar `correct_answer` retornado. Se `null`, algo deu errado mesmo com exit 0 — investigar.
+**#1367 — close-poll é OBRIGATÓRIO. Halt em exit != 0.** Antes do #1367 (260518) close-poll era nice-to-have; falhou silenciosamente e a edição 260519 saiu sem gabarito → próxima edição não pôde exibir % de acertos. Agora é halt obrigatório:
 
-**⚠️ Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, `close-poll.ts` deve ser invocado manualmente após cada publicação:
+```bash
+if ! npx tsx scripts/close-poll.ts --edition {AAMMDD}; then
+  npx tsx scripts/render-halt-banner.ts --stage "4 — Publicação" \
+    --reason "close-poll falhou (ADMIN_SECRET ausente, network, ou Worker rejeitou)" \
+    --action "rode \`npx tsx scripts/close-poll.ts --edition {AAMMDD}\` manualmente até exit 0, depois retome Stage 4i (sentinel)"
+  exit 1
+fi
+```
+
+O script `close-poll.ts` agora (#1367) faz **sanity check automático** após o POST /admin/correct:
+- GET /stats?edition={AAMMDD}
+- Confirma `correct_answer` retornado == answer registrado
+- Grava marker `_internal/.close-poll-done.json` com snapshot do estado
+
+Se sanity check falhar, exit 1 — Worker pode ter rejeitado silenciosamente.
+
+### 4h-bis. Smoke test do voto (#1366 Stage 4 part)
+
+**Imediatamente após close-poll**, validar que `valid_editions` inclui a edição corrente. Caso real 260519: maintain-valid-editions-window read_failed=true em Stage 0; sem smoke test, 482 subscribers receberiam email com botões A/B retornando 410.
+
+```bash
+if ! npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}; then
+  npx tsx scripts/render-halt-banner.ts --stage "4 — Publicação" \
+    --reason "smoke-test-vote falhou — edição não está em valid_editions OU Worker offline" \
+    --action "rode \`npx tsx scripts/add-valid-edition.ts --edition {AAMMDD}\` e retentar"
+  exit 1
+fi
+```
+
+Smoke test exit codes:
+- `0` → vote aceito (Worker incluiu edição em valid_editions)
+- `2` → 410/403 (edição fora do set ou sig inválida) — halt obrigatório
+- `3` → network timeout — halt (Stage 5 vai falhar de qualquer jeito)
+
+**Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, ambos close-poll **e smoke-test-vote** devem ser invocados manualmente:
 
 ```bash
 npx tsx scripts/close-poll.ts --edition {AAMMDD}
+npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}
 ```
 
-Sem isso, gabarito permanece `null` no Worker e a próxima edição não consegue mostrar "Resultado da última edição: X% acertaram" (`compute-eia-poll-stats` retorna null pra `pct_correct`). Verificável via `curl https://poll.diaria.workers.dev/stats?edition={AAMMDD}` — campo `correct_answer` deve ser "A" ou "B", nunca `null` após edição publicada.
+Sem close-poll, gabarito permanece `null` no Worker. Sem smoke test, edição pode estar fora de valid_editions silenciosamente.
 
 ### 4i. Escrever sentinel de conclusão (#978)
 

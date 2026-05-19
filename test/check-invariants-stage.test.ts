@@ -39,6 +39,7 @@ import {
 import {
   checkStep4Sentinel,
   checkSocialPublishedComplete,
+  checkClosePollMarker,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -554,6 +555,58 @@ describe("Stage 5 invariants (pós-publicação)", () => {
     const v = checkSocialPublishedComplete(fixture);
     assert.equal(v.length, 1);
     assert.equal(v[0].severity, "warning");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // #1367 — close-poll marker invariant
+  it("close-poll-marker-exists falha quando marker ausente (#1367)", () => {
+    const v = checkClosePollMarker(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "close-poll-marker-exists");
+    assert.equal(v[0].severity, "error");
+    assert.match(v[0].message, /close-poll/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("close-poll-marker passa quando marker presente e válido (#1367)", () => {
+    writeFileSync(
+      join(fixture, "_internal", ".close-poll-done.json"),
+      JSON.stringify({
+        edition: "260519",
+        answer: "A",
+        updated_votes: 3,
+        closed_at: new Date().toISOString(),
+        sanity_check: { correct_answer: "A" },
+      }),
+    );
+    const v = checkClosePollMarker(fixture);
+    assert.equal(v.length, 0, JSON.stringify(v));
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("close-poll-marker falha quando answer diverge do sanity_check (#1367)", () => {
+    writeFileSync(
+      join(fixture, "_internal", ".close-poll-done.json"),
+      JSON.stringify({
+        edition: "260519",
+        answer: "A",
+        sanity_check: { correct_answer: "B" },
+      }),
+    );
+    const v = checkClosePollMarker(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "close-poll-marker-consistency");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("close-poll-marker falha quando marker sem sanity_check (#1367)", () => {
+    writeFileSync(
+      join(fixture, "_internal", ".close-poll-done.json"),
+      JSON.stringify({ edition: "260519", answer: "A" }),
+    );
+    const v = checkClosePollMarker(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "close-poll-marker-valid");
     rmSync(fixture, { recursive: true, force: true });
   });
 });

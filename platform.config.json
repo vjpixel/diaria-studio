@@ -67,7 +67,7 @@
   "publishing": {
     "newsletter": {
       "mode": "draft",
-      "template": "Default",
+      "template": "HTML",
       "test_email": "vjpixel@gmail.com"
     },
     "social": {
