@@ -787,7 +787,25 @@ function runScript(cmd: string, args: string[]): void {
 
 function runNode(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
+  try {
+    execFileSync(process.execPath, [cmd, ...args], { cwd: ROOT, stdio: CHILD_STDIO });
+  } catch (e) {
+    // #1373: error generic "Command failed" não diz POR QUE. Detectar causas
+    // comuns (missing env vars, exit codes específicos) e re-throw com hint
+    // actionable.
+    const err = e as { status?: number | null; message?: string };
+    const status = err.status ?? null;
+    let hint = "";
+    if (status === 1 || status === 2) {
+      hint =
+        " — possíveis causas: GEMINI_API_KEY/CLOUDFLARE_WORKERS_TOKEN ausente, " +
+        "arquivo de prompt sd não existe, ou API retornou erro. " +
+        "Stderr do child estava acima dessa linha (CHILD_STDIO inherit).";
+    }
+    throw new Error(
+      `[runNode FATAL] ${cmd} exited ${status === null ? "abnormal" : `with code ${status}`}.${hint}`,
+    );
+  }
 }
 
 // Baixa URL pra arquivo via fetch nativo (Node 20+) — substitui curl shell-out.

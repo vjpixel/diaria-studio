@@ -29,6 +29,7 @@ import "dotenv/config";
 
 import { createHmac } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 
@@ -57,9 +58,9 @@ async function main(): Promise<void> {
     `${POLL_WORKER_URL}/vote?email=${encodeURIComponent(email)}` +
     `&edition=${edition}&choice=${choice}&sig=${sig}&test=1`;
 
-  let res: Response;
+  let res: { ok: boolean; status: number; text: () => Promise<string> };
   try {
-    res = await fetch(url);
+    res = await dohFetch(url);
   } catch (e) {
     console.error(`[smoke-test-vote] network error: ${(e as Error).message}`);
     process.exit(3);

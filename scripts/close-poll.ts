@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
+import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
   const sig = adminSig(secret, edition, answer);
   const url = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${sig}`;
 
-  const res = await fetch(url, { method: "POST" });
+  const res = await dohFetch(url, { method: "POST" });
   const data = await res.json() as { ok?: boolean; updated_votes?: number; error?: string };
 
   if (!res.ok || !data.ok) {
@@ -87,7 +88,7 @@ async function main(): Promise<void> {
   // #1367: sanity check pós-close — confirmar que /stats retorna correct_answer
   // não-null. Sem isso, exit 0 não garante que o gabarito ficou registrado
   // (caso real 260518: close-poll falhou silencioso, total=3 mas correct_answer=null).
-  const statsRes = await fetch(`${POLL_WORKER_URL}/stats?edition=${edition}`);
+  const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}`);
   const stats = await statsRes.json() as { correct_answer?: string | null };
   if (!statsRes.ok || stats.correct_answer !== answer) {
     console.error(

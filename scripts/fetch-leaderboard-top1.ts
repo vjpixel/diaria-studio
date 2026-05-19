@@ -29,10 +29,11 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 
 const WORKER_URL =
   process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
-const FETCH_TIMEOUT_MS = 5_000;
+const FETCH_TIMEOUT_MS = 15_000; // #1365 — bumped 5s→15s pra acomodar DoH fallback path
 
 interface Top1Entry {
   nickname: string;
@@ -80,9 +81,21 @@ function parseArgs(argv: string[]): { edition: string; out: string } | null {
   return { edition, out };
 }
 
+// #1365: adapter pra manter compat com `fetchImpl: typeof fetch` injetado
+// nos testes. Default = dohFetch wrapped, mas testes podem injetar mock.
+type FetchLike = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+
+const defaultFetchImpl: FetchLike = async (url, init) => {
+  const res = await dohFetch(url, { signal: init?.signal });
+  return { ok: res.ok, status: res.status, json: () => res.json() };
+};
+
 export async function fetchTop1ForPeriod(
   slug: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchLike = defaultFetchImpl,
 ): Promise<Top1Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
