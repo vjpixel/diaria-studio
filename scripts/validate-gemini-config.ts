@@ -146,13 +146,18 @@ export async function validateGeminiConfig(): Promise<ValidateResult> {
 async function main(): Promise<void> {
   const result = await validateGeminiConfig();
   console.log(JSON.stringify(result, null, 2));
+  // Windows fix: process.exit() força libuv shutdown enquanto fetch agent
+  // ainda tem sockets keep-alive abertos, disparando UV_HANDLE_CLOSING
+  // assertion (exit 134/127). process.exitCode + return permite event loop
+  // drenar naturalmente.
   if (!result.ok) {
-    if (result.reason === "config_missing") process.exit(2);
-    if (result.reason === "key_missing") process.exit(2);
-    if (result.reason === "fetch_failed") process.exit(3);
-    process.exit(1); // model_not_found
+    if (result.reason === "config_missing") process.exitCode = 2;
+    else if (result.reason === "key_missing") process.exitCode = 2;
+    else if (result.reason === "fetch_failed") process.exitCode = 3;
+    else process.exitCode = 1; // model_not_found
+  } else {
+    process.exitCode = 0;
   }
-  process.exit(0);
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
