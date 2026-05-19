@@ -34,16 +34,31 @@ interface StageTiming {
   files: string[];
 }
 
-// Map files to stages based on prefix
-function fileToStage(name: string): { stage: number; label: string } | null {
+// Map files to stages baseado em prefix.
+//
+// #1405: alinhado ao pipeline atual (4 stages — CLAUDE.md):
+//   0 Setup → 1 Research → 2 Writing (newsletter + social paralelo)
+//   → 3 Images → 4 Publishing
+//
+// Prefixes de arquivo refletem ordem cronológica de criação, NÃO stage_id:
+//   01-eia*, 01-categorized — gerados em Stage 1
+//   02-reviewed             — Stage 2 (newsletter)
+//   03-social               — Stage 2 (social, em paralelo com newsletter)
+//   04-d{N}-{2x1,1x1}.jpg  — Stage 3 (imagens de destaque)
+//   05-published.json       — Stage 4 (newsletter publish)
+//   06-social-published.json — Stage 4 (social publish)
+//
+// Antes do #1405, o mapping usava o número do prefix direto como stage_id
+// (resultava em "Stage 3=Social", "Stage 5=Newsletter", "Stage 6=Social pub" —
+// nomes legacy do pipeline antigo, com Stage 5 vazio no caso atual).
+export function fileToStage(name: string): { stage: number; label: string } | null {
   if (name === "_internal/cost.json" || name === "_internal/cost.md") return { stage: 0, label: "Setup" };
-  if (name.startsWith("01-eia")) return { stage: 1, label: "É IA?" };
   if (name.startsWith("01-") || name.startsWith("_internal/01-")) return { stage: 1, label: "Research" };
   if (name.startsWith("02-") || name.startsWith("_internal/02-")) return { stage: 2, label: "Writing" };
-  if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 3, label: "Social" };
-  if (name.startsWith("04-") || name.startsWith("_internal/04-")) return { stage: 4, label: "Images" };
-  if (name.startsWith("05-")) return { stage: 5, label: "Newsletter" };
-  if (name.startsWith("06-")) return { stage: 6, label: "Social pub" };
+  if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 2, label: "Writing" }; // social em paralelo
+  if (name.startsWith("04-") || name.startsWith("_internal/04-")) return { stage: 3, label: "Images" };
+  if (name.startsWith("05-") || name.startsWith("_internal/05-")) return { stage: 4, label: "Publishing" };
+  if (name.startsWith("06-") || name.startsWith("_internal/06-")) return { stage: 4, label: "Publishing" }; // social publish
   return null;
 }
 
@@ -90,7 +105,13 @@ function computeTimings(files: FileInfo[]): StageTiming[] {
       }
     }
 
-    const durationMs = start && end ? end.getTime() - start.getTime() : 0;
+    // #1405: clamp negative durations to 0. Acontece quando o mesmo stage
+    // tem arquivos escritos em paralelo (Stage 2 newsletter + social) e o
+    // sort por mtime resulta em min > max no fluxo subsequente. Antes
+    // renderizava "—" e era confuso pro editor — pior, mascarava bugs
+    // reais de timing inverted.
+    const rawDurationMs = start && end ? end.getTime() - start.getTime() : 0;
+    const durationMs = Math.max(0, rawDurationMs);
 
     timings.push({
       stage,
@@ -266,41 +287,55 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args;
 }
 
-const args = parseArgs(process.argv.slice(2));
+function main(): void {
+  const args = parseArgs(process.argv.slice(2));
 
-if (args.all) {
-  // Compare all editions
-  const editionsDir = resolve(ROOT, "data/editions");
-  const dirs = readdirSync(editionsDir)
-    .filter((d) => /^\d{6}$/.test(d))
-    .sort();
+  if (args.all) {
+    // Compare all editions
+    const editionsDir = resolve(ROOT, "data/editions");
+    const dirs = readdirSync(editionsDir)
+      .filter((d) => /^\d{6}$/.test(d))
+      .sort();
 
-  const results: { label: string; timings: StageTiming[] }[] = [];
-  for (const d of dirs) {
-    const editionDir = resolve(editionsDir, d);
-    const timings = printEditionReport(editionDir, d);
-    if (timings.length > 0) results.push({ label: d, timings });
-  }
+    const results: { label: string; timings: StageTiming[] }[] = [];
+    for (const d of dirs) {
+      const editionDir = resolve(editionsDir, d);
+      const timings = printEditionReport(editionDir, d);
+      if (timings.length > 0) results.push({ label: d, timings });
+    }
 
-  if (results.length > 1) {
-    printComparisonTable(results);
-  }
-} else {
-  // Single edition
-  let editionDir: string;
-  let label: string;
-
-  if (args["edition-dir"]) {
-    editionDir = resolve(ROOT, args["edition-dir"] as string);
-    label = basename(editionDir);
-  } else if (args.edition) {
-    editionDir = resolve(ROOT, "data/editions", args.edition as string);
-    label = args.edition as string;
+    if (results.length > 1) {
+      printComparisonTable(results);
+    }
   } else {
-    const latest = detectLatestEdition();
-    editionDir = resolve(ROOT, "data/editions", latest);
-    label = latest;
-  }
+    // Single edition
+    let editionDir: string;
+    let label: string;
 
-  printEditionReport(editionDir, label);
+    if (args["edition-dir"]) {
+      editionDir = resolve(ROOT, args["edition-dir"] as string);
+      label = basename(editionDir);
+    } else if (args.edition) {
+      editionDir = resolve(ROOT, "data/editions", args.edition as string);
+      label = args.edition as string;
+    } else {
+      const latest = detectLatestEdition();
+      editionDir = resolve(ROOT, "data/editions", latest);
+      label = latest;
+    }
+
+    printEditionReport(editionDir, label);
+  }
+}
+
+// #1405: guard top-level execution. Antes, import do módulo (ex: pelos
+// tests) rodava main() automaticamente — chamava detectLatestEdition que
+// process.exit(1) se data/editions/ não existe. CI Linux quebrava porque
+// não tem a junction local de OneDrive.
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
 }
