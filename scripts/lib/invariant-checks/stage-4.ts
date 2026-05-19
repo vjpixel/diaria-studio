@@ -87,6 +87,81 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * #1413: valida que as URLs dos highlights em `_internal/01-approved.json`
+ * aparecem em `03-social.md`. Cobre o cenário onde editor reestrutura
+ * destaques pós-Stage 2 (move D1→D2, troca D1 por novo macro etc) sem
+ * re-disparar `social-linkedin` + `social-facebook`. Sem este check,
+ * Stage 4 publica posts com hooks de destaques antigos enquanto a
+ * newsletter sai com os novos — contradição cross-channel.
+ *
+ * Detecção determinística: cada highlight.url do approved.json deve
+ * aparecer no 03-social.md. URLs não paraphraseiam — se falta, social
+ * ficou stale.
+ *
+ * Caso real 260520: D1 mudou de Karpathy → Google I/O, mas 03-social.md
+ * continuou com hook Karpathy. Editor notou manualmente.
+ */
+export interface ApprovedHighlight {
+  title_options?: string[];
+  url?: string;
+  category?: string;
+}
+
+interface ApprovedJson {
+  highlights?: ApprovedHighlight[];
+}
+
+function checkSocialMatchesApprovedHighlights(editionDir: string): InvariantViolation[] {
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const socialPath = resolve(editionDir, "03-social.md");
+
+  if (!existsSync(approvedPath)) return []; // Stage 1 incomplete — outro check pega.
+  if (!existsSync(socialPath)) return []; // Stage 2 incomplete — outro check pega.
+
+  let approved: ApprovedJson;
+  try {
+    approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJson;
+  } catch (e) {
+    return [
+      {
+        rule: "social-matches-highlights-parseable",
+        message: `01-approved.json não parseável: ${(e as Error).message}`,
+        source_issue: "#1413",
+        severity: "error",
+        file: approvedPath,
+      },
+    ];
+  }
+
+  const highlights = Array.isArray(approved.highlights) ? approved.highlights : [];
+  if (highlights.length === 0) return [];
+
+  const socialMd = readFileSync(socialPath, "utf8");
+  const violations: InvariantViolation[] = [];
+
+  for (let i = 0; i < highlights.length; i++) {
+    const h = highlights[i];
+    const url = h.url?.trim();
+    if (!url) continue; // highlight sem URL — não dá pra validar
+    if (!socialMd.includes(url)) {
+      const titleHint = h.title_options?.[0]?.slice(0, 60) ?? "(sem título)";
+      violations.push({
+        rule: "social-matches-highlights",
+        message:
+          `03-social.md não menciona URL do D${i + 1} (${titleHint}...): ${url}. ` +
+          `Editor pode ter reestruturado destaques pós-Stage 2 sem re-rodar ` +
+          `social-linkedin/social-facebook. Re-dispatch antes de publicar.`,
+        source_issue: "#1413",
+        severity: "error",
+        file: socialPath,
+      });
+    }
+  }
+
+  return violations;
+}
+
+/**
  * `FACEBOOK_PAGE_ID` env var deve estar setada — publish-facebook usa pra postar
  * via Graph API. Nome confirmado em scripts/publish-facebook.ts:376.
  */
@@ -192,6 +267,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkPublicImagesPopulated,
   },
   {
+    id: "social-matches-highlights",
+    description: "03-social.md tem URLs de todos highlights aprovados (#1413)",
+    source_issue: "#1413",
+    stage: 4,
+    run: checkSocialMatchesApprovedHighlights,
+  },
+  {
     id: "facebook-page-id-set",
     description: "FACEBOOK_PAGE_ID env var presente",
     source_issue: "#facebook",
@@ -223,6 +305,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
 
 export {
   checkPublicImagesPopulated,
+  checkSocialMatchesApprovedHighlights,
   checkFbPageIdSet,
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,
