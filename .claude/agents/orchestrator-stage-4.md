@@ -136,7 +136,16 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 ```
 Se editor responder "none", gravar `05-published.json` com `status: "skipped_by_editor"` e encerrar Etapa 4.
 
-**#1238 trade-off documentado**: Beehiiv path (publish-newsletter playbook) pode falhar no click programático de "Send test email" por causa do user-activation guard do Beehiiv (#1211 — mesmo bug que afeta Schedule). Quando isso acontece em auto_approve mode, capturar via API timestamp check e gravar `05-published.json` com `review_completed: false`, `review_status: "pending_manual_send"`, `note: "Click programatico rejeitado. Editor precisa clicar Send test email em {draft_url}"`. Halt banner após gate 4g listará o passo manual restante. Pipeline ainda automatiza ~90% (draft created, HTML pasted, title/subject set, social agendado) — só o último click escapa.
+**#1238 trade-off atualizado em #1380**: O user-activation guard do Beehiiv **só atinge o click de Schedule** — não o "Send test email". Validado em 260519 (4× test emails enviados consecutivamente via Chrome MCP). O trigger correto pra Send test email é o **chevron dropdown** ao lado do botão Preview:
+
+1. Achar popover `.hidden.absolute` que contém o button "Send test email"
+2. Achar sibling `.relative.z-0` com 2 buttons (`Preview` + chevron sem texto)
+3. Clicar o chevron — popover abre
+4. Clicar "Send test email" — toast `Test email sent` aparece
+
+**Schedule continua sendo manual** (5 mecanismos testados em #1198 — todos rejeitados pelo guard). Quando auto_approve mode rodar até aqui, halt banner pós-gate 4g listará "click Schedule no draft_url" como passo final manual.
+
+Se em runs futuros o click programático de Send test email falhar de novo (Beehiiv pode mudar guard), capturar via API timestamp check (`mcp__claude_ai_Beehiiv__get_post` retorna `last_test_email_sent_at`) e gravar `05-published.json` com `review_completed: false`, `review_status: "pending_manual_send"`. Pipeline ainda automatiza ~95% (draft created, HTML pasted, title/subject set, test email sent, social agendado) — só o Schedule click escapa.
 
 ### 4c-pre. Upload de imagens públicas (#999 fix — pré-requisito do dispatch)
 
