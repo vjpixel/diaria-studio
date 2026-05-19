@@ -75,27 +75,34 @@ function json(data: unknown, status = 200, env?: Env): Response {
 // ── Secrets guard (#1420) ─────────────────────────────────────────────────────
 
 /**
- * #1420: declara quais secrets cada rota precisa. Quando uma rota sensível é
- * chamada sem o secret correspondente, retorna 503 com diagnóstico em vez de
- * deixar o handler crashar com 500 + error 1101 do Cloudflare (sem stack).
+ * #1420: declara quais secrets cada rota precisa (path + method tuple).
+ * Quando uma rota sensível é chamada sem o secret correspondente, retorna
+ * 503 com diagnóstico em vez de deixar o handler crashar com 500 + error
+ * 1101 do Cloudflare (sem stack).
+ *
+ * Method-aware (não só path) pra evitar regressão de mensagem em método
+ * errado — GET /admin/correct continua caindo no fallback 404, não 503.
  *
  * Rotas públicas (não listadas aqui) — `/img`, `/stats`, `/leaderboard*` —
  * continuam funcionando mesmo sem secrets.
  */
-export function requiredSecretsForPath(path: string): Array<"POLL_SECRET" | "ADMIN_SECRET"> {
-  if (path === "/vote") return ["POLL_SECRET"];
-  if (path === "/set-name") return ["POLL_SECRET"];
-  if (path === "/admin/correct") return ["ADMIN_SECRET"];
+export function requiredSecretsForRoute(
+  path: string,
+  method: string,
+): Array<"POLL_SECRET" | "ADMIN_SECRET"> {
+  if (path === "/vote" && method === "GET") return ["POLL_SECRET"];
+  if (path === "/set-name" && method === "GET") return ["POLL_SECRET"];
+  if (path === "/admin/correct" && method === "POST") return ["ADMIN_SECRET"];
   return [];
 }
 
 /**
- * #1420: retorna lista de secrets faltando pra atender o path. Vazio = OK.
+ * #1420: retorna lista de secrets faltando pra atender (path, method). Vazio = OK.
  * Trata string vazia como missing (deploy esquecido de `wrangler secret put`
  * vs accidentalmente set como `""`).
  */
-export function missingSecretsForPath(env: Env, path: string): string[] {
-  const required = requiredSecretsForPath(path);
+export function missingSecretsForRoute(env: Env, path: string, method: string): string[] {
+  const required = requiredSecretsForRoute(path, method);
   return required.filter((name) => {
     const v = env[name];
     return typeof v !== "string" || v.length === 0;
@@ -1069,8 +1076,9 @@ export default {
 
     // #1420: fail-loud com 503 quando secrets ausentes (em vez de 500
     // generic crash). Diagnóstico explícito facilita debug pós-deploy
-    // sem secrets re-setados (#1415).
-    const missingSecrets = missingSecretsForPath(env, path);
+    // sem secrets re-setados (#1415). Method-aware pra não regredir
+    // mensagem de 404 → 503 em métodos errados (ex: GET /admin/correct).
+    const missingSecrets = missingSecretsForRoute(env, path, request.method);
     if (missingSecrets.length > 0) {
       return json({
         error: "server_misconfigured",
