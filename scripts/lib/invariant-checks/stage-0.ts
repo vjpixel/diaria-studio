@@ -71,6 +71,177 @@ function checkBeehiivKeySet(): InvariantViolation[] {
 }
 
 /**
+ * #1370: env vars críticas que outras stages dependem. Editor decisão (2026-05-19):
+ * todas hard halt — pipeline não deve correr metade do caminho pra falhar.
+ */
+function checkRequiredEnvVar(
+  name: string,
+  ruleId: string,
+  sourceIssue: string,
+  context: string,
+): InvariantViolation[] {
+  const value = process.env[name];
+  if (!value || value.trim().length === 0) {
+    return [
+      {
+        rule: ruleId,
+        message:
+          `${name} ausente no env. ${context} ` +
+          "Configure em .env ou exporte no shell antes de rodar a pipeline.",
+        source_issue: sourceIssue,
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+function checkClariceKeySet(): InvariantViolation[] {
+  return checkRequiredEnvVar(
+    "CLARICE_API_KEY",
+    "clarice-key-set",
+    "#1370",
+    "Stage 2 (revisão Clarice) falha sem essa key — tanto MCP quanto REST fallback dependem dela.",
+  );
+}
+
+/**
+ * #1370: image_generator config decide qual key checar.
+ * - gemini → GEMINI_API_KEY
+ * - cloudflare → CLOUDFLARE_WORKERS_TOKEN
+ * - comfyui → nenhuma (local)
+ * - openai → OPENAI_API_KEY
+ */
+function checkImageGeneratorKeySet(): InvariantViolation[] {
+  const configPath = resolve(ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return [];
+  let generator: string;
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { image_generator?: string };
+    generator = (cfg.image_generator ?? "gemini").toLowerCase();
+  } catch {
+    return [];
+  }
+  if (generator === "comfyui") return []; // local, no key
+  const keyMap: Record<string, { env: string; context: string }> = {
+    gemini: {
+      env: "GEMINI_API_KEY",
+      context: "Stage 1 (eia-compose) e Stage 3 (image-generate) usam Gemini API.",
+    },
+    cloudflare: {
+      env: "CLOUDFLARE_WORKERS_TOKEN",
+      context: "Stage 1/3 usam Cloudflare Workers AI (Flux Schnell) — token precisa ter Workers AI permission.",
+    },
+    openai: {
+      env: "OPENAI_API_KEY",
+      context: "Stage 1/3 usam OpenAI DALL-E / gpt-image-2.",
+    },
+  };
+  const cfg = keyMap[generator];
+  if (!cfg) return []; // generator desconhecido — não check
+  return checkRequiredEnvVar(
+    cfg.env,
+    "image-generator-key-set",
+    "#1370",
+    `image_generator="${generator}" em platform.config.json. ${cfg.context}`,
+  );
+}
+
+function checkLinkedinCronCredsSet(): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  violations.push(
+    ...checkRequiredEnvVar(
+      "DIARIA_LINKEDIN_CRON_URL",
+      "linkedin-cron-url-set",
+      "#1370",
+      "Stage 4 (publish-linkedin --schedule) usa o Worker Cloudflare pra enfileirar posts no horário.",
+    ),
+  );
+  violations.push(
+    ...checkRequiredEnvVar(
+      "DIARIA_LINKEDIN_CRON_TOKEN",
+      "linkedin-cron-token-set",
+      "#1370",
+      "Auth Bearer pra Worker LinkedIn — sem isso publish-linkedin --schedule aborta.",
+    ),
+  );
+  return violations;
+}
+
+function checkPollSecretsSet(): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  violations.push(
+    ...checkRequiredEnvVar(
+      "POLL_SECRET",
+      "poll-secret-set",
+      "#1370",
+      "Stage 0 inject-poll-sig + Stage 4 close-poll usam pra assinar URLs do É IA?.",
+    ),
+  );
+  violations.push(
+    ...checkRequiredEnvVar(
+      "ADMIN_SECRET",
+      "admin-secret-set",
+      "#1370",
+      "close-poll.ts assina /admin/correct com este secret. Sem ele, gabarito nunca é registrado.",
+    ),
+  );
+  return violations;
+}
+
+/**
+ * #1382: stdio MCPs declarados em .mcp.json têm `args[0]` (path do binário)
+ * que precisa existir no filesystem. Path stale silently no MCP — Claude Code
+ * tenta iniciar, falha, MCP vira indisponível, scripts caem no fallback (ou
+ * em nada).
+ *
+ * Em 260519, .mcp.json apontava Clarice MCP pra path com username errado
+ * (vjpix em vez do user real desta máquina). Resultou em fallback REST manual
+ * pra todo o Stage 2 review.
+ */
+function checkMcpBinariesExist(): InvariantViolation[] {
+  const mcpJsonPath = resolve(ROOT, ".mcp.json");
+  if (!existsSync(mcpJsonPath)) return [];
+  let parsed: { mcpServers?: Record<string, { type?: string; command?: string; args?: string[] }> };
+  try {
+    parsed = JSON.parse(readFileSync(mcpJsonPath, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "mcp-binaries-exist",
+        message: `.mcp.json não parseável: ${(e as Error).message}`,
+        source_issue: "#1382",
+        severity: "error",
+        file: ".mcp.json",
+      },
+    ];
+  }
+  const violations: InvariantViolation[] = [];
+  const servers = parsed.mcpServers ?? {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (cfg.type !== "stdio" && cfg.command !== "node") continue;
+    const args = cfg.args ?? [];
+    if (args.length === 0) continue;
+    const binPath = args[0];
+    if (binPath.startsWith("/") || /^[A-Z]:[\\/]/i.test(binPath)) {
+      if (!existsSync(binPath)) {
+        violations.push({
+          rule: "mcp-binaries-exist",
+          message:
+            `MCP "${name}" em .mcp.json aponta pra ${binPath} mas o arquivo não existe. ` +
+            "Path provavelmente stale (machine-specific). Considere mover MCP pra user-scope " +
+            "(claude mcp add --scope user) e remover do .mcp.json.",
+          source_issue: "#1382",
+          severity: "error",
+          file: ".mcp.json",
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+/**
  * `data/.credentials.json` deve existir e ser parseável (Drive OAuth tokens).
  * Sem ela, drive-sync falha cedo no Stage 1 (push após gate humano) ou tarde
  * (Stage 2/3/4 push) — melhor pegar no preflight.
@@ -143,10 +314,50 @@ export const STAGE_0_RULES: InvariantRule[] = [
     stage: 0,
     run: () => checkDriveCredsValid(),
   },
+  {
+    id: "clarice-key-set",
+    description: "CLARICE_API_KEY env var presente (#1370)",
+    source_issue: "#1370",
+    stage: 0,
+    run: () => checkClariceKeySet(),
+  },
+  {
+    id: "image-generator-key-set",
+    description: "API key do image_generator configurado em platform.config.json presente (#1370)",
+    source_issue: "#1370",
+    stage: 0,
+    run: () => checkImageGeneratorKeySet(),
+  },
+  {
+    id: "linkedin-cron-creds-set",
+    description: "DIARIA_LINKEDIN_CRON_URL + TOKEN presentes (#1370)",
+    source_issue: "#1370",
+    stage: 0,
+    run: () => checkLinkedinCronCredsSet(),
+  },
+  {
+    id: "poll-secrets-set",
+    description: "POLL_SECRET + ADMIN_SECRET presentes (#1370)",
+    source_issue: "#1370",
+    stage: 0,
+    run: () => checkPollSecretsSet(),
+  },
+  {
+    id: "mcp-binaries-exist",
+    description: "stdio MCPs em .mcp.json apontam pra binários que existem (#1382)",
+    source_issue: "#1382",
+    stage: 0,
+    run: () => checkMcpBinariesExist(),
+  },
 ];
 
 export {
   checkPastEditionsRawValid,
   checkBeehiivKeySet,
   checkDriveCredsValid,
+  checkClariceKeySet,
+  checkImageGeneratorKeySet,
+  checkLinkedinCronCredsSet,
+  checkPollSecretsSet,
+  checkMcpBinariesExist,
 };

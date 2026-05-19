@@ -145,8 +145,20 @@ Política de preservação: nunca remove entries do set (editor pode ter adicion
 
 Exit codes:
 - `0` → set OK ou foi atualizado (escrito no KV)
-- `2` (#1234 review) → `read_failed=true`: wrangler retornou null. Pode ser (a) KV virgem (primeira execução, raro pós-#1233) ou (b) wrangler down. Conservador: NÃO escreve pra evitar destruir entries manuais em transient failure. Editor resolve: `npx tsx scripts/add-valid-edition.ts --edition AAMMDD` (uma vez, popula KV) e re-rodar maintain.
-- `!=0` outro → logar warn mas não bloquear. Voto em edição fora da janela vai falhar com 410 "Essa edição não aceita mais votos."
+- `2` (#1234 review) → `read_failed=true`: wrangler retornou null. Pode ser (a) KV virgem (primeira execução, raro pós-#1233) ou (b) wrangler down. Conservador: NÃO escreve pra evitar destruir entries manuais em transient failure.
+- `!=0` outro → erro inesperado (wrangler crashed, etc).
+
+**HALT obrigatório em exit 2 (#1366).** Antes (até 260518) este caso era tratado como warn-and-continue, mas isso permitia silently rejection de **todos os votos** da edição em produção (caso real 260519: 482 subscribers receberiam email com botões A/B que retornariam 410 "Essa edição não aceita mais votos"). Agora é halt obrigatório:
+
+```bash
+npx tsx scripts/render-halt-banner.ts --stage "0 — Preflight" \
+  --reason "maintain-valid-editions read_failed=true — KV virgem ou wrangler offline" \
+  --action "rode \`npx tsx scripts/add-valid-edition.ts --edition AAMMDD\` pra popular o set e retentar"
+```
+
+Em `auto_approve = true` (ex: `/diaria-edicao --no-gates`), mesmo halt — auto-approve não pode bypassar bug que invalida feature inteira de É IA?. Editor precisa rodar `add-valid-edition.ts` uma vez manual; após KV populado, runs futuros respeitam normal.
+
+**HALT em `!=0` outro também.** Voto silencioso rejeitado é a mesma classe de bug — pipeline deve parar antes de prosseguir.
 
 ### 0d.ter Patch `poll_sig` pra novos subscribers (#1175 — janela 96h)
 

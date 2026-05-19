@@ -96,6 +96,55 @@ describe("Stage 0 invariants", () => {
       else delete process.env.BEEHIIV_API_KEY;
     }
   });
+
+  // #1370 — todas as keys são hard halt (severity: error) per editor decision 2026-05-19
+  const KEY_RULES: Array<{ rule: string; env: string; messageRe: RegExp }> = [
+    { rule: "clarice-key-set", env: "CLARICE_API_KEY", messageRe: /CLARICE_API_KEY/ },
+    { rule: "linkedin-cron-creds-set", env: "DIARIA_LINKEDIN_CRON_URL", messageRe: /DIARIA_LINKEDIN_CRON_URL/ },
+    { rule: "linkedin-cron-creds-set", env: "DIARIA_LINKEDIN_CRON_TOKEN", messageRe: /DIARIA_LINKEDIN_CRON_TOKEN/ },
+    { rule: "poll-secrets-set", env: "POLL_SECRET", messageRe: /POLL_SECRET/ },
+    { rule: "poll-secrets-set", env: "ADMIN_SECRET", messageRe: /ADMIN_SECRET/ },
+  ];
+
+  for (const { rule: ruleId, env, messageRe } of KEY_RULES) {
+    it(`${ruleId} falha (severity=error) quando ${env} ausente (#1370)`, () => {
+      const original = process.env[env];
+      delete process.env[env];
+      try {
+        const rule = STAGE_0_RULES.find((r) => r.id === ruleId)!;
+        const v = rule.run("");
+        assert.ok(v.length >= 1, `Esperava ≥1 violation pra ${env} ausente`);
+        const match = v.find((x) => messageRe.test(x.message));
+        assert.ok(match, `Esperava violation com message matching ${messageRe}, achei: ${v.map((x) => x.message).join("|")}`);
+        assert.equal(match!.severity, "error", `#1370 — todas keys hard halt, ${env} deve ser error não warning`);
+      } finally {
+        if (original !== undefined) process.env[env] = original;
+      }
+    });
+  }
+
+  it("image-generator-key-set falha quando gemini config + GEMINI_API_KEY ausente (#1370)", () => {
+    const original = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const rule = STAGE_0_RULES.find((r) => r.id === "image-generator-key-set")!;
+      const v = rule.run("");
+      // platform.config.json default = gemini
+      assert.ok(v.length >= 1, "Esperava violation pra image_generator=gemini sem key");
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /GEMINI_API_KEY/);
+    } finally {
+      if (original !== undefined) process.env.GEMINI_API_KEY = original;
+    }
+  });
+
+  // #1382 — mcp-binaries-exist
+  it("mcp-binaries-exist passa quando .mcp.json sem stdio servers (estado pós-fix #1382)", () => {
+    const rule = STAGE_0_RULES.find((r) => r.id === "mcp-binaries-exist")!;
+    const v = rule.run("");
+    // .mcp.json atual deve ter mcpServers: {} (clarice movido pra user scope)
+    assert.equal(v.length, 0, `Esperava 0 violations com .mcp.json limpo, achei: ${v.map((x) => x.message).join("|")}`);
+  });
 });
 
 describe("Stage 1 invariants", () => {

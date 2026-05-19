@@ -21,6 +21,7 @@
  *   → resultou em backslashes literais no KV (\"total\":2...) — JSON inválido.
  */
 
+import "dotenv/config"; // #1379 — carrega CLOUDFLARE_API_TOKEN do .env pra wrangler
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { wranglerKvPut } from "./lib/poll-kv.ts";
