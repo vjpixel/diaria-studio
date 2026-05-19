@@ -98,6 +98,76 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
   return violations;
 }
 
+/**
+ * #1367: `_internal/.close-poll-done.json` deve existir após Stage 4 §4h.
+ * Marker é escrito por close-poll.ts apenas se: (a) /admin/correct retornou
+ * ok, (b) sanity check /stats confirmou correct_answer registrado.
+ *
+ * Sem esse marker, a próxima edição não consegue mostrar "Resultado da última
+ * edição: X% acertaram" porque worker retorna correct_pct=null.
+ *
+ * Caso real 260518: close-poll falhou silently (Node fetch broken), pipeline
+ * marcou Stage 4 done, 260519 renderizou sem a linha de stats.
+ */
+function checkClosePollMarker(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", ".close-poll-done.json");
+  if (!existsSync(path)) {
+    return [
+      {
+        rule: "close-poll-marker-exists",
+        message:
+          `_internal/.close-poll-done.json ausente — close-poll.ts não rodou ou falhou. ` +
+          `Próxima edição não vai conseguir exibir % de acertos. ` +
+          `Rode manualmente: \`npx tsx scripts/close-poll.ts --edition {AAMMDD}\`.`,
+        source_issue: "#1367",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as {
+      answer?: string;
+      sanity_check?: { correct_answer?: string };
+    };
+    if (!data.answer || !data.sanity_check?.correct_answer) {
+      return [
+        {
+          rule: "close-poll-marker-valid",
+          message: `close-poll marker existe mas sem answer/sanity_check válidos: ${JSON.stringify(data)}`,
+          source_issue: "#1367",
+          severity: "error",
+          file: path,
+        },
+      ];
+    }
+    if (data.answer !== data.sanity_check.correct_answer) {
+      return [
+        {
+          rule: "close-poll-marker-consistency",
+          message:
+            `close-poll marker answer="${data.answer}" diverge do sanity check correct_answer=` +
+            `"${data.sanity_check.correct_answer}". Worker pode estar com state errado.`,
+          source_issue: "#1367",
+          severity: "error",
+          file: path,
+        },
+      ];
+    }
+  } catch (e) {
+    return [
+      {
+        rule: "close-poll-marker-parseable",
+        message: `close-poll marker não parseável: ${(e as Error).message}`,
+        source_issue: "#1367",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -113,6 +183,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     stage: 5,
     run: checkSocialPublishedComplete,
   },
+  {
+    id: "close-poll-marker-exists",
+    description: "_internal/.close-poll-done.json escrito (#1367)",
+    source_issue: "#1367",
+    stage: 5,
+    run: checkClosePollMarker,
+  },
 ];
 
-export { checkStep4Sentinel, checkSocialPublishedComplete };
+export { checkStep4Sentinel, checkSocialPublishedComplete, checkClosePollMarker };

@@ -21,7 +21,7 @@
 
 import "dotenv/config"; // #1204 — sem isso, ADMIN_SECRET do .env nao chega no processo
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
@@ -84,7 +84,40 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #1367: sanity check pós-close — confirmar que /stats retorna correct_answer
+  // não-null. Sem isso, exit 0 não garante que o gabarito ficou registrado
+  // (caso real 260518: close-poll falhou silencioso, total=3 mas correct_answer=null).
+  const statsRes = await fetch(`${POLL_WORKER_URL}/stats?edition=${edition}`);
+  const stats = await statsRes.json() as { correct_answer?: string | null };
+  if (!statsRes.ok || stats.correct_answer !== answer) {
+    console.error(
+      `[close-poll] FATAL: sanity check falhou — /stats retornou correct_answer=${JSON.stringify(stats.correct_answer)} ` +
+        `esperado="${answer}". Worker pode ter rejeitado silenciosamente ou retornou stale.`,
+    );
+    process.exit(1);
+  }
+
+  // #1367: marker de sucesso pra Stage 5 invariant checar
+  const markerDir = resolve(ROOT, "data", "editions", edition, "_internal");
+  mkdirSync(markerDir, { recursive: true });
+  const markerPath = resolve(markerDir, ".close-poll-done.json");
+  writeFileSync(
+    markerPath,
+    JSON.stringify(
+      {
+        edition,
+        answer,
+        updated_votes: data.updated_votes ?? 0,
+        closed_at: new Date().toISOString(),
+        sanity_check: { correct_answer: stats.correct_answer },
+      },
+      null,
+      2,
+    ),
+  );
+
   console.log(`[close-poll] Poll da edição ${edition} fechado. Resposta correta: ${answer}. Scores atualizados: ${data.updated_votes ?? 0}`);
+  console.log(`[close-poll] Sanity check OK: /stats retornou correct_answer="${stats.correct_answer}". Marker: ${markerPath}`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
