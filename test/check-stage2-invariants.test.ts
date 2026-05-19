@@ -78,14 +78,39 @@ describe("checkHumanizadorRan (#1072)", () => {
   });
 });
 
-describe("checkClariceRan (#1072)", () => {
-  it("OK quando 02-reviewed.md difere de _internal/02-pre-clarice.md", () => {
+describe("checkClariceRan (#1072, refined #1402)", () => {
+  function setupWithSuggestions(dir: string, suggestions: unknown) {
+    writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "pré");
+    writeFileSync(join(dir, "02-reviewed.md"), "pós-clarice");
+    writeFileSync(
+      join(dir, "_internal", "02-clarice-suggestions.json"),
+      JSON.stringify(suggestions),
+    );
+  }
+
+  it("OK quando os 3 artefatos existem e suggestions é array", () => {
     const { dir, cleanup } = mkEdition();
     try {
-      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "pré");
-      writeFileSync(join(dir, "02-reviewed.md"), "pós-clarice");
+      setupWithSuggestions(dir, [{ from: "a", to: "b" }]);
       const r = checkClariceRan(dir);
       assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#1402: OK quando suggestions é array vazio (Clarice rodou sem sugestões)", () => {
+    // Caso real 260520: humanizador eficaz → Clarice retornou [] em 59
+    // parágrafos. Antes do fix, output bytes-idênticos a pre-clarice
+    // disparava clarice_unchanged false positive. Agora é OK legítimo.
+    const { dir, cleanup } = mkEdition();
+    try {
+      const txt = "texto já limpo pelo humanizador";
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), txt);
+      writeFileSync(join(dir, "02-reviewed.md"), txt); // byte-idêntico — Clarice [] suggestions
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkClariceRan(dir);
+      assert.equal(r.ok, true, `esperado OK com suggestions=[], got: ${r.label}`);
     } finally {
       cleanup();
     }
@@ -115,15 +140,41 @@ describe("checkClariceRan (#1072)", () => {
     }
   });
 
-  it("FAIL quando 02-reviewed.md byte-idêntico a 02-pre-clarice.md (Clarice no-op)", () => {
+  it("FAIL quando 02-clarice-suggestions.json ausente (Clarice não foi chamada)", () => {
     const { dir, cleanup } = mkEdition();
     try {
-      const txt = "texto idêntico";
-      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), txt);
-      writeFileSync(join(dir, "02-reviewed.md"), txt);
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "pré");
+      writeFileSync(join(dir, "02-reviewed.md"), "pós-clarice");
+      // sem 02-clarice-suggestions.json
       const r = checkClariceRan(dir);
       assert.equal(r.ok, false);
-      assert.match(r.label!, /clarice_unchanged/);
+      assert.match(r.label!, /suggestions_missing/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL quando suggestions.json não é JSON válido", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "pré");
+      writeFileSync(join(dir, "02-reviewed.md"), "pós");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "{ not json");
+      const r = checkClariceRan(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label!, /suggestions_invalid/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("FAIL quando suggestions não é array (shape inesperado)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      setupWithSuggestions(dir, { error: "wrong shape" });
+      const r = checkClariceRan(dir);
+      assert.equal(r.ok, false);
+      assert.match(r.label!, /suggestions_invalid/);
     } finally {
       cleanup();
     }
@@ -190,6 +241,8 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-humanized.md"), "a humanizado");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
+      // #1402: Clarice agora exige suggestions.json
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir);
       assert.equal(r.ok, true);
       assert.equal(r.checks.humanizador.ok, true);
@@ -207,6 +260,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "a");
       writeFileSync(join(dir, "02-reviewed.md"), "a clarificado");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const r = checkStage2Invariants(dir);
       assert.equal(r.ok, false);
       assert.equal(r.checks.humanizador.ok, false);

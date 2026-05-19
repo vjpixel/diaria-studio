@@ -55,23 +55,58 @@ export function checkHumanizadorRan(internalDir: string): CheckResult {
 }
 
 /**
- * Pure (#1072): Clarice roda no snapshot `02-pre-clarice.md` → `02-reviewed.md`.
- * Se a skill pulou, os 2 arquivos são byte-idênticos.
+ * Pure (#1072, refined #1402): valida que Clarice foi chamada checando
+ * artefatos de execução, não diff de output.
+ *
+ * O check anterior comparava `02-pre-clarice.md` byte-a-byte com
+ * `02-reviewed.md` e abortava se idênticos. Caso real 260520: humanizador
+ * removeu marcas IA suficiente pra Clarice retornar 0 sugestões legítimas
+ * (HTTP 200, array vazio em 59 parágrafos processados). Output idêntico
+ * NÃO é skip — é confirmação de que texto já está limpo. Check antigo
+ * abortava Stage 2 em comportamento esperado.
+ *
+ * Novo: comprova execução via 3 sinais:
+ *  1. `02-pre-clarice.md` existe (snapshot pré-Clarice gravado)
+ *  2. `02-reviewed.md` existe (output do apply)
+ *  3. `_internal/02-clarice-suggestions.json` existe E é array (pode ser `[]`)
+ *
+ * Esses 3 juntos provam que Clarice foi chamada. Output bytes-idênticos
+ * passa a ser legítimo quando suggestions é `[]`.
  */
 export function checkClariceRan(editionDir: string): CheckResult {
   const preClarice = join(editionDir, "_internal", "02-pre-clarice.md");
   const reviewed = join(editionDir, "02-reviewed.md");
+  const suggestionsPath = join(editionDir, "_internal", "02-clarice-suggestions.json");
+
   if (!existsSync(reviewed)) {
     return { ok: false, label: "reviewed_missing: 02-reviewed.md não existe — Clarice foi pulada" };
   }
   if (!existsSync(preClarice)) {
     return { ok: false, label: "pre_clarice_missing: snapshot _internal/02-pre-clarice.md ausente — assertion #889 falhou" };
   }
-  const a = readFileSync(preClarice, "utf8");
-  const b = readFileSync(reviewed, "utf8");
-  if (a === b) {
-    return { ok: false, label: "clarice_unchanged: 02-reviewed.md byte-idêntico a 02-pre-clarice.md — Clarice foi no-op" };
+  if (!existsSync(suggestionsPath)) {
+    return {
+      ok: false,
+      label: "suggestions_missing: _internal/02-clarice-suggestions.json ausente — Clarice não foi chamada",
+    };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(suggestionsPath, "utf8"));
+  } catch (e) {
+    return {
+      ok: false,
+      label: `suggestions_invalid: 02-clarice-suggestions.json não é JSON válido: ${(e as Error).message}`,
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return {
+      ok: false,
+      label: "suggestions_invalid: 02-clarice-suggestions.json não é array",
+    };
+  }
+  // Array vazio (#1402) é legítimo — Clarice foi chamada e não tinha o
+  // que sugerir (texto pós-humanizador estava limpo). Não aborta.
   return { ok: true };
 }
 

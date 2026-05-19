@@ -66,6 +66,31 @@ export function countEditorVsAuto(
 }
 
 /**
+ * Pure (#1404): extrai array de artigos do JSON parseado, suportando ambos
+ * shapes que o pipeline produz:
+ * - Flat array `[...]` (legado, pre-enrich)
+ * - Wrapped object `{articles: [...], expanded: [...], warnings: [...]}`
+ *   (atual, pós enrich-inbox-articles.ts)
+ *
+ * Retorna `null` quando o input não bate em nenhum shape conhecido — caller
+ * decide se aborta. Antes do fix, qualquer wrapped JSON gerava `pool.length
+ * === undefined → NaN` na linha de cobertura final (caso real 260520:
+ * intro saiu como "outros NaN artigos").
+ */
+export function parsePoolArticles(raw: unknown): RawArticle[] | null {
+  if (Array.isArray(raw)) return raw as RawArticle[];
+  if (
+    raw !== null &&
+    typeof raw === "object" &&
+    "articles" in raw &&
+    Array.isArray((raw as { articles?: unknown }).articles)
+  ) {
+    return (raw as { articles: RawArticle[] }).articles;
+  }
+  return null;
+}
+
+/**
  * Helper: conta e-mails distintos do editor lendo `data/inbox.md`.
  * Cada bloco do inbox com `from: editor` conta como 1 submission.
  *
@@ -226,7 +251,16 @@ function main(): void {
   }
 
   const md = readFileSync(mdPath, "utf8");
-  const pool: RawArticle[] = JSON.parse(readFileSync(poolPath, "utf8"));
+  // #1404: tmp-articles-raw.json pode vir como flat array (legado) ou objeto
+  // wrapped (atual, pós enrich-inbox-articles.ts). parsePoolArticles cobre
+  // ambos; null = shape desconhecida → abort com erro claro.
+  const pool = parsePoolArticles(JSON.parse(readFileSync(poolPath, "utf8")));
+  if (!pool) {
+    console.error(
+      `tmp-articles-raw.json formato inesperado em ${poolPath}: esperado array ou {articles:[]}`,
+    );
+    process.exit(1);
+  }
 
   // #1368: prefer marker (escrito no Stage 1 inject-inbox-urls, antes do
   // archive de inbox.md em §1y). Fallback pra inbox.md pra retrocompat com
