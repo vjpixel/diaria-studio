@@ -195,7 +195,28 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     nicknameForm = { email, sig };
   }
 
-  return new Response(votePageHtml(msg, true, nicknameForm), {
+  // #1351: mostrar as duas imagens (A e B) na página de resultado.
+  // Highlight da que o leitor clicou + label "🤖 IA" e "📷 Real" pra que é
+  // qual. Só aparece quando temos gabarito (correct ∈ {true, false}).
+  // Sem gabarito (correct === null), pular — leitor verá só msg.
+  const showImages = correct !== null;
+  const images: { choice: "A" | "B"; isAi: boolean; isClicked: boolean } | null = null;
+  // Determinar qual lado é IA: se choice=A e correct=true → A é IA.
+  // Se choice=A e correct=false → B é IA. Etc.
+  const aiSide: "A" | "B" | null = showImages
+    ? (choice === "A" && correct === true) || (choice === "B" && correct === false)
+      ? "A"
+      : "B"
+    : null;
+  const resultImages = showImages && aiSide
+    ? {
+        edition,
+        aiSide,
+        clickedSide: choice as "A" | "B",
+      }
+    : null;
+
+  return new Response(votePageHtml(msg, true, nicknameForm, resultImages), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
 }
@@ -265,6 +286,9 @@ async function updateScoreByMonth(
   entry.total += 1;
   if (correct === true) entry.correct += 1;
   entry.last_edition = edition;
+  // #1383: timestamp do voto pra tiebreaker no leaderboard. Voto mais recente
+  // vence empate de (correct, total). Sobrescreve a cada vote (não acumula).
+  entry.last_vote_ts = new Date().toISOString();
 
   // Pull nickname from global score key. handleSetName propaga em writes
   // subsequentes, mas o snapshot no momento do vote já é capturado aqui.
@@ -588,7 +612,13 @@ export async function* listAllKeys(env: Env, prefix: string): AsyncGenerator<str
  * caem no fallback de email masked igual ao /leaderboard atual.
  */
 export function scoreByMonthEntriesToLeaderboard(
-  entries: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+  entries: Array<{
+    email: string;
+    nickname: string | null;
+    correct: number;
+    total: number;
+    last_vote_ts?: string;
+  }>,
 ): LeaderboardEntry[] {
   return entries.map((e) => {
     const pct = e.total > 0 ? Math.round((e.correct / e.total) * 100) : 0;
@@ -599,6 +629,8 @@ export function scoreByMonthEntriesToLeaderboard(
       total: e.total,
       pct,
       streak: 0, // streak é per-edition; não tracked no índice mensal (out of scope)
+      // #1383: propaga last_vote_ts pro rankEntries usar como tiebreaker
+      last_vote_ts: e.last_vote_ts,
     };
   });
 }
@@ -766,24 +798,45 @@ async function handleAdminCorrect(url: URL, env: Env): Promise<Response> {
 
 // ── Vote page HTML ────────────────────────────────────────────────────────────
 
+/**
+ * #1351: imagens A/B no resultado do vote. Quando o gabarito existe
+ * (correct ∈ {true, false}), mostrar as duas imagens com label "🤖 IA" /
+ * "📷 Real" + highlight da que o leitor clicou.
+ */
+export interface VoteResultImages {
+  edition: string;
+  aiSide: "A" | "B";
+  clickedSide: "A" | "B";
+}
+
 function votePageHtml(
   message: string,
   success: boolean,
   nicknameForm?: { email: string; sig: string } | null,
+  resultImages?: VoteResultImages | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
+  // #1353: prompt recorrente até subscriber definir nickname.
+  // handleVote já chama votePageHtml com nicknameForm sempre que
+  // !scoreObj?.nickname — então este form aparece em CADA vote até ser
+  // preenchido. Texto explícito sobre consequência (aparecer como email
+  // mascarado no leaderboard) incentiva preenchimento.
   const formHtml = nicknameForm ? `
 <div style="margin:30px auto;padding:20px;background:#f5f5f5;border-radius:8px;max-width:380px;">
-  <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Como você quer ser chamado no ranking?</p>
+  <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Defina seu nickname pra aparecer no leaderboard mensal</p>
+  <p style="font-size:0.85rem;color:#444;margin:0 0 12px 0;line-height:1.5;">Sem nickname você aparece como <code style="background:#fff;padding:1px 4px;border-radius:3px;">${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" style="display:flex;gap:8px;">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:0.95rem;">
     <button type="submit" style="padding:8px 16px;background:#00A0A0;color:#fff;border:none;border-radius:4px;font-weight:600;cursor:pointer;">Salvar</button>
   </form>
-  <p style="font-size:0.75rem;color:#666;margin:10px 0 0 0;">Pode ser apelido. Mostrado publicamente no leaderboard.</p>
+  <p style="font-size:0.75rem;color:#666;margin:10px 0 0 0;">Pode ser apelido. Mostrado publicamente.</p>
 </div>` : "";
+
+  // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
+  const imagesHtml = renderResultImagesHtml(resultImages);
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -792,17 +845,55 @@ function votePageHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | Diar.ia</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
+  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 60px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
   .msg { font-size: 1.3rem; margin: 20px 0; }
   a { color: #0066cc; }
+  .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
+  .result-image { flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
+  .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.18); }
+  .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .result-image .label { font-size: 0.85rem; margin-top: 8px; color: #444; font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #fff; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
 </style>
 </head>
 <body>
 <p class="msg">${htmlEscape(message)}</p>
+${imagesHtml}
 ${formHtml}
 <p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="/leaderboard">Ver leaderboard</a></p>
 </body>
 </html>`;
+}
+
+/**
+ * Pure (#1351): renderiza HTML das imagens A e B com labels e highlight da
+ * clicada. Retorna "" quando `resultImages` é null/undefined (sem gabarito).
+ *
+ * Image URL pattern: poll.diaria.workers.dev/img/img-{AAMMDD}-01-eia-{A|B}.jpg
+ * — mesma URL servida pelo handler /img que o newsletter HTML usa.
+ *
+ * Exportado pra teste.
+ */
+export function renderResultImagesHtml(resultImages: VoteResultImages | null | undefined): string {
+  if (!resultImages) return "";
+  const { edition, aiSide, clickedSide } = resultImages;
+  const renderSide = (side: "A" | "B"): string => {
+    const isAi = side === aiSide;
+    const isClicked = side === clickedSide;
+    const label = isAi ? "🤖 Gerada por IA" : "📷 Foto real";
+    const youBadge = isClicked
+      ? `<span class="you">Você clicou</span>`
+      : "";
+    const imgUrl = `/img/img-${edition}-01-eia-${side}.jpg`;
+    return `<div class="result-image${isClicked ? " clicked" : ""}">
+  <img src="${imgUrl}" alt="Imagem ${side}" loading="lazy">
+  <div class="label">${label}${youBadge}</div>
+</div>`;
+  };
+  return `<div class="result-images">
+${renderSide("A")}
+${renderSide("B")}
+</div>`;
 }
 
 // ── /set-name — leitor escolhe nickname pra leaderboard (#1078) ─────────────

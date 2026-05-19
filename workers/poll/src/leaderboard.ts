@@ -28,6 +28,13 @@ export interface LeaderboardEntry {
   total: number;
   pct: number;
   streak: number;
+  /**
+   * #1383: ISO 8601 timestamp do voto mais recente do leitor no mês. Usado
+   * como 3º critério de tiebreaker (voto mais recente vence empate de
+   * correct+total). Opcional pra compat com entries pré-#1383 — quando
+   * ausente, cai pra displayKey ASC.
+   */
+  last_vote_ts?: string;
 }
 
 export interface RankedEntry extends LeaderboardEntry {
@@ -41,10 +48,13 @@ function displayKey(e: LeaderboardEntry): string {
 }
 
 /**
- * Ordena scores e atribui rank competition-style.
+ * Ordena scores e atribui rank dense-style.
  *
- * Sort key: (correct DESC, total DESC, displayKey ASC).
- * Tie key: (correct, total). Empate → mesmo rank.
+ * Sort key: (correct DESC, total DESC, last_vote_ts DESC, displayKey ASC).
+ * Tie key (rank grouping): (correct, total). Empate em acertos+tentativas →
+ * mesmo rank, mas dentro do grupo a ordem de exibição prioriza voto mais
+ * recente (#1383). Editor decisão: dense rank visual preserva, apenas
+ * ORDEM no grupo muda — quem entrou na disputa mais recente fica na frente.
  *
  * @param scores entries crus do KV
  * @returns array ordenado com `rank` + `medal` atribuídos
@@ -53,6 +63,13 @@ export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
   const sorted = [...scores].sort((a, b) => {
     if (b.correct !== a.correct) return b.correct - a.correct;
     if (b.total !== a.total) return b.total - a.total;
+    // #1383: voto mais recente vence empate.
+    // ISO 8601 strings ordenam lexicograficamente igual a timestamps reais.
+    // Entries sem last_vote_ts (pré-#1383 ou recém-migradas) caem por último
+    // (empty string < qualquer ISO timestamp).
+    const aTs = a.last_vote_ts ?? "";
+    const bTs = b.last_vote_ts ?? "";
+    if (bTs !== aTs) return bTs.localeCompare(aTs); // DESC
     return displayKey(a).localeCompare(displayKey(b));
   });
 
