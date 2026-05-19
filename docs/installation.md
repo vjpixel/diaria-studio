@@ -135,6 +135,38 @@ Validar:
 npx tsx -e "import('./scripts/drive-sync.ts').then(m => console.log('Drive sync loaded'))"
 ```
 
+### 5.1 Configurar consent screen (#1424)
+
+A tela de consentimento OAuth do Google é compartilhada pelo projeto inteiro e
+afeta qualquer fluxo que peça scope (Drive, Gmail, etc.). Sem configurar, o
+editor vê "Projeto sem título" no consent screen — trust signal ruim.
+
+Setup único no Cloud Console (não precisa repetir por máquina):
+
+1. Abrir https://console.cloud.google.com/apis/credentials/consent
+2. Selecionar o projeto que corresponde ao `GOOGLE_CLIENT_ID` do `.env` (o
+   prefixo numérico do client_id é o project number).
+3. Em **OAuth consent screen** → editar:
+   - **App name**: `Diar.ia`
+   - **User support email**: `vjpixel@gmail.com` (ou email do editor)
+   - **App logo** (opcional): PNG quadrado ≥120px — pode usar
+     https://diar.ia.br/favicon-512.png
+   - **Application home page**: `https://diar.ia.br`
+   - **Authorized domains**: `diar.ia.br`
+   - **Developer contact information**: `vjpixel@gmail.com`
+4. Salvar.
+5. **Publishing status**: pra uso interno (1 editor), manter em **Testing** mode
+   com `vjpixel@gmail.com` listado em **Test users** é suficiente — token vale
+   7 dias mas re-auth é trivial via `oauth-setup.ts`. Se precisar de tokens
+   long-lived (60 dias) ou compartilhar com co-editores, bater **Publish app**.
+
+Validar:
+
+1. Apagar `data/.credentials.json`
+2. Rodar `npx tsx scripts/oauth-setup.ts`
+3. Consent screen deve mostrar **Diar.ia** (e logo, se configurado) — não
+   "Projeto sem título".
+
 ---
 
 ## 6. Facebook Graph API
