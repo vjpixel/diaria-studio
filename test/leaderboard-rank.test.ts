@@ -21,6 +21,7 @@ function entry(
   correct: number,
   total: number,
   nickname: string | null = null,
+  last_vote_ts?: string,
 ): LeaderboardEntry {
   return {
     email,
@@ -29,6 +30,7 @@ function entry(
     total,
     pct: total > 0 ? Math.round((correct / total) * 100) : 0,
     streak: 0,
+    last_vote_ts,
   };
 }
 
@@ -191,6 +193,69 @@ describe("rankEntries (#1092)", () => {
     rankEntries(original);
     const afterOrder = original.map((e) => e.email);
     assert.deepEqual(beforeOrder, afterOrder, "rankEntries não pode mutar o input");
+  });
+});
+
+describe("rankEntries last_vote_ts tiebreaker (#1383)", () => {
+  it("voto mais recente vence empate de (correct, total)", () => {
+    // 2 entries idênticas em correct+total, last_vote_ts diferentes
+    const ranked = rankEntries([
+      entry("alice@x.com", 5, 5, "alice", "2026-05-19T08:00:00Z"),
+      entry("bob@x.com", 5, 5, "bob", "2026-05-19T20:00:00Z"), // mais recente
+    ]);
+    // Bob votou depois → aparece primeiro dentro do empate
+    assert.equal(ranked[0].email, "bob@x.com");
+    assert.equal(ranked[1].email, "alice@x.com");
+    // Mas rank visual é o mesmo (dense rank por correct+total)
+    assert.equal(ranked[0].rank, 1);
+    assert.equal(ranked[1].rank, 1);
+  });
+
+  it("displayKey ASC ainda é tiebreaker final (timestamps iguais)", () => {
+    const ts = "2026-05-19T12:00:00Z";
+    const ranked = rankEntries([
+      entry("zebra@x.com", 5, 5, "zebra", ts),
+      entry("alice@x.com", 5, 5, "alice", ts),
+    ]);
+    // Mesmo correct+total+ts → ordem alfabética por display
+    assert.equal(ranked[0].email, "alice@x.com");
+    assert.equal(ranked[1].email, "zebra@x.com");
+  });
+
+  it("entry sem last_vote_ts (legacy) cai POR ÚLTIMO no empate", () => {
+    // Entries pré-#1383 não tem last_vote_ts. Lexicograficamente "" < qualquer
+    // ISO timestamp, então (DESC) entry SEM ts fica DEPOIS de qualquer com ts.
+    const ranked = rankEntries([
+      entry("legacy@x.com", 3, 5, "legacy"), // sem ts
+      entry("new@x.com", 3, 5, "new", "2026-05-19T10:00:00Z"), // com ts
+    ]);
+    // Quem tem timestamp vence quem não tem (incentiva migração silenciosa)
+    assert.equal(ranked[0].email, "new@x.com");
+    assert.equal(ranked[1].email, "legacy@x.com");
+  });
+
+  it("não afeta entries com correct ou total diferentes", () => {
+    // last_vote_ts só importa quando correct+total empata
+    const ranked = rankEntries([
+      entry("a@x.com", 5, 5, "a", "2026-01-01T00:00:00Z"), // ts antigo, MAIS acertos
+      entry("b@x.com", 3, 5, "b", "2026-12-31T23:59:59Z"), // ts recente, MENOS acertos
+    ]);
+    assert.equal(ranked[0].email, "a@x.com"); // correct=5 vence correct=3
+    assert.equal(ranked[1].email, "b@x.com");
+  });
+
+  it("ordem dense rank preservada: 3 leitores rank 1, ordenados por ts DESC", () => {
+    const ranked = rankEntries([
+      entry("first@x.com", 5, 5, "first", "2026-05-01T00:00:00Z"),
+      entry("third@x.com", 5, 5, "third", "2026-05-19T00:00:00Z"), // mais recente
+      entry("second@x.com", 5, 5, "second", "2026-05-10T00:00:00Z"),
+    ]);
+    // Todos rank 1 (dense rank), ordem: ts mais recente primeiro
+    assert.deepEqual(ranked.map((r) => r.rank), [1, 1, 1]);
+    assert.deepEqual(
+      ranked.map((r) => r.email),
+      ["third@x.com", "second@x.com", "first@x.com"],
+    );
   });
 });
 
