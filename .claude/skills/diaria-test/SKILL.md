@@ -69,6 +69,8 @@ Variáveis pra alimentar o playbook:
 
 **Não relayar gates ao usuário.** Em `test_mode`, auto-aprovar tudo conforme Princípio 2 do playbook.
 
+**#1400 — NUNCA pausar pra confirmação humana em `/diaria-test`.** Nem mesmo pré-Stage 4. Nem mesmo "actions visible to others" tipo Beehiiv draft + LinkedIn/Facebook schedule. O skill description deixa explícito: "Roda a pipeline **completa** da Diar.ia **sem gates humanos**". Editor opt-in via `/diaria-test` é consent suficiente pra pipeline inteira; `day_offset = 10` cobre o blast radius (drafts/agendados são reversíveis pelo editor antes da data real). Halt obrigatório só em bloqueio externo real (MCP desconectado, env crítico faltando, file output corrompido). Pausar pra "Posso prosseguir?" anula o valor do skill como benchmark.
+
 #### 2.1 INVARIANTE: Beehiiv playbook completo é OBRIGATÓRIO (#1267)
 
 Em `/diaria-test`, com `with_publish = true` hardcoded (#1397), o **playbook newsletter Beehiiv é OBRIGATÓRIO** (passos completos de `context/publishers/beehiiv-playbook.md` — pre-render, criar draft, paste HTML via TipTap, set title/subtitle/subject). NÃO é opcional, mesmo achando que "playbook é complexo" ou "tem muitos passos".
