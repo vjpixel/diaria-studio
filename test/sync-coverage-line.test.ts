@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import {
   countForwardedEmailsFromInbox,
   countSelectedItems,
   rewriteCoverageLine,
+  readEditorBlocksFromMarker,
 } from "../scripts/sync-coverage-line.ts";
 
 describe("countEditorVsAuto (#1323)", () => {
@@ -312,5 +313,70 @@ Resto.`;
     assert.ok(r.changed);
     assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
     assert.match(r.md, /Selecionamos os 12 mais relevantes/);
+  });
+});
+
+describe("readEditorBlocksFromMarker (#1368)", () => {
+  function makeFixtureEdition(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-sync-coverage-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("retorna editor_blocks do marker quando presente", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ editor_blocks: 4, newsletter_blocks: 26 }),
+    );
+    assert.equal(readEditorBlocksFromMarker(dir), 4);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna null quando marker ausente — caller faz fallback inbox.md", () => {
+    const dir = makeFixtureEdition();
+    assert.equal(readEditorBlocksFromMarker(dir), null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna null se editor_blocks não é número (marker corrupto)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ editor_blocks: "4" }), // string em vez de number
+    );
+    assert.equal(readEditorBlocksFromMarker(dir), null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna null se editor_blocks ausente do marker", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ injected: 5 }), // sem editor_blocks
+    );
+    assert.equal(readEditorBlocksFromMarker(dir), null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna null se marker é JSON inválido", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      "not-json-{{{",
+    );
+    assert.equal(readEditorBlocksFromMarker(dir), null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("retorna 0 quando marker explicitamente diz editor_blocks: 0", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({ editor_blocks: 0 }),
+    );
+    // 0 é valor válido (edição sem editor submissions) — não cair em fallback
+    assert.equal(readEditorBlocksFromMarker(dir), 0);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -88,6 +88,30 @@ export function countForwardedEmailsFromInbox(
 }
 
 /**
+ * #1368: lê `editor_blocks` do marker `.marker-inject-inbox-urls.json` —
+ * fonte autoritativa porque foi escrita no Stage 1 antes do inbox.md ser
+ * arquivado (§1y `mv data/inbox.md data/inbox-archive/...`).
+ *
+ * Caso real 260519: sync-coverage-line.ts lia `data/inbox.md` que já tinha
+ * sido arquivado → forwardedEmails = 0 → intro saía "0 submissões" mesmo o
+ * editor tendo enviado 4.
+ *
+ * Retorna null se marker não existir (caller faz fallback pra inbox.md).
+ */
+export function readEditorBlocksFromMarker(editionDir: string): number | null {
+  const markerPath = join(editionDir, "_internal", ".marker-inject-inbox-urls.json");
+  if (!existsSync(markerPath)) return null;
+  try {
+    const data = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      editor_blocks?: number;
+    };
+    return typeof data.editor_blocks === "number" ? data.editor_blocks : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pure: conta itens editoriais visíveis no MD final.
  * Considera DESTAQUE N + 4 seções secundárias. Pula blocos editoriais fixos
  * (SORTEIO / PARA ENCERRAR / ERRO INTENCIONAL / É IA?) e links de afiliados.
@@ -203,9 +227,18 @@ function main(): void {
 
   const md = readFileSync(mdPath, "utf8");
   const pool: RawArticle[] = JSON.parse(readFileSync(poolPath, "utf8"));
-  const editorEmail = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(process.cwd(), "platform.config.json"));
-  const inboxMdPath = resolve(process.cwd(), args["inbox-md"] ?? "data/inbox.md");
-  const forwardedEmails = countForwardedEmailsFromInbox(inboxMdPath, editorEmail);
+
+  // #1368: prefer marker (escrito no Stage 1 inject-inbox-urls, antes do
+  // archive de inbox.md em §1y). Fallback pra inbox.md pra retrocompat com
+  // edições antigas sem marker.
+  let forwardedEmails = readEditorBlocksFromMarker(root);
+  let source: "marker" | "inbox_md" = "marker";
+  if (forwardedEmails === null) {
+    const editorEmail = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(process.cwd(), "platform.config.json"));
+    const inboxMdPath = resolve(process.cwd(), args["inbox-md"] ?? "data/inbox.md");
+    forwardedEmails = countForwardedEmailsFromInbox(inboxMdPath, editorEmail);
+    source = "inbox_md";
+  }
   const { x, y } = countEditorVsAuto(pool, forwardedEmails);
   const z = countSelectedItems(md);
 
@@ -216,7 +249,7 @@ function main(): void {
   }
   if (changed) writeFileSync(mdPath, updatedMd, "utf8");
 
-  console.log(JSON.stringify({ x, y, z, changed, mdPath }, null, 2));
+  console.log(JSON.stringify({ x, y, z, changed, mdPath, source }, null, 2));
   process.exit(0);
 }
 
