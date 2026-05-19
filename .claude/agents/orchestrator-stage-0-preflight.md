@@ -164,7 +164,7 @@ Em `auto_approve = true` (ex: `/diaria-edicao --no-gates`), mesmo halt — auto-
 
 `poll_sig` (HMAC permanente do email) é o custom field Beehiiv que o HTML da newsletter usa pra construir URLs do É IA? assinadas. Subscriber sem `poll_sig` populado recebe email com `&sig=` vazio → Worker rejeita com 403 e o voto não conta.
 
-`inject-poll-sig.ts` é idempotente — só patcheaer quem está faltando. Per #1175, o legacy `inject-poll-urls.ts` faz isso de jeito errado (popula `poll_a_url/b_url` desperdiçados em todos os 481 subscribers todo dia). O fluxo correto é: listar subscribers das últimas 96h (janela cobre fim de semana com folga) e patchear apenas os faltantes.
+`inject-poll-sig.ts` é idempotente — só patcheaer quem está faltando. Per #1175 (e cleanup #1185 que removeu o legacy `inject-poll-urls.ts`), o fluxo correto é: listar subscribers das últimas 96h (janela cobre fim de semana com folga) e patchear apenas os faltantes.
 
 ```bash
 export BEEHIIV_PUBLICATION_ID=$(node -e "console.log(require('./platform.config.json').beehiiv.publicationId)") && \

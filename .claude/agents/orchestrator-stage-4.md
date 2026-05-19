@@ -75,13 +75,11 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
-### 4a-bis. ~~Injetar URLs do poll É IA? por subscriber~~ — removido (#1175)
+### 4a-bis. ~~Injetar URLs do poll É IA? por subscriber~~ — removido (#1175, script deletado #1185)
 
-**Removido em #1175** (2026-05-12). O passo legacy `inject-poll-urls.ts` populava custom fields `poll_a_url`/`poll_b_url` em todos os 481 subscribers (~962 API calls Beehiiv por edição), mas o HTML render usa `{{poll_sig}}` + `{{email}}` desde #1083 — os custom fields populados ficavam órfãos.
+**Removido em #1175** (2026-05-12), script `inject-poll-urls.ts` deletado em #1185 junto com os custom fields órfãos `poll_a_url`/`poll_b_url`. O HTML render usa `{{poll_sig}}` + `{{email}}` desde #1083.
 
-O patch correto agora roda em Stage 0 §0d.ter (`inject-poll-sig.ts --since-hours 96`), que filtra pra novos subscribers nas últimas 96h. `poll_sig` é HMAC permanente do email — 1× por subscriber, vitalício.
-
-Se este orchestrator versão pré-#1175 ainda invocar `inject-poll-urls.ts` aqui, é seguro pular: o HTML não usa esses custom fields. Em caso de retry isolado de Stage 4, **não rodar** o script legacy — confiar no 0d.ter.
+O patch correto roda em Stage 0 §0d.ter (`inject-poll-sig.ts --since-hours 96`), que filtra pra novos subscribers nas últimas 96h. `poll_sig` é HMAC permanente do email — 1× por subscriber, vitalício.
 
 ### 4b. Confirmar modo de publicação por canal (#336 — invertido em #1326)
 

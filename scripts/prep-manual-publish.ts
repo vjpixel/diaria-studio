@@ -1,22 +1,22 @@
 /**
- * prep-manual-publish.ts (#1047)
+ * prep-manual-publish.ts (#1047, refatorado em #1185)
  *
- * Gate técnico antes de publicação manual no Beehiiv. Valida pré-condições,
- * roda `inject-poll-urls.ts`, e imprime instruções step-by-step pra paste +
- * publish + close-poll.
+ * Gate técnico antes de publicação manual no Beehiiv. Valida pré-condições
+ * e imprime instruções step-by-step pra paste + publish + close-poll.
  *
- * Resolve risco do PR #1044: workflow manual sem inject prévio = botões A/B
- * com `href=""` (Beehiiv substitui {{poll_a_url}} por string vazia se subscriber
- * não tem custom field populado). Click → nada acontece → UX break visível.
+ * Histórico: o script original (#1044/#1047) rodava `inject-poll-urls.ts` pra
+ * popular custom fields `{{poll_a_url}}` / `{{poll_b_url}}` em cada subscriber.
+ * Desde #1083 o HTML usa `{{poll_sig}}` + `{{email}}` inline — `poll_sig` é
+ * HMAC permanente do email, populado 1x por subscriber pelo `inject-poll-sig.ts`
+ * (Stage 0 § 0d.ter, com janela 96h). Não há mais necessidade de inject
+ * per-edição. Esta versão drop o passo + o check dos fields órfãos.
  *
  * Uso:
  *   npx tsx scripts/prep-manual-publish.ts --edition 260510
- *   npx tsx scripts/prep-manual-publish.ts --edition 260510 --skip-inject
  *
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID - ID da publicação (required)
- *   POLL_SECRET            - HMAC key (required)
  *   POLL_WORKER_URL        - default https://poll.diaria.workers.dev
  */
 
@@ -24,7 +24,6 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
-import { run as injectPollUrls } from "./inject-poll-urls.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
@@ -49,8 +48,7 @@ async function listCustomFields(opts: {
   publicationId: string;
   apiKey: string;
 }): Promise<string[]> {
-  // Pagina via cursor pra cobrir publications com >100 fields (consistência
-  // com inject-poll-urls.ts:ensureCustomFields — mesmo padrão).
+  // Pagina via cursor pra cobrir publications com >100 fields.
   const baseUrl = `https://api.beehiiv.com/v2/publications/${opts.publicationId}/custom_fields`;
   const all: string[] = [];
   let cursor: string | undefined;
@@ -141,7 +139,7 @@ async function pingWorker(edition: string): Promise<{
   }
 }
 
-function checkNewsletterHtml(editionDir: string): Check {
+export function checkNewsletterHtml(editionDir: string): Check {
   const path = resolve(editionDir, "_internal", "newsletter-final.html");
   if (!existsSync(path)) {
     return {
@@ -151,36 +149,23 @@ function checkNewsletterHtml(editionDir: string): Check {
     };
   }
   const html = readFileSync(path, "utf8");
-  // Aceita 3 designs (em ordem cronológica):
-  //   (a) Legacy "Votar A/B" buttons + {{poll_X_url}} (pré-#1082)
-  //   (b) Clickable images com {{poll_X_url}} (#1082)
-  //   (c) Inline URL com {{ subscriber.email }} + {{ poll_sig }} (#1083, permanente)
-  const hasVotarButtons = /Votar A/.test(html) && /Votar B/.test(html);
-  const hasLegacyLinks =
-    /href="\{\{poll_a_url\}\}"/.test(html) && /href="\{\{poll_b_url\}\}"/.test(html);
-  // Beehiiv merge tag syntax: SEM espaços, SEM prefix (docs 2026-05-11).
-  // Sintaxe correta: {{email}} (reserved) + {{poll_sig}} (custom field).
+  // Design atual (#1083, permanente): URL inline com merge tags
+  // `{{email}}` (reserved field) + `{{poll_sig}}` (custom field HMAC).
+  // Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
   const hasInlineSig =
     /\{\{email\}\}/.test(html) && /\{\{poll_sig\}\}/.test(html);
-  const hasVoteAnchors = hasVotarButtons || hasLegacyLinks || hasInlineSig;
-  const hasMergeTag = /\{\{poll_[ab]_url\}\}/.test(html) || hasInlineSig;
-  if (!hasVoteAnchors || !hasMergeTag) {
+  if (!hasInlineSig) {
     return {
-      name: "newsletter-final.html tem ancoras A/B + merge tags",
+      name: "newsletter-final.html tem merge tags inline ({{email}} + {{poll_sig}})",
       passed: false,
-      detail: `Votar buttons=${hasVotarButtons}, legacy links=${hasLegacyLinks}, inline sig=${hasInlineSig}. Re-rodar render-newsletter-html.ts.`,
+      detail: `Design atual requer URL inline com poll_sig (desde #1083). Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);
-  const designLabel = hasInlineSig
-    ? "inline URL + poll_sig"
-    : hasLegacyLinks
-    ? "imagens clicáveis A/B (legacy)"
-    : "botões A/B (legacy)";
   return {
     name: "newsletter-final.html",
     passed: true,
-    detail: `${sizeKb}KB, ${designLabel}`,
+    detail: `${sizeKb}KB, inline URL + poll_sig`,
   };
 }
 
@@ -190,23 +175,22 @@ async function checkCustomFields(opts: {
 }): Promise<Check> {
   try {
     const fields = await listCustomFields(opts);
-    const hasA = fields.includes("poll_a_url");
-    const hasB = fields.includes("poll_b_url");
-    if (!hasA || !hasB) {
+    const hasSig = fields.includes("poll_sig");
+    if (!hasSig) {
       return {
-        name: "custom fields poll_a_url + poll_b_url",
+        name: "custom field poll_sig",
         passed: false,
-        detail: `poll_a_url=${hasA}, poll_b_url=${hasB}. inject-poll-urls.ts cria automático no primeiro run, ou crie manualmente via API.`,
+        detail: `poll_sig ausente na publicação. inject-poll-sig.ts cria automaticamente — rode 'npx tsx scripts/inject-poll-sig.ts --since-hours 96' (idempotente).`,
       };
     }
     return {
-      name: "custom fields Beehiiv",
+      name: "custom field Beehiiv",
       passed: true,
-      detail: `poll_a_url + poll_b_url existem (${fields.length} fields total)`,
+      detail: `poll_sig existe (${fields.length} fields total)`,
     };
   } catch (e) {
     return {
-      name: "custom fields Beehiiv",
+      name: "custom field Beehiiv",
       passed: false,
       detail: `erro consultando API: ${(e as Error).message}`,
     };
@@ -243,22 +227,26 @@ function printChecks(checks: Check[]): boolean {
 async function main(): Promise<void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
-  const skipInject = flags.has("skip-inject");
+  // #1185: --skip-inject ainda aceito por compat (1mo, remover 2026-06-19);
+  // emite warn pois o script não roda mais inject (cron Stage 0 cobre).
+  if (flags.has("skip-inject")) {
+    console.warn(
+      "[prep-manual-publish] ⚠️  --skip-inject é flag legacy desde #1185 (inject-poll-urls removido). Pode omitir.",
+    );
+  }
 
   if (!edition || !/^\d{6}$/.test(edition)) {
     console.error(
-      "Uso: prep-manual-publish.ts --edition AAMMDD [--skip-inject]",
+      "Uso: prep-manual-publish.ts --edition AAMMDD",
     );
     process.exit(1);
   }
 
   const apiKey = process.env.BEEHIIV_API_KEY;
   const publicationId = process.env.BEEHIIV_PUBLICATION_ID;
-  const secret = process.env.POLL_SECRET;
   const missing: string[] = [];
   if (!apiKey) missing.push("BEEHIIV_API_KEY");
   if (!publicationId) missing.push("BEEHIIV_PUBLICATION_ID");
-  if (!secret) missing.push("POLL_SECRET");
   if (missing.length > 0) {
     console.error(
       `[prep-manual-publish] envs ausentes: ${missing.join(", ")} — abortando`,
@@ -287,26 +275,6 @@ async function main(): Promise<void> {
   if (!allPassed) {
     console.error("[prep-manual-publish] algumas pré-condições falharam — fix antes de prosseguir.");
     process.exit(1);
-  }
-
-  // Run inject-poll-urls unless skipped
-  if (skipInject) {
-    console.log("[prep-manual-publish] --skip-inject passado, pulando inject-poll-urls");
-  } else {
-    console.log("=== Rodando inject-poll-urls.ts ===");
-    const result = await injectPollUrls({
-      edition,
-      dryRun: false,
-      apiOpts,
-      secret: secret!,
-    });
-    console.log(`[inject] ${result.patched}/${result.total_subscribers} subscribers OK, ${result.failed} falhas, ${result.skipped_no_email} skipped\n`);
-    if (result.failed > result.total_subscribers * 0.1) {
-      console.error(
-        `[prep-manual-publish] ⚠️ ${result.failed}/${result.total_subscribers} (>10%) subscribers falharam — investigue antes de publicar.`,
-      );
-      process.exit(2);
-    }
   }
 
   // Print step-by-step instructions
