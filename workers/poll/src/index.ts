@@ -72,6 +72,43 @@ function json(data: unknown, status = 200, env?: Env): Response {
   });
 }
 
+// ── Secrets guard (#1420) ─────────────────────────────────────────────────────
+
+/**
+ * #1420: declara quais secrets cada rota precisa (path + method tuple).
+ * Quando uma rota sensível é chamada sem o secret correspondente, retorna
+ * 503 com diagnóstico em vez de deixar o handler crashar com 500 + error
+ * 1101 do Cloudflare (sem stack).
+ *
+ * Method-aware (não só path) pra evitar regressão de mensagem em método
+ * errado — GET /admin/correct continua caindo no fallback 404, não 503.
+ *
+ * Rotas públicas (não listadas aqui) — `/img`, `/stats`, `/leaderboard*` —
+ * continuam funcionando mesmo sem secrets.
+ */
+export function requiredSecretsForRoute(
+  path: string,
+  method: string,
+): Array<"POLL_SECRET" | "ADMIN_SECRET"> {
+  if (path === "/vote" && method === "GET") return ["POLL_SECRET"];
+  if (path === "/set-name" && method === "GET") return ["POLL_SECRET"];
+  if (path === "/admin/correct" && method === "POST") return ["ADMIN_SECRET"];
+  return [];
+}
+
+/**
+ * #1420: retorna lista de secrets faltando pra atender (path, method). Vazio = OK.
+ * Trata string vazia como missing (deploy esquecido de `wrangler secret put`
+ * vs accidentalmente set como `""`).
+ */
+export function missingSecretsForRoute(env: Env, path: string, method: string): string[] {
+  const required = requiredSecretsForRoute(path, method);
+  return required.filter((name) => {
+    const v = env[name];
+    return typeof v !== "string" || v.length === 0;
+  });
+}
+
 // #1083: helpers puros extraídos pra `./lib.ts` pra ficarem testáveis em
 // Node sem mock do Worker runtime. Re-exportados aqui pra back-compat de
 // consumers externos (se algum dia houver) e pra leitura linear do código.
@@ -1035,6 +1072,19 @@ export default {
       const target = new URL(request.url);
       target.pathname = stripped;
       return Response.redirect(target.toString(), 301);
+    }
+
+    // #1420: fail-loud com 503 quando secrets ausentes (em vez de 500
+    // generic crash). Diagnóstico explícito facilita debug pós-deploy
+    // sem secrets re-setados (#1415). Method-aware pra não regredir
+    // mensagem de 404 → 503 em métodos errados (ex: GET /admin/correct).
+    const missingSecrets = missingSecretsForRoute(env, path, request.method);
+    if (missingSecrets.length > 0) {
+      return json({
+        error: "server_misconfigured",
+        missing_secrets: missingSecrets,
+        action: `Re-set secrets via: cd workers/poll && wrangler secret put ${missingSecrets[0]}`,
+      }, 503, env);
     }
 
     if (path === "/vote" && request.method === "GET") return handleVote(url, env);

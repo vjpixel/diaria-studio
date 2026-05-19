@@ -28,7 +28,16 @@ import {
   currentMonthSlugBrt,
   monthSlugCompare,
 } from "../workers/poll/src/lib.ts";
-import { computeTop1, computePodium, scoreByMonthEntriesToLeaderboard, listAllKeys, computeSnapshotEntries } from "../workers/poll/src/index.ts";
+import {
+  computeTop1,
+  computePodium,
+  scoreByMonthEntriesToLeaderboard,
+  listAllKeys,
+  computeSnapshotEntries,
+  requiredSecretsForRoute,
+  missingSecretsForRoute,
+  type Env,
+} from "../workers/poll/src/index.ts";
 
 describe("formatEditionDate (#1080)", () => {
   it("converte AAMMDD pro formato pt-BR humano", () => {
@@ -705,3 +714,84 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     assert.deepEqual(entries, []);
   });
 });
+
+describe("requiredSecretsForRoute (#1420)", () => {
+  it("GET /vote → POLL_SECRET", () => {
+    assert.deepEqual(requiredSecretsForRoute("/vote", "GET"), ["POLL_SECRET"]);
+  });
+
+  it("GET /set-name → POLL_SECRET", () => {
+    assert.deepEqual(requiredSecretsForRoute("/set-name", "GET"), ["POLL_SECRET"]);
+  });
+
+  it("POST /admin/correct → ADMIN_SECRET", () => {
+    assert.deepEqual(requiredSecretsForRoute("/admin/correct", "POST"), ["ADMIN_SECRET"]);
+  });
+
+  it("método errado pra rota sensível → [] (cai no fallback 404 do router)", () => {
+    // Sem isso, GET /admin/correct + ADMIN_SECRET missing daria 503 ao
+    // invés do 404 esperado (regressão de mensagem em método errado).
+    assert.deepEqual(requiredSecretsForRoute("/admin/correct", "GET"), []);
+    assert.deepEqual(requiredSecretsForRoute("/vote", "POST"), []);
+    assert.deepEqual(requiredSecretsForRoute("/set-name", "DELETE"), []);
+  });
+
+  it("rotas públicas (img/stats/leaderboard) → []", () => {
+    assert.deepEqual(requiredSecretsForRoute("/img/abc.jpg", "GET"), []);
+    assert.deepEqual(requiredSecretsForRoute("/stats", "GET"), []);
+    assert.deepEqual(requiredSecretsForRoute("/leaderboard", "GET"), []);
+    assert.deepEqual(requiredSecretsForRoute("/leaderboard/2026-05", "GET"), []);
+    assert.deepEqual(requiredSecretsForRoute("/", "GET"), []);
+  });
+});
+
+describe("missingSecretsForRoute (#1420)", () => {
+  function makeEnv(overrides: Partial<Env> = {}): Env {
+    return {
+      POLL: {} as KVNamespace,
+      POLL_SECRET: "pollsecret",
+      ADMIN_SECRET: "adminsecret",
+      ALLOWED_ORIGINS: "*",
+      ...overrides,
+    };
+  }
+
+  it("retorna [] quando todos os secrets necessários estão presentes", () => {
+    const env = makeEnv();
+    assert.deepEqual(missingSecretsForRoute(env, "/vote", "GET"), []);
+    assert.deepEqual(missingSecretsForRoute(env, "/admin/correct", "POST"), []);
+  });
+
+  it("#1420: GET /vote sem POLL_SECRET → [POLL_SECRET]", () => {
+    const env = makeEnv({ POLL_SECRET: undefined as unknown as string });
+    assert.deepEqual(missingSecretsForRoute(env, "/vote", "GET"), ["POLL_SECRET"]);
+  });
+
+  it("#1420: POST /admin/correct sem ADMIN_SECRET → [ADMIN_SECRET]", () => {
+    const env = makeEnv({ ADMIN_SECRET: undefined as unknown as string });
+    assert.deepEqual(missingSecretsForRoute(env, "/admin/correct", "POST"), ["ADMIN_SECRET"]);
+  });
+
+  it("string vazia é tratada como missing (deploy seteou secret como \"\")", () => {
+    const env = makeEnv({ POLL_SECRET: "" });
+    assert.deepEqual(missingSecretsForRoute(env, "/vote", "GET"), ["POLL_SECRET"]);
+  });
+
+  it("método errado sempre retorna [] (preserva fallback 404)", () => {
+    // ADMIN_SECRET missing mas GET /admin/correct → guard NÃO dispara.
+    // Router cai no fallback 404, semanticamente mais correto que 503.
+    const env = makeEnv({ ADMIN_SECRET: undefined as unknown as string });
+    assert.deepEqual(missingSecretsForRoute(env, "/admin/correct", "GET"), []);
+  });
+
+  it("rotas públicas nunca falham por falta de secret (mesmo com env vazio)", () => {
+    const env = makeEnv({
+      POLL_SECRET: undefined as unknown as string,
+      ADMIN_SECRET: undefined as unknown as string,
+    });
+    assert.deepEqual(missingSecretsForRoute(env, "/img/foo.jpg", "GET"), []);
+    assert.deepEqual(missingSecretsForRoute(env, "/stats", "GET"), []);
+    assert.deepEqual(missingSecretsForRoute(env, "/leaderboard", "GET"), []);
+  });
+});
+
