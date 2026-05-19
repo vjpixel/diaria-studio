@@ -34,16 +34,31 @@ interface StageTiming {
   files: string[];
 }
 
-// Map files to stages based on prefix
-function fileToStage(name: string): { stage: number; label: string } | null {
+// Map files to stages baseado em prefix.
+//
+// #1405: alinhado ao pipeline atual (4 stages — CLAUDE.md):
+//   0 Setup → 1 Research → 2 Writing (newsletter + social paralelo)
+//   → 3 Images → 4 Publishing
+//
+// Prefixes de arquivo refletem ordem cronológica de criação, NÃO stage_id:
+//   01-eia*, 01-categorized — gerados em Stage 1
+//   02-reviewed             — Stage 2 (newsletter)
+//   03-social               — Stage 2 (social, em paralelo com newsletter)
+//   04-d{N}-{2x1,1x1}.jpg  — Stage 3 (imagens de destaque)
+//   05-published.json       — Stage 4 (newsletter publish)
+//   06-social-published.json — Stage 4 (social publish)
+//
+// Antes do #1405, o mapping usava o número do prefix direto como stage_id
+// (resultava em "Stage 3=Social", "Stage 5=Newsletter", "Stage 6=Social pub" —
+// nomes legacy do pipeline antigo, com Stage 5 vazio no caso atual).
+export function fileToStage(name: string): { stage: number; label: string } | null {
   if (name === "_internal/cost.json" || name === "_internal/cost.md") return { stage: 0, label: "Setup" };
-  if (name.startsWith("01-eia")) return { stage: 1, label: "É IA?" };
   if (name.startsWith("01-") || name.startsWith("_internal/01-")) return { stage: 1, label: "Research" };
   if (name.startsWith("02-") || name.startsWith("_internal/02-")) return { stage: 2, label: "Writing" };
-  if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 3, label: "Social" };
-  if (name.startsWith("04-") || name.startsWith("_internal/04-")) return { stage: 4, label: "Images" };
-  if (name.startsWith("05-")) return { stage: 5, label: "Newsletter" };
-  if (name.startsWith("06-")) return { stage: 6, label: "Social pub" };
+  if (name.startsWith("03-") || name.startsWith("_internal/03-")) return { stage: 2, label: "Writing" }; // social em paralelo
+  if (name.startsWith("04-") || name.startsWith("_internal/04-")) return { stage: 3, label: "Images" };
+  if (name.startsWith("05-") || name.startsWith("_internal/05-")) return { stage: 4, label: "Publishing" };
+  if (name.startsWith("06-") || name.startsWith("_internal/06-")) return { stage: 4, label: "Publishing" }; // social publish
   return null;
 }
 
@@ -90,7 +105,13 @@ function computeTimings(files: FileInfo[]): StageTiming[] {
       }
     }
 
-    const durationMs = start && end ? end.getTime() - start.getTime() : 0;
+    // #1405: clamp negative durations to 0. Acontece quando o mesmo stage
+    // tem arquivos escritos em paralelo (Stage 2 newsletter + social) e o
+    // sort por mtime resulta em min > max no fluxo subsequente. Antes
+    // renderizava "—" e era confuso pro editor — pior, mascarava bugs
+    // reais de timing inverted.
+    const rawDurationMs = start && end ? end.getTime() - start.getTime() : 0;
+    const durationMs = Math.max(0, rawDurationMs);
 
     timings.push({
       stage,
