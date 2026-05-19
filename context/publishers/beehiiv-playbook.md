@@ -279,7 +279,7 @@ Esperar `hasEditor: true`, `hasCommands: true`, `hasNode: true`, `isEmpty: true`
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
-Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`poll.diaria.workers.dev/html/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
+Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
 ```bash
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD}
@@ -289,7 +289,7 @@ Stdout (JSON):
 ```json
 {
   "edition": "260514",
-  "url": "https://poll.diaria.workers.dev/html/260514",
+  "url": "https://draft.diaria.workers.dev/260514",
   "bytes": 28341,
   "ttl_seconds": 43200
 }
@@ -312,7 +312,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 ```js
 // (1 chamada javascript_tool — fetch + decode + insertContent)
 (async () => {
-  const res = await fetch('https://poll.diaria.workers.dev/html/260514');
+  const res = await fetch('https://draft.diaria.workers.dev/260514');
   if (!res.ok) return { error: `fetch ${res.status}` };
   const html = await res.text();
 
