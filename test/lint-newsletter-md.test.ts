@@ -1081,6 +1081,40 @@ Body.`,
     assert.match(r.label!, /correct_value/);
     rmSync(dir, { recursive: true });
   });
+
+  // #1378: frontmatter pós-TÍTULO bloco deve ser aceito
+  it("aceita frontmatter posicionado APÓS bloco TÍTULO/SUBTÍTULO — #1378", () => {
+    const dir = join(TMP, "fm_after_titulo");
+    mkdirSync(dir, { recursive: true });
+    const mdPath = join(dir, "02-reviewed.md");
+    writeFileSync(
+      mdPath,
+      `TÍTULO
+
+Título de D1
+
+SUBTÍTULO
+
+Título D2 | Título D3
+
+---
+
+---
+intentional_error:
+  description: "Numero 10.000 quando real é 5.000"
+  location: "DESTAQUE 2"
+  category: "numerico"
+  correct_value: "5.000"
+---
+
+Body principal.`,
+    );
+    const r = checkIntentionalError(mdPath);
+    assert.equal(r.ok, true, `Expected ok=true, got: ${r.label}`);
+    assert.equal(r.parsed?.category, "numerico");
+    assert.equal(r.parsed?.correct_value, "5.000");
+    rmSync(dir, { recursive: true });
+  });
 });
 
 describe("lintIntroCount (#743)", () => {

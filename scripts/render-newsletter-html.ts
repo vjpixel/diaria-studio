@@ -169,22 +169,35 @@ export function truncateAtSectionTerminator(text: string): string {
   return text.slice(0, minIdx).trim();
 }
 
+// #1363: regex única reutilizada em match + replace. Aceita:
+// - `**SECTION**` ou `SECTION` (com/sem markdown bold)
+// - prefix opcional emoji + whitespace (ex: `**🚀 LANÇAMENTOS**`) inserido pelo
+//   `singularize-md-sections.ts` per #1324/#1328
+// - singular (LANÇAMENTO, NOTÍCIA, PESQUISA) ou plural (idem + S)
+// - C ou Ç em LANÇAMENTO (compat com OS sem cedilha)
+//
+// Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
+// seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
+// NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
+const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?)(?:\*\*)?$/m;
+
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
   const sections: Section[] = [];
 
   for (const block of blocks) {
-    // #1077 — aceitar tanto `SECTION` quanto `**SECTION**` (writer agent sempre
-    // gera com markdown bold; regex antiga só pegava sem formatação).
-    const sectionMatch = block.match(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m);
+    const sectionMatch = block.match(SECTION_HEADER_RE);
     if (!sectionMatch) continue;
 
-    const name = sectionMatch[1];
+    // #1363: normalizar pra plural pro switch em sectionEmojiPrefix
+    // (mapping aceita só plural). LANÇAMENTO → LANÇAMENTOS etc.
+    const rawName = sectionMatch[1];
+    const name = rawName.endsWith("S") ? rawName : rawName + "S";
     const emoji = sectionEmojiPrefix(name).trim() || "📰";
     // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
     // consumir esses blocos como items quando writer omitir `---`.
     const afterHeader = truncateAtSectionTerminator(
-      block.replace(/^(?:\*\*)?(PESQUISAS|LANÇAMENTOS|OUTRAS NOTÍCIAS)(?:\*\*)?$/m, "").trim(),
+      block.replace(SECTION_HEADER_RE, "").trim(),
     );
     const items = parseListItems(afterHeader);
     if (items.length > 0) {
@@ -523,12 +536,34 @@ export function unescapeMd(s: string): string {
 }
 
 /**
+ * #1364: converte `*text*` (italic markdown) em `<em>text</em>` inline,
+ * preservando `**text**` (bold) intacto.
+ *
+ * Writer agent + crédito do É IA? usam `*Canis aureus*` pra nome científico.
+ * Antes do #1364 o renderer mantinha os asteriscos literais → o email saía
+ * com "(*Canis aureus*)" em texto puro, sem itálico.
+ *
+ * Regex: `*` solo (não-precedido nem seguido de `*`), conteúdo sem `*` nem
+ * newline. `font-style:italic` inline garante renderização email-safe.
+ *
+ * Pure helper — exportado pra teste.
+ */
+export function processInlineItalics(s: string): string {
+  return s.replace(
+    /(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g,
+    '<em style="font-style:italic;">$1</em>',
+  );
+}
+
+/**
  * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
- * + `esc` (HTML entities). Usar em conteúdo editorial; NÃO usar em URLs
- * (backslash em URL é literal, raro mas legítimo).
+ * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`).
+ * Ordem: unescape → esc → italics. Italics roda por último pra que as tags
+ * `<em>` não sejam HTML-escapadas. Usar em conteúdo editorial; NÃO usar em
+ * URLs (backslash em URL é literal, raro mas legítimo).
  */
 function escText(s: string): string {
-  return esc(unescapeMd(s));
+  return processInlineItalics(esc(unescapeMd(s)));
 }
 
 /**

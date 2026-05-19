@@ -14,6 +14,7 @@ import {
   extractCoverageLine,
   renderCoverage,
   unescapeMd,
+  processInlineItalics,
   truncateAtSectionTerminator,
   joinMultilineLinks,
   singularizeSectionName,
@@ -215,6 +216,51 @@ describe("parseSections (#172)", () => {
     assert.equal(sections[0].items[0].description, "Descrição do lançamento.");
     assert.equal(sections[1].name, "PESQUISAS");
     assert.equal(sections[2].name, "OUTRAS NOTÍCIAS");
+  });
+
+  // #1363: parseSections deveria aceitar headers com emoji prefix e singular
+  it("parseSections aceita **🚀 LANÇAMENTO** (emoji + singular) — #1363", () => {
+    const md = [
+      "**🚀 LANÇAMENTO**",
+      "Item único",
+      "https://x.com/y",
+      "Descrição.",
+      "",
+      "---",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "Notícia 1",
+      "https://news.com/1",
+      "Resumo 1.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 2, JSON.stringify(sections));
+    assert.equal(sections[0].name, "LANÇAMENTOS"); // normalized to plural
+    assert.equal(sections[0].items.length, 1);
+    assert.equal(sections[0].items[0].title, "Item único");
+    assert.equal(sections[1].name, "OUTRAS NOTÍCIAS");
+  });
+
+  it("parseSections aceita variantes: **LANÇAMENTO**, NOTÍCIA, PESQUISA singular — #1363", () => {
+    const md = [
+      "**LANÇAMENTO**",
+      "Lan único",
+      "https://x.com/y",
+      "Desc.",
+      "",
+      "---",
+      "",
+      "PESQUISA",
+      "Pesq única",
+      "https://arxiv.org/abs/1",
+      "Resumo.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 2, JSON.stringify(sections));
+    assert.equal(sections[0].name, "LANÇAMENTOS");
+    assert.equal(sections[1].name, "PESQUISAS");
   });
 });
 
@@ -1230,5 +1276,50 @@ describe("renderHTML — singular nas seções quando N=1 (#1070)", () => {
     ]));
     assert.match(html, />📰 OUTRA NOTÍCIA</u);
     assert.doesNotMatch(html, />📰 OUTRAS NOTÍCIAS</u);
+  });
+});
+
+describe("processInlineItalics (#1364)", () => {
+  it("converte *texto* em <em>", () => {
+    assert.equal(
+      processInlineItalics("Chacal-dourado (*Canis aureus*) em flores"),
+      'Chacal-dourado (<em style="font-style:italic;">Canis aureus</em>) em flores',
+    );
+  });
+
+  it("converte múltiplos *italics* na mesma linha", () => {
+    assert.equal(
+      processInlineItalics("foo *italic1* bar *italic2* baz"),
+      'foo <em style="font-style:italic;">italic1</em> bar <em style="font-style:italic;">italic2</em> baz',
+    );
+  });
+
+  it("não toca **bold** (asterisco duplo)", () => {
+    assert.equal(
+      processInlineItalics("**bold** stays as-is"),
+      "**bold** stays as-is",
+    );
+  });
+
+  it("não toca *** misto", () => {
+    // ***x*** é bold+italic em CommonMark — não tratamos aqui (raro em pt-BR editorial)
+    assert.equal(
+      processInlineItalics("***triple*** middle"),
+      "***triple*** middle",
+    );
+  });
+
+  it("preserva texto sem italics", () => {
+    assert.equal(
+      processInlineItalics("Texto puro sem asteriscos"),
+      "Texto puro sem asteriscos",
+    );
+  });
+
+  it("não cruza newlines (italic em parágrafo único só)", () => {
+    assert.equal(
+      processInlineItalics("foo *open\nclose* bar"),
+      "foo *open\nclose* bar",
+    );
   });
 });

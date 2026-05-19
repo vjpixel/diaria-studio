@@ -696,6 +696,43 @@ const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
   "correct_value",
 ] as const;
 
+/**
+ * #1378: extrai conteúdo de bloco frontmatter YAML, aceitando posição
+ * line-1 (canonical) ou inside first ~30 lines (caso editor adicione
+ * manual após insert-titulo-subtitulo já ter colocado TÍTULO no topo).
+ *
+ * Retorna o body do frontmatter (entre os `---`) ou null se não houver.
+ *
+ * Pure helper — exportado pra teste.
+ *
+ * Implementação: itera todos os pares de `---` no topo do MD e retorna o
+ * primeiro que tenha conteúdo não-vazio (line com `key:` ou similar).
+ * Evita falso positivo com `---` separadores (ex: o `---` que fecha o
+ * bloco TÍTULO/SUBTÍTULO).
+ */
+export function extractFrontmatter(md: string, scanLines = 30): string | null {
+  // Tentar canonical primeiro (line 1) — fast path para o caso normal
+  const canonical = md.match(/^---\n([\s\S]*?)\n---/);
+  if (canonical && canonical[1].trim().length > 0) return canonical[1];
+
+  // Fallback (#1378): iterar pares de `---` dentro das primeiras N linhas
+  // e retornar o primeiro com body não-vazio (qualquer linha com texto).
+  const lines = md.split("\n");
+  const fenceIndices: number[] = [];
+  const scanLimit = Math.min(lines.length, scanLines + 10);
+  for (let i = 0; i < scanLimit; i++) {
+    if (lines[i].trim() === "---") fenceIndices.push(i);
+  }
+  for (let k = 0; k < fenceIndices.length - 1; k++) {
+    const open = fenceIndices[k];
+    const close = fenceIndices[k + 1];
+    if (open >= scanLines) break;
+    const body = lines.slice(open + 1, close).join("\n");
+    if (body.trim().length > 0) return body;
+  }
+  return null;
+}
+
 export function checkIntentionalError(
   mdPath: string,
 ): IntentionalErrorCheckResult {
@@ -707,8 +744,12 @@ export function checkIntentionalError(
   }
   const md = readFileSync(mdPath, "utf8");
 
-  // Extract frontmatter block
-  const fmMatch = md.match(/^---\n([\s\S]*?)\n---/);
+  // #1378: aceitar frontmatter em linha 1 OU dentro das primeiras 30 linhas.
+  // Razão: insert-titulo-subtitulo.ts roda em Stage 2 e coloca bloco TÍTULO no
+  // topo. Editor adiciona intentional_error via Drive em Stage 4 — sem reordenar
+  // o MD, frontmatter cai DEPOIS do TÍTULO. Antes do #1378 isso quebrava o lint
+  // silenciosamente; agora aceitamos qualquer posição razoável no topo.
+  const fmMatch = extractFrontmatter(md);
   if (!fmMatch) {
     return {
       ok: false,
@@ -717,7 +758,7 @@ export function checkIntentionalError(
     };
   }
 
-  const fmBody = fmMatch[1];
+  const fmBody = fmMatch;
   if (!/intentional_error\s*:/i.test(fmBody)) {
     return {
       ok: false,
