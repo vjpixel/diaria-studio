@@ -201,6 +201,25 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
 Issues detectadas no email recebem prefixo `email:`. Issues vindas de `unfixed_issues` (passo 0) recebem `publish:`. Erros intencionais confirmados recebem `info:`. Visual formatting checks (#753) usam `email:formatting:` (blocker) ou `info:formatting:` (não-blocker). Lint determinístico via CLI também usa esses prefixos. Isso permite o fix loop priorizar ou filtrar por origem quando necessario.
 
+### 3f. Checks específicos do post-mortem 260519 (#1371)
+
+Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas reais que escaparam da checklist. Adicionados como verificações explícitas:
+
+**18. Italic markdown literal no body (não convertido).** Em adição ao check item 11 (CSS italic em EIA crédito), checar especificamente se há padrão `*texto*` literal em texto editorial (excluindo URLs e código). Procurar regex `(?<!\*)\*(?!\*)[^*\n]{2,}\*(?!\*)` no plain-text do email. Se encontrar (ex: `(*Canis aureus*)` literal no crédito do É IA?):
+   `"email:italic_literal: '*{texto}*' literal sem conversão pra <em> — esperado itálico, ver #1364"`
+
+**19. Bloco leaderboard ausente se esperado.** Ler `{edition_dir}/_internal/04-leaderboard-top1.json`. Se `top1.length > 0` OU `podium.length > 0`, validar que a string "Liderança" (com ç) aparece no body do email. Se ausente:
+   `"email:leaderboard_missing: 04-leaderboard-top1.json tem top1[]/podium[] populados mas 'Liderança' não aparece no email — renderer pode ter falhado"`
+
+   Se top1/podium vazios (Worker offline ou mês sem votos), pular este check.
+
+**20. Intro count match com marker editor_blocks.** Ler `{edition_dir}/_internal/.marker-inject-inbox-urls.json`. Extrair `editor_blocks` (count). No email, extrair o número N em "enviei N submissões". Se diverge:
+   `"email:intro_count_mismatch: intro diz 'enviei {N} submissões' mas marker reporta editor_blocks={M}"`
+
+   Se marker ausente (edição pré-#1368), pular este check.
+
+**Resultado:** estes 3 checks fecham o gap do attempt 2 em 260519, onde italic+leaderboard+intro count escaparam e o editor pediu re-paste. Prefixo `email:` (blocker) — força fix loop.
+
 ### 3c. Link tracking via HEAD (#1248)
 
 **Procedimento (passo 17):**

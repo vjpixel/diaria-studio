@@ -433,6 +433,11 @@ async function main(): Promise<void> {
         total_editor_urls: injectedFromEditor.length,
         total_newsletter_urls: injectedFromNewsletters.length,
         total_pool_size: merged.length,
+        // #1368: contagem de emails distintos do editor (1 por thread/forward).
+        // sync-coverage-line lê isso pra X em "enviei X submissões". Antes lia
+        // de data/inbox.md, mas Stage 1 §1y arquivava inbox.md → contagem zerava.
+        editor_blocks: editorBlocks.length,
+        newsletter_blocks: newsletterBlocks.length,
       });
     }
   } catch (e) {
