@@ -10,6 +10,9 @@ import {
   mimeTypeFor,
   sourceImageFor,
   imageSpecsFor,
+  md5OfFile,
+  shouldReuseCachedUpload,
+  type PublicImage,
 } from "../scripts/upload-images-public.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -218,5 +221,119 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("md5OfFile (#1418)", () => {
+  it("calcula md5 hex consistente pros mesmos bytes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md5-test-"));
+    const path = join(dir, "a.bin");
+    writeFileSync(path, "hello world");
+    // md5("hello world") = 5eb63bbbe01eeed093cb22bb8f5acdc3
+    assert.equal(md5OfFile(path), "5eb63bbbe01eeed093cb22bb8f5acdc3");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("md5 diferente quando bytes mudam", () => {
+    const dir = mkdtempSync(join(tmpdir(), "md5-test-"));
+    const path = join(dir, "a.bin");
+    writeFileSync(path, "v1");
+    const m1 = md5OfFile(path);
+    writeFileSync(path, "v2");
+    const m2 = md5OfFile(path);
+    assert.notEqual(m1, m2);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("shouldReuseCachedUpload (#1418)", () => {
+  function makeImageFile(bytes: string): { path: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "reuse-test-"));
+    const path = join(dir, "img.jpg");
+    writeFileSync(path, bytes);
+    return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("reuse OK quando md5 do cache bate com bytes locais", () => {
+    const { path, cleanup } = makeImageFile("hello");
+    const cached: PublicImage = {
+      file_id: "k1",
+      url: "u",
+      mime_type: "image/jpeg",
+      filename: "img.jpg",
+      target: "cloudflare",
+      md5: md5OfFile(path),
+    };
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), true);
+    cleanup();
+  });
+
+  it("#1418: re-upload quando bytes locais mudaram (md5 não bate)", () => {
+    const { path, cleanup } = makeImageFile("v1");
+    const oldMd5 = md5OfFile(path);
+    const cached: PublicImage = {
+      file_id: "k1",
+      url: "u",
+      mime_type: "image/jpeg",
+      filename: "img.jpg",
+      target: "cloudflare",
+      md5: oldMd5,
+    };
+    // Sobrescreve bytes locais (caso real: eia-compose --force regerou imagem)
+    writeFileSync(path, "v2");
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
+    cleanup();
+  });
+
+  it("re-upload quando entry pre-#1418 (cache sem md5 field) — força refresh", () => {
+    const { path, cleanup } = makeImageFile("any");
+    const cached: PublicImage = {
+      file_id: "k1",
+      url: "u",
+      mime_type: "image/jpeg",
+      filename: "img.jpg",
+      target: "cloudflare",
+      // md5 ausente
+    };
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
+    cleanup();
+  });
+
+  it("re-upload quando target mudou (drive ↔ cloudflare)", () => {
+    const { path, cleanup } = makeImageFile("any");
+    const cached: PublicImage = {
+      file_id: "k1",
+      url: "u",
+      mime_type: "image/jpeg",
+      filename: "img.jpg",
+      target: "drive",
+      md5: md5OfFile(path),
+    };
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
+    cleanup();
+  });
+
+  it("re-upload quando cache não tem file_id (upload anterior falhou)", () => {
+    const { path, cleanup } = makeImageFile("any");
+    const cached = undefined;
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
+    cleanup();
+  });
+
+  it("default target=drive quando cached.target ausente (entries muito antigas)", () => {
+    const { path, cleanup } = makeImageFile("any");
+    const cached: PublicImage = {
+      file_id: "k1",
+      url: "u",
+      mime_type: "image/jpeg",
+      filename: "img.jpg",
+      md5: md5OfFile(path),
+      // target ausente
+    };
+    // target solicitado = drive → matches default
+    assert.equal(shouldReuseCachedUpload(cached, path, "drive"), true);
+    // target solicitado = cloudflare → não bate
+    assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
+    cleanup();
   });
 });

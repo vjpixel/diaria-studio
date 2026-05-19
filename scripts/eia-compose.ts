@@ -315,12 +315,23 @@ async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaIm
   return data.image ?? null;
 }
 
-function readUsedTitles(): Set<string> {
+export function readUsedTitles(
+  excludeEdition?: string,
+  candidatePaths?: string[],
+): Set<string> {
   // #257 migration: ler new path primeiro, fallback p/ legacy `eai-used.json`
   // se o novo arquivo não existir. Garante dedup contínuo até que o editor
   // delete o arquivo antigo (ou rode `sync-eai-used.ts`).
+  //
+  // #1417: `excludeEdition` filtra entries da própria edição em re-runs
+  // (--force). Caso 260520: 4 re-runs consecutivos acumulavam 4 entries
+  // da edição, e cada re-run via os anteriores como "already_used", forçando
+  // POTDs muito antigos. Excluir entries da própria edição faz re-run
+  // idempotente — escolhe a mesma POTD que escolheria no primeiro run.
+  //
+  // `candidatePaths` é override pra testes; produção usa o default ROOT-relative.
   const dir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
+  const candidates = candidatePaths ?? [
     resolve(dir, "../data/eia-used.json"),
     resolve(dir, "../data/eai-used.json"),
   ];
@@ -328,7 +339,10 @@ function readUsedTitles(): Set<string> {
     if (!existsSync(path)) continue;
     try {
       const arr = JSON.parse(readFileSync(path, "utf8")) as UsedEntry[];
-      return new Set(arr.map((e) => e.title.toLowerCase()));
+      const filtered = excludeEdition
+        ? arr.filter((e) => e.edition_date !== excludeEdition)
+        : arr;
+      return new Set(filtered.map((e) => e.title.toLowerCase()));
     } catch {
       continue;
     }
@@ -885,7 +899,10 @@ async function main(): Promise<void> {
   }
 
   // 1. Fetch POTD com eligibility
-  const usedTitles = readUsedTitles();
+  // #1417: passa edition pra excluir entries da própria edição em re-runs.
+  // Re-rodar eia-compose --force pra mesma edição não pode se auto-conflitar
+  // marcando POTDs como already_used que foram só rejeitadas/regeneradas.
+  const usedTitles = readUsedTitles(edition);
   const startIso = editionToIso(edition);
   const { image, imageDate, rejections } = await findEligiblePotd(
     startIso,

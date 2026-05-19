@@ -32,6 +32,7 @@ loadProjectEnv(); // #1157 — carrega .env.local + .env antes de process.env ac
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 
@@ -46,6 +47,10 @@ export interface PublicImage {
   filename: string;
   /** Target onde a imagem está hospedada. Default drive (compat com edições antigas). #1119 */
   target?: "drive" | "cloudflare";
+  /** #1418: md5 dos bytes locais no momento do upload — pra detectar drift
+   * em re-runs (imagem regerada local com bytes novos mas cache aponta pro
+   * upload antigo). Ausente em entries pre-#1418 → assume drift e re-uploadar. */
+  md5?: string;
 }
 
 /** Target de hospedagem das imagens. #1119 */
@@ -244,6 +249,31 @@ function loadCache(cachePath: string): Record<string, PublicImage> {
   }
 }
 
+/** #1418: md5 hex de um arquivo, pra detectar drift entre local e cache. */
+export function md5OfFile(path: string): string {
+  const bytes = readFileSync(path);
+  return createHash("md5").update(bytes).digest("hex");
+}
+
+/**
+ * #1418: decide se um cached entry pode ser reused pra um source path local.
+ * Reuse OK quando:
+ *   1. cache tem file_id válido (upload anterior teve sucesso), E
+ *   2. target bate (não mudou drive ↔ cloudflare), E
+ *   3. md5 do cache bate com md5 atual do arquivo local
+ *      (ausência de md5 no cache = entry pre-#1418 → assume drift, re-upload).
+ */
+export function shouldReuseCachedUpload(
+  cached: PublicImage | undefined,
+  imagePath: string,
+  target: UploadTarget,
+): boolean {
+  if (!cached?.file_id) return false;
+  if ((cached.target ?? "drive") !== target) return false;
+  if (!cached.md5) return false;
+  return cached.md5 === md5OfFile(imagePath);
+}
+
 export interface UploadOptions {
   editionDir: string;
   /** Lista explícita de chaves a upload. Sobrescreve `mode` se ambos passados. */
@@ -253,6 +283,8 @@ export interface UploadOptions {
   skipExisting?: boolean;
   /** Target de hospedagem (#1119). Default deriva do mode via `defaultTargetFor`. */
   target?: UploadTarget;
+  /** #1418: ignora cache md5/target e força re-upload. Útil pra recovery. */
+  forceReupload?: boolean;
 }
 
 /**
@@ -270,6 +302,7 @@ export async function uploadPublicImages(
 ): Promise<PublicImagesOutput> {
   const { editionDir } = opts;
   const skipExisting = opts.skipExisting ?? true;
+  const forceReupload = opts.forceReupload ?? false;
   const mode = opts.mode ?? "social";
   const target = opts.target ?? defaultTargetFor(mode);
 
@@ -300,17 +333,18 @@ export async function uploadPublicImages(
   }
 
   for (const spec of specs) {
-    // Cache hit: respeitar quando o entry bate com o target solicitado.
-    // Se mudou de drive↔cloudflare, re-uploadar.
-    const cached = cache[spec.key];
-    if (skipExisting && cached?.file_id && (cached.target ?? "drive") === target) {
-      continue;
-    }
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
+    // #1418: cache hit + md5 match → reuse. md5 ausente (entries pre-#1418)
+    // OU mudou drive↔cloudflare OU bytes locais diferem → re-uploadar.
+    const cached = cache[spec.key];
+    if (skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, target)) {
+      continue;
+    }
     const mime = mimeTypeFor(spec.filename);
+    const localMd5 = md5OfFile(imagePath);
 
     if (target === "cloudflare") {
       const key = cloudflareKvKey(editionDir, spec.filename);
@@ -321,6 +355,7 @@ export async function uploadPublicImages(
         mime_type: mime,
         filename: spec.filename,
         target: "cloudflare",
+        md5: localMd5,
       };
     } else {
       const content = readFileSync(imagePath);
@@ -333,6 +368,7 @@ export async function uploadPublicImages(
         mime_type: mime,
         filename: spec.filename,
         target: "drive",
+        md5: localMd5,
       };
     }
   }
@@ -377,7 +413,8 @@ export function assertCacheCompleteness(
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   // Flags booleanas (sem valor após). #1275: --no-require-keys opt-out de validação.
-  const BOOL_FLAGS = new Set(["--no-cache", "--no-require-keys"]);
+  // #1418: --force-reupload ignora cache md5/target e força upload de novo.
+  const BOOL_FLAGS = new Set(["--no-cache", "--no-require-keys", "--force-reupload"]);
   for (let i = 0; i < argv.length; i++) {
     if (BOOL_FLAGS.has(argv[i])) {
       out[argv[i].slice(2)] = true;
@@ -395,14 +432,16 @@ async function main(): Promise<void> {
   const editionDirArg = args["edition-dir"];
   if (typeof editionDirArg !== "string") {
     console.error(
-      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache]\n" +
+      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache] [--force-reupload]\n" +
         "\n" +
-        "Default target: 'cloudflare' pra mode=newsletter|all (#1119), 'drive' pra mode=social.",
+        "Default target: 'cloudflare' pra mode=newsletter|all (#1119), 'drive' pra mode=social.\n" +
+        "--force-reupload: ignora cache md5/target e força re-upload (recovery após bytes locais mudarem).",
     );
     process.exit(1);
   }
   const editionDir = resolve(ROOT, editionDirArg);
   const skipExisting = !args["no-cache"];
+  const forceReupload = args["force-reupload"] === true;
   const modeArg = args.mode;
   const mode: UploadMode =
     modeArg === "newsletter" || modeArg === "all" || modeArg === "social"
@@ -413,7 +452,7 @@ async function main(): Promise<void> {
   const target: UploadTarget | undefined =
     targetArg === "drive" || targetArg === "cloudflare" ? targetArg : undefined;
 
-  const result = await uploadPublicImages({ editionDir, mode, skipExisting, target });
+  const result = await uploadPublicImages({ editionDir, mode, skipExisting, target, forceReupload });
   console.log(JSON.stringify(result, null, 2));
 
   // #1275: validate cache completeness por default. Opt-out via --no-require-keys
