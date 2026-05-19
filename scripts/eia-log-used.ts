@@ -66,7 +66,15 @@ const entry: UsedEntry = {
   used_at: new Date().toISOString(),
 };
 
-log.push(entry);
-fs.writeFileSync(LOG_PATH, JSON.stringify(log, null, 2) + '\n');
+// #1417: re-runs (--force) da mesma edição acumulavam N entries; remove
+// prior entries da mesma edição antes de append. Mantém só o último — que
+// é o que vai pro deploy. eia-compose.ts::readUsedTitles também filtra
+// entries da própria edição no read-path, então essa cleanup é cosmético
+// (mantém o arquivo enxuto) mais do que correção funcional.
+const prior = log.length;
+const cleaned = log.filter((e) => e.edition_date !== edition);
+const dropped = prior - cleaned.length;
+cleaned.push(entry);
+fs.writeFileSync(LOG_PATH, JSON.stringify(cleaned, null, 2) + '\n');
 
-console.log(JSON.stringify({ logged: entry, total_entries: log.length }));
+console.log(JSON.stringify({ logged: entry, total_entries: cleaned.length, dropped_prior_same_edition: dropped }));

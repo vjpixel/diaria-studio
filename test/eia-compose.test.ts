@@ -18,6 +18,7 @@ import {
   buildCreditLine,
   pickSubjectWikipediaLink,
   tokenizeImageTitle,
+  readUsedTitles,
 } from "../scripts/eia-compose.ts";
 
 interface MockImage {
@@ -1073,5 +1074,73 @@ describe("firstSentence (#299)", () => {
   it("aceita ! e ? como terminadores", () => {
     assert.equal(firstSentence("Wow! Really?"), "Wow!");
     assert.equal(firstSentence("Sure? Yes."), "Sure?");
+  });
+});
+
+describe("readUsedTitles excludeEdition (#1417)", () => {
+  function makeFixture(entries: unknown): { path: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-eia-used-"));
+    const path = join(dir, "eia-used.json");
+    writeFileSync(path, JSON.stringify(entries), "utf8");
+    return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("retorna titles de todas as edições quando excludeEdition é undefined", () => {
+    const { path, cleanup } = makeFixture([
+      { edition_date: "260518", title: "File:A.jpg", image_date: "2026-05-17", url: "u" },
+      { edition_date: "260519", title: "File:B.jpg", image_date: "2026-05-18", url: "u" },
+    ]);
+    const titles = readUsedTitles(undefined, [path]);
+    assert.equal(titles.size, 2);
+    assert.ok(titles.has("file:a.jpg"));
+    assert.ok(titles.has("file:b.jpg"));
+    cleanup();
+  });
+
+  it("#1417: filtra entries da própria edição em re-runs (caso 260520)", () => {
+    const { path, cleanup } = makeFixture([
+      { edition_date: "260518", title: "File:Other.jpg", image_date: "2026-05-17", url: "u" },
+      { edition_date: "260520", title: "File:Rapanui.jpg", image_date: "2026-04-24", url: "u" },
+      { edition_date: "260520", title: "File:Pigs.jpg", image_date: "2026-04-25", url: "u" },
+      { edition_date: "260520", title: "File:Colli.jpg", image_date: "2026-04-26", url: "u" },
+      { edition_date: "260520", title: "File:Tiger.jpg", image_date: "2026-05-20", url: "u" },
+    ]);
+    const titles = readUsedTitles("260520", [path]);
+    // Só File:Other.jpg deve estar — os 4 entries de 260520 são filtrados.
+    assert.equal(titles.size, 1);
+    assert.ok(titles.has("file:other.jpg"));
+    assert.ok(!titles.has("file:rapanui.jpg"));
+    assert.ok(!titles.has("file:tiger.jpg"));
+    cleanup();
+  });
+
+  it("retorna Set vazio quando nenhum candidate path existe", () => {
+    const titles = readUsedTitles("260520", ["/nonexistent/path.json"]);
+    assert.equal(titles.size, 0);
+  });
+
+  it("normaliza titles pra lowercase (case-insensitive dedup)", () => {
+    const { path, cleanup } = makeFixture([
+      { edition_date: "260518", title: "File:CamelCase.JPG", image_date: "2026-05-17", url: "u" },
+    ]);
+    const titles = readUsedTitles(undefined, [path]);
+    assert.ok(titles.has("file:camelcase.jpg"));
+    assert.ok(!titles.has("File:CamelCase.JPG"));
+    cleanup();
+  });
+
+  it("graceful skip quando JSON é inválido (cai no próximo candidate)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-eia-corrupt-"));
+    const corruptPath = join(dir, "corrupt.json");
+    writeFileSync(corruptPath, "not-json", "utf8");
+    const validPath = join(dir, "valid.json");
+    writeFileSync(
+      validPath,
+      JSON.stringify([{ edition_date: "260518", title: "File:Valid.jpg", image_date: "x", url: "u" }]),
+      "utf8",
+    );
+    const titles = readUsedTitles(undefined, [corruptPath, validPath]);
+    assert.ok(titles.has("file:valid.jpg"));
+    rmSync(dir, { recursive: true, force: true });
   });
 });
