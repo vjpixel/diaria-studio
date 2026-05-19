@@ -287,41 +287,55 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args;
 }
 
-const args = parseArgs(process.argv.slice(2));
+function main(): void {
+  const args = parseArgs(process.argv.slice(2));
 
-if (args.all) {
-  // Compare all editions
-  const editionsDir = resolve(ROOT, "data/editions");
-  const dirs = readdirSync(editionsDir)
-    .filter((d) => /^\d{6}$/.test(d))
-    .sort();
+  if (args.all) {
+    // Compare all editions
+    const editionsDir = resolve(ROOT, "data/editions");
+    const dirs = readdirSync(editionsDir)
+      .filter((d) => /^\d{6}$/.test(d))
+      .sort();
 
-  const results: { label: string; timings: StageTiming[] }[] = [];
-  for (const d of dirs) {
-    const editionDir = resolve(editionsDir, d);
-    const timings = printEditionReport(editionDir, d);
-    if (timings.length > 0) results.push({ label: d, timings });
-  }
+    const results: { label: string; timings: StageTiming[] }[] = [];
+    for (const d of dirs) {
+      const editionDir = resolve(editionsDir, d);
+      const timings = printEditionReport(editionDir, d);
+      if (timings.length > 0) results.push({ label: d, timings });
+    }
 
-  if (results.length > 1) {
-    printComparisonTable(results);
-  }
-} else {
-  // Single edition
-  let editionDir: string;
-  let label: string;
-
-  if (args["edition-dir"]) {
-    editionDir = resolve(ROOT, args["edition-dir"] as string);
-    label = basename(editionDir);
-  } else if (args.edition) {
-    editionDir = resolve(ROOT, "data/editions", args.edition as string);
-    label = args.edition as string;
+    if (results.length > 1) {
+      printComparisonTable(results);
+    }
   } else {
-    const latest = detectLatestEdition();
-    editionDir = resolve(ROOT, "data/editions", latest);
-    label = latest;
-  }
+    // Single edition
+    let editionDir: string;
+    let label: string;
 
-  printEditionReport(editionDir, label);
+    if (args["edition-dir"]) {
+      editionDir = resolve(ROOT, args["edition-dir"] as string);
+      label = basename(editionDir);
+    } else if (args.edition) {
+      editionDir = resolve(ROOT, "data/editions", args.edition as string);
+      label = args.edition as string;
+    } else {
+      const latest = detectLatestEdition();
+      editionDir = resolve(ROOT, "data/editions", latest);
+      label = latest;
+    }
+
+    printEditionReport(editionDir, label);
+  }
+}
+
+// #1405: guard top-level execution. Antes, import do módulo (ex: pelos
+// tests) rodava main() automaticamente — chamava detectLatestEdition que
+// process.exit(1) se data/editions/ não existe. CI Linux quebrava porque
+// não tem a junction local de OneDrive.
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
 }
