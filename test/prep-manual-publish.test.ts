@@ -1,30 +1,17 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
+import { checkNewsletterHtml } from "../scripts/prep-manual-publish.ts";
 
 /**
- * Tests pra prep-manual-publish.ts (#1047).
+ * Tests pra prep-manual-publish.ts (#1047, refatorado #1185).
  *
- * Cobre validações puras (não interage com Beehiiv API ou Worker — esses
- * são integration testados pelo inject-poll-urls.test.ts e fetch-poll-stats).
- *
- * Foco: checkNewsletterHtml() detecta HTML faltando, sem botões, sem merge tags.
+ * Após #1185, o design suportado é apenas inline URL com `{{email}}` +
+ * `{{poll_sig}}` (desde #1083). Legacy `{{poll_a_url}}`/`{{poll_b_url}}`
+ * não é mais aceito — paths antigos deletados junto com inject-poll-urls.ts.
  */
-
-// Re-implementa logic do checkNewsletterHtml em prep-manual-publish.ts.
-// Mantido isolado pra teste (evita import do main que tem side effects).
-function checkHtml(editionDir: string) {
-  const path = resolve(editionDir, "_internal", "newsletter-final.html");
-  if (!existsSync(path)) return { passed: false, reason: "missing" };
-  const html = readFileSync(path, "utf8");
-  const hasVotar = /Votar A/.test(html) && /Votar B/.test(html);
-  const hasMergeTag = /\{\{poll_[ab]_url\}\}/.test(html);
-  if (!hasVotar) return { passed: false, reason: "no_votar_buttons" };
-  if (!hasMergeTag) return { passed: false, reason: "no_merge_tags" };
-  return { passed: true, reason: "ok" };
-}
 
 let tmpDir: string;
 
@@ -36,41 +23,17 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe("checkNewsletterHtml validation", () => {
+describe("checkNewsletterHtml validation (#1185)", () => {
   it("detecta arquivo ausente", () => {
     const editionDir = join(tmpDir, "missing-edition");
     mkdirSync(editionDir, { recursive: true });
-    const result = checkHtml(editionDir);
+    const result = checkNewsletterHtml(editionDir);
     assert.equal(result.passed, false);
-    assert.equal(result.reason, "missing");
+    assert.match(result.detail, /não encontrado/);
   });
 
-  it("detecta HTML sem botões Votar", () => {
-    const editionDir = join(tmpDir, "no-votar");
-    mkdirSync(join(editionDir, "_internal"), { recursive: true });
-    writeFileSync(
-      resolve(editionDir, "_internal", "newsletter-final.html"),
-      `<html><body><p>{{poll_a_url}}</p></body></html>`,
-    );
-    const result = checkHtml(editionDir);
-    assert.equal(result.passed, false);
-    assert.equal(result.reason, "no_votar_buttons");
-  });
-
-  it("detecta HTML sem merge tags poll_*_url", () => {
-    const editionDir = join(tmpDir, "no-mergetag");
-    mkdirSync(join(editionDir, "_internal"), { recursive: true });
-    writeFileSync(
-      resolve(editionDir, "_internal", "newsletter-final.html"),
-      `<html><body><a>Votar A</a><a>Votar B</a></body></html>`,
-    );
-    const result = checkHtml(editionDir);
-    assert.equal(result.passed, false);
-    assert.equal(result.reason, "no_merge_tags");
-  });
-
-  it("aceita HTML com botões + merge tags", () => {
-    const editionDir = join(tmpDir, "ok");
+  it("rejeita HTML legacy com poll_a_url/poll_b_url (sem poll_sig)", () => {
+    const editionDir = join(tmpDir, "legacy");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(
       resolve(editionDir, "_internal", "newsletter-final.html"),
@@ -79,8 +42,45 @@ describe("checkNewsletterHtml validation", () => {
         <a href="{{poll_b_url}}">Votar B</a>
       </body></html>`,
     );
-    const result = checkHtml(editionDir);
+    const result = checkNewsletterHtml(editionDir);
+    assert.equal(result.passed, false);
+    assert.match(result.detail, /poll_sig/);
+  });
+
+  it("rejeita HTML sem nenhuma merge tag", () => {
+    const editionDir = join(tmpDir, "no-tags");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "_internal", "newsletter-final.html"),
+      `<html><body><a>Votar A</a><a>Votar B</a></body></html>`,
+    );
+    const result = checkNewsletterHtml(editionDir);
+    assert.equal(result.passed, false);
+  });
+
+  it("aceita HTML com inline URL ({{email}} + {{poll_sig}})", () => {
+    const editionDir = join(tmpDir, "ok");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "_internal", "newsletter-final.html"),
+      `<html><body>
+        <a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260519&choice=A&sig={{poll_sig}}">A</a>
+        <a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260519&choice=B&sig={{poll_sig}}">B</a>
+      </body></html>`,
+    );
+    const result = checkNewsletterHtml(editionDir);
     assert.equal(result.passed, true);
-    assert.equal(result.reason, "ok");
+    assert.match(result.detail, /poll_sig/);
+  });
+
+  it("rejeita HTML com só {{email}} (sem poll_sig)", () => {
+    const editionDir = join(tmpDir, "email-only");
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "_internal", "newsletter-final.html"),
+      `<html><body>Olá {{email}}</body></html>`,
+    );
+    const result = checkNewsletterHtml(editionDir);
+    assert.equal(result.passed, false);
   });
 });

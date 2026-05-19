@@ -5,8 +5,8 @@
  * field permanente `poll_sig` via Beehiiv API. Edition + choice vão no HTML
  * literalmente; Worker valida sig contra email.
  *
- * Substitui `inject-poll-urls.ts` (#1044) pro caso permanente — o legacy
- * permanece pra back-compat com edições já enviadas.
+ * Substitui `inject-poll-urls.ts` (#1044), que foi deletado em #1185 após
+ * os custom fields órfãos `poll_a_url`/`poll_b_url` virarem dead weight.
  *
  * Idempotente: lê valor atual e skipa se já bate com o calculado. Roda 1x por
  * subscriber (na primeira edição que ele recebe); patcha apenas novos
