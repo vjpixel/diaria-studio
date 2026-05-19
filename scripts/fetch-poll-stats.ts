@@ -21,6 +21,7 @@
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
 const MIN_RESPONSES = 5;
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
   } = {};
 
   try {
-    const res = await fetch(url);
+    const res = await dohFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json() as typeof data;
   } catch (err) {
