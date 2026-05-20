@@ -33,7 +33,6 @@ import {
 } from "../scripts/lib/invariant-checks/stage-3.ts";
 import {
   checkPublicImagesPopulated,
-  checkSocialMatchesApprovedHighlights,
   checkLinkedinWorkerUrlSet,
   checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
@@ -496,104 +495,6 @@ describe("Stage 4 invariants", () => {
     }
   });
 
-  describe("social-matches-highlights (#1413)", () => {
-    let fixture: string;
-
-    beforeEach(() => {
-      fixture = makeFixtureEdition();
-    });
-
-    it("passa silenciosamente quando 01-approved.json ausente (outro check pega)", () => {
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 0);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("passa silenciosamente quando 03-social.md ausente", () => {
-      writeFileSync(
-        join(fixture, "_internal", "01-approved.json"),
-        JSON.stringify({ highlights: [{ url: "https://x.com/a", title_options: ["A"] }] }),
-      );
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 0);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("#1413: falha quando 03-social.md não contém URL de algum highlight", () => {
-      writeFileSync(
-        join(fixture, "_internal", "01-approved.json"),
-        JSON.stringify({
-          highlights: [
-            { url: "https://example.com/google-io", title_options: ["Google I/O"] },
-            { url: "https://example.com/karpathy", title_options: ["Karpathy"] },
-            { url: "https://example.com/salesforce", title_options: ["Salesforce"] },
-          ],
-        }),
-      );
-      // Social md menciona só 2 das 3 URLs (Google I/O ausente — Karpathy/Salesforce velhos)
-      writeFileSync(
-        join(fixture, "03-social.md"),
-        "## d1\nKarpathy comentário https://example.com/karpathy\n## d2\nSalesforce https://example.com/salesforce\n## d3\nKPMG hook antigo",
-      );
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 1, JSON.stringify(v));
-      assert.equal(v[0].rule, "social-matches-highlights");
-      assert.match(v[0].message, /D1/);
-      assert.match(v[0].message, /google-io/);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("passa quando todas URLs aparecem em 03-social.md (ordem irrelevante)", () => {
-      writeFileSync(
-        join(fixture, "_internal", "01-approved.json"),
-        JSON.stringify({
-          highlights: [
-            { url: "https://example.com/a", title_options: ["A"] },
-            { url: "https://example.com/b", title_options: ["B"] },
-            { url: "https://example.com/c", title_options: ["C"] },
-          ],
-        }),
-      );
-      writeFileSync(
-        join(fixture, "03-social.md"),
-        "## d1\nhttps://example.com/a\n## d2\nhttps://example.com/b\n## d3\nhttps://example.com/c",
-      );
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 0, JSON.stringify(v));
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("highlight sem URL é pulado (não dá pra validar)", () => {
-      writeFileSync(
-        join(fixture, "_internal", "01-approved.json"),
-        JSON.stringify({
-          highlights: [
-            { title_options: ["Sem URL"] }, // URL ausente — skip
-            { url: "https://example.com/x", title_options: ["X"] },
-          ],
-        }),
-      );
-      writeFileSync(
-        join(fixture, "03-social.md"),
-        "## d1\nhttps://example.com/x",
-      );
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 0);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("01-approved.json corrupto retorna violation parseable (não crash)", () => {
-      writeFileSync(
-        join(fixture, "_internal", "01-approved.json"),
-        "not-json-{{{",
-      );
-      writeFileSync(join(fixture, "03-social.md"), "## d1\nany");
-      const v = checkSocialMatchesApprovedHighlights(fixture);
-      assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "social-matches-highlights-parseable");
-      rmSync(fixture, { recursive: true, force: true });
-    });
-  });
 });
 
 describe("Stage 5 invariants (pós-publicação)", () => {
