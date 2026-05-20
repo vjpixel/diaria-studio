@@ -240,13 +240,22 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
   2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (30s × 2^(N-1), até 10 tentativas de reconexão). Após reconexão, re-disparar `review-test-email` (não `publish-newsletter`).
   3. **Se retornar `status: "inconclusive"` (#1212 — fail-closed)**: logar warn `"review-test-email: inconclusive — email não chegou em 30s, review NÃO foi feito"` e **sair do loop**. **NÃO marcar `review_completed: true`** — gravar `review_status: "inconclusive"` em vez. Editor deve verificar visualmente no gate. Pre-#1212 o status era `email_not_found` que o orchestrator tratava como "review limpo" — falso negativo estrutural.
   4. Se `issues` estiver vazio E `status: "ok"`: **sair do loop** — email aprovado automaticamente.
-  5. Se `issues` não estiver vazio:
-     - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10"`.
+  4.5. **Filtrar falso-positivos (#1421)**: o `review-test-email` em Haiku tem viés conhecido (vê acentos em URL slugs ou entities HTML-encoded como corruption). Antes de disparar fix-mode, cross-check determinístico:
+     ```typescript
+     import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
+     const htmlLocal = readFileSync(`{edition_dir}/_internal/newsletter-final.html`, "utf8");
+     const { kept, dropped } = filterAgentIssues(issues, htmlLocal, edition_date);
+     for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
+     ```
+     Se `kept.length === 0` E `dropped.length > 0`: todos os issues eram FPs verificáveis. Logar info `"all {N} issues filtered as FPs, sair do loop com status=ok"` e **sair do loop**. Não disparar fix-mode.
+     Senão: passar `kept` (não `issues`) pra step 5 abaixo. Issues não-validáveis (unexpected_content, formatting) preservam — caller decide via fix-mode.
+  5. Se `kept` (issues pós-filtro) não estiver vazio:
+     - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10 (após filtro de FPs)"`.
      - Disparar `publish-newsletter` em **modo fix** passando:
        - `edition_dir`
        - `mode: "fix"`
        - `draft_url`
-       - `issues` (a lista do reviewer)
+       - `issues` = `kept` (lista pós-filtro do reviewer)
      - Se retornar `unfixable_issues[]` não vazio, logar warn e **sair do loop** — correção manual necessária.
      - Caso contrário, continuar para a próxima iteração (re-verificar o email reenviado).
 

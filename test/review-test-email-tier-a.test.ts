@@ -51,4 +51,30 @@ describe("review-test-email Tier A (#1212)", () => {
     assert.match(orchestrator, /review_status/,
       "orchestrator-stage-4.md deve introduzir review_status field em 05-published.json");
   });
+
+  it("#1434: orchestrator-stage-4 chama filterAgentIssues antes de fix-mode", () => {
+    // Sem wire, lib `scripts/lib/agent-issue-validator.ts` fica órfã e
+    // bugs do #1421 continuam runtime via fix-mode disparado pra
+    // "corrigir" falso-positivos. Esse test guarda contra revert silencioso.
+    assert.match(
+      orchestrator,
+      /filterAgentIssues/,
+      "orchestrator-stage-4.md deve mencionar filterAgentIssues pré-fix-mode (#1434)",
+    );
+    assert.match(
+      orchestrator,
+      /agent-issue-validator/,
+      "orchestrator-stage-4.md deve referenciar o path da lib pra contexto",
+    );
+  });
+
+  it("#1434: context/agents-known-issues.md existe e documenta o viés do review-test-email", () => {
+    const knownIssues = readFileSync(
+      resolve(ROOT, "context/agents-known-issues.md"),
+      "utf8",
+    );
+    assert.match(knownIssues, /review-test-email/i);
+    assert.match(knownIssues, /encoding/i);
+    assert.match(knownIssues, /#1421/);
+  });
 });
