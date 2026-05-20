@@ -33,9 +33,11 @@ import {
 } from "../scripts/lib/invariant-checks/stage-3.ts";
 import {
   checkPublicImagesPopulated,
+  checkSocialHashFresh,
   checkLinkedinWorkerUrlSet,
   checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { hashHighlights } from "../scripts/lib/social-source-hash.ts";
 import {
   checkStep4Sentinel,
   checkSocialPublishedComplete,
@@ -493,6 +495,98 @@ describe("Stage 4 invariants", () => {
     } finally {
       if (original !== undefined) process.env.FACEBOOK_PAGE_ID = original;
     }
+  });
+
+  describe("social-hash-fresh (#1413)", () => {
+    let fixture: string;
+
+    beforeEach(() => {
+      fixture = makeFixtureEdition();
+    });
+
+    function writeApproved(highlights: unknown[]): void {
+      writeFileSync(
+        join(fixture, "_internal", "01-approved.json"),
+        JSON.stringify({ highlights }),
+      );
+    }
+
+    function writeSocial(content = "## d1\nany\n"): void {
+      writeFileSync(join(fixture, "03-social.md"), content);
+    }
+
+    function writeHash(hash: string): void {
+      writeFileSync(
+        join(fixture, "_internal", ".social-source-hash.json"),
+        JSON.stringify({ hash, generated_at: new Date().toISOString() }),
+      );
+    }
+
+    it("passa silenciosamente quando approved.json ausente (outro check cobre)", () => {
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa silenciosamente quando 03-social.md ausente", () => {
+      writeApproved([{ url: "https://a", title_options: ["A"] }]);
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("warning quando hash file ausente (social.md gerado pre-#1413)", () => {
+      writeApproved([{ url: "https://a", title_options: ["A"] }]);
+      writeSocial();
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning");
+      assert.equal(v[0].rule, "social-hash-fresh");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa quando hash bate (social.md current)", () => {
+      const highlights = [{ url: "https://a", title_options: ["A"] }];
+      writeApproved(highlights);
+      writeSocial();
+      writeHash(hashHighlights(highlights));
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#1413: falha quando hash diverge (caso 260520: D1 trocou pós-Stage 2)", () => {
+      const oldHighlights = [
+        { url: "https://karpathy", title_options: ["Karpathy"] },
+        { url: "https://kpmg", title_options: ["KPMG"] },
+      ];
+      const newHighlights = [
+        { url: "https://google-io", title_options: ["Google I/O"] },
+        { url: "https://karpathy", title_options: ["Karpathy"] },
+      ];
+      writeHash(hashHighlights(oldHighlights)); // social.md foi gerado com old
+      writeApproved(newHighlights); // editor reestruturou
+      writeSocial();
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /Highlights mudaram/);
+      assert.match(v[0].message, /Re-dispatch/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("hash file corrupted → error parseable", () => {
+      writeApproved([{ url: "https://a", title_options: ["A"] }]);
+      writeSocial();
+      writeFileSync(
+        join(fixture, "_internal", ".social-source-hash.json"),
+        "not-json",
+      );
+      const v = checkSocialHashFresh(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "social-hash-fresh-parseable");
+      rmSync(fixture, { recursive: true, force: true });
+    });
   });
 
 });
