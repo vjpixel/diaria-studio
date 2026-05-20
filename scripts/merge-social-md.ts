@@ -29,7 +29,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { hashFromApprovedFile } from "./lib/social-source-hash.ts";
 
