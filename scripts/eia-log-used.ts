@@ -14,7 +14,10 @@
 import fs from 'fs';
 
 interface UsedEntry {
-  edition_date: string;   // YYMMDD of the edition the image was used in
+  // Format do edition_date varia historicamente: novas entries usam YYMMDD
+  // (`260520`); entries pre-#1417 podem ter ISO (`2026-05-20`). `readUsedTitles`
+  // em eia-compose.ts trata ambos comparando string igualdade.
+  edition_date: string;
   image_date: string;     // Date the POTD was published (YYYY-MM-DD)
   title: string;          // Wikimedia file title (e.g. "File:Example.jpg")
   credit: string;         // Full credit string

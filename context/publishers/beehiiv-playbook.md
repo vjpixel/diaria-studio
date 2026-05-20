@@ -197,9 +197,55 @@ Ler `context/publishers/beehiiv.md` (playbook semântico).
 
 - **Title** = `title` (do JSON extraído no passo 1)
 - **Subtitle** = `subtitle` (se houver campo)
-- **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800)
+- **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800) — ver §4b.
 
-**⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. Antes de avançar pra Audience/Email steps: (a) `Tab` away pra trigar blur+autosave, (b) chamar `mcp__claude_ai_Beehiiv__get_post` e confirmar `title === expected`, (c) se stale, re-focar o campo + retype + blur. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
+#### 4a. Setar Title/Subtitle (helper atômico #1423)
+
+**⚠️ NUNCA chamar `execCommand('insertText')` direto pra setar Title/Subtitle.** Em 260520 isso produziu title duplicado silenciosamente (race entre `select()` e `insertText()`). Use sempre o helper `buildSetFieldJs` que faz a sequência atômica `focus → select → delete → insertText → blur`:
+
+```typescript
+import { buildSetFieldJs, isFieldVerified } from "scripts/lib/beehiiv-set-field.ts";
+// Dispatch via javascript_tool:
+mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
+// Aguardar autosave (5-8s) + verify via API:
+sleep(8_000);
+const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
+if (!isFieldVerified(post.title, newTitle)) {
+  // Retry 1× — autosave latency #1198 pode pegar valor stale brevemente
+  mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
+}
+```
+
+**⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. O `isFieldVerified` cobre isso. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
+
+#### 4b. Upload da cover image via URL (#1416)
+
+Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do post editor. Caminho que funciona: UI nativa "Upload from URL" (descoberto em 260520).
+
+URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-public.ts --mode newsletter`):
+
+```
+https://poll.diaria.workers.dev/img/img-{AAMMDD}-04-d1-2x1.jpg
+```
+
+Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache. Dispatch + validate:
+
+```typescript
+import { buildCoverUploadJs, classifyUploadResult } from "scripts/lib/beehiiv-cover-upload.ts";
+const result = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverUploadJs(imageUrl) });
+const decision = classifyUploadResult(result);
+if (!decision.ok) {
+  // decision.reason inclui qual step falhou (steps trail)
+  // Fallback manual: editor faz upload via dashboard ANTES de avançar pra §5
+  halt(`Cover upload falhou: ${decision.reason}`);
+}
+// Validar via API que web_thumbnail_url está populado:
+sleep(3_000);
+const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
+if (!post.web_thumbnail_url) halt("Thumbnail set falhou — re-trigger ou upload manual");
+```
+
+Falha não bloqueia teste de email — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
 
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
@@ -417,6 +463,33 @@ Se o campo Subject não for encontrado após 2 tentativas, registrar em
 com o test email — editor pode editar manualmente.
 
 ### 7. Enviar email de teste
+
+**⚠️ Rate limit silencioso #1419**: Beehiiv tem rate limit em "Send test email" (~10 sends/hora). Sends posteriores são absorvidos sem erro visual nem API error — popover de sucesso aparece mas o email NÃO chega ao Gmail. Em 260520, sends 11-14 foram stale; loop verify→fix iterou sobre o 10º (mais antigo). Antes de cada click, consultar o counter:
+
+```typescript
+import { loadSendCount, recordSend, decideWarnLevel, shouldResetWindow, getCountFilePath } from "scripts/lib/beehiiv-send-count.ts";
+import { unlinkSync, existsSync } from "node:fs";
+
+// Reset natural se janela 1h passou desde último send (rate limit resetou)
+const state = loadSendCount(edition_dir);
+if (state && shouldResetWindow(state.last_sent_at)) {
+  const countPath = getCountFilePath(edition_dir);
+  if (existsSync(countPath)) unlinkSync(countPath);
+}
+
+// Decide warn/block antes do send
+const current = loadSendCount(edition_dir);
+const decision = decideWarnLevel(current?.count ?? 0);
+if (decision.level === "block") {
+  halt(`Block: ${decision.message}`);
+}
+if (decision.level === "warn") {
+  log_warn(decision.message);
+}
+
+// ... click Send test email ...
+recordSend(edition_dir, true);
+```
 
 - Abrir menu de testes → enviar para `test_email` → confirmar.
 - Capturar timestamp:
