@@ -156,9 +156,12 @@ Setup único no Cloud Console (não precisa repetir por máquina):
    - **Developer contact information**: `vjpixel@gmail.com`
 4. Salvar.
 5. **Publishing status**: pra uso interno (1 editor), manter em **Testing** mode
-   com `vjpixel@gmail.com` listado em **Test users** é suficiente — token vale
-   7 dias mas re-auth é trivial via `oauth-setup.ts`. Se precisar de tokens
-   long-lived (60 dias) ou compartilhar com co-editores, bater **Publish app**.
+   com `vjpixel@gmail.com` listado em **Test users** é suficiente — refresh
+   tokens em Testing valem 7 dias (re-auth trivial via `oauth-setup.ts`). Em
+   **Production** (Publish app), refresh tokens não têm TTL fixo; só são
+   revogados após 6 meses de inatividade ou em eventos específicos (user
+   revogou, mudou senha, >100 grants do mesmo client). Ver
+   https://developers.google.com/identity/protocols/oauth2#expiration.
 
 Validar:
 

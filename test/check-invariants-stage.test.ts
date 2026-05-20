@@ -629,6 +629,16 @@ describe("Stage 5 invariants (pós-publicação)", () => {
       assert.equal(v.length, 1);
       assert.match(v[0].message, /review_attempts=0/);
     });
+
+    it("reporta violation quando 05-published.json corrupted (audit nit)", () => {
+      writeFileSync(
+        join(fixture, "_internal", "05-published.json"),
+        "not-json-{{{",
+      );
+      const v = checkStage4ReviewLoop(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "stage-4-review-loop-parseable");
+    });
   });
 
   // #1367 — close-poll marker invariant
