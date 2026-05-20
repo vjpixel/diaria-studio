@@ -127,9 +127,19 @@ function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
   };
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    // checkSocialPublishedComplete já reportaria JSON corrupted; não dup.
-    return [];
+  } catch (e) {
+    // 05-published.json corrupted é raro mas precisa ser reportado — nenhum
+    // outro rule lê esse arquivo (checkSocialPublishedComplete lê
+    // 06-social-published.json, file diferente).
+    return [
+      {
+        rule: "stage-4-review-loop-parseable",
+        message: `05-published.json não parseável: ${(e as Error).message}`,
+        source_issue: "#1410",
+        severity: "error",
+        file: path,
+      },
+    ];
   }
   if (data.review_status !== "issues_unfixable") return [];
 

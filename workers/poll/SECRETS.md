@@ -1,5 +1,10 @@
 # workers/poll — Secrets manifest (#1415)
 
+> **Função guard (#1420)**: `requiredSecretsForRoute(path, method)` e
+> `missingSecretsForRoute(env, path, method)` em `workers/poll/src/index.ts`.
+> Method-aware pra preservar 404 fallback em método errado.
+
+
 Lista declarativa dos secrets que o Worker `poll` precisa em runtime. Usada
 como referência quando o Worker é re-deployado/re-criado (secrets **não**
 persistem em `wrangler deploy` após `delete + redeploy` — precisam ser
