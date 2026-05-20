@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { hashFromApprovedFile } from "../social-source-hash.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -84,6 +85,102 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
     }
   }
   return violations;
+}
+
+/**
+ * #1413 (second attempt — hash marker em vez de URL match revert em #1431):
+ * compara o hash dos highlights atuais (01-approved.json) contra o hash
+ * cached em `_internal/.social-source-hash.json` (escrito por
+ * merge-social-md.ts quando social.md foi gerado).
+ *
+ * Mismatch = highlights mudaram após social.md ser gerado — social ficou
+ * stale e precisa re-dispatch dos agents `social-linkedin` + `social-facebook`
+ * + re-run de merge-social-md.ts. Caso 260520: D1 trocou de Karpathy pra
+ * Google I/O pós-Stage 2; social manteve hook Karpathy → contradição
+ * cross-channel.
+ *
+ * Hash ausente = social.md gerado antes desse fix existir, ou merge-social-md
+ * não rodou. Warning, não error — pipeline continua mas editor deve verificar.
+ */
+function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const socialPath = resolve(editionDir, "03-social.md");
+  const hashPath = resolve(editionDir, "_internal", ".social-source-hash.json");
+
+  if (!existsSync(approvedPath) || !existsSync(socialPath)) return [];
+
+  if (!existsSync(hashPath)) {
+    return [
+      {
+        rule: "social-hash-fresh",
+        message:
+          `_internal/.social-source-hash.json ausente — social.md gerado antes do #1413 ` +
+          `OU merge-social-md.ts não rodou. Stale detection desabilitada pra essa edição.`,
+        source_issue: "#1413",
+        severity: "warning",
+        file: hashPath,
+      },
+    ];
+  }
+
+  let cachedHash: string;
+  try {
+    const data = JSON.parse(readFileSync(hashPath, "utf8")) as { hash?: string };
+    if (typeof data.hash !== "string") {
+      return [
+        {
+          rule: "social-hash-fresh-parseable",
+          message: `social-source-hash sem campo hash string`,
+          source_issue: "#1413",
+          severity: "error",
+          file: hashPath,
+        },
+      ];
+    }
+    cachedHash = data.hash;
+  } catch (e) {
+    return [
+      {
+        rule: "social-hash-fresh-parseable",
+        message: `social-source-hash não parseável: ${(e as Error).message}`,
+        source_issue: "#1413",
+        severity: "error",
+        file: hashPath,
+      },
+    ];
+  }
+
+  let currentHash: string;
+  try {
+    currentHash = hashFromApprovedFile(approvedPath);
+  } catch (e) {
+    return [
+      {
+        rule: "social-hash-fresh",
+        message: `falha calculando hash atual: ${(e as Error).message}`,
+        source_issue: "#1413",
+        severity: "error",
+        file: approvedPath,
+      },
+    ];
+  }
+
+  if (cachedHash !== currentHash) {
+    return [
+      {
+        rule: "social-hash-fresh",
+        message:
+          `Highlights mudaram após social.md ser gerado (hash: ${cachedHash} → ${currentHash}). ` +
+          `Editor reestruturou destaques pós-Stage 2. Re-dispatch agents ` +
+          `social-linkedin + social-facebook + re-run merge-social-md.ts antes de publicar.`,
+        source_issue: "#1413",
+        severity: "error",
+        file: socialPath,
+      },
+    ];
+  }
+
+  return [];
 }
 
 /**
@@ -192,6 +289,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkPublicImagesPopulated,
   },
   {
+    id: "social-hash-fresh",
+    description: "social.md hash bate com approved.json highlights (#1413)",
+    source_issue: "#1413",
+    stage: 4,
+    run: checkSocialHashFresh,
+  },
+  {
     id: "facebook-page-id-set",
     description: "FACEBOOK_PAGE_ID env var presente",
     source_issue: "#facebook",
@@ -223,6 +327,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
 
 export {
   checkPublicImagesPopulated,
+  checkSocialHashFresh,
   checkFbPageIdSet,
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,

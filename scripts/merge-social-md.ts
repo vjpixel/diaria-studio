@@ -29,7 +29,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { hashFromApprovedFile } from "./lib/social-source-hash.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -237,6 +239,28 @@ function main(): void {
     } catch (err) {
       console.error(
         `merge-social-md: warn — falha deletando ${tmp.path}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // #1413: gravar hash dos highlights aprovados quando social.md foi
+  // gerado. Stage 4 invariant rule (checkSocialHashFresh) compara hash
+  // atual contra esse cached pra detectar reestrutura pós-Stage 2.
+  // Best-effort: se approved.json não existir (test fixture), skip
+  // silenciosamente — caller decide se isso é OK.
+  const approvedPath = resolve(editionDir, "_internal/01-approved.json");
+  if (existsSync(approvedPath)) {
+    try {
+      const hash = hashFromApprovedFile(approvedPath);
+      const hashPath = resolve(editionDir, "_internal/.social-source-hash.json");
+      writeFileSync(
+        hashPath,
+        JSON.stringify({ hash, generated_at: new Date().toISOString() }, null, 2) + "\n",
+        "utf8",
+      );
+    } catch (err) {
+      console.error(
+        `merge-social-md: warn — falha gravando social-source-hash: ${(err as Error).message}`,
       );
     }
   }
