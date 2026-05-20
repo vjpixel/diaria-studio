@@ -24,7 +24,7 @@
  *   - Aos 10 sends: bloqueia o próximo send em modo strict; warning forte
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 export interface SendCountState {
@@ -64,14 +64,20 @@ export function recordSend(
   ok: boolean,
   now: () => Date = () => new Date(),
 ): SendCountState {
+  // Auto-reset se janela 1h passou desde último send (rate limit Beehiiv
+  // resetou naturalmente — não há motivo pra carregar histórico stale).
+  // Caller pode override chamando resetSendCount() explicitamente antes.
   const existing = loadSendCount(editionDir);
+  const reset = existing ? shouldResetWindow(existing.last_sent_at, now()) : false;
+  const baseline = reset ? null : existing;
+
   const nowIso = now().toISOString();
-  const state: SendCountState = existing
+  const state: SendCountState = baseline
     ? {
-        count: existing.count + 1,
-        first_sent_at: existing.first_sent_at,
+        count: baseline.count + 1,
+        first_sent_at: baseline.first_sent_at,
         last_sent_at: nowIso,
-        history: [...existing.history, { ts: nowIso, ok }].slice(-HISTORY_LIMIT),
+        history: [...baseline.history, { ts: nowIso, ok }].slice(-HISTORY_LIMIT),
       }
     : {
         count: 1,
@@ -83,6 +89,17 @@ export function recordSend(
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(state, null, 2) + "\n", "utf8");
   return state;
+}
+
+/**
+ * #1419 audit follow-up: reset explícito (deleta o counter file).
+ * Caller usa pra forçar reset (ex: editor sabe que rate limit já voltou
+ * antes da janela 1h, ou debug). recordSend auto-checa shouldResetWindow,
+ * então essa é só pra force.
+ */
+export function resetSendCount(editionDir: string): void {
+  const path = getCountFilePath(editionDir);
+  if (existsSync(path)) unlinkSync(path);
 }
 
 export type WarnLevel = "ok" | "warn" | "block";

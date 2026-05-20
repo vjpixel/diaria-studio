@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   loadSendCount,
   recordSend,
+  resetSendCount,
   decideWarnLevel,
   shouldResetWindow,
   WARN_THRESHOLD,
@@ -44,12 +45,30 @@ describe("loadSendCount (#1419)", () => {
 describe("recordSend (#1419)", () => {
   it("incrementa counter a cada send", () => {
     const { dir, cleanup } = makeFixture();
-    const s1 = recordSend(dir, true);
+    // Mesma janela 1h pra garantir que auto-reset não dispara
+    let t = 0;
+    const clock = () => new Date(Date.UTC(2026, 4, 20, 18, 0, 0) + t * 60_000);
+    t = 0; const s1 = recordSend(dir, true, clock);
     assert.equal(s1.count, 1);
-    const s2 = recordSend(dir, true);
+    t = 5; const s2 = recordSend(dir, true, clock);
     assert.equal(s2.count, 2);
-    const s3 = recordSend(dir, false);
+    t = 10; const s3 = recordSend(dir, false, clock);
     assert.equal(s3.count, 3);
+    cleanup();
+  });
+
+  it("audit follow-up: auto-reset quando janela 1h passou desde last_sent_at", () => {
+    const { dir, cleanup } = makeFixture();
+    let t = 0;
+    const clock = () => new Date(Date.UTC(2026, 4, 20, 18, 0, 0) + t * 60_000);
+    t = 0; recordSend(dir, true, clock);
+    t = 30; recordSend(dir, true, clock);
+    t = 50; const s3 = recordSend(dir, true, clock);
+    assert.equal(s3.count, 3, "dentro de 1h: count cresce");
+    // Pular 70 minutos (>1h desde t=50)
+    t = 50 + 70;
+    const s4 = recordSend(dir, true, clock);
+    assert.equal(s4.count, 1, "passou >1h desde último send: counter resetou");
     cleanup();
   });
 
@@ -82,6 +101,24 @@ describe("recordSend (#1419)", () => {
     const raw = readFileSync(path, "utf8");
     const parsed = JSON.parse(raw);
     assert.equal(parsed.count, 1);
+    cleanup();
+  });
+});
+
+describe("resetSendCount (#1419 audit follow-up)", () => {
+  it("deleta o counter file quando existe", () => {
+    const { dir, cleanup } = makeFixture();
+    recordSend(dir, true);
+    assert.ok(loadSendCount(dir) !== null);
+    resetSendCount(dir);
+    assert.equal(loadSendCount(dir), null);
+    cleanup();
+  });
+
+  it("no-op quando counter file não existe (idempotente)", () => {
+    const { dir, cleanup } = makeFixture();
+    resetSendCount(dir); // não deve throw
+    assert.equal(loadSendCount(dir), null);
     cleanup();
   });
 });
