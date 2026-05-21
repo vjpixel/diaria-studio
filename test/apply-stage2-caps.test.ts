@@ -14,6 +14,7 @@ import {
   applyStage2Caps,
   checkStage2Caps,
   capOutrasNoticias,
+  highlightUrl,
   STAGE_2_CAP_LANCAMENTOS,
   STAGE_2_CAP_PESQUISAS,
   STAGE_2_MIN_OUTRAS,
@@ -451,6 +452,108 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     assert.equal(capped.pesquisa?.[0].url, "https://arxiv.org/abs/2605.19192");
     assert.equal(capped.noticias?.length, 1);
     assert.equal(capped.noticias?.[0].url, "https://cybersecuritynews.com/rce/");
+  });
+});
+
+describe("highlightUrl (#1445)", () => {
+  it("nested shape (scorer output): lê article.url", () => {
+    const h = {
+      rank: 1,
+      score: 92,
+      article: { url: "https://blog.google/gemini-omni/", title: "Gemini Omni" },
+    };
+    assert.equal(highlightUrl(h), "https://blog.google/gemini-omni/");
+  });
+
+  it("flat shape (legacy): lê url no topo", () => {
+    const h = { url: "https://example.com/x", title: "X" };
+    assert.equal(highlightUrl(h), "https://example.com/x");
+  });
+
+  it("prefere article.url quando ambos presentes (nested wins)", () => {
+    const h = {
+      rank: 1,
+      url: "https://flat.example.com/wrong",
+      article: { url: "https://nested.example.com/correct" },
+    };
+    assert.equal(highlightUrl(h), "https://nested.example.com/correct");
+  });
+
+  it("retorna undefined quando nenhum URL presente", () => {
+    assert.equal(highlightUrl({ rank: 1, score: 50 }), undefined);
+  });
+
+  it("retorna undefined quando article presente mas sem url", () => {
+    const h = { rank: 1, article: { title: "no url" } };
+    assert.equal(highlightUrl(h), undefined);
+  });
+});
+
+describe("#1445 — defense-in-depth warn quando highlights non-empty + URLs zero", () => {
+  it("emite warn quando highlights presentes mas todos sem URL", () => {
+    const original = console.warn;
+    let warned = "";
+    console.warn = (msg: string) => {
+      warned += msg;
+    };
+    try {
+      const approved = {
+        highlights: [
+          { rank: 1, score: 80, reason: "x" }, // sem url nem article.url
+          { rank: 2, score: 70, reason: "y" },
+        ],
+        lancamento: [{ url: "https://x.com/l1" }],
+        pesquisa: [],
+        noticias: [],
+      };
+      applyStage2Caps(approved);
+      assert.match(warned, /shape mudou\?/);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it("NÃO emite warn quando highlights vazio (zero é normal, não regressão)", () => {
+    const original = console.warn;
+    let warned = "";
+    console.warn = (msg: string) => {
+      warned += msg;
+    };
+    try {
+      const approved = {
+        highlights: [],
+        lancamento: [{ url: "https://x.com/l1" }],
+        pesquisa: [],
+        noticias: [],
+      };
+      applyStage2Caps(approved);
+      assert.equal(warned, "");
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it("NÃO emite warn quando ao menos 1 highlight tem URL extraída", () => {
+    const original = console.warn;
+    let warned = "";
+    console.warn = (msg: string) => {
+      warned += msg;
+    };
+    try {
+      const approved = {
+        highlights: [
+          { rank: 1, article: { url: "https://x.com/h1" } },
+          { rank: 2 }, // sem url — mas o outro tem, então tudo bem
+        ],
+        lancamento: [],
+        pesquisa: [],
+        noticias: [],
+      };
+      applyStage2Caps(approved);
+      assert.equal(warned, "");
+    } finally {
+      console.warn = original;
+    }
   });
 });
 
