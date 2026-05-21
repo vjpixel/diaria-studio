@@ -129,9 +129,17 @@ export function applyStage2Caps(
 
   // #1240: build set de URLs já em highlights (canonicalizadas) pra
   // remover overlap dos buckets ANTES de truncar.
+  // highlights schema é { rank, score, reason, article: { url, ... } }
+  // — não `{ url }` direto (regressão pré-#1240 fix).
   const highlightUrlsCanon = new Set<string>();
   for (const h of approved.highlights ?? []) {
-    const url = typeof h.url === "string" ? h.url : "";
+    const hAny = h as { url?: unknown; article?: { url?: unknown } };
+    const url =
+      typeof hAny.article?.url === "string"
+        ? hAny.article.url
+        : typeof hAny.url === "string"
+          ? hAny.url
+          : "";
     if (url) highlightUrlsCanon.add(canonicalize(url));
   }
   const lDeduped = dedupAgainstHighlights(approved.lancamento, highlightUrlsCanon);

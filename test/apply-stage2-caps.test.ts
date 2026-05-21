@@ -397,6 +397,61 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     assert.equal(report.removed_overlap.noticias, 0);
     assert.equal(capped.noticias?.length, 5);
   });
+
+  it("#1440 — schema nested do scorer ({rank, score, article: {url}}) é deduplicado", () => {
+    // Repro do bug: scorer produz highlights como
+    // { rank, score, reason, article: { url, title, ... } }, mas o código pre-#1440
+    // lia `h.url` direto (sempre undefined) — Set ficava vazio, dedup virava no-op.
+    // Caso real 260521: D2 (Meta demite 8 mil) duplicado em noticias → writer dropou.
+    const approved = {
+      highlights: [
+        {
+          rank: 1,
+          score: 92,
+          reason: "Top model release",
+          article: { url: "https://blog.google/gemini-omni/", title: "Gemini Omni" },
+        },
+        {
+          rank: 2,
+          score: 89,
+          reason: "Market shift",
+          article: { url: "https://cnnbrasil.com.br/meta-8mil/", title: "Meta 8 mil" },
+        },
+        {
+          rank: 3,
+          score: 86,
+          reason: "Benchmark",
+          article: { url: "https://arxiv.org/abs/2605.19156", title: "ResearchArena" },
+        },
+      ],
+      lancamento: [
+        { url: "https://blog.google/gemini-omni/", title: "dup with D1" }, // overlap
+        { url: "https://blog.google/asset-studio/", title: "Asset Studio" },
+      ],
+      pesquisa: [
+        { url: "https://arxiv.org/abs/2605.19156", title: "dup with D3" }, // overlap
+        { url: "https://arxiv.org/abs/2605.19192", title: "Hallucination" },
+      ],
+      noticias: [
+        { url: "https://cnnbrasil.com.br/meta-8mil/", title: "dup with D2" }, // overlap
+        { url: "https://cybersecuritynews.com/rce/", title: "Claude RCE" },
+      ],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+
+    // Cada bucket teve 1 item dropado por overlap
+    assert.equal(report.removed_overlap.lancamento, 1);
+    assert.equal(report.removed_overlap.pesquisa, 1);
+    assert.equal(report.removed_overlap.noticias, 1);
+
+    // Output só contém os non-duplicados
+    assert.equal(capped.lancamento?.length, 1);
+    assert.equal(capped.lancamento?.[0].url, "https://blog.google/asset-studio/");
+    assert.equal(capped.pesquisa?.length, 1);
+    assert.equal(capped.pesquisa?.[0].url, "https://arxiv.org/abs/2605.19192");
+    assert.equal(capped.noticias?.length, 1);
+    assert.equal(capped.noticias?.[0].url, "https://cybersecuritynews.com/rce/");
+  });
 });
 
 describe("cap calculation pós-#1240 (sem inflacao do #1071)", () => {
