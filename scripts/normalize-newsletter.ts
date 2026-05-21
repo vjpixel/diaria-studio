@@ -560,8 +560,7 @@ export function injectMissingSectionSeparators(
   const out: string[] = [];
   let injected = 0;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+  for (const line of lines) {
     if (FIXED_SECTION_HEADER_RE.test(line)) {
       // Olhar pra trás pra encontrar primeira linha não-blank no `out`.
       let j = out.length - 1;

@@ -1,31 +1,31 @@
 # Perfil de Audiência — Diar.ia
 
-**updated_at:** 2026-05-19
-**subscribers ativos:** 482
+**updated_at:** 2026-05-20
+**subscribers ativos:** 481
 **respondentes survey:** 167
-**links analisados:** 1622 (152 edições, 7+ dias de idade)
+**links analisados:** 1637 (153 edições, 7+ dias de idade)
 
 ## 1. Engajamento real (CTR por categoria)
 
-Fonte primária: comportamento de 482 subscribers em 152 edições.
+Fonte primária: comportamento de 481 subscribers em 153 edições.
 CTR médio geral: 0.61%
 
 - **Treinamento** — CTR 3.27% | 22 links (acima da média)
 - **Impacto** — CTR 0.87% | 48 links (acima da média)
 - **Estratégia** — CTR 0.81% | 25 links (acima da média)
 - **Tendência** — CTR 0.75% | 54 links
-- **Lançamento** — CTR 0.74% | 487 links
-- **Bastidores** — CTR 0.65% | 100 links
+- **Lançamento** — CTR 0.74% | 491 links
 - **Ferramenta** — CTR 0.65% | 52 links
+- **Bastidores** — CTR 0.65% | 101 links
 - **Aplicação** — CTR 0.62% | 48 links
-- **Pesquisa** — CTR 0.60% | 150 links
+- **Pesquisa** — CTR 0.60% | 153 links
 - **Regulação** — CTR 0.52% | 121 links
 - **Mercado** — CTR 0.51% | 107 links
+- **Outro** — CTR 0.43% | 50 links (abaixo da média)
 - **Segurança** — CTR 0.43% | 40 links (abaixo da média)
-- **Outro** — CTR 0.43% | 44 links (abaixo da média)
 - **Geopolítica** — CTR 0.42% | 57 links (abaixo da média)
 - **Infraestrutura** — CTR 0.32% | 114 links (abaixo da média)
-- **Curiosidade** — CTR 0.30% | 138 links (abaixo da média)
+- **Curiosidade** — CTR 0.30% | 139 links (abaixo da média)
 - **Indústria** — CTR 0.28% | 15 links (abaixo da média)
 
 ### Destaques por categoria + origem
@@ -39,14 +39,14 @@ Top 10 combinações com maior CTR (mínimo 5 links):
 - **Aplicação BR** — CTR 1.00% | 14 links
 - **Estratégia INT** — CTR 0.99% | 19 links
 - **Impacto INT** — CTR 0.81% | 34 links
-- **Lançamento INT** — CTR 0.77% | 430 links
+- **Lançamento INT** — CTR 0.77% | 434 links
 - **Regulação BR** — CTR 0.67% | 39 links
 - **Ferramenta INT** — CTR 0.66% | 50 links
 
 ### Engajamento por origem
 
-- **BR** — CTR 0.62% | 327 links (20.2% do total)
-- **INT** — CTR 0.61% | 1295 links (79.8% do total)
+- **BR** — CTR 0.62% | 330 links (20.2% do total)
+- **INT** — CTR 0.61% | 1307 links (79.8% do total)
 
 > **Como usar:** categorias com CTR acima da média devem receber bônus de score.
 > Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.
@@ -97,7 +97,7 @@ Fontes com CTR 0.00% (26 fontes, 3+ links):
 - wikidata.org (4 links)
 - bnnbloomberg.ca (3 links)
 - en.wikipedia.org (16 links)
-- creativecommons.org (9 links)
+- creativecommons.org (10 links)
 - mittechreview.com.br (3 links)
 
 > **Como usar:** fontes com CTR alto indicam conteúdo que a audiência valoriza.
