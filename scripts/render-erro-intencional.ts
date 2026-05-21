@@ -143,8 +143,10 @@ export function extractIntentionalErrorFromMd(
  * ou sem `correct_value`.
  */
 export function extractCorrectValueFromFrontmatter(md: string): string | null {
-  // Frontmatter pode estar nas primeiras 30 linhas (insert-titulo-subtitulo
-  // pode injetar TÍTULO antes — espelhar lint-newsletter-md.ts extractFrontmatter).
+  // Frontmatter pode estar nas primeiras 60 linhas — espelhar `extractFrontmatter`
+  // de lint-newsletter-md.ts (default scanLines=30) e dar margem extra pro caso
+  // do bloco TÍTULO/SUBTÍTULO injetado por insert-titulo-subtitulo.ts antes do
+  // YAML (#1378).
   const lines = md.split("\n").slice(0, 60);
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -526,7 +528,7 @@ function main(): void {
       error_type: "editor_declared",
       source: "md_extract",
     } as IntentionalError & { narrative?: string; gabarito?: string };
-    reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
+    reveal = composeRevealText(prev);
   } else {
     const errors = loadIntentionalErrors(errorsPath);
     prev = findPreviousIntentionalError(errors, args.edition);

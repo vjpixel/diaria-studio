@@ -176,6 +176,9 @@ describe("composeRevealText (#1443) — enforce 'o correto é Y'", () => {
     const text = composeRevealText(prev);
     // narrativeHasCorrection match em 'onde deveria ser' OU 'mas o correto era' → preserve
     assert.doesNotMatch(text, /,\s*o correto é V5\./);
+    assert.match(text, /mas o correto era V5/);
+    // Narrativa veio intacta (com aspas bolded por #915)
+    assert.match(text, /escrevi \*\*'V4'\*\* onde deveria ser \*\*'V5'\*\*, mas o correto era V5/);
   });
 
   it("preserva narrative com 'onde deveria ser' (fraseologia legacy formato 'escrevi X onde deveria ser Y')", () => {
@@ -918,6 +921,68 @@ describe("render-erro-intencional CLI (#911)", () => {
       assert.match(updated, /22 anos/);
       // Placeholder pra autor escrever o erro corrente
       assert.match(updated, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1443: integração — auto-append 'o correto é Y' lendo prev MD com frontmatter + narrative sem correção", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-int-1443-"));
+    try {
+      const editionsRoot = join(dir, "editions");
+      mkdirSync(join(editionsRoot, "260520"), { recursive: true });
+      mkdirSync(join(editionsRoot, "260521"), { recursive: true });
+
+      // Edição anterior 260520: frontmatter com correct_value + narrative sem correção
+      writeFileSync(
+        join(editionsRoot, "260520", "02-reviewed.md"),
+        [
+          "---",
+          "intentional_error:",
+          '  description: "Ano de fundação da OpenAI no DESTAQUE 2"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "2014"',
+          "---",
+          "",
+          "Body.",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, contei que Karpathy cofundou a OpenAI em 1914, depois liderou a IA da Tesla.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // Edição atual 260521: MD que vai receber a seção ERRO INTENCIONAL
+      const mdPath = join(editionsRoot, "260521", "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        ["OUTRAS NOTÍCIAS", "", "Item.", "", "---", "", "**ASSINE**", "X"].join("\n"),
+        "utf8",
+      );
+
+      const r = runCli([
+        "--edition",
+        "260521",
+        "--md",
+        mdPath,
+        "--editions-dir",
+        editionsRoot,
+        "--errors",
+        join(dir, "ghost.jsonl"), // forçar caminho MD
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.prev_source, "md");
+      assert.equal(out.prev_edition, "260520");
+      assert.equal(out.prev_revealed, true);
+      const updated = readFileSync(mdPath, "utf8");
+      // O reveal precisa ter "o correto é 2014" (auto-appended)
+      assert.match(updated, /Na última edição, contei que Karpathy[^\n]*, o correto é 2014\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
