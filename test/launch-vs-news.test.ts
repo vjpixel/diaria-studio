@@ -67,6 +67,27 @@ describe("isLikelyNewsNotLaunch (#1442) — anúncio institucional vs lançament
     );
   });
 
+  it("'OpenAI para o Brasil' — programa geográfico PT direto", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("OpenAI para o Brasil"),
+      true,
+    );
+  });
+
+  it("'Claude para a Índia' — programa geográfico PT (artigo feminino)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Claude para a Índia"),
+      true,
+    );
+  });
+
+  it("anti-case PT: 'Claude para Desenvolvedores' continua lancamento (audience, não geo)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Claude para Desenvolvedores"),
+      false,
+    );
+  });
+
   // ============ ANTI-cases (deve retornar false → continua LANÇAMENTO) ============
 
   it("'Introducing Gemini Omni' — lançamento de modelo", () => {

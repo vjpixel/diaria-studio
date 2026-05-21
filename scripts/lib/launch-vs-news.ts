@@ -17,9 +17,11 @@
  * Cobertura desta heurística (complementa DEAL_PATTERNS / NON_PRODUCT_ANNOUNCEMENT
  * / CUSTOMER_STORY do `categorize.ts`):
  *   - "{Product} for {Country}" — programa geográfico específico
- *   - "for Countries" — programa multi-país
- *   - "opens office in {City}" — expansão geográfica
- *   - "Summit {Year}" — evento (não lançamento)
+ *   - "for Countries" / "para países" — programa multi-país (EN+PT)
+ *   - "opens office in {City}" / "abre escritório em" — expansão geográfica
+ *   - "Summit {Year}" / "{Year} Summit" — evento (não lançamento)
+ *   - "at Cloud Next" — apresentação em evento
+ *   - "government program" / "programa governamental"
  *
  * Não cobre (já capturado em categorize.ts):
  *   - "X acquires Y" → DEAL_PATTERNS
@@ -140,6 +142,11 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   // "for {Country}" — programa/produto específico pra um país
   // Ex: "Introducing OpenAI for Singapore", "Claude for Brazil"
   new RegExp(`\\bfor\\s+(${COUNTRY_ALTERNATION})\\b`, "i"),
+  // PT variant: "para o Brasil", "para a Índia", "para o Japão"
+  // Match `\bpara\s+(o\s+|a\s+|os\s+|as\s+)?{Country}\b`. Cobre tanto
+  // título PT direto quanto traduções de anúncio EN. Conservador: ainda
+  // exige nome do país na lista canônica, evitando "para o Cliente Final".
+  new RegExp(`\\bpara\\s+(?:o\\s+|a\\s+|os\\s+|as\\s+)?(${COUNTRY_ALTERNATION})\\b`, "i"),
   // "for Countries" (plural) — programa multi-país
   // Ex: "The next phase of OpenAI's Education for Countries"
   /\bfor\s+Countries\b/i,
