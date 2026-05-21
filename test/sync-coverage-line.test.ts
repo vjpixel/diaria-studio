@@ -247,6 +247,102 @@ Vista aérea... [Takht-i-Bahi](https://pt.wikipedia.org/wiki/Takht-i-Bahi). [Aut
     assert.equal(countSelectedItems(md), 1);
   });
 
+  it("#1441: conta OUTRAS NOTÍCIAS mesmo sem --- antes de SORTEIO (caso 260520)", () => {
+    const md = `Para esta edição...
+
+---
+
+**📰 OUTRAS NOTÍCIAS**
+
+**[Item 1](https://x.com/a)**
+desc
+
+**[Item 2](https://x.com/b)**
+desc
+
+**🎁 SORTEIO**
+
+texto sorteio
+
+---
+
+**ASSINE**
+
+x`;
+    // Sem --- entre OUTRAS e SORTEIO. Antes do fix retornava 0 (skip section
+    // toda por conter "SORTEIO"); pós-fix conta 2 itens (sub-split por section
+    // header isola OUTRAS de SORTEIO).
+    assert.equal(countSelectedItems(md), 2);
+  });
+
+  it("#1441: conta destaque + OUTRAS sem --- entre LANÇAMENTOS e PESQUISAS", () => {
+    const md = `---
+
+**DESTAQUE 1**
+
+**[Destaque A](https://example.com/d1)**
+
+---
+
+**🚀 LANÇAMENTOS**
+
+**[L1](https://x.com/l1)**
+desc
+**[L2](https://x.com/l2)**
+desc
+
+**🔬 PESQUISAS**
+
+**[P1](https://x.com/p1)**
+desc
+
+**📰 OUTRAS NOTÍCIAS**
+
+**[N1](https://x.com/n1)**
+desc
+
+**🎁 SORTEIO**
+
+texto`;
+    // 1 destaque + 2 lancamentos + 1 pesquisa + 1 outra = 5
+    assert.equal(countSelectedItems(md), 5);
+  });
+
+  it("#1441: PARA ENCERRAR cola com SORTEIO sem --- entre eles → skip ambos", () => {
+    const md = `---
+
+**📰 OUTRAS NOTÍCIAS**
+
+**[N1](https://x.com/n1)**
+
+**🎁 SORTEIO**
+
+x
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+Encerrando`;
+    // 1 outra + 0 (sorteio skip) + 0 (encerrar skip) = 1
+    assert.equal(countSelectedItems(md), 1);
+  });
+
+  it("#1441: ERRO INTENCIONAL cola com ASSINE → ambos skip", () => {
+    const md = `---
+
+**OUTRAS NOTÍCIAS**
+
+**[N1](https://x.com/n1)**
+
+**ERRO INTENCIONAL**
+
+Nessa edição, X.
+
+**ASSINE**
+
+x`;
+    assert.equal(countSelectedItems(md), 1);
+  });
+
   it("deduplica URLs repetidas no mesmo destaque (3 títulos pré-poda)", () => {
     const md = `---
 

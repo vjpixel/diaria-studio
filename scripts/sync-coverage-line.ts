@@ -212,7 +212,6 @@ export function countSubmissionsFromArchive(
  * facebook.com/diar.ia, pt.wikipedia, commons.wikimedia, creativecommons).
  */
 export function countSelectedItems(md: string): number {
-  const sections = md.split(/^---\s*$/m);
   const FOOTER_DOMAINS = [
     "diaria.beehiiv.com", // afiliados (cursos, livros)
     "wisprflow.ai",
@@ -234,8 +233,27 @@ export function countSelectedItems(md: string): number {
     "SUBTÍTULO",
   ];
 
+  // #1441: Split por --- E por section-header lines. Bug 260520: OUTRAS NOTÍCIAS
+  // colava com SORTEIO sem --- entre eles; a section toda continha "SORTEIO" e
+  // virava skip, perdendo 6 itens contados. Agora um second pass via lookahead
+  // particiona qualquer section que contenha mais de 1 header conhecido, de
+  // forma que cada sub-bloco tem no máximo 1 header → decisão de skip é cirúrgica.
+  //
+  // Headers reconhecidos: bold com nome de seção OU `## É IA?`. Restringimos o
+  // prefixo entre `**` e o nome da seção a `[^\n\[]*?` (sem `[`) pra evitar
+  // matchar conteúdo tipo `**[Título A](url)**` onde "Título" bateria com
+  // T[ÍI]TULO. Headers reais nunca têm `[` antes do nome.
+  const SECTION_HEADER_LOOKAHEAD =
+    /(?=^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS\s+NOT[ÍI]CIAS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|DESTAQUE\s+\d)[^\n]*\*\*\s*$)|(?=^##\s+É\s+IA\?)/im;
+
+  const rawSections = md.split(/^---\s*$/m);
+  const allBlocks: string[] = [];
+  for (const sec of rawSections) {
+    allBlocks.push(...sec.split(SECTION_HEADER_LOOKAHEAD));
+  }
+
   let count = 0;
-  for (const section of sections) {
+  for (const section of allBlocks) {
     // Pular seções editoriais fixas
     const isSkip = SKIP_HEADERS.some((h) => section.includes(h));
     if (isSkip) continue;

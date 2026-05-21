@@ -524,7 +524,63 @@ export function normalizeNewsletter(text: string): {
   if (emdashes > 0) {
     report.warnings.push(`${emdashes} travessão(ões) substituído(s) por vírgula — humanizador deve ter corrigido antes`);
   }
-  return { text: normalized, report };
+
+  // #1441: Injetar `---` entre seções secundárias quando ausente. Writer às
+  // vezes emite OUTRAS NOTÍCIAS direto colado em SORTEIO, sem separador.
+  // sync-coverage-line vê isso como uma seção só, marca SKIP pela presença de
+  // SORTEIO no texto, e não conta itens de OUTRAS NOTÍCIAS — intro saía
+  // mentindo o número total (caso 260520).
+  const { text: withSeparators, injected } = injectMissingSectionSeparators(normalized);
+  if (injected > 0) {
+    report.warnings.push(`${injected} separador(es) --- injetado(s) entre seções secundárias coladas`);
+  }
+  return { text: withSeparators, report };
+}
+
+/**
+ * Pure (#1441): garante `---\n\n` antes de seções fixas (SORTEIO, PARA ENCERRAR,
+ * ERRO INTENCIONAL, ASSINE) quando faltando. Idempotente — se separador já
+ * está presente, no-op.
+ *
+ * Critério: para cada linha que matcha um section header fixo, olhar pra trás
+ * pra encontrar a primeira linha não-blank. Se não for `---`, injetar.
+ *
+ * Não injeta antes de DESTAQUE / LANÇAMENTOS / PESQUISAS / OUTRAS — esses já
+ * costumam ter separadores corretos via writer template; tocar pode quebrar
+ * fluxo intencional. Foco fica em headers POST-LANÇAMENTOS que historicamente
+ * colam (writer emite OUTRAS → SORTEIO → PARA ENCERRAR em sequência).
+ */
+export function injectMissingSectionSeparators(
+  text: string,
+): { text: string; injected: number } {
+  const FIXED_SECTION_HEADER_RE =
+    /^\*\*[^\n\[]*?(?:SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE)[^\n]*\*\*\s*$/i;
+
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let injected = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (FIXED_SECTION_HEADER_RE.test(line)) {
+      // Olhar pra trás pra encontrar primeira linha não-blank no `out`.
+      let j = out.length - 1;
+      while (j >= 0 && out[j].trim() === "") j--;
+      const prevNonBlank = j >= 0 ? out[j].trim() : null;
+
+      if (prevNonBlank !== null && prevNonBlank !== "---") {
+        // Substitui blanks trailing por blank line + `---` + blank line
+        while (out.length > 0 && out[out.length - 1].trim() === "") {
+          out.pop();
+        }
+        out.push("", "---", "");
+        injected++;
+      }
+    }
+    out.push(line);
+  }
+
+  return { text: out.join("\n"), injected };
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
