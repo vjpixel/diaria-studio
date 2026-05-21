@@ -276,6 +276,78 @@ describe("categorize() — non-product announcement override (#77)", () => {
   });
 });
 
+describe("categorize() — geographic program announcement override (#1442)", () => {
+  it("'Introducing OpenAI for Singapore' em domínio oficial vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-openai-for-singapore",
+        title: "Introducing OpenAI for Singapore",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'Education for Countries' em domínio oficial vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/the-next-phase-of-education-for-countries",
+        title: "The next phase of OpenAI's Education for Countries",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'Claude for Brazil' em domínio oficial vira noticias (programa geográfico PT)", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-for-brazil",
+        title: "Claude for Brazil",
+      }),
+      "noticias",
+    );
+  });
+
+  it("'opens office in Tokyo' em domínio oficial vira noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/tokyo-office",
+        title: "Anthropic opens new office in Tokyo",
+      }),
+      "noticias",
+    );
+  });
+
+  it("anti-case: 'Claude for Creative Work' continua lancamento (feature/audience, não geo)", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-creative-work",
+        title: "Claude for Creative Work",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("anti-case: 'Introducing Gemini Omni' continua lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/gemini/omni",
+        title: "Introducing Gemini Omni",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("anti-case: 'Asset Studio multimodal' em domínio oficial continua lancamento (feature update PT)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blog.google/products/asset-studio-multimodal",
+        title: "Asset Studio ganha capacidades multimodais",
+      }),
+      "lancamento",
+    );
+  });
+});
+
 describe("categorize() — patterns específicos (#77)", () => {
   it("aws.amazon.com/blogs/machine-learning/ → tutorial (não lancamento) (#318)", () => {
     // AWS ML Blog é historicamente tutoriais/case studies, não anúncios de produto.

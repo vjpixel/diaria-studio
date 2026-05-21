@@ -26,6 +26,7 @@ import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
 import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
+import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
@@ -619,6 +620,7 @@ export function categorize(article: Article): Category {
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
+    if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
     // #1173 (híbrido): type_hint do source-researcher/discovery (Haiku) é
