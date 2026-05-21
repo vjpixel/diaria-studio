@@ -37,9 +37,61 @@ export interface StageArticle {
   [key: string]: unknown;
 }
 
+/**
+ * Highlight no Stage 2 (#1445) — pode vir em 2 shapes:
+ *
+ * 1. **Nested** (produção, output do scorer):
+ *    `{ rank, score, bucket, reason, article: { url, title, ... } }`
+ *
+ * 2. **Flat** (testes legacy, fixtures pre-scorer e edge cases):
+ *    `{ url, title, score, ... }` opcionalmente com `{ rank, reason, bucket }`.
+ *
+ * O helper `highlightUrl()` abstrai a leitura. Antes do #1445, o código fazia
+ * cast `as { url?: unknown; article?: { url?: unknown } }` pra evitar mismatch
+ * — agora o tipo declara ambos os formatos como possíveis e o helper é
+ * type-safe.
+ */
+export interface ScoredHighlight {
+  rank?: number;
+  score?: number;
+  bucket?: string;
+  reason?: string;
+  /** Nested shape (scorer output): article carrega url e metadata. */
+  article?: StageArticle;
+  /** Flat shape (legacy/tests): url no topo. */
+  url?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Runner-up no Stage 2 (#1445). Schema similar a ScoredHighlight mas sem
+ * `rank` obrigatório (runners-up são scored mas não ranqueados oficialmente).
+ */
+export interface ScoredRunnerUp {
+  score?: number;
+  reason?: string;
+  bucket?: string;
+  article?: StageArticle;
+  url?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Pure (#1445): lê a URL de um highlight ou runner-up, abstraindo o shape.
+ * Prefere `article.url` (nested, formato canônico do scorer); fallback pra
+ * `url` no topo (flat, formato legado).
+ */
+export function highlightUrl(h: ScoredHighlight | ScoredRunnerUp): string | undefined {
+  if (h.article && typeof h.article.url === "string") return h.article.url;
+  if (typeof h.url === "string") return h.url;
+  return undefined;
+}
+
 export interface ApprovedJson {
-  highlights?: StageArticle[];
-  runners_up?: StageArticle[];
+  highlights?: ScoredHighlight[];
+  runners_up?: ScoredRunnerUp[];
   lancamento?: StageArticle[];
   pesquisa?: StageArticle[];
   noticias?: StageArticle[];
@@ -129,18 +181,25 @@ export function applyStage2Caps(
 
   // #1240: build set de URLs já em highlights (canonicalizadas) pra
   // remover overlap dos buckets ANTES de truncar.
-  // highlights schema é { rank, score, reason, article: { url, ... } }
-  // — não `{ url }` direto (regressão pré-#1240 fix).
+  //
+  // #1445: tipo ScoredHighlight cobre ambos shapes (nested `article.url` do
+  // scorer e flat `url` legacy/tests). Helper `highlightUrl()` substitui
+  // o cast `as { url?, article? }` que existia pré-#1445.
   const highlightUrlsCanon = new Set<string>();
   for (const h of approved.highlights ?? []) {
-    const hAny = h as { url?: unknown; article?: { url?: unknown } };
-    const url =
-      typeof hAny.article?.url === "string"
-        ? hAny.article.url
-        : typeof hAny.url === "string"
-          ? hAny.url
-          : "";
+    const url = highlightUrl(h);
     if (url) highlightUrlsCanon.add(canonicalize(url));
+  }
+
+  // #1445 defense-in-depth: highlights non-empty mas zero URLs extraídas é
+  // sinal de schema mudou — script silenciosamente faria dedup no-op, mascarando
+  // o bug. Warning explícito facilita debug futuro (caso original #1440 ficou
+  // silencioso por 1+ edições antes do editor notar).
+  if ((approved.highlights?.length ?? 0) > 0 && highlightUrlsCanon.size === 0) {
+    console.warn(
+      "[apply-stage2-caps] WARN: highlights presentes mas nenhuma URL extraída — " +
+        "shape mudou? Esperado `article.url` (nested) ou `url` (flat).",
+    );
   }
   const lDeduped = dedupAgainstHighlights(approved.lancamento, highlightUrlsCanon);
   const pDeduped = dedupAgainstHighlights(approved.pesquisa, highlightUrlsCanon);
