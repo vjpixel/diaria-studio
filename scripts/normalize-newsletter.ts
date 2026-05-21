@@ -263,7 +263,11 @@ const SECTION_HEADERS = [
  * exatamente os destaques (que vão pelo branch ctx="highlight" que
  * funciona). Pós-fix: todas 16 preservadas.
  */
-const EMOJI_PREFIX_RE = /^[\p{Emoji}‍️]+\s*/u;
+// Usar Extended_Pictographic (não \p{Emoji}) pra evitar matchar dígitos
+// 0-9 e símbolos básicos que têm propriedade Emoji=Yes — só queremos
+// emoji-as-pictograph (🚀, 📰, 🔬, 🇧🇷, 🙋🏼‍♀️). Suportar zero-width joiner
+// `‍` (U+200D) e variation selector `️` (U+FE0F) pra emoji compostos.
+const EMOJI_PREFIX_RE = /^[\p{Extended_Pictographic}‍️\u{1F1E6}-\u{1F1FF}]+\s*/u;
 
 function isSectionHeader(line: string): boolean {
   // Aceita plain ou **negrito** (#590) — writer pós-#590 emite headers com bold.
