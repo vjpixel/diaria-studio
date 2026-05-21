@@ -1,6 +1,6 @@
 ---
 name: humanizador
-version: 1.4.1
+version: 1.5.0
 description: |
   Remove marcas de texto gerado por IA em português brasileiro. Use ao
   editar ou revisar textos para que soem mais naturais. Detecta e corrige
@@ -493,6 +493,8 @@ Qualquer outro uso — incluindo conector ou remate — deve ser substituído. A
 
 ## PADRÕES DE PRESERVAÇÃO TÉCNICA
 
+Texto técnico (markdown estruturado, código, IDs) tem que ficar literal — qualquer reformatação aqui quebra parsers/renderers downstream silenciosamente. Em todos os casos abaixo, **na dúvida preserve o original**.
+
 ### 27. Capitalização indevida de URLs e identificadores técnicos
 
 **Problema:** Ao reescrever, a IA frequentemente aplica regras de capitalização (início de frase, "correção" de marca) a URLs, caminhos e identificadores que precisam ficar literalmente iguais. Em URLs, o **host** é case-insensitive por especificação (`GitHub.com` resolve igual a `github.com`), mas **path, query e fragmento** são tratados pelo servidor, geralmente case-sensitive em servidores Unix-like. Encurtadores e tokens (`bit.ly/Ab3xZ`, hashes de commit) dependem do case exato. Capitalizar pode quebrar o link silenciosamente, sem o usuário perceber.
@@ -514,6 +516,69 @@ O caso especial do **brand-name** ("github" → "GitHub", "openai" → "OpenAI")
 > Veja `example.com/docs/foo`, que tem instruções de uso e exemplos.
 
 Quando uma URL ou identificador cair no começo da frase, reorganize a frase para que ele não fique na primeira posição (em vez de capitalizá-lo). Se não der para reorganizar, deixe minúsculo mesmo: é menos errado que quebrar o link.
+
+
+### 28. Trailing whitespace (`  ` no fim da linha) e `\` para `<br>`
+
+**Problema:** Markdown converte 2 espaços trailing (`  `) ou backslash (`\`) no fim da linha em `<br>` dentro do mesmo parágrafo. Sem isso, linhas consecutivas colapsam num único parágrafo no renderer. A IA frequentemente trim/strip whitespace ao reescrever ("limpeza estética"), removendo essas marcas invisíveis.
+
+**Onde aparece em texto técnico:**
+- Newsletters/email markdown: cada título de item seguido de descrição usa `  \n` para que o renderer mostre as duas linhas como uma quebra dentro do mesmo parágrafo, em vez de colar tudo num bloco.
+- Listas com sub-itens em paragrafos.
+
+**Não mexer:**
+- Linhas que terminam com `  ` (2 espaços) — preserve exato.
+- Linhas que terminam com `\` (backslash) — preserve exato.
+
+**Regra operacional:** se uma linha do input termina em whitespace visível (mesmo que invisível na tela), mantenha. Não chame de "espaço supérfluo"; é estrutura de renderização.
+
+
+### 29. Aninhação de bold/link `**[X](url)**` vs `[**X**](url)`
+
+**Problema:** As duas formas renderizam o mesmo bold+link no HTML, mas parsers e linters downstream (renderers Beehiiv, lint-newsletter, etc.) podem assumir o formato canônico do writer (`**[X](url)**`). A IA às vezes inverte ("reorganiza por clareza") sem que o usuário peça.
+
+**Não mexer:**
+- `**[título](url)**` — bold envolvendo link inteiro (formato canônico do writer)
+- `[**título**](url)` — bold dentro do link (formato alternativo)
+- Mistura dos dois em listas/seções diferentes
+
+**Regra:** se o input tem `**[X](url)**`, mantenha `**[X](url)**`. Não converta pra `[**X**](url)`.
+
+
+### 30. Listas, indentação e separadores
+
+**Problema:** Markdown depende de indentação consistente para aninhar listas e de linhas em branco para separar parágrafos/seções. A IA reescreve estruturas de lista achatando aninhamentos ou colando seções, quebrando hierarquia.
+
+**Não mexer:**
+- Indentação de bullets aninhados (`  - sub-item` vs `- item`).
+- Linhas em branco entre blocos — incluindo as `\n\n` entre uma seção e a próxima.
+- Separadores horizontais (`---`, `***`, `___`) — preserve número e posição.
+- Trailing whitespace em linhas (ver §28).
+
+**Regra:** se o input tem 2 blank lines entre blocos, mantenha 2 blank lines. Não consolide.
+
+
+### 31. Frontmatter YAML / HTML comments
+
+**Problema:** Frontmatter YAML (entre `---` no topo) e comentários HTML (`<!-- ... -->`) carregam metadata estrutural que outros scripts processam (data de publicação, categoria, intentional_error). Removendo ou reformatando esses blocos vaza dados editoriais.
+
+**Não mexer:**
+- Bloco YAML entre `---\n` e `\n---` no topo do arquivo — preserve campos, ordem, indentação e aspas exatamente.
+- Comentários HTML — preserve.
+- Frontmatter custom de outras ferramentas (TOML, JSON) — idem.
+
+**Regra:** se o input começa com `---\n`, NÃO toque até encontrar o segundo `---\n`. Mantenha tudo dentro literal.
+
+
+### 32. Section headers fixos do template
+
+**Problema:** Templates editoriais frequentemente usam headers fixos (`**TÍTULO**`, `**SUBTÍTULO**`, `**ERRO INTENCIONAL**`, `**🚀 LANÇAMENTOS**`, etc.) que scripts downstream procuram literal. Reescrever o header (`**Título**` → `**Manchete**`, ou removendo emoji) quebra esses scripts.
+
+**Não mexer:**
+- Linhas inteiras em bold que contém só nome de seção (com ou sem emoji prefixo).
+- Cabeçalhos com `## ` (h2) que delimitam blocos editoriais.
+
+**Regra:** se o input tem um header bold isolado numa linha, ele provavelmente é estrutural, não decorativo. Preserve exato (texto + emoji + capitalização).
 
 ---
 

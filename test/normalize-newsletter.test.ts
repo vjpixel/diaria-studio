@@ -265,6 +265,58 @@ describe("addTrailingSpaces (#382)", () => {
     assert.ok(!lines[6].endsWith("  "), "corpo não deve ter trailing spaces");
   });
 
+  it("#1439: reconhece header com emoji prefix (`**🚀 LANÇAMENTOS**`, `**📰 OUTRAS NOTÍCIAS**`)", () => {
+    // Bug pré-#1439: isSectionHeader strippava só `**` e `🚀 LANÇAMENTOS`
+    // NÃO batia com SECTION_HEADERS, então state machine não entrava em
+    // ctx=section e trailing 2-space de títulos sumia (caso 260521).
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "",
+      "**[I/O 2026: a era agêntica do Gemini](https://blog.google/x)**",
+      "Sundar Pichai apresentou a visão para 2026.",
+      "",
+      "**[Asset Studio multimodal](https://blog.google/y)**",
+      "Outro texto descritivo.",
+      "",
+      "---",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "**[Item A](https://x.com/a)**",
+      "Descrição A.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    assert.ok(lines[2].endsWith("  "), "título 1º item LANÇAMENTOS deve ter trailing");
+    assert.ok(!lines[3].endsWith("  "), "descrição 1º item não deve ter trailing");
+    assert.ok(lines[5].endsWith("  "), "título 2º item LANÇAMENTOS deve ter trailing");
+    assert.ok(!lines[6].endsWith("  "), "descrição 2º item não deve ter trailing");
+    assert.ok(lines[12].endsWith("  "), "título 1º item OUTRAS NOTÍCIAS deve ter trailing");
+    assert.ok(!lines[13].endsWith("  "), "descrição não deve ter trailing");
+  });
+
+  it("#1439: header com emoji + format real do writer (inline link, sem URL separada)", () => {
+    // Replica o formato canônico que o writer pós-#590 emite:
+    // **[Title](url)**  ← single-line inline link
+    // descrição
+    const md = [
+      "**🔬 PESQUISAS**",
+      "",
+      "**[Co-Scientist: parceiro multi-agente](https://deepmind.google/blog/co-scientist)**",
+      "Sistema multi-agente baseado no Gemini.",
+      "",
+      "**[Alucinação como exploit](https://arxiv.org/abs/2605.19192)**",
+      "Pesquisa formaliza como afirmações visuais não sustentadas.",
+    ].join("\n");
+    const result = addTrailingSpaces(md);
+    const lines = result.split("\n");
+    // Header NÃO deve ter trailing
+    assert.ok(!lines[0].endsWith("  "), "header de seção sem trailing");
+    // Cada título de item deve ter trailing pra forçar <br> antes da descrição
+    assert.ok(lines[2].endsWith("  "), "título 1º item deve ter trailing");
+    assert.ok(lines[5].endsWith("  "), "título 2º item deve ter trailing");
+  });
+
   it("adiciona trailing spaces em título e URL das seções secundárias", () => {
     const md = [
       "LANÇAMENTOS",
