@@ -87,7 +87,7 @@ export function findPreviousIntentionalError(
  */
 export function extractIntentionalErrorFromMd(
   md: string,
-): { narrative: string; detail?: string; gabarito?: string } | null {
+): { narrative: string; detail?: string; gabarito?: string; correct_value?: string } | null {
   // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
   // dentro do bloco. Caso contrário, busca global (back-compat com testes
   // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
@@ -114,12 +114,66 @@ export function extractIntentionalErrorFromMd(
   // Pular placeholder não preenchido.
   if (/^\{PREENCHER/i.test(narrative)) return null;
 
+  // #1443: pull `correct_value` do frontmatter pra que o reveal da próxima
+  // edição possa enforçar "o correto é Y". Frontmatter shape esperada (validada
+  // pelo lint-newsletter-md `intentional-error-flagged`):
+  //   intentional_error:
+  //     correct_value: "..."
+  const correctValue = extractCorrectValueFromFrontmatter(md);
+
   // Back-compat: tenta extrair detail/gabarito do formato legado
   // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
   const legacyRe = /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
   const lm = narrative.match(legacyRe);
-  if (lm) return { narrative, detail: lm[2], gabarito: lm[4] };
-  return { narrative };
+  if (lm) {
+    return {
+      narrative,
+      detail: lm[2],
+      gabarito: lm[4],
+      ...(correctValue ? { correct_value: correctValue } : {}),
+    };
+  }
+  return { narrative, ...(correctValue ? { correct_value: correctValue } : {}) };
+}
+
+/**
+ * Pure (#1443): extrai `intentional_error.correct_value` do frontmatter YAML.
+ * Reusa o mesmo regex leve do lint-newsletter-md.ts — não traz dependência
+ * de YAML parser. Retorna `null` se frontmatter ausente, sem `intentional_error`,
+ * ou sem `correct_value`.
+ */
+export function extractCorrectValueFromFrontmatter(md: string): string | null {
+  // Frontmatter pode estar nas primeiras 60 linhas — espelhar `extractFrontmatter`
+  // de lint-newsletter-md.ts (default scanLines=30) e dar margem extra pro caso
+  // do bloco TÍTULO/SUBTÍTULO injetado por insert-titulo-subtitulo.ts antes do
+  // YAML (#1378).
+  const lines = md.split("\n").slice(0, 60);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  let end = -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return null;
+  const fm = lines.slice(start + 1, end).join("\n");
+  const ieBlock = fm.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlock) return null;
+  for (const line of ieBlock[1].split("\n")) {
+    const m = line.match(/^[ \t]+correct_value\s*:\s*"?(.*?)"?\s*$/);
+    if (m && m[1].trim().length > 0) return m[1].trim();
+  }
+  return null;
 }
 
 /**
@@ -135,7 +189,7 @@ export function extractIntentionalErrorFromMd(
 export function findPreviousIntentionalErrorFromMd(
   editionsRoot: string,
   currentEdition: string,
-): { edition: string; detail: string; gabarito: string; narrative: string } | null {
+): { edition: string; detail: string; gabarito: string; narrative: string; correct_value?: string } | null {
   if (!existsSync(editionsRoot)) return null;
   let entries: string[];
   try {
@@ -162,6 +216,7 @@ export function findPreviousIntentionalErrorFromMd(
         detail: extracted.detail ?? extracted.narrative,
         gabarito: extracted.gabarito ?? "",
         narrative: extracted.narrative,
+        ...(extracted.correct_value ? { correct_value: extracted.correct_value } : {}),
       };
     }
   }
@@ -214,26 +269,72 @@ export function boldQuotedStrings(text: string): string {
 }
 
 /**
- * Pure (#1079): compõe o texto de revelação do erro anterior no novo formato
- * "Na última edição, {narrative}.".
+ * Heurística pra detectar se a narrativa já inclui a correção (#1443).
+ * Match fraseologias comuns: "o correto é X", "mas o correto era X", "na verdade
+ * é X", "deveria ser X", "onde deveria ser X" (formato legado).
  *
- * Prioridade de fonte de narrativa:
- *   1. Campo `narrative` (extraído do MD anterior pela regex livre)
- *   2. Composição a partir de `detail` + `gabarito` legados:
- *      "{detail}, mas o correto era {gabarito}"
- *   3. Fallback genérico quando só `detail` está disponível
- *   4. Fallback genérico sem detalhe
+ * Boundaries: sem `\b` final porque `\b` é ascii-only no JS — falha em "é " (é
+ * não está em `\w`, então não há boundary). Usar prefix-boundary só no início,
+ * e confiar que as fraseologias são distintivas o suficiente.
+ */
+const HAS_CORRECTION_RE =
+  /(?:^|[\s,;.])(o\s+correto\s+(?:é|era)|mas\s+o\s+correto|na\s+verdade\s+(?:é|era)|deveria\s+ser|onde\s+deveria\s+ser)/i;
+
+export function narrativeHasCorrection(narrative: string): boolean {
+  return HAS_CORRECTION_RE.test(narrative);
+}
+
+/**
+ * Pure (#1079, #1443): compõe o texto de revelação do erro anterior no formato
+ * "Na última edição, {narrative}, o correto é {correct_value}.".
+ *
+ * #1443: o reveal precisa SEMPRE incluir uma frase de correção explícita ("o
+ * correto é Y") pra fechar o loop do concurso "ache o erro". Antes desse fix,
+ * o autor podia escrever uma narrativa neutra ("contei que Karpathy cofundou
+ * a OpenAI em 1914, depois liderou a IA da Tesla") sem dizer o que era o
+ * erro — leitor que pulou a edição anterior ficava sem entender.
+ *
+ * Estratégia:
+ *   - Se narrative já tem fraseologia de correção (`o correto é`, `mas o
+ *     correto era`, `na verdade é`, `deveria ser`, `onde deveria ser`) →
+ *     preservar.
+ *   - Senão e `correct_value` (do frontmatter) está presente → auto-append
+ *     `, o correto é {correct_value}`.
+ *   - Senão e há `detail + gabarito` legados → "{detail}, mas o correto era
+ *     {gabarito}".
+ *   - Senão e há só `detail` (sem correct_value/gabarito) → emitir warn
+ *     e devolver narrative/detail crus (formato incompleto, mas não falha).
+ *   - Fallback genérico final.
  *
  * Strings entre aspas são envoltas em negrito (#915).
  */
-export function composeRevealText(prev: IntentionalError & { narrative?: string }): string {
+export function composeRevealText(
+  prev: IntentionalError & { narrative?: string; gabarito?: string },
+): string {
   const narrative = (prev.narrative ?? "").trim();
   const detail = (prev.detail ?? "").trim();
-  const gabarito = ((prev as { gabarito?: string }).gabarito ?? "").trim();
+  const gabarito = (prev.gabarito ?? "").trim();
+  const correctValue = (prev.correct_value ?? "").trim();
 
   let narrativeFinal: string;
   if (narrative) {
-    narrativeFinal = narrative;
+    if (narrativeHasCorrection(narrative)) {
+      narrativeFinal = narrative;
+    } else if (correctValue) {
+      narrativeFinal = `${narrative.replace(/\.$/, "")}, o correto é ${correctValue}`;
+    } else {
+      // Narrative sem correção e sem correct_value pra auto-completar — formato
+      // incompleto (leitor não sabe qual é o erro). Avisar pra ficar visível no
+      // log; ainda assim devolve o que tem (não bloqueia).
+      console.warn(
+        "[render-erro-intencional] WARN: narrativa do erro intencional sem frase " +
+          "de correção (\"o correto é Y\") e sem `intentional_error.correct_value` " +
+          "no frontmatter da edição anterior — reveal sairá sem correção explícita.",
+      );
+      narrativeFinal = narrative;
+    }
+  } else if (correctValue && detail) {
+    narrativeFinal = `${detail.replace(/\.$/, "")}, o correto é ${correctValue}`;
   } else if (gabarito && detail) {
     narrativeFinal = `${detail}, mas o correto era ${gabarito}`;
   } else if (detail) {
@@ -421,10 +522,12 @@ function main(): void {
       edition: fromMd.edition,
       detail: fromMd.detail,
       gabarito: fromMd.gabarito,
+      narrative: fromMd.narrative,
+      correct_value: fromMd.correct_value,
       is_feature: true,
       error_type: "editor_declared",
       source: "md_extract",
-    } as IntentionalError;
+    } as IntentionalError & { narrative?: string; gabarito?: string };
     reveal = composeRevealText(prev);
   } else {
     const errors = loadIntentionalErrors(errorsPath);

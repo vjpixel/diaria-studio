@@ -21,7 +21,9 @@ import {
   currentHasIntentionalErrorFlag,
   boldQuotedStrings,
   extractIntentionalErrorFromMd,
+  extractCorrectValueFromFrontmatter,
   findPreviousIntentionalErrorFromMd,
+  narrativeHasCorrection,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 
@@ -127,6 +129,262 @@ describe("composeRevealText (#1079)", () => {
     const text = composeRevealText(prev);
     assert.match(text, /\*\*'220 anos'\*\*/);
     assert.match(text, /\*\*'22 anos'\*\*/);
+  });
+});
+
+describe("composeRevealText (#1443) — enforce 'o correto é Y'", () => {
+  it("auto-append 'o correto é Y' quando narrative sem correção + correct_value presente (caso Karpathy 260520→260521)", () => {
+    const prev = {
+      edition: "260520",
+      error_type: "factual",
+      is_feature: true,
+      narrative: "contei que Karpathy cofundou a OpenAI em 1914, depois liderou a IA da Tesla",
+      correct_value: "2014",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    assert.match(text, /^Na última edição, /);
+    assert.match(text, /em 1914/);
+    assert.match(text, /, o correto é 2014\.$/);
+  });
+
+  it("preserva narrative quando já tem 'o correto é' (não duplica)", () => {
+    const prev = {
+      edition: "260520",
+      error_type: "factual",
+      is_feature: true,
+      narrative: "disse que GPT-5 foi lançado em 2024, o correto é 2025",
+      correct_value: "2025",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    assert.equal(
+      text,
+      "Na última edição, disse que GPT-5 foi lançado em 2024, o correto é 2025.",
+    );
+    // Não pode aparecer 2x
+    const matches = text.match(/o correto é/g);
+    assert.equal(matches?.length, 1);
+  });
+
+  it("preserva narrative com 'mas o correto era' (fraseologia legacy)", () => {
+    const prev = {
+      edition: "260520",
+      error_type: "factual",
+      is_feature: true,
+      narrative: "escrevi 'V4' onde deveria ser 'V5', mas o correto era V5",
+      correct_value: "V5",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    // narrativeHasCorrection match em 'onde deveria ser' OU 'mas o correto era' → preserve
+    assert.doesNotMatch(text, /,\s*o correto é V5\./);
+    assert.match(text, /mas o correto era V5/);
+    // Narrativa veio intacta (com aspas bolded por #915)
+    assert.match(text, /escrevi \*\*'V4'\*\* onde deveria ser \*\*'V5'\*\*, mas o correto era V5/);
+  });
+
+  it("preserva narrative com 'onde deveria ser' (fraseologia legacy formato 'escrevi X onde deveria ser Y')", () => {
+    const prev = {
+      edition: "260520",
+      error_type: "factual",
+      is_feature: true,
+      narrative: 'escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16"',
+      correct_value: "iPhone 15 e 16",
+    } as IntentionalError & { narrative: string };
+    const text = composeRevealText(prev);
+    // 'onde deveria ser' já cobre a correção — não auto-append
+    assert.match(text, /onde deveria ser/);
+    assert.doesNotMatch(text, /,\s*o correto é/);
+  });
+
+  it("warn + preserva narrative quando sem correct_value disponível (formato incompleto, não bloqueia)", () => {
+    const original = console.warn;
+    let warnedWith = "";
+    console.warn = (msg: string) => {
+      warnedWith += msg;
+    };
+    try {
+      const prev = {
+        edition: "260520",
+        error_type: "factual",
+        is_feature: true,
+        narrative: "exagerei o número de empresas",
+      } as IntentionalError & { narrative: string };
+      const text = composeRevealText(prev);
+      assert.match(text, /^Na última edição, exagerei o número de empresas\.$/);
+      assert.match(warnedWith, /sem frase de correção/);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it("usa 'o correto é' quando só detail + correct_value (sem narrative)", () => {
+    const prev: IntentionalError = {
+      edition: "260520",
+      error_type: "factual",
+      is_feature: true,
+      detail: "ano de fundação errado",
+      correct_value: "2014",
+    };
+    const text = composeRevealText(prev);
+    assert.match(text, /ano de fundação errado, o correto é 2014\./);
+  });
+
+  it("mantém formato legado 'mas o correto era' quando só detail + gabarito (sem correct_value)", () => {
+    const prev = {
+      edition: "260506",
+      error_type: "wrong_number",
+      is_feature: true,
+      detail: "Texto trazia '220 anos' onde deveria ser '22 anos'",
+      gabarito: "22 anos",
+    } as IntentionalError & { gabarito: string };
+    const text = composeRevealText(prev);
+    assert.match(text, /mas o correto era/);
+    assert.match(text, /22 anos/);
+  });
+});
+
+describe("narrativeHasCorrection (#1443)", () => {
+  it("detecta 'o correto é X'", () => {
+    assert.equal(narrativeHasCorrection("disse X, o correto é Y"), true);
+  });
+
+  it("detecta 'o correto era X'", () => {
+    assert.equal(narrativeHasCorrection("disse X, o correto era Y"), true);
+  });
+
+  it("detecta 'mas o correto era X'", () => {
+    assert.equal(narrativeHasCorrection("texto, mas o correto era 22 anos"), true);
+  });
+
+  it("detecta 'na verdade é X'", () => {
+    assert.equal(narrativeHasCorrection("disse X, na verdade é Y"), true);
+  });
+
+  it("detecta 'deveria ser X'", () => {
+    assert.equal(narrativeHasCorrection("escrevi 5, deveria ser 50"), true);
+  });
+
+  it("detecta 'onde deveria ser X' (legacy)", () => {
+    assert.equal(
+      narrativeHasCorrection("escrevi 'V4' onde deveria ser 'V5'"),
+      true,
+    );
+  });
+
+  it("retorna false em narrativa neutra sem correção", () => {
+    assert.equal(
+      narrativeHasCorrection(
+        "contei que Karpathy cofundou a OpenAI em 1914, depois liderou a IA da Tesla",
+      ),
+      false,
+    );
+  });
+
+  it("retorna false em texto qualquer", () => {
+    assert.equal(narrativeHasCorrection("nada relacionado a correção"), false);
+  });
+});
+
+describe("extractCorrectValueFromFrontmatter (#1443)", () => {
+  it("extrai correct_value do frontmatter (aspas duplas)", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      '  description: "Ano de fundação da OpenAI no DESTAQUE 2"',
+      '  location: "DESTAQUE 2"',
+      '  category: "factual"',
+      '  correct_value: "2014"',
+      "---",
+      "",
+      "Body",
+    ].join("\n");
+    assert.equal(extractCorrectValueFromFrontmatter(md), "2014");
+  });
+
+  it("extrai correct_value sem aspas", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: x",
+      "  location: y",
+      "  category: factual",
+      "  correct_value: 2014",
+      "---",
+    ].join("\n");
+    assert.equal(extractCorrectValueFromFrontmatter(md), "2014");
+  });
+
+  it("retorna null quando sem frontmatter", () => {
+    assert.equal(extractCorrectValueFromFrontmatter("Sem frontmatter"), null);
+  });
+
+  it("retorna null quando frontmatter sem intentional_error", () => {
+    const md = ["---", "title: X", "---", "body"].join("\n");
+    assert.equal(extractCorrectValueFromFrontmatter(md), null);
+  });
+
+  it("retorna null quando intentional_error sem correct_value", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: x",
+      "  location: y",
+      "  category: factual",
+      "---",
+    ].join("\n");
+    assert.equal(extractCorrectValueFromFrontmatter(md), null);
+  });
+
+  it("#1378: frontmatter após bloco TÍTULO (até linha 60) ainda é detectado", () => {
+    const md = [
+      "**TÍTULO**",
+      "",
+      "Manchete da edição",
+      "",
+      "**SUBTÍTULO**",
+      "",
+      "Subtítulo",
+      "",
+      "---",
+      "intentional_error:",
+      '  description: "x"',
+      '  location: "y"',
+      '  category: "factual"',
+      '  correct_value: "42"',
+      "---",
+      "",
+      "Body",
+    ].join("\n");
+    assert.equal(extractCorrectValueFromFrontmatter(md), "42");
+  });
+});
+
+describe("extractIntentionalErrorFromMd (#1443) — agora retorna correct_value", () => {
+  it("passa correct_value do frontmatter pra estrutura retornada", () => {
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: x",
+      "  location: y",
+      "  category: factual",
+      '  correct_value: "2014"',
+      "---",
+      "",
+      "Body com **ERRO INTENCIONAL**",
+      "",
+      "Nessa edição, contei que Karpathy cofundou a OpenAI em 1914.",
+      "",
+    ].join("\n");
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.narrative, "contei que Karpathy cofundou a OpenAI em 1914");
+    assert.equal(r?.correct_value, "2014");
+  });
+
+  it("correct_value undefined quando frontmatter ausente", () => {
+    const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
+    const r = extractIntentionalErrorFromMd(md);
+    assert.equal(r?.detail, "X");
+    assert.equal(r?.gabarito, "Y");
+    assert.equal(r?.correct_value, undefined);
   });
 });
 
@@ -663,6 +921,68 @@ describe("render-erro-intencional CLI (#911)", () => {
       assert.match(updated, /22 anos/);
       // Placeholder pra autor escrever o erro corrente
       assert.match(updated, /\{PREENCHER_NARRATIVA_DO_ERRO\}/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1443: integração — auto-append 'o correto é Y' lendo prev MD com frontmatter + narrative sem correção", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-int-1443-"));
+    try {
+      const editionsRoot = join(dir, "editions");
+      mkdirSync(join(editionsRoot, "260520"), { recursive: true });
+      mkdirSync(join(editionsRoot, "260521"), { recursive: true });
+
+      // Edição anterior 260520: frontmatter com correct_value + narrative sem correção
+      writeFileSync(
+        join(editionsRoot, "260520", "02-reviewed.md"),
+        [
+          "---",
+          "intentional_error:",
+          '  description: "Ano de fundação da OpenAI no DESTAQUE 2"',
+          '  location: "DESTAQUE 2"',
+          '  category: "factual"',
+          '  correct_value: "2014"',
+          "---",
+          "",
+          "Body.",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, foo.",
+          "",
+          "Nessa edição, contei que Karpathy cofundou a OpenAI em 1914, depois liderou a IA da Tesla.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // Edição atual 260521: MD que vai receber a seção ERRO INTENCIONAL
+      const mdPath = join(editionsRoot, "260521", "02-reviewed.md");
+      writeFileSync(
+        mdPath,
+        ["OUTRAS NOTÍCIAS", "", "Item.", "", "---", "", "**ASSINE**", "X"].join("\n"),
+        "utf8",
+      );
+
+      const r = runCli([
+        "--edition",
+        "260521",
+        "--md",
+        mdPath,
+        "--editions-dir",
+        editionsRoot,
+        "--errors",
+        join(dir, "ghost.jsonl"), // forçar caminho MD
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.prev_source, "md");
+      assert.equal(out.prev_edition, "260520");
+      assert.equal(out.prev_revealed, true);
+      const updated = readFileSync(mdPath, "utf8");
+      // O reveal precisa ter "o correto é 2014" (auto-appended)
+      assert.match(updated, /Na última edição, contei que Karpathy[^\n]*, o correto é 2014\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

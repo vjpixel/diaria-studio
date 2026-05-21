@@ -37,6 +37,10 @@ export interface IntentionalError {
   destaque?: number | string;
   is_feature: boolean;
   detail?: string;
+  /** Valor correto (#1443) — vem do frontmatter `intentional_error.correct_value`
+   * e é usado pelo render-erro-intencional pra garantir que o reveal da edição
+   * seguinte inclui "o correto é Y". */
+  correct_value?: string;
   source?: string;
   detected_by?: string;
   resolution?: string;
@@ -173,11 +177,11 @@ export function frontmatterToEntry(
     destaque: destaque || undefined,
     is_feature: true,
     detail: fm.description ?? "",
+    correct_value: fm.correct_value,
     source: "frontmatter_02_reviewed",
     detected_by: "lint-newsletter-md.ts intentional-error-flagged",
     resolution: "published_intentionally",
-    ...(fm.correct_value ? { correct_value: fm.correct_value } : {}),
-  } as IntentionalError;
+  };
 }
 
 /**
