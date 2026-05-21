@@ -11,6 +11,7 @@ import {
   extractEiaFrontmatter,
   resolveEiaFrontmatterBlock,
   removeEmdashes,
+  injectMissingSectionSeparators,
 } from "../scripts/normalize-newsletter.ts";
 import { writeEiaAnswerSidecar } from "../scripts/lib/eia-answer.ts";
 
@@ -608,5 +609,136 @@ describe("removeEmdashes — pontuação adjacente (#1098)", () => {
   it("preserva meia-risca em intervalo numérico (não toca –)", () => {
     const r = removeEmdashes("1989–2002");
     assert.equal(r.text, "1989–2002", "meia-risca (U+2013) não deve mudar — só travessão (U+2014)");
+  });
+});
+
+describe("injectMissingSectionSeparators (#1441)", () => {
+  it("injeta --- antes de SORTEIO quando colado em OUTRAS NOTÍCIAS (caso 260520)", () => {
+    const md = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "**[Item 1](https://x.com/a)**",
+      "desc",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "texto",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 1);
+    assert.match(r.text, /\n\n---\n\n\*\*🎁 SORTEIO\*\*/);
+  });
+
+  it("idempotente: --- já presente entre OUTRAS NOTÍCIAS e SORTEIO → injected=0", () => {
+    const md = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "**[Item 1](https://x.com/a)**",
+      "",
+      "---",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "texto",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 0);
+    assert.equal(r.text, md);
+  });
+
+  it("injeta --- antes de PARA ENCERRAR quando colado em SORTEIO", () => {
+    const md = [
+      "**🎁 SORTEIO**",
+      "",
+      "x",
+      "",
+      "**🙋🏼‍♀️ PARA ENCERRAR**",
+      "",
+      "y",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 1);
+    assert.match(r.text, /\n---\n\n\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
+  });
+
+  it("injeta múltiplos separadores quando 3 seções fixas estão coladas", () => {
+    const md = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "**[X](https://x.com/a)**",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "x",
+      "",
+      "**🙋🏼‍♀️ PARA ENCERRAR**",
+      "",
+      "y",
+      "",
+      "**ASSINE**",
+      "",
+      "z",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 3);
+  });
+
+  it("não injeta antes de DESTAQUE / LANÇAMENTOS / PESQUISAS / OUTRAS (não são alvo do fix)", () => {
+    const md = [
+      "**DESTAQUE 1**",
+      "",
+      "**[Link](https://x.com/a)**",
+      "",
+      "**🚀 LANÇAMENTOS**",
+      "",
+      "**[L1](https://x.com/l1)**",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "**[N1](https://x.com/n1)**",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 0);
+  });
+
+  it("preserva conteúdo intacto exceto pelos separadores injetados", () => {
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "**[A](https://x.com/a)**",
+      "Texto descritivo do item.",
+      "",
+      "**[B](https://x.com/b)**",
+      "Outro texto.",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "Convite ao concurso.",
+    ].join("\n");
+    const r = injectMissingSectionSeparators(md);
+    assert.equal(r.injected, 1);
+    // Conteúdo de OUTRAS NOTÍCIAS preservado
+    assert.match(r.text, /\*\*\[A\]\(https:\/\/x\.com\/a\)\*\*/);
+    assert.match(r.text, /Texto descritivo do item\./);
+    assert.match(r.text, /\*\*\[B\]\(https:\/\/x\.com\/b\)\*\*/);
+    assert.match(r.text, /Convite ao concurso\./);
+  });
+});
+
+describe("normalizeNewsletter (#1441) — integração com inject separators", () => {
+  it("output tem --- entre OUTRAS NOTÍCIAS e SORTEIO mesmo quando input sem separator", () => {
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "**[Item](https://x.com/a)**",
+      "Desc.",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "x",
+    ].join("\n");
+    const r = normalizeNewsletter(md);
+    assert.match(r.text, /\n---\n\n\*\*🎁 SORTEIO\*\*/);
+    assert.ok(r.report.warnings.some((w) => /separador.*injetado/.test(w)));
   });
 });

@@ -1,9 +1,99 @@
 # Últimas edições publicadas — para dedup
 
-**atualizado em:** 2026-05-19
+**atualizado em:** 2026-05-21
 **edições carregadas:** 14
 
 Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
+
+---
+
+## 2026-05-21 — "Google lança Gemini Omni no Google I/O"
+URL: https://diaria.beehiiv.com/p/google-lan-a-gemini-omni-no-google-i-o
+
+Links usados:
+- https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni/
+- https://blog.google/innovation-and-ai/sundar-pichai-io-2026/
+- https://blog.google/products/ads-commerce/asset-studio-updates/
+- https://blog.google/innovation-and-ai/technology/developers-tools/google-io-2026-developer-highlights/
+- https://deepmind.google/blog/introducing-google-antigravity-2-0/
+- https://openai.com/index/advancing-content-provenance
+- https://deepmind.google/blog/fast-tracking-genetic-leads-to-reverse-cellular-aging/
+- https://deepmind.google/blog/gemini-for-science-ai-experiments-and-tools-for-a-new-era-of-discovery/
+- https://openai.com/index/the-next-phase-of-education-for-countries
+- https://openai.com/index/introducing-openai-for-singapore
+- https://huggingface.co/blog/allenai/olmoearth-v1-1
+- https://arxiv.org/abs/2605.19156
+- https://deepmind.google/blog/co-scientist-a-multi-agent-ai-partner-to-accelerate-research/
+- https://arxiv.org/abs/2605.19192
+- https://arxiv.org/abs/2605.19099
+- https://arxiv.org/abs/2605.19127
+- https://www.cnnbrasil.com.br/economia/negocios/meta-inicia-demissao-de-8-mil-funcionarios-para-focar-em-ia-diz-bloomberg/
+- https://cybersecuritynews.com/claude-code-rce-flaw/#amp_tf=From%20%251%24s&aoh=17792117372847&csi=0&referrer=https%3A%2F%2Fwww.google.com&ampshare=https%3A%2F%2Fcybersecuritynews.com%2Fclaude-code-rce-flaw%2F
+- https://iclnoticias.com.br/china-quer-cobrar-por-danos-gerados-por-ia/
+- https://blog.google/products-and-platforms/products/workspace/workspace-updates/
+- https://centraldovarejo.com.br/tiktok-world-2026-apresenta-novas-solucoes-de-ia-commerce-e-performance-para-anunciantes/
+- https://www.bbc.com/future/article/20260519-google-tackles-attempts-to-hack-its-ai-results
+- https://cursor.com/blog/composer-2-5
+- https://mittechreview.com.br/musk-v-altman-julgamento/
+- https://www.theguardian.com/technology/2026/may/19/meta-jobs-ai-transfers
+- https://www.cnnbrasil.com.br/tecnologia/receio-de-ataques-apos-lancamento-do-mythos-ia-da-anthropic-e-exagero/
+- https://canaltech.com.br/mercado/como-o-chatgpt-e-o-google-escolhem-quais-fontes-vao-citar/
+- https://www.anthropic.com/news/widening-conversation-ai
+- https://www.theguardian.com/commentisfree/2026/may/20/elon-musk-us-government-ai-law
+- https://www.saasultra.com/startup-funding-capital-is-moving/
+- https://alphasignalai.substack.com/p/rag-and-long-context-arent-enough
+- https://www.theguardian.com/technology/2026/may/20/ai-engineer-says-google-unfairly-sacked-him-after-he-protested-against-work-for-israel
+- https://canaltech.com.br/apps/play-store-quer-revolucionar-indicacao-de-novos-apps-no-android-veja-como/
+- https://www.cnnbrasil.com.br/internacional/sistema-baseado-em-drones-canivete-e-apresentado-para-exercito-dos-eua/
+- https://canaltech.com.br/apps/teclado-do-android-usara-capturas-de-tela-e-conversas-para-escrever-por-voce/
+- https://olhardigital.com.br/2026/05/19/inteligencia-artificial/gemini-spark-e-seu-novo-agente-de-ia-do-google/
+- https://www.businessinsider.com/pizza-hut-ai-system-dragontail-lawsuit-franchisee-2026-5
+- https://9to5google.com/2026/05/12/gemini-chrome-android/
+
+---
+
+## 2026-05-20 — "Google I/O: Gemini 3.5, Omni e agentes no Search"
+URL: https://diaria.beehiiv.com/p/karpathy-entra-no-time-de-pr-treino-da-anthropic
+
+Links usados:
+- https://blog.google/innovation-and-ai/infrastructure-and-cloud/google-cloud/blackstone-tpu-cloud/
+- https://huggingface.co/blog/ettin-reranker
+- https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/
+- https://aimultiple.com/ai-chip-makers
+- https://techcrunch.com/2026/05/19/openai-co-founder-andrej-karpathy-joins-anthropics-pre-training-team/
+- https://www.anthropic.com/news/anthropic-kpmg
+- https://www.livemint.com/companies/news/ai-not-engineers-for-coding-salesforce-to-spend-300-million-on-anthropic-tokens-ceo-marc-benioff-says-11779085374756.html#amp_tf=From%20%251%24s&aoh=17791986080243&csi=0&referrer=https%3A%2F%2Fwww.google.com&ampshare=https%3A%2F%2Fwww.livemint.com%2Fcompanies%2Fnews%2Fai-not-engineers-for-coding-salesforce-to-spend-300-million-on-anthropic-tokens-ceo-marc-benioff-says-11779085374756.html
+- https://www.theguardian.com/business/2026/may/19/standard-chartered-bank-cut-jobs-ai-london
+- https://tiinside.com.br/18/05/2026/itau-unibanco-leva-ia-generativa-para-maquininha/
+- https://www.anthropic.com/news/anthropic-acquires-stainless
+- https://canaltech.com.br/apps/nao-e-x-e-y-linkedin-vai-reduzir-o-alcance-de-publicacoes-feitas-com-ia/
+- https://canaltech.com.br/apps/google-faz-grandes-mudancas-no-gemini-que-vao-frustrar-usuarios-gratuitos/
+- https://www.cnnbrasil.com.br/economia/negocios/como-a-ia-tem-impulsionado-receitas-de-empresas-e-revolucionado-mercados/
+- https://www.buildfastwithai.com/blogs/gemini-3-2-flash-google-io-2026
+- https://exame.com/invest/minhas-financas/btg-lanca-assistente-de-ia-que-consolida-despesas-e-gera-previsao-de-gastos/
+- https://www.cnnbrasil.com.br/economia/negocios/conheca-a-seven-nova-assistente-de-ia-do-super-app-do-inter/
+- https://www.seplag.ce.gov.br/2026/05/18/ceara-apresenta-politica-de-inteligencia-artificial-para-modernizar-servicos-publicos/
+- https://www.cnnbrasil.com.br/economia/macroeconomia/china-diz-que-xi-jinping-e-trump-realizaram-conversas-construtivas-sobre-ia/
+- https://cohere.com/blog/cohere-acquires-reliant-ai-expand-sovereign-enterprise-ai
+- https://canaltech.com.br/colunas/o-fim-do-saas-tradicional-por-que-o-mercado-esta-parando-de-pagar-por-licencas/
+- https://www.androidauthority.com/perplexity-usage-limits-promo-code-crackdown-3668441/
+- https://startupi.com.br/transformacao-corporativa-no-brasil-em-2026/
+- https://blog.google/products-and-platforms/products/education/measuring-the-impact-of-ai-on-teaching-and-learning/
+- https://alphasignalai.substack.com/p/11-open-source-repos-every-ai-infra
+- https://www.theguardian.com/us-news/2026/may/18/trump-cuts-ai-weather-prediction-forecasts
+- https://www.correiobraziliense.com.br/aqui/2026/05/18/como-a-inteligencia-artificial-esta-transformando-os-supermercados-do-pais/
+- https://www.dataprivacybr.org/data-participa-do-seminario-principios-e-diretrizes-para-regulacao-de-plataformas-digitais/
+- https://www.theguardian.com/news/video/2026/may/19/musk-v-altman-tech-bros-at-war-over-openai-the-latest
+- https://www.theguardian.com/us-news/2026/may/18/eric-schmidt-ai-university-commencement-speech-booed
+- https://blog.google/products-and-platforms/products/education/partnering-with-unicef-to-support-innovation-in-education-across-the-globe/
+- https://www.thundercompute.com/blog/nvidia-h200-pricing
+- https://www.distillintelligence.com/briefings/semiconductors-ai-chips-2026-05-15
+- https://www.bensbites.com/p/can-i-get-my-agents-on-the-phone
+- https://codebit.com.br/blog/inteligencia-artificial/o-que-muda-com-a-ia-em-2026-do-hype-a-adocao-real
+- https://the-decoder.com/cursors-composer-2-5-matches-opus-4-7-and-gpt-5-5-benchmarks-at-a-fraction-of-the-cost/
+- https://www.makeuseof.com/notebooklm-prompts-learn-complex-topics/
+- https://www.businessinsider.com/ex-google-executive-wants-to-get-people-off-their-screens-2026-5
+- https://deadline.com/2026/05/the-mandalorian-and-grogu-review-pedro-pascal-jon-favreau-1236915463/
 
 ---
 
@@ -414,45 +504,5 @@ Links usados:
 - https://mittechreview.com.br/deepseek-v4-modelo-ia/
 - https://exame.com/inteligencia-artificial/nvidia-microsoft-e-uber-podem-estar-em-lista-das-empresas-afetadas-por-falha-em-ferramenta-de-ia/
 - https://importai.substack.com/p/import-ai-455-automating-ai-research
-
----
-
-## 2026-05-04 — "Meta compra startup para construir robô humanoide"
-URL: https://diaria.beehiiv.com/p/meta-compra-startup-para-construir-rob-humanoide
-
-Links usados:
-- https://deepmind.google/blog/ai-co-clinician
-- https://openai.com/index/where-the-goblins-came-from
-- https://venturebeat.com/technology/xai-launches-grok-4-3-at-an-aggressively-low-price-and-a-new-fast-powerful-voice-cloning-suite
-- https://mittechreview.com.br/economia-bicos-treina-robos-humanoides
-- https://canaltech.com.br/inteligencia-artificial/crie-playlists-perfeitas-no-spotify-com-estes-prompts-do-claude
-- https://canaltech.com.br/inteligencia-artificial/prompts-claude-para-escrever-melhor-resumir-arquivos-organizar-ideias
-- https://alphasignalai.substack.com/p/how-kimi-k26-deploys-300-sub-agents
-- https://mittechreview.com.br/boom-robos-humanoides-ia
-- https://canaltech.com.br/inteligencia-artificial/mude-sua-rotina-de-trabalho-em-90-dias-com-estas-dicas-de-ia
-- https://canaltech.com.br/inteligencia-artificial/o-que-mudou-de-verdade-no-chatgpt-images-20
-- https://techcrunch.com/2026/05/01/meta-buys-robotics-startup-to-bolster-its-humanoid-ai-ambitions
-- https://www.anthropic.com/research/claude-personal-guidance
-- https://canaltech.com.br/apps/blablacar-leva-reservas-de-caronas-e-onibus-para-o-chatgpt
-
----
-
-## 2026-04-30 — "Brasil emprega mais... em cargos que somem"
-URL: https://diaria.beehiiv.com/p/brasil-emprega-mais-em-cargos-que-somem
-
-Links usados:
-- https://aws.amazon.com/about-aws/whats-new/2026/04/bedrock-openai-models-codex-managed-agents/
-- https://blogs.nvidia.com/blog/nemotron-3-nano-omni-multimodal-ai-agents/
-- https://poolside.ai/blog/laguna-a-deeper-dive
-- https://arxiv.org/html/2604.24636v1
-- https://techcrunch.com/2026/04/28/google-expands-pentagons-access-to-its-ai-after-anthropics-refusal/
-- https://www.anthropic.com/news/google-broadcom-partnership-compute
-- https://www.cnnbrasil.com.br/economia/negocios/musk-presta-depoimento-em-processo-contra-ceo-da-openai/
-- https://www.cnnbrasil.com.br/economia/negocios/com-adesao-empresarial-citi-estima-mercado-de-ia-em-mais-de-us-4-trilhoes/
-- https://blog.google/products-and-platforms/platforms/google-pay/agent-payments-protocol-fido-alliance/
-- https://www.muvucapopular.com.br/2026/04/28/recorde-de-emprego-no-brasil-recorde-de-jovens-em-funcoes-que-estao-em-extincao/
-- https://techcrunch.com/2026/04/27/openai-could-be-making-a-phone-with-ai-agents-replacing-apps/
-- https://techcrunch.com/2026/04/27/deepminds-david-silver-just-raised-1-1b-to-build-an-ai-that-learns-without-human-data/
-- https://openai.com/index/our-agreement-with-the-department-of-war/
 
 ---
