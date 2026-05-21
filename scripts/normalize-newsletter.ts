@@ -249,9 +249,27 @@ const SECTION_HEADERS = [
   "NOTICIAS",
 ];
 
+/**
+ * Strip optional emoji prefix from a section header literal (#1439).
+ * Writer pós-#590 emite headers como `**🚀 LANÇAMENTOS**`, `**🔬 PESQUISAS**`,
+ * `**📰 OUTRAS NOTÍCIAS**`. Antes do fix, isSectionHeader strippava só `**`
+ * e o resultado era `🚀 LANÇAMENTOS` que NÃO batia com SECTION_HEADERS,
+ * fazendo o state machine de addTrailingSpaces nunca entrar em ctx=section.
+ * Resultado: trailing 2-space dos títulos de item (que writer já incluía)
+ * eram strippados pelo `trimEnd` na entrada do loop e não re-aplicados.
+ *
+ * Caso real 260521: writer draft tinha 16 linhas com trailing `  ` em
+ * LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS; pós-normalize só 9 sobraram —
+ * exatamente os destaques (que vão pelo branch ctx="highlight" que
+ * funciona). Pós-fix: todas 16 preservadas.
+ */
+const EMOJI_PREFIX_RE = /^[\p{Emoji}‍️]+\s*/u;
+
 function isSectionHeader(line: string): boolean {
-  // Aceita plain ou **negrito** (#590) — writer pós-#590 emite headers com bold
-  const trimmed = line.trim().replace(/^\*\*|\*\*$/g, "").trim();
+  // Aceita plain ou **negrito** (#590) — writer pós-#590 emite headers com bold.
+  // Também strippa emoji prefix opcional (#1439) — writer canônico usa
+  // `**🚀 LANÇAMENTOS**`, `**🔬 PESQUISAS**`, `**📰 OUTRAS NOTÍCIAS**`.
+  const trimmed = line.trim().replace(/^\*\*|\*\*$/g, "").trim().replace(EMOJI_PREFIX_RE, "").trim();
   return SECTION_HEADERS.some((h) => trimmed === h);
 }
 
