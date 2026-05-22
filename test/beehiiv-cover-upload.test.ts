@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCoverUploadJs,
+  buildCoverReplaceJs,
   classifyUploadResult,
 } from "../scripts/lib/beehiiv-cover-upload.ts";
 
@@ -81,5 +82,54 @@ describe("classifyUploadResult (#1416)", () => {
     if (!r.ok) {
       assert.match(r.reason, /não bate com pattern/);
     }
+  });
+});
+
+describe("buildCoverReplaceJs (#1457)", () => {
+  it("detecta cover existente via Beehiiv S3 pattern", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    assert.ok(js.includes("beehiiv-images-production"));
+    assert.ok(js.includes("found existing cover"));
+  });
+
+  it("usa aria-label selectors específicos (não regex frouxa)", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    // Selectors canonical via aria-label
+    assert.ok(js.includes('aria-label*="Remove thumbnail" i'));
+    assert.ok(js.includes('aria-label*="Delete thumbnail" i'));
+    // Distractors EXPLICITAMENTE blocked
+    assert.ok(js.includes("twitter|share|navigate|tab|settings"));
+    // Word boundary em vez de char solto
+    assert.ok(js.includes("\\b(remove|delete|trash)\\b"));
+  });
+
+  it("trata caso sem cover existente (fallback pra Add thumbnail flow)", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    // Quando `existing` é null, ainda procura "Add thumbnail" ou "Change thumbnail"
+    assert.ok(js.includes("add thumbnail|change thumbnail"));
+  });
+
+  it("aguarda confirmação modal pós-remove", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    assert.ok(js.includes("Confirm|Yes|Remove|Delete"));
+    assert.ok(js.includes("confirmed modal"));
+  });
+
+  it("encoda URL como JSON string (escape seguro)", () => {
+    const url = `https://poll.diaria.workers.dev/img/img-260520-04-d1-2x1.jpg?v=3&t=now`;
+    const js = buildCoverReplaceJs(url);
+    assert.ok(js.includes('"' + url + '"'));
+  });
+
+  it("NÃO clica X (previously Twitter) — caso real 260522", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    assert.ok(js.includes("twitter"));
+    // Distractor blocking inclui share/navigate/tab/settings/preview/publish/schedule/save
+    assert.ok(js.includes("twitter|share|navigate|tab|settings|preview|publish|schedule|save"));
+  });
+
+  it("retorna replaced flag pra distinguir replace vs initial upload", () => {
+    const js = buildCoverReplaceJs("https://x.com/new.jpg");
+    assert.ok(js.includes("replaced: !!existing"));
   });
 });
