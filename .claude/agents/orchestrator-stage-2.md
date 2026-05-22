@@ -60,17 +60,19 @@ Exit code handling:
 
 **INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**, não só auto_approve/test_mode. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
 
-**Pré:** rodar coordenador inline (top-level) que extrai metadata do `01-approved-capped.json`:
-```bash
-npx tsx scripts/extract-destaques.ts data/editions/{AAMMDD}/_internal/01-approved-capped.json --json
-```
+**Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. Verificar que `highlights.length === 3` (fallback condition). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
 
-Saída: `{ destaques: [{n,category_label,article}], peer_titles_per_destaque }`.
+`category_label` é derivado de `highlights[N-1].bucket`:
+- `lancamento` → "LANÇAMENTO"
+- `pesquisa` → "PESQUISA"
+- `noticias` → "MERCADO" (ou ajustar baseado no tema)
+
+Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
 **Dispatch paralelo (uma única mensagem com 5 chamadas Agent — 3 writer + 2 social):**
 
 1. `Agent` → `writer-destaque` × 3 — uma instância por destaque (n=1, n=2, n=3). Cada uma recebe:
-   - `destaque_n`, `destaque` (article), `category_label`
+   - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
    - `peer_titles` (titles dos outros 2 — preserva voice diversity)
    - `edition_date`
    - `out_path = data/editions/{AAMMDD}/_internal/02-d{N}-draft.md`
@@ -80,27 +82,35 @@ Saída: `{ destaques: [{n,category_label,article}], peer_titles_per_destaque }`.
 
 3. `Agent` → `social-facebook` (mesmo input).
 
-**Pós:** stitch coordenador inline produz `02-draft.md` final:
-- Coverage line (top)
-- DESTAQUE 1 (lê `02-d1-draft.md`)
-- DESTAQUE 2 (lê `02-d2-draft.md`)
-- É IA? section (mesma lógica do writer original)
-- DESTAQUE 3 (lê `02-d3-draft.md`)
-- LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS sections (escrito inline)
-- ERRO INTENCIONAL placeholder
-- ASSINE / encerramento
+**Aguardar os 3 writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
+
+**Pós:** stitch coordenador inline produz `02-draft.md` final via `Write` tool, concatenando:
+- Coverage line (top — gerada pelo `sync-coverage-line.ts` posteriormente, deixar placeholder por hora)
+- DESTAQUE 1 block (lê `_internal/02-d1-draft.md`)
+- DESTAQUE 2 block (lê `_internal/02-d2-draft.md`)
+- É IA? section — coordenador lê `01-eia.md` se existir, ou injeta placeholder
+- DESTAQUE 3 block (lê `_internal/02-d3-draft.md`)
+- **LANÇAMENTOS** section: lista items de `01-approved-capped.json > lancamento[]` em formato `[**title**](url)\\nsummary` (1 item por linha, separados por linha em branco)
+- **PESQUISAS** section: idem para `pesquisa[]`
+- **OUTRAS NOTÍCIAS** section: idem para `noticias[]`
+- `**ERRO INTENCIONAL**` placeholder: `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}`
+- `**🎁 SORTEIO**` block (texto fixo do template)
+- `**🙋🏼‍♀️ PARA ENCERRAR**` block (texto fixo do template — ver `context/templates/newsletter.md`)
 
 Lint pós-stitch valida overlap de hook entre destaques; se overlap detectado, re-dispatch o destaque "perdedor" com peer_titles atualizado.
 
 ### Modo fallback: writer único (legacy, casos edge)
 
-Usar quando o coordenador detectar **destaque count ≠ 3** (edge case sem 3 destaques aprovados) ou **falha de `extract-destaques.ts`**. Operacionalmente, o coordenador inline deve:
+Usar quando `highlights.length ≠ 3` (edge case sem 3 destaques aprovados). Coordenador detecta isso lendo JSON antes do dispatch:
 
-```bash
-DESTAQUE_COUNT=$(npx tsx scripts/extract-destaques.ts ... --json | jq '.destaques | length')
-if [ "$DESTAQUE_COUNT" -ne 3 ]; then
-  # fallback pro writer único legacy
-fi
+```typescript
+// Pseudo: top-level lê via Read tool, parsea, branch:
+const approved = JSON.parse(read("_internal/01-approved-capped.json"));
+if (approved.highlights.length !== 3) {
+  // fallback pro writer único legacy (abaixo)
+} else {
+  // dispatch paralelo writer-destaque × 3 (acima)
+}
 ```
 
 Fallback dispatch:

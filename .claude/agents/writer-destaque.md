@@ -109,4 +109,4 @@ Retorne JSON:
 
 Trade-off: voice consistency pode sofrer (cada agente vê só seu destaque + peer_titles). Lint pós-stitch valida overlap; se detectar, o coordenador re-dispatcha o destaque com peer_titles atualizado.
 
-Use este sub-agente apenas quando o orchestrator-stage-2.md instruir explicitamente (modo paralelo opt-in). Default ainda é o `writer` único — flip pra paralelo quando A/B test confirmar qualidade equivalente.
+**#1451 (2026-05-21):** este sub-agente é o **default** em todas as situações do Stage 2 — não mais opt-in. Modo `writer` único legacy só é usado em fallback quando `highlights.length ≠ 3` (edge case raro). Ver `orchestrator-stage-2.md` §2a "Modo padrão: writer-destaque × 3 paralelo".
