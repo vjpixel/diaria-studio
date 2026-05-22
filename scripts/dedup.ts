@@ -181,10 +181,26 @@ function readApprovedDestaqueUrls(approvedPath: string): string[] {
  */
 export function readReviewedDestaqueUrls(reviewedPath: string): string[] {
   if (!existsSync(reviewedPath)) return [];
-  const md = readFileSync(reviewedPath, "utf8");
+  let md: string;
+  try {
+    md = readFileSync(reviewedPath, "utf8");
+  } catch {
+    // Race com OneDrive sync ou permissão flake — fail gracioso
+    return [];
+  }
   const urls: string[] = [];
   const lines = md.split(/\r?\n/);
   let inDestaque = false;
+  // Markdown link tolerante a URLs com parênteses balanceados (Wikipedia etc.):
+  // captura até o último `)` que precede whitespace ou fim de linha.
+  // Aceita formatos:
+  //   [**title**](url)     (canonical)
+  //   **[title](url)**     (writer variant)
+  //   [title](url)         (bare inline)
+  // Trim já remove leading/trailing whitespace; t.startsWith() permitiria
+  // qualquer prefixo de blockquote/list, mas conservador: regex aceita só
+  // os prefixos esperados pelo renderer.
+  const LINK_PATTERN = /\*{0,2}\[(?:\*{0,2})?[^\]]+(?:\*{0,2})?\]\((https?:\/\/[^\s]+?)\)\*{0,2}\s*$/;
   for (const line of lines) {
     const t = line.trim();
     // Reset on section separator
@@ -192,15 +208,14 @@ export function readReviewedDestaqueUrls(reviewedPath: string): string[] {
       inDestaque = false;
       continue;
     }
-    // Destaque header (com ou sem emoji+pipe)
+    // Destaque header (com ou sem emoji+pipe, tolerante a leading prefix)
     if (/^\*{0,2}DESTAQUE\s+\d+\s*\|/i.test(t)) {
       inDestaque = true;
       continue;
     }
     // Dentro de destaque, pega primeira URL canônica ou inline-link
     if (inDestaque) {
-      // [**title**](url) ou **[title](url)** ou [title](url)
-      const m = t.match(/^\*{0,2}\[(?:\*{0,2})?[^\]]+(?:\*{0,2})?\]\((https?:\/\/[^)\s]+)\)\*{0,2}/);
+      const m = t.match(LINK_PATTERN);
       if (m) {
         urls.push(m[1]);
         inDestaque = false; // só primeira URL conta
@@ -221,13 +236,28 @@ export function readReviewedDestaqueUrls(reviewedPath: string): string[] {
  */
 export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
   if (!existsSync(htmlPath)) return [];
-  const html = readFileSync(htmlPath, "utf8");
+  let html: string;
+  try {
+    html = readFileSync(htmlPath, "utf8");
+  } catch {
+    return [];
+  }
   const urls: string[] = [];
-  // Find each DESTAQUE marker + first <a href> following
-  const re = /DESTAQUE\s+\d+[\s\S]*?<a\s+[^>]*href=["']([^"']+)["']/gi;
+  // Decodifica entities HTML comuns no href ANTES de extrair pra alinhar com
+  // canonicalize() (que opera em URL "limpa", não encoded).
+  const decoded = html.replace(/&amp;/gi, "&");
+  // Pattern restritivo: marker DESTAQUE seguido de <a href> DENTRO de até
+  // ~500 chars (~scope típico do bloco do destaque no template). Sem boundary,
+  // [\s\S]*? podia pular pra <a> de footer/share em template degradado.
+  // O lookahead negativo `?!\1` previne span passar pelo próximo marker.
+  const re = /DESTAQUE\s+\d+[\s\S]{0,500}?<a\s+[^>]*href=["']([^"']+)["']/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
-    urls.push(m[1]);
+    const href = m[1];
+    // Skip non-article links: anchors, share/permalink, mailto, javascript
+    if (/^(#|mailto:|javascript:|tel:)/i.test(href)) continue;
+    if (/share\.|\/share\?|\/unsubscribe|\/share-this/i.test(href)) continue;
+    urls.push(href);
   }
   return urls;
 }

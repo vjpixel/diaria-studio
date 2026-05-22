@@ -440,17 +440,28 @@ export function hasLaunchVerb(article: Article): boolean {
 
 /**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente
- * seria lançamento. \"X disproves Y\", \"breakthrough\", \"solves Z\", \"refutes\".
- * Esses NÃO são lançamentos de produto — são resultados acadêmicos.
+ * seria lançamento. Patterns são CONSERVADORES — pedem contexto explícito
+ * pra evitar match em marketing copy ("breakthrough in performance",
+ * "proves capable", "proof of concept").
  *
  * Caso real 260522: openai.com/index/model-disproves-discrete-geometry-conjecture
  * passou todas as defenses anteriores e virou LANÇAMENTO indevidamente.
  */
 const RESEARCH_RESULT_PATTERNS: RegExp[] = [
-  /\b(disprove[sd]?|refute[sd]?|prove[sd]?|solve[sd]?\s+(?:a|an|the|\d))\b/i,
-  /\b(breakthrough|conjectur(e|a)|theorem|lemma|proof|prov(es|ed)\s+\w+)\b/i,
-  /\b(refuta|resolv[eu]?|comprova[r]?\s+(?:um|uma|o|a))\b/i,
-  /\bopen\s+problem\b/i,
+  // Verbos de prova/refutação acadêmica — precisam de objeto matemático
+  // (conjectura, teorema, problem, proof) pra evitar match em "proves itself"
+  /\b(disprove[sd]?|refute[sd]?)\s+(?:a|an|the|its|some|this|that)\s+(conjectur|theorem|hypothesis|lemma|problem|proof)/i,
+  /\b(prove[sd]?\s+(?:a|an|the)\s+(conjectur|theorem|hypothesis|lemma|problem))/i,
+  /\b(solve[sd]?\s+(?:a|an|the)?\s*\d+-year-old|solve[sd]?\s+(?:a|an|the)\s+(conjectur|theorem|hypothesis|problem))/i,
+  // Termos puramente acadêmicos no título (sem ambiguidade com marketing)
+  /\b(conjectur(e|a)|lemma|theorem)\b/i,
+  // "open problem" em contexto matemático (com modificador acadêmico)
+  /\b(long-standing|open|unsolved|unresolved)\s+(open\s+)?problem\s+(in|of|from)\s+\w+/i,
+  // PT — prova/refutação com objeto acadêmico (resolv[eu]? não casava "resolveu",
+  // agora aceita formas conjugadas)
+  /\b(refuta(m|r|ram|ria)?|resolv(eu|e|emos|eram|ido)|comprova(m|r|ram)?)\s+(?:a|o|uma|um)\s+(conjectur|problem|teorema|hip[oó]tese)/i,
+  // URL path com slug acadêmico explícito
+  /\/(disprov|refut|solv|prov)(e|es|ed)?-(a|the|an|model)?-?(conjectur|theorem|problem|geometry|math)/i,
 ];
 export function isLikelyResearchResult(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
@@ -458,18 +469,22 @@ export function isLikelyResearchResult(article: Article): boolean {
 }
 
 /**
- * #1453: detecta milestone de logística/entrega — \"X delivers Y\", \"first units\",
- * \"ships to\", \"arrives at\". Esses são marcos operacionais, não lançamento
- * \"available pra desenvolvedor\".
+ * #1453: detecta milestone de logística/entrega — \"ships TO {client}\",
+ * \"first units\", \"arrives at\", \"lands at\". Patterns CONSERVADORES —
+ * \"delivers\" e \"ships\" bare NÃO casam (marketing comum).
  *
  * Caso real 260522: blogs.nvidia.com/blog/vera-cpu-delivery/ — \"NVIDIA's First
- * CPU Built for Agents Lands at Top AI Labs\" — entrega pra Anthropic/OpenAI,
- * não disponibilidade geral.
+ * CPU Built for Agents Lands at Top AI Labs\".
  */
 const LOGISTICS_PATTERNS: RegExp[] = [
-  /\b(deliver(s|y|ies|ed)?|ships?(\s+to)?|first\s+units?|arrives?\s+(at|in)|lands?\s+at)\b/i,
-  /\bdistribu(es|i|iu|imos)\b/i,
-  /\/(\w+-)?delivery(-|\.|\/|$)/i,
+  // "ships to {entity}" e "delivered to {entity}" — precisa destino explícito
+  /\b(ships?|shipped|deliver(ing|ed|s)?)\s+to\s+(top|major|first|enterprise|select|early|partner|its|the)\b/i,
+  // "first units" e "arrives at/in {client}" — explícito milestone de logística
+  /\bfirst\s+units?\b/i,
+  /\barrives?\s+at\s+\w+\s+labs?\b/i,
+  /\blands?\s+at\s+\w+\s+labs?\b/i,
+  // URL path com slug explícito de entrega
+  /\/[\w-]*-cpu-delivery(\/|$)|\/(hardware-)?delivery-to-/i,
 ];
 export function isLogisticsMilestone(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
@@ -695,6 +710,13 @@ export function categorize(article: Article): Category {
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
     if (isNonLaunchPath(article.url)) return "noticias"; // #898
+
+    // #1173/#1453: type_hint=lancamento do source-researcher (Haiku que LEU
+    // a página) curto-circuita TODAS as heurísticas defensivas abaixo.
+    // Agent leu o conteúdo, é o sinal mais autoritativo. Caso: agent confirma
+    // launch mesmo que título tenha "delivers" ou path tenha customer-name.
+    if (article.type_hint === "lancamento") return "lancamento";
+
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";
     if (isCustomerStory(article)) return "noticias"; // #898
@@ -714,15 +736,15 @@ export function categorize(article: Article): Category {
     // #1453: slug single-token com nome de cliente em URL (ex:
     // openai.com/index/adventhealth, /databricks, /kpmg) → noticias.
     // Combinado com !hasLaunchVerb pra cobrir edge case "single-token
-    // brand launching" (raro).
+    // brand launching" (raro). type_hint=lancamento já curto-circuitou
+    // acima — esse path só roda quando agent NÃO confirmou launch.
     if (isCustomerSlug(article.url) && !hasLaunchVerb(article)) return "noticias";
 
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
 
-    // #1173 (híbrido): type_hint do source-researcher/discovery (Haiku) é
-    // sinal upstream de classificação por conteúdo (não só URL). Agent LEU
-    // a página — sinal mais autoritativo que heurística de URL.
+    // #1173: outros type_hints (pesquisa/noticia/analise/opiniao) também
+    // vencem heurística — agent leu o conteúdo.
     if (article.type_hint === "pesquisa") return "pesquisa";
     if (article.type_hint === "noticia" || article.type_hint === "opiniao" || article.type_hint === "analise") return "noticias";
 

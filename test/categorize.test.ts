@@ -1749,4 +1749,89 @@ describe("categorize() — #1453 inversão de default + novos detectores", () =>
       "lancamento",
     );
   });
+
+  // Review fixes — precedência de type_hint
+  it("type_hint=lancamento do source-researcher curto-circuita customer-slug (#1173)", () => {
+    // Agent LEU a página e disse "lancamento". URL parece customer (single-token),
+    // mas type_hint vence — caso "Sora", "Codex", "Gemini" em /index/{name}.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/sora",
+        title: "Sora",
+        type_hint: "lancamento",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("type_hint=lancamento curto-circuita logistics (delivers/ships não derruba launch real)", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-5",
+        title: "Claude 4.5 delivers state-of-the-art performance",
+        type_hint: "lancamento",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLogisticsMilestone NÃO casa 'delivers' bare (marketing copy comum)", () => {
+    // Antes do tightening, "delivers state-of-the-art" virava noticias.
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-5-perf",
+        title: "Claude 4.5 delivers state-of-the-art coding performance",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLogisticsMilestone CASA 'ships to enterprise/select/etc' (contexto específico)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/x",
+        title: "Vera CPU ships to top AI labs",
+      }),
+      "noticias",
+    );
+  });
+
+  it("isLikelyResearchResult NÃO casa 'breakthrough' bare em copy de marketing", () => {
+    // Antes do tightening, "breakthrough in reasoning" virava pesquisa.
+    assert.equal(
+      categorize({
+        url: "https://deepmind.google/blog/gemini-3-launch",
+        title: "Gemini 3: a breakthrough in multimodal reasoning",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLikelyResearchResult CASA 'disproves the conjecture' (contexto acadêmico)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/model-disproves-discrete-geometry-conjecture",
+        title: "Model disproves the discrete geometry conjecture",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("PT: 'resolveu conjectura' casa research result (fix resolv[eu]?)", () => {
+    assert.equal(
+      categorize({
+        url: "https://exemplo.com.br/blog/erdos",
+        title: "Modelo resolveu a conjectura de Erdős sobre distâncias unitárias",
+      }),
+      "noticias", // sem domain de lancamento — vai pra noticias mesmo
+    );
+    // Em domain de lancamento, PT 'resolveu' agora casa research → pesquisa
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/x",
+        title: "Modelo da OpenAI resolveu a conjectura de Erdős",
+      }),
+      "pesquisa",
+    );
+  });
 });
