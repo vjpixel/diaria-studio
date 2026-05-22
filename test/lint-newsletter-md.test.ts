@@ -21,24 +21,24 @@ import {
 describe("extractUrlsBySection", () => {
   it("extrai URLs por seção LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "https://destaque-fora.com",
       "",
       "---",
       "",
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "Item",
       "https://openai.com/x",
       "",
       "---",
       "",
-      "PESQUISAS",
+      "**PESQUISAS**",
       "Paper",
       "https://arxiv.org/y",
       "",
       "---",
       "",
-      "OUTRAS NOTÍCIAS",
+      "**OUTRAS NOTÍCIAS**",
       "Notícia",
       "https://techcrunch.com/z",
     ].join("\n");
@@ -52,7 +52,7 @@ describe("extractUrlsBySection", () => {
 
   it("ignora URLs em destaques (fora das seções secundárias)", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "https://destaque.com",
       "Texto.",
     ].join("\n");
@@ -62,12 +62,12 @@ describe("extractUrlsBySection", () => {
 
   it("#599: extrai URL de inline link `[título](URL)` em seções secundárias", () => {
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "[GPT-5 lançado](https://openai.com/gpt5)",
       "Descrição.",
       "",
       "---",
-      "PESQUISAS",
+      "**PESQUISAS**",
       "[Novo paper](https://arxiv.org/abs/1234.5678)",
       "Descrição.",
     ].join("\n");
@@ -115,16 +115,16 @@ describe("lintNewsletter", () => {
       noticias: [{ url: "https://techcrunch.com/z" }],
     };
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "Item",
       "https://openai.com/x",
       "",
       "---",
-      "PESQUISAS",
+      "**PESQUISAS**",
       "https://arxiv.org/y",
       "",
       "---",
-      "OUTRAS NOTÍCIAS",
+      "**OUTRAS NOTÍCIAS**",
       "https://techcrunch.com/z",
     ].join("\n");
     const r = lintNewsletter(md, approved);
@@ -142,7 +142,7 @@ describe("lintNewsletter", () => {
       ],
     };
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "ComfyUI atinge $500M",
       "https://techcrunch.com/comfyui-500m",
     ].join("\n");
@@ -157,7 +157,7 @@ describe("lintNewsletter", () => {
   it("erro quando URL não existe no approved", () => {
     const approved = { highlights: [], lancamento: [], pesquisa: [], noticias: [] };
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "Artigo fantasma",
       "https://ghost.com/x",
     ].join("\n");
@@ -174,7 +174,7 @@ describe("lintNewsletter", () => {
       noticias: [],
     };
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "Item",
       "https://x/destaque",
     ].join("\n");
@@ -192,7 +192,7 @@ describe("lintNewsletter", () => {
       noticias: [],
     };
     const md = [
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "Item",
       "[https://openai.com/x](https://openai.com/x)",
     ].join("\n");
@@ -204,7 +204,7 @@ describe("lintNewsletter", () => {
 describe("countTitlesPerHighlight (#178, #245)", () => {
   it("ok quando todos 3 destaques têm exatamente 1 título — formato single-newline (legado)", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título único do destaque 1",
       "https://example.com/1",
       "",
@@ -212,7 +212,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "Título único do destaque 2",
       "https://example.com/2",
       "",
@@ -220,7 +220,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "Título único do destaque 3",
       "https://example.com/3",
       "",
@@ -237,7 +237,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("ok com formato double-newline (#245) — blank line entre cada elemento", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Título único do destaque 1",
       "",
@@ -247,7 +247,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título único do destaque 2",
       "",
@@ -257,7 +257,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Título único do destaque 3",
       "",
@@ -276,7 +276,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("erro quando destaque tem 3 títulos (editor não podou) — single-newline", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Opção 1 de título",
       "Opção 2 de título",
       "Opção 3 de título",
@@ -284,13 +284,13 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "Título único",
       "https://example.com/2",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "Título único",
       "https://example.com/3",
       "",
@@ -307,7 +307,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("erro quando destaque tem 3 títulos (editor não podou) — double-newline (#245)", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Opção 1 de título",
       "",
@@ -319,7 +319,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título único",
       "",
@@ -327,7 +327,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Título único",
       "",
@@ -350,7 +350,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("erro quando há menos de 3 destaques", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Título",
       "",
@@ -365,17 +365,17 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("URL na linha logo abaixo do header é ignorada (não conta como título)", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título único",
       "https://example.com/1",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "Título único",
       "https://example.com/2",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "Título único",
       "https://example.com/3",
     ].join("\n");
@@ -388,17 +388,17 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     // Caso degenerado: destaque sem URL nenhum. Sem URL, o terminador
     // alternativo é o próximo DESTAQUE.
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Título único",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título 2",
       "",
       "https://example.com/2",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Título 3",
       "",
@@ -411,19 +411,19 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("#599: formato inline `[título](URL)` é contado como título", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "[Título único embedado](https://example.com/x)",
       "",
       "Corpo do destaque.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "[Título D2](https://b.com/y)",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "[Título D3](https://c.com/z)",
       "",
@@ -438,7 +438,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("#599: formato inline com 3 opções pré-gate é detectado como needs_pruning", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "[Opção 1 do título](https://example.com/x)",
       "",
@@ -448,13 +448,13 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
       "",
       "Corpo do destaque.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "[Título único](https://b.com/y)",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "[Título único](https://c.com/z)",
       "",
@@ -468,19 +468,19 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 
   it("para em section break --- quando não há URL no bloco", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Título único",
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título 2",
       "",
       "https://example.com/2",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Título 3",
       "",
@@ -494,7 +494,7 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
 describe("checkTitleLengths (#701)", () => {
   it("ok quando todos títulos cabem em ≤52 chars", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "Título curto",
       "",
@@ -502,7 +502,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Outro título dentro do limite",
       "",
@@ -510,7 +510,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Terceiro título OK",
       "",
@@ -527,7 +527,7 @@ describe("checkTitleLengths (#701)", () => {
     const longTitle = "Título extremamente longo que claramente passa do limite de 52 caracteres";
     assert.ok(longTitle.length > 52);
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       longTitle,
       "",
@@ -535,7 +535,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título OK",
       "",
@@ -543,7 +543,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Outro OK",
       "",
@@ -563,7 +563,7 @@ describe("checkTitleLengths (#701)", () => {
   it("#599: formato inline `[título](URL)` mede só o texto, não o markdown", () => {
     // URL longa faria a linha inteira passar de 52 chars, mas o título é curto
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       "[Título curto](https://example.com/path/with/very/long/segments/that/would/break/length-check)",
       "",
@@ -571,13 +571,13 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "[Título OK](https://b.com)",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "[Outro OK](https://c.com)",
       "",
@@ -591,19 +591,19 @@ describe("checkTitleLengths (#701)", () => {
     const longTitle = "Título extremamente longo dentro do markdown link que excede facilmente 52 chars";
     assert.ok(longTitle.length > 52);
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       `[${longTitle}](https://example.com/x)`,
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "[Título OK](https://b.com)",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "[Outro OK](https://c.com)",
       "",
@@ -618,7 +618,7 @@ describe("checkTitleLengths (#701)", () => {
 
   it("conta múltiplas opções de título (3 por destaque) — todas validadas", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Opção curta",
       "Opção também curta",
       "Opção bem longa que excede o limite de cinquenta e dois caracteres com folga",
@@ -626,13 +626,13 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "Título OK",
       "https://example.com/2",
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "Outro OK",
       "https://example.com/3",
       "",
@@ -656,7 +656,7 @@ describe("checkTitleLengths (#701)", () => {
     assert.ok(graphemeCount <= 52, `grafemas: ${graphemeCount}`);
     // Mas .length pode ser > graphemeCount por causa do emoji de bandeira
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       titleWith49Graphemes,
       "",
@@ -664,7 +664,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título OK",
       "",
@@ -672,7 +672,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Outro OK",
       "",
@@ -692,7 +692,7 @@ describe("checkTitleLengths (#701)", () => {
     const graphemeCount = [...new Intl.Segmenter().segment(titleOver52Graphemes)].length;
     assert.ok(graphemeCount > 52, `esperado >52 grafemas, got ${graphemeCount}`);
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "",
       titleOver52Graphemes,
       "",
@@ -700,7 +700,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 2 | PESQUISA",
+      "**DESTAQUE 2 | PESQUISA**",
       "",
       "Título OK",
       "",
@@ -708,7 +708,7 @@ describe("checkTitleLengths (#701)", () => {
       "",
       "Corpo.",
       "",
-      "DESTAQUE 3 | MERCADO",
+      "**DESTAQUE 3 | MERCADO**",
       "",
       "Outro OK",
       "",
@@ -727,7 +727,7 @@ describe("checkTitleLengths (#701)", () => {
 describe("checkWhyMattersFormat (#701)", () => {
   it("ok quando 'Por que isso importa:' não começa com 'Para [audiência],'", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título",
       "https://x.com",
       "",
@@ -742,7 +742,7 @@ describe("checkWhyMattersFormat (#701)", () => {
 
   it("erro quando próxima linha começa com 'Para profissionais,'", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título",
       "https://x.com",
       "",
@@ -757,7 +757,7 @@ describe("checkWhyMattersFormat (#701)", () => {
 
   it("erro inline 'Por que isso importa: Para X,'", () => {
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título",
       "https://x.com",
       "",
@@ -774,7 +774,7 @@ describe("checkWhyMattersFormat (#701)", () => {
     // corpus real e o benefício de não pular falsos negativos vale o
     // ruído ocasional. Documentando aqui pra revisar se virar problema.
     const md = [
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "Título",
       "https://x.com",
       "",
@@ -1125,17 +1125,15 @@ describe("lintIntroCount (#743)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 1 | PRODUTO",
-      "Título",
-      "https://example.com/d1",
+      "**DESTAQUE 1 | PRODUTO**",
+      "[**Título**](https://example.com/d1)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
-      "Título",
-      "https://example.com/d2",
+      "**DESTAQUE 2 | PESQUISA**",
+      "[**Título**](https://example.com/d2)",
       "",
       "Corpo.",
       "",
@@ -1147,35 +1145,30 @@ describe("lintIntroCount (#743)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 3 | MERCADO",
-      "Título",
-      "https://example.com/d3",
+      "**DESTAQUE 3 | MERCADO**",
+      "[**Título**](https://example.com/d3)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "LANÇAMENTOS",
-      "Item 1",
-      "https://example.com/l1",
+      "**LANÇAMENTOS**",
+      "[**Item 1**](https://example.com/l1)",
       "Descrição.",
       "",
       "---",
       "",
-      "PESQUISAS",
-      "Paper",
-      "https://example.com/p1",
+      "**PESQUISAS**",
+      "[**Paper**](https://example.com/p1)",
       "Resumo.",
       "",
       "---",
       "",
-      "OUTRAS NOTÍCIAS",
-      "Notícia 1",
-      "https://example.com/n1",
+      "**OUTRAS NOTÍCIAS**",
+      "[**Notícia 1**](https://example.com/n1)",
       "Desc.",
       "",
-      "Notícia 2",
-      "https://example.com/n2",
+      "[**Notícia 2**](https://example.com/n2)",
       "Desc.",
     ];
     return lines.join("\n");
@@ -1209,9 +1202,8 @@ describe("lintIntroCount (#743)", () => {
     const md = [
       "Selecionamos os 1 mais relevantes para as pessoas que assinam a newsletter.",
       "",
-      "DESTAQUE 1 | PRODUTO",
-      "Título",
-      "https://example.com/d1",
+      "**DESTAQUE 1 | PRODUTO**",
+      "[**Título**](https://example.com/d1)",
       "",
       "Corpo.",
       "",
@@ -1241,25 +1233,22 @@ describe("lintIntroCount (#743)", () => {
       "",
       "---",
       "",
-      "DESTAQUE 1 | PRODUTO",
-      "Título",
-      "https://example.com/d1",
+      "**DESTAQUE 1 | PRODUTO**",
+      "[**Título**](https://example.com/d1)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
-      "Título",
-      "https://example.com/d2",
+      "**DESTAQUE 2 | PESQUISA**",
+      "[**Título**](https://example.com/d2)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "DESTAQUE 3 | MERCADO",
-      "Título",
-      "https://example.com/d3",
+      "**DESTAQUE 3 | MERCADO**",
+      "[**Título**](https://example.com/d3)",
       "",
       "Corpo.",
     ].join("\n");
@@ -1274,25 +1263,22 @@ describe("lintIntroCount (#743)", () => {
     const md = [
       "Reunimos os 3 mais relevantes para as pessoas que assinam a newsletter.",
       "",
-      "DESTAQUE 1 | PRODUTO",
-      "Título",
-      "https://example.com/d1",
+      "**DESTAQUE 1 | PRODUTO**",
+      "[**Título**](https://example.com/d1)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "DESTAQUE 2 | PESQUISA",
-      "Título",
-      "https://example.com/d2",
+      "**DESTAQUE 2 | PESQUISA**",
+      "[**Título**](https://example.com/d2)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "DESTAQUE 3 | MERCADO",
-      "Título",
-      "https://example.com/d3",
+      "**DESTAQUE 3 | MERCADO**",
+      "[**Título**](https://example.com/d3)",
       "",
       "Corpo.",
     ].join("\n");
@@ -1318,28 +1304,28 @@ describe("lintIntroCount (#743)", () => {
     const md = [
       "Selecionamos os 4 mais relevantes para as pessoas que assinam a newsletter.",
       "",
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "**[Título D1](https://example.com/d1)**",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "",
       "**[Item bold-outside](https://example.com/l1)**",
       "Descrição do item.",
       "",
       "---",
       "",
-      "PESQUISAS",
+      "**PESQUISAS**",
       "",
       "**[Paper bold-outside](https://example.com/p1)**",
       "Resumo.",
       "",
       "---",
       "",
-      "OUTRAS NOTÍCIAS",
+      "**OUTRAS NOTÍCIAS**",
       "",
       "**[Notícia bold-outside](https://example.com/n1)**",
       "Desc.",
@@ -1355,14 +1341,14 @@ describe("lintIntroCount (#743)", () => {
     const md = [
       "Selecionamos os 2 mais relevantes para as pessoas que assinam a newsletter.",
       "",
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "**[Título](https://example.com/d1)**  ",  // trailing 2 spaces (line-break)
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "**[Item](https://example.com/l1)**  ",  // trailing
       "Descrição.",
     ].join("\n");
@@ -1375,28 +1361,28 @@ describe("lintIntroCount (#743)", () => {
     const md = [
       "Selecionamos os 4 mais relevantes para as pessoas que assinam a newsletter.",
       "",
-      "DESTAQUE 1 | PRODUTO",
+      "**DESTAQUE 1 | PRODUTO**",
       "[Título D1](https://example.com/d1)",
       "",
       "Corpo.",
       "",
       "---",
       "",
-      "LANÇAMENTOS",
+      "**LANÇAMENTOS**",
       "",
       "[Item inline](https://example.com/l1)",
       "Descrição do item.",
       "",
       "---",
       "",
-      "PESQUISAS",
+      "**PESQUISAS**",
       "",
       "[Paper inline](https://example.com/p1)",
       "Resumo.",
       "",
       "---",
       "",
-      "OUTRAS NOTÍCIAS",
+      "**OUTRAS NOTÍCIAS**",
       "",
       "[Notícia inline](https://example.com/n1)",
       "Desc.",
@@ -1404,6 +1390,141 @@ describe("lintIntroCount (#743)", () => {
     const r = lintIntroCount(md);
     assert.equal(r.actual, 4, `actual=${r.actual} claimed=${r.claimed}`);
     assert.equal(r.ok, true);
+  });
+
+  // #1454/#1455 — regressões do caso 260522
+  it("#1454: section headers com emoji prefix são reconhecidos (🚀 LANÇAMENTO)", () => {
+    const md = [
+      "Selecionamos os 5 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "[**Título**](https://example.com/d1)",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTO**",
+      "[**Item**](https://example.com/l1)",
+      "",
+      "**🔬 PESQUISAS**",
+      "[**P1**](https://example.com/p1)",
+      "[**P2**](https://example.com/p2)",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "[**N1**](https://example.com/n1)",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    // 1d + 1l + 2p + 1n = 5
+    assert.equal(r.actual, 5, `actual=${r.actual} claimed=${r.claimed}`);
+    assert.equal(r.ok, true);
+  });
+
+  it("#1454: section headers singular reconhecidos (LANÇAMENTO/OUTRA NOTÍCIA)", () => {
+    const md = [
+      "Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "[**T**](https://example.com/d1)",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTO**",
+      "[**L1**](https://example.com/l1)",
+      "",
+      "---",
+      "",
+      "**📰 OUTRA NOTÍCIA**",
+      "[**N1**](https://example.com/n1)",
+    ].join("\n");
+    const r = lintIntroCount(md);
+    assert.equal(r.actual, 3, `actual=${r.actual} claimed=${r.claimed}`);
+    assert.equal(r.ok, true);
+  });
+
+  it("#1455 review-fix: frontmatter YAML com 'DESTAQUE N' NÃO infla contagem", async () => {
+    // Caso real: intentional_error.location = "DESTAQUE 3, parágrafo X"
+    // Pre-fix: frontmatter virava section, /DESTAQUE/ matchava, destaques=4 em vez de 3.
+    const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: \"DESTAQUE 3 problema X\"",
+      "  location: \"DESTAQUE 3, primeiro parágrafo\"",
+      "  category: \"factual\"",
+      "  correct_value: \"Y\"",
+      "---",
+      "",
+      "Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "[**T1**](https://example.com/d1)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 🔬 PESQUISA**",
+      "[**T2**](https://example.com/d2)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 3 | 💼 MERCADO**",
+      "[**T3**](https://example.com/d3)",
+    ].join("\n");
+    const counts = countSelectedItems(md);
+    assert.equal(counts.destaques, 3, `expected 3, got ${counts.destaques}`);
+    assert.equal(counts.total, 3);
+  });
+
+  it("#1455 review-fix: SKIP_HEADER_NAMES casa só em LINHA, não em body", async () => {
+    // Pre-fix: artigo com título contendo "PARA ENCERRAR" silenciava a section toda.
+    const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
+    const md = [
+      "Selecionamos os 2 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**PARA ENCERRAR o ano: relatório anual**](https://example.com/n1)",
+      "Descrição.",
+      "",
+      "[**TÍTULO chocante: OpenAI lança**](https://example.com/n2)",
+      "Descrição.",
+    ].join("\n");
+    const counts = countSelectedItems(md);
+    assert.equal(counts.noticias, 2, `expected 2, got ${counts.noticias}`);
+    assert.equal(counts.total, 2);
+  });
+
+  it("#1455: producer/consumer round-trip — sync-coverage Z bate com lint claimed", async () => {
+    // Property test: countSelectedItems (shared) consistente com lintIntroCount.
+    const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
+    const md = [
+      "Selecionamos os XX mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "[**T1**](https://example.com/d1)",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTO**",
+      "[**L1**](https://example.com/l1)",
+      "",
+      "**🔬 PESQUISAS**",
+      "[**P1**](https://example.com/p1)",
+      "[**P2**](https://example.com/p2)",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "[**N1**](https://example.com/n1)",
+      "[**N2**](https://example.com/n2)",
+    ].join("\n");
+    const counts = countSelectedItems(md);
+    // Producer escreve Z = counts.total na intro
+    const mdWithIntro = md.replace("XX", String(counts.total));
+    // Consumer (lint) deve validar como ok
+    const lint = lintIntroCount(mdWithIntro);
+    assert.equal(lint.ok, true, `claimed=${lint.claimed} actual=${lint.actual} counts.total=${counts.total}`);
+    assert.equal(lint.claimed, counts.total);
+    assert.equal(lint.actual, counts.total);
   });
 });
 
