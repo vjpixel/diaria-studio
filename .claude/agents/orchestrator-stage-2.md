@@ -56,26 +56,9 @@ Exit code handling:
 
 **Em uma única mensagem**, disparar os agents simultaneamente:
 
-### Modo padrão: writer único (legacy)
+### Modo padrão: writer-destaque × 3 paralelo (#1158, #1451)
 
-1. `Agent` → `writer` (Sonnet) passando:
-   - `highlights` (extraído de `_internal/01-approved-capped.json` — sempre exatamente 3 entradas após o gate da Etapa 1)
-   - `categorized = _internal/01-approved-capped.json` (já truncado pelos caps de #358 via `apply-stage2-caps.ts` — nunca o arquivo bruto)
-   - `edition_date`
-   - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
-   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
-   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
-   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
-
-2. `Agent` → `social-linkedin` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
-
-3. `Agent` → `social-facebook` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
-
-Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
-
-### Modo opcional: writer paralelo por destaque (#1158, opt-in)
-
-Disparar 3 sub-agents `writer-destaque` em paralelo (1 por destaque) corta o wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total). Habilitar quando o pipeline precisar terminar em ≤15min — ex: `/diaria-edicao --no-gates` em janela apertada.
+**INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**, não só auto_approve/test_mode. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
 
 **Pré:** rodar coordenador inline (top-level) que extrai metadata do `01-approved-capped.json`:
 ```bash
@@ -84,7 +67,7 @@ npx tsx scripts/extract-destaques.ts data/editions/{AAMMDD}/_internal/01-approve
 
 Saída: `{ destaques: [{n,category_label,article}], peer_titles_per_destaque }`.
 
-**Dispatch paralelo (uma única mensagem com 3 chamadas Agent + 2 social):**
+**Dispatch paralelo (uma única mensagem com 5 chamadas Agent — 3 writer + 2 social):**
 
 1. `Agent` → `writer-destaque` × 3 — uma instância por destaque (n=1, n=2, n=3). Cada uma recebe:
    - `destaque_n`, `destaque` (article), `category_label`
@@ -93,8 +76,9 @@ Saída: `{ destaques: [{n,category_label,article}], peer_titles_per_destaque }`.
    - `out_path = data/editions/{AAMMDD}/_internal/02-d{N}-draft.md`
    - `image_prompt_out_path = data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md`
 
-2. `Agent` → `social-linkedin` (mesmo input do modo padrão).
-3. `Agent` → `social-facebook` (mesmo input do modo padrão).
+2. `Agent` → `social-linkedin` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+
+3. `Agent` → `social-facebook` (mesmo input).
 
 **Pós:** stitch coordenador inline produz `02-draft.md` final:
 - Coverage line (top)
@@ -108,7 +92,32 @@ Saída: `{ destaques: [{n,category_label,article}], peer_titles_per_destaque }`.
 
 Lint pós-stitch valida overlap de hook entre destaques; se overlap detectado, re-dispatch o destaque "perdedor" com peer_titles atualizado.
 
-**Quando usar paralelo:** A/B test confirmou qualidade equivalente em 3+ edições consecutivas. Default ainda é `writer` único (modo padrão acima) até validação completa.
+### Modo fallback: writer único (legacy, casos edge)
+
+Usar quando o coordenador detectar **destaque count ≠ 3** (edge case sem 3 destaques aprovados) ou **falha de `extract-destaques.ts`**. Operacionalmente, o coordenador inline deve:
+
+```bash
+DESTAQUE_COUNT=$(npx tsx scripts/extract-destaques.ts ... --json | jq '.destaques | length')
+if [ "$DESTAQUE_COUNT" -ne 3 ]; then
+  # fallback pro writer único legacy
+fi
+```
+
+Fallback dispatch:
+
+1. `Agent` → `writer` (Sonnet) passando:
+   - `highlights` (extraído de `_internal/01-approved-capped.json`)
+   - `categorized = _internal/01-approved-capped.json`
+   - `edition_date`
+   - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
+   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
+   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
+   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
+
+2. `Agent` → `social-linkedin` (mesmo input).
+3. `Agent` → `social-facebook` (mesmo input).
+
+Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
 **Validar outputs dos 3 agents antes de qualquer processamento (#872):** se um dos 3 falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente. Antes de prosseguir, rodar:
 
