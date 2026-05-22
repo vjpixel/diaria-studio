@@ -173,12 +173,21 @@ export function buildCoverReplaceJs(imageUrl: string): string {
       const existing = Array.from(document.querySelectorAll('img'))
         .find(i => i.offsetParent !== null && /beehiiv-images-production.*uploads/i.test(i.src));
 
+      // #1457 review fix: capturar existingSrc ANTES do remove (existing.src
+      // pode estar stale após detach do DOM)
+      const existingSrcSnapshot = existing ? existing.src : '';
+
       if (existing) {
         steps.push('found existing cover: ' + existing.src.slice(60, 110));
 
-        // Hover sobre o thumbnail pra revelar action overlay
-        const hoverEvt = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
-        existing.dispatchEvent(hoverEvt);
+        // #1457 review fix: hover via múltiplos event types — React onMouseEnter
+        // não dispara em mouseover; precisa de pointerenter ou mouseenter.
+        for (const evtType of ['pointerenter', 'mouseenter', 'mouseover']) {
+          const evt = evtType.startsWith('pointer')
+            ? new PointerEvent(evtType, { bubbles: false, cancelable: true })
+            : new MouseEvent(evtType, { bubbles: false, cancelable: true });
+          existing.dispatchEvent(evt);
+        }
         await sleep(800);
 
         // Procurar remove button via aria-label canonical (NUNCA via regex frouxa
@@ -192,36 +201,54 @@ export function buildCoverReplaceJs(imageUrl: string): string {
         ];
         let removeBtn = null;
         for (const sel of removeSelectors) {
-          const el = document.querySelector(sel);
-          if (el && el.offsetParent !== null) {
-            removeBtn = el;
-            steps.push('found remove btn via selector: ' + sel);
-            break;
+          try {
+            const el = document.querySelector(sel);
+            if (el && el.offsetParent !== null) {
+              removeBtn = el;
+              steps.push('found remove btn via selector: ' + sel);
+              break;
+            }
+          } catch {
+            // CSS4 case-insensitive attribute selector pode falhar em runtimes
+            // antigos — fall back pra exact aria-label sem flag
+            const fallbackSel = sel.replace(/" i\]$/, '"]');
+            const el = document.querySelector(fallbackSel);
+            if (el && el.offsetParent !== null) {
+              removeBtn = el;
+              steps.push('found remove btn via fallback selector: ' + fallbackSel);
+              break;
+            }
           }
         }
 
-        // Fallback: search dentro do parent container do thumbnail por
-        // botão com SVG icon de trash (Beehiiv UI usa heroicons)
+        // Fallback: search APENAS no immediate parent container do thumbnail
+        // (level 0 = parent direto). Walking 5 levels podia capturar 'Delete
+        // draft' ou outros remove buttons de seções vizinhas.
         if (!removeBtn) {
-          let container = existing.parentElement;
-          for (let i = 0; i < 5 && container; i++) {
+          const container = existing.parentElement;
+          if (container) {
             const candidates = Array.from(container.querySelectorAll('button')).filter(b => {
               const al = (b.getAttribute('aria-label') || '').toLowerCase();
               const txt = (b.textContent || '').trim().toLowerCase();
-              // Aceitar SOMENTE remove/trash/delete words completas, não fragmentos
-              // (\\b boundaries pra evitar 'x' bare). Skip se aria-label tem 'twitter',
-              // 'share', 'navigate', 'tab', 'settings', 'preview' — esses são distractors.
-              if (/twitter|share|navigate|tab|settings|preview|publish|schedule|save/i.test(al + ' ' + txt)) return false;
+              // Skip distractors no botão e em ancestors (impede 'Delete draft'
+              // dentro de panel de settings que tenha aria 'Settings').
+              if (/twitter|share|navigate|tab|settings|preview|publish|schedule|save|draft|account|user|publication/i.test(al + ' ' + txt)) return false;
+              // Skip se algum ancestor próximo é um modal/menu não relacionado a thumbnail
+              let p = b.parentElement;
+              for (let k = 0; k < 3 && p; k++) {
+                const pal = (p.getAttribute('aria-label') || '').toLowerCase();
+                if (/twitter|share|navigate|tab|settings|preview|publish|schedule|account|user|publication|toast/i.test(pal)) return false;
+                p = p.parentElement;
+              }
+              // Aceitar SOMENTE remove/trash/delete words completas (\\b boundaries
+              // pra evitar 'x' bare match — fonte do bug original do #1457).
               return /\\b(remove|delete|trash)\\b/i.test(al) ||
-                     /\\b(remove|delete|trash)\\b/i.test(txt) ||
-                     /×|✕/.test(txt);
+                     /\\b(remove|delete|trash)\\b/i.test(txt);
             });
             if (candidates.length > 0) {
               removeBtn = candidates[0];
-              steps.push('found remove btn via fallback at level ' + i);
-              break;
+              steps.push('found remove btn via parent-only fallback');
             }
-            container = container.parentElement;
           }
         }
 
@@ -233,9 +260,11 @@ export function buildCoverReplaceJs(imageUrl: string): string {
         await sleep(2000);
 
         // Confirmação modal (Beehiiv às vezes pergunta "Are you sure?")
+        // Aceitar variantes "Yes, remove" / "Confirm deletion" — não exigir
+        // exact match.
         const confirmBtn = buttons().find(b => {
           const txt = b.textContent?.trim() || '';
-          return /^(Confirm|Yes|Remove|Delete)$/i.test(txt);
+          return /^(Confirm|Yes|Remove|Delete)(\\b|,|\\.|\\s|$)/i.test(txt);
         });
         if (confirmBtn) {
           confirmBtn.click();
@@ -286,13 +315,13 @@ export function buildCoverReplaceJs(imageUrl: string): string {
       steps.push('clicked: Upload N media');
       await sleep(6000);
 
-      // Click na nova imagem uploadada (NÃO a antiga que tinha existing.src)
-      const existingSrc = existing ? existing.src : '';
+      // Click na nova imagem uploadada (usa existingSrcSnapshot capturado
+      // pre-remove pra evitar stale .src de DOM detached). naturalWidth check
+      // removido — imagem pode não ter completed decode em 6s; tolerar 0.
       const targetImg = Array.from(document.querySelectorAll('img')).find(i =>
         i.offsetParent !== null &&
         /uploads.asset.file/i.test(i.src) &&
-        i.src !== existingSrc &&
-        i.naturalWidth >= 400 &&
+        i.src !== existingSrcSnapshot &&
         !(/static_assets|publication.logo/i.test(i.src))
       );
       if (!targetImg) return { error: 'new uploaded image card not found in library', steps };
@@ -306,8 +335,16 @@ export function buildCoverReplaceJs(imageUrl: string): string {
       steps.push('clicked: new uploaded image card');
       await sleep(3000);
 
-      const thumbnailImg = Array.from(document.querySelectorAll('img'))
-        .find(i => /beehiiv-images-production.*uploads/i.test(i.src) && i.src !== existingSrc);
+      // Re-detect thumbnail — primeira tentativa: img com src diferente do
+      // existingSrc snapshot. Se a nova imagem tiver mesmo S3 URL (cache,
+      // re-upload idêntico), aceitar a 1ª img Beehiiv S3 visível.
+      const allBeehiivImgs = Array.from(document.querySelectorAll('img'))
+        .filter(i => /beehiiv-images-production.*uploads/i.test(i.src));
+      let thumbnailImg = allBeehiivImgs.find(i => i.src !== existingSrcSnapshot);
+      if (!thumbnailImg && allBeehiivImgs.length > 0) {
+        // Edge case: re-upload com mesma S3 URL → aceitar a única visible
+        thumbnailImg = allBeehiivImgs[0];
+      }
       return {
         thumbnailSrc: thumbnailImg?.src ?? null,
         steps,
