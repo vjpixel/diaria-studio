@@ -438,6 +438,101 @@ export function hasLaunchVerb(article: Article): boolean {
   return LAUNCH_VERB_PATTERN.test(hay);
 }
 
+/**
+ * #1453: detecta resultado científico/pesquisa em domínio que normalmente
+ * seria lançamento. Patterns são CONSERVADORES — pedem contexto explícito
+ * pra evitar match em marketing copy ("breakthrough in performance",
+ * "proves capable", "proof of concept").
+ *
+ * Caso real 260522: openai.com/index/model-disproves-discrete-geometry-conjecture
+ * passou todas as defenses anteriores e virou LANÇAMENTO indevidamente.
+ */
+const RESEARCH_RESULT_PATTERNS: RegExp[] = [
+  // Verbos de prova/refutação acadêmica — precisam de objeto matemático
+  // (conjectura, teorema, problem, proof) pra evitar match em "proves itself"
+  /\b(disprove[sd]?|refute[sd]?)\s+(?:a|an|the|its|some|this|that)\s+(conjectur|theorem|hypothesis|lemma|problem|proof)/i,
+  /\b(prove[sd]?\s+(?:a|an|the)\s+(conjectur|theorem|hypothesis|lemma|problem))/i,
+  /\b(solve[sd]?\s+(?:a|an|the)?\s*\d+-year-old|solve[sd]?\s+(?:a|an|the)\s+(conjectur|theorem|hypothesis|problem))/i,
+  // Termos puramente acadêmicos no título (sem ambiguidade com marketing)
+  /\b(conjectur(e|a)|lemma|theorem)\b/i,
+  // "open problem" em contexto matemático (com modificador acadêmico)
+  /\b(long-standing|open|unsolved|unresolved)\s+(open\s+)?problem\s+(in|of|from)\s+\w+/i,
+  // PT — prova/refutação com objeto acadêmico (resolv[eu]? não casava "resolveu",
+  // agora aceita formas conjugadas)
+  /\b(refuta(m|r|ram|ria)?|resolv(eu|e|emos|eram|ido)|comprova(m|r|ram)?)\s+(?:a|o|uma|um)\s+(conjectur|problem|teorema|hip[oó]tese)/i,
+  // URL path com slug acadêmico explícito
+  /\/(disprov|refut|solv|prov)(e|es|ed)?-(a|the|an|model)?-?(conjectur|theorem|problem|geometry|math)/i,
+];
+export function isLikelyResearchResult(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
+  return RESEARCH_RESULT_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * #1453: detecta milestone de logística/entrega — \"ships TO {client}\",
+ * \"first units\", \"arrives at\", \"lands at\". Patterns CONSERVADORES —
+ * \"delivers\" e \"ships\" bare NÃO casam (marketing comum).
+ *
+ * Caso real 260522: blogs.nvidia.com/blog/vera-cpu-delivery/ — \"NVIDIA's First
+ * CPU Built for Agents Lands at Top AI Labs\".
+ */
+const LOGISTICS_PATTERNS: RegExp[] = [
+  // "ships to {entity}" e "delivered to {entity}" — precisa destino explícito
+  /\b(ships?|shipped|deliver(ing|ed|s)?)\s+to\s+(top|major|first|enterprise|select|early|partner|its|the)\b/i,
+  // "first units" e "arrives at/in {client}" — explícito milestone de logística
+  /\bfirst\s+units?\b/i,
+  /\barrives?\s+at\s+\w+\s+labs?\b/i,
+  /\blands?\s+at\s+\w+\s+labs?\b/i,
+  // URL path com slug explícito de entrega
+  /\/[\w-]*-cpu-delivery(\/|$)|\/(hardware-)?delivery-to-/i,
+];
+export function isLogisticsMilestone(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}\n${article.url ?? ""}`;
+  return LOGISTICS_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * #1453: detecta URL com slug que parece nome de empresa cliente
+ * (\`/adventhealth\`, \`/databricks\`, \`/kpmg\`) em domínios oficiais
+ * tipo openai.com/index/ — sinal de customer story / partnership.
+ *
+ * Heurística conservadora: **só single-token slugs** (sem hyphens) com 4-25
+ * chars, alphabetic, sem aparecer no título do artigo como produto.
+ * Multi-token slugs (\"claude-creative-work\", \"gpt-5-flash\") são quase
+ * sempre nomes de produto/feature, não clientes — não casamos pra evitar
+ * falso-positivo (caso \"Claude for Creative Work\" vira noticias indevidamente).
+ *
+ * Combinar com `!hasLaunchVerb(article)` no caller pra cobrir o edge case
+ * \"single-token brand launching\" (raro mas possível).
+ */
+export function isCustomerSlug(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "");
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length === 0) return false;
+    const last = segments[segments.length - 1].toLowerCase();
+    // Single-token only (no hyphens) — restrição vs multi-token slugs (#1453)
+    if (last.includes("-")) return false;
+    // Length check: customer names tendem a ser 4-25 chars
+    if (last.length < 4 || last.length > 25) return false;
+    // Alphabetic only (sem números/versões)
+    if (!/^[a-z]+$/.test(last)) return false;
+    // Skip se aparece em lista de palavras genéricas / produto
+    const genericSlugs = new Set([
+      "news", "blog", "post", "article", "index", "story", "stories",
+      "research", "papers", "tools", "products", "features", "updates",
+      "docs", "guide", "guides", "learn", "tutorial", "tutorials",
+      "about", "contact", "team", "careers", "jobs", "press",
+      "support", "help", "pricing", "plans", "compare",
+    ]);
+    if (genericSlugs.has(last)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Detecção de vídeos — YouTube e Vimeo (#359)
 // ---------------------------------------------------------------------------
@@ -615,32 +710,51 @@ export function categorize(article: Article): Category {
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
     if (isNonLaunchPath(article.url)) return "noticias"; // #898
+
+    // #1173/#1453: type_hint=lancamento do source-researcher (Haiku que LEU
+    // a página) curto-circuita TODAS as heurísticas defensivas abaixo.
+    // Agent leu o conteúdo, é o sinal mais autoritativo. Caso: agent confirma
+    // launch mesmo que título tenha "delivers" ou path tenha customer-name.
+    if (article.type_hint === "lancamento") return "lancamento";
+
     if (isBusinessDeal(article)) return "noticias";
     if (isNonProductAnnouncement(article)) return "noticias";
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
     if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos
+
+    // #1453: resultado científico/prova matemática em domínio que normalmente
+    // seria lançamento → pesquisa. Caso real 260522:
+    // openai.com/index/model-disproves-discrete-geometry-conjecture.
+    if (isLikelyResearchResult(article)) return "pesquisa";
+
+    // #1453: milestone de logística/entrega em domínio oficial → noticias.
+    // Caso real 260522: blogs.nvidia.com/blog/vera-cpu-delivery/.
+    if (isLogisticsMilestone(article)) return "noticias";
+
+    // #1453: slug single-token com nome de cliente em URL (ex:
+    // openai.com/index/adventhealth, /databricks, /kpmg) → noticias.
+    // Combinado com !hasLaunchVerb pra cobrir edge case "single-token
+    // brand launching" (raro). type_hint=lancamento já curto-circuitou
+    // acima — esse path só roda quando agent NÃO confirmou launch.
+    if (isCustomerSlug(article.url) && !hasLaunchVerb(article)) return "noticias";
+
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
-    // #1173 (híbrido): type_hint do source-researcher/discovery (Haiku) é
-    // sinal upstream de classificação por conteúdo (não só URL). Quando ele
-    // diz "noticia" ou "pesquisa" pra URL que normalmente seria lançamento
-    // (ex: openai.com/index/introducing-trusted-contact ou
-    // deepmind.google/blog/ai-co-clinician), respeitar — Pixel confirmou
-    // que esses casos vão pra seção errada com regras só de URL.
-    //
-    // type_hint vem do agent que LEU o conteúdo da página (não só URL).
-    // Optimize-for-precision: precisão no LANÇAMENTOS é alta porque
-    // remover falso-positivo é editorialmente importante (LANÇAMENTO sugere
-    // novidade de produto, não feature/research/análise).
+
+    // #1173: outros type_hints (pesquisa/noticia/analise/opiniao) também
+    // vencem heurística — agent leu o conteúdo.
     if (article.type_hint === "pesquisa") return "pesquisa";
     if (article.type_hint === "noticia" || article.type_hint === "opiniao" || article.type_hint === "analise") return "noticias";
-    // #898: as overrides acima (path-blocklist, deal, customer-story,
-    // non-product-announcement, update) cobrem os falso-positivos comuns.
-    // `hasLaunchVerb` continua exposta como helper pra callers que queiram
-    // gating mais agressivo (ex: scorer), mas não é gate aqui — quebraria
-    // títulos product-name-only ("Gemini 2.0 Flash", "Claude for Creative Work").
+
+    // #898 / #1453: as overrides acima cobrem os falso-positivos comuns.
+    // Default `lancamento` mantido pra títulos product-name-only ("Gemini 2.0",
+    // "Claude 4 Sonnet") que NÃO contêm verbo de anúncio mas são lançamentos
+    // reais. Inversão de default geraria falso-negativo agressivo nessas
+    // peças canônicas — preferimos os 3 detectores específicos (#1453:
+    // research-result, logistics-milestone, customer-slug) pra zerar os
+    // falso-positivos da 260522 sem quebrar produtos nome-only.
     return "lancamento";
   }
 

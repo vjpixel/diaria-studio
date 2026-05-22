@@ -71,7 +71,8 @@ describe("categorize() — regras de domínio", () => {
   });
 
   it("lida com www. no hostname", () => {
-    const art: Article = { url: "https://www.openai.com/blog/something" };
+    // Slug multi-token pra evitar isCustomerSlug match (#1453)
+    const art: Article = { url: "https://www.openai.com/blog/something-new-here" };
     assert.equal(categorize(art), "lancamento");
   });
 
@@ -1633,6 +1634,204 @@ describe("categorize() — type_hint override em lançamento (#1173)", () => {
         title: "Introducing Claude 4.5",
       }),
       "lancamento",
+    );
+  });
+});
+
+describe("categorize() — #1453 inversão de default + novos detectores", () => {
+  it("OpenAI Erdős math proof → pesquisa (não lancamento)", () => {
+    // Caso real 260522: foi LANÇAMENTO indevidamente.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/model-disproves-discrete-geometry-conjecture",
+        title: "An OpenAI model has disproved a central conjecture in discrete geometry",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("NVIDIA Vera CPU delivery → noticias (não lancamento)", () => {
+    // Caso real 260522: \"Vera Arrives: NVIDIA's First CPU Built for Agents Lands at Top AI Labs\"
+    // Domain oficial, mas é entrega/milestone — não disponibilidade geral.
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/vera-cpu-delivery/",
+        title: "Vera Arrives: NVIDIA's First CPU Built for Agents Lands at Top AI Labs",
+      }),
+      "noticias",
+    );
+  });
+
+  it("OpenAI + customer name slug → noticias", () => {
+    // Caso real 260522: openai.com/index/adventhealth — partnership/customer story.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/adventhealth",
+        title: "AdventHealth advances whole-person care with OpenAI",
+      }),
+      "noticias",
+    );
+    // Outros casos típicos
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/databricks",
+        title: "Databricks integrates ChatGPT",
+      }),
+      "noticias",
+    );
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/kpmg",
+        title: "Anthropic e KPMG",
+      }),
+      "noticias",
+    );
+  });
+
+  it("domínio oficial + título product-name-only (sem verbo) → lancamento (default mantido)", () => {
+    // #1453 — inversão de default foi rejeitada pra preservar product-name-only
+    // launches como \"Claude 4 Sonnet\". A precisão extra vem dos 3 detectores
+    // específicos (research/logistics/customer), não da inversão wholesale.
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-haiku-5",
+        title: "Claude Haiku 5",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("domínio oficial + verbo de lançamento explícito → lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-6",
+        title: "Introducing GPT-6: our new flagship model",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLikelyResearchResult cobre 'breakthrough' e 'solves'", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/math-breakthrough",
+        title: "Math breakthrough: model solves 80-year-old conjecture",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("isLogisticsMilestone cobre 'ships to' e 'first units'", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/first-units-ship",
+        title: "First units ship to enterprise customers",
+      }),
+      "noticias",
+    );
+  });
+
+  it("isCustomerSlug NÃO casa slugs de produto (skip false positives)", () => {
+    // Slug com verbo de lançamento → não trata como customer
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-5",
+        title: "Introducing GPT-5",
+      }),
+      "lancamento",
+    );
+    // Slug com versão → não trata como customer
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-v3",
+        title: "Claude v3 announces availability",
+      }),
+      "lancamento",
+    );
+  });
+
+  // Review fixes — precedência de type_hint
+  it("type_hint=lancamento do source-researcher curto-circuita customer-slug (#1173)", () => {
+    // Agent LEU a página e disse "lancamento". URL parece customer (single-token),
+    // mas type_hint vence — caso "Sora", "Codex", "Gemini" em /index/{name}.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/sora",
+        title: "Sora",
+        type_hint: "lancamento",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("type_hint=lancamento curto-circuita logistics (delivers/ships não derruba launch real)", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-5",
+        title: "Claude 4.5 delivers state-of-the-art performance",
+        type_hint: "lancamento",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLogisticsMilestone NÃO casa 'delivers' bare (marketing copy comum)", () => {
+    // Antes do tightening, "delivers state-of-the-art" virava noticias.
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-4-5-perf",
+        title: "Claude 4.5 delivers state-of-the-art coding performance",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLogisticsMilestone CASA 'ships to enterprise/select/etc' (contexto específico)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/x",
+        title: "Vera CPU ships to top AI labs",
+      }),
+      "noticias",
+    );
+  });
+
+  it("isLikelyResearchResult NÃO casa 'breakthrough' bare em copy de marketing", () => {
+    // Antes do tightening, "breakthrough in reasoning" virava pesquisa.
+    assert.equal(
+      categorize({
+        url: "https://deepmind.google/blog/gemini-3-launch",
+        title: "Gemini 3: a breakthrough in multimodal reasoning",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLikelyResearchResult CASA 'disproves the conjecture' (contexto acadêmico)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/model-disproves-discrete-geometry-conjecture",
+        title: "Model disproves the discrete geometry conjecture",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("PT: 'resolveu conjectura' casa research result (fix resolv[eu]?)", () => {
+    assert.equal(
+      categorize({
+        url: "https://exemplo.com.br/blog/erdos",
+        title: "Modelo resolveu a conjectura de Erdős sobre distâncias unitárias",
+      }),
+      "noticias", // sem domain de lancamento — vai pra noticias mesmo
+    );
+    // Em domain de lancamento, PT 'resolveu' agora casa research → pesquisa
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/x",
+        title: "Modelo da OpenAI resolveu a conjectura de Erdős",
+      }),
+      "pesquisa",
     );
   });
 });

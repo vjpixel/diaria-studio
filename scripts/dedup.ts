@@ -166,6 +166,102 @@ function readApprovedDestaqueUrls(approvedPath: string): string[] {
   return [...urls];
 }
 
+/**
+ * Pure (#1452): lê URLs dos destaques (D1/D2/D3) do MD final `02-reviewed.md`.
+ * Padrão do renderer:
+ *   **DESTAQUE N | category**
+ *   (blank)
+ *   [**title**](url)        ← canonical
+ *   ou
+ *   **[title](url)**        ← writer agent variant
+ *
+ * Pegamos a primeira URL após cada marcador `DESTAQUE N`. Mais autoritativo
+ * que approved.json porque MD reflete edições pós-Stage-1 (title-picker,
+ * dedup cleanup, Drive edits) que approved.json não captura.
+ */
+export function readReviewedDestaqueUrls(reviewedPath: string): string[] {
+  if (!existsSync(reviewedPath)) return [];
+  let md: string;
+  try {
+    md = readFileSync(reviewedPath, "utf8");
+  } catch {
+    // Race com OneDrive sync ou permissão flake — fail gracioso
+    return [];
+  }
+  const urls: string[] = [];
+  const lines = md.split(/\r?\n/);
+  let inDestaque = false;
+  // Markdown link tolerante a URLs com parênteses balanceados (Wikipedia etc.):
+  // captura até o último `)` que precede whitespace ou fim de linha.
+  // Aceita formatos:
+  //   [**title**](url)     (canonical)
+  //   **[title](url)**     (writer variant)
+  //   [title](url)         (bare inline)
+  // Trim já remove leading/trailing whitespace; t.startsWith() permitiria
+  // qualquer prefixo de blockquote/list, mas conservador: regex aceita só
+  // os prefixos esperados pelo renderer.
+  const LINK_PATTERN = /\*{0,2}\[(?:\*{0,2})?[^\]]+(?:\*{0,2})?\]\((https?:\/\/[^\s]+?)\)\*{0,2}\s*$/;
+  for (const line of lines) {
+    const t = line.trim();
+    // Reset on section separator
+    if (t === "---") {
+      inDestaque = false;
+      continue;
+    }
+    // Destaque header (com ou sem emoji+pipe, tolerante a leading prefix)
+    if (/^\*{0,2}DESTAQUE\s+\d+\s*\|/i.test(t)) {
+      inDestaque = true;
+      continue;
+    }
+    // Dentro de destaque, pega primeira URL canônica ou inline-link
+    if (inDestaque) {
+      const m = t.match(LINK_PATTERN);
+      if (m) {
+        urls.push(m[1]);
+        inDestaque = false; // só primeira URL conta
+      }
+    }
+  }
+  return urls;
+}
+
+/**
+ * Pure (#1452): lê URLs dos destaques do HTML final pasted no Beehiiv.
+ * Padrão do render-newsletter-html.ts:
+ *   <p>...DESTAQUE N | category...</p>
+ *   <p>...<a href="URL" ...>title</a>...</p>
+ *
+ * Última instância de fallback antes do legacy 01-approved.json — HTML é
+ * o que foi de fato entregue ao subscriber.
+ */
+export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
+  if (!existsSync(htmlPath)) return [];
+  let html: string;
+  try {
+    html = readFileSync(htmlPath, "utf8");
+  } catch {
+    return [];
+  }
+  const urls: string[] = [];
+  // Decodifica entities HTML comuns no href ANTES de extrair pra alinhar com
+  // canonicalize() (que opera em URL "limpa", não encoded).
+  const decoded = html.replace(/&amp;/gi, "&");
+  // Pattern restritivo: marker DESTAQUE seguido de <a href> DENTRO de até
+  // ~500 chars (~scope típico do bloco do destaque no template). Sem boundary,
+  // [\s\S]*? podia pular pra <a> de footer/share em template degradado.
+  // O lookahead negativo `?!\1` previne span passar pelo próximo marker.
+  const re = /DESTAQUE\s+\d+[\s\S]{0,500}?<a\s+[^>]*href=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const href = m[1];
+    // Skip non-article links: anchors, share/permalink, mailto, javascript
+    if (/^(#|mailto:|javascript:|tel:)/i.test(href)) continue;
+    if (/share\.|\/share\?|\/unsubscribe|\/share-this/i.test(href)) continue;
+    urls.push(href);
+  }
+  return urls;
+}
+
 function readApprovedTitles(approvedPath: string): string[] {
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJsonShape;
@@ -232,17 +328,35 @@ export function extractPastDestaqueUrls(
 
   const urls = new Set<string>();
   for (const aammdd of recent) {
-    const candidates = [
+    // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
+    // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
+    // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
+    // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
+    const reviewedPath = resolve(editionsDir, aammdd, "02-reviewed.md");
+    const htmlPath = resolve(editionsDir, aammdd, "_internal", "newsletter-final.html");
+    const approvedCandidates = [
       resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
       resolve(editionsDir, aammdd, "01-approved.json"),
     ];
-    for (const path of candidates) {
-      if (!existsSync(path)) continue;
-      for (const u of readApprovedDestaqueUrls(path)) {
-        // Canonicalize pra match com canonicalize(art.url) no dedup
-        urls.add(canonicalize(u));
+
+    let sourceUrls: string[] = [];
+    if (existsSync(reviewedPath)) {
+      sourceUrls = readReviewedDestaqueUrls(reviewedPath);
+    }
+    if (sourceUrls.length === 0 && existsSync(htmlPath)) {
+      sourceUrls = readNewsletterHtmlDestaqueUrls(htmlPath);
+    }
+    if (sourceUrls.length === 0) {
+      for (const path of approvedCandidates) {
+        if (!existsSync(path)) continue;
+        sourceUrls = readApprovedDestaqueUrls(path);
+        if (sourceUrls.length > 0) break;
       }
-      break;
+    }
+
+    for (const u of sourceUrls) {
+      // Canonicalize pra match com canonicalize(art.url) no dedup
+      urls.add(canonicalize(u));
     }
   }
   return urls;
