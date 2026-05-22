@@ -45,6 +45,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
 
 interface RawArticle {
   url?: string;
@@ -202,76 +203,19 @@ export function countSubmissionsFromArchive(
 }
 
 /**
- * Pure: conta itens editoriais visíveis no MD final.
- * Considera DESTAQUE N + 4 seções secundárias. Pula blocos editoriais fixos
- * (SORTEIO / PARA ENCERRAR / ERRO INTENCIONAL / É IA?) e links de afiliados.
+ * Pure: conta itens editoriais visíveis no MD final. Z na linha de cobertura.
  *
- * Heurística: contar markdown links `[texto](http...)` em seções relevantes,
- * filtrando URLs de domínios de afiliado/footer (diaria.beehiiv.com,
- * wisprflow, clarice.ai, beehiiv.com?via, linkedin.com/company,
- * facebook.com/diar.ia, pt.wikipedia, commons.wikimedia, creativecommons).
+ * #1455: agora wrapper sobre `lib/newsletter-count.ts:countSelectedItems` —
+ * single source of truth com `lint-newsletter-md.ts --check intro-count`.
+ * Antes os dois divergiam: producer (este) contava sections + emoji + singular
+ * corretamente, consumer (lint) tinha regex restritiva que falhava em emoji
+ * prefix. Caso 260522: producer setou "12", lint reclamou "real é 3".
+ *
+ * Retorna apenas o total — assinatura mantida pra compat com callers existentes.
+ * Quem quiser breakdown por bucket usa `lib/newsletter-count.ts` direto.
  */
 export function countSelectedItems(md: string): number {
-  const FOOTER_DOMAINS = [
-    "diaria.beehiiv.com", // afiliados (cursos, livros)
-    "wisprflow.ai",
-    "clarice.ai",
-    "beehiiv.com?via",
-    "linkedin.com/company",
-    "facebook.com/diar.ia",
-    "pt.wikipedia.org",
-    "commons.wikimedia.org",
-    "creativecommons.org",
-  ];
-  const SKIP_HEADERS = [
-    "SORTEIO",
-    "PARA ENCERRAR",
-    "ERRO INTENCIONAL",
-    "É IA?",
-    "ASSINE",
-    "TÍTULO",
-    "SUBTÍTULO",
-  ];
-
-  // #1441: Split por --- E por section-header lines. Bug 260520: OUTRAS NOTÍCIAS
-  // colava com SORTEIO sem --- entre eles; a section toda continha "SORTEIO" e
-  // virava skip, perdendo 6 itens contados. Agora um second pass via lookahead
-  // particiona qualquer section que contenha mais de 1 header conhecido, de
-  // forma que cada sub-bloco tem no máximo 1 header → decisão de skip é cirúrgica.
-  //
-  // Headers reconhecidos: bold com nome de seção OU `## É IA?`. Restringimos o
-  // prefixo entre `**` e o nome da seção a `[^\n\[]*?` (sem `[`) pra evitar
-  // matchar conteúdo tipo `**[Título A](url)**` onde "Título" bateria com
-  // T[ÍI]TULO. Headers reais nunca têm `[` antes do nome.
-  const SECTION_HEADER_LOOKAHEAD =
-    /(?=^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS\s+NOT[ÍI]CIAS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|DESTAQUE\s+\d)[^\n]*\*\*\s*$)|(?=^##\s+É\s+IA\?)/im;
-
-  const rawSections = md.split(/^---\s*$/m);
-  const allBlocks: string[] = [];
-  for (const sec of rawSections) {
-    allBlocks.push(...sec.split(SECTION_HEADER_LOOKAHEAD));
-  }
-
-  let count = 0;
-  for (const section of allBlocks) {
-    // Pular seções editoriais fixas
-    const isSkip = SKIP_HEADERS.some((h) => section.includes(h));
-    if (isSkip) continue;
-
-    // Procurar markdown links — formato `[texto](url)` ou `**[texto](url)**` ou `[**texto**](url)`
-    const linkRe = /\[(?:\*\*)?([^\]]+?)(?:\*\*)?\]\((https?:\/\/[^)]+)\)/g;
-    let m: RegExpExecArray | null;
-    const urls = new Set<string>();
-    while ((m = linkRe.exec(section)) !== null) {
-      const url = m[2];
-      // Pular afiliados/footer
-      const isFooter = FOOTER_DOMAINS.some((d) => url.includes(d));
-      if (isFooter) continue;
-      urls.add(url);
-    }
-    count += urls.size;
-  }
-  return count;
+  return sharedCountSelectedItems(md).total;
 }
 
 /**

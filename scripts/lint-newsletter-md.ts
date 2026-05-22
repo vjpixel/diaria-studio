@@ -36,6 +36,7 @@ import {
 import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
+import { lintIntroCount as sharedLintIntroCount } from "./lib/newsletter-count.ts"; // #1455
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -813,131 +814,24 @@ export function checkIntentionalError(
  * Retorna `{ ok, claimed, actual }`.
  * Se não conseguir parsear o número da intro, retorna `{ ok: true }` (não bloqueia).
  */
-export interface IntroCountResult {
-  ok: boolean;
-  claimed?: number;
-  actual?: number;
-}
+// #1455: re-exporta `IntroCountResult` da lib pra manter compat com callers
+// existentes (test/lint-intro-count.test.ts, scripts/check-stage2-invariants.ts).
+export type { IntroCountResult } from "./lib/newsletter-count.ts";
 
+/**
+ * #1454/#1455: wrapper sobre `lib/newsletter-count.ts:lintIntroCount` —
+ * single source of truth com `sync-coverage-line.ts:countSelectedItems`.
+ *
+ * Antes (até #1453) os dois usavam algoritmos diferentes: producer dividia
+ * por `---` E section-header lookahead com emoji+singular suportados, consumer
+ * (este) tinha state machine line-by-line com regex que NÃO casava emoji
+ * prefix (`**🚀 LANÇAMENTOS**`) nem singular (`**🚀 LANÇAMENTO**`). Caso
+ * real 260522: intro dizia "12" (correto), lint reclamava "real é 3".
+ *
+ * Agora delegam pra mesma função — divergência por construção é impossível.
+ */
 export function lintIntroCount(md: string): IntroCountResult {
-  const normalized = md.replace(/\r\n/g, "\n");
-
-  // Extrair número declarado na intro.
-  // Cobre frase canônica + variações pós-humanizador/Clarice (#804):
-  //   "Selecionamos os N mais relevantes"
-  //   "Escolhemos os N mais relevantes"
-  //   "Reunimos os N mais relevantes"
-  //   "Destacamos os N mais relevantes"
-  //   "Separamos os N mais relevantes"
-  //   "Trouxemos os N mais relevantes"
-  const introMatch = normalized.match(
-    /(?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\s+os?\s+(\d+)/i,
-  );
-  if (!introMatch) return { ok: true }; // forma singular, ausente ou frase não reconhecida — não verificar
-  const claimed = parseInt(introMatch[1], 10);
-
-  // Contar URLs editoriais no body
-  // Separar blocos por `---`. Processar linha a linha.
-  let actual = 0;
-  const lines = normalized.split("\n");
-  let inHighlight = false;
-  let highlightUrlSeen = false;
-  let inSection = false;
-  let inEai = false;
-  let sectionItemState: "expect_title" | "expect_url" | "body" = "expect_title";
-
-  // Helper: linha é URL canônica (bare ou inline link)
-  const isUrl = (s: string) =>
-    /^\s*(?:\[https?:\/\/\S+\]\(https?:\/\/\S+\)|https?:\/\/\S+)\s*$/.test(s);
-  // #1206: aceitar ambos formatos de bold em inline link:
-  //   - [**Título**](url)    (canonical, usado pelas edições publicadas)
-  //   - **[Título](url)**    (gerado às vezes pelo writer agent)
-  // Pre-#1206 a regex `^\[.+\]\(...\)` falhava no formato **[...]** porque
-  // a linha começava com **. Trailing trim cobre `  ` (line-break markdown).
-  const isInlineLink = (s: string) =>
-    /^\*{0,2}\[.+\]\(https?:\/\/.+\)\*{0,2}\s*$/.test(s);
-
-  for (const raw of lines) {
-    const t = raw.trim();
-
-    if (t === "---") {
-      inHighlight = false;
-      highlightUrlSeen = false;
-      inSection = false;
-      inEai = false;
-      sectionItemState = "expect_title";
-      continue;
-    }
-
-    // É IA? — excluir desta seção inteira
-    if (/^(##\s+)?É IA\?\s*$/i.test(t)) {
-      inEai = true;
-      inHighlight = false;
-      inSection = false;
-      continue;
-    }
-    if (inEai) continue;
-
-    // Header de destaque — plain ou em **negrito** (#590)
-    if (/^(?:\*\*)?DESTAQUE\s+\d+\s*\|/.test(t)) {
-      inHighlight = true;
-      highlightUrlSeen = false;
-      inSection = false;
-      sectionItemState = "expect_title";
-      continue;
-    }
-
-    // Header de seção secundária — plain ou em **negrito** (#590)
-    if (/^(?:\*\*)?(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/.test(t)) {
-      inSection = true;
-      inHighlight = false;
-      sectionItemState = "expect_title";
-      continue;
-    }
-
-    // Linha em branco
-    if (t === "") {
-      if (inSection && sectionItemState === "body") {
-        sectionItemState = "expect_title";
-      }
-      continue;
-    }
-
-    // Dentro de destaque: contar 1 URL por bloco (a primeira URL encontrada)
-    if (inHighlight && !highlightUrlSeen) {
-      if (isUrl(t) || isInlineLink(t)) {
-        actual++;
-        highlightUrlSeen = true;
-      }
-      continue;
-    }
-
-    // Dentro de seção secundária
-    if (inSection) {
-      // #599 — formato inline `[Título](url)`: título e URL na mesma linha.
-      // Contar direto e avançar para body sem transição via expect_url.
-      if (sectionItemState === "expect_title" && isInlineLink(t)) {
-        actual++;
-        sectionItemState = "body";
-        continue;
-      }
-      if (sectionItemState === "expect_title" && !isUrl(t)) {
-        sectionItemState = "expect_url";
-        continue;
-      }
-      if (sectionItemState === "expect_url" && isUrl(t)) {
-        actual++;
-        sectionItemState = "body";
-        continue;
-      }
-      if (sectionItemState === "expect_url" && !isUrl(t)) {
-        // Edge: URL não veio após o título — reset pra próximo item
-        sectionItemState = "expect_title";
-      }
-    }
-  }
-
-  return { ok: claimed === actual, claimed, actual };
+  return sharedLintIntroCount(md);
 }
 
 /**
