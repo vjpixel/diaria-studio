@@ -104,6 +104,8 @@ Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do 
 
 ## Passo 2 — Dispatch paralelo
 
+> **TODO (#1451 follow-up):** o orchestrator-stage-2.md §2a já marca `writer-destaque × 3` paralelo como default em todas as situações. Esta skill ainda dispatcha o `writer` único legacy — migração requer (1) ler highlights de approved-capped JSON, (2) dispatch 3 writer-destaques + 2 social numa única mensagem, (3) stitch dos 02-d{N}-draft.md em 02-draft.md. Por enquanto, a skill standalone usa writer único (~30min); pipeline full (/diaria-edicao) já usa parallel via orchestrator.
+
 **Em uma única mensagem**, dispatchar os agents conforme `$2`:
 
 ### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
