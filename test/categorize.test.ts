@@ -71,7 +71,8 @@ describe("categorize() — regras de domínio", () => {
   });
 
   it("lida com www. no hostname", () => {
-    const art: Article = { url: "https://www.openai.com/blog/something" };
+    // Slug multi-token pra evitar isCustomerSlug match (#1453)
+    const art: Article = { url: "https://www.openai.com/blog/something-new-here" };
     assert.equal(categorize(art), "lancamento");
   });
 
@@ -1631,6 +1632,119 @@ describe("categorize() — type_hint override em lançamento (#1173)", () => {
       categorize({
         url: "https://anthropic.com/news/claude-4-5",
         title: "Introducing Claude 4.5",
+      }),
+      "lancamento",
+    );
+  });
+});
+
+describe("categorize() — #1453 inversão de default + novos detectores", () => {
+  it("OpenAI Erdős math proof → pesquisa (não lancamento)", () => {
+    // Caso real 260522: foi LANÇAMENTO indevidamente.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/model-disproves-discrete-geometry-conjecture",
+        title: "An OpenAI model has disproved a central conjecture in discrete geometry",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("NVIDIA Vera CPU delivery → noticias (não lancamento)", () => {
+    // Caso real 260522: \"Vera Arrives: NVIDIA's First CPU Built for Agents Lands at Top AI Labs\"
+    // Domain oficial, mas é entrega/milestone — não disponibilidade geral.
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/vera-cpu-delivery/",
+        title: "Vera Arrives: NVIDIA's First CPU Built for Agents Lands at Top AI Labs",
+      }),
+      "noticias",
+    );
+  });
+
+  it("OpenAI + customer name slug → noticias", () => {
+    // Caso real 260522: openai.com/index/adventhealth — partnership/customer story.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/adventhealth",
+        title: "AdventHealth advances whole-person care with OpenAI",
+      }),
+      "noticias",
+    );
+    // Outros casos típicos
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/databricks",
+        title: "Databricks integrates ChatGPT",
+      }),
+      "noticias",
+    );
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/kpmg",
+        title: "Anthropic e KPMG",
+      }),
+      "noticias",
+    );
+  });
+
+  it("domínio oficial + título product-name-only (sem verbo) → lancamento (default mantido)", () => {
+    // #1453 — inversão de default foi rejeitada pra preservar product-name-only
+    // launches como \"Claude 4 Sonnet\". A precisão extra vem dos 3 detectores
+    // específicos (research/logistics/customer), não da inversão wholesale.
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-haiku-5",
+        title: "Claude Haiku 5",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("domínio oficial + verbo de lançamento explícito → lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-6",
+        title: "Introducing GPT-6: our new flagship model",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("isLikelyResearchResult cobre 'breakthrough' e 'solves'", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/math-breakthrough",
+        title: "Math breakthrough: model solves 80-year-old conjecture",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("isLogisticsMilestone cobre 'ships to' e 'first units'", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/first-units-ship",
+        title: "First units ship to enterprise customers",
+      }),
+      "noticias",
+    );
+  });
+
+  it("isCustomerSlug NÃO casa slugs de produto (skip false positives)", () => {
+    // Slug com verbo de lançamento → não trata como customer
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/introducing-gpt-5",
+        title: "Introducing GPT-5",
+      }),
+      "lancamento",
+    );
+    // Slug com versão → não trata como customer
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/claude-v3",
+        title: "Claude v3 announces availability",
       }),
       "lancamento",
     );

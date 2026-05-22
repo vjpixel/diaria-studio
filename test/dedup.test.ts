@@ -871,6 +871,148 @@ describe("extractPastDestaqueUrls (#1068)", () => {
       cleanup();
     }
   });
+
+  // #1452 — divergência approved.json vs publicado (caso 260520).
+  it("prefere 02-reviewed.md sobre 01-approved.json (caso #1452 — divergência)", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260520", "_internal"), { recursive: true });
+    // approved.json tem destaques ANTIGOS (pré-edit do editor)
+    writeFileSync(
+      join(dir, "260520", "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { rank: 1, url: "https://example.com/stale-d1", article: { title: "Stale D1" } },
+        ],
+      }),
+      "utf8",
+    );
+    // 02-reviewed.md tem destaques ATUAIS (publicados)
+    writeFileSync(
+      join(dir, "260520", "02-reviewed.md"),
+      `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+[**Real D1 title**](https://example.com/real-d1)
+
+body
+`,
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      // Deve usar MD (autoritativo), não JSON stale
+      assert.ok(r.has("https://example.com/real-d1"), "deve incluir URL do MD");
+      assert.ok(!r.has("https://example.com/stale-d1"), "NÃO deve incluir URL stale do JSON");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("parsea formato canonical `[**title**](url)` no MD", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "02-reviewed.md"),
+      `**DESTAQUE 1 | LANÇAMENTO**
+
+[**Title 1**](https://example.com/d1)
+
+body1
+
+---
+
+**DESTAQUE 2 | NOTÍCIA**
+
+[**Title 2**](https://example.com/d2)
+`,
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.equal(r.size, 2);
+      assert.ok(r.has("https://example.com/d1"));
+      assert.ok(r.has("https://example.com/d2"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("parsea formato writer `**[title](url)**` no MD", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "02-reviewed.md"),
+      `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Writer-format title](https://example.com/writer-d1)**
+
+body
+`,
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.ok(r.has("https://example.com/writer-d1"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fallback pra newsletter-final.html quando MD não existe", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510", "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "260510", "_internal", "newsletter-final.html"),
+      `<p>...DESTAQUE 1 | LANÇAMENTO...</p>
+<p><a href="https://example.com/html-d1" target="_blank">Title</a></p>
+<p>...DESTAQUE 2 | NOTÍCIA...</p>
+<p><a href="https://example.com/html-d2" target="_blank">Title 2</a></p>`,
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.ok(r.has("https://example.com/html-d1"));
+      assert.ok(r.has("https://example.com/html-d2"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fallback pra approved.json quando MD e HTML não existem (edição legacy)", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260101", "_internal"), { recursive: true });
+    writeFileSync(
+      join(dir, "260101", "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ url: "https://example.com/legacy" }],
+      }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.ok(r.has("https://example.com/legacy"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("MD vazio sem destaques cai pro HTML/JSON fallback", () => {
+    const { dir, cleanup } = setupDir();
+    mkdirSync(join(dir, "260510", "_internal"), { recursive: true });
+    // MD existe mas não tem destaques (ex: edição incompleta)
+    writeFileSync(join(dir, "260510", "02-reviewed.md"), "no destaques here", "utf8");
+    // approved.json tem destaque
+    writeFileSync(
+      join(dir, "260510", "_internal", "01-approved.json"),
+      JSON.stringify({ highlights: [{ url: "https://example.com/from-approved" }] }),
+      "utf8",
+    );
+    try {
+      const r = extractPastDestaqueUrls(dir, 3);
+      assert.ok(r.has("https://example.com/from-approved"));
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("dedup com pastDestaqueUrlsSet (#1068)", () => {

@@ -166,6 +166,72 @@ function readApprovedDestaqueUrls(approvedPath: string): string[] {
   return [...urls];
 }
 
+/**
+ * Pure (#1452): lê URLs dos destaques (D1/D2/D3) do MD final `02-reviewed.md`.
+ * Padrão do renderer:
+ *   **DESTAQUE N | category**
+ *   (blank)
+ *   [**title**](url)        ← canonical
+ *   ou
+ *   **[title](url)**        ← writer agent variant
+ *
+ * Pegamos a primeira URL após cada marcador `DESTAQUE N`. Mais autoritativo
+ * que approved.json porque MD reflete edições pós-Stage-1 (title-picker,
+ * dedup cleanup, Drive edits) que approved.json não captura.
+ */
+export function readReviewedDestaqueUrls(reviewedPath: string): string[] {
+  if (!existsSync(reviewedPath)) return [];
+  const md = readFileSync(reviewedPath, "utf8");
+  const urls: string[] = [];
+  const lines = md.split(/\r?\n/);
+  let inDestaque = false;
+  for (const line of lines) {
+    const t = line.trim();
+    // Reset on section separator
+    if (t === "---") {
+      inDestaque = false;
+      continue;
+    }
+    // Destaque header (com ou sem emoji+pipe)
+    if (/^\*{0,2}DESTAQUE\s+\d+\s*\|/i.test(t)) {
+      inDestaque = true;
+      continue;
+    }
+    // Dentro de destaque, pega primeira URL canônica ou inline-link
+    if (inDestaque) {
+      // [**title**](url) ou **[title](url)** ou [title](url)
+      const m = t.match(/^\*{0,2}\[(?:\*{0,2})?[^\]]+(?:\*{0,2})?\]\((https?:\/\/[^)\s]+)\)\*{0,2}/);
+      if (m) {
+        urls.push(m[1]);
+        inDestaque = false; // só primeira URL conta
+      }
+    }
+  }
+  return urls;
+}
+
+/**
+ * Pure (#1452): lê URLs dos destaques do HTML final pasted no Beehiiv.
+ * Padrão do render-newsletter-html.ts:
+ *   <p>...DESTAQUE N | category...</p>
+ *   <p>...<a href="URL" ...>title</a>...</p>
+ *
+ * Última instância de fallback antes do legacy 01-approved.json — HTML é
+ * o que foi de fato entregue ao subscriber.
+ */
+export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
+  if (!existsSync(htmlPath)) return [];
+  const html = readFileSync(htmlPath, "utf8");
+  const urls: string[] = [];
+  // Find each DESTAQUE marker + first <a href> following
+  const re = /DESTAQUE\s+\d+[\s\S]*?<a\s+[^>]*href=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    urls.push(m[1]);
+  }
+  return urls;
+}
+
 function readApprovedTitles(approvedPath: string): string[] {
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJsonShape;
@@ -232,17 +298,35 @@ export function extractPastDestaqueUrls(
 
   const urls = new Set<string>();
   for (const aammdd of recent) {
-    const candidates = [
+    // #1452 hierarchy: MD final > HTML final > approved.json (legacy fallback).
+    // Razão: 02-reviewed.md reflete edições pós-Stage-1 (title-picker, dedup
+    // cleanup, Drive sync) que approved.json não captura — caso 260520 onde
+    // approved.json tinha D1=Karpathy mas o publicado tinha D1=Gemini 3.5.
+    const reviewedPath = resolve(editionsDir, aammdd, "02-reviewed.md");
+    const htmlPath = resolve(editionsDir, aammdd, "_internal", "newsletter-final.html");
+    const approvedCandidates = [
       resolve(editionsDir, aammdd, "_internal", "01-approved.json"),
       resolve(editionsDir, aammdd, "01-approved.json"),
     ];
-    for (const path of candidates) {
-      if (!existsSync(path)) continue;
-      for (const u of readApprovedDestaqueUrls(path)) {
-        // Canonicalize pra match com canonicalize(art.url) no dedup
-        urls.add(canonicalize(u));
+
+    let sourceUrls: string[] = [];
+    if (existsSync(reviewedPath)) {
+      sourceUrls = readReviewedDestaqueUrls(reviewedPath);
+    }
+    if (sourceUrls.length === 0 && existsSync(htmlPath)) {
+      sourceUrls = readNewsletterHtmlDestaqueUrls(htmlPath);
+    }
+    if (sourceUrls.length === 0) {
+      for (const path of approvedCandidates) {
+        if (!existsSync(path)) continue;
+        sourceUrls = readApprovedDestaqueUrls(path);
+        if (sourceUrls.length > 0) break;
       }
-      break;
+    }
+
+    for (const u of sourceUrls) {
+      // Canonicalize pra match com canonicalize(art.url) no dedup
+      urls.add(canonicalize(u));
     }
   }
   return urls;
