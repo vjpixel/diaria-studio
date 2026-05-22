@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -363,6 +363,145 @@ describe("checkStage2Invariants — integração", () => {
       const r = checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true);
       assert.equal(r.checks.urls_accessible.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // #1456 review fix: schema canonical {version, entries}
+  it("urls_accessible aceita schema canonical {version, entries: {...}}", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[T1](https://a.com/x) [T2](https://b.com/y)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      // Schema real de produção
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          entries: {
+            "https://a.com/x": { verdict: "accessible" },
+            "https://b.com/y": { verdict: "accessible" },
+          },
+        }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
+      assert.equal(r.checks.urls_accessible.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible normaliza trailing slash entre MD e cache", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // MD tem URL com trailing slash, cache sem
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[T1](https://blog.google/x/) [T2](https://anthropic.com/y)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          entries: {
+            "https://blog.google/x": { verdict: "accessible" }, // sem trailing slash
+            "https://anthropic.com/y/": { verdict: "accessible" }, // com trailing slash
+          },
+        }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible faz match via finalUrl (redirect)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // MD tem a URL canonical (pós-redirect)
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[T](https://canonical.com/final)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      // Cache tem entry com finalUrl populated
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          entries: {
+            "https://short.url/abc": {
+              verdict: "accessible",
+              finalUrl: "https://canonical.com/final",
+            },
+          },
+        }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible aceita variantes wikipedia (en.wikipedia.org)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[En Wiki](https://en.wikipedia.org/wiki/X) [Commons](https://upload.wikimedia.org/x.jpg)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible persiste lista completa em _internal/02-urls-suspicious.json", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // Mais que 5 URLs suspeitas pra triggerar o `+N mais`
+      const urls = Array.from({ length: 7 }, (_, i) => `[T${i}](https://s${i}.com/x)`).join(" ");
+      writeFileSync(join(dir, "02-reviewed.md"), urls);
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, false);
+      // Verifica que o arquivo foi gerado
+      const persisted = JSON.parse(
+        readFileSync(join(dir, "_internal", "02-urls-suspicious.json"), "utf8"),
+      );
+      assert.equal(persisted.suspicious.length, 7);
     } finally {
       cleanup();
     }

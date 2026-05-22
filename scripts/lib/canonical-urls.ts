@@ -57,17 +57,28 @@ export function getCanonicalUrls(approved: ApprovedJsonShape): Map<string, strin
     if (!map.has(key)) map.set(key, url);
   };
 
+  // Helper para extrair (title, url) de qualquer shape — highlights/runners_up
+  // usam `article.{title,url}` (wrapped); buckets secundários usam flat
+  // `{title, url}`. Forma única evita iteração duplicada (#1456 review).
+  const pickEntry = (a: ArticleLike): { title?: string; url?: string } => {
+    if (a.article && (a.article.title || a.article.url)) {
+      return { title: a.article.title, url: a.article.url };
+    }
+    return { title: a.title, url: a.url };
+  };
+
   for (const h of approved.highlights ?? []) {
-    addEntry(h.article?.title, h.article?.url);
-    addEntry(h.title, h.url);
+    const e = pickEntry(h);
+    addEntry(e.title, e.url);
   }
   for (const r of approved.runners_up ?? []) {
-    addEntry(r.article?.title, r.article?.url);
-    addEntry(r.title, r.url);
+    const e = pickEntry(r);
+    addEntry(e.title, e.url);
   }
   for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const) {
     for (const a of approved[bucket] ?? []) {
-      addEntry(a.title, a.url);
+      const e = pickEntry(a);
+      addEntry(e.title, e.url);
     }
   }
   return map;
@@ -91,8 +102,8 @@ export function lookupCanonicalUrl(
  * frontmatter YAML (se houver) e blocos de código.
  */
 export function extractUrlsFromMd(md: string): string[] {
-  // Strip frontmatter
-  const body = md.replace(/^---\s*\n[\s\S]*?\n---\s*\n/, "");
+  // Strip frontmatter — tolerante a LF e CRLF (Windows OneDrive). #1456 review.
+  const body = md.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n/, "");
   // Strip code blocks (```...```)
   const noCode = body.replace(/```[\s\S]*?```/g, "");
   const urls: string[] = [];

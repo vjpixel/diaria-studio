@@ -17,7 +17,7 @@
  *   exit 0 quando todos passaram; exit 1 com mensagem clara quando algum falhou.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
@@ -28,8 +28,11 @@ interface VerifyCacheEntry {
   checked_at?: string;
   finalUrl?: string;
 }
+// Production cache schema (#1456 review): `{ version, entries: Record<url, entry> }`.
+// Pre-fix lia `cache[url]` direto, falhava todo URL.
 interface VerifyCacheShape {
-  [url: string]: VerifyCacheEntry;
+  version?: number;
+  entries: Record<string, VerifyCacheEntry>;
 }
 
 interface CheckResult {
@@ -176,7 +179,16 @@ export function checkUrlsAccessible(
   }
   let cache: VerifyCacheShape;
   try {
-    cache = JSON.parse(readFileSync(cachePath, "utf8")) as VerifyCacheShape;
+    const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as unknown;
+    // Suporta ambas as formas: schema canonical `{entries: {...}}` E shape
+    // legado `{[url]: entry}` (test fixtures + edge edições antigas).
+    if (parsed && typeof parsed === "object" && "entries" in parsed) {
+      cache = parsed as VerifyCacheShape;
+    } else if (parsed && typeof parsed === "object") {
+      cache = { entries: parsed as Record<string, VerifyCacheEntry> };
+    } else {
+      return { ok: true, label: "verify_cache_invalid: skip" };
+    }
   } catch {
     return { ok: true, label: "verify_cache_invalid: skip" };
   }
@@ -189,15 +201,36 @@ export function checkUrlsAccessible(
     "beehiiv.com?via",
     "linkedin.com/company",
     "facebook.com/diar.ia",
-    "pt.wikipedia.org",
-    "commons.wikimedia.org",
+    "wikipedia.org", // todas as variantes (pt/en/es/...)
+    "wikimedia.org", // commons + upload
     "creativecommons.org",
     "wikidata.org",
   ];
+  // #1456 review fix: build reverse index por finalUrl + normalized form tb.
+  // verify-accessibility.ts strips trailing slash; nosso checker precisa
+  // tentar ambas formas pra evitar false-positive (caso: URL no MD termina
+  // em `/`, cache key não).
+  const finalUrlIndex = new Map<string, VerifyCacheEntry>();
+  const normalizedIndex = new Map<string, VerifyCacheEntry>();
+  const stripTrailingSlash = (u: string) => u.endsWith("/") ? u.slice(0, -1) : u;
+  for (const [key, entry] of Object.entries(cache.entries)) {
+    if (entry.finalUrl && entry.finalUrl !== key) {
+      finalUrlIndex.set(entry.finalUrl, entry);
+      normalizedIndex.set(stripTrailingSlash(entry.finalUrl), entry);
+    }
+    normalizedIndex.set(stripTrailingSlash(key), entry);
+  }
+  const lookupCacheEntry = (url: string): VerifyCacheEntry | undefined => {
+    return (
+      cache.entries[url] ??
+      finalUrlIndex.get(url) ??
+      normalizedIndex.get(stripTrailingSlash(url))
+    );
+  };
   const suspicious: { url: string; reason: string }[] = [];
   for (const url of urls) {
     if (FOOTER.some((d) => url.includes(d))) continue;
-    const entry = cache[url];
+    const entry = lookupCacheEntry(url);
     if (!entry) {
       suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
       continue;
@@ -207,11 +240,22 @@ export function checkUrlsAccessible(
     }
   }
   if (suspicious.length > 0) {
+    // Persist lista completa pra inspeção (#1456 review).
+    try {
+      const internalDir = join(editionDir, "_internal");
+      if (!existsSync(internalDir)) mkdirSync(internalDir, { recursive: true });
+      writeFileSync(
+        join(internalDir, "02-urls-suspicious.json"),
+        JSON.stringify({ suspicious, generated_at: new Date().toISOString() }, null, 2),
+      );
+    } catch {
+      // Best-effort — não bloqueia o check se write falhar.
+    }
     const list = suspicious
       .slice(0, 5)
       .map((s) => `${s.url.slice(0, 80)} (${s.reason})`)
       .join("; ");
-    const more = suspicious.length > 5 ? ` +${suspicious.length - 5} mais` : "";
+    const more = suspicious.length > 5 ? ` +${suspicious.length - 5} mais em _internal/02-urls-suspicious.json` : "";
     return {
       ok: false,
       label: `urls_suspicious: ${suspicious.length} URL(s) não-accessible/desconhecidas no cache — ${list}${more}. Re-rode verify-accessibility ou corrija as URLs editadas manualmente.`,

@@ -90,6 +90,12 @@ Some code with https://code.com/x or [fake](https://fake.com/y)
 `;
     assert.deepEqual(extractUrlsFromMd(md), ["https://real.com/z"]);
   });
+
+  // #1456 review fix
+  it("ignora frontmatter com CRLF (Windows OneDrive)", () => {
+    const md = "---\r\nintentional_error:\r\n  url: \"https://yaml.com/x\"\r\n---\r\n\r\n[**Real**](https://body.com/y)\r\n";
+    assert.deepEqual(extractUrlsFromMd(md), ["https://body.com/y"]);
+  });
 });
 
 describe("findMismatchedUrls (#1456)", () => {
