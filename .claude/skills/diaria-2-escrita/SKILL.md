@@ -102,18 +102,76 @@ npx tsx scripts/apply-stage2-caps.ts \
 
 Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do script (input ausente, etc.) = parar — sem caps o writer pode publicar 9 notícias quando cap esperado era 4 (caso real em 260507).
 
-## Passo 2 — Dispatch paralelo
+## Passo 2 — Dispatch paralelo (writer-destaque × 3 + social, #1451/#1463)
 
-> **TODO (#1451 follow-up):** o orchestrator-stage-2.md §2a já marca `writer-destaque × 3` paralelo como default em todas as situações. Esta skill ainda dispatcha o `writer` único legacy — migração requer (1) ler highlights de approved-capped JSON, (2) dispatch 3 writer-destaques + 2 social numa única mensagem, (3) stitch dos 02-d{N}-draft.md em 02-draft.md. Por enquanto, a skill standalone usa writer único (~30min); pipeline full (/diaria-edicao) já usa parallel via orchestrator.
+**INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × 3 + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.
 
-**Em uma única mensagem**, dispatchar os agents conforme `$2`:
+**Pré-dispatch — ler highlights inline (sem extract-destaques.ts — esse parsea MD, não JSON):**
+
+```bash
+node -e "
+  const fs=require('fs');
+  const j=JSON.parse(fs.readFileSync('data/editions/$1/_internal/01-approved-capped.json','utf8'));
+  if(!j.highlights||j.highlights.length!==3){
+    console.error('FALLBACK: highlights.length='+(j.highlights?.length||0)+' — usar writer legacy');
+    process.exit(1);
+  }
+  console.log(JSON.stringify(j.highlights.map((h,i)=>({n:i+1,article:h.article,bucket:h.bucket})),null,2));
+"
+```
+
+Se `highlights.length !== 3`: cair em writer único legacy (ver bloco "Fallback" abaixo).
 
 ### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
 
 ```
 Agent({
+  subagent_type: "writer-destaque",
+  description: "Etapa 2 — D1 writer",
+  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path=data/editions/$1/_internal/02-d1-draft.md, image_prompt_out_path=data/editions/$1/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
+})
+
+Agent({
+  subagent_type: "writer-destaque",
+  description: "Etapa 2 — D2 writer",
+  prompt: "Escreve DESTAQUE 2... [análogo, com highlights[1].article + peer_titles dos outros 2]"
+})
+
+Agent({
+  subagent_type: "writer-destaque",
+  description: "Etapa 2 — D3 writer",
+  prompt: "Escreve DESTAQUE 3... [análogo, com highlights[2].article + peer_titles dos outros 2]"
+})
+
+Agent({
+  subagent_type: "social-linkedin",
+  description: "Etapa 2 — LinkedIn writer",
+  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
+})
+
+Agent({
+  subagent_type: "social-facebook",
+  description: "Etapa 2 — Facebook writer",
+  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de data/editions/$1/_internal/01-approved.json. Output: data/editions/$1/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
+})
+```
+
+**Após os 3 writer-destaques retornarem, rodar stitch:**
+
+```bash
+npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/$1/
+```
+
+Output: `data/editions/$1/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA? + seções secundárias + ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR).
+
+### Fallback (writer único legacy)
+
+Quando `highlights.length !== 3` ou falha de dispatch parallel:
+
+```
+Agent({
   subagent_type: "writer",
-  description: "Etapa 2 — newsletter writer",
+  description: "Etapa 2 — newsletter writer (fallback legacy)",
   prompt: "Escreve a newsletter completa da edição $1 a partir de data/editions/$1/_internal/01-approved-capped.json (já com caps de #358 aplicados em Passo 1b). Seguir context/templates/newsletter.md e context/editorial-rules.md. Output: data/editions/$1/_internal/02-draft.md"
 })
 

@@ -84,18 +84,22 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
 **Aguardar os 3 writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
-**Pós:** stitch coordenador inline produz `02-draft.md` final via `Write` tool, concatenando:
-- Coverage line (top — gerada pelo `sync-coverage-line.ts` posteriormente, deixar placeholder por hora)
+**Pós:** rodar `scripts/stitch-newsletter.ts` (#1463) que produz `02-draft.md` determinístico unificando os 3 destaque drafts + seções secundárias + blocos fixos:
+
+```bash
+npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
+```
+
+O script é determinístico, sem LLM. Ordem canonical:
+- Coverage line (do `01-approved-capped.json > coverage.line`)
 - DESTAQUE 1 block (lê `_internal/02-d1-draft.md`)
 - DESTAQUE 2 block (lê `_internal/02-d2-draft.md`)
-- É IA? section — coordenador lê `01-eia.md` se existir, ou injeta placeholder
+- É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML)
 - DESTAQUE 3 block (lê `_internal/02-d3-draft.md`)
-- **LANÇAMENTOS** section: lista items de `01-approved-capped.json > lancamento[]` em formato `[**title**](url)\\nsummary` (1 item por linha, separados por linha em branco)
-- **PESQUISAS** section: idem para `pesquisa[]`
-- **OUTRAS NOTÍCIAS** section: idem para `noticias[]`
-- `**ERRO INTENCIONAL**` placeholder: `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}`
-- `**🎁 SORTEIO**` block (texto fixo do template)
-- `**🙋🏼‍♀️ PARA ENCERRAR**` block (texto fixo do template — ver `context/templates/newsletter.md`)
+- **LANÇAMENTOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324)
+- **PESQUISAS**, **OUTRAS NOTÍCIAS**, **VÍDEOS** (idem; omite seção vazia)
+- **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
+- **🎁 SORTEIO** + **🙋🏼‍♀️ PARA ENCERRAR** (texto fixo)
 
 Lint pós-stitch valida overlap de hook entre destaques; se overlap detectado, re-dispatch o destaque "perdedor" com peer_titles atualizado.
 
