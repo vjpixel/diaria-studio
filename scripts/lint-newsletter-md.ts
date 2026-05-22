@@ -36,7 +36,7 @@ import {
 import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
-import { lintIntroCount as sharedLintIntroCount } from "./lib/newsletter-count.ts"; // #1455
+import { lintIntroCount as sharedLintIntroCount, type IntroCountResult } from "./lib/newsletter-count.ts"; // #1455
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
