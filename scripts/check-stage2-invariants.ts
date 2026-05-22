@@ -21,6 +21,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
+import { extractUrlsFromMd } from "./lib/canonical-urls.ts"; // #1456
+
+interface VerifyCacheEntry {
+  verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
+  checked_at?: string;
+  finalUrl?: string;
+}
+interface VerifyCacheShape {
+  [url: string]: VerifyCacheEntry;
+}
 
 interface CheckResult {
   ok: boolean;
@@ -131,23 +141,109 @@ export function checkErroIntencionalRendered(editionDir: string): CheckResult {
   return { ok: true };
 }
 
+/**
+ * Pure (#1456): valida que todas as URLs editoriais no `02-reviewed.md` estão
+ * marcadas como `accessible` no cache cross-edition de verify-accessibility.
+ *
+ * Pega edições manuais de top-level Claude/editor que introduziram URLs
+ * hallucinadas (caso 260522 — Hassabis Guardian URL 404, Canaltech com sufixo
+ * `-em-sp/` inventado). URLs sem entry no cache OU com verdict != accessible
+ * são flagged.
+ *
+ * Footer/affiliate URLs (diaria.beehiiv.com, wisprflow, etc.) já são puladas
+ * em `extractUrlsFromMd` via filter explícito do `extractUrlsFromMd` helper
+ * (#1456). Pelo design conservador, URLs ausentes do cache são tratadas como
+ * suspeitas — caller pode re-rodar `verify-accessibility` pra popular.
+ *
+ * @param cachePath path pro link-verify-cache.json (default
+ *   `data/link-verify-cache.json`). Quando ausente/inválido, skip silencioso
+ *   (não bloqueia stage 2 mas perde a defesa).
+ */
+export function checkUrlsAccessible(
+  editionDir: string,
+  cachePath: string,
+): CheckResult {
+  const reviewed = join(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) {
+    return { ok: true, label: "reviewed_missing: outro check captura isso" };
+  }
+  if (!existsSync(cachePath)) {
+    // Sem cache, não há defesa — não bloqueia mas avisa.
+    return {
+      ok: true,
+      label: `verify_cache_missing: ${cachePath} não existe — rode \`verify-accessibility\` pra ativar safety net`,
+    };
+  }
+  let cache: VerifyCacheShape;
+  try {
+    cache = JSON.parse(readFileSync(cachePath, "utf8")) as VerifyCacheShape;
+  } catch {
+    return { ok: true, label: "verify_cache_invalid: skip" };
+  }
+  const md = readFileSync(reviewed, "utf8");
+  const urls = extractUrlsFromMd(md);
+  const FOOTER = [
+    "diaria.beehiiv.com",
+    "wisprflow.ai",
+    "clarice.ai",
+    "beehiiv.com?via",
+    "linkedin.com/company",
+    "facebook.com/diar.ia",
+    "pt.wikipedia.org",
+    "commons.wikimedia.org",
+    "creativecommons.org",
+    "wikidata.org",
+  ];
+  const suspicious: { url: string; reason: string }[] = [];
+  for (const url of urls) {
+    if (FOOTER.some((d) => url.includes(d))) continue;
+    const entry = cache[url];
+    if (!entry) {
+      suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
+      continue;
+    }
+    if (entry.verdict !== "accessible") {
+      suspicious.push({ url, reason: `verdict=${entry.verdict}` });
+    }
+  }
+  if (suspicious.length > 0) {
+    const list = suspicious
+      .slice(0, 5)
+      .map((s) => `${s.url.slice(0, 80)} (${s.reason})`)
+      .join("; ");
+    const more = suspicious.length > 5 ? ` +${suspicious.length - 5} mais` : "";
+    return {
+      ok: false,
+      label: `urls_suspicious: ${suspicious.length} URL(s) não-accessible/desconhecidas no cache — ${list}${more}. Re-rode verify-accessibility ou corrija as URLs editadas manualmente.`,
+    };
+  }
+  return { ok: true };
+}
+
 interface AggregateResult {
   ok: boolean;
   checks: {
     humanizador: CheckResult;
     clarice: CheckResult;
     erro_intencional: CheckResult;
+    urls_accessible: CheckResult;
   };
 }
 
-export function checkStage2Invariants(editionDir: string): AggregateResult {
+export function checkStage2Invariants(
+  editionDir: string,
+  opts: { cachePath?: string } = {},
+): AggregateResult {
   const internalDir = join(editionDir, "_internal");
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const cachePath = opts.cachePath ?? resolve(ROOT, "data/link-verify-cache.json");
   const humanizador = checkHumanizadorRan(internalDir);
   const clarice = checkClariceRan(editionDir);
   const erro_intencional = checkErroIntencionalRendered(editionDir);
+  const urls_accessible = checkUrlsAccessible(editionDir, cachePath);
   return {
-    ok: humanizador.ok && clarice.ok && erro_intencional.ok,
-    checks: { humanizador, clarice, erro_intencional },
+    ok: humanizador.ok && clarice.ok && erro_intencional.ok && urls_accessible.ok,
+    checks: { humanizador, clarice, erro_intencional, urls_accessible },
   };
 }
 
@@ -171,6 +267,7 @@ function main(): void {
     if (!result.checks.humanizador.ok) failed.push(`humanizador: ${result.checks.humanizador.label}`);
     if (!result.checks.clarice.ok) failed.push(`clarice: ${result.checks.clarice.label}`);
     if (!result.checks.erro_intencional.ok) failed.push(`erro_intencional: ${result.checks.erro_intencional.label}`);
+    if (!result.checks.urls_accessible.ok) failed.push(`urls_accessible: ${result.checks.urls_accessible.label}`);
     console.error(`\n[check-stage2-invariants] FAIL — ${failed.length} check(s) falharam:`);
     for (const f of failed) console.error(`  - ${f}`);
     process.exit(1);

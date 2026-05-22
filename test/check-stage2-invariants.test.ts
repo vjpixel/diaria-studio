@@ -268,4 +268,120 @@ describe("checkStage2Invariants — integração", () => {
       cleanup();
     }
   });
+
+  // #1456: novo check urls_accessible
+  it("urls_accessible OK quando cache marca todas as URLs accessible", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[T1](https://a.com/x) [T2](https://b.com/y)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          "https://a.com/x": { verdict: "accessible" },
+          "https://b.com/y": { verdict: "accessible" },
+        }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true);
+      assert.equal(r.checks.urls_accessible.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible FAIL quando URL pós-edit não está no cache (caso 260522)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      // MD com URL que foi adicionada manual após Stage 1 verify
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[Hallucinated](https://hallucinated.com/x)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({})); // cache vazio
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.urls_accessible.ok, false);
+      assert.match(
+        r.checks.urls_accessible.label ?? "",
+        /not_in_cache|urls_suspicious/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible FAIL quando URL tem verdict != accessible no cache", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[Paywall](https://nyt.com/x)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(
+        cachePath,
+        JSON.stringify({ "https://nyt.com/x": { verdict: "paywall" } }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, false);
+      assert.equal(r.checks.urls_accessible.ok, false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible ignora footer/affiliate URLs (não bloqueia stage 2)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        "[Cursos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia) [Wispr](https://wisprflow.ai/r?x)",
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({})); // cache vazio mas só tem footer URLs
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.ok, true);
+      assert.equal(r.checks.urls_accessible.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("urls_accessible skip silencioso quando cache não existe", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(join(dir, "02-reviewed.md"), "[T](https://x.com/y)");
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const r = checkStage2Invariants(dir, { cachePath: join(dir, "nonexistent.json") });
+      assert.equal(r.ok, true); // não bloqueia
+      assert.equal(r.checks.urls_accessible.ok, true);
+      assert.match(r.checks.urls_accessible.label ?? "", /verify_cache_missing/);
+    } finally {
+      cleanup();
+    }
+  });
 });
