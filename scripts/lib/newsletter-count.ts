@@ -69,8 +69,38 @@ const SECTION_HEADER_LOOKAHEAD =
  * relevantes. Usado por sync-coverage-line (escreve Z na intro) e
  * lint-newsletter-md (valida intro vs contagem).
  */
+// Regex pra detectar header de section como linha standalone. Mais restrito
+// que `section.includes(name)` — só casa quando o nome aparece numa linha que
+// é APENAS o header (com bold opcional + emoji prefix opcional).
+const SECTION_HEADER_LINE_RE =
+  /^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?(LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|É\s+IA\?)\s*(?:\*\*)?\s*$/imu;
+// Production format: `**DESTAQUE 1 | 🚀 LANÇAMENTO**`. Pipe é canonical mas
+// tolerante a `**DESTAQUE 1**` standalone (fixtures de teste).
+const DESTAQUE_HEADER_LINE_RE = /^\s*(?:\*\*)?DESTAQUE\s+\d+(?:\s*\||\s*(?:\*\*)?\s*$)/im;
+const EIA_HEADER_LINE_RE = /^\s*(?:##\s+)?É\s+IA\?\s*$/im;
+
+/**
+ * Strip YAML frontmatter (entre primeiro par de `---` no topo). #1455 bug
+ * caught by review: frontmatter intentional_error.location continha
+ * \"DESTAQUE 3\" e era contado como destaque, inflando total.
+ */
+function stripFrontmatter(md: string): string {
+  // Strip APENAS se entre `---` aparecer YAML key:value (heurística: ao
+  // menos uma linha do tipo `chave:`/`chave: valor`). Sem isso, divisões
+  // de seção (como `---` antes de DESTAQUE) seriam confundidas com FM.
+  const m = md.match(/^\s*---\s*\n([\s\S]*?)\n---\s*\n/);
+  if (!m) return md;
+  const block = m[1];
+  // Pelo menos 1 linha YAML-like (key: ou key: value, indentada ou não)
+  if (!/^\s*[A-Za-z_][\w-]*\s*:/m.test(block)) return md;
+  return md.slice(m[0].length);
+}
+
 export function countSelectedItems(md: string): SelectedCounts {
-  const rawSections = md.split(/^---\s*$/m);
+  // #1455 fix (review): strip frontmatter primeiro — sem isso, intentional_error
+  // com \"DESTAQUE N\" polui contagem.
+  const body = stripFrontmatter(md);
+  const rawSections = body.split(/^---\s*$/m);
   const allBlocks: string[] = [];
   for (const sec of rawSections) {
     allBlocks.push(...sec.split(SECTION_HEADER_LOOKAHEAD));
@@ -87,16 +117,30 @@ export function countSelectedItems(md: string): SelectedCounts {
   const linkRe = /\[(?:\*\*)?([^\]]+?)(?:\*\*)?\]\((https?:\/\/[^)]+)\)/g;
 
   for (const section of allBlocks) {
-    // Skip blocos editoriais fixos
-    const isSkip = SKIP_HEADER_NAMES.some((h) => section.includes(h));
-    if (isSkip) continue;
+    // Skip blocos editoriais fixos — match em LINHA inteira, não substring.
+    // Fix #1455 (review): `section.includes(name)` casava body text com
+    // o nome (ex: artigo titulado \"PARA ENCERRAR o ano...\"), zerando seções
+    // legítimas silenciosamente.
+    const hasSkipHeader = SECTION_HEADER_LINE_RE.test(section) &&
+      SKIP_HEADER_NAMES.some((h) => {
+        // Constrói regex per-skip-name pra match em linha
+        const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp(
+          `^\\s*(?:\\*\\*)?(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]\\s+)?${escaped}\\s*(?:\\*\\*)?\\s*$`,
+          "imu",
+        );
+        return re.test(section);
+      });
+    if (hasSkipHeader || EIA_HEADER_LINE_RE.test(section)) continue;
 
-    // Identifica o bucket pela header. Default = noticias se nenhum match.
+    // Identifica o bucket pela header em LINHA (não substring).
+    // Fix #1455: antes `section.includes("DESTAQUE")` casava texto de body
+    // (artigo que mencionasse \"DESTAQUE\" em descrição) e inflava destaques.
     let bucket: "destaques" | "lancamentos" | "pesquisas" | "noticias" | null = null;
-    if (/DESTAQUE\s+\d/i.test(section)) bucket = "destaques";
-    else if (/\bLAN[ÇC]AMENTOS?\b/i.test(section)) bucket = "lancamentos";
-    else if (/\bPESQUISAS?\b/i.test(section)) bucket = "pesquisas";
-    else if (/OUTRAS?\s+NOT[ÍI]CIAS?\b|OUTRA\s+NOT[ÍI]CIA/i.test(section)) bucket = "noticias";
+    if (DESTAQUE_HEADER_LINE_RE.test(section)) bucket = "destaques";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?LAN[ÇC]AMENTOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "lancamentos";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?PESQUISAS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "pesquisas";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?(?:OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA)\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "noticias";
 
     if (!bucket) continue;
 
@@ -109,12 +153,11 @@ export function countSelectedItems(md: string): SelectedCounts {
       if (isFooter) continue;
       urls.add(url);
     }
-    // Para destaques, o bloco tem 1 URL (o título); contamos 1 por bloco
-    // DESTAQUE. Para seções secundárias, cada item = 1 URL.
+    // Para destaques, cada bloco = 1 destaque com 1 URL (o título).
+    // Match em LINHA pra contar só headers reais, não menções no body.
     if (bucket === "destaques") {
-      // Pode haver múltiplos DESTAQUE em um único allBlocks slice se o split
-      // não particionou completamente. Conta 1 por marcador encontrado.
-      const destaqueCount = (section.match(/DESTAQUE\s+\d/gi) || []).length;
+      const destaqueHeaders = section.match(/^\s*(?:\*\*)?DESTAQUE\s+\d+(?:\s*\||\s*(?:\*\*)?\s*$)/gim);
+      const destaqueCount = destaqueHeaders ? destaqueHeaders.length : 0;
       buckets.destaques += destaqueCount;
       buckets.total += destaqueCount;
     } else {

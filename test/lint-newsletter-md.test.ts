@@ -1441,6 +1441,60 @@ describe("lintIntroCount (#743)", () => {
     assert.equal(r.ok, true);
   });
 
+  it("#1455 review-fix: frontmatter YAML com 'DESTAQUE N' NÃO infla contagem", async () => {
+    // Caso real: intentional_error.location = "DESTAQUE 3, parágrafo X"
+    // Pre-fix: frontmatter virava section, /DESTAQUE/ matchava, destaques=4 em vez de 3.
+    const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
+    const md = [
+      "---",
+      "intentional_error:",
+      "  description: \"DESTAQUE 3 problema X\"",
+      "  location: \"DESTAQUE 3, primeiro parágrafo\"",
+      "  category: \"factual\"",
+      "  correct_value: \"Y\"",
+      "---",
+      "",
+      "Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "[**T1**](https://example.com/d1)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | 🔬 PESQUISA**",
+      "[**T2**](https://example.com/d2)",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 3 | 💼 MERCADO**",
+      "[**T3**](https://example.com/d3)",
+    ].join("\n");
+    const counts = countSelectedItems(md);
+    assert.equal(counts.destaques, 3, `expected 3, got ${counts.destaques}`);
+    assert.equal(counts.total, 3);
+  });
+
+  it("#1455 review-fix: SKIP_HEADER_NAMES casa só em LINHA, não em body", async () => {
+    // Pre-fix: artigo com título contendo "PARA ENCERRAR" silenciava a section toda.
+    const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
+    const md = [
+      "Selecionamos os 2 mais relevantes para as pessoas que assinam a newsletter.",
+      "",
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**PARA ENCERRAR o ano: relatório anual**](https://example.com/n1)",
+      "Descrição.",
+      "",
+      "[**TÍTULO chocante: OpenAI lança**](https://example.com/n2)",
+      "Descrição.",
+    ].join("\n");
+    const counts = countSelectedItems(md);
+    assert.equal(counts.noticias, 2, `expected 2, got ${counts.noticias}`);
+    assert.equal(counts.total, 2);
+  });
+
   it("#1455: producer/consumer round-trip — sync-coverage Z bate com lint claimed", async () => {
     // Property test: countSelectedItems (shared) consistente com lintIntroCount.
     const { countSelectedItems } = await import("../scripts/lib/newsletter-count.ts");
