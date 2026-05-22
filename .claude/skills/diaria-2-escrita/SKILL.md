@@ -128,7 +128,7 @@ Se `highlights.length !== 3`: cair em writer único legacy (ver bloco "Fallback"
 Agent({
   subagent_type: "writer-destaque",
   description: "Etapa 2 — D1 writer",
-  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 🚀 LANÇAMENTO|🔬 PESQUISA|💼 MERCADO|etc}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path=data/editions/$1/_internal/02-d1-draft.md, image_prompt_out_path=data/editions/$1/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
+  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path=data/editions/$1/_internal/02-d1-draft.md, image_prompt_out_path=data/editions/$1/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
 })
 
 Agent({

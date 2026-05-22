@@ -84,7 +84,10 @@ export function renderSection(
   const lines: string[] = [header, ""];
   for (const a of items) {
     if (!a.url || !a.title) continue;
-    lines.push(`[**${a.title}**](${a.url})  `);
+    // Format canonical: **[title](url)** (bold OUTSIDE link), conforme
+    // context/templates/newsletter.md + edições publicadas. Review fix #1463
+    // — antes era [**title**](url) (bold INSIDE) que divergia do template.
+    lines.push(`**[${a.title}](${a.url})**  `);
     if (a.summary) lines.push(a.summary);
     lines.push("");
   }
@@ -103,7 +106,15 @@ function readEiaBlock(editionDir: string): string {
   if (!existsSync(path)) {
     return "É IA?\n\n[É IA? ainda processando — bloco será inserido na Etapa 3]";
   }
-  return readFileSync(path, "utf8").trim();
+  let content = readFileSync(path, "utf8");
+  // Strip YAML frontmatter (writer single faz o mesmo — eia_answer fica
+  // sidecar, NÃO entra no MD final). Sem isso, 02-draft.md sai com
+  // `eia_answer:` raw entre D2 e D3. Review fix #1463.
+  const fmMatch = content.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n/);
+  if (fmMatch) {
+    content = content.slice(fmMatch[0].length);
+  }
+  return content.trim();
 }
 
 interface StitchInput {

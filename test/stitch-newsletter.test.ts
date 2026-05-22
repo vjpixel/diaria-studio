@@ -26,11 +26,12 @@ describe("renderSection (#1463)", () => {
     assert.match(out, /\*\*🔬 PESQUISAS\*\*/);
   });
 
-  it("formato canonical: [**title**](url) + summary linha abaixo", () => {
+  it("formato canonical: **[title](url)** + summary linha abaixo", () => {
     const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
       { title: "Notícia X", url: "https://example.com/n1", summary: "Desc da N1." },
     ]);
-    assert.match(out, /\[\*\*Notícia X\*\*\]\(https:\/\/example\.com\/n1\)/);
+    // Format canonical: bold OUTSIDE link (matches template + edições publicadas)
+    assert.match(out, /\*\*\[Notícia X\]\(https:\/\/example\.com\/n1\)\*\*/);
     assert.match(out, /Desc da N1\./);
   });
 
@@ -40,7 +41,7 @@ describe("renderSection (#1463)", () => {
       { title: "" } as { title: string }, // no URL
       { url: "https://no-title.com" } as { url: string }, // no title
     ]);
-    assert.match(out, /\[\*\*OK\*\*\]/);
+    assert.match(out, /\*\*\[OK\]/);
     assert.doesNotMatch(out, /no-title\.com/);
   });
 });
@@ -137,6 +138,49 @@ describe("stitchNewsletter (#1463)", () => {
       assert.doesNotMatch(result, /LANÇAMENTOS|LANÇAMENTO/);
       assert.match(result, /PESQUISA/);
       assert.doesNotMatch(result, /OUTRA NOTÍCIA|OUTRAS NOTÍCIAS/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#1463 review fix: strip YAML frontmatter do 01-eia.md", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+      );
+      // 01-eia.md em formato real de produção (com YAML frontmatter)
+      writeFileSync(
+        join(dir, "01-eia.md"),
+        `---
+eia_answer:
+  A: ia
+  B: real
+---
+
+É IA?
+
+Foto descrição.
+
+> Gabarito: **A é a IA**`,
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      // Frontmatter NÃO deve aparecer no output
+      assert.doesNotMatch(result, /eia_answer:/);
+      assert.doesNotMatch(result, /A: ia/);
+      // Mas o conteúdo do bloco É IA? sim
+      assert.match(result, /Foto descrição\./);
+      assert.match(result, /Gabarito.*A é a IA/);
     } finally {
       cleanup();
     }
