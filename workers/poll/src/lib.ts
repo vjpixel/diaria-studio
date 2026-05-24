@@ -175,3 +175,20 @@ export function previousPeriodLabelBrt(now: Date): string {
   const monthName = MONTH_NAMES_PT[brt.getUTCMonth()];
   return monthName.charAt(0).toUpperCase() + monthName.slice(1);
 }
+
+// ── 403 reason classifier (#1468) ───────────────────────────────────────────
+
+export type Vote403Reason = "sig_empty" | "sig_invalid";
+
+/**
+ * Classifica a razão de um 403 no /vote pra logging estruturado. Caller já
+ * decidiu que hmacVerify falhou; aqui só desambiguamos sig vazio (subscriber
+ * sem poll_sig populado — cenário do #1186) vs sig com valor (HMAC mismatch
+ * por rotation, tampering, ou edição antiga).
+ *
+ * `sig === null` não chega aqui — index.ts guarda `if (sig !== null)` antes
+ * de chamar hmacVerify, então sig ausente do URL é merge-tag mode (200).
+ */
+export function classify403Reason(sig: string): Vote403Reason {
+  return sig === "" ? "sig_empty" : "sig_invalid";
+}

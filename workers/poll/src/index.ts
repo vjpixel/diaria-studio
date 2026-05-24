@@ -118,8 +118,9 @@ import {
   parseValidEditions,
   isValidEdition,
   redirectTargetForTrailingSlash,
+  classify403Reason,
 } from "./lib";
-export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, redirectTargetForTrailingSlash } from "./lib";
+export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, redirectTargetForTrailingSlash, classify403Reason } from "./lib";
 
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,17 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       ? true
       : await hmacVerify(env.POLL_SECRET, `${email}:${edition}`, sig);
     if (!newValid && !legacyValid) {
+      // #1468: log estruturado pra distinguir sig_empty (subscriber sem
+      // poll_sig populado — cenário do #1186) de sig_invalid (HMAC mismatch).
+      // Cloudflare Logs filtra por reason. email_domain só pra detectar
+      // bot/spam pattern, evita vazar PII completa em log retention.
+      const reason = classify403Reason(sig);
+      console.log(JSON.stringify({
+        event: "poll_vote_403",
+        reason,
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
       return new Response(votePageHtml("Link inválido ou expirado.", false), {
         status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
       });
