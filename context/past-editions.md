@@ -1,9 +1,48 @@
 # Últimas edições publicadas — para dedup
 
-**atualizado em:** 2026-05-21
+**atualizado em:** 2026-05-24
 **edições carregadas:** 14
 
 Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
+
+---
+
+## 2026-05-22 — "SoberanIA: IA pública nacional"
+URL: https://diaria.beehiiv.com/p/soberania-ia-pu-blica-nacional
+
+Links usados:
+- https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-5/
+- https://blogs.nvidia.com/blog/vera-cpu-delivery/
+- https://openai.com/index/model-disproves-discrete-geometry-conjecture
+- https://blog.google/innovation-and-ai/technology/developers-tools/google-io-2026-collection/
+- https://blog.google/innovation-and-ai/models-and-research/google-labs/flow-updates/
+- https://blog.google/products/ads-commerce/ask-advisor/
+- https://openai.com/index/adventhealth
+- https://alignment.anthropic.com/2026/sleight-bench/
+- https://benchlm.ai/best/open-source
+- https://arxiv.org/abs/2605.19337
+- https://arxiv.org/abs/2605.19010
+- https://arxiv.org/abs/2605.19485
+- https://www25.senado.leg.br/web/atividade/materias/-/materia/157233
+- https://www.theguardian.com/technology/2026/may/21/openai-paul-erdos-maths-problem-breakthrough
+- https://www.brasil247.com/brasil/governo-lanca-soberania-plataforma-nacional-de-inteligencia-artificial-voltada-ao-servico-publico
+- https://www.theguardian.com/technology/2026/may/21/spotify-and-universal-music-agree-deal-to-let-subscribers-create-ai-remixes
+- https://canaltech.com.br/carros/fiscalizacao-com-ia-faz-explodir-multas-por-celular-ao-volante-e-falta-de-cinto/
+- https://www.theguardian.com/technology/2026/may/21/ai-nobel-prize-winning-discovery-robots-jack-clark-anthropic
+- https://www.gov.br/anpd/pt-br/assuntos/noticias/anpd-telebrasil-regulacao-ia
+- https://canaltech.com.br/inteligencia-artificial/maioria-dos-influencers-politicos-feitos-com-ia-escondem-que-nao-sao-reais/
+- https://www.theguardian.com/uk-news/2026/may/21/london-mayor-sadiq-khan-blocks-met-police-deal-with-palantir
+- https://mittechreview.com.br/musk-v-altman-elon-musk-perdeu-openai/
+- https://exame.com/carreira/antes-de-investir-em-ia-ceos-precisam-responder-a-uma-pergunta-incomoda/
+- https://canaltech.com.br/inteligencia-artificial/gemini-em-todo-lugar-ia-do-google-esta-prestes-a-chegar-ao-seu-carro/
+- https://www.theguardian.com/technology/2026/may/20/ai-chatbots-chatgpt-replika-grok-gemini-misinformation-scottish-election-demos
+- https://openai.com/index/ramp
+- https://canaltech.com.br/seguranca/golpe-do-imposto-de-renda-usa-app-falso-e-ia-para-enganar-vitimas/
+- https://saudedigitalnews.com.br/20/05/2026/ia-e-governanca-sao-o-futuro-das-emergencias-e-atendimentos-hospitalares-aponta-ludhmilla-hajjar/
+- https://alphasignalai.substack.com/p/the-three-harness-layers-and-how
+- https://exame.com/bussola/o-que-e-o-modelo-de-capital-hibrido-que-surgiu-junto-a-gestao-com-ia/
+- https://aithority.com/machine-learning/evomap-introduces-genome-evolution-protocol-for-ai-agent-capability-inheritance-across-models-and-frameworks/
+- https://www.marktechpost.com/2026/05/20/meet-turbovec-a-rust-vector-index-with-python-bindings-and-built-on-googles-turboquant-algorithm/
 
 ---
 
@@ -481,28 +520,5 @@ Links usados:
 - https://openai.com/index/gpt-5-5-instant
 - https://www.alobrasilia.com.br/2026/05/camara-agenda-votacao-do-marco-legal-da.html
 - https://openai.com/index/new-ways-to-buy-chatgpt-ads
-
----
-
-## 2026-05-05 — "Diar.ia 260505"
-URL: https://diar.ia.br/
-
-Links usados:
-- https://canaltech.com.br/apps/buser-lanca-app-no-chatgpt-para-pesquisa-de-viagens-rodoviarias/
-- https://winbuzzer.com/2026/05/02/mistral-medium-3-5-unified-flagship-chat-reasoning-code-xcxwbn/
-- https://blog.google/innovation-and-ai/technology/developers-tools/event-driven-webhooks/
-- https://codersera.com/blog/best-open-source-llm-2026-llama-4-qwen-3-5-deepseek-v4-gemma-4-mistral/
-- https://www.mofo.com/resources/insights/260501-european-digital-compliance-key-digital-regulation
-- https://codersera.com/blog/kimi-k2-6-complete-guide-2026/
-- https://exame.com/inteligencia-artificial/por-que-sam-altman-defende-dar-dinheiro-a-populacao-todos-os-meses-para-conter-o-estrago-da-ia/
-- https://canaltech.com.br/inteligencia-artificial/ia-substitui-medicos-teste-de-harvard-em-pronto-socorro-surpreende/
-- https://canaltech.com.br/apps/novo-selo-do-instagram-vai-marcar-perfis-que-usam-ia/
-- https://blog.google/innovation-and-ai/technology/ai/google-ai-updates-april-2026/
-- https://www.wbur.org/news/2026/05/04/massachusetts-doctors-diagnosis-artificial-intelligence
-- https://canaltech.com.br/apps/google-ai-studio-como-criar-suas-proprias-instrucoes-de-ia/
-- https://www.cnnbrasil.com.br/economia/negocios/pentagono-fecha-acordo-com-8-big-techs-apos-ter-deixado-de-lado-anthropic/
-- https://mittechreview.com.br/deepseek-v4-modelo-ia/
-- https://exame.com/inteligencia-artificial/nvidia-microsoft-e-uber-podem-estar-em-lista-das-empresas-afetadas-por-falha-em-ferramenta-de-ia/
-- https://importai.substack.com/p/import-ai-455-automating-ai-research
 
 ---
