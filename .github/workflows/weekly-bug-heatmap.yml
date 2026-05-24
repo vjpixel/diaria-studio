@@ -13,8 +13,9 @@ jobs:
   heatmap:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Pra commitar docs/bug-heatmap.md
+      contents: write # Pra criar branch + commit
       issues: read
+      pull-requests: write # Pra abrir PR
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,15 +33,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: npx tsx scripts/bug-heatmap.ts --out docs/bug-heatmap.md
 
-      - name: Commit if changed
-        run: |
-          git config user.name "diaria-bot"
-          git config user.email "diaria-bot@noreply.github.com"
-          if [ -n "$(git status --porcelain docs/bug-heatmap.md)" ]; then
-            git add docs/bug-heatmap.md
-            today=$(date -u +%Y-%m-%d)
-            git commit -m "chore(heatmap): weekly regen ($today) (#1014)"
-            git push
-          else
-            echo "Heatmap inalterado — nada pra commitar."
-          fi
+      # #1465: branch protection bloqueia push direto pra master — abrimos PR.
+      - name: Open PR if changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(heatmap): weekly regen (#1014)"
+          title: "chore(heatmap): weekly regen ${{ github.run_id }}"
+          body: |
+            Regen automático semanal do `docs/bug-heatmap.md` (#1014).
+
+            Mergear se o snapshot atualizado for útil; fechar sem merge caso
+            contrário. Workflow não falha mais se não houver mudanças (ver #1465).
+          branch: bot/heatmap-weekly-regen
+          delete-branch: true
+          add-paths: docs/bug-heatmap.md
+          author: "diaria-bot <diaria-bot@noreply.github.com>"
+          committer: "diaria-bot <diaria-bot@noreply.github.com>"
