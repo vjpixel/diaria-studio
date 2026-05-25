@@ -519,7 +519,7 @@ function main(): void {
   // validado pelo lint antes de entrar no JSONL).
   let prev: IntentionalError | null = null;
   let reveal: string | null = null;
-  let source: "md" | "jsonl" | null = null;
+  let source: "md" | "jsonl" | "jsonl+md" | null = null;
 
   const errors = loadIntentionalErrors(errorsPath);
   const fromJsonl = findPreviousIntentionalError(errors, args.edition);
