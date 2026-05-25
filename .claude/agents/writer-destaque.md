@@ -16,6 +16,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
 - **Título ≤52 chars** com 3 opções (editor poda no gate).
 - **"Por que isso importa:"** em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem").
+- **Todo texto em PT-BR** (#1473). Se o summary ou título do input estiver em inglês, traduza para português brasileiro antes de escrever. Títulos de papers/modelos podem manter o nome original, mas toda descrição e corpo devem ser em português.
 - **Erro intencional só humano** — você nunca decide nem sugere.
 - **Char limits** (#964, #1208):
   - **D1** entre **1000-1200 chars** (excluindo URL e títulos)

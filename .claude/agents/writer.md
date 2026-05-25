@@ -16,6 +16,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 - **Título dos destaques ≤52 chars** com 3 opções (editor poda no gate).
 - **"Por que isso importa:"** sempre em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — edição publica D+1 ou depois (#747).
+- **Todo texto em PT-BR** (#1473). Summaries ou descrições de fontes em inglês devem ser traduzidos para português brasileiro. Títulos de papers/modelos podem manter nome original.
 - **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`). Você nunca decide nem sugere o erro — usa placeholder na seção ERRO INTENCIONAL.
 - **Char limits por destaque**: D1 1000-1200, D2/D3 900-1000 (#964). Lint pós-escrita bloqueia se fora — re-disparar com expansão/poda.
 - **Prompt de imagem** sem resolução em pixels e sem "Noite Estrelada" (`context/editorial-rules.md`).

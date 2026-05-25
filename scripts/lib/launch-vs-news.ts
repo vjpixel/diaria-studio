@@ -159,6 +159,30 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   /\b\d{4}\s+summit\b/i,
   // "X at Cloud Next" — apresentação em evento, não lançamento standalone
   /\bat\s+Cloud\s+Next\b/i,
+  // #1472: Conference recaps — GTC, COMPUTEX, I/O, Build, re:Invent, etc.
+  // Caso real 260525: "NVIDIA GTC Taipei at COMPUTEX" e "Everything ... from I/O"
+  // classificados como LANÇAMENTOS mesmo sendo recaps de conferência.
+  /\bGTC\b/,
+  /\bCOMPUTEX\b/,
+  /\bGoogle\s+I\/O\b/i,
+  /\b(?:at|from)\s+I\/O\b/i,
+  /\bI\/O\s+\d{4}\b/,
+  /\bBuild\s+\d{4}\b/i,
+  /\b\d{4}\s+Build\b/i,
+  /\bre:?Invent\b/i,
+  /\bConnect\s+\d{4}\b/i,
+  /\bIgnite\s+\d{4}\b/i,
+  /\bWWDC\b/,
+  /\bMeta\s+F8\b/i,
+  /\b(?:Live\s+)?Updates?\s+(?:on|from)\s+(?:What'?s\s+Next|the)\b/i,
+  /\beverything\s+.*(?:need\s+to\s+know|customers)\s+.*\bfrom\b/i,
+  // #1472: Industry recognition/awards — Gartner, rankings, "named a Leader"
+  // Caso real 260525: "OpenAI named a Leader in enterprise coding agents by Gartner"
+  /\bnamed\s+a\s+(?:Leader|Visionary|Challenger|Niche Player)\b/i,
+  /\bMagic\s+Quadrant\b/i,
+  /\bGartner\b/i,
+  /\bForrester\s+Wave\b/i,
+  /\bIDC\s+MarketScape\b/i,
   // Programa governamental explícito
   /\bgovernment(al)?\s+program\b/i,
   /\bprograma\s+governamental\b/i,
