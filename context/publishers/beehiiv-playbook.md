@@ -258,6 +258,21 @@ if (!post.web_thumbnail_url) {
 
 Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares. Gate deve indicar separadamente se cover está presente ou ausente (não misturar com status das imagens inline, que são automáticas via Worker KV).
 
+**Método alternativo que funciona (#1500, testado 260526):** Se `buildCoverUploadJs` falhar, usar DataTransfer no file input:
+
+```javascript
+const resp = await fetch(imageUrl);
+const blob = await resp.blob();
+const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
+const dt = new DataTransfer();
+dt.items.add(file);
+document.querySelectorAll('input[type="file"]')[0].files = dt.files;
+document.querySelectorAll('input[type="file"]')[0].dispatchEvent(new Event('change', { bubbles: true }));
+// Aguardar ~5s, depois clicar na imagem no media library grid
+```
+
+Sinais de sucesso: botão "Add thumbnail" desaparece, imagem 640×320 aparece no topo do editor. API `get_post` NÃO retorna `thumbnail_url` (campo não exposto pelo MCP).
+
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
 **Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.
