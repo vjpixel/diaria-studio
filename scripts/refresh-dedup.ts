@@ -48,6 +48,7 @@ import {
   type Post,
   populateLinksFromTracking,
   populateAllFromApproved,
+  populateAllThemes,
   renderMarkdown,
   extractLinks,
 } from "./refresh-past-editions.ts";
@@ -424,6 +425,14 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
     populateAllFromApproved(truncated, projectRootForApproved);
   } else {
     populateAllFromApproved(truncated);
+  }
+
+  // #1475: popular themes[] (entidades-chave dos highlights) para dedup temático.
+  if (opts.editionsRoot) {
+    const projectRootForApproved = resolve(opts.editionsRoot, "..", "..");
+    populateAllThemes(truncated, projectRootForApproved);
+  } else {
+    populateAllThemes(truncated);
   }
 
   // Resolver tracking URLs do Beehiiv (#234) — opt-out via flag.

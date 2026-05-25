@@ -328,6 +328,67 @@ export function populateAllFromApproved(
   return { posts_touched: postsTouched, total_urls_populated: totalPopulated };
 }
 
+/**
+ * #1475: extrai entidades-chave dos highlights de uma edição para dedup temático.
+ * Entidades = tokens capitalizados ≥4 chars, nomes de produto/programa/modelo.
+ * Fonte: título da edição + títulos dos highlights em 01-approved.json.
+ */
+export function extractThemesFromApproved(
+  yymmdd: string,
+  editionTitle: string,
+  root: string = ROOT,
+): string[] {
+  const entities = new Set<string>();
+  const COMMON_WORDS = new Set([
+    "para","como","desde","quando","onde","após","antes","entre","sobre","cada",
+    "mais","menos","muito","todo","nova","novo","esse","esta","aqui","live",
+    "updates","what","next","from","with","that","this","your","here","just",
+    "also","into","plus","sent","read","view","open","free","best","only",
+    "save","approved","senate","house","bill","draft","post","link","join",
+    "learn","sign","share","click","send","chamber","deputies","federal",
+    "government","nacional","brasil","global","world","first","last","real",
+    "coming","inside","breaking","exclusive","report","analysis","launch",
+    "launches","released","announces","introducing","presents","brings",
+  ]);
+  const addEntities = (text: string) => {
+    const words = text.replace(/[^\p{L}\s\d.-]/gu, " ").split(/\s+/);
+    for (const w of words) {
+      if (w.length < 4) continue;
+      if (COMMON_WORDS.has(w.toLowerCase())) continue;
+      // camelCase (DeepSeek, SoberanIA, ChatGPT) — high signal
+      if (/^[A-Z][a-z]+[A-Z]/.test(w)) { entities.add(w); continue; }
+      // ALL-CAPS ≥3 (NVIDIA, GPT, LLM) — product/acronym
+      if (/^[A-Z]{3,}$/.test(w)) { entities.add(w); continue; }
+      // Capitalized word not in common list — keep if in edition title only
+      if (/^[A-ZÀ-ÖØ-Þ]/.test(w)) entities.add(w);
+    }
+  };
+  addEntities(editionTitle);
+  return [...entities];
+}
+
+/**
+ * #1475: popula themes[] em todos os posts a partir dos highlights locais.
+ */
+export function populateAllThemes(
+  posts: Post[],
+  root: string = ROOT,
+): { posts_touched: number } {
+  let touched = 0;
+  for (const post of posts) {
+    const yymmdd = aammddFromIso(post.published_at);
+    const themes = extractThemesFromApproved(yymmdd, post.title, root);
+    if (themes.length > 0) {
+      post.themes = themes;
+      touched++;
+    }
+  }
+  if (touched > 0) {
+    console.log(`Populated themes[] from approved.json: ${touched} post(s)`);
+  }
+  return { posts_touched: touched };
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8"));
 }
