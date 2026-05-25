@@ -135,7 +135,7 @@ async function callApi() {
   const buf = Buffer.from(imagePart.inlineData.data, 'base64');
 
   // Trim any uniform borders (black, white, grey) Gemini adds as letterbox/frame.
-  // threshold 50 covers black bars AND light grey/white canvas edges.
+  // threshold 80 covers black bars, light grey canvas edges, and gradient borders.
   const trimmed = await sharp(buf).trim({ threshold: 80 }).toBuffer();
 
   if (resizeW && resizeH) {
