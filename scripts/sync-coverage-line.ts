@@ -143,10 +143,16 @@ export function readSubmissionsCountFromMarker(editionDir: string): number | nul
   const markerPath = join(editionDir, "_internal", ".marker-inject-inbox-urls.json");
   if (!existsSync(markerPath)) return null;
   try {
-    const data = JSON.parse(readFileSync(markerPath, "utf8")) as {
+    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
       editor_blocks?: number;
       newsletter_blocks?: number;
+      details?: {
+        editor_blocks?: number;
+        newsletter_blocks?: number;
+      };
     };
+    // #1476: marker pode ter campos no top-level (legado) ou em details (atual)
+    const data = raw.details ?? raw;
     if (typeof data.editor_blocks !== "number") return null;
     const newsletter = typeof data.newsletter_blocks === "number" ? data.newsletter_blocks : 0;
     return data.editor_blocks + newsletter;
