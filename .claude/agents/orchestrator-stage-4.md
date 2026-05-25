@@ -165,14 +165,13 @@ npx tsx scripts/render-halt-banner.ts \
 
 Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b (sem dispatch automático = sem necessidade de URLs públicas).
 
-### 4c. Dispatch paralelo (UMA mensagem, 3 chamadas)
+### 4c. Dispatch newsletter (primeiro, sozinha)
 
-**Só dispatchar os canais que o editor autorizou em 4b.** Canais manuais ficam com status `pending_manual`.
+**#1501 — social dispatch é TARDIO.** Newsletter dispatcha primeiro (sozinha). Social dispatcha DEPOIS do gate 4g, quando o editor já revisou tudo e o `03-social.md` está final. Isso elimina posts com texto não-revisado e posts órfãos.
 
-**Em uma única mensagem**, disparar simultaneamente (apenas os autorizados):
-1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
-2. **Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: você (top-level) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** — o caminho chunked-base64 vive só como fallback automático no apêndice do playbook (#1327). Nunca propor manualmente "vou chunkar" ou "vou fazer paste manual" antes de tentar Worker-hosted. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`. Em paralelo aos scripts (1) e (3) — só não há dispatch separado, é execução inline pelo top-level.
-3. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule --skip-existing")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
+**Só dispatchar newsletter se o editor autorizou em 4b.** Canal manual fica com `status: pending_manual`.
+
+**Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: você (top-level) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** — o caminho chunked-base64 vive só como fallback automático no apêndice do playbook (#1327). Nunca propor manualmente "vou chunkar" ou "vou fazer paste manual" antes de tentar Worker-hosted. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`.
 
 **`--test-mode` flag (#1056)**: quando `test_mode = true`, scripts publish-facebook e publish-linkedin tagam todas as entries gravadas em `06-social-published.json` com `is_test: true`. `delete-test-schedules.ts` honra esse flag por default (`--require-is-test` true) — só deleta entries explicitamente marcadas. Safety: rodar `delete-test-schedules.ts` em pasta de produção real é no-op porque entries de produção não têm `is_test: true`.
 
@@ -381,29 +380,38 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
   ```
   Se algum FAIL, instruir o editor: "1+ post nao confirmado no destino. Verifique manualmente no Facebook/LinkedIn antes de aprovar; se faltar, re-rode `/diaria-4-publicar social {AAMMDD}` com `--no-skip-existing`."
 
-  **Upload manual de imagens (gate obrigatório, só para newsletter)** — as imagens do email de teste do Beehiiv são placeholders (localhost). Editor DEVE subir as imagens no Beehiiv antes de aprovar:
+  **Imagens (#1499):**
   ```
-  📎 Suba as imagens no rascunho do Beehiiv ANTES de aprovar:
-     • Cover/Thumbnail → 04-d1-2x1.jpg (1600×800)
-     • Inline D1  → 04-d1-2x1.jpg
-     • Inline D2  → 04-d2-1x1.jpg
-     • Inline D3  → 04-d3-1x1.jpg
-     • É IA? (A)  → 01-eia-A.jpg
-     • É IA? (B)  → 01-eia-B.jpg
-     📁 Arquivos em data/editions/{AAMMDD}/ ou no Drive.
+  📎 Imagens:
+     • Cover (D1 2:1) — subida automaticamente pelo pipeline ✓
+     • Inline D1 — via Worker KV (automático) ✓
+     • D2 e D3 — sem imagem inline (só texto)
+     • É IA? (A e B) — via Worker KV (automático) ✓
+       Se não aparecerem no test email, subir manualmente:
+       01-eia-A.jpg e 01-eia-B.jpg de data/editions/{AAMMDD}/
   ```
-  Social posts não exigem upload manual — Facebook foi via Graph API com upload já feito; LinkedIn drafts têm imagens já anexadas pelo agent.
 
   **Instrução**: "Suba as imagens no Beehiiv, reenvie o email de teste pra conferir, revise os 6 social drafts no dashboard de cada plataforma, e só então aprove. Posts agendados serão publicados automaticamente no horário."
 
   **Opções**:
-  - aprovar (segue para auto-reporter)
+  - aprovar (segue para social dispatch + auto-reporter)
   - regenerar newsletter (re-dispatch `publish-newsletter`)
-  - regenerar social (re-dispatch `publish-facebook` + `publish-linkedin`, com `--skip-existing` pra resume-aware)
-  - regenerar tudo (volta a 4b)
   - abortar
 
 - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 4 done via `update-stage-status.ts --stage 4 --status done --end ISO --duration-ms X [--cost-usd Y --models "sonnet-4-6"]`.
+
+### 4g-bis. Dispatch social (APÓS gate — #1501)
+
+**Social dispatcha DEPOIS do gate.** O `03-social.md` já passou por todas as revisões (humanizador, Clarice, edições manuais). Nenhum re-dispatch necessário.
+
+**Em uma única mensagem**, disparar simultaneamente (apenas os autorizados em 4b):
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
+2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
+
+**Aguardar ambos retornarem.** Verificar dispatch:
+```bash
+npx tsx scripts/verify-stage-4-dispatch.ts --edition-dir data/editions/{AAMMDD}/
+```
 
 ### 4h. Fechar poll É IA? (#465, #1044, #1367)
 
@@ -511,14 +519,17 @@ Script lê `data/source-health.json`, `{edition_dir}/05-published.json` (`unfixe
 
 Se `signals_count === 0`, logar info e pular auto-reporter — edição passou limpa, nada a reportar.
 
-### 4b-3. Modo test/auto_approve
+### 4b-3. Sempre rodar (#1502)
 
-- **Se `test_mode = true`**: **pular auto-reporter aqui** (orchestrator). O Stage final do `/diaria-test` (#519) roda `collect-edition-signals.ts --include-test-warnings` + `auto-reporter` com `test_mode: true` por conta própria, capturando regressões silenciosas que viram issues automáticas com label `from-diaria-test`. Não duplicar o trabalho.
-- **Se `auto_approve = true` mas `test_mode = false`** (ex: `/diaria-edicao --no-gates`): pular o auto-reporter inteiramente. Criação automática só é aceitável no fluxo de teste.
+Auto-reporter roda em **todos os modos** (interativo, `auto_approve`, `test_mode`). É o único mecanismo de observabilidade pós-edição — sem ele, bugs detectados durante a edição não viram issues.
+
+- **`test_mode = true`**: usar `--include-test-warnings` e label `from-diaria-test`.
+- **`auto_approve = true`**: gate do auto-reporter é auto-aprovado (issues criadas automaticamente).
+- **Modo interativo**: gate normal (editor aprova/skip/edit cada issue).
 
 ### 4b-4. Disparar auto-reporter
 
-Se há sinais e não é test_mode, disparar agent `auto-reporter` via `Agent` com:
+Se há sinais, disparar agent `auto-reporter` via `Agent` com:
 - `edition_dir`
 - `repo: "vjpixel/diaria-studio"`
 

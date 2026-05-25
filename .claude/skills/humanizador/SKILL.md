@@ -1,6 +1,6 @@
 ---
 name: humanizador
-version: 1.5.0
+version: 1.4.1
 description: |
   Remove marcas de texto gerado por IA em português brasileiro. Use ao
   editar ou revisar textos para que soem mais naturais. Detecta e corrige
@@ -348,6 +348,21 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 **Depois:**
 > A empresa cresceu 30% no ano passado e abriu filiais em mais três estados. A meta para 2025 é entrar na região Nordeste, onde hoje ela tem só dois clientes.
 
+
+### 19b. "E" como falso conector pós-ponto
+
+**Problema:** Frases que começam com "E" logo após um ponto final. O "E" simula continuidade oral mas não adiciona informação — a frase seguinte funciona sozinha sem ele.
+
+**Antes:**
+> O modelo falhou. E ninguém percebeu.
+> A Mistral comprou uma empresa. E o movimento revela onde a corrida está indo.
+
+**Depois:**
+> O modelo falhou. Ninguém percebeu.
+> A Mistral comprou uma empresa. O movimento revela onde a corrida está indo.
+
+**Exceção:** "E" como parte de nome próprio ou sigla.
+
 ## PADRÕES DE ESTILO
 
 ### 20. Travessão excessivo e mal usado
@@ -361,7 +376,7 @@ Evitar padrões de IA é só metade do trabalho. Texto estéril, sem voz, é tã
 - **Diálogo.** A fala de personagem em narrativa pt-BR começa com travessão. Se aparecer, deixar como está.
 - **Meia-risca (–) em intervalos numéricos.** "1989–2002", "p. 5–10". Tecnicamente é meia-risca, não travessão, mas IA e teclado costumam confundir. Não trocar por travessão (—) nem por hífen (-); mantenha como meia-risca.
 
-Qualquer outro uso — incluindo conector ou remate — deve ser substituído. Aposto com vírgulas internas é exceção (ver passo 4).
+Qualquer outro uso — incluindo aposto longo, conector ou remate — deve ser substituído.
 
 #### Padrões viciosos a corrigir
 
@@ -413,7 +428,7 @@ Qualquer outro uso — incluindo conector ou remate — deve ser substituído. A
 6. Substitui um *e*, *mas*, *porque*? → escrever o conector.
 7. Qualquer outro caso → vírgula.
 
-**Meta quantitativa:** texto humanizado deve sair com no máximo **1 travessão a cada 5–6 parágrafos**. Se passar disso, refaça a auditoria com olhar mais agressivo — provavelmente algum sobrevivente cabia melhor como vírgula.
+**Meta quantitativa:** texto humanizado deve sair com **zero travessões**. As únicas exceções são diálogo (fala de personagem) e meia-risca em intervalos numéricos. Todo outro travessão deve ser substituído por vírgula, ponto, dois-pontos ou conector conforme a ordem acima. Se sobrar algum após a auditoria, é erro.
 
 
 ### 21. Negrito mecânico
@@ -493,8 +508,6 @@ Qualquer outro uso — incluindo conector ou remate — deve ser substituído. A
 
 ## PADRÕES DE PRESERVAÇÃO TÉCNICA
 
-Texto técnico (markdown estruturado, código, IDs) tem que ficar literal — qualquer reformatação aqui quebra parsers/renderers downstream silenciosamente. Em todos os casos abaixo, **na dúvida preserve o original**.
-
 ### 27. Capitalização indevida de URLs e identificadores técnicos
 
 **Problema:** Ao reescrever, a IA frequentemente aplica regras de capitalização (início de frase, "correção" de marca) a URLs, caminhos e identificadores que precisam ficar literalmente iguais. Em URLs, o **host** é case-insensitive por especificação (`GitHub.com` resolve igual a `github.com`), mas **path, query e fragmento** são tratados pelo servidor, geralmente case-sensitive em servidores Unix-like. Encurtadores e tokens (`bit.ly/Ab3xZ`, hashes de commit) dependem do case exato. Capitalizar pode quebrar o link silenciosamente, sem o usuário perceber.
@@ -517,75 +530,14 @@ O caso especial do **brand-name** ("github" → "GitHub", "openai" → "OpenAI")
 
 Quando uma URL ou identificador cair no começo da frase, reorganize a frase para que ele não fique na primeira posição (em vez de capitalizá-lo). Se não der para reorganizar, deixe minúsculo mesmo: é menos errado que quebrar o link.
 
-
-### 28. Trailing whitespace (`  ` no fim da linha) e `\` para `<br>`
-
-**Problema:** Markdown converte 2 espaços trailing (`  `) ou backslash (`\`) no fim da linha em `<br>` dentro do mesmo parágrafo. Sem isso, linhas consecutivas colapsam num único parágrafo no renderer. A IA frequentemente trim/strip whitespace ao reescrever ("limpeza estética"), removendo essas marcas invisíveis.
-
-**Onde aparece em texto técnico:**
-- Newsletters/email markdown: cada título de item seguido de descrição usa `  \n` para que o renderer mostre as duas linhas como uma quebra dentro do mesmo parágrafo, em vez de colar tudo num bloco.
-- Listas com sub-itens em paragrafos.
-
-**Não mexer:**
-- Linhas que terminam com `  ` (2 espaços) — preserve exato.
-- Linhas que terminam com `\` (backslash) — preserve exato.
-
-**Regra operacional:** se uma linha do input termina em whitespace visível (mesmo que invisível na tela), mantenha. Não chame de "espaço supérfluo"; é estrutura de renderização.
-
-
-### 29. Aninhação de bold/link `**[X](url)**` vs `[**X**](url)`
-
-**Problema:** As duas formas renderizam o mesmo bold+link no HTML, mas parsers e linters downstream (renderers Beehiiv, lint-newsletter, etc.) podem assumir o formato canônico do writer (`**[X](url)**`). A IA às vezes inverte ("reorganiza por clareza") sem que o usuário peça.
-
-**Não mexer:**
-- `**[título](url)**` — bold envolvendo link inteiro (formato canônico do writer)
-- `[**título**](url)` — bold dentro do link (formato alternativo)
-- Mistura dos dois em listas/seções diferentes
-
-**Regra:** se o input tem `**[X](url)**`, mantenha `**[X](url)**`. Não converta pra `[**X**](url)`.
-
-
-### 30. Listas, indentação e separadores
-
-**Problema:** Markdown depende de indentação consistente para aninhar listas e de linhas em branco para separar parágrafos/seções. A IA reescreve estruturas de lista achatando aninhamentos ou colando seções, quebrando hierarquia.
-
-**Não mexer:**
-- Indentação de bullets aninhados (`  - sub-item` vs `- item`).
-- Linhas em branco entre blocos — incluindo as `\n\n` entre uma seção e a próxima.
-- Separadores horizontais (`---`, `***`, `___`) — preserve número e posição.
-- Trailing whitespace em linhas (ver §28).
-
-**Regra:** se o input tem 2 blank lines entre blocos, mantenha 2 blank lines. Não consolide.
-
-
-### 31. Frontmatter YAML / HTML comments
-
-**Problema:** Frontmatter YAML (entre `---` no topo) e comentários HTML (`<!-- ... -->`) carregam metadata estrutural que outros scripts processam (data de publicação, categoria, intentional_error). Removendo ou reformatando esses blocos vaza dados editoriais.
-
-**Não mexer:**
-- Bloco YAML entre `---\n` e `\n---` no topo do arquivo — preserve campos, ordem, indentação e aspas exatamente.
-- Comentários HTML — preserve.
-- Frontmatter custom de outras ferramentas (TOML, JSON) — idem.
-
-**Regra:** se o input começa com `---\n`, NÃO toque até encontrar o segundo `---\n`. Mantenha tudo dentro literal.
-
-
-### 32. Section headers fixos do template
-
-**Problema:** Templates editoriais frequentemente usam headers fixos (`**TÍTULO**`, `**SUBTÍTULO**`, `**ERRO INTENCIONAL**`, `**🚀 LANÇAMENTOS**`, etc.) que scripts downstream procuram literal. Reescrever o header (`**Título**` → `**Manchete**`, ou removendo emoji) quebra esses scripts.
-
-**Não mexer:**
-- Linhas inteiras em bold que contém só nome de seção (com ou sem emoji prefixo).
-- Cabeçalhos com `## ` (h2) que delimitam blocos editoriais.
-
-**Regra:** se o input tem um header bold isolado numa linha, ele provavelmente é estrutural, não decorativo. Preserve exato (texto + emoji + capitalização).
-
 ---
 
 ## Processo
 
-1. Leia o texto com atenção.
-2. Marque mentalmente (ou liste) todas as ocorrências dos padrões acima.
+**INVARIANTE: rodar o processo completo de 9 passos.** Edições cirúrgicas pontuais (corrigir 3-4 padrões óbvios sem varrer o texto inteiro) deixam escapar padrões estruturais repetidos. Caso real 260526: 1ª passada pegou 4 padrões, 2ª pegou 11 que a 1ª deixou escapar.
+
+1. Leia o texto **inteiro** com atenção.
+2. Liste **todas** as ocorrências dos padrões acima (não só as mais óbvias).
 3. Reescreva cada trecho problemático.
 4. Cheque se o texto revisado:
    - Soa natural quando lido em voz alta
@@ -594,7 +546,7 @@ Quando uma URL ou identificador cair no começo da frase, reorganize a frase par
    - Mantém o tom adequado ao contexto
    - Usa construções simples (é/são/tem) onde cabe
    - URLs, caminhos e identificadores estão com case original
-   - Contagem de travessões está abaixo da meta (≤ 1 a cada 3–4 parágrafos)
+   - Zero travessões (exceto diálogo e meia-risca numérica)
 5. Apresente o rascunho.
 6. Pergunte: "O que ainda soa de IA no trecho abaixo?"
 7. Responda brevemente com os resquícios (se houver).
