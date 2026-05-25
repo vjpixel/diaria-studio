@@ -510,30 +510,47 @@ function main(): void {
   const editionsRoot = args["editions-dir"]
     ? resolve(ROOT, args["editions-dir"])
     : join(ROOT, "data", "editions");
-  const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
-
+  // #1471: JSONL é fonte primária — populado por sync-intentional-error.ts
+  // com dados estruturados do frontmatter. MD extraction é fallback pra
+  // edições antigas sem entry no JSONL.
+  // Bug pré-#1471: MD era primário, mas edições com narrativa não-preenchida
+  // ({PREENCHER_NARRATIVA_DO_ERRO}) eram puladas silenciosamente, caindo em
+  // edição mais antiga. JSONL sempre tem a entry correta (frontmatter é
+  // validado pelo lint antes de entrar no JSONL).
   let prev: IntentionalError | null = null;
   let reveal: string | null = null;
   let source: "md" | "jsonl" | null = null;
 
-  if (fromMd) {
-    source = "md";
-    prev = {
-      edition: fromMd.edition,
-      detail: fromMd.detail,
-      gabarito: fromMd.gabarito,
-      narrative: fromMd.narrative,
-      correct_value: fromMd.correct_value,
-      is_feature: true,
-      error_type: "editor_declared",
-      source: "md_extract",
-    } as IntentionalError & { narrative?: string; gabarito?: string };
-    reveal = composeRevealText(prev);
+  const errors = loadIntentionalErrors(errorsPath);
+  const fromJsonl = findPreviousIntentionalError(errors, args.edition);
+  if (fromJsonl) {
+    source = "jsonl";
+    prev = fromJsonl;
+    // Enriquecer com narrativa do MD se disponível (pra reveal mais natural)
+    const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
+    if (fromMd && fromMd.edition === fromJsonl.edition) {
+      prev = {
+        ...fromJsonl,
+        narrative: fromMd.narrative,
+        gabarito: fromMd.gabarito,
+      } as IntentionalError & { narrative?: string; gabarito?: string };
+      source = "jsonl+md";
+    }
+    reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
   } else {
-    const errors = loadIntentionalErrors(errorsPath);
-    prev = findPreviousIntentionalError(errors, args.edition);
-    if (prev) {
-      source = "jsonl";
+    const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
+    if (fromMd) {
+      source = "md";
+      prev = {
+        edition: fromMd.edition,
+        detail: fromMd.detail,
+        gabarito: fromMd.gabarito,
+        narrative: fromMd.narrative,
+        correct_value: fromMd.correct_value,
+        is_feature: true,
+        error_type: "editor_declared",
+        source: "md_extract",
+      } as IntentionalError & { narrative?: string; gabarito?: string };
       reveal = composeRevealText(prev);
     }
   }
