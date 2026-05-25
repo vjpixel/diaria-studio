@@ -656,9 +656,8 @@ function imageGeneratorCredit(): string {
 }
 
 function renderImage(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  // #1085: border-radius:6px na imagem; caption italic cinza alinhada à direita.
   return `<tr><td align="left" valign="top" style="padding:0 2px;">
-  <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 8px 0;" border="0"/>
+  <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;margin:0 0 8px 0;" border="0"/>
   <p style="font-family:${FONT_BODY};font-size:16px;color:${MUTED};font-style:italic;margin:0 0 20px 0;padding:0;text-align:right;">${esc(caption)}</p>
 </td></tr>`;
 }
@@ -754,7 +753,7 @@ function renderEIA(eia: EIA): string {
   // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
   // interativo, sem o border ciano grosso dos destaques antigos. Padding
   // simétrico em ambos <td> das imagens (#1085) — alinha A/B no stack mobile.
-  const imageStyle = `display:block;width:100%;height:auto;border-radius:6px;`;
+  const imageStyle = `display:block;width:100%;height:auto;`;
   const buildVoteUrl = (choice: "A" | "B") =>
     `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
   const eiaChoice = (choice: "A" | "B", imgFile: string) =>
@@ -859,6 +858,8 @@ function renderSectionItem(item: SectionItem, last: boolean): string {
 export { singularizeSectionName } from "./lib/section-naming.ts";
 
 function renderSection(section: Section): string {
+  if (section.items.length === 0) return "";
+
   // #1090: rule fina (1px RULE) cima E baixo do kicker pra simetria visual —
   // versão anterior tinha rule grossa (2px TEXT_COLOR) só em cima, ficava
   // pesada e desbalanceada (feedback Pixel 2026-05-11).
