@@ -337,6 +337,31 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
 - Ler `06-social-published.json` (já gerado por 4c).
 - **GATE HUMANO:** mostrar **uma só vez**:
 
+  **Links de preview e rascunhos (#1484)**
+
+  Antes das seções detalhadas, exibir bloco consolidado de links para acesso rápido. O `draft_preview_url` vem de `05-published.json` (campo `draft_preview_url`, gerado por `upload-html-public.ts`) ou é construído inline com `https://draft.diaria.workers.dev/{AAMMDD}`. URLs sociais vêm de `06-social-published.json` (campo `url` e `scheduled_at` de cada post).
+
+  ```
+  📰 Newsletter:
+    Preview HTML: https://draft.diaria.workers.dev/{AAMMDD}
+    Rascunho Beehiiv: {draft_url}
+
+  📱 Social:
+    Facebook D1: {status} {scheduled_time} BRT — {fb_url}
+    Facebook D2: {status} {scheduled_time} BRT — {fb_url}
+    Facebook D3: {status} {scheduled_time} BRT — {fb_url}
+    LinkedIn D1: {status} {scheduled_time} BRT (Worker queue) — {li_url}
+    LinkedIn D2: {status} {scheduled_time} BRT (Worker queue) — {li_url}
+    LinkedIn D3: {status} {scheduled_time} BRT (Worker queue) — {li_url}
+  ```
+
+  Regras de preenchimento:
+  - `{draft_url}` = `05-published.json > draft_url`.
+  - `{fb_url}` / `{li_url}` = `06-social-published.json > posts[].url` (pode ser null se draft sem URL pública — mostrar `(URL pendente)`).
+  - `{status}` = status do post (`scheduled`, `draft`, `published`, `failed`). Posts `failed` aparecem com ❌ e `reason`.
+  - `{scheduled_time}` = `scheduled_at` formatado como `HH:MM` BRT. Se ausente, omitir.
+  - Se social ainda não dispatchou (pré-4g-bis), indicar: `(dispatch pendente — após aprovação do gate)`.
+
   **Newsletter (Beehiiv)**
   - URL do rascunho Beehiiv (`draft_url`)
   - Confirmação de envio do email de teste para `test_email_sent_to`
