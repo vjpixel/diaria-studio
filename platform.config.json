@@ -29,6 +29,10 @@
     "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },
+  "draft": {
+    "worker_url": "https://draft.diaria.workers.dev",
+    "note": "Draft Worker uses its own KV namespace (NOT poll.kv_namespace_id). Use upload-html-public.ts to write — never wrangler kv directly (#1488)."
+  },
   "drive_sync": true,
   "logging": {
     "path": "data/run-log.jsonl"
