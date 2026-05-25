@@ -9,6 +9,7 @@ import {
   isCustomerStory,
   isNonLaunchPath,
   hasLaunchVerb,
+  isThirdPartyBlogAboutOtherCompany,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -1832,6 +1833,79 @@ describe("categorize() — #1453 inversão de default + novos detectores", () =>
         title: "Modelo da OpenAI resolveu a conjectura de Erdős",
       }),
       "pesquisa",
+    );
+  });
+});
+
+// #1472: conference recaps, awards e third-party blogs → noticias
+describe("categorize() — #1472 conference/award/third-party overrides", () => {
+  it("NVIDIA GTC conference recap → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/nvidia-gtc-taipei-computex-2026-news/",
+        title: "NVIDIA GTC Taipei at COMPUTEX: Live Updates on What's Next in AI",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Google I/O recap → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://cloud.google.com/blog/products/ai-machine-learning/innovations-from-google-io-26-on-google-cloud",
+        title: "Everything Google Cloud customers need to know from I/O",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Gartner Magic Quadrant recognition → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/gartner-2026-agentic-coding-leader",
+        title: "OpenAI named a Leader in enterprise coding agents by Gartner",
+      }),
+      "noticias",
+    );
+  });
+
+  it("HuggingFace blog hosting NVIDIA content → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/nvidia/nemotron-labs-diffusion",
+        title: "Towards Speed-of-Light Text Generation with Nemotron-Labs Diffusion Language Models",
+      }),
+      "noticias",
+    );
+  });
+
+  it("HuggingFace own blog post (no company subdir) → lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/cool-new-feature",
+        title: "Introducing Cool New Feature",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("WWDC → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://developer.apple.com/wwdc26/",
+        title: "WWDC 2026 Highlights",
+      }),
+      "noticias",
+    );
+  });
+
+  it("Forrester Wave → noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://anthropic.com/news/forrester-wave-leader",
+        title: "Anthropic named Leader in Forrester Wave for AI Platforms",
+      }),
+      "noticias",
     );
   });
 });

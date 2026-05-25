@@ -24,7 +24,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { exitWithError } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
-import { lancamentoDomains, lancamentoPatterns } from "./lib/official-domains.ts"; // #566
+import { lancamentoDomains, lancamentoPatterns, OFFICIAL_SOURCES } from "./lib/official-domains.ts"; // #566
 import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
 import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
@@ -533,6 +533,65 @@ export function isCustomerSlug(url: string): boolean {
   }
 }
 
+/**
+ * #1473: detecta se um texto está em inglês (vs português) usando
+ * contagem de stop words. Threshold: se >15% das palavras são stop words
+ * inglesas e <8% são portuguesas, classifica como inglês.
+ * Conservador — textos mistos ou curtos (<10 palavras) retornam false.
+ */
+const EN_STOP = new Set(["the","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","must","can","could","a","an","and","but","or","nor","for","yet","so","in","on","at","to","of","by","with","from","as","into","through","during","before","after","above","below","between","out","off","over","under","again","further","then","once","here","there","when","where","why","how","all","each","every","both","few","more","most","other","some","such","no","not","only","same","than","too","very","that","this","these","those","it","its","which","who","whom","what"]);
+const PT_STOP = new Set(["o","a","os","as","um","uma","uns","umas","de","do","da","dos","das","em","no","na","nos","nas","por","para","com","sem","sob","sobre","entre","até","após","ante","e","ou","mas","nem","que","se","como","quando","onde","porque","pois","já","não","mais","muito","também","ainda","só","foi","são","ser","ter","está","há","seu","sua","seus","suas","este","esta","esse","essa","isso","isto","aqui","ali","lá","ela","ele","eles","elas","nos","me","te","lhe","nós","vós"]);
+function looksEnglish(text: string): boolean {
+  if (!text) return false;
+  const words = text.toLowerCase().replace(/[^\p{L}\s]/gu, "").split(/\s+/).filter(w => w.length > 1);
+  if (words.length < 10) return false;
+  let en = 0, pt = 0;
+  for (const w of words) {
+    if (EN_STOP.has(w)) en++;
+    if (PT_STOP.has(w)) pt++;
+  }
+  const total = words.length;
+  return (en / total > 0.15) && (pt / total < 0.08);
+}
+
+/**
+ * #1472: detecta artigo hospedado em blog de terceiro sobre produto de outra empresa.
+ * Caso real 260525: huggingface.co/blog/nvidia/nemotron-labs-diffusion — post da NVIDIA
+ * publicado no blog da HuggingFace. URL bate o pattern de lancamento (huggingface.co/blog/)
+ * mas o conteúdo é sobre produto da NVIDIA, não da HuggingFace.
+ *
+ * Heurística: se o path contém subdiretório com nome de empresa conhecida
+ * (da lista OFFICIAL_SOURCES), o artigo é sobre o produto daquela empresa
+ * publicado em plataforma de terceiro → noticias.
+ */
+const THIRD_PARTY_BLOG_HOSTS = new Set(["huggingface.co"]);
+const KNOWN_COMPANY_SLUGS: Set<string> = (() => {
+  const slugs = new Set<string>();
+  for (const src of OFFICIAL_SOURCES) {
+    slugs.add(src.company.split(/[\s\/()]+/)[0].toLowerCase());
+    for (const d of src.domains ?? []) {
+      slugs.add(d.split(".")[0].replace(/^(blogs|developer|ai|about|engineering)$/, ""));
+    }
+  }
+  slugs.delete("");
+  return slugs;
+})();
+export function isThirdPartyBlogAboutOtherCompany(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (!THIRD_PARTY_BLOG_HOSTS.has(host)) return false;
+    const segments = u.pathname.split("/").filter(Boolean);
+    // huggingface.co/blog/{company}/{slug} — check if segment after "blog" is a known company
+    const blogIdx = segments.indexOf("blog");
+    if (blogIdx < 0 || blogIdx + 1 >= segments.length) return false;
+    const companySegment = segments[blogIdx + 1].toLowerCase();
+    return KNOWN_COMPANY_SLUGS.has(companySegment);
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Detecção de vídeos — YouTube e Vimeo (#359)
 // ---------------------------------------------------------------------------
@@ -722,7 +781,8 @@ export function categorize(article: Article): Category {
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
-    if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos
+    if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
+    if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
 
     // #1453: resultado científico/prova matemática em domínio que normalmente
     // seria lançamento → pesquisa. Caso real 260522:
@@ -819,6 +879,21 @@ export function categorizeArticles(articles: Article[]): Record<Category, Articl
     }
     const cat = categorize(article);
     result[cat].push({ ...article, category: cat });
+  }
+
+  // #1473: detectar summaries em inglês e flaggar para tradução downstream.
+  // Heurística simples: contar stop words inglesas vs portuguesas no summary.
+  let englishCount = 0;
+  for (const cat of Object.keys(result) as Category[]) {
+    for (const article of result[cat]) {
+      if (looksEnglish(article.summary ?? "")) {
+        (article as any).summary_lang = "en";
+        englishCount++;
+      }
+    }
+  }
+  if (englishCount > 0) {
+    console.warn(`[categorize] #1473: ${englishCount} artigo(s) com summary em inglês — writer deve traduzir`);
   }
 
   // Limite de 2 vídeos por edição — manter os primeiros (maior relevância por ordem de entrada).
