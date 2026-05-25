@@ -232,20 +232,31 @@ Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a U
 
 ```typescript
 import { buildCoverUploadJs, classifyUploadResult } from "scripts/lib/beehiiv-cover-upload.ts";
-const result = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverUploadJs(imageUrl) });
-const decision = classifyUploadResult(result);
-if (!decision.ok) {
-  // decision.reason inclui qual step falhou (steps trail)
-  // Fallback manual: editor faz upload via dashboard ANTES de avançar pra §5
-  halt(`Cover upload falhou: ${decision.reason}`);
+
+// #1474: retry loop (até 2x) com delay crescente. CDP timeout em 45s
+// é insuficiente quando Beehiiv demora no upload — retry resolve.
+for (let attempt = 1; attempt <= 3; attempt++) {
+  const result = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverUploadJs(imageUrl) });
+  const decision = classifyUploadResult(result);
+  if (decision.ok) break;
+  if (attempt < 3) {
+    log_warn(`Cover upload tentativa ${attempt}/3 falhou: ${decision.reason}. Retry em ${attempt * 5}s...`);
+    sleep(attempt * 5_000);
+    continue;
+  }
+  // 3 falhas: logar warn mas NÃO bloquear — cover é cosmético, não bloqueia publicação.
+  // Editor pode subir manualmente via dashboard (visível no gate).
+  log_warn(`Cover upload falhou após 3 tentativas: ${decision.reason}. Editor pode subir manualmente.`);
 }
 // Validar via API que web_thumbnail_url está populado:
 sleep(3_000);
 const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
-if (!post.web_thumbnail_url) halt("Thumbnail set falhou — re-trigger ou upload manual");
+if (!post.web_thumbnail_url) {
+  log_warn("Thumbnail não setado — editor pode subir cover manualmente via Beehiiv dashboard.");
+}
 ```
 
-Falha não bloqueia teste de email — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
+Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares. Gate deve indicar separadamente se cover está presente ou ausente (não misturar com status das imagens inline, que são automáticas via Worker KV).
 
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
