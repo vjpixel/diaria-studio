@@ -21,6 +21,10 @@ import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import {
+  detectEntityDuplicates,
+  extractPastHighlights,
+} from "./lib/entity-dedup.ts";
 
 export { canonicalize };
 
@@ -707,6 +711,12 @@ export function dedup(
   // duplicates onde vocabulário diverge mas entidades coincidem.
   subjectVsPastThresholdLowered = 0.55,
   pastThemeEntities: Set<string> = new Set(),
+  // #1492: past highlights for entity-based dedup. When provided, articles
+  // sharing 2+ entities (1 named + 1 numeric) with a past highlight are
+  // flagged as entity_duplicate. Catches same-event coverage across
+  // different URLs/titles (e.g., "DeepSeek corta 75%" vs "IA concorrente
+  // do Gemini derruba preco em 75%").
+  pastHighlights: { title: string; url: string; themes?: string[] }[] = [],
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -892,10 +902,41 @@ export function dedup(
     afterPass1d.push(...afterPass1c);
   }
 
+  // ---- Pass 1e: entity-based dedup vs past highlights (#1492) -------------
+  // Catches same-event coverage across different URLs and titles by
+  // extracting named entities (companies, models) and numeric entities
+  // (percentages, monetary values) from both the candidate and past
+  // highlights. Flags when an article shares at least 1 named + 1 numeric
+  // entity with a highlight from a recent edition.
+  const afterPass1e: Article[] = [];
+  if (pastHighlights.length > 0) {
+    const entityMatches = detectEntityDuplicates(afterPass1d, pastHighlights);
+    const matchedUrls = new Set(entityMatches.map((m) => m.url));
+    for (const art of afterPass1d) {
+      if (matchedUrls.has(art.url)) {
+        const match = entityMatches.find((m) => m.url === art.url)!;
+        removed.push({
+          url: art.url,
+          title: art.title,
+          dedup_note: `entity_duplicate: compartilha entidades [${match.sharedEntities.join(", ")}] com highlight "${match.matchedHighlight}" de edição anterior (#1492)`,
+        });
+      } else {
+        afterPass1e.push(art);
+      }
+    }
+    if (afterPass1d.length > afterPass1e.length) {
+      console.error(
+        `dedup Pass-1e (#1492): ${afterPass1d.length - afterPass1e.length} artigo(s) removido(s) por entity-duplicate contra highlight de edição anterior`,
+      );
+    }
+  } else {
+    afterPass1e.push(...afterPass1d);
+  }
+
   // ---- Pass 2: dedup within the current list -----------------------------
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
-  for (const art of afterPass1d) {
+  for (const art of afterPass1e) {
     const canon = canonicalize(art.url);
     const group = byUrl.get(canon) ?? [];
     group.push(art);
@@ -1079,6 +1120,16 @@ async function main() {
     );
   }
 
+  // #1492: extrair highlights (título + URL) das edições recentes para
+  // entity-based dedup. Detecta cobertura duplicada do mesmo evento quando
+  // URLs e títulos diferem mas entidades (empresa+número) coincidem.
+  const pastHighlightsData = extractPastHighlights(pastMd, window);
+  if (pastHighlightsData.length > 0) {
+    console.error(
+      `dedup: ${pastHighlightsData.length} highlight(s) de edições anteriores carregados (#1492 entity-dedup)`,
+    );
+  }
+
   const result = dedup(
     articles,
     pastUrls,
@@ -1090,6 +1141,7 @@ async function main() {
     pastDestaqueUrls,
     subjectVsPastThresholdLowered,
     pastThemes,
+    pastHighlightsData,
   );
 
   console.error(
