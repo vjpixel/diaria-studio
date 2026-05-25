@@ -534,6 +534,33 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("#1476: lê editor_blocks de dentro de details (formato atual do marker)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        completed_at: "2026-05-24T19:31:04.759Z",
+        details: { injected: 4, total_editor_urls: 4, total_newsletter_urls: 0, total_pool_size: 147, editor_blocks: 4, newsletter_blocks: 0 },
+      }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 4);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#1476: lê editor_blocks+newsletter_blocks de details (caso misto)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: { editor_blocks: 9, newsletter_blocks: 4 },
+      }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 13);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("ignora newsletter_blocks corrupto (não-número) — soma 0 ao invés de NaN", () => {
     const dir = makeFixtureEdition();
     writeFileSync(
