@@ -41,8 +41,11 @@ const resizeH = sd.final_height ?? null;
 
 // Gemini has no native negative prompt — fold it in as an avoidance instruction.
 let prompt = sd.positive;
+// Force "fill the entire canvas" instruction to prevent Gemini from rendering
+// the painting as a 3D object on a background (canvas frame effect).
+prompt += '\n\nCRITICAL: The painting must fill the ENTIRE image edge to edge. No visible canvas edges, no frame, no shadow, no border, no background behind the painting. The painted content must extend to all four edges of the image with no gaps or margins.';
 if (sd.negative) {
-  prompt += `\n\nDo NOT include any of the following in the image: ${sd.negative}`;
+  prompt += `\n\nDo NOT include any of the following in the image: ${sd.negative}, canvas edge, canvas border, canvas frame, mounted canvas, 3D canvas, shadow behind painting, grey background, white background, wall behind painting`;
 }
 
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -131,15 +134,25 @@ async function callApi() {
 
   const buf = Buffer.from(imagePart.inlineData.data, 'base64');
 
+  // Trim any uniform borders (black, white, grey) Gemini adds as letterbox/frame.
+  // threshold 50 covers black bars AND light grey/white canvas edges.
+  const trimmed = await sharp(buf).trim({ threshold: 80 }).toBuffer();
+
   if (resizeW && resizeH) {
-    const resized = await sharp(buf)
+    const resized = await sharp(trimmed)
       .resize(resizeW, resizeH, { fit: 'cover' })
       .jpeg({ quality: 90 })
       .toBuffer();
     fs.writeFileSync(outPath, resized);
   } else {
-    // Convert to JPEG regardless of API output format.
-    const jpg = await sharp(buf).jpeg({ quality: 90 }).toBuffer();
+    // D2/D3: force square crop after trim to eliminate gradient borders.
+    // Gemini generates slightly non-square with "painting on canvas" effect.
+    const meta = await sharp(trimmed).metadata();
+    const side = Math.min(meta.width, meta.height);
+    const jpg = await sharp(trimmed)
+      .resize(side, side, { fit: 'cover' })
+      .jpeg({ quality: 90 })
+      .toBuffer();
     fs.writeFileSync(outPath, jpg);
   }
 
