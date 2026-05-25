@@ -40,7 +40,7 @@ loadProjectEnv();
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHmac } from "node:crypto";
+import { createHmac, createHash } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,8 +89,13 @@ export async function uploadHtml(args: {
   fetchImpl?: typeof fetch;
 }): Promise<UploadHtmlResult> {
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
-  const url = buildDraftUrl(workerUrl, args.edition);
   const html = readFileSync(args.htmlPath, "utf8");
+
+  // #1494: content-hash versioning — each different content gets a unique URL.
+  // Eliminates browser/edge cache issues when re-uploading updated HTML.
+  const contentHash = createHash("md5").update(html).digest("hex").slice(0, 6);
+  const versionedEdition = `${args.edition}-${contentHash}`;
+  const url = buildDraftUrl(workerUrl, versionedEdition);
 
   // #1277: fail-loud se HTML ainda tem placeholders {{IMG:...}} não-substituídas.
   // Editor já viu draft com imagens quebradas em 260515 — invariant defensivo
@@ -111,7 +116,7 @@ export async function uploadHtml(args: {
     };
   }
 
-  const sig = htmlPutSig(args.secret, args.edition);
+  const sig = htmlPutSig(args.secret, versionedEdition);
   const fetchFn = args.fetchImpl ?? fetch;
   const res = await fetchFn(url, {
     method: "PUT",
