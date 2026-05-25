@@ -116,6 +116,60 @@ export function extractPastTitles(md: string, window: number): string[] {
   return titles;
 }
 
+/**
+ * #1475: extrai entidades dos "Temas cobertos:" de past-editions.md.
+ * Retorna Set de entidades lowercased das últimas `window` edições.
+ */
+export function extractPastThemeEntities(md: string, window: number): Set<string> {
+  const entities = new Set<string>();
+  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
+  for (const section of editionSections) {
+    const themeStart = section.indexOf("Temas cobertos:");
+    if (themeStart < 0) continue;
+    const themeBlock = section.slice(themeStart);
+    for (const line of themeBlock.split("\n")) {
+      const m = line.match(/^-\s+(.+)/);
+      if (m) entities.add(m[1].trim().toLowerCase());
+    }
+  }
+  return entities;
+}
+
+/**
+ * #1475: checa se um artigo candidato compartilha entidade com temas recentes.
+ * Match case-insensitive: cada entidade do past-themes é buscada no título+summary.
+ * Entidades curtas (<5 chars) ou genéricas ("Model", "Agent") são ignoradas.
+ */
+const GENERIC_THEME_WORDS = new Set([
+  // common tech words
+  "model","agent","cloud","flash","spark","ultra","build","tools","alpha",
+  "delta","scale","state","smart","brain","pilot","robot","coral","atlas",
+  "llama","search","studio","platform","release","update","launch",
+  // major companies — too frequent to block by name alone
+  "google","microsoft","apple","amazon","meta","nvidia","openai",
+  "anthropic","deepmind","deepseek","mistral","cohere",
+  // major products with daily news — block by specific feature, not product family
+  "gemini","chatgpt","claude","copilot","alexa","siri","grok",
+  "codex","cursor","perplexity",
+  // common PT-BR words that slip through capitalization filter
+  "regulação","mercado","brasil","lança","novo","nova",
+]);
+export function matchesRecentTheme(
+  title: string,
+  summary: string,
+  pastEntities: Set<string>,
+): string | null {
+  const hay = `${title} ${summary}`.toLowerCase();
+  for (const entity of pastEntities) {
+    if (entity.length < 5) continue;
+    if (GENERIC_THEME_WORDS.has(entity)) continue;
+    if (hay.includes(entity)) return entity;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // #897: Subject-level dedup contra past editions
 //
@@ -652,6 +706,7 @@ export function dedup(
   // entidades nomeadas (default 0.55 vs 0.6 do baseline). Cobre cross-domain
   // duplicates onde vocabulário diverge mas entidades coincidem.
   subjectVsPastThresholdLowered = 0.55,
+  pastThemeEntities: Set<string> = new Set(),
 ): { kept: Article[]; removed: RemovedEntry[] } {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
@@ -806,10 +861,41 @@ export function dedup(
     afterPass1c.push(...afterPass1b);
   }
 
+  // ---- Pass 1d: theme-entity match vs past edition themes (#1475) ---------
+  // Bloqueia artigos cujo título/summary contém entidade-chave de um highlight
+  // recente, mesmo se URL e Jaccard divergem. Caso real 260525: "SoberanIA"
+  // era destaque na 260522 com URL diferente e Jaccard baixo (~0.14).
+  const afterPass1d: Article[] = [];
+  if (pastThemeEntities.size > 0) {
+    for (const art of afterPass1c) {
+      const matchedEntity = matchesRecentTheme(
+        art.title ?? "",
+        art.summary ?? "",
+        pastThemeEntities,
+      );
+      if (matchedEntity) {
+        removed.push({
+          url: art.url,
+          title: art.title,
+          dedup_note: `theme-entity match: "${matchedEntity}" apareceu em highlight de edição recente (#1475)`,
+        });
+      } else {
+        afterPass1d.push(art);
+      }
+    }
+    if (afterPass1c.length > afterPass1d.length) {
+      console.error(
+        `dedup Pass-1d (#1475): ${afterPass1c.length - afterPass1d.length} artigo(s) removido(s) por theme-entity match contra edição anterior`,
+      );
+    }
+  } else {
+    afterPass1d.push(...afterPass1c);
+  }
+
   // ---- Pass 2: dedup within the current list -----------------------------
   // Sub-pass 2a: group by canonical URL, keep best per group
   const byUrl = new Map<string, Article[]>();
-  for (const art of afterPass1c) {
+  for (const art of afterPass1d) {
     const canon = canonicalize(art.url);
     const group = byUrl.get(canon) ?? [];
     group.push(art);
@@ -985,6 +1071,14 @@ async function main() {
     );
   }
 
+  // #1475: extrair entidades dos "Temas cobertos:" das edições recentes.
+  const pastThemes = extractPastThemeEntities(pastMd, window);
+  if (pastThemes.size > 0) {
+    console.error(
+      `dedup: ${pastThemes.size} entidade(s) de tema carregadas (#1475 theme-dedup)`,
+    );
+  }
+
   const result = dedup(
     articles,
     pastUrls,
@@ -995,6 +1089,7 @@ async function main() {
     subjectVsPastThreshold,
     pastDestaqueUrls,
     subjectVsPastThresholdLowered,
+    pastThemes,
   );
 
   console.error(
