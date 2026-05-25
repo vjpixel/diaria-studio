@@ -870,7 +870,7 @@ export function dedup(
     for (const art of afterPass1c) {
       const matchedEntity = matchesRecentTheme(
         art.title ?? "",
-        art.summary ?? "",
+        String(art.summary ?? ""),
         pastThemeEntities,
       );
       if (matchedEntity) {
