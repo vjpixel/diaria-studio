@@ -33,6 +33,19 @@
     "worker_url": "https://draft.diaria.workers.dev",
     "note": "Draft Worker uses its own KV namespace (NOT poll.kv_namespace_id). Use upload-html-public.ts to write — never wrangler kv directly (#1488)."
   },
+  "newsletter_auto_capture": {
+    "enabled": true,
+    "senders": [
+      "email@newsletter.7min.ai",
+      "superhuman@mail.joinsuperhuman.ai",
+      "marktechpost-newsletter@mail.beehiiv.com",
+      "lenny@substack.com",
+      "dan@tldrnewsletter.com",
+      "cyberman@mail.beehiiv.com"
+    ],
+    "since_hours": 48,
+    "min_primary_urls": 5
+  },
   "drive_sync": true,
   "logging": {
     "path": "data/run-log.jsonl"
