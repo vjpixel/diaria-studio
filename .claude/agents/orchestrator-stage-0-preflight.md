@@ -39,6 +39,27 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
   - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
 - **Receber `schedule_day_offset` (opcional).** Se presente, usar como `day_offset` para todos os agendamentos sociais na Etapa 4. Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
+### 0a-bis. Auto-capture newsletters (#1514)
+
+Captura newsletters de IA do inbox pessoal do editor antes do inbox drain.
+Substitui o forward manual que o editor fazia diariamente.
+
+1. Ler `platform.config.json > newsletter_auto_capture`. Se `enabled !== true`, skip silencioso.
+2. Montar senders OR clause: `from:({sender1} OR {sender2} OR ...)`.
+3. Buscar via Gmail MCP: `mcp__claude_ai_Gmail__search_threads` com query `from:({senders}) newer_than:2d` (usa `since_hours` da config, default 48h = `2d`). Limit 20.
+4. Para cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (messageFormat: `"FULL_CONTENT"`). Extrair `thread_id`, `sender` (From header), `subject`, `date` (ISO from internalDate), `body` (text/plain preferido, fallback text/html). Montar JSON array `CapturedThread[]`.
+5. Salvar threads em `data/editions/{AAMMDD}/_internal/captured-newsletters.json`.
+6. Rodar:
+   ```bash
+   npx tsx scripts/auto-forward-newsletters.ts \
+     --threads data/editions/{AAMMDD}/_internal/captured-newsletters.json \
+     --inbox-md data/inbox.md \
+     --cursor data/newsletter-capture-cursor.json
+   ```
+7. Logar resultado (info). Falha nao bloqueia (warn only).
+
+Se Gmail MCP estiver indisponivel: skip silencioso (logar `info "0a-bis skipped: Gmail MCP unavailable"`). Newsletter capture e nice-to-have, nao critico.
+
 ### 0b. Resume-aware
 
 Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
