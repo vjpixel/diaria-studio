@@ -118,11 +118,12 @@ describe("orchestrator-prompt (#634)", () => {
     // #1091 adicionou warning anti-skip de 1f + passo 1w-quint; 540→555
     // quando #1095 + #1097 documentaram newsletter extraction + coverage line sync;
     // 555→565 quando #1112 adicionou step 1p1 research-review-dates; 565→580
-    // quando #1273 adicionou wrapper ensure-research-reviewer-output post-dispatch).
+    // quando #1273 adicionou wrapper ensure-research-reviewer-output post-dispatch;
+    // 580→620 quando stage-4 cresceu com publish paralelo + resume-aware + halt rules).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 580,
-        `${file} tem ${lines[file]} linhas (target ≤580)`,
+        lines[file] <= 620,
+        `${file} tem ${lines[file]} linhas (target ≤620)`,
       );
     }
   });
