@@ -6,7 +6,7 @@ Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como *
 
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
-1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker (`draft.diaria.workers.dev/{edition}`).
+1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD` — sobe HTML pro Worker. **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
 2. Single `javascript_tool` no Chrome (fetch + `editor.commands.insertContent({type:'text', text:html})`) — ver §5.2 Fase 3.
 
 Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
@@ -357,15 +357,17 @@ Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por ediç�
 npx tsx scripts/upload-html-public.ts --edition {AAMMDD}
 ```
 
-Stdout (JSON):
+Stdout (JSON) — **`url` é versionada com hash do conteúdo (#1494, #1511)**:
 ```json
 {
   "edition": "260514",
-  "url": "https://draft.diaria.workers.dev/260514",
+  "url": "https://draft.diaria.workers.dev/260514-a3b2c1",
   "bytes": 28341,
   "ttl_seconds": 43200
 }
 ```
+
+**INVARIANTE (#1511):** o orchestrator DEVE capturar `url` do JSON stdout e usar essa URL exata no `fetch()` da Fase 3. Nunca montar `DRAFT_WORKER_BASE + '/' + edition` manualmente — o hash muda a cada upload e a URL sem hash retorna 404.
 
 Pré-requisitos:
 - `ADMIN_SECRET` (ou `POLL_ADMIN_SECRET`) no env — Worker valida HMAC do PUT.
@@ -383,8 +385,10 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 
 ```js
 // (1 chamada javascript_tool — fetch + decode + insertContent)
+// IMPORTANTE: usar a URL versionada retornada por upload-html-public.ts (#1511)
+// NÃO usar 'https://draft.diaria.workers.dev/{edition}' sem hash — retorna 404
 (async () => {
-  const res = await fetch('https://draft.diaria.workers.dev/260514');
+  const res = await fetch('{DRAFT_PREVIEW_URL}'); // ex: https://draft.diaria.workers.dev/260514-a3b2c1
   if (!res.ok) return { error: `fetch ${res.status}` };
   const html = await res.text();
 

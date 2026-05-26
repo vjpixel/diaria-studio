@@ -570,9 +570,25 @@ Gravar resumo (#1217 — sem cost.md):
 
 Se o agent retornar `action: "fallback_md"` (GitHub MCP indisponível), mostrar o path do MD gerado e instruir: "GitHub MCP falhou. Abra `{md_path}` e crie as issues manualmente quando tiver tempo."
 
+### 4b-6. Enviar relatório por email (#1510)
+
+Último passo do pipeline. Gera HTML report e envia via Gmail MCP:
+
+```bash
+npx tsx scripts/send-edition-report.ts \
+  --edition {AAMMDD} \
+  --edition-dir data/editions/{AAMMDD}/ \
+  > data/editions/{AAMMDD}/_internal/edition-report.html \
+  2> data/editions/{AAMMDD}/_internal/report-summary.json
+```
+
+Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatório de edição`, htmlBody: conteúdo de `edition-report.html`).
+
+**Falha não bloqueia** — logar warn e seguir. O relatório fica em `_internal/edition-report.html` pra consulta local mesmo se email falhar.
+
 ---
 
-## Resumo final (após auto-reporter)
+## Resumo final (após auto-reporter + relatório)
 
 Após auto-reporter, apresentar resumo consolidado da edição. Se alguma parte foi pulada (ex: `CHROME_MCP = false` levou newsletter e LinkedIn a serem pulados), incluir bloco de retomada explícito:
 

@@ -111,8 +111,9 @@ describe("uploadHtml — real PUT", () => {
       fetchImpl: fetchStub as unknown as typeof fetch,
     });
 
-    assert.equal(capturedUrl, "https://test.workers.dev/260514");
-    assert.equal(capturedAuth, `Bearer ${htmlPutSig(SECRET, "260514")}`);
+    // #1494: URL now includes content hash
+    assert.equal(capturedUrl, "https://test.workers.dev/260514-31fd02");
+    assert.equal(capturedAuth, `Bearer ${htmlPutSig(SECRET, "260514-31fd02")}`);
     assert.equal(capturedBody, html);
     assert.equal(r.bytes, html.length);
     assert.equal(r.ttl_seconds, 43200);
