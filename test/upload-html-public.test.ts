@@ -76,7 +76,7 @@ describe("uploadHtml — dry-run", () => {
     assert.equal(r.edition, "260514");
     assert.equal(r.dry_run, true);
     assert.equal(r.bytes, "<p>hello</p>".length);
-    assert.match(r.url, /\/260514$/);
+    assert.match(r.url, /\/260514-[0-9a-f]{6}$/);
   });
 });
 

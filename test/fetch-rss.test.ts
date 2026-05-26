@@ -251,7 +251,7 @@ describe("fetchRss filtered_by_topic (#678)", () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => xml } as unknown as Response);
     try {
-      const r = await fetchRss({ url: "https://x.com/rss", sourceName: "Test", days: 30, topicFilter: ["IA", "AI"] });
+      const r = await fetchRss({ url: "https://x.com/rss", sourceName: "Test", days: 30, topicFilter: ["IA", "AI"], now: new Date("2026-04-26T12:00:00Z") });
       assert.equal(r.articles.length, 1, "só o artigo de IA deve passar");
       assert.equal(r.filtered_by_topic, 1, "1 artigo filtrado pelo topicFilter");
     } finally { globalThis.fetch = origFetch; }
