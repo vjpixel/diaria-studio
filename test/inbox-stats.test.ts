@@ -38,7 +38,7 @@ const sampleArchive = `# Inbox Editorial — Diar.ia
   - https://example.io/x
 `;
 
-describe("countEditorSubmissions (#592, #609)", () => {
+describe("countEditorSubmissions (#592, #609, #1486)", () => {
   function withArchive(content: string): { path: string; cleanup: () => void } {
     const dir = mkdtempSync(join(tmpdir(), "diaria-archive-"));
     const path = join(dir, "archive.md");
@@ -46,41 +46,42 @@ describe("countEditorSubmissions (#592, #609)", () => {
     return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
 
-  it("conta blocos cujo from contém o e-mail do editor", () => {
+  it("#1486: conta TODOS os blocos como submissões (inclui forwards)", () => {
     const { path, cleanup } = withArchive(sampleArchive);
     try {
-      assert.equal(countEditorSubmissions(path, "vjpixel@gmail.com"), 2);
+      // sampleArchive tem 4 blocos (2 do editor + 2 forwards)
+      assert.equal(countEditorSubmissions(path), 4);
     } finally {
       cleanup();
     }
   });
 
-  it("é case-insensitive", () => {
+  it("#1486: _editorEmail é ignorado (backwards compat)", () => {
     const { path, cleanup } = withArchive(sampleArchive);
     try {
-      assert.equal(countEditorSubmissions(path, "VJPIXEL@gmail.com"), 2);
+      assert.equal(countEditorSubmissions(path, "ninguem@example.com"), 4);
     } finally {
       cleanup();
     }
   });
 
   it("retorna 0 se arquivo ausente", () => {
-    assert.equal(countEditorSubmissions("/path/never/exists.md", "vjpixel@gmail.com"), 0);
+    assert.equal(countEditorSubmissions("/path/never/exists.md"), 0);
   });
 
-  it("retorna 0 se nenhum bloco bate", () => {
-    const { path, cleanup } = withArchive(sampleArchive);
+  it("retorna 0 se archive vazio (sem blocos)", () => {
+    const { path, cleanup } = withArchive("# Inbox Editorial — Diar.ia\n\n<!-- entries abaixo -->\n");
     try {
-      assert.equal(countEditorSubmissions(path, "ninguem@example.com"), 0);
+      assert.equal(countEditorSubmissions(path), 0);
     } finally {
       cleanup();
     }
   });
 
-  it("usa default vjpixel@gmail.com se editor não passado", () => {
+  it("sem args opcionais funciona (backwards compat)", () => {
     const { path, cleanup } = withArchive(sampleArchive);
     try {
-      assert.equal(countEditorSubmissions(path), 2);
+      assert.equal(countEditorSubmissions(path), 4);
     } finally {
       cleanup();
     }
