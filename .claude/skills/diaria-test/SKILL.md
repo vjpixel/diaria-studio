@@ -104,6 +104,15 @@ Stage final §4 valida automaticamente este invariante via `scripts/validate-tes
        • LinkedIn: 3 rascunhos/agendados — {publishing.social.linkedin.scheduled_posts_url do config}
      ```
    - Link para o rascunho no Beehiiv (de `05-published.json`).
+3. Gerar e enviar relatório por email (#1510):
+   ```bash
+   npx tsx scripts/send-edition-report.ts \
+     --edition {AAMMDD} \
+     --edition-dir data/editions/{AAMMDD}/ \
+     > data/editions/{AAMMDD}/_internal/edition-report.html \
+     2> data/editions/{AAMMDD}/_internal/report-summary.json
+   ```
+   Enviar via Gmail MCP `create_draft`. Falha não bloqueia.
 
 ### 4. Stage final — Coleta de erros e auto-reporter (#519)
 
