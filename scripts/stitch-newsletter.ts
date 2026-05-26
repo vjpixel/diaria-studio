@@ -24,6 +24,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
+import { cleanSummary } from "./lib/clean-summary.ts";
 
 interface ArticleLike {
   url?: string;
@@ -88,7 +89,11 @@ export function renderSection(
     // context/templates/newsletter.md + edições publicadas. Review fix #1463
     // — antes era [**title**](url) (bold INSIDE) que divergia do template.
     lines.push(`**[${a.title}](${a.url})**  `);
-    if (a.summary) lines.push(a.summary);
+    if (a.summary) {
+      // #1493: clean scraped meta descriptions — strip arXiv prefix,
+      // remove unrelated sentences, truncate to 200 chars.
+      lines.push(cleanSummary(a.summary, a.title));
+    }
     lines.push("");
   }
   // Remove trailing blank

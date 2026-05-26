@@ -19,14 +19,20 @@ import { existsSync, readFileSync } from "node:fs";
 const DEFAULT_EDITOR_EMAIL = "vjpixel@gmail.com";
 
 /**
- * Conta blocos no archive cujo `from:` line contém `editorEmail` (case-insensitive).
- * Cada bloco é uma submissão (forward ou link direto) — não conta URLs.
+ * Conta TODOS os blocos no archive como submissões do editor (#1486).
  *
- * Retorna 0 se arquivo ausente, malformado, ou sem matches.
+ * Antes (#592), filtrava por `from:` === editorEmail, mas forwards de
+ * newsletters (7min.ai, AlphaSignal, etc.) chegam com `from:` do sender
+ * original — o editor apenas fez forward. Todos os blocos existem porque
+ * o editor os enviou, então contamos todos.
+ *
+ * `_editorEmail` mantido para backwards compat mas não é mais usado.
+ *
+ * Retorna 0 se arquivo ausente, malformado, ou vazio.
  */
 export function countEditorSubmissions(
   inboxArchivePath: string,
-  editorEmail: string = DEFAULT_EDITOR_EMAIL,
+  _editorEmail?: string,
 ): number {
   if (!existsSync(inboxArchivePath)) return 0;
   let text: string;
@@ -35,16 +41,8 @@ export function countEditorSubmissions(
   } catch {
     return 0;
   }
-  const blocks = text.split(/^## /m).slice(1); // primeiro segmento é o header
-  const lower = editorEmail.toLowerCase();
-  let count = 0;
-  for (const block of blocks) {
-    const fromMatch = block.match(/^-\s*\*\*from:\*\*\s*(.+)$/m);
-    if (fromMatch && fromMatch[1].toLowerCase().includes(lower)) {
-      count += 1;
-    }
-  }
-  return count;
+  const blocks = text.split(/^## /m).slice(1);
+  return blocks.length;
 }
 
 // (resolveInboxArchivePath removida em #1008 — dead code, knip findings)
