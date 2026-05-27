@@ -186,6 +186,28 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   // Programa governamental explícito
   /\bgovernment(al)?\s+program\b/i,
   /\bprograma\s+governamental\b/i,
+  // #1521: Benchmarks / performance reviews — não são lançamentos
+  // Caso real 260527: "NVIDIA Vera CPU Is 'Packing a Heavy-Hitting Punch'"
+  /\bbenchmark(s|ing)?\b/i,
+  /\bperformance\s+(test|review|comparison|result)\b/i,
+  /\bpacking\s+a\s+.*punch\b/i,
+  /\bfirst\s+benchmark\b/i,
+  /\bprimeiros?\s+benchmarks?\b/i,
+  // #1521: Platform migrations / reorganizations — not launches
+  // Caso real 260527: "Google Display Ads has a new home in Demand Gen"
+  /\bnew\s+home\s+in\b/i,
+  /\bmoves?\s+to\b/i,
+  /\bmigrat(es?|ing|ion)\b/i,
+  /\btransition(s|ing)?\s+(to|from)\b/i,
+  /\bnova\s+casa\s+(n[oa]|em)\b/i,
+  // #1521: Hardware without AI component — CPU/GPU benchmarks, chips
+  // Only when title is purely about hardware (not "AI chip launch")
+  /\bCPU\s+(?:is|benchmark|review|test|comparison)\b/i,
+  /\bGPU\s+(?:benchmark|review|test|comparison)\b/i,
+  // #1521: Ads/marketing platform changes — not AI launches
+  /\bDisplay\s+Ads?\b/i,
+  /\bDemand\s+Gen\b/i,
+  /\bad\s+platform\b/i,
 ];
 
 /**
