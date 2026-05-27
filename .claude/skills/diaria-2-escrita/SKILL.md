@@ -323,6 +323,9 @@ Arquivo: data/editions/$1/_internal/02-draft.md
 
 OBRIGATÓRIO — execute em ordem:
 
+ETAPA 0 — TRADUÇÃO (#1525):
+- Itens marcados com [TRADUZIR] nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) estão em inglês. Traduza título e descrição para PT-BR natural. Remova o prefixo [TRADUZIR] após traduzir. Se o item não tiver [TRADUZIR] mas o título/descrição estiver em inglês, traduza também.
+
 ETAPA 1 — RASCUNHO:
 - Leia o arquivo, identifique padrões de IA (travessão excessivo >1/5 parágrafos, gerúndio em cascata, inflação de importância, fechamentos genéricos, negação paralela, conectores repetitivos, verbos pomposos, anglicismos desnecessários)
 - Reescreva os trechos problemáticos
@@ -336,7 +339,7 @@ ETAPA 2 — VERSÃO FINAL:
 - Escreva: '### Versão final salva.'
 
 ETAPA 3 — RESUMO:
-- Liste as principais mudanças
+- Liste as principais mudanças (incluindo traduções feitas na Etapa 0)
 
 Regras de preservação: sem markdown (nada de **, #, - ), preservar template da newsletter (seções, estrutura, links, listas de notícias), não alterar URLs."
 })

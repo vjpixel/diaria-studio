@@ -44,6 +44,22 @@ describe("renderSection (#1463)", () => {
     assert.match(out, /\*\*\[OK\]/);
     assert.doesNotMatch(out, /no-title\.com/);
   });
+
+  it("#1525: itens em inglês recebem prefixo [TRADUZIR]", () => {
+    const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
+      { title: "The rise in plastic surgeons asked to create AI face", url: "https://x.com/en", summary: "Growing numbers of people are seeking cosmetic surgery based on chatbot recommendations." },
+      { title: "IA generativa no Brasil avança", url: "https://x.com/pt", summary: "O mercado brasileiro de IA cresce." },
+    ]);
+    assert.match(out, /\[TRADUZIR\].*plastic surgeons/);
+    assert.doesNotMatch(out, /\[TRADUZIR\].*Brasil/);
+  });
+
+  it("#1525: summary_lang=en também dispara [TRADUZIR]", () => {
+    const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
+      { title: "Short EN title", url: "https://x.com/en", summary: "Brief.", summary_lang: "en" },
+    ]);
+    assert.match(out, /\[TRADUZIR\]/);
+  });
 });
 
 describe("stitchNewsletter (#1463)", () => {
