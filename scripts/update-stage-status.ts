@@ -45,7 +45,9 @@ export interface StageRow {
   status: StageStatus;
   start?: string; // ISO
   end?: string;
-  duration_ms?: number;
+  gate_at?: string; // ISO — when gate was presented to editor (#1517)
+  duration_ms?: number; // total (start → end), includes gate wait
+  pipeline_ms?: number; // pipeline only (start → gate_at), excludes gate wait (#1517)
   cost_usd?: number;
   tokens_in?: number;
   tokens_out?: number;
@@ -224,11 +226,23 @@ export interface UpdateOpts {
   status: StageStatus;
   start?: string;
   end?: string;
+  gate_at?: string; // #1517
   duration_ms?: number;
+  pipeline_ms?: number; // #1517
   cost_usd?: number;
   tokens_in?: number;
   tokens_out?: number;
   models?: string[];
+}
+
+function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undefined {
+  if (opts.pipeline_ms != null) return opts.pipeline_ms;
+  const gateAt = opts.gate_at ?? existing.gate_at;
+  const start = opts.start ?? existing.start;
+  if (gateAt && start) {
+    return new Date(gateAt).getTime() - new Date(start).getTime();
+  }
+  return existing.pipeline_ms;
 }
 
 /**
@@ -243,7 +257,9 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusD
       status: opts.status,
       start: opts.start ?? r.start,
       end: opts.end ?? r.end,
+      gate_at: opts.gate_at ?? r.gate_at,
       duration_ms: opts.duration_ms ?? r.duration_ms,
+      pipeline_ms: opts.pipeline_ms ?? computePipelineMs(opts, r),
       cost_usd: opts.cost_usd ?? r.cost_usd,
       tokens_in: opts.tokens_in ?? r.tokens_in,
       tokens_out: opts.tokens_out ?? r.tokens_out,
@@ -377,7 +393,9 @@ async function main(): Promise<void> {
       status: status as StageStatus,
       start: args.start as string | undefined,
       end: args.end as string | undefined,
+      gate_at: args["gate-at"] as string | undefined,
       duration_ms: args["duration-ms"] ? parseInt(args["duration-ms"] as string, 10) : undefined,
+      pipeline_ms: args["pipeline-ms"] ? parseInt(args["pipeline-ms"] as string, 10) : undefined,
       cost_usd: args["cost-usd"] ? parseFloat(args["cost-usd"] as string) : undefined,
       tokens_in: args["tokens-in"] ? parseInt(args["tokens-in"] as string, 10) : undefined,
       tokens_out: args["tokens-out"] ? parseInt(args["tokens-out"] as string, 10) : undefined,
