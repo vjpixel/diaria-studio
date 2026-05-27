@@ -35,6 +35,7 @@ import {
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fmtTimeBrt, fmtDuration } from "./lib/format.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -81,30 +82,7 @@ export const STAGE_LABELS: Record<number, string> = {
 // ---------------------------------------------------------------------------
 // Format helpers
 // ---------------------------------------------------------------------------
-
-function fmtTimeBrt(iso: string | undefined): string {
-  if (!iso) return "-";
-  // BRT (UTC-3) — usar Date.toLocaleString não funciona consistente em CI.
-  // Fazer offset manual.
-  const ms = Date.parse(iso);
-  if (isNaN(ms)) return "-";
-  const brt = new Date(ms - 3 * 3600 * 1000);
-  const hh = String(brt.getUTCHours()).padStart(2, "0");
-  const mm = String(brt.getUTCMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-function fmtDuration(ms: number | undefined): string {
-  if (!ms || ms < 0) return "-";
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const remSec = sec % 60;
-  if (min < 60) return remSec > 0 ? `${min}m${remSec}s` : `${min}m`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return remMin > 0 ? `${hr}h${remMin}m` : `${hr}h`;
-}
+// fmtTimeBrt, fmtDuration — imported from ./lib/format.ts
 
 function fmtCost(usd: number | undefined): string {
   if (usd === undefined || usd === null || isNaN(usd)) return "-";

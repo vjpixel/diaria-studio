@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { resolveReadPath } from "./lib/edition-paths.ts";
+import { fmtTimeBrt, fmtDuration, escapeHtml } from "./lib/format.ts";
 import {
   type StageStatusDoc,
   type StageRow,
@@ -46,6 +47,7 @@ export interface StageSummary {
   label: string;
   status: string;
   duration_ms: number;
+  pipeline_ms?: number;
   models: string[];
 }
 
@@ -68,10 +70,6 @@ export interface ReportSummary {
 // ---------------------------------------------------------------------------
 // Data loaders
 // ---------------------------------------------------------------------------
-
-function loadStageStatus(editionDir: string, edition: string): StageStatusDoc {
-  return loadDoc(editionDir, edition);
-}
 
 function loadHighlights(editionDir: string): HighlightSummary[] {
   const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
@@ -180,47 +178,17 @@ function loadRunLogEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Format helpers
-// ---------------------------------------------------------------------------
-
-function fmtDuration(ms: number): string {
-  if (!ms || ms <= 0) return "-";
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const remSec = sec % 60;
-  if (min < 60) return remSec > 0 ? `${min}m ${remSec}s` : `${min}m`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
-}
-
-function fmtTimeBrt(iso: string | undefined): string {
-  if (!iso) return "-";
-  const ms = Date.parse(iso);
-  if (isNaN(ms)) return "-";
-  const brt = new Date(ms - 3 * 3600 * 1000);
-  const hh = String(brt.getUTCHours()).padStart(2, "0");
-  const mm = String(brt.getUTCMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// ---------------------------------------------------------------------------
 // HTML render
 // ---------------------------------------------------------------------------
 
 function renderStageRow(row: StageRow): string {
   const label = STAGE_LABELS[row.stage] ?? `Stage ${row.stage}`;
   const models = row.models?.join(", ") ?? "-";
-  const duration = fmtDuration(row.duration_ms ?? 0);
+  const pipeline = fmtDuration(row.pipeline_ms);
+  const total = fmtDuration(row.duration_ms);
+  const durationCell = row.pipeline_ms
+    ? `${escapeHtml(pipeline)} <span style="color:#999;">(+gate: ${escapeHtml(total)})</span>`
+    : escapeHtml(total);
   const statusEmoji =
     row.status === "done"
       ? "&#9989;"
@@ -235,8 +203,7 @@ function renderStageRow(row: StageRow): string {
     <td>${statusEmoji} ${escapeHtml(row.status)}</td>
     <td>${escapeHtml(fmtTimeBrt(row.start))}</td>
     <td>${escapeHtml(fmtTimeBrt(row.end))}</td>
-    <td>${escapeHtml(duration)}</td>
-    <td style="color:#999;">not available</td>
+    <td>${durationCell}</td>
     <td>${escapeHtml(models)}</td>
   </tr>`;
 }
@@ -344,7 +311,7 @@ export function renderHtmlReport(
   <h2>Tempo por stage</h2>
   <table>
     <thead>
-      <tr><th>#</th><th>Stage</th><th>Status</th><th>Inicio (BRT)</th><th>Fim (BRT)</th><th>Duracao</th><th>Custo</th><th>Modelos</th></tr>
+      <tr><th>#</th><th>Stage</th><th>Status</th><th>Inicio (BRT)</th><th>Fim (BRT)</th><th>Duracao</th><th>Modelos</th></tr>
     </thead>
     <tbody>
       ${stageRows}
@@ -407,6 +374,7 @@ export function buildSummary(
     label: STAGE_LABELS[r.stage] ?? `Stage ${r.stage}`,
     status: r.status,
     duration_ms: r.duration_ms ?? 0,
+    ...(r.pipeline_ms ? { pipeline_ms: r.pipeline_ms } : {}),
     models: r.models ?? [],
   }));
   const totalMs = stages.reduce((a, s) => a + s.duration_ms, 0);
@@ -450,7 +418,7 @@ async function main(): Promise<void> {
   }
 
   // Load all data
-  const stageDoc = loadStageStatus(editionDir, edition);
+  const stageDoc = loadDoc(editionDir, edition);
   const highlights = loadHighlights(editionDir);
   const published = loadPublished(editionDir);
   const social = loadSocial(editionDir);
