@@ -174,6 +174,18 @@ Se substituição reportar `unresolved: []` não vazio, abortar — uma imagem n
 
 **Modo `--split` (legacy, NÃO usar pelo agent)**: o renderer ainda suporta `--split` que gera `newsletter-body.html` + `newsletter-eia.html` separados. Era pra resolver merge tags via insertContent que não funcionava. #1054 validou que paste-into-htmlSnippet preserva merge tags em arquivo único — `--split` fica obsoleto pro agent flow, mantido só pra eventual debug.
 
+#### 1.4 Setar gabarito É IA? no Worker (#1526)
+
+Garantir que o poll Worker já sabe a resposta correta **antes** do test email — editor testa o É IA? assim que o HTML vai pro Beehiiv. Sem isso, `correct:{edition}` fica vazio e o Worker não mostra resultado, ou pior, um valor stale de uma run anterior causa inversão.
+
+`close-poll.ts` é idempotente — re-rodar após publicação só atualiza scores de votos novos.
+
+```bash
+npx tsx scripts/close-poll.ts --edition {AAMMDD}
+```
+
+Falha (exit != 0) = **warning, não bloqueia** o paste no Beehiiv. Poll sem gabarito ainda aceita votos; scores são reconciliados quando `close-poll` rodar pós-publicação. Mas logar warn explícito pro editor saber que o teste do É IA? não vai mostrar resultado.
+
 ### 2. Ler configuração
 
 Ler `platform.config.json` → bloco `publishing.newsletter`:

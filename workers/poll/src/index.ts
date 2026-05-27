@@ -250,12 +250,9 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // Sem gabarito (correct === null), pular — leitor verá só msg.
   const showImages = correct !== null;
   const images: { choice: "A" | "B"; isAi: boolean; isClicked: boolean } | null = null;
-  // Determinar qual lado é IA: se choice=A e correct=true → A é IA.
-  // Se choice=A e correct=false → B é IA. Etc.
-  const aiSide: "A" | "B" | null = showImages
-    ? (choice === "A" && correct === true) || (choice === "B" && correct === false)
-      ? "A"
-      : "B"
+  // correctRaw armazena qual lado é IA — usar direto.
+  const aiSide: "A" | "B" | null = showImages && correctRaw
+    ? (correctRaw as "A" | "B")
     : null;
   const resultImages = showImages && aiSide
     ? {
