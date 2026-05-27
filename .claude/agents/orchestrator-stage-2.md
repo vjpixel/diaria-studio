@@ -58,7 +58,7 @@ Exit code handling:
 
 ### Modo padrão: writer-destaque × 3 paralelo (#1158, #1451)
 
-**INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**, não só auto_approve/test_mode. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
+**INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
 
 **Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. Verificar que `highlights.length === 3` (fallback condition). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
 
