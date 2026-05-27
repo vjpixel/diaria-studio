@@ -99,6 +99,34 @@ npx tsx scripts/upload-images-public.ts \
 
 Resume-aware: re-execuções pularão imagens já no cache. Falha = **warning**, nunca bloqueia — `publish-linkedin.ts` faz graceful fallback pra `null` se o cache não existir (comportamento anterior: post sem imagem).
 
+### Etapa 4a.1 — Pre-gate (#1523)
+
+**Este gate é apresentado quando `pre_gate = true`** (default em `/diaria-edicao`, flag em `/diaria-4-publicar`). É o único gate de toda a pipeline no modo pre-gate.
+
+Antes de disparar publishers, executar pré-render completo da newsletter:
+1. Lint intentional-error + sync JSONL (beehiiv-playbook §0)
+2. Extract metadata (beehiiv-playbook §1.1)
+3. Upload imagens Cloudflare KV (beehiiv-playbook §1.2)
+4. Render HTML + substitute images (beehiiv-playbook §1.3)
+5. Setar gabarito É IA? (beehiiv-playbook §1.4)
+6. Upload HTML pro Worker (beehiiv-playbook Fase 2)
+
+Apresentar ao editor:
+
+```
+📄 Newsletter HTML: {worker_url}  (revise no browser/celular)
+📄 Social: data/editions/{AAMMDD}/03-social.md
+📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
+
+Aprovar para disparar publicação em todos os canais? (sim/não/editar)
+```
+
+- **sim** → prosseguir para dispatch dos publishers (Etapa 4a)
+- **não** → abortar sem publicar
+- **editar** → editor edita arquivos, responde `sim` quando pronto
+
+**Se `--no-gates` ou `auto_approve = true`:** pular este gate, ir direto pro dispatch.
+
 ### Etapa 4a — Publicação paralela (#38)
 
 **Em uma única mensagem dispatcham 2 scripts em paralelo + você (top-level) executa o playbook newsletter** (ver `.claude/agents/orchestrator.md` § Etapa 4):

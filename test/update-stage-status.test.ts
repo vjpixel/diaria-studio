@@ -314,6 +314,35 @@ describe("update-stage-status CLI (#960)", () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  it("#1530: Stage 4 done bloqueado sem edition-report.html", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-1530-"));
+    try {
+      const editionDir = join(dir, "260527");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      runCli(["--edition-dir", editionDir, "--init"]);
+
+      // Without report → exit 1
+      const r1 = runCli([
+        "--edition-dir", editionDir,
+        "--stage", "4",
+        "--status", "done",
+      ]);
+      assert.equal(r1.status, 1, "should block stage 4 done without report");
+      assert.match(r1.stderr, /edition-report\.html/);
+
+      // With report → exit 0
+      writeFileSync(join(editionDir, "_internal", "edition-report.html"), "<html>report</html>");
+      const r2 = runCli([
+        "--edition-dir", editionDir,
+        "--stage", "4",
+        "--status", "done",
+      ]);
+      assert.equal(r2.status, 0, r2.stderr);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 });
 
 describe("loadDoc/saveDoc (#1216)", () => {
