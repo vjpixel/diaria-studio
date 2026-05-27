@@ -370,9 +370,11 @@ async function main(): Promise<void> {
   const outPath = values["out"];
   const editorEmail = values["editor"] || process.env.EDITOR_EMAIL || resolveEditorEmail(resolve(ROOT, "platform.config.json"));
 
+  const capturedArticlesPath = values["captured-articles"];
+
   if (!inboxMdPath || !outPath) {
     console.error(
-      "Uso: inject-inbox-urls.ts --inbox-md <path> [--pool <path>] --out <path> [--editor <email>] [--validate-pool]"
+      "Uso: inject-inbox-urls.ts --inbox-md <path> [--pool <path>] --out <path> [--editor <email>] [--captured-articles <path>] [--validate-pool]"
     );
     process.exit(1);
   }
@@ -388,15 +390,31 @@ async function main(): Promise<void> {
   const editorBlocks = filterEditorBlocks(allBlocks, editorEmail);
   const injectedFromEditor = extractEditorUrls(editorBlocks);
 
-  // #1095: também extrair URLs primárias de newsletters não-Pixel (Cyberman,
-  // Superhuman, etc). Opt-out via --no-newsletters pra back-compat.
-  const includeNewsletters = !flags.has("no-newsletters");
-  const newsletterBlocks = includeNewsletters
-    ? filterNewsletterBlocks(allBlocks, editorEmail)
-    : [];
-  const injectedFromNewsletters = includeNewsletters
-    ? extractNewsletterUrls(newsletterBlocks)
-    : [];
+  // #1520: Load pre-captured newsletter articles if --captured-articles provided.
+  // When present, skip newsletter extraction from inbox.md entirely — the
+  // captured-articles file IS the newsletter source (already filtered by
+  // capture-newsletter-urls.ts).
+  let injectedFromNewsletters: SyntheticInboxArticle[] = [];
+  let newsletterBlocks: InboxBlock[] = [];
+  let newsletterSource: "captured-articles" | "inbox-md" | "none" = "none";
+
+  if (capturedArticlesPath) {
+    const absCapPath = resolve(ROOT, capturedArticlesPath);
+    if (existsSync(absCapPath)) {
+      injectedFromNewsletters = JSON.parse(readFileSync(absCapPath, "utf8"));
+      newsletterSource = "captured-articles";
+      console.error(`[inject-inbox-urls] loaded ${injectedFromNewsletters.length} articles from captured-articles`);
+    } else {
+      console.error(`[inject-inbox-urls] captured-articles not found: ${absCapPath}, falling back to inbox.md`);
+      newsletterBlocks = filterNewsletterBlocks(allBlocks, editorEmail);
+      injectedFromNewsletters = extractNewsletterUrls(newsletterBlocks);
+      newsletterSource = "inbox-md";
+    }
+  } else if (!flags.has("no-newsletters")) {
+    newsletterBlocks = filterNewsletterBlocks(allBlocks, editorEmail);
+    injectedFromNewsletters = extractNewsletterUrls(newsletterBlocks);
+    newsletterSource = "inbox-md";
+  }
 
   const injected = [...injectedFromEditor, ...injectedFromNewsletters];
 
@@ -438,6 +456,7 @@ async function main(): Promise<void> {
         // de data/inbox.md, mas Stage 1 §1y arquivava inbox.md → contagem zerava.
         editor_blocks: editorBlocks.length,
         newsletter_blocks: newsletterBlocks.length,
+        newsletter_source: newsletterSource, // #1520
       });
     }
   } catch (e) {
@@ -470,6 +489,7 @@ async function main(): Promise<void> {
       editor_blocks: editorBlocks.length,
       newsletter_blocks: newsletterBlocks.length, // #1095
       total_inbox_blocks: allBlocks.length,
+      newsletter_source: newsletterSource, // #1520
     })
   );
 }

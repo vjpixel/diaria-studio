@@ -69,13 +69,14 @@ Substitui o forward manual que o editor fazia diariamente.
 3. Buscar via Gmail MCP: `mcp__claude_ai_Gmail__search_threads` com query `from:({senders}) newer_than:2d` (usa `since_hours` da config, default 48h = `2d`). Limit 20.
 4. Para cada thread, chamar `mcp__claude_ai_Gmail__get_thread` (messageFormat: `"FULL_CONTENT"`). Extrair `thread_id`, `sender` (From header), `subject`, `date` (ISO from internalDate), `body` (text/plain preferido, fallback text/html). Montar JSON array `CapturedThread[]`.
 5. Salvar threads em `data/editions/{AAMMDD}/_internal/captured-newsletters.json`.
-6. Rodar **em background** (`run_in_background: true`) — o resultado (`data/inbox.md`) só é consumido no Stage 1 (1a inbox drain), então não precisa bloquear os health checks (0c) e refreshes (0d+):
+6. Rodar **em background** (`run_in_background: true`) — o resultado (`_internal/captured-newsletter-articles.json`) só é consumido no Stage 1 (1h inject-inbox-urls), então não precisa bloquear os health checks (0c) e refreshes (0d+):
    ```bash
-   npx tsx scripts/auto-forward-newsletters.ts \
+   npx tsx scripts/capture-newsletter-urls.ts \
      --threads data/editions/{AAMMDD}/_internal/captured-newsletters.json \
-     --inbox-md data/inbox.md \
+     --out data/editions/{AAMMDD}/_internal/captured-newsletter-articles.json \
      --cursor data/newsletter-capture-cursor.json
    ```
+   Writes `SyntheticInboxArticle[]` JSON directly to `_internal/captured-newsletter-articles.json` — no inbox.md intermediary (#1520). URL filtering (tracking, affiliate, sender-domain) is applied during capture.
 7. Logar resultado quando o background completar (info). Falha não bloqueia (warn only).
 
 Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped: Gmail MCP unavailable"`). Newsletter capture é nice-to-have, não crítico.
