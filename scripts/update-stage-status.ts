@@ -358,6 +358,20 @@ async function main(): Promise<void> {
       console.error(`--status inválido: ${status}`);
       process.exit(2);
     }
+    // #1530: Stage 4 done requires edition-report.html — blocks closing
+    // without auto-reporter + report email.
+    if (stage === 4 && status === "done") {
+      const reportPath = resolve(editionDir, "_internal", "edition-report.html");
+      if (!existsSync(reportPath)) {
+        console.error(
+          `[update-stage-status] BLOCKED: Stage 4 cannot be marked done without edition report.\n` +
+          `  Missing: ${reportPath}\n` +
+          `  Run: npx tsx scripts/send-edition-report.ts --edition {AAMMDD} --edition-dir ${editionDirRaw}/`,
+        );
+        process.exit(1);
+      }
+    }
+
     doc = applyUpdate(doc, {
       stage,
       status: status as StageStatus,

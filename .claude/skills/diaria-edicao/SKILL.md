@@ -5,13 +5,13 @@ description: Roda a pipeline completa da Diar.ia (4 etapas). Uso — `/diaria-ed
 
 # /diaria-edicao
 
-Executa a pipeline completa da Diar.ia (4 etapas com gate humano em cada uma).
+Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o único gate da pipeline é no Stage 4 antes do dispatch dos publishers. Editor revisa HTML preview + social antes de qualquer publicação.
 
 ## Argumentos
 
 - `$1` = data da edição no formato `AAMMDD` (ex: `260418`). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir amanhã como atalho principal (regra D+1 — edição é sempre o dia seguinte à pesquisa), com hoje como secundário, mas exigir confirmação:
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
-- `--no-gates` (opcional) = pular todos os gates humanos, auto-aprovando cada stage. Drive sync, social scheduling e demais comportamentos permanecem normais (diferente de `/diaria-test` que também desabilita Drive e agenda social 10 dias à frente).
+- `--no-gates` (opcional) = pular TODOS os gates, inclusive o pre-gate do Stage 4. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
 
 ## Pré-requisitos
 
@@ -61,19 +61,28 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `edition_date = $1` (AAMMDD)
 - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
 - `window_days = {valor confirmado no Passo 1}`
-- `auto_approve = true` se `--no-gates` foi passado, senão `false`
-- `test_mode = false` (use `/diaria-test` se quiser test_mode)
+- `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523)
+- `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate antes do dispatch)
+- `test_mode = false`
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 - **§ 0 Setup** — resume detection, Drive sync flag, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
-- **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → GATE humano
-- **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → GATE humano unificado
-- **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → GATE humano unificado
-- **§ 4 Etapa 4 — Publicação** (newsletter Beehiiv + Facebook Graph + LinkedIn Chrome em paralelo) → GATE único + auto-reporter → fim
+- **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → auto-approve
+- **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → auto-approve
+- **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → auto-approve
+- **§ 4 Etapa 4 — Publicação**:
+  1. Pré-render (HTML + imagens + upload Worker + close-poll)
+  2. **PRE-GATE** — apresenta preview HTML + social ao editor
+  3. Dispatch publishers (Beehiiv + Facebook + LinkedIn)
+  4. Test email + review loop
+  5. Auto-reporter + relatório por email
+  → fim
 
-**Se `--no-gates` (`auto_approve = true`):** auto-aprovar todos os gates conforme Princípio 2 do playbook (`test_mode` ou `auto_approve` pulam gates). Drive sync e social scheduling ficam normais (diferente de `test_mode`).
+**Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 pre-gate é o único ponto de interação. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor apenas no pre-gate.
 
-**Caso contrário:** em cada gate, apresente o output do stage e peça aprovação (`sim` / `editar` / `retry`). Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
+**Se `--no-gates`:** auto-aprovar TUDO, inclusive o pre-gate do Stage 4. Pipeline roda fim-a-fim sem interação.
+
+Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
 
 ## Outputs
 
