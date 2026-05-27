@@ -749,22 +749,12 @@ export function dedup(
       afterPass1.push(art);
       continue;
     }
-    if (pastDestaqueUrlsSet && !pastDestaqueUrlsSet.has(canon)) {
-      // URL apareceu em past só como secondary — permite promoção pra destaque.
-      afterPass1.push(art);
-      promotedFromSecondary++;
-      console.error(
-        `dedup Pass-1: secondary→destaque permitido (#1068) | ${art.url}`,
-      );
-      continue;
-    }
+    // #1512: removed #1068 secondary→destaque promotion at dedup time.
+    // URL that appeared in ANY past edition is blocked — same URL in a
+    // published newsletter should never re-appear regardless of section.
     removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });
   }
-  if (promotedFromSecondary > 0) {
-    console.error(
-      `dedup Pass-1: ${promotedFromSecondary} URL(s) liberadas via promoção secondary→destaque (#1068)`,
-    );
-  }
+  // #1512: promotedFromSecondary counter removed — promotion no longer applies.
 
   // ---- Pass 1b: title similarity vs past edition headlines (#231 defense-in-depth) ---
   // Threshold mais permissivo (0.70 vs 0.85 dentro da lista) — títulos de newsletter
