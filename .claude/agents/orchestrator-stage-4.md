@@ -320,6 +320,25 @@ Exit codes:
 parcial (ex: 1 post LinkedIn falhou mas os outros 5 estao OK), e force-block
 travaria a edicao. O relatorio no gate da visibilidade — editor decide.
 
+### 4f-ter. Render social preview HTML (#1545)
+
+Gerar e subir preview HTML dos posts sociais para revisão no gate. O script `render-social-html.ts` renderiza cards por plataforma com imagens dos destaques (#1497).
+
+```bash
+npx tsx scripts/render-social-html.ts \
+  --md data/editions/{AAMMDD}/03-social.md \
+  --out data/editions/{AAMMDD}/_internal/social-preview.html \
+  --images data/editions/{AAMMDD}/06-public-images.json
+
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
+  --key {AAMMDD}-social \
+  --html data/editions/{AAMMDD}/_internal/social-preview.html
+```
+
+Capturar a URL retornada (campo `url` do JSON stdout) e incluir no bloco de links do gate 4g como `Social Preview HTML: {url}`.
+
+Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente. Logar warn e prosseguir.
+
 ### 4g. Gate único
 
 - **Sync push antes do gate (#507):**
@@ -345,6 +364,7 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
     Rascunho Beehiiv: {draft_url}
 
   📱 Social:
+    Preview HTML: {social_preview_url}  (gerado em 4f-ter)
     Facebook D1: {status} {scheduled_time} BRT — {fb_url}
     Facebook D2: {status} {scheduled_time} BRT — {fb_url}
     Facebook D3: {status} {scheduled_time} BRT — {fb_url}
