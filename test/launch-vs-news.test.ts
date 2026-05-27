@@ -138,4 +138,34 @@ describe("isLikelyNewsNotLaunch (#1442) — anúncio institucional vs lançament
   it("título vazio retorna false (defensive)", () => {
     assert.equal(isLikelyNewsNotLaunch(""), false);
   });
+
+  // ============ #1521: benchmarks, migrations, hardware, ads ============
+
+  it("#1521: 'NVIDIA Vera CPU Is Packing a Heavy-Hitting Punch' → true (benchmark)", () => {
+    assert.equal(isLikelyNewsNotLaunch("NVIDIA Vera CPU Is 'Packing a Heavy-Hitting Punch' Against Competition"), true);
+  });
+
+  it("#1521: 'Google Display Ads has a new home in Demand Gen' → true (migration)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Google Display Ads has a new home in Demand Gen."), true);
+  });
+
+  it("#1521: 'First benchmarks of Apple M5 Ultra' → true (benchmark)", () => {
+    assert.equal(isLikelyNewsNotLaunch("First benchmarks of Apple M5 Ultra"), true);
+  });
+
+  it("#1521: 'Service migrates to new platform' → true (migration)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Google Cloud service migrates to new platform"), true);
+  });
+
+  it("#1521: 'CPU benchmark results show improvement' → true", () => {
+    assert.equal(isLikelyNewsNotLaunch("CPU benchmark results show 40% improvement"), true);
+  });
+
+  it("#1521: 'OpenAI launches GPT-6' → false (real launch, no benchmark/migration keywords)", () => {
+    assert.equal(isLikelyNewsNotLaunch("OpenAI launches GPT-6"), false);
+  });
+
+  it("#1521: 'Anthropic releases Claude 5' → false (real launch)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Anthropic releases Claude 5"), false);
+  });
 });
