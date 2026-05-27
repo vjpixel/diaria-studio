@@ -1039,7 +1039,7 @@ describe("dedup com pastDestaqueUrlsSet (#1068)", () => {
     assert.equal(r.removed.length, 1);
   });
 
-  it("URL em past só como secondary é LIBERADA (promoção permitida)", () => {
+  it("#1512: URL em past como secondary é BLOQUEADA (promoção removida)", () => {
     const pastUrls = new Set(["https://example.com/promoted"]);
     const pastDestaques = new Set<string>(); // não foi destaque
     const r = dedup(
@@ -1052,8 +1052,8 @@ describe("dedup com pastDestaqueUrlsSet (#1068)", () => {
       0.6,
       pastDestaques,
     );
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.removed.length, 0);
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.removed.length, 1);
   });
 
   it("sem pastDestaqueUrlsSet (legacy callers): bloqueia tudo de pastUrls", () => {
