@@ -30,6 +30,21 @@ interface ArticleLike {
   url?: string;
   title?: string;
   summary?: string;
+  summary_lang?: string;
+}
+
+const EN_STOPWORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "have", "has", "had",
+  "do", "does", "did", "will", "would", "could", "should", "can",
+  "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+  "and", "but", "or", "not", "that", "this", "it", "they", "we", "you",
+]);
+
+function looksEnglish(text: string): boolean {
+  if (!text || text.length < 20) return false;
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, "").split(/\s+/).filter(w => w.length > 1);
+  if (words.length < 4) return false;
+  return words.filter(w => EN_STOPWORDS.has(w)).length / words.length > 0.25;
 }
 
 interface ApprovedJsonShape {
@@ -85,13 +100,10 @@ export function renderSection(
   const lines: string[] = [header, ""];
   for (const a of items) {
     if (!a.url || !a.title) continue;
-    // Format canonical: **[title](url)** (bold OUTSIDE link), conforme
-    // context/templates/newsletter.md + edições publicadas. Review fix #1463
-    // — antes era [**title**](url) (bold INSIDE) que divergia do template.
-    lines.push(`**[${a.title}](${a.url})**  `);
+    const isEn = a.summary_lang === "en" || looksEnglish(a.title) || looksEnglish(a.summary ?? "");
+    const titlePrefix = isEn ? "[TRADUZIR] " : "";
+    lines.push(`**[${titlePrefix}${a.title}](${a.url})**  `);
     if (a.summary) {
-      // #1493: clean scraped meta descriptions — strip arXiv prefix,
-      // remove unrelated sentences, truncate to 200 chars.
       lines.push(cleanSummary(a.summary, a.title));
     }
     lines.push("");
