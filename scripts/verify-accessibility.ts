@@ -209,6 +209,11 @@ export function classifyHttpStatus(
   if ((statusCode === 405 || statusCode === 406) && TRUSTED_PUBLISHERS.has(host)) {
     return { verdict: "anti_bot", note: `${method} ${statusCode} (trusted publisher)`, access_uncertain: true };
   }
+  // #1524: 403 de qualquer domínio é ambíguo — pode ser anti-bot ou acesso
+  // negado real. Marcar como uncertain pra entrar no browser fallback.
+  if (statusCode === 403) {
+    return { verdict: "uncertain", note: `${method} 403`, access_uncertain: true };
+  }
   return { verdict: "blocked", note: `${method} ${statusCode}` };
 }
 
@@ -474,6 +479,10 @@ export async function verify(
     if (TRUSTED_PUBLISHERS.has(host) && (msg.includes("abort") || msg.includes("timeout") || msg.includes("ECONNREFUSED"))) {
       return { verdict: "anti_bot", finalUrl: effectiveUrl, note: `fetch error: ${msg}`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
+    // #1524: timeout/abort de qualquer domínio é ambíguo — browser fallback resolve
+    if (msg.includes("abort") || msg.includes("timeout") || msg.includes("ECONNREFUSED") || msg.includes("ECONNRESET")) {
+      return { verdict: "uncertain", finalUrl: effectiveUrl, note: `fetch error: ${msg}`, access_uncertain: true, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    }
     return { verdict: "blocked", finalUrl: effectiveUrl, note: msg, ...(resolvedFrom ? { resolvedFrom } : {}) };
   } finally {
     clearTimeout(timer);
@@ -625,9 +634,10 @@ async function main() {
   // First pass: verify all URLs with undici (fast, no JS)
   const results = await Promise.all(urls.map(async (url) => ({ url, ...(await verify(url, verifyOpts)) })));
 
-  // Second pass: retry uncertain results with Puppeteer (JS rendering)
+  // Second pass: retry uncertain results with Puppeteer (JS rendering).
+  // #1524: includes HTTP 403 (ambiguous — anti-bot vs real block).
   const uncertainIdxs = results
-    .map((r, i) => (r.verdict === "uncertain" && r.note === "body < 500 chars" ? i : -1))
+    .map((r, i) => (r.verdict === "uncertain" ? i : -1))
     .filter((i) => i >= 0);
 
   if (uncertainIdxs.length > 0) {
