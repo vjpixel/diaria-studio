@@ -1909,3 +1909,56 @@ describe("categorize() — #1472 conference/award/third-party overrides", () => 
     );
   });
 });
+
+// #1544: concepts, updates, policies and techniques misclassified as lancamento
+describe("categorize() — #1544 non-launch items on official blogs", () => {
+  it("Nvidia concept/vision post → noticias (not lancamento)", () => {
+    assert.equal(
+      categorize({
+        url: "https://blogs.nvidia.com/blog/ai-factories-the-new-infrastructure-of-intelligence/",
+        title: "AI Factories: The New Infrastructure of Intelligence",
+      }),
+      "noticias",
+    );
+  });
+
+  it("HF blog 'goes fully local' → noticias (update, not launch)", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/local-reachy-mini-conversation",
+        title: "Reachy Mini goes fully local",
+      }),
+      "noticias",
+    );
+  });
+
+  it("OpenAI election safeguards → noticias (policy, not launch)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/election-safeguards-2026",
+        title: "Election information and safeguards in 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("HF blog technique post → pesquisa (not lancamento)", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/delta-weight-sync",
+        title: "Shipping a Trillion Parameters With a Hub Bucket: Delta Weight Sync in TRL",
+      }),
+      "pesquisa",
+    );
+  });
+
+  it("HF blog real launch still works → lancamento", () => {
+    assert.equal(
+      categorize({
+        url: "https://huggingface.co/blog/new-model-release",
+        title: "Introducing SmolLM2: A New Family of Small Language Models",
+      }),
+      "lancamento",
+    );
+  });
+});

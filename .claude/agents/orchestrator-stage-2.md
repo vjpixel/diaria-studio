@@ -302,9 +302,9 @@ O script:
 
 Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
-**Humanizar social (#308, #1072):** invocar skill `humanizador` in-place no `03-social.md`:
+**Humanizar social (#308, #1072, refined #1546):** invocar skill `humanizador` in-place no `03-social.md` com prompt completo (mesma profundidade da newsletter — prompt fraco causava remoção de só 25% dos travessões):
 ```
-Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, e salve no mesmo arquivo.")
+Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência. Rode os 9 passos completos. Meta quantitativa do padrão #20: zero travessões no output (exceção: diálogo e meia-risca numérica). Salve no mesmo arquivo.")
 ```
 **Retry 3x + abort se persistir (#1072).** Se skill retornar erro OU `03-social.md` post-humanizador for byte-idêntico ao pré (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** — não publicar social com tom corporativo de agent output. Antes da invocação, fazer snapshot: `cp data/editions/{AAMMDD}/03-social.md data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md` pra diff post-skill.
 
