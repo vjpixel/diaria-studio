@@ -597,9 +597,9 @@ describe("--captured-articles integration (#1520)", () => {
     );
 
     const output = JSON.parse(result.trim());
-    // When captured-articles file is missing, newsletter_source should be "none"
-    // because --captured-articles was provided but file not found
-    assert.equal(output.newsletter_source, "none");
+    // When captured-articles file is missing, fall back to inbox.md extraction
+    assert.equal(output.newsletter_source, "inbox-md");
+    assert.ok(output.total_newsletter_urls >= 1, "newsletter URLs extracted from inbox.md fallback");
   });
 
   it("without --captured-articles, uses legacy inbox.md newsletter extraction", () => {

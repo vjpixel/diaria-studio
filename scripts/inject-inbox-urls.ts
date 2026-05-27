@@ -405,10 +405,12 @@ async function main(): Promise<void> {
       newsletterSource = "captured-articles";
       console.error(`[inject-inbox-urls] loaded ${injectedFromNewsletters.length} articles from captured-articles`);
     } else {
-      console.error(`[inject-inbox-urls] captured-articles not found: ${absCapPath} (skipping)`);
+      console.error(`[inject-inbox-urls] captured-articles not found: ${absCapPath}, falling back to inbox.md`);
+      newsletterBlocks = filterNewsletterBlocks(allBlocks, editorEmail);
+      injectedFromNewsletters = extractNewsletterUrls(newsletterBlocks);
+      newsletterSource = "inbox-md";
     }
   } else if (!flags.has("no-newsletters")) {
-    // Legacy path: extract from inbox.md
     newsletterBlocks = filterNewsletterBlocks(allBlocks, editorEmail);
     injectedFromNewsletters = extractNewsletterUrls(newsletterBlocks);
     newsletterSource = "inbox-md";

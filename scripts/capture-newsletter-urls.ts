@@ -270,15 +270,16 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1);
   }
 
-  // Empty array = no-op
+  // Empty array = no-op (preserve existing output if any)
   if (threads.length === 0) {
     const result: CaptureResult = { processed: 0, skipped_already: 0, articles_produced: 0, urls_extracted: 0, urls_filtered: 0 };
-    // Write empty array to output
-    mkdirSync(dirname(resolve(ROOT, outPath)), { recursive: true });
     const absOut = resolve(ROOT, outPath);
-    const tmpOut = absOut + ".tmp";
-    writeFileSync(tmpOut, JSON.stringify([], null, 2) + "\n", "utf8");
-    renameSync(tmpOut, absOut);
+    if (!existsSync(absOut)) {
+      mkdirSync(dirname(absOut), { recursive: true });
+      const tmpOut = absOut + ".tmp";
+      writeFileSync(tmpOut, JSON.stringify([], null, 2) + "\n", "utf8");
+      renameSync(tmpOut, absOut);
+    }
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -289,11 +290,19 @@ export function main(argv: string[] = process.argv): void {
   // Process
   const { articles, result, newCursor } = processThreads(threads, cursor);
 
-  // Atomic write of articles JSON
+  // Merge with existing output (crash-resume safety: re-run preserves prior articles)
   const absOut = resolve(ROOT, outPath);
   mkdirSync(dirname(absOut), { recursive: true });
+  let existing: SyntheticInboxArticle[] = [];
+  if (existsSync(absOut)) {
+    try {
+      existing = JSON.parse(readFileSync(absOut, "utf8"));
+    } catch { /* corrupt file — overwrite */ }
+  }
+  const existingUrls = new Set(existing.map((a) => a.url));
+  const merged = [...existing, ...articles.filter((a) => !existingUrls.has(a.url))];
   const tmpOut = absOut + ".tmp";
-  writeFileSync(tmpOut, JSON.stringify(articles, null, 2) + "\n", "utf8");
+  writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpOut, absOut);
 
   // Save cursor

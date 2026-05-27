@@ -317,14 +317,17 @@ describe("main() CLI integration", () => {
     const first = run();
     assert.ok(first.articles_produced >= 2);
 
+    const firstArticles = JSON.parse(readFileSync(outPath, "utf8"));
+    assert.ok(firstArticles.length >= 2, "first run produced articles");
+
     const second = run();
     assert.equal(second.articles_produced, 0);
     assert.equal(second.skipped_already, 1);
 
-    // articles.json should have empty array on second run (only new articles written)
+    // articles.json should PRESERVE first run's articles (crash-resume safety)
     const articles = JSON.parse(readFileSync(outPath, "utf8"));
     assert.ok(Array.isArray(articles));
-    assert.equal(articles.length, 0, "second run produces 0 new articles");
+    assert.equal(articles.length, firstArticles.length, "second run preserves prior articles");
   });
 
   it("empty threads array produces no-op JSON and empty output file", () => {
