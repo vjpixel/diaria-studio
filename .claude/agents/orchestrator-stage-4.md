@@ -599,7 +599,7 @@ npx tsx scripts/send-edition-report.ts \
   2> data/editions/{AAMMDD}/_internal/report-summary.json
 ```
 
-Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatório de edição`, htmlBody: conteúdo de `edition-report.html`).
+Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatório de edição`, htmlBody: conteúdo **completo** de `edition-report.html`). **Não reescrever HTML resumido** (#1548) — o script já gera tabela de duração por stage, destaques, status de publicação e warnings. Usar o arquivo como está.
 
 **Falha não bloqueia** — logar warn e seguir. O relatório fica em `_internal/edition-report.html` pra consulta local mesmo se email falhar.
 

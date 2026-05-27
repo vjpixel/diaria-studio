@@ -238,10 +238,22 @@ const UPDATE_PATTERNS: RegExp[] = [
   /\bour\s+(commitment|approach|policy|stance|plans?)\s+to\b/i,
   // "Election safeguards", "safety update", "policy update"
   /\b(safety|security|election)\s+(safeguards?|update[sd]?|report)\b/i,
+  // #1544: "election" near "safeguards" with words between (caso 260528:
+  // "Election information and safeguards in 2026" — "election" + "safeguards"
+  // separated by up to 5 words, not just adjacent)
+  /\belection\b.{0,40}\bsafeguards?\b/i,
   // Posts de aniversário: "AI Max Turns 1", "3 years of X" (#486)
   /\b(turns?\s+\d+|\d+\s+(years?|anos?)\s+of\b)/i,
   // Expansão incremental: "expansion to more X" (#486)
   /\bexpansion\s+to\s+(more|new)\b/i,
+  // #1544: "goes (fully)? local/offline/on-device" — update de funcionalidade
+  // Caso 260528: "Reachy Mini goes fully local" (HF blog, not a new product)
+  /\bgoes?\s+(fully\s+)?(local|offline|on[- ]device|open[- ]source)\b/i,
+  // #1544: concept/vision/infrastructure posts — blog posts about concepts,
+  // not actual product launches. Caso 260528: "AI Factories: The New
+  // Infrastructure of Intelligence" (Nvidia blog about a concept, not a product)
+  /\b(infrastructure|arquitetura|architecture)\s+of\s+(intelligence|AI|IA)\b/i,
+  /\bnew\s+(era|paradigm|model)\s+of\s+(intelligence|computing|AI)\b/i,
 ];
 
 export function isUpdate(article: Article): boolean {
@@ -256,6 +268,11 @@ export function isUpdate(article: Article): boolean {
  */
 const RESEARCH_IN_LAUNCH_DOMAIN =
   /\b(researching|toward\s+a|path\s+to(ward)?|exploring|a\s+study\s+on)\b/i;
+
+// #1544: Technical methodology/technique posts on official blogs → pesquisa.
+// Caso 260528: "Delta Weight Sync in TRL" (HF blog about a training technique).
+const TECHNIQUE_IN_LAUNCH_DOMAIN =
+  /\b(sync(hroniz\w+)?|weight\s+sync|delta\s+weight|training\s+(technique|method|recipe)|quantiz(ation|ing)|distill(ation|ing)|speculative\s+decoding|inference\s+(optim|trick|technique))\b/i;
 
 /**
  * Domínios que são predominantemente tutoriais / case studies, mesmo quando
@@ -802,6 +819,8 @@ export function categorize(article: Article): Category {
 
     // #486: títulos de pesquisa em domínio oficial → reclassificar como pesquisa
     if (RESEARCH_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
+    // #1544: technique/methodology posts in official blogs → pesquisa
+    if (TECHNIQUE_IN_LAUNCH_DOMAIN.test(article.title ?? "")) return "pesquisa";
 
     // #1173: outros type_hints (pesquisa/noticia/analise/opiniao) também
     // vencem heurística — agent leu o conteúdo.
