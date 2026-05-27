@@ -1,5 +1,14 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
+import { resolve } from "node:path";
+import { execSync } from "node:child_process";
 import {
   parseInboxMd,
   filterEditorBlocks,
@@ -13,6 +22,7 @@ import {
   isSenderOwnUrl,
   isAffiliateUrl,
 } from "../scripts/inject-inbox-urls.ts";
+import type { SyntheticInboxArticle } from "../scripts/inject-inbox-urls.ts";
 
 const sampleInbox = `# Inbox Editorial — Diar.ia
 
@@ -447,5 +457,183 @@ describe("extractNewsletterUrls (#1095)", () => {
     ];
     const articles = extractNewsletterUrls(blocks);
     assert.equal(articles[0].flag, "newsletter_extracted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: --captured-articles (#1520)
+// ---------------------------------------------------------------------------
+
+const TMP_DIR = resolve(import.meta.dirname, ".tmp-inject-inbox-test");
+const ROOT = resolve(import.meta.dirname, "..");
+
+describe("--captured-articles integration (#1520)", () => {
+  beforeEach(() => {
+    mkdirSync(TMP_DIR, { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
+
+  function writeInbox(path: string): void {
+    writeFileSync(path, `# Inbox Editorial — Diar.ia
+
+<!-- entries abaixo -->
+## 2026-05-25T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+- **subject:** Check this AI article
+- **urls:**
+  - https://www.editor-submitted.com/article
+`, "utf8");
+  }
+
+  it("merges captured-articles into pool alongside editor URLs", () => {
+    const inboxPath = resolve(TMP_DIR, "inbox.md");
+    const capturedPath = resolve(TMP_DIR, "captured-newsletter-articles.json");
+    const poolPath = resolve(TMP_DIR, "pool.json");
+    const outPath = resolve(TMP_DIR, "out.json");
+
+    writeInbox(inboxPath);
+
+    const capturedArticles: SyntheticInboxArticle[] = [
+      {
+        url: "https://techcrunch.com/newsletter-article",
+        source: "inbox_newsletter:AI Roundup",
+        title: "(newsletter:AI Roundup)",
+        flag: "newsletter_extracted",
+        submitted_at: "2026-05-25T10:00:00Z",
+        submitted_subject: "AI Roundup - Issue 42",
+        submitted_via: "newsletter:AI Roundup",
+      },
+    ];
+    writeFileSync(capturedPath, JSON.stringify(capturedArticles), "utf8");
+    writeFileSync(poolPath, JSON.stringify([{ url: "https://existing.com/article", source: "rss" }]), "utf8");
+
+    const result = execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --captured-articles "${capturedPath}" --pool "${poolPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8" },
+    );
+
+    const output = JSON.parse(result.trim());
+    // Should have newsletter articles from captured-articles
+    assert.ok(output.total_newsletter_urls >= 1, `expected >=1 newsletter URL, got ${output.total_newsletter_urls}`);
+    assert.equal(output.newsletter_source, "captured-articles");
+
+    // Pool should contain existing + editor + newsletter articles
+    const pool = JSON.parse(readFileSync(outPath, "utf8"));
+    const urls = pool.map((a: any) => a.url);
+    assert.ok(urls.includes("https://existing.com/article"), "existing pool article preserved");
+    assert.ok(urls.includes("https://www.editor-submitted.com/article"), "editor URL injected");
+    assert.ok(urls.includes("https://techcrunch.com/newsletter-article"), "captured newsletter article injected");
+  });
+
+  it("skips newsletter extraction from inbox.md when --captured-articles present", () => {
+    const inboxPath = resolve(TMP_DIR, "inbox-with-newsletters.md");
+    const capturedPath = resolve(TMP_DIR, "captured-empty.json");
+    const outPath = resolve(TMP_DIR, "out-skip.json");
+
+    // inbox.md has newsletter blocks that would normally be extracted
+    writeFileSync(inboxPath, `# Inbox Editorial — Diar.ia
+
+<!-- entries abaixo -->
+## 2026-05-25T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+- **subject:** My article
+- **urls:**
+  - https://editor-article.com/post
+
+## 2026-05-25T11:00:00.000Z
+- **from:** Cyberman <cyberman@mail.beehiiv.com>
+- **subject:** AI Roundup
+- **urls:**
+  - https://should-not-appear-from-inbox.com/article
+`, "utf8");
+
+    // Empty captured-articles — newsletter extraction from inbox.md should NOT happen
+    writeFileSync(capturedPath, JSON.stringify([]), "utf8");
+
+    const result = execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --captured-articles "${capturedPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8" },
+    );
+
+    const output = JSON.parse(result.trim());
+    assert.equal(output.newsletter_source, "captured-articles");
+    assert.equal(output.total_newsletter_urls, 0, "no newsletter URLs from inbox.md when captured-articles present");
+
+    const pool = JSON.parse(readFileSync(outPath, "utf8"));
+    const urls = pool.map((a: any) => a.url);
+    assert.ok(urls.includes("https://editor-article.com/post"), "editor URL still injected");
+    assert.ok(!urls.includes("https://should-not-appear-from-inbox.com/article"),
+      "newsletter URL from inbox.md should NOT appear when captured-articles is present");
+  });
+
+  it("falls back to inbox.md newsletter extraction when captured-articles file missing", () => {
+    const inboxPath = resolve(TMP_DIR, "inbox-fallback.md");
+    const capturedPath = resolve(TMP_DIR, "nonexistent-captured.json");
+    const outPath = resolve(TMP_DIR, "out-fallback.json");
+
+    writeFileSync(inboxPath, `# Inbox Editorial — Diar.ia
+
+<!-- entries abaixo -->
+## 2026-05-25T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+- **subject:** My article
+- **urls:**
+  - https://editor-article.com/post
+
+## 2026-05-25T11:00:00.000Z
+- **from:** Cyberman <cyberman@mail.beehiiv.com>
+- **subject:** AI Roundup
+- **urls:**
+  - https://techcrunch.com/newsletter-extracted
+`, "utf8");
+
+    // captured-articles file does NOT exist — should fall back to inbox.md extraction
+    // (capturedPath points to nonexistent file)
+    const result = execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --captured-articles "${capturedPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+
+    const output = JSON.parse(result.trim());
+    // When captured-articles file is missing, newsletter_source should be "none"
+    // because --captured-articles was provided but file not found
+    assert.equal(output.newsletter_source, "none");
+  });
+
+  it("without --captured-articles, uses legacy inbox.md newsletter extraction", () => {
+    const inboxPath = resolve(TMP_DIR, "inbox-legacy.md");
+    const outPath = resolve(TMP_DIR, "out-legacy.json");
+
+    writeFileSync(inboxPath, `# Inbox Editorial — Diar.ia
+
+<!-- entries abaixo -->
+## 2026-05-25T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+- **subject:** My article
+- **urls:**
+  - https://editor-article.com/post
+
+## 2026-05-25T11:00:00.000Z
+- **from:** Cyberman <cyberman@mail.beehiiv.com>
+- **subject:** AI Roundup
+- **urls:**
+  - https://techcrunch.com/legacy-newsletter-extraction
+`, "utf8");
+
+    const result = execSync(
+      `npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --out "${outPath}" --editor vjpixel@gmail.com`,
+      { cwd: ROOT, encoding: "utf8" },
+    );
+
+    const output = JSON.parse(result.trim());
+    assert.equal(output.newsletter_source, "inbox-md");
+    assert.ok(output.total_newsletter_urls >= 1, "newsletter URLs extracted from inbox.md");
+
+    const pool = JSON.parse(readFileSync(outPath, "utf8"));
+    const urls = pool.map((a: any) => a.url);
+    assert.ok(urls.includes("https://techcrunch.com/legacy-newsletter-extraction"),
+      "newsletter URL from inbox.md extracted in legacy mode");
   });
 });
