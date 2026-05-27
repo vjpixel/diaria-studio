@@ -41,11 +41,11 @@ describe("classifyHttpStatus (#696) — 429 sempre anti_bot", () => {
     assert.ok(r!.note?.includes("trusted publisher"));
   });
 
-  it("403 em publisher NÃO-trusted → blocked (comportamento existente preservado)", () => {
+  it("#1524: 403 em publisher NÃO-trusted → uncertain (browser fallback)", () => {
     const r = classifyHttpStatus(403, UNKNOWN_HOST, "HEAD");
     assert.ok(r);
-    assert.equal(r!.verdict, "blocked");
-    assert.equal(r!.access_uncertain, undefined, "blocked não deve ter access_uncertain");
+    assert.equal(r!.verdict, "uncertain");
+    assert.equal(r!.access_uncertain, true, "403 deve marcar access_uncertain pra browser fallback");
   });
 
   it("404 em qualquer domínio → blocked", () => {
