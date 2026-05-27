@@ -146,18 +146,51 @@ export function readSubmissionsCountFromMarker(editionDir: string): number | nul
     const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
       editor_blocks?: number;
       newsletter_blocks?: number;
+      newsletter_source?: string;
+      captured_newsletter_count?: number;
       details?: {
         editor_blocks?: number;
         newsletter_blocks?: number;
+        newsletter_source?: string;
+        captured_newsletter_count?: number;
       };
     };
     // #1476: marker pode ter campos no top-level (legado) ou em details (atual)
     const data = raw.details ?? raw;
     if (typeof data.editor_blocks !== "number") return null;
-    const newsletter = typeof data.newsletter_blocks === "number" ? data.newsletter_blocks : 0;
-    return data.editor_blocks + newsletter;
+
+    let newsletterCount: number;
+    if (data.newsletter_source === "captured-articles") {
+      // #1541: when newsletters came from captured-articles path, newsletter_blocks
+      // is 0 (no inbox blocks were parsed). Use captured_newsletter_count from
+      // marker, or fall back to reading captured-newsletters.json directly.
+      if (typeof data.captured_newsletter_count === "number") {
+        newsletterCount = data.captured_newsletter_count;
+      } else {
+        newsletterCount = readCapturedNewsletterCount(editionDir);
+      }
+    } else {
+      newsletterCount = typeof data.newsletter_blocks === "number" ? data.newsletter_blocks : 0;
+    }
+    return data.editor_blocks + newsletterCount;
   } catch {
     return null;
+  }
+}
+
+/**
+ * #1541: reads `_internal/captured-newsletters.json` and returns the number
+ * of entries (= distinct newsletter threads captured). Each entry is one
+ * editorial submission, not the individual URLs extracted from it.
+ */
+export function readCapturedNewsletterCount(editionDir: string): number {
+  const capPath = join(editionDir, "_internal", "captured-newsletters.json");
+  if (!existsSync(capPath)) return 0;
+  try {
+    const data = JSON.parse(readFileSync(capPath, "utf8"));
+    return Array.isArray(data) ? data.length : 0;
+  } catch {
+    return 0;
   }
 }
 
