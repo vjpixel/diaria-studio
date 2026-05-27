@@ -104,7 +104,6 @@
 ### AI Breakfast
 - URL: https://aibreakfast.beehiiv.com/
 - Site query: `site:aibreakfast.beehiiv.com`
-- RSS: https://aibreakfast.beehiiv.com/feed
 
 ### AlphaSignal
 - URL: https://alphasignal.ai/
@@ -127,14 +126,13 @@
 - RSS: https://importai.substack.com/feed
 
 ### The AI Pulse
-- URL: https://theaipulse.beehiiv.com/
-- Site query: `site:theaipulse.beehiiv.com`
-- RSS: https://theaipulse.beehiiv.com/feed
+- URL: https://theaipulse.me/en/
+- Site query: `site:theaipulse.me/en`
 
 ### TLDR AI
 - URL: https://tldr.tech/ai
 - Site query: `site:tldr.tech/ai`
-- RSS: https://tldr.tech/ai/rss
+- RSS: https://tldr.tech/api/rss/ai
 
 ### Ben's Bites
 - URL: https://www.bensbites.co/
@@ -211,7 +209,6 @@
 ### DeepLearning.ai The Batch
 - URL: https://www.deeplearning.ai/the-batch/
 - Site query: `site:deeplearning.ai/the-batch`
-- RSS: https://www.deeplearning.ai/the-batch/feed/
 
 ### Latent Space
 - URL: https://www.latent.space/
