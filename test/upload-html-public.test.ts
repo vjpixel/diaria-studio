@@ -75,7 +75,7 @@ describe("uploadHtml — dry-run", () => {
     });
     assert.equal(r.edition, "260514");
     assert.equal(r.dry_run, true);
-    assert.equal(r.bytes, "<p>hello</p>".length);
+    assert.ok(r.bytes > "<p>hello</p>".length, "bytes should include preview wrapper");
     assert.match(r.url, /\/260514-[0-9a-f]{6}$/);
   });
 });
@@ -111,11 +111,12 @@ describe("uploadHtml — real PUT", () => {
       fetchImpl: fetchStub as unknown as typeof fetch,
     });
 
-    // #1494: URL now includes content hash
-    assert.equal(capturedUrl, "https://test.workers.dev/260514-31fd02");
-    assert.equal(capturedAuth, `Bearer ${htmlPutSig(SECRET, "260514-31fd02")}`);
-    assert.equal(capturedBody, html);
-    assert.equal(r.bytes, html.length);
+    // #1494: URL includes content hash (of wrapped HTML, not raw)
+    assert.match(capturedUrl!, /^https:\/\/test\.workers\.dev\/260514-[0-9a-f]{6}$/);
+    const hashMatch = capturedUrl!.match(/260514-([0-9a-f]{6})$/);
+    assert.equal(capturedAuth, `Bearer ${htmlPutSig(SECRET, `260514-${hashMatch![1]}`)}`);
+    assert.ok(capturedBody!.includes(html), "body should contain original HTML");
+    assert.ok(capturedBody!.includes("preview-wrapper"), "body should include mobile wrapper");
     assert.equal(r.ttl_seconds, 43200);
   });
 

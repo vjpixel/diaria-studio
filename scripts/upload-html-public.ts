@@ -80,6 +80,59 @@ export function findUnresolvedImgPlaceholders(html: string): string[] {
   return Array.from(new Set(matches));
 }
 
+export function wrapForPreview(body: string): string {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newsletter Preview</title>
+<style>
+  body {
+    margin: 0;
+    padding: 12px;
+    background: #f5f5f5;
+    font-size: 16px;
+  }
+  .preview-wrapper {
+    max-width: 620px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .preview-wrapper img {
+    max-width: 100%;
+    height: auto !important;
+  }
+  .preview-wrapper table {
+    max-width: 100% !important;
+  }
+  .preview-wrapper td {
+    word-break: break-word;
+  }
+  @media (max-width: 480px) {
+    body { padding: 6px; }
+    .preview-wrapper { padding: 10px; border-radius: 0; }
+    .preview-wrapper p,
+    .preview-wrapper td { font-size: 16px !important; line-height: 1.55 !important; }
+    .preview-wrapper .mob-stack {
+      display: block !important;
+      width: 100% !important;
+      padding: 0 0 12px 0 !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="preview-wrapper">
+${body}
+</div>
+</body>
+</html>`;
+}
+
 export async function uploadHtml(args: {
   edition: string;
   htmlPath: string;
@@ -89,7 +142,8 @@ export async function uploadHtml(args: {
   fetchImpl?: typeof fetch;
 }): Promise<UploadHtmlResult> {
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
-  const html = readFileSync(args.htmlPath, "utf8");
+  const rawHtml = readFileSync(args.htmlPath, "utf8");
+  const html = wrapForPreview(rawHtml);
 
   // #1494: content-hash versioning — each different content gets a unique URL.
   // Eliminates browser/edge cache issues when re-uploading updated HTML.
