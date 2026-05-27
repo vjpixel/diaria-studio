@@ -20,7 +20,7 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
   Bash("node -e \"const s='{edition_date}';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6))\"")
   ```
   Armazenar como `edition_iso` (ex: `2026-04-23`).
-- **Calcular `anchor_iso` e `cutoff_iso` (#560).** A janela de pesquisa é ancorada em "agora" (data de execução), não na publication date. Edições agendadas pra publicar dias à frente (test_mode, ou /diaria-edicao chamado com data futura) **continuam pesquisando o que foi publicado nos últimos `window_days` dias do ponto de vista de quem está rodando**, não a janela futura entre `today` e `edition_date`.
+- **Calcular `anchor_iso` e `cutoff_iso` (#560).** A janela de pesquisa é ancorada em "agora" (data de execução), não na publication date. Edições agendadas pra publicar dias à frente (ex: /diaria-edicao chamado com data futura) **continuam pesquisando o que foi publicado nos últimos `window_days` dias do ponto de vista de quem está rodando**, não a janela futura entre `today` e `edition_date`.
   ```bash
   Bash("node -e \"process.stdout.write(new Date().toISOString().slice(0,10))\"")
   ```
@@ -31,13 +31,7 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
   Esses dois valores **substituem** `edition_iso` em qualquer prompt de agente de pesquisa (1f) e qualquer chamada a `filter-date-window.ts` (1o). `edition_iso` permanece só como identificador da edição.
 - Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
-- **Receber `test_mode` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, desabilitar Drive sync, copiar `_internal/01-categorized.json` → `_internal/01-approved.json` diretamente.
-- **Receber `with_publish` (opcional, default `false`, #568).** Só relevante quando `test_mode = true`. Controla se a Etapa 4 (publicação) roda no `/diaria-test`:
-  - `with_publish = false` (default): Stage 0c força `CHROME_MCP = false`, fazendo Etapa 4 pular com `status: "skipped"`. Comportamento histórico do `/diaria-test` — fluxo de publicação fica fora do teste.
-  - `with_publish = true`: Stage 0c roda o probe normal de Chrome MCP. Se sucesso, Etapa 4 dispatcha publish-newsletter / publish-facebook / publish-linkedin com `schedule_day_offset = 10`. Editor é responsável por deletar manualmente os artefatos gerados (rascunho Beehiiv, posts agendados FB/LinkedIn).
 - **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal, copiar categorized → approved diretamente.
-  - Em resumo: `auto_approve` é "sem gates, resto normal"; `test_mode` é "sem gates + sem Drive + social 10 dias à frente".
-- **Receber `schedule_day_offset` (opcional).** Se presente, usar como `day_offset` para todos os agendamentos sociais na Etapa 4. Usado pelo `/diaria-test` para agendar 10 dias à frente.
 
 ### 0b. Resume-aware
 
@@ -90,7 +84,7 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
-- **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true` E não está em `test_mode`, rodar:
+- **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true`, rodar:
   ```bash
   npx tsx scripts/drive-sync.ts --health-check
   ```
@@ -106,9 +100,8 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
   npx tsx scripts/clarice-healthcheck.ts
   ```
   Output JSON: `{ ok, latency_ms?, error? }`. Exit 0 = saudável (`CLARICE_REST = true`); exit 2 = degradado (`CLARICE_REST = false`, logar warn com `error` e seguir). Stage 2 §3b consulta `CLARICE_REST` antes de tentar o fallback quando o MCP falha. Sem essa flag, Stage 2 ainda tenta o fallback — só perde a chance de pre-warn o editor.
-- **Pre-flight Claude in Chrome MCP (#143, #568).** Se `test_mode = true` E `with_publish !== true`, setar `CHROME_MCP = false` diretamente (sem probe). Caso contrário (incluindo `test_mode = true` com `with_publish = true`), tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
-  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve` e não `test_mode`), alertar editor e aguardar `[y/n]`. **Em `auto_approve` ou `test_mode` SEM `with_publish`**, prosseguir silenciosamente.
-  - **Caso especial `test_mode = true` E `with_publish = true` E `CHROME_MCP = false` (#568):** warn LOUD — imprimir bloco visível no terminal (não silenciar) e logar `level: warn` com `agent: orchestrator`, `message: "with_publish=true mas Chrome MCP indisponível — Etapa 4 vai pular"`. Editor pediu publicação explícita; merece saber que não vai acontecer. Pipeline continua mas sem Etapa 4.
+- **Pre-flight Claude in Chrome MCP (#143).** Tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
+  - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve`), alertar editor e aguardar `[y/n]`. **Em `auto_approve`**, prosseguir silenciosamente.
   - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
   ```bash

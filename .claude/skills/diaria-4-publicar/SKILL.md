@@ -147,8 +147,8 @@ Após todos retornarem, **loop de review-test-email** roda em cima do draft Beeh
 ### Etapa 4b — Auto-reporter (#57 / #79)
 
 1. Coleta sinais da edição (`collect-edition-signals.ts`).
-2. Se `signals_count > 0` e não é test_mode: dispara agent `auto-reporter` (gate humano de issues GitHub).
-3. Pula auto-reporter se test_mode/auto_approve.
+2. Se `signals_count > 0`: dispara agent `auto-reporter` (gate humano de issues GitHub).
+3. Pula auto-reporter se auto_approve.
 
 ## Output
 

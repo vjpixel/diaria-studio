@@ -97,8 +97,6 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 **⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
 
-**RSS-only mode (#1055).** Se `rss_only = true` no contexto (default em `/diaria-test`, opt-in via `--full-research`), **pular** todo o dispatch de `source-researcher` e `discovery-searcher` deste passo. RSS batch (1e) e eia-composer (1d) seguem rodando normalmente. Razão: yield de researchers em runs de teste foi 12× pior por fonte (5/200 articles) consumindo ~80% do token budget de Stage 1f. Logar info: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level info --message 'rss_only mode: skipping source-researchers and discovery'`. Quando `rss_only = false` (modo `/diaria-edicao` normal ou `/diaria-test --full-research`), o dispatch abaixo segue como sempre.
-
 
 - **Pre-flight: skip aggregator-domain sources** (#717 hipótese 5). Antes de dispatchar agents, filtrar fontes que batem na blocklist de `source-researcher` (que voltariam com `articles: []` de qualquer jeito). Rodar:
   ```bash
@@ -106,7 +104,7 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
   ```
   Output JSON `{ kept[], skipped[] }`. Dispatchar source-researcher apenas pra `kept[]`. Logar `skipped[]` como info: cada entry tem `category` + `pattern` que casou. Economiza ~30s-1min de wall clock + ~50k Haiku tokens em edições com 11+ fontes em fallback (medido em #717 / 260506).
 
-- **#1074 — sempre dispatchar pra TODAS as fontes em prod** (atalho só em `rss_only`/`/diaria-test`). Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **pra todas as fontes cadastradas em `context/sources.md` que passaram no pre-flight de blocklist acima**, **independente do RSS ter retornado artigos ou não**. Razão (#1074): RSS feeds são incompletos / atrasados; fontes oficiais publicam no site antes do RSS atualizar; pular mascara coverage gaps que o editor não vê. Em `/diaria-test` (`rss_only=true`), o passo 1f inteiro é pulado — atalho intencional pra benchmark de performance. Passar: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
+- **#1074 — sempre dispatchar pra TODAS as fontes.** Disparar N chamadas `Agent` paralelas com subagent `source-researcher` **pra todas as fontes cadastradas em `context/sources.md` que passaram no pre-flight de blocklist acima**, **independente do RSS ter retornado artigos ou não**. Razão (#1074): RSS feeds são incompletos / atrasados; fontes oficiais publicam no site antes do RSS atualizar; pular mascara coverage gaps que o editor não vê. Passar: nome da fonte, site query, **`cutoff_iso`** (data mais antiga aceita — calculada em 0a a partir de `anchor_iso = today`), `window_days`, `timeout_seconds: 180`. **Não passar `edition_date` como anchor da janela** (#560) — apenas como identificador, se necessário.
 - Em paralelo, disparar M chamadas `Agent` com subagent `discovery-searcher` para queries temáticas (~5 PT + ~5 EN + **todos os `inbox_topics`** como queries adicionais — prioridade alta, vêm do próprio editor). `inbox_topics` vem do output do step 1e.5 (`scripts/extract-inbox-topics.ts`). Passar `cutoff_iso`, `window_days`, `timeout_seconds: 180`.
 - Agregar resultados (cada subagente retorna JSON com `status`, `duration_ms`, `articles[]`, e `reason` se status != ok).
 
@@ -405,7 +403,7 @@ Opções:
   - Forçar aceitação no gate (override editorial pontual)
 ```
 
-Editor decide no gate. Auto-aprovação (test_mode/--no-gates) bypassa o lint mas loga warn no run-log.
+Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga warn no run-log.
 
 ### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
 
@@ -441,11 +439,10 @@ Antes do `validate-stage-1-output.ts`, rodar:
 
 ```bash
 npx tsx scripts/validate-stage-1-completeness.ts \
-  --edition-dir data/editions/{AAMMDD}/ \
-  [--allow-rss-only]
+  --edition-dir data/editions/{AAMMDD}/
 ```
 
-Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir. Pra modo `/diaria-test` com `rss_only=true`, passar `--allow-rss-only` (validator pula).
+Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir.
 
 Razão (#1091): incidente 2026-05-11 na edição 260512. Orchestrator pulou 1f silenciosamente após RSS batch trazer 109 artigos. Validador é defesa primária; memory `feedback_no_skip_playbook.md` é defesa secundária; warning no início da seção 1f acima é tercer layer.
 

@@ -5,7 +5,7 @@ model: claude-opus-4-7
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
-> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`, `/diaria-test`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
+> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
 
@@ -15,8 +15,7 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 
 1. **Paralelismo agressivo.** Sempre que múltiplos subagentes podem rodar independentes (ex: 1 por fonte, 4 posts sociais), dispare todos com chamadas `Agent` em paralelo — uma única mensagem com múltiplos tool uses.
 2. **Gate humano é inegociável.** Ao final de cada stage, escreva o output em `data/editions/{AAMMDD}/` e **pare**. Apresente um resumo claro ao usuário e peça aprovação antes de prosseguir.
-   - **Exceção: `test_mode = true` ou `auto_approve = true`.** Se receber qualquer um deles no prompt, **pular todos os gates humanos** — auto-aprovar imediatamente e prosseguir sem aguardar input. Continuar logando e gravando outputs normalmente. Ao final de cada gate, emitir apenas `[AUTO] Stage {N} auto-approved` no output (não apresentar o resumo completo ao usuário). Usar `_internal/01-categorized.json` diretamente como `_internal/01-approved.json` (copiar arquivo) no Stage 1 — sem edição humana.
-   - **`test_mode = true` desabilita TODOS os prompts de confirmação humana (#1400)**, incluindo o INVARIANTE #336 ("nunca dispatch publish-* sem confirmação explícita"). Stage 4 dispatcha automaticamente os 3 publishers (Beehiiv, LinkedIn, Facebook) sem perguntar. Editor já opted-in via `/diaria-test` — perguntar de novo no meio da pipeline é regressão (caso real 260520: orchestrator pausou pré-Stage 4 com "Posso prosseguir?" quebrando o benchmark de wall-clock que o skill existe pra medir). **NUNCA emita perguntas tipo "Posso prosseguir?" / "Aprovar e seguir?" / "Quer que eu rode Stage 4?"** em `test_mode`. Halt banner (#738) continua válido pra falhas de MCP/env/external — esses são bloqueios reais, não confirmação editorial.
+   - **Exceção: `auto_approve = true`.** Se receber no prompt, **pular todos os gates humanos** — auto-aprovar imediatamente e prosseguir sem aguardar input. Continuar logando e gravando outputs normalmente. Ao final de cada gate, emitir apenas `[AUTO] Stage {N} auto-approved` no output (não apresentar o resumo completo ao usuário). Usar `_internal/01-categorized.json` diretamente como `_internal/01-approved.json` (copiar arquivo) no Stage 1 — sem edição humana.
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual.
 5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` no Drive em sincronia com `data/editions/{AAMMDD}/`:
@@ -84,13 +83,12 @@ Aprovar e seguir para Etapa {N+1}? (sim / editar / retry)
 ### Drive sync — comportamento geral
 
 - Todos os blocos de push/pull verificam `DRIVE_SYNC` (lido de `platform.config.json`) antes de chamar `drive-sync.ts`. Se `false`, pular silenciosamente.
-- Se em `test_mode`, pular todos os blocos de push/pull sem verificar a flag.
 - Falha de sync vira warning, nunca bloqueia o pipeline.
 - Tracking acumulado: contar stages com sync degradado em `sync_results`; ≥3 consecutivos → escalar mensagem de degradação para o editor (ver Princípio 5 acima).
 
 ### Confirmação antes de publicar (#336)
 
-**INVARIANTE:** NUNCA dispatch publish-* agent ou script publicador (Beehiiv, LinkedIn, Facebook) sem confirmação explícita do editor no turno atual. A única exceção é `auto_approve = true`, que registra warn no run-log mas prossegue automaticamente. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
+**INVARIANTE:** NUNCA dispatch publish-* agent ou script publicador (Beehiiv, LinkedIn, Facebook) sem confirmação explícita do editor no turno atual. A exceção é `auto_approve = true` (via `--no-gates`), que registra warn no run-log mas prossegue automaticamente. Blast radius alto: publicação real em plataforma de audiência, não-reversível sem ação do editor.
 
 ### Proteção contra sobrescrita (#101)
 
@@ -111,9 +109,9 @@ npx tsx scripts/log-runtime-fix.ts \
 
 Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não vale virar issue. P1 = bug urgente que deveria ter parado o pipeline.
 
-`collect-edition-signals.ts` agrupa por `(component, fix_type)` — fixes recorrentes em /diaria-test runs detectados como ruído de prompt regression vs ruído de drift de schema.
+`collect-edition-signals.ts` agrupa por `(component, fix_type)` — fixes recorrentes detectados como ruído de prompt regression vs ruído de drift de schema.
 
-**Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook. Sem o log, fixes in-flight escapam do auto-reporter (gap arquitetural identificado em #1210 — /diaria-test 260517 teve 5 bugs fixados sem nenhum virar issue).
+**Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook. Sem o log, fixes in-flight escapam do auto-reporter (gap arquitetural identificado em #1210).
 
 ### Cost + timing tracking (#1217)
 

@@ -63,7 +63,7 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `window_days = {valor confirmado no Passo 1}`
 - `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523)
 - `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate antes do dispatch)
-- `test_mode = false`
+
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 - **§ 0 Setup** — resume detection, Drive sync flag, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início

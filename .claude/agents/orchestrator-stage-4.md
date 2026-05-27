@@ -173,8 +173,6 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 4b
 
 **Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: você (top-level) **lê `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). **Não tente dispatchar via `Agent`** — `javascript_tool` é restrito ao top-level e o paste-into-htmlSnippet falha em qualquer subagent. **Sempre usar Fase 2 Worker-hosted (~5K tokens, 1 javascript_tool fetch+paste)** — o caminho chunked-base64 vive só como fallback automático no apêndice do playbook (#1327). Nunca propor manualmente "vou chunkar" ou "vou fazer paste manual" antes de tentar Worker-hosted. Output: `_internal/05-published.json` com `draft_url`, `title`, `test_email_sent_at`, `template_used`.
 
-**`--test-mode` flag (#1056)**: quando `test_mode = true`, scripts publish-facebook e publish-linkedin tagam todas as entries gravadas em `06-social-published.json` com `is_test: true`. `delete-test-schedules.ts` honra esse flag por default (`--require-is-test` true) — só deleta entries explicitamente marcadas. Safety: rodar `delete-test-schedules.ts` em pasta de produção real é no-op porque entries de produção não têm `is_test: true`.
-
 **Tab isolation no Chrome**: `publish-newsletter` é o único agent Chrome em Etapa 4 — abre tab Beehiiv própria via `tabs_create_mcp`. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser.
 
 **LinkedIn route — Worker queue + fallback Make (#887):** `publish-linkedin.ts` prefere o Cloudflare Worker `diaria-linkedin-cron` quando `cloudflare_worker_url` + `DIARIA_LINKEDIN_CRON_TOKEN` estão configurados E `scheduled_at` é futuro. Worker enfileira em KV e dispara o webhook Make no horário agendado. **Se o Worker falhar todos os retries** (503, KV down, deploy quebrado), o script cai automaticamente em `postToMakeWebhook` — Make posta **imediatamente** (ignora `scheduled_at`). Entry resultante traz `status: "draft"` (post live, sem agendamento futuro) + `fallback_used: true` + `fallback_reason: "{HTTP NNN: ...}"` (sanitizado, max ~110 chars) para auditoria. Política: post real > post falhado.
@@ -430,8 +428,8 @@ travaria a edicao. O relatorio no gate da visibilidade — editor decide.
 **Social dispatcha DEPOIS do gate.** O `03-social.md` já passou por todas as revisões (humanizador, Clarice, edições manuais). Nenhum re-dispatch necessário.
 
 **Em uma única mensagem**, disparar simultaneamente (apenas os autorizados em 4b):
-1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Graph API, ~30s. Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
-2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook, ~3s (#971). Se `test_mode = true` e `schedule_day_offset` definido, adicionar `--day-offset {schedule_day_offset} --test-mode`.
+1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Graph API, ~30s.
+2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/{AAMMDD}/ --schedule")` — Worker queue + Make webhook, ~3s (#971).
 
 **Aguardar ambos retornarem.** Verificar dispatch:
 ```bash
@@ -546,9 +544,8 @@ Se `signals_count === 0`, logar info e pular auto-reporter — edição passou l
 
 ### 4b-3. Sempre rodar (#1502)
 
-Auto-reporter roda em **todos os modos** (interativo, `auto_approve`, `test_mode`). É o único mecanismo de observabilidade pós-edição — sem ele, bugs detectados durante a edição não viram issues.
+Auto-reporter roda em **todos os modos** (interativo, `auto_approve`). É o único mecanismo de observabilidade pós-edição — sem ele, bugs detectados durante a edição não viram issues.
 
-- **`test_mode = true`**: usar `--include-test-warnings` e label `from-diaria-test`.
 - **`auto_approve = true`**: gate do auto-reporter é auto-aprovado (issues criadas automaticamente).
 - **Modo interativo**: gate normal (editor aprova/skip/edit cada issue).
 

@@ -16,7 +16,7 @@ Closes #
 
 <!-- Passos específicos, comando exato, onde olhar. Esta seção é o handoff web → local.
      Para PRs que só tocam scripts/testes/CI, listar: pull, npm ci, npm test.
-     Para PRs que tocam pipeline ou agents, listar /diaria-test, dashboards a verificar, etc. -->
+     Para PRs que tocam pipeline ou agents, listar /diaria-edicao --no-gates, dashboards a verificar, etc. -->
 
 - [ ] `git pull origin <branch>`
 - [ ] `npm ci`
