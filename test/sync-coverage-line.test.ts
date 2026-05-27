@@ -16,6 +16,7 @@ import {
   deriveResearchDateISO,
   rewriteCoverageLine,
   readSubmissionsCountFromMarker,
+  readCapturedNewsletterCount,
   parsePoolArticles,
 } from "../scripts/sync-coverage-line.ts";
 
@@ -568,6 +569,132 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
       JSON.stringify({ editor_blocks: 5, newsletter_blocks: "x" }),
     );
     assert.equal(readSubmissionsCountFromMarker(dir), 5);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#1541: captured-articles path usa captured_newsletter_count do marker (não newsletter_blocks)", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: {
+          editor_blocks: 0,
+          newsletter_blocks: 0,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 9,
+        },
+      }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#1541: captured-articles sem captured_newsletter_count faz fallback pra captured-newsletters.json", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: {
+          editor_blocks: 0,
+          newsletter_blocks: 0,
+          newsletter_source: "captured-articles",
+        },
+      }),
+    );
+    // Simulate captured-newsletters.json with 9 newsletter threads
+    writeFileSync(
+      join(dir, "_internal", "captured-newsletters.json"),
+      JSON.stringify(Array.from({ length: 9 }, (_, i) => ({
+        thread_id: `t${i}`,
+        sender: `sender${i}@example.com`,
+        subject: `Newsletter ${i}`,
+      }))),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#1541: captured-articles sem captured_newsletter_count nem captured-newsletters.json → 0", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: {
+          editor_blocks: 2,
+          newsletter_blocks: 0,
+          newsletter_source: "captured-articles",
+        },
+      }),
+    );
+    // No captured-newsletters.json → newsletter count falls back to 0
+    assert.equal(readSubmissionsCountFromMarker(dir), 2);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("#1541: caso real 260528 — editor_blocks:0 + 9 captured newsletters = 9", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        completed_at: "2026-05-27T19:42:51.255Z",
+        details: {
+          injected: 79,
+          total_editor_urls: 0,
+          total_newsletter_urls: 80,
+          total_pool_size: 246,
+          editor_blocks: 0,
+          newsletter_blocks: 0,
+          newsletter_source: "captured-articles",
+        },
+      }),
+    );
+    writeFileSync(
+      join(dir, "_internal", "captured-newsletters.json"),
+      JSON.stringify(Array.from({ length: 9 }, (_, i) => ({
+        thread_id: `t${i}`,
+        sender: `sender${i}@mail.beehiiv.com`,
+        subject: `Newsletter ${i}`,
+      }))),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 9);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("readCapturedNewsletterCount (#1541)", () => {
+  function makeFixtureEdition(): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-sync-coverage-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+
+  it("counts entries in captured-newsletters.json", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", "captured-newsletters.json"),
+      JSON.stringify([{ thread_id: "a" }, { thread_id: "b" }, { thread_id: "c" }]),
+    );
+    assert.equal(readCapturedNewsletterCount(dir), 3);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns 0 when file missing", () => {
+    const dir = makeFixtureEdition();
+    assert.equal(readCapturedNewsletterCount(dir), 0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns 0 when file is not an array", () => {
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", "captured-newsletters.json"),
+      JSON.stringify({ threads: [] }),
+    );
+    assert.equal(readCapturedNewsletterCount(dir), 0);
     rmSync(dir, { recursive: true, force: true });
   });
 });
