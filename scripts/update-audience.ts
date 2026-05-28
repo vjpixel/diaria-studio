@@ -293,10 +293,28 @@ function main() {
       lines.push(`- **${origin}** — CTR ${ctrPct(agg)}% | ${agg.count} links (${pctLinks}% do total)`);
     }
 
+    // #1564: derivar annotation BR vs INT da data atual em vez de hardcoded.
+    // Pre-mudança assumia BR > INT (era verdade no regime antigo); pós-mudança
+    // o ranking pode ter virado. Annotation derivada evita stale claim.
+    const brCtr = (() => {
+      const a = ctr.byOrigin.get("BR");
+      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+    })();
+    const intCtr = (() => {
+      const a = ctr.byOrigin.get("INT");
+      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+    })();
+    const originHint = (() => {
+      if (brCtr === 0 || intCtr === 0) return "Sem dados suficientes pra comparar BR vs INT.";
+      const ratio = brCtr / intCtr;
+      if (ratio >= 1.15) return `Conteúdo BR tem CTR ${Math.round((ratio - 1) * 100)}% maior — priorizar quando disponível em qualidade equivalente.`;
+      if (ratio <= 0.85) return `Conteúdo INT tem CTR ${Math.round((1 / ratio - 1) * 100)}% maior — não há prêmio automático por origem BR; avaliar caso a caso.`;
+      return "BR e INT têm CTR comparável — origem não é fator decisivo, focar em relevância editorial.";
+    })();
     lines.push(
       "",
       "> **Como usar:** categorias com CTR acima da média devem receber bônus de score.",
-      "> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.",
+      `> ${originHint}`,
     );
 
     // By domain (source quality)

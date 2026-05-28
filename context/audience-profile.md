@@ -50,7 +50,7 @@ Top 10 combinações com maior CTR (mínimo 5 links):
 - **BR** — CTR 0.36% | 289 links (19.2% do total)
 
 > **Como usar:** categorias com CTR acima da média devem receber bônus de score.
-> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.
+> Conteúdo INT tem CTR 27% maior — não há prêmio automático por origem BR; avaliar caso a caso.
 
 ### CTR por fonte (mínimo 3 links)
 
