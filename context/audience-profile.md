@@ -1,52 +1,53 @@
 # Perfil de Audiência — Diar.ia
 
-**updated_at:** 2026-05-24
+**updated_at:** 2026-05-28
 **subscribers ativos:** 482
 **respondentes survey:** 167
-**links analisados:** 1670 (155 edições, 7+ dias de idade)
+**links analisados:** 1504 (158 edições, 7+ dias de idade)
+**filtros aplicados (#1564):** 220 rows com anchor "Aprofunde" excluídas (regime pré-mar/2026), exponential decay com time constant 90d aplicado (half-life ~62d)
 
 ## 1. Engajamento real (CTR por categoria)
 
-Fonte primária: comportamento de 482 subscribers em 155 edições.
-CTR médio geral: 0.61%
+Fonte primária: comportamento de 482 subscribers em 158 edições.
+CTR médio geral: 0.44%
 
-- **Treinamento** — CTR 3.27% | 22 links (acima da média)
-- **Impacto** — CTR 0.87% | 48 links (acima da média)
-- **Estratégia** — CTR 0.77% | 26 links (acima da média)
-- **Tendência** — CTR 0.75% | 54 links
-- **Lançamento** — CTR 0.74% | 499 links
-- **Ferramenta** — CTR 0.65% | 52 links
-- **Bastidores** — CTR 0.65% | 101 links
-- **Aplicação** — CTR 0.62% | 48 links
-- **Pesquisa** — CTR 0.58% | 158 links
-- **Regulação** — CTR 0.53% | 123 links
-- **Mercado** — CTR 0.51% | 107 links
-- **Outro** — CTR 0.43% | 56 links (abaixo da média)
-- **Segurança** — CTR 0.43% | 40 links (abaixo da média)
-- **Geopolítica** — CTR 0.42% | 58 links (abaixo da média)
-- **Indústria** — CTR 0.37% | 16 links (abaixo da média)
-- **Infraestrutura** — CTR 0.32% | 117 links (abaixo da média)
-- **Curiosidade** — CTR 0.29% | 145 links (abaixo da média)
+- **Treinamento** — CTR 2.42% | 18 links (acima da média)
+- **Impacto** — CTR 0.69% | 38 links (acima da média)
+- **Aplicação** — CTR 0.68% | 43 links (acima da média)
+- **Estratégia** — CTR 0.60% | 25 links (acima da média)
+- **Lançamento** — CTR 0.54% | 430 links
+- **Bastidores** — CTR 0.53% | 89 links
+- **Ferramenta** — CTR 0.52% | 50 links
+- **Segurança** — CTR 0.50% | 38 links
+- **Regulação** — CTR 0.43% | 107 links
+- **Outro** — CTR 0.42% | 69 links
+- **Geopolítica** — CTR 0.40% | 49 links
+- **Pesquisa** — CTR 0.39% | 140 links
+- **Tendência** — CTR 0.39% | 49 links
+- **Indústria** — CTR 0.36% | 17 links
+- **Mercado** — CTR 0.35% | 90 links
+- **Infraestrutura** — CTR 0.23% | 107 links (abaixo da média)
+- **Curiosidade** — CTR 0.15% | 145 links (abaixo da média)
 
 ### Destaques por categoria + origem
 
 Top 10 combinações com maior CTR (mínimo 5 links):
 
-- **Treinamento BR** — CTR 3.71% | 7 links
-- **Treinamento INT** — CTR 3.10% | 15 links
-- **Impacto BR** — CTR 1.05% | 14 links
-- **Tendência BR** — CTR 1.03% | 20 links
-- **Aplicação BR** — CTR 1.00% | 14 links
-- **Estratégia INT** — CTR 0.99% | 19 links
-- **Impacto INT** — CTR 0.81% | 34 links
-- **Lançamento INT** — CTR 0.77% | 441 links
-- **Regulação BR** — CTR 0.68% | 41 links
-- **Ferramenta INT** — CTR 0.66% | 50 links
+- **Treinamento INT** — CTR 3.71% | 14 links
+- **Aplicação BR** — CTR 0.92% | 12 links
+- **Estratégia INT** — CTR 0.86% | 17 links
+- **Impacto INT** — CTR 0.72% | 29 links
+- **Lançamento INT** — CTR 0.60% | 380 links
+- **Regulação BR** — CTR 0.58% | 31 links
+- **Bastidores INT** — CTR 0.57% | 67 links
+- **Aplicação INT** — CTR 0.56% | 31 links
+- **Ferramenta INT** — CTR 0.53% | 48 links
+- **Pesquisa BR** — CTR 0.50% | 19 links
 
 ### Engajamento por origem
 
-- **BR** — CTR 0.61% | 338 links (20.2% do total)
-- **INT** — CTR 0.60% | 1332 links (79.8% do total)
+- **INT** — CTR 0.46% | 1215 links (80.8% do total)
+- **BR** — CTR 0.36% | 289 links (19.2% do total)
 
 > **Como usar:** categorias com CTR acima da média devem receber bônus de score.
 > Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.
@@ -55,52 +56,46 @@ Top 10 combinações com maior CTR (mínimo 5 links):
 
 Top 15 fontes com maior engajamento:
 
-- **veja.abril.com.br** — CTR 1.52% | 4 links
-- **elevenlabs.io** — CTR 1.50% | 4 links
-- **techradar.com** — CTR 1.46% | 5 links
-- **x.ai** — CTR 1.42% | 5 links
-- **futurism.com** — CTR 1.41% | 4 links
-- **deepmind.google** — CTR 1.30% | 4 links
-- **wired.com** — CTR 1.21% | 6 links
-- **the-decoder.com** — CTR 1.20% | 4 links
-- **developers.googleblog.com** — CTR 1.08% | 4 links
-- **slack.com** — CTR 1.07% | 3 links
-- **github.com** — CTR 1.07% | 6 links
-- **microsoft.com** — CTR 1.03% | 11 links
-- **indiatoday.in** — CTR 1.00% | 3 links
-- **axios.com** — CTR 0.99% | 4 links
-- **bbc.com** — CTR 0.97% | 11 links
+- **veja.abril.com.br** — CTR 1.47% | 3 links
+- **futurism.com** — CTR 1.33% | 4 links
+- **the-decoder.com** — CTR 1.30% | 4 links
+- **techradar.com** — CTR 1.14% | 5 links
+- **poll.diaria.workers.dev** — CTR 1.14% | 3 links
+- **github.com** — CTR 1.06% | 6 links
+- **deepmind.google** — CTR 1.05% | 3 links
+- **z.ai** — CTR 0.94% | 3 links
+- **bbc.com** — CTR 0.92% | 11 links
+- **diar-ia-poll.diaria.workers.dev** — CTR 0.91% | 5 links
+- **businessinsider.com** — CTR 0.90% | 7 links
+- **wired.com** — CTR 0.88% | 5 links
+- **meet.google.com** — CTR 0.88% | 4 links
+- **developers.googleblog.com** — CTR 0.85% | 5 links
+- **sciencedaily.com** — CTR 0.82% | 3 links
 
-Fontes com CTR 0.00% (28 fontes, 3+ links):
+Fontes com CTR 0.00% (22 fontes, 3+ links):
 
 - usnews.com (4 links)
 - registro.br (3 links)
-- wsj.com (6 links)
+- wsj.com (5 links)
 - nytimes.com (3 links)
-- aljazeera.com (3 links)
 - newsroom.ibm.com (3 links)
-- fortune.com (5 links)
+- fortune.com (3 links)
 - morningstar.com (3 links)
-- abcnews.go.com (3 links)
-- uol.com.br (3 links)
 - markets.financialcontent.com (3 links)
 - bloomberg.com (5 links)
 - tomshardware.com (3 links)
-- timesofindia.indiatimes.com (3 links)
 - engadget.com (6 links)
-- gd.eurisko.com.br (3 links)
 - claude.ai (4 links)
 - siliconangle.com (4 links)
 - nvidianews.nvidia.com (4 links)
-- marktechpost.com (3 links)
-- 9to5mac.com (3 links)
+- marktechpost.com (4 links)
+- 9to5mac.com (4 links)
 - timesbrasil.com.br (4 links)
-- agenciabrasil.ebc.com.br (3 links)
-- wikidata.org (6 links)
+- wikidata.org (7 links)
 - bnnbloomberg.ca (3 links)
-- en.wikipedia.org (16 links)
-- creativecommons.org (12 links)
-- mittechreview.com.br (4 links)
+- en.wikipedia.org (17 links)
+- creativecommons.org (15 links)
+- mittechreview.com.br (6 links)
 
 > **Como usar:** fontes com CTR alto indicam conteúdo que a audiência valoriza.
 > Fontes com CTR 0.00% podem ter paywall ou conteúdo genérico — considerar na curadoria.
