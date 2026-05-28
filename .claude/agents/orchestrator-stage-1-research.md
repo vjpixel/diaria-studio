@@ -109,9 +109,9 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 **⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
 
-#### Path A: Brave Search determinístico (opt-in, #1555 P0)
+#### Path A: Brave Search determinístico (DEFAULT desde #1560)
 
-**Se `BRAVE_API_KEY` está setada E `WEBSEARCH_BACKEND=brave`**, usar script TS em vez dos agents Haiku. Economiza ~8-12min/edição. Default `WEBSEARCH_BACKEND=agents` — não ativar sem validar qualidade lado-a-lado primeiro:
+**Default desde 260529 (#1560).** Quando `BRAVE_API_KEY` está setada (default), usar script TS em vez dos agents Haiku. Economiza ~8-12min/edição. Validação side-by-side em 260529 confirmou cobertura comparável + 10× speed. Setar `WEBSEARCH_BACKEND=agents` força fallback pro Path B.
 
 ```bash
 # Gerar sources list
@@ -134,7 +134,9 @@ Output em `websearch-results.json` é RunRecord[] compatível com researcher-res
 
 Exit code 3 do script = "BRAVE_API_KEY ausente" → fallback automático pro Path B (não falha o pipeline).
 
-#### Path B: Agents Haiku (default)
+Melhorias trackeadas em #1559 (filtro de path FAQ/help + WebFetch OG tags).
+
+#### Path B: Agents Haiku (fallback)
 
 - **Pre-flight: skip aggregator-domain sources** (#717 hipótese 5). Antes de dispatchar agents, filtrar fontes que batem na blocklist de `source-researcher` (que voltariam com `articles: []` de qualquer jeito). Rodar:
   ```bash
