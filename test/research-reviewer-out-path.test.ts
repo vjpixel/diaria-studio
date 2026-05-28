@@ -1,12 +1,14 @@
 /**
- * research-reviewer-out-path.test.ts (#1271)
+ * research-reviewer-out-path.test.ts (#1271, removed in #1553)
  *
- * Verifica que (a) o agent .md exige `out_path` como input,
- * (b) o orchestrator-stage-1 passa `out_path` explícito na invocação.
+ * Originalmente verificava que o orchestrator invocava research-reviewer com
+ * out_path explícito. Em #1553 (P3 speed optimization) o agent foi removido
+ * do Stage 1 — o Filtro 2 (theme dedup) é coberto deterministicamente por
+ * dedup.ts Pass 1d (#1475 — theme-entity match) e Pass 1c (#1331 — Jaccard
+ * com threshold lowered quando entidades coincidem).
  *
- * Não testa runtime do agent — esse é dispatch de Haiku via API e cobre
- * só a documentação. Mas garante que se alguém remover o requirement
- * acidentalmente, o test falha (#633 — bugfix exige regressão).
+ * Os testes abaixo são anti-regressão: garantem que a seção 1p2 do playbook
+ * NÃO re-introduza a invocação do agent acidentalmente.
  */
 
 import { describe, it } from "node:test";
@@ -19,31 +21,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT = resolve(__dirname, "..");
 
-describe("research-reviewer out_path requirement (#1271)", () => {
-  it("research-reviewer.md documenta out_path como input obrigatório", () => {
-    const md = readFileSync(resolve(ROOT, ".claude/agents/research-reviewer.md"), "utf8");
-    assert.match(md, /out_path.*obrigat.rio/i, "out_path deve estar marcado como obrigatório");
-    assert.match(md, /tmp-reviewer-output\.json/, "exemplo canônico deve aparecer");
-    // Anti-regressão específica: avisa contra inventar nome semântico
-    assert.match(md, /N.O inventar/i, "deve avisar contra LLM inventar path próprio");
+describe("research-reviewer removal (#1553 P3)", () => {
+  it("orchestrator-stage-1-research.md NÃO invoca research-reviewer agent", () => {
+    const md = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-1-research.md"), "utf8");
+    // Buscar invocação ativa (Agent dispatch ou comando shell)
+    // Excluir menções históricas/comentários que apenas referenciam o removal
+    const activeInvocation = /Disparar `research-reviewer`/.test(md);
+    assert.equal(
+      activeInvocation,
+      false,
+      "research-reviewer agent foi removido em #1553 (coberto por dedup.ts) — não re-invocar",
+    );
   });
 
-  it("orchestrator-stage-1-research.md passa out_path explícito na invocação", () => {
+  it("seção 1p2 documenta a remoção com rationale", () => {
     const md = readFileSync(resolve(ROOT, ".claude/agents/orchestrator-stage-1-research.md"), "utf8");
-    // Busca padrão `out_path: "..."` na seção 1p2
-    const f2section = md.match(/### 1p2\. Research-reviewer[\s\S]{0,1500}/);
-    assert.ok(f2section, "seção 1p2 deve existir");
-    assert.match(
-      f2section![0],
-      /out_path.*tmp-reviewer-output\.json/,
-      "playbook deve passar out_path explícito pro agent",
-    );
-    // E deve avisar que confirma file existe pós-dispatch (#1273:
-    // wrapper ensure-research-reviewer-output.ts substitui Confirmar manual)
-    assert.match(
-      f2section![0],
-      /Confirmar.*arquivo existe|arquivo existe.*scorer|ensure-research-reviewer-output|Pós-dispatch enforcement/i,
-      "playbook deve sanity-check post-dispatch",
-    );
+    const f2section = md.match(/### 1p2\.[\s\S]{0,1500}/);
+    assert.ok(f2section, "seção 1p2 deve existir (mesmo que apenas pra documentar remoção)");
+    assert.match(f2section![0], /REMOVIDO/i, "seção deve marcar explicitamente como removida");
+    assert.match(f2section![0], /dedup\.ts/i, "deve mencionar quem cobre o filtro agora");
   });
 });
