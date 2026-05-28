@@ -121,6 +121,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const format = (args.format as string) ?? "json";
   const rssOnly = args["rss-only"] === true;
+  const websearchOnly = args["websearch-only"] === true; // #1555 P0
   const outPath = args.out as string | undefined;
   const sourcesMdPath = (args.sources as string) ?? "context/sources.md";
 
@@ -129,21 +130,33 @@ async function main(): Promise<void> {
 
   if (rssOnly) sources = sources.filter((s) => !!s.rss);
 
+  // #1555 P0: --websearch-only filtra pra fontes com site_query (todas devem
+  // ter, mas defensive). Não exclui fontes com RSS — WebSearch é ortogonal e
+  // por design captura conteúdo que RSS perde (#1074).
+  if (websearchOnly) sources = sources.filter((s) => !!s.site_query);
+
   // Shape compatível com fetch-rss-batch.ts quando --rss-only:
-  // remove campos não-RSS pra reduzir noise.
+  // remove campos não-RSS pra reduzir noise. Idem pra --websearch-only:
+  // remove campos não-websearch.
   const formatted = rssOnly
     ? sources.map((s) => {
         const { name, rss, filter } = s;
         return filter ? { name, rss, filter } : { name, rss };
       })
-    : sources;
+    : websearchOnly
+      ? sources.map((s) => {
+          const { name, site_query } = s;
+          return { name, site_query };
+        })
+      : sources;
 
   if (format === "json") {
     const json = JSON.stringify(formatted, null, 2);
     if (outPath) {
       writeFileSync(resolve(process.cwd(), outPath), json, "utf8");
+      const label = rssOnly ? " (RSS-only)" : websearchOnly ? " (WebSearch-only)" : "";
       console.error(
-        `[list-active-sources] ${formatted.length} fonte(s)${rssOnly ? " (RSS-only)" : ""} → ${outPath}`,
+        `[list-active-sources] ${formatted.length} fonte(s)${label} → ${outPath}`,
       );
     } else {
       process.stdout.write(json + "\n");
