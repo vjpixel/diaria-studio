@@ -67,6 +67,40 @@ function ctrPct(a: CtrAgg): string {
   return a.opens > 0 ? ((a.clicks / a.opens) * 100).toFixed(2) : "0.00";
 }
 
+/**
+ * Strip Aprofunde rows (#1564): destaques pré-mar/2026 usavam anchor "Aprofunde"
+ * (link secundário com CTR estruturalmente mais alto ~1.5×). Pós-mar/2026 todos
+ * usam título como anchor. Misturar os 2 regimes infla CTR de categorias com
+ * muitos rows antigos.
+ *
+ * Pure: retorna true se anchor começa com "Aprofunde" (case-insensitive).
+ */
+export function isAprofundeAnchor(anchor: string): boolean {
+  return /^aprofunde\b/i.test((anchor || "").trim());
+}
+
+/**
+ * Pure: exponential decay weight com time constant de DECAY_TIME_CONSTANT_DAYS.
+ * `weight = exp(-days / T)` onde T=90 → weight cai pra 1/e (~0.37) em 90d;
+ * half-life equivalente é ~62d (T × ln(2)). Rows mais recentes pesam mais.
+ *
+ * Combina audience drift (audiência cresceu 4× ao longo de 2025-2026) +
+ * format drift (Aprofunde→Título em mar/2026).
+ *
+ * Validação empírica em #1564: T entre 45-180 dá rankings quase idênticos
+ * → escolha 90 como sweet spot estável.
+ */
+export const DECAY_TIME_CONSTANT_DAYS = 90;
+/** Alias deprecated — mantido para compat. Renomear pra DECAY_TIME_CONSTANT_DAYS. */
+export const DECAY_HALF_LIFE_DAYS = DECAY_TIME_CONSTANT_DAYS;
+
+export function decayWeight(rowDate: string, today: Date = new Date()): number {
+  const d = new Date(rowDate);
+  if (isNaN(d.getTime())) return 1; // fallback: peso 1 se data inválida
+  const days = Math.max(0, (today.getTime() - d.getTime()) / 86400000);
+  return Math.exp(-days / DECAY_TIME_CONSTANT_DAYS);
+}
+
 function parseCtr(): {
   byCategory: Map<string, CtrAgg>;
   byCatOrigin: Map<string, CtrAgg>;
@@ -74,6 +108,7 @@ function parseCtr(): {
   byDomain: Map<string, CtrAgg>;
   totalLinks: number;
   totalEditions: number;
+  filteredAprofunde: number;
 } | null {
   if (!existsSync(CTR_CSV)) return null;
 
@@ -85,6 +120,8 @@ function parseCtr(): {
   const byOrigin = new Map<string, CtrAgg>();
   const byDomain = new Map<string, CtrAgg>();
   const dates = new Set<string>();
+  const today = new Date();
+  let filteredAprofunde = 0;
 
   for (const line of lines) {
     // CSV columns: date,post_title,section_title,anchor,base_url,domain,
@@ -98,14 +135,26 @@ function parseCtr(): {
     const uniqueVerifiedClicks = +parts[parts.length - 4];
     const domain = parts[parts.length - 7];
     const date = parts[0];
+    // anchor é parts[3] mas pode ter vírgulas; prefixo "Aprofunde" é literal curto
+    // sem vírgula, então checar parts[3] é suficiente pra detecção.
+    const anchor = parts[3] ?? "";
+
+    // #1564: skip Aprofunde rows (regime antigo de destaque)
+    if (isAprofundeAnchor(anchor)) {
+      filteredAprofunde++;
+      continue;
+    }
 
     dates.add(date);
+
+    // #1564: exponential decay (90d half-life) — rows mais recentes pesam mais
+    const w = decayWeight(date, today);
 
     const add = (map: Map<string, CtrAgg>, key: string) => {
       const existing = map.get(key) ?? { count: 0, clicks: 0, opens: 0 };
       existing.count++;
-      existing.clicks += uniqueVerifiedClicks;
-      existing.opens += uniqueOpens;
+      existing.clicks += uniqueVerifiedClicks * w;
+      existing.opens += uniqueOpens * w;
       map.set(key, existing);
     };
 
@@ -115,7 +164,15 @@ function parseCtr(): {
     if (domain && domain.includes(".")) add(byDomain, domain);
   }
 
-  return { byCategory, byCatOrigin, byOrigin, byDomain, totalLinks: lines.length, totalEditions: dates.size };
+  return {
+    byCategory,
+    byCatOrigin,
+    byOrigin,
+    byDomain,
+    totalLinks: lines.length - filteredAprofunde,
+    totalEditions: dates.size,
+    filteredAprofunde,
+  };
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -162,7 +219,12 @@ function main() {
     `**updated_at:** ${today}`,
     ...(subscribers > 0 ? [`**subscribers ativos:** ${subscribers}`] : []),
     ...(surveyResponses.length > 0 ? [`**respondentes survey:** ${surveyResponses.length}`] : []),
-    ...(ctr ? [`**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edições, 7+ dias de idade)`] : []),
+    ...(ctr
+      ? [
+          `**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edições, 7+ dias de idade)`,
+          `**filtros aplicados (#1564):** ${ctr.filteredAprofunde} rows com anchor "Aprofunde" excluídas (regime pré-mar/2026), exponential decay com time constant ${DECAY_TIME_CONSTANT_DAYS}d aplicado (half-life ~${Math.round(DECAY_TIME_CONSTANT_DAYS * Math.log(2))}d)`,
+        ]
+      : []),
   ];
 
   // ─── Section 1: CTR (primary) ─────────────────────────────────────────────
@@ -231,10 +293,28 @@ function main() {
       lines.push(`- **${origin}** — CTR ${ctrPct(agg)}% | ${agg.count} links (${pctLinks}% do total)`);
     }
 
+    // #1564: derivar annotation BR vs INT da data atual em vez de hardcoded.
+    // Pre-mudança assumia BR > INT (era verdade no regime antigo); pós-mudança
+    // o ranking pode ter virado. Annotation derivada evita stale claim.
+    const brCtr = (() => {
+      const a = ctr.byOrigin.get("BR");
+      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+    })();
+    const intCtr = (() => {
+      const a = ctr.byOrigin.get("INT");
+      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+    })();
+    const originHint = (() => {
+      if (brCtr === 0 || intCtr === 0) return "Sem dados suficientes pra comparar BR vs INT.";
+      const ratio = brCtr / intCtr;
+      if (ratio >= 1.15) return `Conteúdo BR tem CTR ${Math.round((ratio - 1) * 100)}% maior — priorizar quando disponível em qualidade equivalente.`;
+      if (ratio <= 0.85) return `Conteúdo INT tem CTR ${Math.round((1 / ratio - 1) * 100)}% maior — não há prêmio automático por origem BR; avaliar caso a caso.`;
+      return "BR e INT têm CTR comparável — origem não é fator decisivo, focar em relevância editorial.";
+    })();
     lines.push(
       "",
       "> **Como usar:** categorias com CTR acima da média devem receber bônus de score.",
-      "> Conteúdo BR tem engajamento significativamente maior — priorizar quando disponível em qualidade equivalente.",
+      `> ${originHint}`,
     );
 
     // By domain (source quality)
