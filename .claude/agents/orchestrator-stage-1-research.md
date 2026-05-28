@@ -127,8 +127,11 @@ npx tsx scripts/fetch-websearch-batch.ts \
   --discovery data/editions/{AAMMDD}/_internal/inbox-topics.json \
   --cutoff-iso {cutoff_iso} \
   --window-days {window_days} \
+  --edition {AAMMDD} \
   --out data/editions/{AAMMDD}/_internal/websearch-results.json
 ```
+
+Flag `--edition` (#1558): tagga cada Brave query no `data/brave-credits.jsonl` pra tracking de consumo no relatório de edição.
 
 Output em `websearch-results.json` é RunRecord[] compatível com researcher-results.json — mergear no aggregate.
 

@@ -34,6 +34,7 @@ import {
   STAGE_LABELS,
   loadDoc,
 } from "./update-stage-status.ts";
+import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DRAFT_WORKER_BASE = "https://draft.diaria.workers.dev";
@@ -65,6 +66,7 @@ export interface ReportSummary {
   social_posts: Array<{ platform: string; destaque: string; status: string }>;
   warnings_count: number;
   errors_count: number;
+  brave_credits?: BraveCreditStats; // #1558
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +218,7 @@ export function renderHtmlReport(
   social: PublishedSocial | null,
   warnings: LogEntry[],
   errors: LogEntry[],
+  braveCredits: BraveCreditStats | null = null, // #1558
 ): string {
   const totalMs = stageDoc.rows.reduce((a, r) => a + (r.duration_ms ?? 0), 0);
   const mode = stageDoc.rows.every((r) => r.status === "done")
@@ -349,6 +352,18 @@ export function renderHtmlReport(
 
   ${warnings.length === 0 && errors.length === 0 ? "<p>Nenhum warning ou error registrado.</p>" : ""}
 
+  ${braveCredits && braveCredits.queries_this_month > 0 ? `
+  <h2>Brave Search API (#1558)</h2>
+  <table>
+    <tbody>
+      <tr><td>Queries esta edicao</td><td><strong>${braveCredits.queries_this_edition}</strong></td></tr>
+      <tr><td>Queries este mes</td><td><strong>${braveCredits.queries_this_month}</strong> / ${braveCredits.free_tier_limit} (${braveCredits.percent_used}%)</td></tr>
+      ${braveCredits.projected_month_end !== null ? `<tr><td>Projecao fim do mes</td><td>~${braveCredits.projected_month_end}</td></tr>` : ""}
+      <tr><td>Status</td><td class="${braveCredits.alert_level === "critical" ? "err" : braveCredits.alert_level === "warn" ? "warn" : ""}">${braveCredits.alert_level === "critical" ? "&#9888; Critical (&gt;95% free tier)" : braveCredits.alert_level === "warn" ? "&#9888; Warn (&gt;80% free tier)" : "&#10003; OK"}</td></tr>
+    </tbody>
+  </table>
+  ` : ""}
+
   <div class="footer">
     Gerado em ${new Date().toISOString()} por send-edition-report.ts
   </div>
@@ -392,6 +407,7 @@ export function buildSummary(
     })),
     warnings_count: warningsCount,
     errors_count: errorsCount,
+    brave_credits: computeBraveCreditStats(edition), // #1558
   };
 }
 
@@ -428,6 +444,7 @@ async function main(): Promise<void> {
   );
 
   // Render HTML to stdout
+  const braveCredits = computeBraveCreditStats(edition); // #1558
   const html = renderHtmlReport(
     edition,
     stageDoc,
@@ -436,6 +453,7 @@ async function main(): Promise<void> {
     social,
     warnings,
     errors,
+    braveCredits,
   );
   process.stdout.write(html);
 

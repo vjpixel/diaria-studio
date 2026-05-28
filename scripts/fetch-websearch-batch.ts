@@ -38,11 +38,20 @@ import { fileURLToPath } from "node:url";
 import { braveSearch, freshnessForWindow, type BraveWebResult } from "./lib/brave-search.ts";
 import { isAggregator } from "./lib/aggregator-blocklist.ts";
 import { containsAITerms } from "./lib/ai-relevance.ts";
+import { isNonEditorialPath } from "./lib/non-editorial-paths.ts"; // #1559 A
+import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
+import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Brave free tier: 1 query/segundo. Adicionar buffer pra evitar 429.
 const BRAVE_RATE_LIMIT_MS = 1100;
+
+// #1559 B: top-N candidatos por query são enriquecidos com OG tags.
+// Default 5 — top 5 results provavelmente contêm o highlight; resto fica
+// com snippet da Brave (suficiente pra scorer descartar baixa relevância).
+const OG_ENRICH_TOP_N = 5;
+const OG_FETCH_CONCURRENCY = 5;
 
 export interface SourceSpec {
   name: string;
@@ -74,6 +83,9 @@ export interface RunRecord {
   filtered_by_date?: number;
   filtered_by_aggregator?: number;
   filtered_by_relevance?: number;
+  filtered_by_non_editorial_path?: number; // #1559 A
+  og_enriched?: number; // #1559 B
+  og_failed?: number; // #1559 B
 }
 
 interface Args {
@@ -82,6 +94,7 @@ interface Args {
   cutoffIso: string;
   windowDays: number;
   out: string;
+  edition?: string; // #1558: AAMMDD pra tracking de credits por edição
 }
 
 function parseArgs(argv: string[]): Args {
@@ -93,6 +106,7 @@ function parseArgs(argv: string[]): Args {
     else if (k === "--cutoff-iso") args.cutoffIso = argv[++i];
     else if (k === "--window-days") args.windowDays = Number(argv[++i]);
     else if (k === "--out") args.out = argv[++i];
+    else if (k === "--edition") args.edition = argv[++i]; // #1558
   }
   if (!args.cutoffIso || args.windowDays === undefined || !args.out) {
     console.error(
@@ -115,14 +129,21 @@ export function processResult(
   sourceName: string,
   cutoffIso: string,
   discovered = false,
-): { kept: BatchArticle | null; reason?: "date" | "aggregator" | "relevance" } {
+): { kept: BatchArticle | null; reason?: "date" | "aggregator" | "relevance" | "non_editorial_path" } {
   // 1. Aggregator check
   const aggCheck = isAggregator(r.url);
   if (aggCheck.blocked) {
     return { kept: null, reason: "aggregator" };
   }
 
-  // 2. AI relevance check (title + description)
+  // 2. Non-editorial path check (#1559) — drop help/FAQ/about/legal pages
+  // que vêm pelo site:query mas não são conteúdo editorial. Caso real 260529:
+  // site:openai.com retornou help.openai.com/articles/... como artigo.
+  if (isNonEditorialPath(r.url)) {
+    return { kept: null, reason: "non_editorial_path" };
+  }
+
+  // 3. AI relevance check (title + description)
   const text = `${r.title} ${r.description}`;
   if (!containsAITerms(text)) {
     return { kept: null, reason: "relevance" };
@@ -175,6 +196,16 @@ async function runQuery(
 
   const duration_ms = Date.now() - startedAt;
 
+  // #1558: log credit usage (apenas pra status que CONTAM contra free tier)
+  if (response.status === "ok" || response.status === "rate_limited") {
+    recordBraveCredit({
+      edition: args.edition,
+      query,
+      status: response.status,
+      http_status: response.http_status,
+    });
+  }
+
   if (response.status !== "ok") {
     return {
       source: sourceName,
@@ -191,6 +222,7 @@ async function runQuery(
   let filtered_by_date = 0;
   let filtered_by_aggregator = 0;
   let filtered_by_relevance = 0;
+  let filtered_by_non_editorial_path = 0;
 
   for (const r of response.results) {
     const { kept, reason } = processResult(r, sourceName, args.cutoffIso, discovered);
@@ -198,20 +230,82 @@ async function runQuery(
       articles.push(kept);
     } else if (reason === "date") filtered_by_date++;
     else if (reason === "aggregator") filtered_by_aggregator++;
+    else if (reason === "non_editorial_path") filtered_by_non_editorial_path++;
     else if (reason === "relevance") filtered_by_relevance++;
+  }
+
+  // #1559 B: enriquecer top-N com OG tags (parallel fetches)
+  let og_enriched = 0;
+  let og_failed = 0;
+  if (articles.length > 0) {
+    const enrichResult = await enrichWithOgTags(articles);
+    og_enriched = enrichResult.enriched;
+    og_failed = enrichResult.failed;
   }
 
   return {
     source: sourceName,
     outcome: articles.length > 0 ? "ok" : "empty",
-    duration_ms,
+    duration_ms: Date.now() - startedAt, // recalcular após OG enrich
     query_used: query,
     method: "websearch_brave",
     articles,
     filtered_by_date,
     filtered_by_aggregator,
     filtered_by_relevance,
+    filtered_by_non_editorial_path,
+    og_enriched,
+    og_failed,
   };
+}
+
+/**
+ * #1559 B: enriquece top-N articles com OG metadata via fetch direto.
+ * Brave snippet às vezes é pobre (FAQ truncado, sem date). OG tags do HTML
+ * têm title/description/published_time de melhor qualidade.
+ *
+ * Falha de fetch (timeout, 4xx) → mantém snippet original. Defensive.
+ * Atualiza article in-place quando OG retorna dados melhores.
+ */
+async function enrichWithOgTags(
+  articles: BatchArticle[],
+  topN: number = OG_ENRICH_TOP_N,
+): Promise<{ enriched: number; failed: number }> {
+  const targets = articles.slice(0, topN);
+  let enriched = 0;
+  let failed = 0;
+  // Bounded concurrency via batches
+  for (let i = 0; i < targets.length; i += OG_FETCH_CONCURRENCY) {
+    const batch = targets.slice(i, i + OG_FETCH_CONCURRENCY);
+    const results = await Promise.all(batch.map((a) => fetchOgMetadata(a.url)));
+    for (let j = 0; j < batch.length; j++) {
+      const og = results[j];
+      const article = batch[j];
+      if (!og) {
+        failed++;
+        continue;
+      }
+      let updated = false;
+      // Só sobrescrever se OG retornou algo melhor (não-vazio + não-trivial)
+      if (og.title && og.title.length > 5 && og.title !== article.title) {
+        article.title = og.title;
+        updated = true;
+      }
+      if (og.description && og.description.length > 20 && og.description !== article.summary) {
+        article.summary = og.description;
+        updated = true;
+      }
+      if (og.publishedTime && !article.date) {
+        const d = new Date(og.publishedTime);
+        if (!isNaN(d.getTime())) {
+          article.date = d.toISOString().split("T")[0];
+          updated = true;
+        }
+      }
+      if (updated) enriched++;
+    }
+  }
+  return { enriched, failed };
 }
 
 /**
