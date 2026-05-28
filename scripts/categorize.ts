@@ -651,6 +651,15 @@ function hostAndPath(url: string): { host: string; full: string } {
  */
 const TUTORIAL_DOMAINS = new Set([
   "simonwillison.net",
+  // #1568 — novas fontes para seção "Use melhor"
+  "cookbook.openai.com",
+  "magazine.sebastianraschka.com",
+  "www.fast.ai",
+  "fast.ai",
+  "blog.langchain.dev",
+  "hamel.dev",
+  "eugeneyan.com",
+  "hub.asimov.academy",
 ]);
 
 const TUTORIAL_PATTERNS: RegExp[] = [
@@ -664,6 +673,11 @@ const TUTORIAL_PATTERNS: RegExp[] = [
   /^latent\.space\//,
   // Every Inc Chain of Thought (coluna tech com walkthroughs)
   /^every\.to\/chain-of-thought/,
+  // #1568 — novas fontes
+  /^(www\.)?pinecone\.io\/learn\//,
+  /^(www\.)?kaggle\.com\/learn/,
+  /^wandb\.ai\/site\/articles/,
+  /^learn\.microsoft\.com\/.*\/(training|paths)\//i,
 ];
 
 /**

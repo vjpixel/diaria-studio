@@ -93,6 +93,18 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 
 3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**🔬 PESQUISAS**`, `**📰 OUTRAS NOTÍCIAS**`. Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita. Singular vs plural é normalizado pós-write por `singularize-md-sections.ts` (#1324) — writer pode emitir sempre plural.
 
+3b. **Seção USE MELHOR (opcional, #1568)** — após OUTRAS NOTÍCIAS e antes de VÍDEOS/ERRO INTENCIONAL. Renderizar APENAS se input `categorized` tiver campo `use_melhor_selected` (objeto com `{title, url, description}`) que indica a escolha do editor no gate da Etapa 1. **Se ausente, omitir a seção inteira** (header + conteúdo). Não renderizar todos os candidatos do bucket `tutorial` — apenas o selecionado.
+
+   Formato exato:
+   ```
+   **🛠️ USE MELHOR**
+
+   **[Título acionável](URL)**
+   Frase descritiva em 1 linha — ferramenta/técnica, tempo estimado entre parênteses.
+   ```
+
+   Tempo estimado é obrigatório no fim da descrição entre parênteses, ex: `(15 min)`, `(30 min)`. Sem subscription paga obrigatória; se houver, sinalizar no fim da descrição: `(requer plano pago)`.
+
    **Exemplo literal (#909) — copiar formato exato:**
 
    ```

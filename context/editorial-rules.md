@@ -125,9 +125,9 @@ VÍDEOS
 
 ---
 
-## Seção "Aprenda hoje" (#59 — em scoping)
+## Seção "Use melhor" (#1568, renomeada de "Aprenda hoje" #59)
 
-Seção editorial opcional pra conteúdo acionável (tutoriais, walkthroughs, cookbooks). Toda edição pode (mas não precisa) incluir 1 tutorial curado.
+Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, dicas práticas, treinamentos). Toda edição pode (mas não precisa) incluir 1 item curado. Motivação: CTR de Treinamento é 2.42% (5× a média) — audiência engaja fortemente com conteúdo educacional.
 
 ### Critérios de seleção
 
@@ -137,30 +137,53 @@ Seção editorial opcional pra conteúdo acionável (tutoriais, walkthroughs, co
 - **Independente de plano pago**: se requer subscription paga, alertar no blurb.
 - **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior.
 
-### Fontes primárias
+### Garantia de mínimo no pipeline
 
-Veja `context/sources.md` → seção "Tutoriais":
+Stage 1 deve garantir **mínimo 3 candidatos** no bucket `tutorial` de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
 
-- Simon Willison's Weblog — tutoriais LLM na prática
-- Anthropic Cookbook — exemplos oficiais Claude
-- HuggingFace Learn — cursos + cookbook
-- DeepLearning.ai The Batch — resumos + tutoriais
-- Latent Space — tutorial episodes + blog
-- Every Inc (Chain of Thought) — análise prática de AI tools
-- Google AI for Developers — guides oficiais
-- AWS Machine Learning Blog — guides com código
+Editor escolhe 0-1 pra publicar no gate da Etapa 1. Se nenhum candidato bom, seção é omitida da edição.
 
-### Formato
+### Fontes primárias (veja `context/sources.md` → seção "Tutoriais")
 
-Link + blurb curto (3-5 linhas) + tempo estimado:
+- **Cookbooks oficiais**: Anthropic Cookbook, OpenAI Cookbook
+- **Tutoriais práticos**: Simon Willison's Weblog, Sebastian Raschka (Ahead of AI), Fast.ai, Hamel Husain, Eugene Yan
+- **Plataformas de aprendizado**: HuggingFace Learn, Pinecone Learn, Kaggle Learn, Microsoft Learn AI, Weights & Biases
+- **Newsletters técnicas**: Latent Space, Every Inc (Chain of Thought), DeepLearning.ai The Batch
+- **Cursos oficiais corporativos**: Google AI for Developers, AWS Machine Learning Blog, LangChain Blog
+- **BR**: Asimov Academy
+
+### Formato na newsletter
 
 ```
-🧰 APRENDA HOJE · Prompt chaining com Claude (Simon Willison, 15 min)
-Técnica de encadear chamadas de LLM pra tarefas complexas, com exemplo
-em Python. Útil pra quem está começando a construir agents.
-https://simonwillison.net/2024/prompt-chaining/
+🛠️ USE MELHOR
+
+[Título acionável do item](url)
+Frase descritiva curta (1 linha) — ferramenta/técnica, tempo estimado entre parênteses.
 ```
+
+Exemplo:
+```
+🛠️ USE MELHOR
+
+[Prompt chaining com Claude para tarefas complexas](https://simonwillison.net/2024/prompt-chaining/)
+Técnica de encadear chamadas de LLM com exemplo em Python (15 min).
+```
+
+### Posição na newsletter
+
+Após **OUTRAS NOTÍCIAS**, antes de **SORTEIO**. Seção opcional — omitir bloco inteiro se editor não selecionou candidato.
+
+### Validação pós-piloto
+
+Após ~10 edições com a seção ativa, avaliar:
+- CTR sustentar > 1.5% → seção fixa permanente
+- CTR cair pra < 0.5% → reformular ou retirar
+- Editor escolhe candidato bom em ≥ 80% das edições → cobertura suficiente
 
 ### Integração no pipeline
 
-Status: **em scoping** (#59). Pipeline atual (categorize → scorer → writer) ainda não bucketiza tutoriais separadamente — artigos de fontes "Tutoriais" caem em `lancamento`/`pesquisa`/`noticias` via rules atuais. Implementação completa é follow-up (novo bucket `tutorial` em `Category`, render dedicado, scorer rules, template).
+Status (após #1568): implementado.
+- `categorize.ts` bucket `tutorial` ativo (TUTORIAL_DOMAINS + TUTORIAL_PATTERNS + TUTORIAL_KEYWORDS_RE)
+- Stage 1 garante mínimo 3 candidatos em `01-approved.json` (scorer guardrail)
+- Template `context/templates/newsletter.md` tem bloco opcional
+- Writer renderiza quando selecionado, omite seção inteira caso contrário

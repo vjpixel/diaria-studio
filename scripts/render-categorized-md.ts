@@ -9,7 +9,7 @@
  *   ## Lançamentos        — bucket lancamento
  *   ## Pesquisas          — bucket pesquisa
  *   ## Notícias           — bucket noticias
- *   ## Aprenda hoje       — bucket tutorial (#59)
+ *   ## Use melhor         — bucket tutorial (#1568, antes "Aprenda hoje" #59)
  *
  * O editor escolhe destaques movendo linhas para/de a seção Destaques.
  * A ordem física dentro de Destaques define D1/D2/D3 (de cima para baixo).
@@ -691,7 +691,7 @@ function main() {
   const notSec = renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls, cumOffset);
   cumOffset += data.noticias.length;
   const tutSec = data.tutorial && data.tutorial.length > 0
-    ? renderSection("Aprenda hoje", data.tutorial, highlightUrls, runnerUpUrls, cumOffset)
+    ? renderSection("Use melhor", data.tutorial, highlightUrls, runnerUpUrls, cumOffset)
     : null;
   if (tutSec) cumOffset += data.tutorial!.length;
   const vidSec = data.video && data.video.length > 0

@@ -114,7 +114,7 @@ Tudo certo.
     });
   });
 
-  it("parseia seção 'Aprenda hoje' (#59 tutorial)", () => {
+  it("parseia seção 'Aprenda hoje' (#59 tutorial, legacy)", () => {
     const md = `## Aprenda hoje
 
 - [70] Tutorial de RAG — https://simonwillison.net/rag — 2026-04-24
@@ -125,6 +125,20 @@ Tudo certo.
 `;
     const result = parseSections(md);
     assert.deepEqual(result.tutorial, ["https://simonwillison.net/rag"]);
+    assert.deepEqual(result.noticias, ["https://a.com/x"]);
+  });
+
+  it("parseia seção 'Use melhor' (#1568, novo nome para tutorial)", () => {
+    const md = `## Use melhor
+
+- [70] Tutorial de RAG — https://cookbook.openai.com/rag — 2026-04-24
+
+## Notícias
+
+- [60] Notícia — https://a.com/x — 2026-04-24
+`;
+    const result = parseSections(md);
+    assert.deepEqual(result.tutorial, ["https://cookbook.openai.com/rag"]);
     assert.deepEqual(result.noticias, ["https://a.com/x"]);
   });
 

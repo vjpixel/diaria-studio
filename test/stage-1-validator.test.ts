@@ -19,10 +19,11 @@ import {
 
 // Default options pra rodar os testes de integração sem trip nos novos
 // assertions adicionados pós-#776 (drive_sync, section_minimums) — fixtures
-// existentes não populam drive-cache nem 5+ artigos por bucket.
+// existentes não populam drive-cache nem 5+ artigos por bucket. #1568 adiciona
+// minTutorial=0 pra fixtures que não populam o bucket tutorial.
 const TEST_OPTS_NO_AUX = {
   driveCachePath: null,
-  sectionMinimums: { minLancamento: 0, minPesquisa: 0, minNoticias: 0 },
+  sectionMinimums: { minLancamento: 0, minPesquisa: 0, minNoticias: 0, minTutorial: 0 },
 };
 
 describe("validateOutputsPresent (#581)", () => {
@@ -341,15 +342,17 @@ describe("validateSequentialNumbering (#581 → #579)", () => {
   });
 });
 
-describe("validateSectionMinimums (#581 → #488)", () => {
-  it("ok quando todos os mínimos atingidos (3/3/5)", () => {
+describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
+  it("ok quando todos os mínimos atingidos (3/3/5/3)", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
       pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
       noticias: [{ url: "1" }, { url: "2" }, { url: "3" }, { url: "4" }, { url: "5" }],
+      tutorial: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "ok");
+    assert.ok(result.message.includes("tutoriais 3"));
   });
 
   it("warn quando lançamentos abaixo do mínimo", () => {
@@ -357,27 +360,54 @@ describe("validateSectionMinimums (#581 → #488)", () => {
       lancamento: [{ url: "1" }],
       pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
       noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      tutorial: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("lancamento 1/3"));
   });
 
+  it("warn quando tutorial abaixo do mínimo (#1568)", () => {
+    const categorized = {
+      lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      tutorial: [{ url: "1" }],
+    };
+    const result = validateSectionMinimums(categorized);
+    assert.equal(result.status, "warn");
+    assert.ok(result.message.includes("tutorial 1/3"));
+  });
+
+  it("warn quando tutorial ausente do JSON (#1568)", () => {
+    const categorized = {
+      lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      // tutorial omitido — deve ser tratado como 0
+    };
+    const result = validateSectionMinimums(categorized);
+    assert.equal(result.status, "warn");
+    assert.ok(result.message.includes("tutorial 0/3"));
+  });
+
   it("warn lista todos os shortfalls juntos", () => {
-    const categorized = { lancamento: [], pesquisa: [], noticias: [] };
+    const categorized = { lancamento: [], pesquisa: [], noticias: [], tutorial: [] };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("lancamento 0/3"));
     assert.ok(result.message.includes("pesquisa 0/3"));
     assert.ok(result.message.includes("noticias 0/5"));
+    assert.ok(result.message.includes("tutorial 0/3"));
   });
 
-  it("respeita opts override (mínimos custom)", () => {
-    const categorized = { lancamento: [{ url: "1" }], pesquisa: [], noticias: [] };
+  it("respeita opts override (mínimos custom — minTutorial)", () => {
+    const categorized = { lancamento: [{ url: "1" }], pesquisa: [], noticias: [], tutorial: [] };
     const result = validateSectionMinimums(categorized, {
       minLancamento: 1,
       minPesquisa: 0,
       minNoticias: 0,
+      minTutorial: 0,
     });
     assert.equal(result.status, "ok");
   });
