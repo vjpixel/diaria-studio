@@ -109,6 +109,32 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 **⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
 
+#### Path A: Brave Search determinístico (opt-in, #1555 P0)
+
+**Se `BRAVE_API_KEY` está setada E `WEBSEARCH_BACKEND=brave`**, usar script TS em vez dos agents Haiku. Economiza ~8-12min/edição. Default `WEBSEARCH_BACKEND=agents` — não ativar sem validar qualidade lado-a-lado primeiro:
+
+```bash
+# Gerar sources list
+npx tsx scripts/list-active-sources.ts --format json --websearch-only \
+  --out data/editions/{AAMMDD}/_internal/websearch-batch.json
+
+# Pre-flight blocklist (mesma lib usada no Path B)
+# (Output já filtrado quando websearch-batch.json é gerado pelo list-active-sources.ts)
+
+# Rodar dispatch determinístico
+npx tsx scripts/fetch-websearch-batch.ts \
+  --sources data/editions/{AAMMDD}/_internal/websearch-batch.json \
+  --discovery data/editions/{AAMMDD}/_internal/inbox-topics.json \
+  --cutoff-iso {cutoff_iso} \
+  --window-days {window_days} \
+  --out data/editions/{AAMMDD}/_internal/websearch-results.json
+```
+
+Output em `websearch-results.json` é RunRecord[] compatível com researcher-results.json — mergear no aggregate.
+
+Exit code 3 do script = "BRAVE_API_KEY ausente" → fallback automático pro Path B (não falha o pipeline).
+
+#### Path B: Agents Haiku (default)
 
 - **Pre-flight: skip aggregator-domain sources** (#717 hipótese 5). Antes de dispatchar agents, filtrar fontes que batem na blocklist de `source-researcher` (que voltariam com `articles: []` de qualquer jeito). Rodar:
   ```bash
