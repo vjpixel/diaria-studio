@@ -408,4 +408,13 @@ function main() {
   console.log(`Wrote audience profile [${sources.join(" + ")}] → ${OUT}`);
 }
 
-main();
+// Run main() apenas quando invocado como CLI direto.
+// Sem este guard, qualquer test que importe deste arquivo dispara main() →
+// `process.exit(1)` quando CTR CSV ausente (CI não tem `data/`).
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}
