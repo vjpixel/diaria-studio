@@ -202,11 +202,12 @@ npx tsx scripts/verify-accessibility.ts \
   data/editions/{AAMMDD}/_internal/tmp-urls-all.json \
   data/editions/{AAMMDD}/_internal/link-verify-all.json \
   --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
-  --cache data/link-verify-cache.json
+  --cache data/link-verify-cache.json \
+  --browser-concurrency 8
 ```
 A flag `--cache` (#717 hipótese 2) ativa o cache cross-edição de verdicts. URLs já verificadas como `accessible`/`blocked`/`paywall` em qualquer edição passada (TTL default 7 dias) skipam HEAD+GET inteiro. Cache persistido em `data/link-verify-cache.json` (gitignored). Hit ratio típico esperado >50% após 1-2 semanas de runs. Override TTL com `--cache-ttl-days N`.
-A flag `--bodies-dir` (#717 hipótese 1) persiste o body raw de cada GET bem-sucedido no path indicado. `verify-dates.ts` (rodado pelo research-reviewer no passo 1p) lê desse cache antes de fetchar — elimina ~3-4min de fetch duplicado em edições com 300+ URLs.
-O fallback de browser (Puppeteer) usa worker pool com `--browser-concurrency` (#717 hipótese 3, default 4). URLs `uncertain` no first-pass são verificadas em paralelo com até N tabs no mesmo browser headless — em 260506 (227 uncertain), serial era ~26-30min, com concurrency=4 cai pra ~7min. Override com `--browser-concurrency N` se a máquina tiver folga (subir pra 6-8) ou estiver sob pressão de memória (descer pra 2).
+A flag `--bodies-dir` (#717 hipótese 1) persiste o body raw de cada GET bem-sucedido no path indicado. `verify-dates.ts` (rodado pelo step 1p1 research-review-dates) lê desse cache antes de fetchar — elimina ~3-4min de fetch duplicado em edições com 300+ URLs.
+O fallback de browser (Puppeteer) usa worker pool com `--browser-concurrency 8` (#717 hipótese 3, default 4, bumped pra 8 em P5 #1553). URLs `uncertain` no first-pass são verificadas em paralelo com até N tabs no mesmo browser headless — em 260506 (227 uncertain), serial era ~26-30min, com concurrency=4 cai pra ~7min, com concurrency=8 esperado ~4min. Descer pra 2-4 se a máquina estiver sob pressão de memória.
 Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
 - **Anotar (#778)**: para todos os artigos, adicionar `verify_verdict` e (quando presente) `verify_note` no artigo a partir do match por URL no `link-verify-all.json`. Isso permite que `render-categorized-md.ts` marque visualmente artigos editor-submitted que falharam acessibilidade (per #778) em vez de eles sumirem do gate.
 - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`) que **não** sejam de inbox. Editor-submitted (`flag: "editor_submitted"` ou `source: "inbox"`) **nunca** são dropados por verdict de acessibilidade — apenas anotados (#778). A regra de aggregator continua dropando inbox-aggregator que não foi expandido pelo `expand-inbox-aggregators.ts` (esse script já trata o caso primário-extraído).
@@ -275,7 +276,7 @@ Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecid
 
 ### 1o. Filtro determinístico de janela (#233, #560)
 
-Antes do `research-reviewer`, rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao agente Haiku. **Anchor = `anchor_iso`** (today UTC), não `edition_iso` — assim a janela cobre o que foi publicado de fato nos últimos `window_days` dias, e não uma janela hipotética entre hoje e a publication date:
+Antes do step 1p1 (research-review-dates), rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao filtro de datas. **Anchor = `anchor_iso`** (today UTC), não `edition_iso` — assim a janela cobre o que foi publicado de fato nos últimos `window_days` dias, e não uma janela hipotética entre hoje e a publication date:
 ```bash
 npx tsx scripts/filter-date-window.ts \
   --articles data/editions/{AAMMDD}/_internal/tmp-clustered.json \
@@ -284,7 +285,7 @@ npx tsx scripts/filter-date-window.ts \
   --window-days {window_days} \
   --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
 ```
-Logar `removed.length`. Daqui em diante o input do research-reviewer é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial, video } }`) — extrair `kept` e usar como `categorized`.
+Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial, video } }`) — extrair `kept` e usar como `categorized`.
 
 ### 1p1. Research-review-dates (script, Filtro 1) — #1112
 
@@ -302,22 +303,20 @@ npx tsx scripts/research-review-dates.ts \
 ```
 Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`.
 
-### 1p2. Research-reviewer (agent Haiku, Filtro 2 — #1112)
+### 1p2. ~~Research-reviewer (agent Haiku, Filtro 2)~~ — REMOVIDO em P3 #1553
 
-Disparar `research-reviewer` com `{ categorized: dates_reviewed.categorized, edition_date, edition_iso, edition_dir, out_path: "data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json" }`. O agent aplica **apenas** Filtro 2 (Temas recentes — remove artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, lendo `context/past-editions.md`; critério conservador #321). Output gravado em `out_path` exato (#1271 — agent não inventa nome).
+Removido em 2026-05-27 (#1553). O Filtro 2 (theme dedup contra past-editions) é agora coberto deterministicamente por `dedup.ts` Pass 1d (#1475 — theme-entity match) e Pass 1c (Jaccard subject similarity com threshold lowered #1331 quando entidades coincidem). O agent Haiku custava ~1-2min por edição e removia tipicamente apenas 2-5 artigos que dedup.ts já capturava.
 
-**Pós-dispatch enforcement (#1273)**: rodar wrapper que renomeia automático se agent escreveu em path alternativo conhecido (`tmp-reviewed.json`, `tmp-reviewer.json`, etc.):
+Se em produção surgirem casos de tema repetido escapando dedup.ts, considerar:
+- Lower `subjectVsPastThreshold` de 0.6 para 0.55 globalmente
+- Adicionar entidades extras ao `pastThemeEntities` parser
+- Re-introduzir o agent como fallback opcional
 
-```bash
-npx tsx scripts/ensure-research-reviewer-output.ts \
-  --canonical data/editions/{AAMMDD}/_internal/tmp-reviewer-output.json
-```
-
-Stdout JSON: `{ canonical, action: "ok" | "renamed_from" | "missing", source? }`. Se exit 1 (`action: "missing"`), agent não escreveu em nenhum path conhecido — re-dispatch. Se `action: "renamed_from"`, log info no run-log: agent ignorou out_path (regressão #1271 detectada e auto-corrigida).
+Input do scorer (1q) agora vem direto de `tmp-dates-reviewed.json` (output de 1p1).
 
 ### 1q. Scorer
 
-Disparar `scorer` (Opus) passando `categorized` (saída do research-reviewer) e `out_path: data/editions/{AAMMDD}/_internal/tmp-scored.json`. Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+Disparar `scorer` (Opus) passando `categorized` (saída de 1p1 `tmp-dates-reviewed.json`) e `out_path: data/editions/{AAMMDD}/_internal/tmp-scored.json`. Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
 
 ### 1r. Validação pós-scorer (#104)
 
