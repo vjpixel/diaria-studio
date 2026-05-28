@@ -15,6 +15,7 @@ import {
   MAX_CACHED_BODY_SIZE,
 } from "./lib/url-verify-cache.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
+import { extractDateFromBody } from "./lib/extract-date.ts"; // #1554 P2 — populate published_date inline
 
 // #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
 // roda múltiplas tabs no mesmo browser sem problema; serial era ~7-8s/url ×
@@ -163,6 +164,15 @@ type VerifyResult = {
   note?: string;
   resolvedFrom?: string; // set when an aggregator URL was resolved to its primary source
   access_uncertain?: boolean; // true para anti_bot em publisher confiável (#320)
+  /**
+   * #1554 P2: data de publicação extraída do body durante o GET. Permite
+   * que `research-review-dates.ts` (step 1p1) leia direto do output em vez
+   * de re-fetchar a página. `published_date_note` indica a estratégia usada
+   * (json-ld:datePublished, og:article:published_time, etc.) ou "no-date-found".
+   * Ausente quando o body não foi capturado (HEAD-only, browser fallback).
+   */
+  published_date?: string | null;
+  published_date_note?: string;
   /**
    * Sinaliza se este resultado veio do cache cross-edition (#717 hyp 2)
    * ou do path normal (HEAD/GET). Usado por `main()` pra acumular
@@ -472,7 +482,16 @@ export async function verify(
     if (soft404Title) {
       return { verdict: "uncertain", finalUrl: effectiveUrl, note: `possível soft 404 (title: "${soft404Title}")`, ...(resolvedFrom ? { resolvedFrom } : {}) };
     }
-    return { verdict: "accessible", finalUrl: effectiveUrl, ...(resolvedFrom ? { resolvedFrom } : {}) };
+    // #1554 P2: extrair published_date inline — elimina re-fetch em step 1p1.
+    // Usa rawBody (não body.toLowerCase()) pra preservar JSON-LD case-sensitive.
+    const dateResult = extractDateFromBody(rawBody);
+    return {
+      verdict: "accessible",
+      finalUrl: effectiveUrl,
+      ...(resolvedFrom ? { resolvedFrom } : {}),
+      published_date: dateResult.date,
+      published_date_note: dateResult.note,
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     // Timeout/connection error em publisher confiável = provável anti-bot (#320)

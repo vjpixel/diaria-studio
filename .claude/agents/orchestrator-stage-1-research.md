@@ -75,6 +75,18 @@ npx tsx scripts/fetch-rss-batch.ts --sources data/editions/{AAMMDD}/_internal/rs
 
 35 fontes em ~9s. **Não construir `rss-batch.json` via parser inline** — `list-active-sources.ts` é canônico (#1270).
 
+### 1e-bis. Pre-warm verify cache (background, #1554 P1)
+
+**Imediatamente após RSS batch retornar**, kick off `prewarm-verify-cache.ts` em background pra popular o cache cross-edição enquanto os agents WebSearch (1f) rodam em paralelo. URLs do RSS estarão pre-verificadas quando o passo 1i principal rodar — elimina ~3-5min de wall clock duplicado.
+
+```bash
+Bash("npx tsx scripts/prewarm-verify-cache.ts --edition-dir data/editions/{AAMMDD}/", run_in_background: true)
+```
+
+Capturar o `bash_id`. Não aguardar — segue direto pro 1e.5 e 1f. O processo termina sozinho enquanto agents WebSearch dispatch. Quando 1i rodar, URLs do RSS hitam cache e skipam HEAD+GET.
+
+**Falhas são não-bloqueantes** — o script exit 0 em erro, e o 1i sempre cobre o que faltar. Não é necessário await formal; o cache é persistente e idempotente.
+
 **Opção manual (legado):** se preferir dispatch individual:
 
 2. **Se a URL na linha RSS termina em `sitemap.xml`** (#761): disparar `Bash("npx tsx scripts/fetch-sitemap.ts --url <sitemap_url> --source <nome> --days <window_days>")` em paralelo. Marca `method: "sitemap"`. Output shape compatível com `fetch-rss` (mesmas chaves `articles[]`, `error?`). Usado quando a fonte não tem RSS mas expõe sitemap.xml (ex: Perplexity Research).
@@ -289,7 +301,7 @@ Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-fi
 
 ### 1p1. Research-review-dates (script, Filtro 1) — #1112
 
-Rodar `scripts/research-review-dates.ts` ANTES do agent (Filtro 1: verify-dates + filter-date-window com datas corrigidas). Determinístico, sem LLM:
+Rodar `scripts/research-review-dates.ts` ANTES do scorer (Filtro 1: verify-dates + filter-date-window com datas corrigidas). Determinístico, sem LLM:
 ```bash
 npx tsx scripts/research-review-dates.ts \
   --in data/editions/{AAMMDD}/_internal/tmp-filtered.json \
@@ -299,9 +311,12 @@ npx tsx scripts/research-review-dates.ts \
   --edition-iso {edition_iso} \
   --window-days {window_days} \
   --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
-  --verify-cache data/link-verify-cache.json
+  --verify-cache data/link-verify-cache.json \
+  --link-verify-json data/editions/{AAMMDD}/_internal/link-verify-all.json
 ```
 Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`.
+
+**#1554 P2 — `--link-verify-json`**: passa o output do passo 1i (verify-accessibility). Verify-accessibility já fetcha cada URL e extrai `published_date` inline durante o GET. Quando esse campo está populado, o script aqui faz pre-skip do verifyDate (sem novo HTTP GET) — economiza 2-4 min em edições com 70+ artigos. URLs sem pre-extracted date (browser fallback, HEAD-only, fetch failed) caem no caminho normal de verifyDate.
 
 ### 1p2. ~~Research-reviewer (agent Haiku, Filtro 2)~~ — REMOVIDO em P3 #1553
 

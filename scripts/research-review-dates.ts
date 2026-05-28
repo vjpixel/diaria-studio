@@ -62,6 +62,19 @@ interface Args {
   windowDays: number;
   bodiesDir?: string;
   verifyCache?: string;
+  // #1554 P2: path para link-verify-all.json (output do verify-accessibility).
+  // Quando presente, pre-extracted published_date é usado em vez de re-fetch.
+  // Convencionalmente: {edition-dir}/_internal/link-verify-all.json
+  linkVerifyJson?: string;
+}
+
+// #1554 P2: shape mínima do link-verify-all.json entry
+interface LinkVerifyEntry {
+  url: string;
+  finalUrl?: string;
+  verdict?: string;
+  published_date?: string | null;
+  published_date_note?: string;
 }
 
 interface ArticleEntry {
@@ -156,6 +169,7 @@ function parseArgs(argv: string[]): Args {
     else if (k === "--window-days") args.windowDays = Number(argv[++i]);
     else if (k === "--bodies-dir") args.bodiesDir = argv[++i];
     else if (k === "--verify-cache") args.verifyCache = argv[++i];
+    else if (k === "--link-verify-json") args.linkVerifyJson = argv[++i]; // #1554 P2
   }
   for (const required of ["in", "out", "editionDir", "anchorIso", "editionIso", "windowDays"] as const) {
     if (args[required] === undefined) {
@@ -196,14 +210,85 @@ async function main(): Promise<void> {
     verifyCache: verifyCacheMap,
   };
 
-  // verify-dates em paralelo controlado (10 a fio — mesmo padrão do script CLI)
+  // #1554 P2: pre-load published_date map from link-verify-all.json.
+  // Quando verify-accessibility já extraiu a data, podemos pular o verifyDate
+  // (que faria HTTP GET + parse). Cobre o caso comum onde HEAD+GET aconteceu
+  // 1x no step 1i — não há razão pra refetch em 1p1.
+  const preExtractedDates = new Map<string, { date: string | null; note: string }>();
+  const linkVerifyPath = args.linkVerifyJson
+    ?? resolve(args.editionDir, "_internal", "link-verify-all.json");
+  if (existsSync(linkVerifyPath)) {
+    try {
+      const entries = JSON.parse(readFileSync(linkVerifyPath, "utf8")) as LinkVerifyEntry[];
+      for (const entry of entries) {
+        if (typeof entry.published_date !== "undefined") {
+          preExtractedDates.set(entry.url, {
+            date: entry.published_date ?? null,
+            note: entry.published_date_note ?? "no-date-found",
+          });
+          // Indexar também por finalUrl quando difere (redirects)
+          if (entry.finalUrl && entry.finalUrl !== entry.url) {
+            preExtractedDates.set(entry.finalUrl, {
+              date: entry.published_date ?? null,
+              note: entry.published_date_note ?? "no-date-found",
+            });
+          }
+        }
+      }
+      console.error(
+        `[research-review-dates] pre-extracted dates loaded: ${preExtractedDates.size} entries from ${linkVerifyPath}`,
+      );
+    } catch (e) {
+      console.error(`[research-review-dates] warn: failed to load ${linkVerifyPath}: ${(e as Error).message}`);
+    }
+  }
+
+  // verify-dates em paralelo controlado (10 a fio — mesmo padrão do script CLI).
+  // Pré-skip: artigos com published_date pré-extraído (#1554 P2) montam
+  // DateVerifyResult sintético sem fetch.
   const results: DateVerifyResult[] = [];
   const CONCURRENCY = 10;
-  for (let i = 0; i < articles.length; i += CONCURRENCY) {
-    const batch = articles.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(batch.map((a) => verifyDate(a, opts)));
-    results.push(...batchResults);
+  const articlesToFetch: ArticleInput[] = [];
+  const preSkipResults: Array<{ index: number; result: DateVerifyResult }> = [];
+  for (let i = 0; i < articles.length; i++) {
+    const article = articles[i];
+    const pre = preExtractedDates.get(article.url);
+    if (pre && pre.date) {
+      // Hit: pre-extracted date disponível. Skip verifyDate.
+      const normalized = pre.date;
+      const changed = normalized !== article.date;
+      preSkipResults.push({
+        index: i,
+        result: {
+          url: article.url,
+          original_date: article.date,
+          verified_date: normalized,
+          changed,
+          fetch_failed: false,
+          date_unverified: false,
+          note: `pre-extracted:${pre.note}`,
+        },
+      });
+    } else {
+      articlesToFetch.push(article);
+    }
   }
+  if (preSkipResults.length > 0) {
+    console.error(
+      `[research-review-dates] pre-skipped ${preSkipResults.length}/${articles.length} via link-verify cache (#1554 P2)`,
+    );
+  }
+  // Resto vai pro verifyDate normal
+  const fetchResults: DateVerifyResult[] = [];
+  for (let i = 0; i < articlesToFetch.length; i += CONCURRENCY) {
+    const batch = articlesToFetch.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map((a) => verifyDate(a, opts)));
+    fetchResults.push(...batchResults);
+  }
+  // Reassemblar na ordem original (preSkip + fetch). A applyVerifyResults usa
+  // URL como chave de match, então a ordem do array results não importa.
+  results.push(...preSkipResults.map((p) => p.result));
+  results.push(...fetchResults);
 
   const { dateCorrected, fetchFailed } = applyVerifyResults(categorized, results);
 
