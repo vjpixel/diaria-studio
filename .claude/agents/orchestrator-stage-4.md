@@ -649,11 +649,14 @@ Se o agent retornar `action: "fallback_md"` (GitHub MCP indisponível), mostrar 
 npx tsx scripts/send-edition-report.ts \
   --edition {AAMMDD} \
   --edition-dir data/editions/{AAMMDD}/ \
-  > data/editions/{AAMMDD}/_internal/edition-report.html \
-  2> data/editions/{AAMMDD}/_internal/report-summary.json
+  --out data/editions/{AAMMDD}/_internal/edition-report.html
 ```
 
-Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatório de edição`, htmlBody: conteúdo **completo** de `edition-report.html`). **Não reescrever HTML resumido** (#1548) — o script já gera tabela de duração por stage, destaques, status de publicação e warnings. Usar o arquivo como está.
+O flag `--out` (#1579) escreve o HTML direto no arquivo + grava manifest `_internal/.edition-report-md5.txt` com md5 dos bytes. Usar SEMPRE — não redirect stdout (perde rastreabilidade do md5).
+
+**INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatório de edição`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL). **NUNCA construir htmlBody programaticamente** — mesmo "para acrescentar contexto" (issues criadas, narrativa, etc.). Quem precisar de novo campo, abre issue pra estender `send-edition-report.ts` que adicione a seção no HTML gerado.
+
+Pré-#1579 o orchestrator às vezes reescrevia htmlBody manualmente, droppando tabela "Tempo por stage" + Brave + warnings (caso 260529).
 
 **Falha não bloqueia** — logar warn e seguir. O relatório fica em `_internal/edition-report.html` pra consulta local mesmo se email falhar.
 
