@@ -194,6 +194,135 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
  * countSelectedItems + edição editorial mid-stage. Sem re-check em stage 4,
  * email final foi enviado com mismatch.
  */
+/**
+ * #1575: garante que canais com consent=auto realmente dispatcharam (não
+ * foram silenciosamente skipados pra manual paste). Caso 260529: editor
+ * respondeu "Tudo automático" no consent gate, mas orchestrator bypassou
+ * Chrome MCP do Beehiiv e apresentou instruções de paste manual.
+ *
+ * Roda apenas se 05-publish-consent.json existe. Compara cada canal
+ * (newsletter, linkedin, facebook) contra evidência de dispatch:
+ *   - newsletter consent=auto → 05-published.json deve ter draft_url ou
+ *     post_id (status != pending_manual)
+ *   - linkedin consent=auto → 06-social-published.json deve ter posts[]
+ *     da plataforma linkedin com url ou status != pending_manual
+ *   - facebook consent=auto → idem para facebook
+ */
+function checkConsentBinding(editionDir: string): InvariantViolation[] {
+  const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
+  if (!existsSync(consentPath)) return [];
+  let consent: { newsletter?: string; linkedin?: string; facebook?: string };
+  try {
+    consent = JSON.parse(readFileSync(consentPath, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "consent-binding-parseable",
+        message: `05-publish-consent.json não parseável: ${(e as Error).message}`,
+        source_issue: "#1575",
+        severity: "error",
+        file: consentPath,
+      },
+    ];
+  }
+  const violations: InvariantViolation[] = [];
+
+  // Newsletter check
+  if (consent.newsletter === "auto") {
+    const publishedPath = resolve(editionDir, "_internal", "05-published.json");
+    if (!existsSync(publishedPath)) {
+      violations.push({
+        rule: "consent-binding-newsletter",
+        message:
+          `consent.newsletter="auto" mas 05-published.json ausente — dispatch ` +
+          `Beehiiv (Chrome MCP) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
+        source_issue: "#1575",
+        severity: "error",
+        file: publishedPath,
+      });
+    } else {
+      try {
+        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
+          status?: string;
+          draft_url?: string;
+          post_id?: string;
+        };
+        if (pub.status === "pending_manual" || (!pub.draft_url && !pub.post_id)) {
+          violations.push({
+            rule: "consent-binding-newsletter",
+            message:
+              `consent.newsletter="auto" mas 05-published.json tem status="${pub.status ?? "?"}" ` +
+              `sem draft_url/post_id — dispatch automático não aconteceu.`,
+            source_issue: "#1575",
+            severity: "error",
+            file: publishedPath,
+          });
+        }
+      } catch (e) {
+        violations.push({
+          rule: "consent-binding-newsletter",
+          message: `05-published.json não parseável: ${(e as Error).message}`,
+          source_issue: "#1575",
+          severity: "error",
+          file: publishedPath,
+        });
+      }
+    }
+  }
+
+  // Social check (linkedin + facebook)
+  const socialPath = resolve(editionDir, "_internal", "06-social-published.json");
+  if (consent.linkedin === "auto" || consent.facebook === "auto") {
+    if (!existsSync(socialPath)) {
+      const channels = [
+        consent.linkedin === "auto" ? "linkedin" : null,
+        consent.facebook === "auto" ? "facebook" : null,
+      ].filter(Boolean);
+      violations.push({
+        rule: "consent-binding-social",
+        message:
+          `consent.{${channels.join(",")}}=auto mas 06-social-published.json ausente — dispatch social não rodou.`,
+        source_issue: "#1575",
+        severity: "error",
+        file: socialPath,
+      });
+    } else {
+      try {
+        const social = JSON.parse(readFileSync(socialPath, "utf8")) as {
+          posts?: Array<{ platform?: string; status?: string; url?: string }>;
+        };
+        const posts = social.posts ?? [];
+        for (const platform of ["linkedin", "facebook"] as const) {
+          if (consent[platform] !== "auto") continue;
+          const platformPosts = posts.filter(
+            (p) => p.platform === platform,
+          );
+          if (platformPosts.length === 0) {
+            violations.push({
+              rule: `consent-binding-${platform}`,
+              message:
+                `consent.${platform}="auto" mas posts[platform="${platform}"] ` +
+                `vazio em 06-social-published.json.`,
+              source_issue: "#1575",
+              severity: "error",
+              file: socialPath,
+            });
+          }
+        }
+      } catch (e) {
+        violations.push({
+          rule: "consent-binding-social",
+          message: `06-social-published.json não parseável: ${(e as Error).message}`,
+          source_issue: "#1575",
+          severity: "error",
+          file: socialPath,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
 function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(path)) return [];
@@ -335,6 +464,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkIntroCountConsistent,
   },
   {
+    id: "consent-binding",
+    description: "canais com consent=auto devem ter dispatch real (#1575)",
+    source_issue: "#1575",
+    stage: 4,
+    run: checkConsentBinding,
+  },
+  {
     id: "facebook-page-id-set",
     description: "FACEBOOK_PAGE_ID env var presente",
     source_issue: "#facebook",
@@ -368,6 +504,7 @@ export {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
   checkIntroCountConsistent,
+  checkConsentBinding,
   checkFbPageIdSet,
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,
