@@ -66,11 +66,12 @@ describe("assertCacheCompleteness (#1275)", () => {
   });
 
   describe("mode=newsletter", () => {
-    it("passa com cover/eia_a/eia_b", () => {
+    it("passa com cover/d1/eia_a/eia_b (#1583)", () => {
       assert.doesNotThrow(() =>
         assertCacheCompleteness(
           {
             cover: makeImg("https://x/cover"),
+            d1: makeImg("https://x/d1"),
             eia_a: makeImg("https://x/eia_a"),
             eia_b: makeImg("https://x/eia_b"),
           },
@@ -85,11 +86,27 @@ describe("assertCacheCompleteness (#1275)", () => {
           assertCacheCompleteness(
             {
               cover: makeImg("https://x/cover"),
+              d1: makeImg("https://x/d1"),
               eia_b: makeImg("https://x/eia_b"),
             },
             "newsletter",
           ),
         /Missing: eia_a/,
+      );
+    });
+
+    it("#1583: falha quando d1 missing (social preview vai quebrar)", () => {
+      assert.throws(
+        () =>
+          assertCacheCompleteness(
+            {
+              cover: makeImg("https://x/cover"),
+              eia_a: makeImg("https://x/eia_a"),
+              eia_b: makeImg("https://x/eia_b"),
+            },
+            "newsletter",
+          ),
+        /Missing: d1/,
       );
     });
   });
