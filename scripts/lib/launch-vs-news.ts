@@ -213,17 +213,31 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   //   "OpenAI's Frontier Governance Framework" (openai.com/index/)
   //   "Apple at CVPR 2026" (machinelearning.apple.com/updates/)
   //   "Ads Decoded finale" (blog.google/products/ads-commerce/)
+  // Review #1598: regexes anteriores eram over-broad:
+  //   - `\bfinal\b` matchava "Final Cut Pro launches", "Versão final"
+  //   - `policy/guidelines/principles` bare matchava "AUP launches", "new
+  //     privacy policy launches", "Brand guidelines updated"
+  //   - `podcast(?:episode|series)?` reduzia a bare `podcast` → "Anthropic
+  //     launches podcast app" virava news
+  //   - `framework\s+(?:for|de|para)` matchava "Framework for developers
+  //     to ship faster" (legit SDK launch)
+  // Fix: exigir co-occurrence com governance/AI-safety pra policy/principles;
+  // narrow framework pra contextos responsible/ethical/safety; podcast precisa
+  // de followup obrigatório; final removido (finale cobre o caso editorial).
   /\bgovernance\s+framework\b/i,
-  /\bframework\s+(?:for|de|para)\b/i,
-  /\b(?:policy|policies|principles?|princ[íi]pios?|guidelines?)\b/i,
-  // Conference attendance: "at CVPR", "at ICML", "at NeurIPS", "at ICRA"
-  /\bat\s+(?:CVPR|ICML|NeurIPS|ICLR|ICRA|ACL|EMNLP|SIGGRAPH|SIGCHI)\b/i,
+  /\bframework\s+for\s+(?:responsible|ethical|safe|trustworthy|ai\s+safety|ai\s+governance)\b/i,
+  /\b(?:ai\s+safety|ai\s+governance|content\s+moderation|enforcement)\s+(?:policy|policies|principles?|guidelines?)\b/i,
+  /\b(?:princ[íi]pios?|diretrizes)\s+(?:de\s+)?(?:seguran[çc]a|governan[çc]a|[ée]tica)\b/i,
+  // Conference attendance: "at CVPR", "at ICML", "at NeurIPS", "at ICRA", etc
+  /\bat\s+(?:CVPR|ICML|NeurIPS|ICLR|ICRA|ACL|EMNLP|SIGGRAPH|SIGCHI|AAAI|IJCAI|KDD|ICCV|ECCV|RSS|CoRL|NAACL|MLSys|UIST|CSCW)\b/i,
   // Conference recap framing: "advances X from simulation to the real world" (ICRA-style)
   /\bfrom\s+simulation\s+to\s+(?:the\s+)?real\s+world\b/i,
-  // Podcast/episode (not a launch even on official blog)
-  /\bpodcast\s+(?:episode|series)?\b/i,
+  // Podcast/episode — followup obrigatório pra não matchar "podcast app launch"
+  /\bpodcast\s+(?:episode|series|finale|launch\s+(?:recap|wrap))\b/i,
   /\bepis[óo]dio\s+de\s+podcast\b/i,
-  /\b(?:season\s+\d+|finale|temporada\s+\d+|final)\b/i,
+  // Season N / Temporada N (sem bare `final` — usar finale só com qualifier)
+  /\b(?:season|temporada)\s+\d+\b/i,
+  /\b(?:series|season|episode|temporada)\s+finale\b/i,
   /\bAds?\s+Decoded\b/i,
 ];
 

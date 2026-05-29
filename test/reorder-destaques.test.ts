@@ -132,6 +132,65 @@ Texto C6.
     const md = "**DESTAQUE 1 | A**\n\n**[T](https://x.com)**";
     assert.equal(reorderDestaquesInMd(md, [2, 1, 3]), md);
   });
+
+  it("Review #1606+#1608: RADAR (📡) é terminator do D3 — não engole bloco RADAR", () => {
+    // Pré-fix: blockRe não incluía 📡 → D3 estendia até ERRO INTENCIONAL
+    // engolindo RADAR. Reorder corrompia o RADAR.
+    const md = `Intro...
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Opus](https://anthropic.com)**
+
+Texto Opus.
+
+---
+
+**DESTAQUE 2 | 💼 MERCADO**
+
+**[Mercer](https://exame.com)**
+
+Texto Mercer.
+
+---
+
+**DESTAQUE 3 | 🇧🇷 BRASIL**
+
+**[C6](https://c6.com)**
+
+Texto C6.
+
+---
+
+**📡 RADAR**
+
+**[Item radar](https://r.com)**
+
+Desc radar.
+
+---
+
+**ERRO INTENCIONAL**
+
+placeholder
+`;
+    const result = reorderDestaquesInMd(md, [2, 1, 3]);
+    // RADAR section deve estar intacta pós-reorder, NÃO consumida pelo D3.
+    assert.ok(
+      result.indexOf("**📡 RADAR**") > 0,
+      "RADAR section deve estar presente pós-reorder",
+    );
+    assert.ok(
+      result.indexOf("Item radar") > 0,
+      "conteúdo do RADAR preservado",
+    );
+    // Mercer (era D2) agora vem como DESTAQUE 1, antes do bloco RADAR
+    const mercerIdx = result.indexOf("Mercer");
+    const radarIdx = result.indexOf("RADAR");
+    assert.ok(mercerIdx > 0 && mercerIdx < radarIdx);
+  });
 });
 
 describe("updateIntentionalErrorLocation (#1585)", () => {

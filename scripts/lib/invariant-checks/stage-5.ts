@@ -9,6 +9,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+// Review #1602: consent-binding pertence ao stage 5 — data verificada
+// (05-published.json, 06-social-published.json) só existe pós-dispatch.
+import { checkConsentBinding } from "./stage-4.ts";
 
 interface SocialPublishedJson {
   posts?: Array<{ platform?: string; status?: string }>;
@@ -308,6 +311,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     source_issue: "#1367",
     stage: 5,
     run: checkClosePollMarker,
+  },
+  {
+    id: "consent-binding",
+    description: "canais com consent=auto devem ter dispatch real (#1575)",
+    source_issue: "#1575",
+    stage: 5,
+    run: checkConsentBinding,
   },
 ];
 

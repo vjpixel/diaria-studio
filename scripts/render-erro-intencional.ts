@@ -439,8 +439,11 @@ export function insertOrUpdateSection(
     // Stripa o bloco inteiro: opcional `---`+blanks antes, header,
     // body até próximo separador (`---`) ou header conhecido, e
     // opcional `---`+blanks após.
+    // Review #1593: `\Z` é literal Z em JS (não EOF) — usar `$(?![\s\S])`.
+    // #1569 + review: SORTEIO, PARA ENCERRAR, RADAR como sentinelas pra strip
+    // funcionar em edições novas. Legacy PESQUISAS/OUTRAS preservados.
     const stripRe = new RegExp(
-      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|É IA\\?|Encerrando|Até)|\\Z)(?:^---\\s*\\n[\\s\\n]*)?`,
+      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
       "m",
     );
     mdClean = md.replace(stripRe, "").replace(/\n{3,}/g, "\n\n");

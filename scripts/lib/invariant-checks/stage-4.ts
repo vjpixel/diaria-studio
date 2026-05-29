@@ -463,13 +463,9 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkIntroCountConsistent,
   },
-  {
-    id: "consent-binding",
-    description: "canais com consent=auto devem ter dispatch real (#1575)",
-    source_issue: "#1575",
-    stage: 4,
-    run: checkConsentBinding,
-  },
+  // Review #1602: consent-binding movida pra STAGE_5_RULES — os arquivos
+  // que ela verifica (05-published.json, 06-social-published.json) só
+  // existem POST-dispatch. Roda no check pós-publish (--stage 5).
   {
     id: "facebook-page-id-set",
     description: "FACEBOOK_PAGE_ID env var presente",

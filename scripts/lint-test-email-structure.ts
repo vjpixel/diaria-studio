@@ -51,7 +51,9 @@ export interface StructureResult {
   issues: StructureIssue[];
 }
 
-const KNOWN_SECTIONS = ["LANÇAMENTOS", "PESQUISAS", "OUTRAS NOTÍCIAS"];
+// #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS em edições novas.
+// Legacy aliases mantidos pra re-lint de edições antigas (re-render).
+const KNOWN_SECTIONS = ["LANÇAMENTOS", "RADAR", "PESQUISAS", "OUTRAS NOTÍCIAS"];
 
 /**
  * Extrai snapshot estrutural de MD (source).

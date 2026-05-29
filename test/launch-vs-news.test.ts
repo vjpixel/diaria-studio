@@ -233,4 +233,68 @@ describe("isLikelyNewsNotLaunch (#1442) — anúncio institucional vs lançament
   it("#1573: 'Gemini 3 released' → false (real launch)", () => {
     assert.equal(isLikelyNewsNotLaunch("Gemini 3 released"), false);
   });
+
+  // ============ #1598 review fix: narrow over-broad regexes ============
+
+  it("#1598: 'Final Cut Pro launches AI editing' → false (real launch, bare `final` removido)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Final Cut Pro launches AI editing"),
+      false,
+    );
+  });
+
+  it("#1598: 'Versão final do Claude Code lançada' → false (PT real launch)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Versão final do Claude Code lançada"),
+      false,
+    );
+  });
+
+  it("#1598: 'Anthropic launches new podcast app' → false (podcast precisa de followup)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Anthropic launches new podcast app"),
+      false,
+    );
+  });
+
+  it("#1598: 'A framework for developers to ship faster' → false (framework genérico ok)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("A framework for developers to ship faster"),
+      false,
+    );
+  });
+
+  it("#1598: 'Acceptable Use Policy v2 published' → false (bare policy removido)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Acceptable Use Policy v2 published"),
+      false,
+    );
+  });
+
+  it("#1598: 'Brand guidelines updated for partners' → false (bare guidelines removido)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Brand guidelines updated for partners"),
+      false,
+    );
+  });
+
+  // RE-CONFIRMAR que casos legítimos de governance ainda fire
+  it("#1598: 'AI Safety Policy v2 from Anthropic' → true (AI safety qualifier)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("AI Safety Policy v2 from Anthropic"),
+      true,
+    );
+  });
+
+  it("#1598: 'Princípios de segurança da OpenAI' → true (PT governance)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Princípios de segurança da OpenAI"),
+      true,
+    );
+  });
+
+  // Conferências adicionais
+  it("#1598: 'Google Research at AAAI 2026' → true (AAAI agora reconhecida)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Google Research at AAAI 2026"), true);
+  });
 });
