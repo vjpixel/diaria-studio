@@ -295,19 +295,27 @@ Sinais de sucesso: botão "Add thumbnail" desaparece, imagem 640×320 aparece no
 Fluxo (TODOS via `javascript_tool`, não `find`/`read_page`):
 1. Navegar pra `https://app.beehiiv.com/posts/template-library?tab=my_templates`
 2. Aguardar load (~3s) via `wait` ou `setTimeout` no JS
-3. **Via `javascript_tool`**: localizar card "HTML" + clicar overlay:
+3. **Via `javascript_tool`**: localizar card "HTML" + clicar overlay. Usar o helper `buildHtmlTemplateClickJs()` exportado de `scripts/lib/beehiiv-template-click.ts` (#1587). Substitui o snippet ad-hoc anterior — heurística baseada em `text === 'HTML'` poderia matchar overlay "New template" e criar template vazio rogue (caso 260529, #1587).
    ```js
-   const h = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).find(x => x.textContent?.trim() === 'HTML');
-   let card = h;
-   for (let i = 0; i < 4; i++) card = card.parentElement;
-   const overlay = card.querySelector('button.absolute');
-   if (!overlay) throw new Error('HTML template card overlay button não encontrado');
-   overlay.scrollIntoView({behavior: 'instant', block: 'center'});
-   overlay.click();
-   ({clicked: true});
+   // Equivalente ao retorno de buildHtmlTemplateClickJs() — copy/paste se
+   // não puder importar do TS no contexto do javascript_tool:
+   (() => {
+     const h3s = Array.from(document.querySelectorAll('h3'));
+     const htmlH3 = h3s.find((h) => (h.textContent || '').trim() === 'HTML');
+     if (!htmlH3) return { ok: false, error: "<h3>HTML</h3> não encontrado" };
+     let cur = htmlH3.parentElement;
+     let card = null;
+     for (let i = 0; i < 8 && cur; i++) {
+       if (cur.querySelector('button, [role="button"], a[href]')) { card = cur; break; }
+       cur = cur.parentElement;
+     }
+     if (!card) return { ok: false, error: "Sem ancestor clickable" };
+     card.querySelector('button, [role="button"], a[href]').click();
+     return { ok: true };
+   })()
    ```
 4. Aguardar editor carregar (~3-5s) — URL muda pra `/posts/{uuid}/edit`
-5. **Via `javascript_tool`**: validar:
+5. **Via `javascript_tool`**: validar URL + DOM. URL **deve** matchar `/posts/{uuid}/edit` (post real), NÃO `/templates/posts/{uuid}/edit` (template rogue). Helper `validateTemplateClickUrl()` em `scripts/lib/beehiiv-template-click.ts` faz essa distinção:
    ```js
    ({
      hasHtmlSnippet: !!document.querySelector('.node-htmlSnippet'),
@@ -315,7 +323,7 @@ Fluxo (TODOS via `javascript_tool`, não `find`/`read_page`):
      url: location.href,
    });
    ```
-   Esperar `hasHtmlSnippet: true` + `hasProseMirror: true`. Se `false`, retry passo 3.
+   Esperar `hasHtmlSnippet: true` + `hasProseMirror: true` + `url` matchando `/posts/{uuid}/edit`. Se `url` matcha `/templates/posts/{uuid}/edit` → template rogue — navegar back, retry passo 3 (max 3 vezes). Se ainda falhar, halt com instrução pro editor deletar template manualmente.
 
 Se o template "HTML" não estiver na library (heading "HTML" não encontrada), abortar com `{ "error": "html_template_missing", "remediation": "Editor precisa criar template chamado exatamente 'HTML' contendo apenas um node-htmlSnippet vazio em https://app.beehiiv.com/posts/template-library" }`.
 
