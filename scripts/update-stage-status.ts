@@ -279,6 +279,34 @@ export function blockReasonForMarkingStageDone(
     if (!existsSync(reportPath)) {
       return `Stage 4 cannot be marked done without edition report (missing ${reportPath})`;
     }
+    // #1577: Stage 4 done também exige review_completed=true em
+    // 05-published.json. Orchestrator escapava marcando done sem rodar
+    // o loop verify→fix do test email (caso 260529: review_completed=false,
+    // review_status=pending mas stage marked done).
+    const publishedPath = resolve(editionDir, "_internal", "05-published.json");
+    if (existsSync(publishedPath)) {
+      try {
+        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
+          review_completed?: boolean;
+          review_status?: string;
+        };
+        // Aceita review_completed=true OU review_status explicito
+        // ("issues_unfixable" / "inconclusive") — orchestrator declarou
+        // resultado terminal. Bloqueia "pending" (loop não rodou).
+        const explicitTerminal =
+          pub.review_status === "issues_unfixable" ||
+          pub.review_status === "inconclusive";
+        if (!pub.review_completed && !explicitTerminal) {
+          return (
+            `Stage 4 cannot be marked done without review-test-email loop ` +
+            `(05-published.json: review_completed=${pub.review_completed ?? "missing"}, ` +
+            `review_status=${pub.review_status ?? "missing"}). Run Agent(review-test-email) first.`
+          );
+        }
+      } catch {
+        // Corrupted JSON — outro check pega; não bloqueia transition aqui.
+      }
+    }
   }
   return null;
 }
