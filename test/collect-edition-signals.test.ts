@@ -92,6 +92,119 @@ describe("signalsFromSourceHealth", () => {
     });
     assert.equal(signals.length, 0);
   });
+
+  // --- #1576: empty ≠ fail ---
+
+  it("empty NÃO conta como falha dura (blog de baixa frequência sem novidade)", () => {
+    // DeepMind-like: feed funciona, só não publicou na janela. successes > 0.
+    const signals = signalsFromSourceHealth({
+      sources: {
+        DeepMind: {
+          successes: 7,
+          recent_outcomes: [
+            { outcome: "ok" },
+            { outcome: "ok" },
+            { outcome: "empty" },
+            { outcome: "empty" },
+            { outcome: "empty" },
+            { outcome: "empty" },
+          ],
+        },
+      },
+    });
+    assert.equal(signals.length, 0);
+  });
+
+  it("empty no final encerra o streak de falhas duras", () => {
+    // RSS deu fail mas o fallback site: retornou empty (alcançou, sem hit).
+    const signals = signalsFromSourceHealth({
+      sources: {
+        X: {
+          successes: 4,
+          recent_outcomes: [
+            { outcome: "ok" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "empty" },
+          ],
+        },
+      },
+    });
+    assert.equal(signals.length, 0);
+  });
+
+  it("source_dry: zero successes + janela longa sem ok dispara medium", () => {
+    // Data Machina-like: nunca produziu, tudo empty.
+    const signals = signalsFromSourceHealth({
+      sources: {
+        "Data Machina": {
+          successes: 0,
+          total_articles: 0,
+          recent_outcomes: Array.from({ length: 8 }, () => ({ outcome: "empty" })),
+        },
+      },
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "source_dry");
+    assert.equal(signals[0].severity, "medium");
+    assert.equal(signals[0].details.lifetime_successes, 0);
+    assert.equal(signals[0].details.dry_streak, 8);
+  });
+
+  it("source_dry: mix de fail + empty (404 no feed → empty no SERP)", () => {
+    // AI Breakfast-like: feed 404 por edições, depois site: empty. successes 0.
+    const signals = signalsFromSourceHealth({
+      sources: {
+        "AI Breakfast": {
+          successes: 0,
+          recent_outcomes: [
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "empty" },
+            { outcome: "empty" },
+          ],
+        },
+      },
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "source_dry");
+    assert.equal(signals[0].details.hard_failures, 6);
+    assert.equal(signals[0].details.empty, 2);
+  });
+
+  it("fonte com successes > 0 NÃO vira source_dry mesmo com streak longo de empty", () => {
+    const signals = signalsFromSourceHealth({
+      sources: {
+        Cohere: {
+          successes: 6,
+          recent_outcomes: Array.from({ length: 7 }, () => ({ outcome: "empty" })),
+        },
+      },
+    });
+    assert.equal(signals.length, 0);
+  });
+
+  it("falha dura ainda dispara source_streak (não vira dry)", () => {
+    const signals = signalsFromSourceHealth({
+      sources: {
+        X: {
+          successes: 0,
+          recent_outcomes: [
+            { outcome: "fail" },
+            { outcome: "fail" },
+            { outcome: "fail" },
+          ],
+        },
+      },
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "source_streak");
+  });
 });
 
 describe("signalsFromPublished", () => {
