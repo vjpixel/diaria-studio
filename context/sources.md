@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 57 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 54 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -101,10 +101,6 @@
 - URL: https://agentpulse.beehiiv.com/
 - Site query: `site:agentpulse.beehiiv.com`
 
-### AI Breakfast
-- URL: https://aibreakfast.beehiiv.com/
-- Site query: `site:aibreakfast.beehiiv.com`
-
 ### AlphaSignal
 - URL: https://alphasignal.ai/
 - Site query: `site:alphasignal.ai`
@@ -115,19 +111,10 @@
 - Site query: `site:archive.thedeepview.com`
 - RSS: https://rss.beehiiv.com/feeds/nswNBn2yqy.xml
 
-### Data Machina
-- URL: https://datamachina.com/
-- Site query: `site:datamachina.com`
-- RSS: https://datamachina.substack.com/feed
-
 ### Import AI (Jack Clark)
 - URL: https://importai.substack.com/
 - Site query: `site:importai.substack.com`
 - RSS: https://importai.substack.com/feed
-
-### The AI Pulse
-- URL: https://theaipulse.me/en/
-- Site query: `site:theaipulse.me/en`
 
 ### TLDR AI
 - URL: https://tldr.tech/ai
