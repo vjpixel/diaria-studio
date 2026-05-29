@@ -23,17 +23,13 @@
  * estava presente.
  */
 
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import {
-  applyUpdate,
-  loadDoc,
-  saveDoc,
-  STAGES,
-} from "./update-stage-status.ts";
+import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel } from "./lib/pipeline-state.ts";
+import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -59,8 +55,7 @@ interface Fix {
   edition: string;
   stage: number;
   reason: string;
-  end: string;
-  durationMs?: number;
+  endMs: number;
 }
 
 function scanEdition(editionDir: string, editionId: string): Fix[] {
@@ -73,32 +68,24 @@ function scanEdition(editionDir: string, editionId: string): Fix[] {
     if (!row || row.status !== "running") continue;
     const sentinel = readSentinel(editionDir, stage);
     if (!sentinel) continue;
-    const end = sentinel.completed_at;
-    const durationMs = row.start
-      ? new Date(end).getTime() - new Date(row.start).getTime()
-      : undefined;
     fixes.push({
       edition: editionId,
       stage,
       reason: `sentinel .step-${stage}-done.json presente mas row 'running'`,
-      end,
-      durationMs,
+      endMs: new Date(sentinel.completed_at).getTime(),
     });
   }
   return fixes;
 }
 
-function applyFixes(editionDir: string, editionId: string, fixes: Fix[]): void {
-  let doc = loadDoc(editionDir, editionId);
+function applyFixes(editionDir: string, editionId: string, fixes: Fix[]): number {
+  let applied = 0;
   for (const f of fixes) {
-    doc = applyUpdate(doc, {
-      stage: f.stage,
-      status: "done",
-      end: f.end,
-      duration_ms: f.durationMs,
-    });
+    if (autoUpdateStageStatusOnSentinel(editionDir, editionId, f.stage, f.endMs)) {
+      applied++;
+    }
   }
-  saveDoc(editionDir, doc);
+  return applied;
 }
 
 function main(): void {
@@ -126,12 +113,16 @@ function main(): void {
     console.log(`\n[${editionId}] ${fixes.length} stage(s) running com sentinel:`);
     for (const f of fixes) {
       console.log(
-        `  - Stage ${f.stage}: ${f.reason}\n    end=${f.end} duration_ms=${f.durationMs ?? "?"}`,
+        `  - Stage ${f.stage}: ${f.reason}\n    end=${new Date(f.endMs).toISOString()}`,
       );
     }
     if (!args.dryRun) {
-      applyFixes(editionDir, editionId, fixes);
-      console.log(`  ✓ fixes aplicados em ${editionDir}/_internal/stage-status.json`);
+      const applied = applyFixes(editionDir, editionId, fixes);
+      if (applied === fixes.length) {
+        console.log(`  ✓ ${applied} fix(es) aplicados em ${editionDir}/_internal/stage-status.json`);
+      } else {
+        console.log(`  ⚠ ${applied}/${fixes.length} aplicados (bloqueados por gate ou outro motivo)`);
+      }
     }
   }
   console.log("");

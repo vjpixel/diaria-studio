@@ -259,6 +259,31 @@ export function makeInitialDoc(edition: string, runStartedAt?: string): StageSta
 }
 
 // ---------------------------------------------------------------------------
+// Stage transition gates (#1530, #1563)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-conditions checked before marking a stage as `done`. Centralized so
+ * that BOTH the CLI (`update-stage-status --status done`) and the sentinel
+ * auto-update path (`pipeline-sentinel write` via #1563) enforce the same
+ * gate. Returns `null` if the transition is allowed, or a string reason.
+ */
+export function blockReasonForMarkingStageDone(
+  editionDir: string,
+  stage: number,
+): string | null {
+  // #1530: Stage 4 done requires edition-report.html — blocks closing
+  // without auto-reporter + report email.
+  if (stage === 4) {
+    const reportPath = resolve(editionDir, "_internal", "edition-report.html");
+    if (!existsSync(reportPath)) {
+      return `Stage 4 cannot be marked done without edition report (missing ${reportPath})`;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // JSON sidecar (#1216) — canonical storage; MD is presentation only
 // ---------------------------------------------------------------------------
 
@@ -352,14 +377,12 @@ async function main(): Promise<void> {
       console.error(`--status inválido: ${status}`);
       process.exit(2);
     }
-    // #1530: Stage 4 done requires edition-report.html — blocks closing
-    // without auto-reporter + report email.
-    if (stage === 4 && status === "done") {
-      const reportPath = resolve(editionDir, "_internal", "edition-report.html");
-      if (!existsSync(reportPath)) {
+    // #1530 + #1563: stage transition gates (centralized)
+    if (status === "done") {
+      const blockReason = blockReasonForMarkingStageDone(editionDir, stage);
+      if (blockReason) {
         console.error(
-          `[update-stage-status] BLOCKED: Stage 4 cannot be marked done without edition report.\n` +
-          `  Missing: ${reportPath}\n` +
+          `[update-stage-status] BLOCKED: ${blockReason}\n` +
           `  Run: npx tsx scripts/send-edition-report.ts --edition {AAMMDD} --edition-dir ${editionDirRaw}/`,
         );
         process.exit(1);

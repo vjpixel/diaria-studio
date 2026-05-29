@@ -37,6 +37,7 @@ import {
 } from "./lib/pipeline-state.js";
 import {
   applyUpdate,
+  blockReasonForMarkingStageDone,
   loadDoc,
   saveDoc,
   STAGES,
@@ -59,10 +60,19 @@ export function autoUpdateStageStatusOnSentinel(
   nowMs: number = Date.now(),
 ): boolean {
   if (!STAGES.includes(step as (typeof STAGES)[number])) return false;
+  // Don't touch legacy editions (pre-#1216) that only have stage-status.md —
+  // loadDoc fallback to parseStageStatus drops start/end/duration/cost/tokens,
+  // and saveDoc would re-render the MD with empty columns.
+  const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
+  if (!existsSync(jsonPath)) return false;
   try {
     const doc = loadDoc(editionDir, editionId);
     const row = doc.rows.find((r) => r.stage === step);
     if (!row || row.status !== "running") return false;
+    // Same transition gates as the CLI (#1530 — Stage 4 needs report). If
+    // we can't safely mark this stage done, leave it for the editor /
+    // explicit update-stage-status call instead of silently flipping.
+    if (blockReasonForMarkingStageDone(editionDir, step) !== null) return false;
     const nowIso = new Date(nowMs).toISOString();
     const durationMs = row.start
       ? nowMs - new Date(row.start).getTime()
@@ -179,12 +189,10 @@ function main(): void {
       const missing = result.missingOutputs.join(", ");
       console.error(`[error] sentinel step ${step} presente mas outputs ausentes: ${missing}`);
       process.exit(2);
-      return;
     }
 
     case "exists": {
       process.exit(sentinelExists(editionDir, step) ? 0 : 1);
-      return;
     }
 
     case "write-marker": {
@@ -216,7 +224,6 @@ function main(): void {
       }
       console.error(`[error] marker '${args.name}' ausente em ${editionDir}/_internal/`);
       process.exit(1);
-      return;
     }
 
     default: {
