@@ -176,6 +176,80 @@ describe("parseListItems (#599 — inline link)", () => {
   });
 });
 
+describe("parseListItems (#1581 — Drive round-trip flattens title+summary)", () => {
+  // Caso 260529: Drive pull reformata `**[Title](url)**  \nsummary` pra
+  // `[**Title**](url) summary` (link wraps bold, summary inline mesma linha).
+  // Pré-fix: parseInlineLink rejeita (texto após o link), fallback de URL-line
+  // não encontra URL no início da linha → item com title=linha-bruta, url="",
+  // que renderizava markdown raw em <p> no HTML.
+
+  it("extrai title + url + summary quando inline na mesma linha", () => {
+    const text =
+      "[**NVIDIA Research avança robótica**](https://blogs.nvidia.com/x) " +
+      "Robótica entra em nova fase: demos para produção real.";
+    const items = parseListItems(text);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].title, "NVIDIA Research avança robótica");
+    assert.equal(items[0].url, "https://blogs.nvidia.com/x");
+    assert.match(items[0].description, /^Robótica entra em nova fase/);
+  });
+
+  it("múltiplos items inline separados por blank lines", () => {
+    const text = [
+      "[**Paper 1**](https://arxiv.org/abs/1) Resumo do paper 1.",
+      "",
+      "[**Paper 2**](https://arxiv.org/abs/2) Resumo do paper 2.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].title, "Paper 1");
+    assert.equal(items[0].description, "Resumo do paper 1.");
+    assert.equal(items[1].title, "Paper 2");
+    assert.equal(items[1].description, "Resumo do paper 2.");
+  });
+
+  it("formato mixed: alguns items com line break, outros inline (mesma seção)", () => {
+    const text = [
+      "[**Inline**](https://a.com) Summary inline.",
+      "",
+      "[**Com Linebreak**](https://b.com)",
+      "Summary em linha separada.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].url, "https://a.com");
+    assert.equal(items[0].description, "Summary inline.");
+    assert.equal(items[1].url, "https://b.com");
+    assert.equal(items[1].description, "Summary em linha separada.");
+  });
+
+  it("inline title + trailing + linhas adicionais junta tudo na description", () => {
+    const text = [
+      "[**Título**](https://x.com) Frase 1.",
+      "Frase 2 em linha separada.",
+    ].join("\n");
+    const items = parseListItems(text);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].title, "Título");
+    assert.equal(items[0].description, "Frase 1. Frase 2 em linha separada.");
+  });
+
+  it("multi-items colapsados num bloco: M1 handler ainda vence sobre trailing", () => {
+    // Regression guard: o branch parseInlineLinkWithTrailing roda antes do
+    // M1 multi-URL handler, mas só quando block.slice(1) não tem outros
+    // markdown links. Bloco com >1 link → M1 handler continua acessível.
+    const text = [
+      "[**Item A**](https://a.com) desc A",
+      "[**Item B**](https://b.com)",
+      "desc B",
+    ].join("\n");
+    const items = parseListItems(text);
+    // Esperado: M1 handler / fallback detecta múltiplos URLs e quebra em
+    // items separados (não engole tudo na description de A).
+    assert.ok(items.length >= 2, `esperava >=2 items, got ${items.length}: ${JSON.stringify(items)}`);
+  });
+});
+
 describe("parseSections (#172)", () => {
   it("parseia múltiplas seções com formato novo", () => {
     const md = [

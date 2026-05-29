@@ -22,7 +22,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
-import { parseInlineLink } from "./lib/inline-link.ts"; // #599
+import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -257,6 +257,51 @@ export function parseListItems(text: string): SectionItem[] {
         url: firstInlineLink.url,
         description: block.slice(1).join(" "),
       });
+      continue;
+    }
+    // #1581 — Drive round-trip (#1582) reformata `**[Title](url)**  \nsummary`
+    // pra `[**Title**](url) summary` (title + summary inline mesma linha).
+    // parseInlineLink rejeita; tentar variante que captura trailing text.
+    //
+    // TODO(#1582): este branch vira morto-código quando Drive normalize
+    // reverter o roundtrip pós-pull. Remover então.
+    //
+    // Scan: cada linha que começa com `[link](url)` (com ou sem trailing)
+    // abre um novo item. Linhas subsequentes até o próximo inline link
+    // viram description daquele item. Cobre tanto o caso single-item
+    // (Drive flatten do título+summary) quanto multi-item collapsed
+    // (LLM omitiu blank line entre items).
+    const inlineStarts: Array<{
+      index: number;
+      title: string;
+      url: string;
+      trailing: string;
+    }> = [];
+    for (let k = 0; k < block.length; k++) {
+      const withTrailing = parseInlineLinkWithTrailing(block[k]);
+      if (withTrailing) {
+        inlineStarts.push({ index: k, ...withTrailing });
+        continue;
+      }
+      const plain = parseInlineLink(block[k]);
+      if (plain) {
+        inlineStarts.push({ index: k, title: plain.title, url: plain.url, trailing: "" });
+      }
+    }
+    if (inlineStarts.length > 0 && inlineStarts[0].index === 0) {
+      for (let k = 0; k < inlineStarts.length; k++) {
+        const cur = inlineStarts[k];
+        const next = inlineStarts[k + 1];
+        const descLines: string[] = [];
+        if (cur.trailing) descLines.push(cur.trailing);
+        const descEnd = next ? next.index : block.length;
+        for (let j = cur.index + 1; j < descEnd; j++) descLines.push(block[j]);
+        items.push({
+          title: cur.title,
+          url: cur.url,
+          description: descLines.join(" ").trim(),
+        });
+      }
       continue;
     }
 

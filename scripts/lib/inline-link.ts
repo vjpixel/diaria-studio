@@ -62,3 +62,42 @@ export function parseInlineLink(line: string): InlineLink | null {
 export function isInlineLinkLine(line: string): boolean {
   return INLINE_LINK_RE.test(line);
 }
+
+/**
+ * #1581: regex pra linha que COMEÇA com markdown link + tem texto depois.
+ * Caso real: Drive pull (#1582) reformata `**[Title](url)**  \nsummary`
+ * pra `[**Title**](url) summary` (link wraps bold, summary inline).
+ * parseInlineLink rejeita porque tem texto após o link.
+ *
+ * Captura: title (group 1), url (group 2), trailing text (group 3, sem
+ * leading whitespace).
+ */
+const INLINE_LINK_WITH_TRAILING_RE =
+  /^\s*(?:\*\*)?\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)(?:\*\*)?\s+(.+)$/;
+
+export interface InlineLinkWithTrailing extends InlineLink {
+  trailing: string;
+}
+
+/**
+ * #1581: extrai inline link + trailing text quando a linha tem ambos.
+ * Útil pra `parseListItems` quando Drive round-trip junta título e summary.
+ * Retorna null se a linha não tem link ou se link consome a linha toda
+ * (caller usa `parseInlineLink` nesse caso).
+ */
+export function parseInlineLinkWithTrailing(
+  line: string,
+): InlineLinkWithTrailing | null {
+  const m = line.match(INLINE_LINK_WITH_TRAILING_RE);
+  if (!m) return null;
+  let title = m[1].trim();
+  const url = m[2].trim();
+  const trailing = m[3].trim();
+  if (!title || !url || !trailing) return null;
+  // Mesma normalização que parseInlineLink: strip outer ** se balanceado.
+  if (title.length >= 4 && title.startsWith("**") && title.endsWith("**")) {
+    title = title.slice(2, -2).trim();
+  }
+  if (!title) return null;
+  return { title, url, trailing };
+}
