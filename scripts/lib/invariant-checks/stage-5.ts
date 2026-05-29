@@ -115,6 +115,46 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
  * legítimas chegam até fix-mode automaticamente. Esse guard serve de safety
  * net pra caso filter falhe ou novo tipo de issue apareça.
  */
+/**
+ * #1577: garante que review-test-email loop de fato rodou antes do stage 4 fechar.
+ * Distinto de checkStage4ReviewLoop (#1410) — aquele cobre o caso
+ * "issues_unfixable + review_attempts < 2". Este aqui cobre o caso mais
+ * simples: review_completed=false + review_status=pending = loop pulado.
+ *
+ * Caso 260529: orchestrator marcou stage 4 done com:
+ *   review_completed: false
+ *   review_status: pending
+ * Sentinel + auto-reporter rodaram, edition-report gerado, MAS o loop
+ * verify→fix nunca foi disparado.
+ */
+function checkStage4ReviewCompleted(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "05-published.json");
+  if (!existsSync(path)) return [];
+  let data: { review_completed?: boolean; review_status?: string };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return []; // outro rule pega
+  }
+  const explicitTerminal =
+    data.review_status === "issues_unfixable" ||
+    data.review_status === "inconclusive";
+  if (data.review_completed || explicitTerminal) return [];
+  return [
+    {
+      rule: "stage-4-review-completed",
+      message:
+        `05-published.json marca review_completed=${data.review_completed ?? "missing"} ` +
+        `+ review_status=${data.review_status ?? "missing"}. ` +
+        `Loop verify→fix do test email não rodou (ou não terminou). ` +
+        `Run Agent(review-test-email) ANTES de fechar stage 4 / escrever sentinel.`,
+      source_issue: "#1577",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "05-published.json");
   if (!existsSync(path)) {
@@ -256,6 +296,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkStage4ReviewLoop,
   },
   {
+    id: "stage-4-review-completed",
+    description: "review-test-email loop rodou + terminou (#1577)",
+    source_issue: "#1577",
+    stage: 5,
+    run: checkStage4ReviewCompleted,
+  },
+  {
     id: "close-poll-marker-exists",
     description: "_internal/.close-poll-done.json escrito (#1367)",
     source_issue: "#1367",
@@ -268,5 +315,6 @@ export {
   checkStep4Sentinel,
   checkSocialPublishedComplete,
   checkStage4ReviewLoop,
+  checkStage4ReviewCompleted,
   checkClosePollMarker,
 };
