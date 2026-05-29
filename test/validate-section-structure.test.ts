@@ -156,4 +156,39 @@ describe("diffStructure (#1205)", () => {
     assert.match(allDetails, /destaque-4/);
     assert.ok(r.changes.some((c) => c.type === "added"));
   });
+
+  it("#1612: fingerprint detecta seção RADAR com emoji prefix (📡)", () => {
+    const mdWithRadar = [
+      "**DESTAQUE 1 | BRASIL**",
+      "Título D1",
+      "",
+      "---",
+      "",
+      "**📡 RADAR**",
+      "[Item](https://r.com)",
+    ].join("\n");
+    const tokens = extractStructure(mdWithRadar);
+    // Pré-fix: RADAR não aparecia no fingerprint porque regex não cobria emoji.
+    assert.ok(
+      tokens.some((t) => t.label === "radar"),
+      `radar deveria estar no fingerprint, got: ${tokens.map((t) => t.label).join(", ")}`,
+    );
+  });
+
+  it("#1612: fingerprint detecta LANÇAMENTOS com emoji prefix (🚀)", () => {
+    const mdWithLanc = [
+      "**DESTAQUE 1 | BRASIL**",
+      "x",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTOS**",
+      "[L1](https://l.com)",
+    ].join("\n");
+    const tokens = extractStructure(mdWithLanc);
+    assert.ok(
+      tokens.some((t) => t.label === "lancamentos"),
+      `lancamentos deveria estar no fingerprint, got: ${tokens.map((t) => t.label).join(", ")}`,
+    );
+  });
 });

@@ -96,21 +96,22 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
    # Drive: d1/d2/d3 1x1 pros image_url do LinkedIn/Facebook
    npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
    ```
-2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker (`https://draft.diaria.workers.dev/{AAMMDD}`).
+2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker. **Capturar a `url` do JSON stdout de `upload-html-public.ts`** — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML), então a URL inclui sufixo de hash. Sem o hash, fetch retorna 404 (review #1612 regression).
 3. Pre-render do social preview HTML:
    ```bash
    npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html
-   # upload-html-public.ts aceita --edition + --html; pra social usar edition suffix:
+   # upload-html-public.ts aceita --edition + --html. Capturar `url` do stdout —
+   # contém o hash de conteúdo no fim (ex: 260529-social-a1b2c3).
    npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html
    ```
 4. close-poll (set gabarito — script já é idempotente, sem flag):
    ```bash
    npx tsx scripts/close-poll.ts --edition {AAMMDD}
    ```
-5. **PRE-GATE HUMANO:** apresentar bloco:
+5. **PRE-GATE HUMANO:** apresentar bloco (substituir `{newsletter_url}` e `{social_url}` pelos valores capturados do JSON stdout do `upload-html-public.ts` — ambos têm sufixo `-{contentHash}` obrigatório):
    ```
-   📄 Newsletter HTML: https://draft.diaria.workers.dev/{AAMMDD}
-   📱 Social preview:  https://draft.diaria.workers.dev/{AAMMDD}-social
+   📄 Newsletter HTML: {newsletter_url}
+   📱 Social preview:  {social_url}
    📁 Arquivos locais: 02-reviewed.md, 03-social.md
    📎 Imagens:        cover D1 (Cloudflare KV) + EIA A/B + d1/d2/d3 1x1 social
 

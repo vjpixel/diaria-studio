@@ -204,17 +204,9 @@ export function updateIntentionalErrorLocation(
  * Header pattern: `^## d(\d)\b` (case-insensitive). Renumerar igual ao MD.
  */
 export function reorderSocialMd(md: string, newOrder: number[]): string {
-  // Split por platform sections (## d{N})
-  // Review #1606: `\Z` é literal Z em JS — usar `$(?![\s\S])` pra true EOF.
-  // Esse loop é dead-code (sections never read), mas mantemos pra coerência
-  // semântica caso alguém leia o regex como spec do match correto.
-  const sectionRe = /(^##\s+d(\d)\s*$[\s\S]*?)(?=^##\s+d\d|$(?![\s\S]))/gim;
-  const sections: Array<{ idx: number; full: string; n: number }> = [];
-  let m: RegExpExecArray | null;
-  while ((m = sectionRe.exec(md)) !== null) {
-    sections.push({ idx: m.index, full: m[1], n: parseInt(m[2], 10) });
-  }
-  if (sections.length === 0) return md;
+  // Review #1612: dead-code loop de sectionRe removido. O reorder real é
+  // o token-replace abaixo (## d{N} → ## TEMP_D{N} → ## d{newN}).
+  if (!/^##\s+d\d/im.test(md)) return md;
 
   // Grupos por d-number. Pode haver múltiplas plataformas com d1/d2/d3.
   // Estratégia: pra cada plataforma block (sequência de d1/d2/d3 consecutiva),

@@ -73,9 +73,13 @@ export function extractMdStructure(md: string): StructureSnapshot {
   }
 
   // Sections: count items em `**SECTION**` block até próximo `---` ou outra section.
+  // Review #1612: aceitar emoji prefix opcional (📡 RADAR, 🚀 LANÇAMENTOS,
+  // 📰 OUTRAS NOTÍCIAS). Sem isso, regex `\*\*RADAR\*\*` não matchava
+  // `**📡 RADAR**` real-world.
+  const sectionEmojiOpt = "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
   const sections: { name: string; item_count: number }[] = [];
   for (const sec of KNOWN_SECTIONS) {
-    const secRe = new RegExp(`\\*\\*${sec.replace(/\s/g, "\\s+")}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋]|$)`, "i");
+    const secRe = new RegExp(`\\*\\*${sectionEmojiOpt}${sec.replace(/\s/g, "\\s+")}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋📡]|$)`, "iu");
     const match = md.match(secRe);
     if (!match) continue;
     const body = match[1];

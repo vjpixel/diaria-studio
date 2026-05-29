@@ -42,17 +42,21 @@ export interface StructureToken {
  *
  * Headers normalizados pra string canônica (lowercase, sem **, sem emojis).
  */
+// Review #1612: aceitar emoji prefix opcional em todas as seções top-level
+// (era gap pré-existente — só SORTEIO/PARA ENCERRAR tinham emoji explícito).
+// Sem isso, fingerprint não detecta `**📡 RADAR**`, `**🚀 LANÇAMENTOS**`, etc.
+const EMOJI_OPT = "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
 const HEADER_PATTERNS: Array<{ re: RegExp; canonical: string }> = [
   { re: /^\*{0,2}DESTAQUE\s+(\d+)\s*\|/i, canonical: "destaque-$1" },
   { re: /^\*{0,2}(?:## )?É IA\?\*{0,2}\s*$/i, canonical: "é-ia" },
-  { re: /^\*{0,2}LAN[ÇC]AMENTOS\*{0,2}\s*$/i, canonical: "lancamentos" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}LAN[ÇC]AMENTOS\\*{0,2}\\s*$`, "iu"), canonical: "lancamentos" },
   // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS.
-  { re: /^\*{0,2}RADAR\*{0,2}\s*$/i, canonical: "radar" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}RADAR\\*{0,2}\\s*$`, "iu"), canonical: "radar" },
   // Legacy patterns mantidos pra validar fingerprint de edições antigas:
-  { re: /^\*{0,2}PESQUISAS\*{0,2}\s*$/i, canonical: "pesquisas" },
-  { re: /^\*{0,2}OUTRAS\s+NOT[ÍI]CIAS\*{0,2}\s*$/i, canonical: "outras-noticias" },
-  { re: /^\*{0,2}🎁?\s*SORTEIO\*{0,2}\s*$/i, canonical: "sorteio" },
-  { re: /^\*{0,2}🙋🏼‍♀️?\s*PARA\s+ENCERRAR\*{0,2}\s*$/i, canonical: "para-encerrar" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}PESQUISAS\\*{0,2}\\s*$`, "iu"), canonical: "pesquisas" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}OUTRAS\\s+NOT[ÍI]CIAS\\*{0,2}\\s*$`, "iu"), canonical: "outras-noticias" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}SORTEIO\\*{0,2}\\s*$`, "iu"), canonical: "sorteio" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}PARA\\s+ENCERRAR\\*{0,2}\\s*$`, "iu"), canonical: "para-encerrar" },
   { re: /^\*{0,2}ERRO\s+INTENCIONAL\*{0,2}\s*$/i, canonical: "erro-intencional" },
 ];
 
