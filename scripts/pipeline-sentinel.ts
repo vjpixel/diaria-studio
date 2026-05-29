@@ -35,6 +35,60 @@ import {
   writeMarker,
   writeSentinel,
 } from "./lib/pipeline-state.js";
+import {
+  applyUpdate,
+  blockReasonForMarkingStageDone,
+  loadDoc,
+  saveDoc,
+  STAGES,
+} from "./update-stage-status.ts";
+
+/**
+ * #1563: when a stage sentinel is written, auto-update stage-status to mark
+ * the stage as `done` if it was previously `running`. Orchestrator can forget
+ * the explicit `update-stage-status --status done` call; the sentinel write
+ * is the authoritative completion signal so we mirror it here.
+ *
+ * Best-effort: never throws. Returns `true` if stage-status was updated,
+ * `false` if no-op (already done, no running row, no stage-status file, or
+ * any internal error).
+ */
+export function autoUpdateStageStatusOnSentinel(
+  editionDir: string,
+  editionId: string,
+  step: number,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!STAGES.includes(step as (typeof STAGES)[number])) return false;
+  // Don't touch legacy editions (pre-#1216) that only have stage-status.md —
+  // loadDoc fallback to parseStageStatus drops start/end/duration/cost/tokens,
+  // and saveDoc would re-render the MD with empty columns.
+  const jsonPath = resolve(editionDir, "_internal", "stage-status.json");
+  if (!existsSync(jsonPath)) return false;
+  try {
+    const doc = loadDoc(editionDir, editionId);
+    const row = doc.rows.find((r) => r.stage === step);
+    if (!row || row.status !== "running") return false;
+    // Same transition gates as the CLI (#1530 — Stage 4 needs report). If
+    // we can't safely mark this stage done, leave it for the editor /
+    // explicit update-stage-status call instead of silently flipping.
+    if (blockReasonForMarkingStageDone(editionDir, step) !== null) return false;
+    const nowIso = new Date(nowMs).toISOString();
+    const durationMs = row.start
+      ? nowMs - new Date(row.start).getTime()
+      : row.duration_ms;
+    const updated = applyUpdate(doc, {
+      stage: step,
+      status: "done",
+      end: nowIso,
+      duration_ms: durationMs,
+    });
+    saveDoc(editionDir, updated);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -54,121 +108,135 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-const [, , subcmd, ...rest] = process.argv;
-const args = parseArgs(rest);
+function main(): void {
+  const [, , subcmd, ...rest] = process.argv;
+  const args = parseArgs(rest);
 
-if (!args.edition) {
-  console.error("[error] --edition é obrigatório");
-  process.exit(1);
-}
-
-const editionDir = resolve(process.cwd(), "data", "editions", args.edition);
-
-// Marker subcmds só precisam de --name. Step subcmds precisam de --step.
-const isMarkerCmd = subcmd === "write-marker" || subcmd === "assert-marker";
-
-if (!isMarkerCmd && !args.step) {
-  console.error("[error] --step é obrigatório (use --name para sub-step markers)");
-  process.exit(1);
-}
-
-if (isMarkerCmd && !args.name) {
-  console.error("[error] --name é obrigatório para write-marker/assert-marker");
-  process.exit(1);
-}
-
-const step = isMarkerCmd ? -1 : Number(args.step);
-
-if (!isMarkerCmd && (Number.isNaN(step) || step < 1)) {
-  console.error(`[error] --step inválido: ${args.step}`);
-  process.exit(1);
-}
-
-switch (subcmd) {
-  case "write": {
-    if (!args.outputs) {
-      console.error("[error] --outputs é obrigatório para write");
-      process.exit(1);
-    }
-    const outputs = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
-    try {
-      writeSentinel(editionDir, step, outputs);
-      console.log(`sentinel step ${step} escrito em ${editionDir}/_internal/.step-${step}-done.json`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[error] falha ao escrever sentinel: ${msg}`);
-      process.exit(1);
-    }
-    break;
+  if (!args.edition) {
+    console.error("[error] --edition é obrigatório");
+    process.exit(1);
   }
 
-  case "assert": {
-    const result = assertSentinel(editionDir, step);
-    if (result.ok) {
-      process.exit(0);
-    }
-    if (result.reason === "sentinel_missing") {
-      if (args.outputs) {
-        const files = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
-        const missingFiles = files.filter((f) => !existsSync(resolve(editionDir, f)));
-        if (missingFiles.length === 0) {
-          console.warn(
-            `[warn] sentinel step ${step} ausente mas outputs encontrados em disco (legado) — logar e continuar`,
-          );
-          process.exit(3);
-        }
-        // Some outputs missing — list them for actionable diagnosis
-        console.error(
-          `[error] sentinel step ${step} ausente e outputs faltando: ${missingFiles.join(", ")}`,
-        );
+  const editionDir = resolve(process.cwd(), "data", "editions", args.edition);
+
+  // Marker subcmds só precisam de --name. Step subcmds precisam de --step.
+  const isMarkerCmd = subcmd === "write-marker" || subcmd === "assert-marker";
+
+  if (!isMarkerCmd && !args.step) {
+    console.error("[error] --step é obrigatório (use --name para sub-step markers)");
+    process.exit(1);
+  }
+
+  if (isMarkerCmd && !args.name) {
+    console.error("[error] --name é obrigatório para write-marker/assert-marker");
+    process.exit(1);
+  }
+
+  const step = isMarkerCmd ? -1 : Number(args.step);
+
+  if (!isMarkerCmd && (Number.isNaN(step) || step < 1)) {
+    console.error(`[error] --step inválido: ${args.step}`);
+    process.exit(1);
+  }
+
+  switch (subcmd) {
+    case "write": {
+      if (!args.outputs) {
+        console.error("[error] --outputs é obrigatório para write");
         process.exit(1);
       }
-      console.error(`[error] sentinel step ${step} ausente em ${editionDir}`);
-      process.exit(1);
-    }
-    // outputs_missing
-    const missing = result.missingOutputs.join(", ");
-    console.error(`[error] sentinel step ${step} presente mas outputs ausentes: ${missing}`);
-    process.exit(2);
-  }
-
-  case "exists": {
-    process.exit(sentinelExists(editionDir, step) ? 0 : 1);
-  }
-
-  case "write-marker": {
-    let details: Record<string, unknown> | undefined;
-    if (args.details) {
+      const outputs = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
       try {
-        details = JSON.parse(args.details) as Record<string, unknown>;
+        writeSentinel(editionDir, step, outputs);
+        console.log(`sentinel step ${step} escrito em ${editionDir}/_internal/.step-${step}-done.json`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`[error] --details JSON inválido: ${msg}`);
+        console.error(`[error] falha ao escrever sentinel: ${msg}`);
         process.exit(1);
       }
+      // #1563: auto-update stage-status when sentinel is written.
+      if (autoUpdateStageStatusOnSentinel(editionDir, args.edition, step)) {
+        console.log(`stage-status auto-updated: stage ${step} → done`);
+      }
+      break;
     }
-    try {
-      writeMarker(editionDir, args.name, details);
-      console.log(`marker '${args.name}' escrito em ${editionDir}/_internal/.marker-${args.name}.json`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[error] falha ao escrever marker: ${msg}`);
+
+    case "assert": {
+      const result = assertSentinel(editionDir, step);
+      if (result.ok) {
+        process.exit(0);
+      }
+      if (result.reason === "sentinel_missing") {
+        if (args.outputs) {
+          const files = args.outputs.split(",").map((s) => s.trim()).filter(Boolean);
+          const missingFiles = files.filter((f) => !existsSync(resolve(editionDir, f)));
+          if (missingFiles.length === 0) {
+            console.warn(
+              `[warn] sentinel step ${step} ausente mas outputs encontrados em disco (legado) — logar e continuar`,
+            );
+            process.exit(3);
+          }
+          // Some outputs missing — list them for actionable diagnosis
+          console.error(
+            `[error] sentinel step ${step} ausente e outputs faltando: ${missingFiles.join(", ")}`,
+          );
+          process.exit(1);
+        }
+        console.error(`[error] sentinel step ${step} ausente em ${editionDir}`);
+        process.exit(1);
+      }
+      // outputs_missing
+      const missing = result.missingOutputs.join(", ");
+      console.error(`[error] sentinel step ${step} presente mas outputs ausentes: ${missing}`);
+      process.exit(2);
+    }
+
+    case "exists": {
+      process.exit(sentinelExists(editionDir, step) ? 0 : 1);
+    }
+
+    case "write-marker": {
+      let details: Record<string, unknown> | undefined;
+      if (args.details) {
+        try {
+          details = JSON.parse(args.details) as Record<string, unknown>;
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[error] --details JSON inválido: ${msg}`);
+          process.exit(1);
+        }
+      }
+      try {
+        writeMarker(editionDir, args.name, details);
+        console.log(`marker '${args.name}' escrito em ${editionDir}/_internal/.marker-${args.name}.json`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[error] falha ao escrever marker: ${msg}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "assert-marker": {
+      const result = assertMarker(editionDir, args.name);
+      if (result.ok) {
+        process.exit(0);
+      }
+      console.error(`[error] marker '${args.name}' ausente em ${editionDir}/_internal/`);
       process.exit(1);
     }
-    break;
-  }
 
-  case "assert-marker": {
-    const result = assertMarker(editionDir, args.name);
-    if (result.ok) {
-      process.exit(0);
+    default: {
+      console.error(`[error] subcomando desconhecido: ${subcmd}. Use write|assert|exists|write-marker|assert-marker`);
+      process.exit(1);
     }
-    console.error(`[error] marker '${args.name}' ausente em ${editionDir}/_internal/`);
-    process.exit(1);
   }
+}
 
-  default: {
-    console.error(`[error] subcomando desconhecido: ${subcmd}. Use write|assert|exists|write-marker|assert-marker`);
-    process.exit(1);
-  }
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
 }
