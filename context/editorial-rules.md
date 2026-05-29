@@ -11,7 +11,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - **Sem paywall.** Nunca incluir link atrás de paywall. Paywalls comuns: Fortune, Bloomberg, Financial Times, Wall Street Journal, NYT, The Information, Business Insider. Se a história só tiver paywall, substituir por fonte gratuita equivalente. Validação: `npx tsx scripts/validate-domains.ts <md>` (exit ≠0 se houver paywall ou agregador).
 - **Sem agregadores.** Nunca usar links de agregadores: `crescendo.ai`, `techstartups.com`, `perplexity.ai/search`, `news.google.com`, `flipboard.com`. Sempre usar URLs diretas de artigos originais.
 - **Sem repetição.** Antes de incluir qualquer link, verificar `context/past-editions.md` (últimas 5 edições) — se o link ou **tema** já foi coberto, não incluir.
-- **URL limpa.** Nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS, usar apenas a URL — sem título, sem texto adicional antes/depois.
+- **URL limpa.** Nas seções LANÇAMENTOS / RADAR, usar apenas a URL — sem título, sem texto adicional antes/depois.
 - **Lançamentos só com link oficial (#160).** Cada item da seção LANÇAMENTOS deve linkar para o domínio oficial da empresa que está lançando o produto/atualização (lista em `scripts/categorize.ts > LANCAMENTO_DOMAINS`/`LANCAMENTO_PATTERNS`). Cobertura de imprensa, blogs pessoais, agregadores e análise de terceiros vão para NOTÍCIAS, mesmo quando o tema é o lançamento. Se não houver link oficial disponível na janela de pesquisa, **o item não entra em LANÇAMENTOS** (a seção pode ficar vazia — preferível a fingir que análise de terceiro é lançamento). Validação: `npx tsx scripts/validate-lancamentos.ts <md>` (exit ≠0 se houver URL não-oficial).
 - **Dentro da janela de publicação.** Apenas artigos publicados dentro da janela corrida anterior à data da edição: **4 dias para edições de segunda e terça-feira** (segunda: quinta→segunda; terça: sexta→terça — ambas capturam o fim de semana), **3 dias para demais edições** (quarta a sexta).
 - **arXiv canônico.** Para papers, usar `arxiv.org/abs/XXXX.XXXXX` (nunca PDF direto).
@@ -35,11 +35,11 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - O parágrafo de "Por que isso importa" vai **direto ao impacto** — nunca começa com "Para [audiência]," ou endereça o leitor explicitamente. Errado: "Para profissionais de tecnologia, o dado muda...". Certo: "O dado muda...". Validação: `npx tsx scripts/lint-newsletter-md.ts --check why-matters-format --md <md>`.
 - Conteúdo: 4 parágrafos + 1 parágrafo de "Por que isso importa".
 
-## 4. Categorias válidas
+## 4. Categorias válidas (#1569)
 
-- `noticia` ou `opiniao` → **DESTAQUE** ou **OUTRAS NOTÍCIAS**
+- `noticia` ou `opiniao` → **DESTAQUE** ou **RADAR**
 - `ferramenta` → **LANÇAMENTOS**
-- `pesquisa` → **PESQUISAS**
+- `pesquisa` → **DESTAQUE** ou **RADAR** (papers entram em RADAR junto com notícias; seção PESQUISAS removida em #1569)
 
 ## 5. Linguagem
 
@@ -47,9 +47,9 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 ## 6. Formatação geral
 
-- **Markdown limitado** (#590): permitido em **negrito** (`**...**`) apenas em: nomes de seção (`**LANÇAMENTOS**`, `**PESQUISAS**`, `**OUTRAS NOTÍCIAS**`, `**DESTAQUE N | EMOJI CATEGORIA**`, `**É IA?**`), títulos de destaques (cada uma das 3 opções), e títulos de itens em LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS. **Proibido em corpo de parágrafo**, em URLs/descrições, e em `_italic_`/`# headers`/`- bullets`. Markdown link `[título](url)` continua permitido (#599) — não conta como formatação.
+- **Markdown limitado** (#590): permitido em **negrito** (`**...**`) apenas em: nomes de seção (`**LANÇAMENTOS**`, `**RADAR**`, `**DESTAQUE N | EMOJI CATEGORIA**`, `**É IA?**`), títulos de destaques (cada uma das 3 opções), e títulos de itens em LANÇAMENTOS/RADAR. **Proibido em corpo de parágrafo**, em URLs/descrições, e em `_italic_`/`# headers`/`- bullets`. Markdown link `[título](url)` continua permitido (#599) — não conta como formatação.
 - Linha em branco entre elementos.
-- Em LANÇAMENTOS/PESQUISAS/OUTRAS: título na 1ª linha, frase descritiva na 2ª, URL limpa na 3ª, linha em branco, próximo item.
+- Em LANÇAMENTOS/RADAR: título na 1ª linha, frase descritiva na 2ª, URL limpa na 3ª, linha em branco, próximo item.
 
 ---
 

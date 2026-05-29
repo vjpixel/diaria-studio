@@ -69,8 +69,12 @@ interface SectionMapping {
 
 // Headers podem ser plain (legacy) ou em **negrito** (#590). Aceita ambos
 // pra backwards-compat com edições antigas + suporta o novo formato.
+// #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Aliases legacy
+// mantidos pra re-lint de edições antigas; novos lints emitem RADAR.
 const SECTIONS: SectionMapping[] = [
   { header: /^(?:\*\*)?LAN[ÇC]AMENTOS(?:\*\*)?\s*$/m, bucket: "lancamento", label: "LANÇAMENTOS" },
+  { header: /^(?:\*\*)?RADAR(?:\*\*)?\s*$/m, bucket: "noticias", label: "RADAR" },
+  // Legacy aliases — qualquer edição antiga ainda lint normalmente.
   { header: /^(?:\*\*)?PESQUISAS(?:\*\*)?\s*$/m, bucket: "pesquisa", label: "PESQUISAS" },
   { header: /^(?:\*\*)?OUTRAS\s+NOT[ÍI]CIAS(?:\*\*)?\s*$/m, bucket: "noticias", label: "OUTRAS NOTÍCIAS" },
 ];
@@ -318,10 +322,17 @@ export function countItemsPerSection(md: string): SectionCounts {
     if (!entries) return 0;
     return new Set(entries.map((e) => e.url)).size;
   };
+  // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Pra back-compat com
+  // testes antigos + edições legacy, somar todos os 3 buckets em `noticias`
+  // se RADAR não existir; quando RADAR existe, ele já agrega.
+  const lancamento = dedup(urlsBySection["LANÇAMENTOS"]);
+  const radar = dedup(urlsBySection["RADAR"]);
+  const pesquisa = dedup(urlsBySection["PESQUISAS"]);
+  const outrasNoticias = dedup(urlsBySection["OUTRAS NOTÍCIAS"]);
   return {
-    lancamento: dedup(urlsBySection["LANÇAMENTOS"]),
-    pesquisa: dedup(urlsBySection["PESQUISAS"]),
-    noticias: dedup(urlsBySection["OUTRAS NOTÍCIAS"]),
+    lancamento,
+    pesquisa, // legacy — 0 em edições pós-#1569
+    noticias: radar + outrasNoticias,
   };
 }
 
@@ -514,7 +525,7 @@ export interface SectionItemFormatReport {
 }
 
 const SECTION_ITEM_HEADER_RE =
-  /^(?:\*\*)?(LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/;
+  /^(?:\*\*)?(LAN[ÇC]AMENTOS|RADAR|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/;
 
 // Linha contendo APENAS um inline link bem-formado (com **bold** opcional
 // e trailing spaces opcionais). Segura pra detectar item title-line.

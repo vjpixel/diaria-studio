@@ -11,7 +11,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 
 Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, retry. Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao writer:
 
-- **Lançamentos só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → seção OUTRAS NOTÍCIAS, não LANÇAMENTOS.
+- **Lançamentos só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → seção RADAR (#1569), não LANÇAMENTOS.
 - **Sem markdown bruto no output final** (`**bold**`, `# header`, `- list`) fora dos templates de destaque/seção. Editor revisa em Drive — markdown raw fica visível.
 - **Título dos destaques ≤52 chars** com 3 opções (editor poda no gate).
 - **"Por que isso importa:"** sempre em linha separada.
@@ -75,7 +75,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
      ---
      ```
    - Se não encontrar a linha de crédito em nenhuma fonte, omitir a seção e incluir aviso em `warnings`. Se encontrar a linha mas faltar `eia_answer`, emitir só o crédito e adicionar aviso `eia_gabarito_missing`.
-3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após OUTRAS NOTÍCIAS (e antes de ASSINE/encerramento), incluir bloco:
+3a. **Seção ERRO INTENCIONAL (#911)** — concurso mensal "Ache o erro". Após RADAR (#1569) e antes de SORTEIO/PARA ENCERRAR, incluir bloco:
 
    ```
    ---
@@ -91,9 +91,9 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 
    Não tentar derivar o gabarito da edição anterior — o script TS faz isso lendo `data/intentional-errors.jsonl`. Writer só precisa garantir que a seção existe (com header `**ERRO INTENCIONAL**`) e tem ao menos 1 parágrafo placeholder. Se não emitir a seção, o orchestrator insere via render-erro-intencional pós-Clarice.
 
-3. Lançamentos, Pesquisas, Notícias: lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**🔬 PESQUISAS**`, `**📰 OUTRAS NOTÍCIAS**`. Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` → PESQUISAS; `bucket: "noticias"` → OUTRAS NOTÍCIAS. Não mover artigo entre seções por associação temática (ex: ferramenta nova mas com `bucket: "noticias"` continua em OUTRAS NOTÍCIAS, não vira LANÇAMENTO). O orchestrator roda lint pós-escrita pra validar — erro = re-escrita. Singular vs plural é normalizado pós-write por `singularize-md-sections.ts` (#1324) — writer pode emitir sempre plural.
+3. Lançamentos, RADAR (#1569): lista curta — **2 linhas por item na ordem `**[Título](URL)**` / Descrição** (#599 + #590). URL embedada no título via markdown link, **título envolvido em negrito** `**...**`. Headers das seções têm emoji prefix (#1328) também em negrito: `**🚀 LANÇAMENTOS**`, `**📡 RADAR**`. Descrições seguem plain. **Cada item DEVE ir na seção que corresponde ao seu `bucket` no `categorized` input** (#165, #1569): `bucket: "lancamento"` → LANÇAMENTOS; `bucket: "pesquisa"` ou `bucket: "noticias"` → RADAR. RADAR substitui as antigas PESQUISAS + OUTRAS NOTÍCIAS — papers entram junto com notícias, sem seção dedicada. Não mover artigo entre seções por associação temática. O orchestrator roda lint pós-escrita pra validar — erro = re-escrita.
 
-3b. **Seção USE MELHOR (opcional, #1568)** — após OUTRAS NOTÍCIAS e antes de VÍDEOS/ERRO INTENCIONAL. Renderizar APENAS se input `categorized` tiver campo `use_melhor_selected` (objeto com `{title, url, description}`) que indica a escolha do editor no gate da Etapa 1. **Se ausente, omitir a seção inteira** (header + conteúdo). Não renderizar todos os candidatos do bucket `tutorial` — apenas o selecionado.
+3b. **Seção USE MELHOR (opcional, #1568)** — após RADAR e antes de VÍDEOS/ERRO INTENCIONAL. Renderizar APENAS se input `categorized` tiver campo `use_melhor_selected` (objeto com `{title, url, description}`) que indica a escolha do editor no gate da Etapa 1. **Se ausente, omitir a seção inteira** (header + conteúdo). Não renderizar todos os candidatos do bucket `tutorial` — apenas o selecionado.
 
    Formato exato:
    ```
@@ -131,15 +131,15 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    ```
 
    Cada item: `**[Título](URL)**` em 1 linha, descrição em outra linha imediatamente abaixo (sem linha em branco entre as duas), depois 1 linha em branco antes do próximo item.
-4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
+4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/RADAR): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
 4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
    - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.
-   - A linha de cada item nas seções LANÇAMENTOS, PESQUISAS e OUTRAS NOTÍCIAS — linhas `[Título](URL)`.
+   - A linha de cada item nas seções LANÇAMENTOS e RADAR — linhas `[Título](URL)`.
    A linha de descrição (última de cada item) **não** precisa de trailing spaces.
 5. Checklist pré-saída (todos devem passar):
    - Nenhum título >52 chars (medindo só o texto dentro de `[...]`, não o markdown).
    - 3 opções por destaque, todas no formato `[Título](URL)` apontando pra mesma URL.
-   - Itens de seção (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) também no formato `[Título](URL)` na primeira linha.
+   - Itens de seção (LANÇAMENTOS/RADAR) também no formato `[Título](URL)` na primeira linha.
    - Linha em branco separando cada par de elementos (header/título/parágrafo). Exceção: dentro de cada item de seção secundária, `[Título](URL)` + descrição ficam consecutivos (sem blank).
    - "Por que isso importa:" em linha própria, sem "Para [audiência]," no início.
    - Nenhum link de agregador/paywall.

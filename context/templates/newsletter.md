@@ -61,15 +61,9 @@ Por que isso importa:
 
 ---
 
-**🔬 PESQUISAS**
+**📡 RADAR**
 
-[mesmo formato de Lançamentos — linha em branco entre cada elemento]
-
----
-
-**📰 OUTRAS NOTÍCIAS**
-
-[mesmo formato de Lançamentos — linha em branco entre cada elemento]
+[mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas. Papers podem ganhar prefix 🔬 inline pra dica visual — opcional, decidir após 2 edições piloto. #1569]
 
 ---
 
@@ -146,8 +140,7 @@ URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2,
   Se nenhum se encaixar bem, criar uma nova categoria com emoji adequado.
 - Ordenar destaques por relevância editorial (scorer decide).
 - LANÇAMENTOS: itens da categoria `ferramenta` que não viraram destaque.
-- PESQUISAS: itens da categoria `pesquisa` (papers, estudos).
-- OUTRAS NOTÍCIAS: itens `noticia`/`opiniao` que não viraram destaque.
+- RADAR (#1569): itens das categorias `noticia`/`opiniao`/`pesquisa` que não viraram destaque. Substituiu OUTRAS NOTÍCIAS + PESQUISAS — papers ainda entram no pipeline, só não têm seção dedicada.
 - Se uma seção não tiver itens, omitir a seção inteira (incluindo o cabeçalho).
 
 ## Não fazer
