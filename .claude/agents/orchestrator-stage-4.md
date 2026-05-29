@@ -15,6 +15,54 @@ LinkedIn não usa Chrome — Cloudflare Worker enfileira em KV e dispara Make we
 
 Manteve-se modo draft pra Beehiiv — `mode: "scheduled"` + scheduled_at sincronizado fica pra PR 2 (#38).
 
+### Modos de execução (#1523 / #1571)
+
+A skill que invoca este playbook define `pre_gate` no contexto (lido do SKILL.md). Dois fluxos:
+
+- **`pre_gate = true` (default em `/diaria-edicao`):** o gate ao editor acontece **ANTES** do dispatch. Após 4a (pré-reqs + sync pull + invariants), executar **4a-pre-gate** descrito abaixo (pre-render newsletter HTML + social preview + upload pro draft worker → apresentar URLs → editor aprova). **Pós-aprovação**, prosseguir pra 4c (dispatch newsletter) → 4f (review test email) → 4g-bis (dispatch social) em paralelo. **PULAR 4g** (gate pós-dispatch) — a aprovação editorial já aconteceu no pre-gate.
+
+- **`pre_gate = false` ou ausente (`/diaria-4-publicar` legacy interativo):** fluxo histórico — 4c dispatch newsletter → 4f review loop → 4f-bis verify → 4f-ter render social preview → **4g gate pós-dispatch** → 4g-bis social → fim.
+
+A skill `/diaria-4-publicar` está em transição pra pre-gate (#1571 followup). Por enquanto, ela default-falha pra `pre_gate = false` a menos que `--pre-gate` seja passado explicitamente.
+
+### 4a-pre-gate. Pré-render + apresentar preview ao editor (#1523 / #1571)
+
+**Executar SOMENTE quando `pre_gate = true`.** Faz tudo que o dispatch precisa exceto enviar pros canais finais:
+
+1. Roda upload-images-public newsletter mode (cobre 4c-pre):
+   ```bash
+   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode newsletter
+   ```
+2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker (`https://draft.diaria.workers.dev/{AAMMDD}-{hash}`).
+3. Pre-render do social — `npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out _internal/social-preview.html` + `upload-html-public.ts --key {AAMMDD}-social` pra subir pro draft worker.
+4. close-poll idempotente (set gabarito):
+   ```bash
+   npx tsx scripts/close-poll.ts --edition {AAMMDD} --idempotent
+   ```
+5. **PRE-GATE HUMANO:** apresentar bloco:
+   ```
+   📄 Newsletter HTML: https://draft.diaria.workers.dev/{AAMMDD}-{hash}
+   📱 Social preview:  https://draft.diaria.workers.dev/{AAMMDD}-social-{hash}
+   📁 Arquivos locais: 02-reviewed.md, 03-social.md
+   📎 Imagens:        cover D1 (Cloudflare KV) + EIA A/B + d1/d2/d3 1x1 social
+   
+   Aprovar dispatch em todos os 3 canais? (sim / editar / abortar)
+     - "sim" → prossegue pra 4c dispatch newsletter + 4g-bis social em paralelo
+     - "editar" → halt; editor edita arquivos no Drive → pull → re-roda /diaria-4-publicar
+     - "abortar" → encerra stage 4 sem publicar (sentinel não é escrito)
+   ```
+6. Logar resposta:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
+     --message "pre_gate response: {sim|editar|abortar}"
+   ```
+
+**Pós-aprovação ("sim"):** consumir o consent automático em 4b (auto-approve path), saltar 4c-pre (já rodou step 1 acima) e ir pra 4c. PULAR 4g (gate pós-dispatch já é redundante).
+
+**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita e re-roda.
+
+**"abortar":** logar warn, encerrar sem sentinel.
+
 ### Pré-condição: sentinel Stage 3
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-3.md §Escrever sentinel de conclusão do Stage 3 -->
@@ -339,7 +387,13 @@ Capturar a URL retornada (campo `url` do JSON stdout) e incluir no bloco de link
 
 Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente. Logar warn e prosseguir.
 
-### 4g. Gate único
+### 4g. Gate único (legacy — PULAR quando pre_gate=true; #1571)
+
+**Quando `pre_gate = true`** (default de `/diaria-edicao`), este step é PULADO — a aprovação editorial já aconteceu em 4a-pre-gate antes do dispatch. Saltar direto pra 4g-bis (dispatch social, em paralelo com newsletter que ainda está em test-email loop).
+
+**Quando `pre_gate = false`** (legacy `/diaria-4-publicar` sem `--pre-gate`), mantém o fluxo histórico: newsletter já dispatchou em 4c, social ainda não. Editor revisa preview antes de aprovar.
+
+
 
 - **Sync push antes do gate (#507):**
   1. Lista base: `_internal/05-published.json,06-social-published.json`
