@@ -309,4 +309,37 @@ describe("syncFrontmatterToEntries — idempotência (#754)", () => {
     // A frontmatter sync NÃO conflita com manual entries — só checa source frontmatter
     assert.equal(r.added, true);
   });
+
+  // #1589: MD frontmatter agora é fonte autoritativa. Se frontmatter mudou
+  // após primeira sync (ex: editor corrigiu pós-publish), próxima sync
+  // atualiza a entry existente em vez de bloquear silenciosamente.
+  it("#1589: frontmatter divergente sobrescreve entry existente (updated=true)", () => {
+    const fmOld: IntentionalErrorFrontmatter = {
+      description: "Versão antiga do erro",
+      category: "factual",
+      location: "DESTAQUE 2",
+      correct_value: "old correct",
+    };
+    const fmNew: IntentionalErrorFrontmatter = {
+      description: "Versão corrigida pós-publish",
+      category: "factual",
+      location: "DESTAQUE 2",
+      correct_value: "new correct",
+    };
+    const first = syncFrontmatterToEntries(fmOld, "260528", []);
+    assert.equal(first.added, true);
+    const second = syncFrontmatterToEntries(fmNew, "260528", first.entries);
+    assert.equal(second.added, false, "não é add");
+    assert.equal(second.updated, true, "deve ser update");
+    assert.equal(second.entries.length, 1, "1 entry só (não duplica)");
+    assert.equal(second.entries[0].detail, "Versão corrigida pós-publish");
+    assert.equal(second.entries[0].correct_value, "new correct");
+  });
+
+  it("#1589: frontmatter idêntico em re-sync → no-op (sem updated)", () => {
+    const first = syncFrontmatterToEntries(fm, "260510", []);
+    const second = syncFrontmatterToEntries(fm, "260510", first.entries);
+    assert.equal(second.added, false);
+    assert.equal(second.updated, false);
+  });
 });
