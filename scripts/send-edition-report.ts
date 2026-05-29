@@ -21,7 +21,8 @@
  *   stderr: JSON summary { edition, total_duration_ms, stages, highlights, warnings_count, errors_count }
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
@@ -419,10 +420,11 @@ async function main(): Promise<void> {
   const { values } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
   const editionDirRaw = values["edition-dir"];
+  const outPath = values["out"]; // #1579: opcional, default = stdout
 
   if (!edition || !editionDirRaw) {
     console.error(
-      "Uso: send-edition-report.ts --edition AAMMDD --edition-dir data/editions/AAMMDD/",
+      "Uso: send-edition-report.ts --edition AAMMDD --edition-dir data/editions/AAMMDD/ [--out _internal/edition-report.html]",
     );
     process.exit(2);
   }
@@ -443,7 +445,6 @@ async function main(): Promise<void> {
     stageDoc.run_started_at,
   );
 
-  // Render HTML to stdout
   const braveCredits = computeBraveCreditStats(edition); // #1558
   const html = renderHtmlReport(
     edition,
@@ -455,7 +456,24 @@ async function main(): Promise<void> {
     errors,
     braveCredits,
   );
-  process.stdout.write(html);
+
+  // #1579: quando --out passado, escreve arquivo + grava manifest com md5
+  // pra invariant edition-report-not-rewritten poder verificar que o
+  // Gmail draft criado downstream usa os mesmos bytes (caso 260529:
+  // orchestrator reescreveu htmlBody com narrativa custom em vez de ler o
+  // arquivo).
+  if (outPath) {
+    const absOut = resolve(ROOT, outPath);
+    mkdirSync(dirname(absOut), { recursive: true });
+    writeFileSync(absOut, html, "utf8");
+    const md5 = createHash("md5").update(html).digest("hex");
+    const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    writeFileSync(manifestPath, md5 + "\n", "utf8");
+    process.stderr.write(`[send-edition-report] wrote ${absOut} (md5: ${md5.slice(0, 8)})\n`);
+  } else {
+    process.stdout.write(html);
+  }
 
   // JSON summary to stderr
   const summary = buildSummary(
