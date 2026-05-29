@@ -127,6 +127,34 @@ describe("computeFailureStreak", () => {
     const r = computeFailureStreak(entry);
     assert.equal(r.consecutive_failures, 2);
   });
+
+  it("#1576: empty NÃO é falha dura — encerra o streak", () => {
+    const entry: SourceEntry = {
+      ...emptyEntry(),
+      recent_outcomes: [
+        { outcome: "fail", timestamp: "t1" },
+        { outcome: "fail", timestamp: "t2" },
+        { outcome: "empty", timestamp: "t3" },
+      ],
+    };
+    const r = computeFailureStreak(entry);
+    assert.equal(r.consecutive_failures, 0);
+    assert.deepEqual(r.failure_timestamps, []);
+  });
+
+  it("#1576: empty no meio não conta; streak pega só fails do final", () => {
+    const entry: SourceEntry = {
+      ...emptyEntry(),
+      recent_outcomes: [
+        { outcome: "empty", timestamp: "t1" },
+        { outcome: "fail", timestamp: "t2" },
+        { outcome: "timeout", timestamp: "t3" },
+      ],
+    };
+    const r = computeFailureStreak(entry);
+    assert.equal(r.consecutive_failures, 2);
+    assert.deepEqual(r.failure_timestamps, ["t2", "t3"]);
+  });
 });
 
 describe("recordRun / recordRunsBatch — I/O", () => {

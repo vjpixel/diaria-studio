@@ -15,7 +15,15 @@ import {
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.ts";
 
-export type Outcome = "ok" | "fail" | "timeout";
+// `empty` = fetch/SERP teve sucesso mas retornou zero artigos (sem novidade na
+// janela, ou query/feed sem hit). NÃO é falha — distinto de `fail` (erro HTTP/
+// parse) e `timeout`. Emitido por fetch-rss-batch.ts / fetch-websearch-batch.ts.
+export type Outcome = "ok" | "empty" | "fail" | "timeout";
+
+/** Falhas "duras": fetch quebrado (HTTP/parse) ou timeout. `empty`/`ok` não. */
+export function isHardFailure(outcome: string): boolean {
+  return outcome === "fail" || outcome === "timeout";
+}
 
 export interface OutcomeEntry {
   outcome: Outcome;
@@ -120,21 +128,26 @@ export function applyRun(
 
 /**
  * Deriva consecutive_failures + failure_timestamps do `recent_outcomes`
- * (streak de não-ok a partir do mais recente).
+ * (streak de falhas DURAS — `fail`/`timeout` — a partir do mais recente).
+ *
+ * `empty` (fetch OK, zero artigos) e `ok` encerram o streak: nenhum dos dois é
+ * falha. Antes (#1576) qualquer não-`ok` contava, o que inflava o streak de
+ * blogs de baixa frequência que só retornaram `empty` por falta de novidade.
  */
 export function computeFailureStreak(entry: SourceEntry): {
   consecutive_failures: number;
   failure_timestamps: string[];
 } {
-  const reversed = entry.recent_outcomes.slice().reverse();
-  const streak = reversed.findIndex((e) => e.outcome === "ok");
-  const consecutive_failures =
-    streak === -1 ? entry.recent_outcomes.length : streak;
-  const failure_timestamps = reversed
-    .slice(0, streak === -1 ? undefined : streak)
-    .map((e) => e.timestamp)
-    .reverse();
-  return { consecutive_failures, failure_timestamps };
+  const failure_timestamps: string[] = [];
+  for (let i = entry.recent_outcomes.length - 1; i >= 0; i--) {
+    const e = entry.recent_outcomes[i];
+    if (!isHardFailure(e.outcome)) break;
+    failure_timestamps.unshift(e.timestamp);
+  }
+  return {
+    consecutive_failures: failure_timestamps.length,
+    failure_timestamps,
+  };
 }
 
 // -------------------- I/O wrappers --------------------

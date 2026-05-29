@@ -12,7 +12,7 @@
  * Refs #91 (follow-up to #90 / PR #86).
  */
 
-export type SignalKind = "source_streak" | "unfixed_issue" | "chrome_disconnects";
+export type SignalKind = "source_streak" | "source_dry" | "unfixed_issue" | "chrome_disconnects";
 export type Severity = "low" | "medium" | "high";
 
 export interface Signal {
@@ -53,6 +53,12 @@ export function dedupKey(signal: Signal): string | null {
       const source = signal.details?.source;
       return typeof source === "string" && source.length > 0
         ? `source_streak:${source}`
+        : null;
+    }
+    case "source_dry": {
+      const source = signal.details?.source;
+      return typeof source === "string" && source.length > 0
+        ? `source_dry:${source}`
         : null;
     }
     case "unfixed_issue": {

@@ -40,6 +40,7 @@ export type Severity = "low" | "medium" | "high";
 export interface Signal {
   kind:
     | "source_streak"
+    | "source_dry"
     | "unfixed_issue"
     | "chrome_disconnects"
     | "mcp_unavailable"
@@ -138,6 +139,8 @@ export interface IssuesDraft {
 
 interface SourceHealthEntry {
   attempts?: number;
+  successes?: number;
+  total_articles?: number;
   recent_outcomes?: Array<{ outcome: string; timestamp?: string }>;
 }
 
@@ -145,32 +148,78 @@ interface SourceHealthFile {
   sources?: Record<string, SourceHealthEntry>;
 }
 
+const isHardFailure = (outcome: string | undefined): boolean =>
+  outcome === "fail" || outcome === "timeout";
+
+/**
+ * Dois sinais distintos a partir do source-health (#1576):
+ *
+ * - `source_streak`: streak de falhas DURAS (`fail`/`timeout`) — fetch quebrado
+ *   (HTTP 404/500, parse, timeout). `empty` e `ok` encerram o streak.
+ * - `source_dry`: fonte que NUNCA produziu artigo (zero successes na vida) e
+ *   acumulou uma janela longa sem `ok` — feed/URL provavelmente errada ou fonte
+ *   descontinuada. Distingue "fonte parada" de "blog de baixa frequência sem
+ *   novidade" (que tem successes > 0 e portanto não dispara).
+ *
+ * Antes do #1576 ambos colapsavam num único streak que contava qualquer não-`ok`
+ * (incluindo `empty`), gerando ~10 falsos positivos por edição com blogs quietos.
+ */
 export function signalsFromSourceHealth(
   health: SourceHealthFile,
   minStreak = 3,
+  dryThreshold = 6,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
     const recent = entry.recent_outcomes ?? [];
     if (recent.length === 0) continue;
-    // Streak de não-ok do mais recente pra trás.
     const reversed = recent.slice().reverse();
-    let streak = 0;
+
+    // --- Falhas duras consecutivas (fetch quebrado) ---
+    let hardStreak = 0;
     for (const r of reversed) {
-      if (r.outcome === "ok") break;
-      streak++;
+      if (!isHardFailure(r.outcome)) break;
+      hardStreak++;
     }
-    if (streak >= minStreak) {
+    if (hardStreak >= minStreak) {
       out.push({
         kind: "source_streak",
-        severity: streak >= 5 ? "high" : "medium",
-        title: `Source ${source} com ${streak} falhas consecutivas`,
+        severity: hardStreak >= 5 ? "high" : "medium",
+        title: `Source ${source} com ${hardStreak} falhas consecutivas`,
         details: {
           source,
-          consecutive_failures: streak,
+          consecutive_failures: hardStreak,
           last_outcomes: recent.slice(-Math.min(5, recent.length)),
         },
         suggested_action: `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
+      });
+      continue; // já sinalizado como quebrado; não duplicar como "dry"
+    }
+
+    // --- Fonte seca: nunca produziu + janela longa sem ok ---
+    const hasRecentOk = recent.some((r) => r.outcome === "ok");
+    const lifetimeSuccesses = entry.successes ?? 0;
+    let dryStreak = 0;
+    for (const r of reversed) {
+      if (r.outcome === "ok") break;
+      dryStreak++;
+    }
+    if (!hasRecentOk && lifetimeSuccesses === 0 && dryStreak >= dryThreshold) {
+      const hardCount = recent.filter((r) => isHardFailure(r.outcome)).length;
+      const emptyCount = recent.filter((r) => r.outcome === "empty").length;
+      out.push({
+        kind: "source_dry",
+        severity: "medium",
+        title: `Source ${source} sem nenhum artigo em ${dryStreak} execuções`,
+        details: {
+          source,
+          dry_streak: dryStreak,
+          hard_failures: hardCount,
+          empty: emptyCount,
+          lifetime_successes: lifetimeSuccesses,
+          last_outcomes: recent.slice(-Math.min(5, recent.length)),
+        },
+        suggested_action: `${source} nunca produziu artigos — feed/URL provavelmente errada ou fonte descontinuada. Verifique a URL em seed/sources.csv ou desative.`,
       });
     }
   }
@@ -824,6 +873,7 @@ function main(): void {
         include_test_warnings: includeTestWarnings,
         by_kind: {
           source_streak: draft.signals.filter((s) => s.kind === "source_streak").length,
+          source_dry: draft.signals.filter((s) => s.kind === "source_dry").length,
           unfixed_issue: draft.signals.filter((s) => s.kind === "unfixed_issue").length,
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
           mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
