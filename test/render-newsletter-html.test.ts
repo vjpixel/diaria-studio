@@ -233,6 +233,21 @@ describe("parseListItems (#1581 — Drive round-trip flattens title+summary)", (
     assert.equal(items[0].title, "Título");
     assert.equal(items[0].description, "Frase 1. Frase 2 em linha separada.");
   });
+
+  it("multi-items colapsados num bloco: M1 handler ainda vence sobre trailing", () => {
+    // Regression guard: o branch parseInlineLinkWithTrailing roda antes do
+    // M1 multi-URL handler, mas só quando block.slice(1) não tem outros
+    // markdown links. Bloco com >1 link → M1 handler continua acessível.
+    const text = [
+      "[**Item A**](https://a.com) desc A",
+      "[**Item B**](https://b.com)",
+      "desc B",
+    ].join("\n");
+    const items = parseListItems(text);
+    // Esperado: M1 handler / fallback detecta múltiplos URLs e quebra em
+    // items separados (não engole tudo na description de A).
+    assert.ok(items.length >= 2, `esperava >=2 items, got ${items.length}: ${JSON.stringify(items)}`);
+  });
 });
 
 describe("parseSections (#172)", () => {
