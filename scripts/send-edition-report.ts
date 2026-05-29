@@ -248,33 +248,36 @@ function renderStageRow(row: StageRow): string {
   </tr>`;
 }
 
+/**
+ * Tempo de pipeline de um stage = trabalho determinístico (scripts/agents/MCP),
+ * SEM o aguardo no gate humano. `pipeline_ms` (#1517) já exclui o gate; cai pra
+ * `duration_ms` (= end - start, inclui gate) em edições antigas pré-#1517.
+ */
+function rowPipelineMs(r: { pipeline_ms?: number; duration_ms?: number }): number {
+  return r.pipeline_ms ?? r.duration_ms ?? 0;
+}
+
 export function renderHtmlReport(
   edition: string,
   stageDoc: StageStatusDoc,
-  highlights: HighlightSummary[],
   published: PublishedNewsletter | null,
   social: PublishedSocial | null,
   warnings: LogEntry[],
   errors: LogEntry[],
   braveCredits: BraveCreditStats | null = null, // #1558
 ): string {
-  const totalMs = stageDoc.rows.reduce((a, r) => a + (r.duration_ms ?? 0), 0);
+  // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
+  // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
+  const totalMs = stageDoc.rows.reduce((a, r) => a + rowPipelineMs(r), 0);
+  const anyGateFallback = stageDoc.rows.some(
+    (r) => r.pipeline_ms == null && (r.duration_ms ?? 0) > 0,
+  );
   const mode = stageDoc.rows.every((r) => r.status === "done")
     ? "completa"
     : "parcial";
 
   // Stage table rows
   const stageRows = stageDoc.rows.map(renderStageRow).join("\n");
-
-  // Highlights
-  const highlightsHtml = highlights.length > 0
-    ? highlights
-        .map(
-          (h, i) =>
-            `<li><strong>D${i + 1}:</strong> <a href="${escapeHtml(h.url)}">${escapeHtml(h.title)}</a></li>`,
-        )
-        .join("\n")
-    : "<li>(nenhum highlight encontrado)</li>";
 
   // Newsletter status
   const nlStatus = published
@@ -346,7 +349,7 @@ export function renderHtmlReport(
   <div>
     <span class="metric"><strong>Edicao:</strong> ${escapeHtml(edition)}</span>
     <span class="metric"><strong>Modo:</strong> ${escapeHtml(mode)}</span>
-    <span class="metric"><strong>Duracao total:</strong> ${escapeHtml(fmtDuration(totalMs))}</span>
+    <span class="metric"><strong>Duracao total:</strong> ${escapeHtml(fmtDuration(totalMs))}${anyGateFallback ? ` <span style="color:#999;">(inclui aguardo gate em stages pre-#1517)</span>` : ""}</span>
   </div>
 
   <h2>Tempo por stage</h2>
@@ -358,11 +361,6 @@ export function renderHtmlReport(
       ${stageRows}
     </tbody>
   </table>
-
-  <h2>Destaques</h2>
-  <ol>
-    ${highlightsHtml}
-  </ol>
 
   <h2>Publicacao</h2>
   <h3 style="font-size:14px;">Newsletter</h3>
@@ -430,7 +428,9 @@ export function buildSummary(
     ...(r.pipeline_ms ? { pipeline_ms: r.pipeline_ms } : {}),
     models: r.models ?? [],
   }));
-  const totalMs = stages.reduce((a, s) => a + s.duration_ms, 0);
+  // #1609: total reflete tempo de pipeline (sem aguardo de gate), consistente
+  // com o HTML report. Fallback pra duration_ms em edições pré-#1517.
+  const totalMs = stages.reduce((a, s) => a + rowPipelineMs(s), 0);
 
   return {
     edition,
@@ -486,7 +486,6 @@ async function main(): Promise<void> {
   const html = renderHtmlReport(
     edition,
     stageDoc,
-    highlights,
     published,
     social,
     warnings,
