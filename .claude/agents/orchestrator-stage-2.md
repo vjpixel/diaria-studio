@@ -54,6 +54,14 @@ Exit code handling:
   ```
   Writer recebe `01-approved-capped.json`. Lint pós-writer (`--check section-counts`) valida que o output respeitou os caps; falha = re-disparar writer.
 
+- **Limpar/truncar summaries em inglês (#1490 / #1572).** Antes de stitch, rodar:
+  ```bash
+  npx tsx scripts/translate-summaries.ts \
+    --in data/editions/{AAMMDD}/_internal/01-approved-capped.json \
+    --out data/editions/{AAMMDD}/_internal/01-approved-capped.json
+  ```
+  O script é idempotente (marca `summary_translated: true` após processar). Strip de prefixo arXiv + 1ª frase + truncate em 150 chars; **não faz tradução LLM** — apenas cleanup determinístico pra evitar prefix bruto `[TRADUZIR]` no MD final. Items com `summary_lang: "en"` (categorize.ts #1473) e/ou arXiv abstract são afetados. Stitch ainda adiciona `[TRADUZIR]` no título quando `summary_lang === "en"` — esse prefix é removido pelo writer-destaque ou pelo editor no gate (#1572). Sem este step, prefixo `[TRADUZIR]` + summary em inglês cru vazaram pro newsletter HTML em 260529 (LANÇAMENTOS + PESQUISAS sections).
+
 **Em uma única mensagem**, disparar os agents simultaneamente:
 
 ### Modo padrão: writer-destaque × 3 paralelo (#1158, #1451)
