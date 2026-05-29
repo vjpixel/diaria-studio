@@ -168,4 +168,69 @@ describe("isLikelyNewsNotLaunch (#1442) — anúncio institucional vs lançament
   it("#1521: 'Anthropic releases Claude 5' → false (real launch)", () => {
     assert.equal(isLikelyNewsNotLaunch("Anthropic releases Claude 5"), false);
   });
+
+  // ============ #1573: governance/conference/podcast (260529 false positives) ============
+
+  it("#1573: 'OpenAI Frontier Governance Framework' → true (policy, não lançamento)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("OpenAI's Frontier Governance Framework"),
+      true,
+    );
+  });
+
+  it("#1573: 'NVIDIA Research Advances Robotics From Simulation to the Real World' → true (research framing)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch(
+        "NVIDIA Research Advances Robotics From Simulation to the Real World",
+      ),
+      true,
+    );
+  });
+
+  it("#1573: 'Apple at CVPR 2026' → true (conference attendance)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Apple at CVPR 2026"), true);
+  });
+
+  it("#1573: 'Anthropic at NeurIPS' → true (conference attendance)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Anthropic at NeurIPS"), true);
+  });
+
+  it("#1573: 'Google Research presents new model at ICML' → true", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Google Research presents new model at ICML"),
+      true,
+    );
+  });
+
+  it("#1573: 'How AI is rebuilding marketing - Ads Decoded podcast finale' → true (podcast)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch(
+        "How AI is rebuilding marketing - Ads Decoded podcast finale",
+      ),
+      true,
+    );
+  });
+
+  it("#1573: 'AI Safety Principles for Frontier Models' → true (policy/principles)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("AI Safety Principles for Frontier Models"),
+      true,
+    );
+  });
+
+  it("#1573: 'Framework for Responsible AI Deployment' → true (framework)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Framework for Responsible AI Deployment"),
+      true,
+    );
+  });
+
+  // Negative cases — real launches that mention these words inside other contexts
+  it("#1573: 'Claude 5 launched' → false (real launch, no policy keyword)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Claude 5 launched"), false);
+  });
+
+  it("#1573: 'Gemini 3 released' → false (real launch)", () => {
+    assert.equal(isLikelyNewsNotLaunch("Gemini 3 released"), false);
+  });
 });
