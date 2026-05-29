@@ -208,6 +208,23 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   /\bDisplay\s+Ads?\b/i,
   /\bDemand\s+Gen\b/i,
   /\bad\s+platform\b/i,
+  // #1573: governance/policy/framework — não são lançamentos
+  // Casos reais 260529:
+  //   "OpenAI's Frontier Governance Framework" (openai.com/index/)
+  //   "Apple at CVPR 2026" (machinelearning.apple.com/updates/)
+  //   "Ads Decoded finale" (blog.google/products/ads-commerce/)
+  /\bgovernance\s+framework\b/i,
+  /\bframework\s+(?:for|de|para)\b/i,
+  /\b(?:policy|policies|principles?|princ[íi]pios?|guidelines?)\b/i,
+  // Conference attendance: "at CVPR", "at ICML", "at NeurIPS", "at ICRA"
+  /\bat\s+(?:CVPR|ICML|NeurIPS|ICLR|ICRA|ACL|EMNLP|SIGGRAPH|SIGCHI)\b/i,
+  // Conference recap framing: "advances X from simulation to the real world" (ICRA-style)
+  /\bfrom\s+simulation\s+to\s+(?:the\s+)?real\s+world\b/i,
+  // Podcast/episode (not a launch even on official blog)
+  /\bpodcast\s+(?:episode|series)?\b/i,
+  /\bepis[óo]dio\s+de\s+podcast\b/i,
+  /\b(?:season\s+\d+|finale|temporada\s+\d+|final)\b/i,
+  /\bAds?\s+Decoded\b/i,
 ];
 
 /**
