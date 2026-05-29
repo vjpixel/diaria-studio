@@ -138,6 +138,55 @@ Frase.
     assert.equal(result.actual, 4);
   });
 
+  it("emoji com VS16 (🛠️) match header sem cair em null", () => {
+    const md = `**🛠️ USE MELHOR**
+
+**[Tutorial](https://tools.com/t)**
+
+Descrição.
+`;
+    const counts = countSelectedItems(md);
+    assert.equal(counts.tutoriais, 1);
+    assert.equal(counts.total, 1);
+  });
+
+  it("emoji ZWJ + skin-tone (🙋🏼‍♀️ PARA ENCERRAR) é SKIP, não bucket", () => {
+    const md = `**DESTAQUE 1**
+
+**[D1](https://example.com/d1)**
+
+---
+
+**🙋🏼‍♀️ PARA ENCERRAR**
+
+**[Wispr](https://wisprflow.ai/r?X=Y)**
+
+Texto.
+`;
+    const counts = countSelectedItems(md);
+    assert.equal(counts.destaques, 1);
+    assert.equal(counts.total, 1, "PARA ENCERRAR não conta como bucket");
+  });
+
+  it("frontmatter com 'Selecionamos os' não polui extractIntroClaimedCount", () => {
+    const md = `---
+description: "Selecionamos os 99 mais relevantes — fake"
+---
+
+Para esta edição, eu (o editor) enviei 1 submissões e a Diar.ia encontrou outros 50 artigos. Selecionamos os 1 mais relevantes.
+
+---
+
+**DESTAQUE 1**
+
+**[D1](https://example.com/d1)**
+`;
+    const result = lintIntroCount(md);
+    assert.equal(result.claimed, 1, "frontmatter '99' deve ser ignorado");
+    assert.equal(result.actual, 1);
+    assert.equal(result.ok, true);
+  });
+
   it("intro count detecta mismatch quando declared < real (caso 260529)", () => {
     const md = `Para esta edição, eu (o editor) enviei 9 submissões e a Diar.ia encontrou outros 265 artigos. Selecionamos os 6 mais relevantes.
 

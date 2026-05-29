@@ -54,6 +54,20 @@ const SKIP_HEADER_NAMES = [
   "SUBTÍTULO",
 ];
 
+// Emoji prefix shared by all header regexes. Suporta:
+//   - emoji simples (📰, 🚀)
+//   - emoji + variation selector U+FE0F (🛠️)
+//   - emoji + skin-tone modifier U+1F3FB-U+1F3FF + ZWJ + base (🙋🏼‍♀️)
+//   - emoji + supplementary symbols U+2600-U+27BF (♀, ♂, ✨)
+// Extraído pra um lugar só pra evitar drift entre os 6+ sites que usam o
+// mesmo padrão (review #1591).
+const EMOJI_PREFIX_FRAGMENT =
+  "(?:\\*\\*)?(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][️‍\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
+
+// Nomes válidos das seções secundárias (não-destaque, não-eia).
+const SECTION_NAME_FRAGMENT =
+  "LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?|USE\\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO";
+
 // Regex pra reconhecer header de seção secundária. Aceita:
 //   **LANÇAMENTOS** / **LANÇAMENTO** (plural/singular)
 //   **🚀 LANÇAMENTOS** / **🚀 LANÇAMENTO** (com emoji prefix)
@@ -63,8 +77,10 @@ const SKIP_HEADER_NAMES = [
 //
 // Restrição: prefixo entre `**` e nome da seção é `[^\n\[]*?` (sem `[`)
 // pra evitar matchar `**[Título A](url)**` onde "Título" bateria com TÍTULO.
-const SECTION_HEADER_LOOKAHEAD =
-  /(?=^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?|USE\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|DESTAQUE\s+\d)[^\n]*\*\*\s*$)|(?=^##\s+É\s+IA\?)/imu;
+const SECTION_HEADER_LOOKAHEAD = new RegExp(
+  `(?=^\\*\\*[^\\n\\[]*?(?:${SECTION_NAME_FRAGMENT}|DESTAQUE\\s+\\d)[^\\n]*\\*\\*\\s*$)|(?=^##\\s+É\\s+IA\\?)`,
+  "imu",
+);
 
 /**
  * Pure: parsea o MD e retorna a contagem por bucket + total visível.
@@ -76,8 +92,26 @@ const SECTION_HEADER_LOOKAHEAD =
 // Regex pra detectar header de section como linha standalone. Mais restrito
 // que `section.includes(name)` — só casa quando o nome aparece numa linha que
 // é APENAS o header (com bold opcional + emoji prefix opcional).
-const SECTION_HEADER_LINE_RE =
-  /^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?(LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?|USE\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|É\s+IA\?)\s*(?:\*\*)?\s*$/imu;
+const SECTION_HEADER_LINE_RE = new RegExp(
+  `^\\s*${EMOJI_PREFIX_FRAGMENT}(${SECTION_NAME_FRAGMENT}|É\\s+IA\\?)\\s*(?:\\*\\*)?\\s*$`,
+  "imu",
+);
+
+/** Helper: build a per-bucket regex matching `<emoji_prefix> <name>` standalone. */
+function bucketHeaderRe(nameFragment: string): RegExp {
+  return new RegExp(
+    `^\\s*${EMOJI_PREFIX_FRAGMENT}(?:${nameFragment})\\s*(?:\\*\\*)?\\s*$`,
+    "imu",
+  );
+}
+
+const LANCAMENTOS_RE = bucketHeaderRe("LAN[ÇC]AMENTOS?");
+const PESQUISAS_RE = bucketHeaderRe("PESQUISAS?");
+const NOTICIAS_RE = bucketHeaderRe(
+  "OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?",
+);
+const TUTORIAIS_RE = bucketHeaderRe("USE\\s+MELHOR");
+const VIDEOS_RE = bucketHeaderRe("V[ÍI]DEOS?");
 // Production format: `**DESTAQUE 1 | 🚀 LANÇAMENTO**`. Pipe é canonical mas
 // tolerante a `**DESTAQUE 1**` standalone (fixtures de teste).
 const DESTAQUE_HEADER_LINE_RE = /^\s*(?:\*\*)?DESTAQUE\s+\d+(?:\s*\||\s*(?:\*\*)?\s*$)/im;
@@ -129,10 +163,13 @@ export function countSelectedItems(md: string): SelectedCounts {
     // legítimas silenciosamente.
     const hasSkipHeader = SECTION_HEADER_LINE_RE.test(section) &&
       SKIP_HEADER_NAMES.some((h) => {
-        // Constrói regex per-skip-name pra match em linha
+        // Per-skip-name regex usa o mesmo EMOJI_PREFIX_FRAGMENT que as
+        // bucket regexes — sem isso, headers com VS16/ZWJ (🛠️, 🙋🏼‍♀️) não
+        // matcham SKIP, caem em bucket=null por sorte e poderiam vazar
+        // pra contagem se bucket-detection mudar (review #1591).
         const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const re = new RegExp(
-          `^\\s*(?:\\*\\*)?(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]\\s+)?${escaped}\\s*(?:\\*\\*)?\\s*$`,
+          `^\\s*${EMOJI_PREFIX_FRAGMENT}${escaped}\\s*(?:\\*\\*)?\\s*$`,
           "imu",
         );
         return re.test(section);
@@ -151,11 +188,11 @@ export function countSelectedItems(md: string): SelectedCounts {
       | "videos"
       | null = null;
     if (DESTAQUE_HEADER_LINE_RE.test(section)) bucket = "destaques";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?LAN[ÇC]AMENTOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "lancamentos";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?PESQUISAS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "pesquisas";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?(?:OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?)\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "noticias";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?USE\s+MELHOR\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "tutoriais";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?V[ÍI]DEOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "videos";
+    else if (LANCAMENTOS_RE.test(section)) bucket = "lancamentos";
+    else if (PESQUISAS_RE.test(section)) bucket = "pesquisas";
+    else if (NOTICIAS_RE.test(section)) bucket = "noticias";
+    else if (TUTORIAIS_RE.test(section)) bucket = "tutoriais";
+    else if (VIDEOS_RE.test(section)) bucket = "videos";
 
     if (!bucket) continue;
 
@@ -192,8 +229,10 @@ export function countSelectedItems(md: string): SelectedCounts {
  * ausência como ok ou erro).
  */
 export function extractIntroClaimedCount(md: string): number | null {
-  const normalized = md.replace(/\r\n/g, "\n");
-  const introMatch = normalized.match(
+  // Strip frontmatter primeiro pra evitar matchar `description: "Selecionamos
+  // os 5..."` em YAML (review #1591 — futuro template pode poluir).
+  const body = stripFrontmatter(md).replace(/\r\n/g, "\n");
+  const introMatch = body.match(
     /(?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\s+os?\s+(\d+)/i,
   );
   if (!introMatch) return null;

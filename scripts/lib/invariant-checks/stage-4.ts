@@ -205,7 +205,9 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
       rule: "intro-count-consistent",
       message:
         `intro line declara ${result.claimed} items mas contagem real é ${result.actual}. ` +
-        `Rodar: npx tsx scripts/sync-coverage-line.ts --edition-dir ${editionDir}`,
+        `Fix manual: editar "Selecionamos os ${result.claimed}" → "Selecionamos os ${result.actual}" ` +
+        `em ${path}. Re-rodar sync-coverage-line só se quiser também recomputar X/Y ` +
+        `(consome tmp-articles-raw.json — pode mudar mais que Z).`,
       source_issue: "#1578",
       severity: "error",
       file: path,
