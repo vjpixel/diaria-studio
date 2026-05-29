@@ -120,11 +120,12 @@ describe("orchestrator-prompt (#634)", () => {
     // 555→565 quando #1112 adicionou step 1p1 research-review-dates; 565→580
     // quando #1273 adicionou wrapper ensure-research-reviewer-output post-dispatch;
     // 580→620 quando stage-4 cresceu com publish paralelo + resume-aware + halt rules;
-    // 620→640 quando #1545 adicionou 4f-ter social preview + #1548 report instruction).
+    // 620→640 quando #1545 adicionou 4f-ter social preview + #1548 report instruction;
+    // 640→700 quando #1571 documentou pre-gate mode + 4a-pre-gate explícito.
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 640,
-        `${file} tem ${lines[file]} linhas (target ≤640)`,
+        lines[file] <= 700,
+        `${file} tem ${lines[file]} linhas (target ≤700)`,
       );
     }
   });
