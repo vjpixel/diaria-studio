@@ -26,39 +26,67 @@ const HIGHLIGHTS: HighlightSummary[] = [
 ];
 
 describe("renderHtmlReport", () => {
-  it("produces valid HTML with all sections", () => {
-    const html = renderHtmlReport("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, [], []);
+  it("produces valid HTML with core sections", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
     assert.ok(html.includes("<!DOCTYPE html>"));
     assert.ok(html.includes("260525"));
-    assert.ok(html.includes("OpenAI lanca GPT-5"));
-    assert.ok(html.includes("https://openai.com/gpt-5"));
+    assert.ok(html.includes("Tempo por stage"));
+    assert.ok(html.includes("Publicacao"));
+  });
+
+  // #1609: seção "Destaques" removida (redundante — editor já vê no Drive +
+  // test email). highlights não é mais argumento de renderHtmlReport.
+  it("omits the Destaques section", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+    assert.ok(!html.includes("<h2>Destaques</h2>"), "Destaques header should be gone");
   });
 
   it("shows pipeline_ms when available", () => {
-    const html = renderHtmlReport("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, [], []);
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
     assert.ok(html.includes("+gate:"), "should show gate annotation for stages with pipeline_ms");
     assert.ok(html.includes("5m"), "pipeline_ms of 300000 should render as 5m");
   });
 
+  // #1609: total = soma do tempo de pipeline (sem aguardo de gate).
+  // MINIMAL_DOC: 60k(s0) + 300k(s1 pipeline) + 900k(s2) + 300k(s3) + 300k(s4)
+  // = 1.860.000ms = 31m. Soma de duration_ms (antes) seria 35m.
+  it("total duration soma pipeline_ms, nao duration_ms (com aguardo gate)", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+    assert.ok(html.includes("31m"), "total deve usar pipeline (31m), nao 35m");
+    assert.ok(!html.includes("35m"), "total nao deve incluir aguardo de gate");
+  });
+
+  it("marca fallback quando algum stage nao tem pipeline_ms", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+    assert.ok(html.includes("pre-#1517"), "deve marcar visualmente o fallback duration_ms");
+  });
+
+  it("sem fallback quando todos os stages tem pipeline_ms", () => {
+    const allPipeline: StageStatusDoc = {
+      ...MINIMAL_DOC,
+      rows: MINIMAL_DOC.rows.map((r) => ({ ...r, pipeline_ms: r.pipeline_ms ?? r.duration_ms })),
+    };
+    const html = renderHtmlReport("260525", allPipeline, null, null, [], []);
+    assert.ok(!html.includes("pre-#1517"), "sem fallback, sem marcador");
+  });
+
   it("omits cost column", () => {
-    const html = renderHtmlReport("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, [], []);
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
     assert.ok(!html.includes("Custo"), "cost column header should not appear");
     assert.ok(!html.includes("not available"), "hardcoded 'not available' should be gone");
   });
 
   it("escapes single quotes in HTML", () => {
-    const xssHighlights: HighlightSummary[] = [
-      { title: "It's a test", url: "https://example.com" },
-    ];
-    const html = renderHtmlReport("260525", MINIMAL_DOC, xssHighlights, null, null, [], []);
-    assert.ok(!html.includes("It's"), "single quote should be escaped");
-    assert.ok(html.includes("It&#39;s"), "single quote should become &#39;");
+    const warnings = [{ level: "warn", message: "It's a timeout", agent: "researcher", stage: 1, edition: "260525" }];
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, warnings, []);
+    assert.ok(!html.includes("It's a timeout"), "single quote should be escaped");
+    assert.ok(html.includes("It&#39;s a timeout"), "single quote should become &#39;");
   });
 
   it("shows warnings and errors", () => {
     const warnings = [{ level: "warn", message: "timeout", agent: "researcher", stage: 1, edition: "260525" }];
     const errors = [{ level: "error", message: "crash", agent: "writer", stage: 2, edition: "260525" }];
-    const html = renderHtmlReport("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, warnings, errors);
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, warnings, errors);
     assert.ok(html.includes("Warnings (1)"));
     assert.ok(html.includes("Errors (1)"));
     assert.ok(html.includes("timeout"));
@@ -72,7 +100,7 @@ describe("renderHtmlReport", () => {
         { platform: "linkedin", destaque: "d1", status: "scheduled", scheduled_at: "2026-05-26T20:00:00Z" },
       ],
     };
-    const html = renderHtmlReport("260525", MINIMAL_DOC, HIGHLIGHTS, null, social, [], []);
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, social, [], []);
     assert.ok(html.includes("facebook"));
     assert.ok(html.includes("linkedin"));
     assert.ok(html.includes("BRT"));
@@ -80,9 +108,10 @@ describe("renderHtmlReport", () => {
 });
 
 describe("buildSummary", () => {
-  it("computes total duration from all stages", () => {
+  // #1609: total soma pipeline_ms (fallback duration_ms): 60k+300k+900k+300k+300k.
+  it("computes total pipeline duration from all stages (sem aguardo gate)", () => {
     const summary = buildSummary("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, 2, 1);
-    assert.equal(summary.total_duration_ms, 2_100_000);
+    assert.equal(summary.total_duration_ms, 1_860_000);
     assert.equal(summary.warnings_count, 2);
     assert.equal(summary.errors_count, 1);
   });
