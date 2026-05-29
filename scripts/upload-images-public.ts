@@ -51,6 +51,11 @@ export interface PublicImage {
    * em re-runs (imagem regerada local com bytes novos mas cache aponta pro
    * upload antigo). Ausente em entries pre-#1418 → assume drift e re-uploadar. */
   md5?: string;
+  /** #1584: Cloudflare URL persistente, separada de `url`. Quando uma key
+   * (ex: `d1`) é uploadada primeiro pra Cloudflare (mode=newsletter) e depois
+   * pra Drive (mode=social), a Cloudflare URL antes era perdida ao overwrite.
+   * Agora preservada aqui pro renderer do social preview continuar resolvendo. */
+  cloudflare_url?: string;
 }
 
 /** Target de hospedagem das imagens. #1119 */
@@ -293,11 +298,27 @@ export interface UploadOptions {
 /**
  * Constrói KV key única por edição + filename. Convenção #1119: `img-{AAMMDD}-{filename}`.
  * Extrai AAMMDD do path da edição (ex: `data/editions/260512/` → `260512`).
+ *
+ * #1584: quando `md5Hex` é passado, anexa sufixo `-{md5short}` antes da extensão
+ * (`img-{AAMMDD}-{base}-{md5short}.{ext}`). Cache-busts re-uploads — Cloudflare
+ * serve com `Cache-Control: max-age=1ano, immutable`, então sem suffix o browser
+ * nunca pega imagem regenerada (caso 260529: D1 regen 3 vezes, sempre mesma URL
+ * → editor via imagem antiga).
  */
-export function cloudflareKvKey(editionDir: string, filename: string): string {
+export function cloudflareKvKey(
+  editionDir: string,
+  filename: string,
+  md5Hex?: string,
+): string {
   const match = editionDir.replace(/[\\/]+$/, "").match(/(\d{6})$/);
   const aammdd = match?.[1] ?? "unknown";
-  return `img-${aammdd}-${filename}`;
+  if (!md5Hex) return `img-${aammdd}-${filename}`;
+  const md5short = md5Hex.slice(0, 8);
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return `img-${aammdd}-${filename}-${md5short}`;
+  const base = filename.slice(0, dot);
+  const ext = filename.slice(dot);
+  return `img-${aammdd}-${base}-${md5short}${ext}`;
 }
 
 export async function uploadPublicImages(
@@ -350,7 +371,9 @@ export async function uploadPublicImages(
     const localMd5 = md5OfFile(imagePath);
 
     if (target === "cloudflare") {
-      const key = cloudflareKvKey(editionDir, spec.filename);
+      // #1584: md5 suffix no key cache-busts re-uploads (Cloudflare serve com
+      // max-age=1ano immutable).
+      const key = cloudflareKvKey(editionDir, spec.filename, localMd5);
       const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
       images[spec.key] = {
         file_id: key,
@@ -359,12 +382,17 @@ export async function uploadPublicImages(
         filename: spec.filename,
         target: "cloudflare",
         md5: localMd5,
+        cloudflare_url: url,
       };
     } else {
       const content = readFileSync(imagePath);
       const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
       const { id: fileId } = await driveUploadFile(driveName, content, mime);
       await makeFilePublic(fileId);
+      // #1584: preserva cloudflare_url se já estava no cache (mode=newsletter
+      // rodou primeiro e fez upload pra Cloudflare). Sem isso, social mode
+      // sobrescrevia o entry e o renderer social perdia a URL Cloudflare.
+      const preservedCloudflare = cached?.cloudflare_url;
       images[spec.key] = {
         file_id: fileId,
         url: publicImageUrl(fileId),
@@ -372,6 +400,7 @@ export async function uploadPublicImages(
         filename: spec.filename,
         target: "drive",
         md5: localMd5,
+        ...(preservedCloudflare ? { cloudflare_url: preservedCloudflare } : {}),
       };
     }
   }

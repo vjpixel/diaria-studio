@@ -86,3 +86,44 @@ describe("cloudflareKvKey (#1119)", () => {
     assert.match(k, /^[a-zA-Z0-9._-]+$/, "key deve ser URL-safe");
   });
 });
+
+describe("cloudflareKvKey — md5 suffix (#1584)", () => {
+  const MD5_HEX = "abcdef1234567890abcdef1234567890";
+
+  it("sem md5 → formato legacy preservado", () => {
+    assert.equal(
+      cloudflareKvKey("data/editions/260529", "04-d1-1x1.jpg"),
+      "img-260529-04-d1-1x1.jpg",
+    );
+  });
+
+  it("com md5 → adiciona sufixo {md5short} antes da extensão", () => {
+    assert.equal(
+      cloudflareKvKey("data/editions/260529", "04-d1-1x1.jpg", MD5_HEX),
+      "img-260529-04-d1-1x1-abcdef12.jpg",
+    );
+  });
+
+  it("md5short é exatamente 8 chars (não a hash inteira)", () => {
+    const key = cloudflareKvKey("data/editions/260529", "img.png", MD5_HEX);
+    assert.match(key, /-abcdef12\.png$/);
+  });
+
+  it("filename sem extensão → md5 no fim, sem ponto", () => {
+    assert.equal(
+      cloudflareKvKey("data/editions/260529", "noext", MD5_HEX),
+      "img-260529-noext-abcdef12",
+    );
+  });
+
+  it("re-upload com md5 diferente gera key diferente (cache-bust)", () => {
+    const k1 = cloudflareKvKey("data/editions/260529", "04-d1-1x1.jpg", "aaaa1111");
+    const k2 = cloudflareKvKey("data/editions/260529", "04-d1-1x1.jpg", "bbbb2222");
+    assert.notEqual(k1, k2);
+  });
+
+  it("key com md5 ainda URL-safe", () => {
+    const k = cloudflareKvKey("data/editions/260529", "04-d1-1x1.jpg", MD5_HEX);
+    assert.match(k, /^[a-zA-Z0-9._-]+$/);
+  });
+});
