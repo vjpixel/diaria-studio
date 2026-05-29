@@ -56,7 +56,6 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
-| `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente | #facebook |
 | `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente | #facebook |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
@@ -70,6 +69,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
+| `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `social-published-complete` | 06-social-published.json não-vazio, sem failed (#272) | #272 |
 | `stage-4-review-completed` | review-test-email loop rodou + terminou (#1577) | #1577 |
 | `stage-4-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |

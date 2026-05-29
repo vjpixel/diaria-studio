@@ -27,7 +27,9 @@
  * Validação:
  *   - --new-order DEVE ser permutação de [1,2,3]
  *   - Idempotente: reorder 1,2,3 = no-op (saída zero-changes)
- *   - Reorder 2× volta ao original
+ *   - Reorder + inverso = identity (#1606 review fix: 2× só identity em 2-cycles
+ *     como [2,1,3]; 3-cycles como [3,1,2] precisam 3 aplicações pra fechar).
+ *     Editor que quer desfazer reorder anterior deve usar o inverso explícito.
  */
 
 import {
@@ -124,9 +126,12 @@ export function reorderHighlightsInJson(
  */
 export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   // Match cada bloco: header + content until next `---\n\n**DESTAQUE` OR
-  // next non-destaque section (LANÇAMENTOS, PESQUISAS, OUTRAS, etc).
+  // next non-destaque section (LANÇAMENTOS, RADAR/PESQUISAS/OUTRAS legacy, etc).
+  // #1569: 📡 RADAR adicionado como terminator (caso 260529+ teve D3 engolindo
+  // RADAR inteiro porque emoji ausente da lista).
+  // Review #1606: `\Z` é literal Z em JS — usar `$(?![\s\S])` pra true EOF.
   const blockRe =
-    /(\*\*DESTAQUE\s+\d+\s*\|[^\n]*\*\*[\s\S]*?)(?=\n+---\n+\*\*(?:DESTAQUE\s+\d|🚀|🔬|📰|🛠️|VÍDEOS?|🎁|🙋|ERRO\s+INTENCIONAL|ASSINE)|\Z)/g;
+    /(\*\*DESTAQUE\s+\d+\s*\|[^\n]*\*\*[\s\S]*?)(?=\n+---\n+\*\*(?:DESTAQUE\s+\d|🚀|🔬|📰|📡|🛠️|VÍDEOS?|🎁|🙋|ERRO\s+INTENCIONAL|ASSINE)|$(?![\s\S]))/g;
   const blocks: string[] = [];
   const positions: Array<{ start: number; end: number }> = [];
   let m: RegExpExecArray | null;
@@ -162,24 +167,34 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
  * Atualiza frontmatter intentional_error.location quando refere a DESTAQUE N.
  * "DESTAQUE 2, paragrafo 2" + newOrder=[2,1,3] → "DESTAQUE 1, paragrafo 2"
  * (porque o que era D2 agora é D1).
+ *
+ * Review #1606: scope LIMITADO ao frontmatter (entre primeiros pares `---`)
+ * pra evitar reescrever menção de DESTAQUE N em body text. Pré-fix, regex
+ * com `location:` opcional matcheava body lines também.
  */
 export function updateIntentionalErrorLocation(
   md: string,
   newOrder: number[],
 ): string {
-  return md.replace(
-    /^(\s+location:\s+["'])?DESTAQUE\s+(\d)(\s*,[^"'\n]*)?(["']?\s*)$/m,
+  // Extrair frontmatter — só atua se o MD começa com YAML block.
+  const fmMatch = md.match(/^(---\s*\n)([\s\S]*?)(\n---\s*\n)/);
+  if (!fmMatch) return md;
+  const [, openFence, fmBody, closeFence] = fmMatch;
+  // Substituir DESTAQUE N dentro do frontmatter — exige prefixo `location:`
+  // pra ser conservativo (evitar tocar outros campos).
+  const newFmBody = fmBody.replace(
+    /^(\s+location:\s+["'])DESTAQUE\s+(\d)(\s*,[^"'\n]*)?(["']?\s*)$/m,
     (full, pre, oldN, rest, post) => {
       const oldNum = parseInt(oldN, 10);
       if (![1, 2, 3].includes(oldNum)) return full;
-      // newOrder[i] é o número original que agora está na posição i+1
-      // Então procurar onde oldNum está no newOrder.
       const newIdx = newOrder.indexOf(oldNum);
       if (newIdx < 0) return full;
       const newN = newIdx + 1;
-      return `${pre ?? ""}DESTAQUE ${newN}${rest ?? ""}${post ?? ""}`;
+      return `${pre}DESTAQUE ${newN}${rest ?? ""}${post ?? ""}`;
     },
   );
+  if (newFmBody === fmBody) return md;
+  return openFence + newFmBody + closeFence + md.slice(fmMatch[0].length);
 }
 
 /**
@@ -190,7 +205,10 @@ export function updateIntentionalErrorLocation(
  */
 export function reorderSocialMd(md: string, newOrder: number[]): string {
   // Split por platform sections (## d{N})
-  const sectionRe = /(^##\s+d(\d)\s*$[\s\S]*?)(?=^##\s+d\d|\Z)/gim;
+  // Review #1606: `\Z` é literal Z em JS — usar `$(?![\s\S])` pra true EOF.
+  // Esse loop é dead-code (sections never read), mas mantemos pra coerência
+  // semântica caso alguém leia o regex como spec do match correto.
+  const sectionRe = /(^##\s+d(\d)\s*$[\s\S]*?)(?=^##\s+d\d|$(?![\s\S]))/gim;
   const sections: Array<{ idx: number; full: string; n: number }> = [];
   let m: RegExpExecArray | null;
   while ((m = sectionRe.exec(md)) !== null) {

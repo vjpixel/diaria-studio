@@ -102,6 +102,16 @@ npx tsx scripts/apply-stage2-caps.ts \
 
 Writer (Passo 2) deve receber `01-approved-capped.json` em vez do raw. Falha do script (input ausente, etc.) = parar — sem caps o writer pode publicar 9 notícias quando cap esperado era 4 (caso real em 260507).
 
+**Passo 1b-bis — translate-summaries (#1572 + #1601 review fix):** depois dos caps, limpar/truncar summaries em inglês pra evitar `[TRADUZIR]` + summary cru vazando pra newsletter HTML (caso 260529):
+
+```bash
+npx tsx scripts/translate-summaries.ts \
+  --in data/editions/$1/_internal/01-approved-capped.json \
+  --out data/editions/$1/_internal/01-approved-capped.json
+```
+
+Idempotente (marca `summary_translated: true`). NÃO traduz via LLM — strip de prefixo arXiv + 1ª frase + truncate 150 chars. Stitch adiciona prefix `[TRADUZIR]` em items `summary_lang === "en"`; humanizer (ou editor no gate) remove o prefix downstream.
+
 ## Passo 2 — Dispatch paralelo (writer-destaque × 3 + social, #1451/#1463)
 
 **INVARIANTE (#1451):** writer paralelo é default em todas as situações. Dispatch `writer-destaque` × 3 + social em paralelo, depois `scripts/stitch-newsletter.ts` une os outputs.

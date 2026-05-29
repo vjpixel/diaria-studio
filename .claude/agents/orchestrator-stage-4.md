@@ -25,44 +25,6 @@ A skill que invoca este playbook define `pre_gate` no contexto (lido do SKILL.md
 
 A skill `/diaria-4-publicar` está em transição pra pre-gate (#1571 followup). Por enquanto, ela default-falha pra `pre_gate = false` a menos que `--pre-gate` seja passado explicitamente.
 
-### 4a-pre-gate. Pré-render + apresentar preview ao editor (#1523 / #1571)
-
-**Executar SOMENTE quando `pre_gate = true`.** Faz tudo que o dispatch precisa exceto enviar pros canais finais:
-
-1. Roda upload-images-public newsletter mode (cobre 4c-pre):
-   ```bash
-   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode newsletter
-   ```
-2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker (`https://draft.diaria.workers.dev/{AAMMDD}-{hash}`).
-3. Pre-render do social — `npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out _internal/social-preview.html` + `upload-html-public.ts --key {AAMMDD}-social` pra subir pro draft worker.
-4. close-poll idempotente (set gabarito):
-   ```bash
-   npx tsx scripts/close-poll.ts --edition {AAMMDD} --idempotent
-   ```
-5. **PRE-GATE HUMANO:** apresentar bloco:
-   ```
-   📄 Newsletter HTML: https://draft.diaria.workers.dev/{AAMMDD}-{hash}
-   📱 Social preview:  https://draft.diaria.workers.dev/{AAMMDD}-social-{hash}
-   📁 Arquivos locais: 02-reviewed.md, 03-social.md
-   📎 Imagens:        cover D1 (Cloudflare KV) + EIA A/B + d1/d2/d3 1x1 social
-   
-   Aprovar dispatch em todos os 3 canais? (sim / editar / abortar)
-     - "sim" → prossegue pra 4c dispatch newsletter + 4g-bis social em paralelo
-     - "editar" → halt; editor edita arquivos no Drive → pull → re-roda /diaria-4-publicar
-     - "abortar" → encerra stage 4 sem publicar (sentinel não é escrito)
-   ```
-6. Logar resposta:
-   ```bash
-   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
-     --message "pre_gate response: {sim|editar|abortar}"
-   ```
-
-**Pós-aprovação ("sim"):** consumir o consent automático em 4b (auto-approve path), saltar 4c-pre (já rodou step 1 acima) e ir pra 4c. PULAR 4g (gate pós-dispatch já é redundante).
-
-**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita e re-roda.
-
-**"abortar":** logar warn, encerrar sem sentinel.
-
 ### Pré-condição: sentinel Stage 3
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-3.md §Escrever sentinel de conclusão do Stage 3 -->
@@ -122,6 +84,54 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   npx tsx scripts/check-invariants.ts --stage 4 --edition-dir data/editions/{AAMMDD}/
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
+
+### 4a-pre-gate. Pré-render + apresentar preview ao editor (#1523 / #1571)
+
+**Executar SOMENTE quando `pre_gate = true`.** Roda APÓS 4a (sentinel-3, sync pull, invariants) — review #1600 corrigiu posição que estava antes do sync. Faz tudo que o dispatch precisa exceto enviar pros canais finais:
+
+1. **upload-images-public — TODOS modos** (cobre 4c-pre completo). Newsletter mode sozinho deixa d2/d3 fora do Drive → DLQ #999:
+   ```bash
+   # CF: cover + d1 1x1 + EIA A/B
+   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode newsletter
+   # Drive: d1/d2/d3 1x1 pros image_url do LinkedIn/Facebook
+   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
+   ```
+2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker (`https://draft.diaria.workers.dev/{AAMMDD}`).
+3. Pre-render do social preview HTML:
+   ```bash
+   npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html
+   # upload-html-public.ts aceita --edition + --html; pra social usar edition suffix:
+   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html
+   ```
+4. close-poll (set gabarito — script já é idempotente, sem flag):
+   ```bash
+   npx tsx scripts/close-poll.ts --edition {AAMMDD}
+   ```
+5. **PRE-GATE HUMANO:** apresentar bloco:
+   ```
+   📄 Newsletter HTML: https://draft.diaria.workers.dev/{AAMMDD}
+   📱 Social preview:  https://draft.diaria.workers.dev/{AAMMDD}-social
+   📁 Arquivos locais: 02-reviewed.md, 03-social.md
+   📎 Imagens:        cover D1 (Cloudflare KV) + EIA A/B + d1/d2/d3 1x1 social
+
+   Aprovar dispatch em todos os 3 canais? (sim / editar / abortar)
+     - "sim" → prossegue pra 4c dispatch newsletter + 4g-bis social em paralelo
+     - "editar" → halt; editor edita arquivos no Drive → pull → re-roda /diaria-4-publicar
+     - "abortar" → encerra stage 4 sem publicar (sentinel não é escrito)
+     - Qualquer outra resposta → repetir prompt (fail-closed pra evitar dispatch
+       acidental por resposta ambígua — review #1600 fix)
+   ```
+6. Logar resposta:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
+     --message "pre_gate response: {sim|editar|abortar}"
+   ```
+
+**Pós-aprovação ("sim"):** consumir o consent automático em 4b (auto-approve path), saltar 4c-pre (já rodou step 1 acima) e ir pra 4c. PULAR 4g (gate pós-dispatch já é redundante).
+
+**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita e re-roda.
+
+**"abortar":** logar warn, encerrar sem sentinel.
 
 ### 4a-bis. ~~Injetar URLs do poll É IA? por subscriber~~ — removido (#1175, script deletado #1185)
 

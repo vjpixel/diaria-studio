@@ -46,6 +46,9 @@ const HEADER_PATTERNS: Array<{ re: RegExp; canonical: string }> = [
   { re: /^\*{0,2}DESTAQUE\s+(\d+)\s*\|/i, canonical: "destaque-$1" },
   { re: /^\*{0,2}(?:## )?É IA\?\*{0,2}\s*$/i, canonical: "é-ia" },
   { re: /^\*{0,2}LAN[ÇC]AMENTOS\*{0,2}\s*$/i, canonical: "lancamentos" },
+  // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS.
+  { re: /^\*{0,2}RADAR\*{0,2}\s*$/i, canonical: "radar" },
+  // Legacy patterns mantidos pra validar fingerprint de edições antigas:
   { re: /^\*{0,2}PESQUISAS\*{0,2}\s*$/i, canonical: "pesquisas" },
   { re: /^\*{0,2}OUTRAS\s+NOT[ÍI]CIAS\*{0,2}\s*$/i, canonical: "outras-noticias" },
   { re: /^\*{0,2}🎁?\s*SORTEIO\*{0,2}\s*$/i, canonical: "sorteio" },
