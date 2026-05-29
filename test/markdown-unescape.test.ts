@@ -114,6 +114,54 @@ describe("unescapeMarkdown — edge cases", () => {
   });
 });
 
+describe("unescapeMarkdown — bold-link nesting flip (#1582)", () => {
+  it("normaliza [**Title**](url) → **[Title](url)** (Drive roundtrip flip)", () => {
+    const input = "[**Modelos se replicam sozinhos**](https://theguardian.com/x)";
+    const expected = "**[Modelos se replicam sozinhos](https://theguardian.com/x)**";
+    assert.equal(unescapeMarkdown(input), expected);
+  });
+
+  it("preserva **[Title](url)** quando já no formato canônico (no-op)", () => {
+    const input = "**[Título canônico](https://example.com)**";
+    assert.equal(unescapeMarkdown(input), input);
+  });
+
+  it("não toca [Title](url) sem bold dentro", () => {
+    const input = "[Texto plain](https://example.com)";
+    assert.equal(unescapeMarkdown(input), input);
+  });
+
+  it("não toca quando bold só de um lado dentro: [**Title](url) preserva", () => {
+    const input = "[**Title sem fechar](https://example.com)";
+    assert.equal(unescapeMarkdown(input), input);
+  });
+
+  it("idempotente: 2x não duplica os asteriscos", () => {
+    const input = "[**Título**](https://example.com)";
+    const once = unescapeMarkdown(input);
+    const twice = unescapeMarkdown(once);
+    assert.equal(twice, once);
+    assert.equal(once, "**[Título](https://example.com)**");
+  });
+
+  it("múltiplos items na mesma string normalizam todos", () => {
+    const input = [
+      "[**Item 1**](https://a.com) desc 1",
+      "[**Item 2**](https://b.com) desc 2",
+    ].join("\n");
+    const expected = [
+      "**[Item 1](https://a.com)** desc 1",
+      "**[Item 2](https://b.com)** desc 2",
+    ].join("\n");
+    assert.equal(unescapeMarkdown(input), expected);
+  });
+
+  it("não toca em emoji prefix [📰 …](…) — não tem ** dentro", () => {
+    const input = "[📰 Section](https://example.com)";
+    assert.equal(unescapeMarkdown(input), input);
+  });
+});
+
 describe("unescapeMarkdown — caso real edição 260513 (snippet integral)", () => {
   it("desescapa bloco LinkedIn completo", () => {
     const input = [

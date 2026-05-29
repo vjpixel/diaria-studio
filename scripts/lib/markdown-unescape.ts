@@ -40,6 +40,18 @@ const UNESCAPE_RE = /\\([`*_{}[\]()#+\-.!|>])/g;
 const AUTOLINK_RE = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
 
 /**
+ * #1582: Drive Doc round-trip flips `**[Title](url)**` (bold-wraps-link, fonte
+ * canônica do pipeline) pra `[**Title**](url)` (link-wraps-bold). Semanticamente
+ * equivalente em CommonMark mas downstream parsers (lint determinístico,
+ * extractor de destaque) podem tratar diferente — flag mecanicamente quebrava
+ * lint multiline-links / counter de items em #1581.
+ *
+ * Normaliza de volta pra `**[Title](url)**` pós-pull. Conservativa: só inverte
+ * quando o título inteiro está envolto em `**...**` balanceados.
+ */
+const BOLD_INSIDE_LINK_RE = /\[\*\*([^[\]\n]+?)\*\*\]\((https?:\/\/[^)\n]+)\)/g;
+
+/**
  * Desfaz escapes Markdown adicionados pelo Google Docs no round-trip MD→Doc→MD.
  *
  * @param content - markdown bruto exportado do Drive (pulled)
@@ -50,5 +62,8 @@ export function unescapeMarkdown(content: string): string {
     .replace(UNESCAPE_RE, "$1")
     .replace(AUTOLINK_RE, (match, text: string, url: string) =>
       text === url ? url : match,
+    )
+    .replace(BOLD_INSIDE_LINK_RE, (_match, text: string, url: string) =>
+      `**[${text}](${url})**`,
     );
 }
