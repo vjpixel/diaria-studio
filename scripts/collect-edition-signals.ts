@@ -34,6 +34,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
+import { isHardFailure } from "./lib/source-runs.ts";
 
 export type Severity = "low" | "medium" | "high";
 
@@ -147,9 +148,6 @@ interface SourceHealthEntry {
 interface SourceHealthFile {
   sources?: Record<string, SourceHealthEntry>;
 }
-
-const isHardFailure = (outcome: string | undefined): boolean =>
-  outcome === "fail" || outcome === "timeout";
 
 /**
  * Dois sinais distintos a partir do source-health (#1576):
