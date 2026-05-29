@@ -74,7 +74,44 @@ export interface ReportSummary {
 // Data loaders
 // ---------------------------------------------------------------------------
 
+/**
+ * #1586: extrai destaques DIRETO do `02-reviewed.md` final, que reflete
+ * a ordem editorial pós-Stage 4 (incluindo reorders manuais do editor).
+ *
+ * Regex captura blocos `**DESTAQUE N | EMOJI CATEGORIA**` + título inline
+ * link na próxima linha não-vazia. Suporta os 2 formatos canônicos:
+ *   - `**[Título](URL)**` (bold-wraps-link, fonte canônica do pipeline)
+ *   - `[**Título**](URL)` (link-wraps-bold, pós-Drive round-trip pré-#1582)
+ *
+ * Retorna lista vazia se MD não tem destaques parseáveis — caller faz
+ * fallback pra 01-approved.json (pre-Stage 2 ou edição abortada).
+ */
+export function extractHighlightsFromMd(md: string): HighlightSummary[] {
+  const out: HighlightSummary[] = [];
+  const blockRe =
+    /^\*\*DESTAQUE\s+(\d+)\s*\|[^*\n]*\*\*\s*\n+\s*(?:\*\*)?\[(?:\*\*)?([^\]\n]+?)(?:\*\*)?\]\((https?:\/\/[^)\s]+)\)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(md)) !== null) {
+    const title = m[2].trim();
+    const url = m[3].trim();
+    if (title && url) out.push({ title, url });
+  }
+  return out.slice(0, 3);
+}
+
 function loadHighlights(editionDir: string): HighlightSummary[] {
+  // #1586: preferir 02-reviewed.md final (reflete reorder editorial mid-Stage 4).
+  // Fallback pra 01-approved.json quando MD ausente (pre-Stage 2 ou edição abortada).
+  const mdPath = resolve(editionDir, "02-reviewed.md");
+  if (existsSync(mdPath)) {
+    try {
+      const md = readFileSync(mdPath, "utf8");
+      const fromMd = extractHighlightsFromMd(md);
+      if (fromMd.length > 0) return fromMd;
+    } catch {
+      // fall through
+    }
+  }
   const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
   if (!existsSync(approvedPath)) return [];
   try {
