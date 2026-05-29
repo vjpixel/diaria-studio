@@ -185,18 +185,55 @@ export function frontmatterToEntry(
 }
 
 /**
- * Idempotente: verifica se já existe entry pra `edition` no array; se não,
- * append a entry derivada do frontmatter.
+ * #1589: compara dois entries pra detectar drift. Retorna `true` se os campos
+ * derivados do frontmatter (error_type, destaque, detail, correct_value)
+ * diverem.
+ */
+export function entryDiffersFromFrontmatter(
+  existing: IntentionalError,
+  fm: IntentionalErrorFrontmatter,
+): boolean {
+  const candidate = frontmatterToEntry(fm, existing.edition);
+  return (
+    existing.error_type !== candidate.error_type ||
+    String(existing.destaque ?? "") !== String(candidate.destaque ?? "") ||
+    (existing.detail ?? "") !== (candidate.detail ?? "") ||
+    (existing.correct_value ?? "") !== (candidate.correct_value ?? "")
+  );
+}
+
+/**
+ * Sync one-way (#1589): MD frontmatter é fonte autoritativa. Se já existe
+ * entry pra `edition` com `source: "frontmatter_02_reviewed"`:
+ *   - bate com o frontmatter atual → no-op
+ *   - difere → substitui (mantém entries de outras editions intactas)
+ * Se não existe entry, append.
+ *
+ * Pré-#1589: entry existente bloqueava qualquer sync, então editor que
+ * editava o frontmatter pós-publish via stale data no JSONL → reveal
+ * Frankenstein na próxima edição (260528 → 260529).
  */
 export function syncFrontmatterToEntries(
   fm: IntentionalErrorFrontmatter,
   edition: string,
   existing: IntentionalError[],
-): { added: boolean; entries: IntentionalError[] } {
-  const already = existing.some(
+): {
+  added: boolean;
+  updated: boolean;
+  entries: IntentionalError[];
+} {
+  const idx = existing.findIndex(
     (e) => e.edition === edition && e.source === "frontmatter_02_reviewed",
   );
-  if (already) return { added: false, entries: existing };
-  const newEntry = frontmatterToEntry(fm, edition);
-  return { added: true, entries: [...existing, newEntry] };
+  if (idx === -1) {
+    const newEntry = frontmatterToEntry(fm, edition);
+    return { added: true, updated: false, entries: [...existing, newEntry] };
+  }
+  if (!entryDiffersFromFrontmatter(existing[idx], fm)) {
+    return { added: false, updated: false, entries: existing };
+  }
+  const updatedEntry = frontmatterToEntry(fm, edition);
+  const next = [...existing];
+  next[idx] = updatedEntry;
+  return { added: false, updated: true, entries: next };
 }

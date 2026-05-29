@@ -548,10 +548,15 @@ function main(): void {
     // Enriquecer com narrativa do MD se disponível (pra reveal mais natural)
     const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
     if (fromMd && fromMd.edition === fromJsonl.edition) {
+      // #1589: MD frontmatter é fonte autoritativa. Quando há drift entre
+      // JSONL e MD (caso 260528 → 260529: detail/correct_value divergiam),
+      // MD vence — incluindo correct_value. Evita reveal Frankenstein.
       prev = {
         ...fromJsonl,
         narrative: fromMd.narrative,
         gabarito: fromMd.gabarito,
+        ...(fromMd.detail ? { detail: fromMd.detail } : {}),
+        ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
       } as IntentionalError & { narrative?: string; gabarito?: string };
       source = "jsonl+md";
     }

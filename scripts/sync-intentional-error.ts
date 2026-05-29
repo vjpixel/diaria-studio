@@ -65,6 +65,19 @@ function appendJsonl(path: string, entry: IntentionalError): void {
   }
 }
 
+/**
+ * #1589: re-escreve o JSONL inteiro a partir do array `entries`. Usado quando
+ * uma entry pre-existente foi atualizada (não dá pra fazer in-place edit num
+ * append-only JSONL — precisa re-escrever).
+ */
+function rewriteJsonl(path: string, entries: IntentionalError[]): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const body = entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : "");
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, body, "utf8");
+  renameSync(tmp, path);
+}
+
 function main(): number {
   const argv = process.argv.slice(2);
   const flags = parseArgs(argv);
@@ -87,7 +100,7 @@ function main(): number {
   }
 
   const existing = loadIntentionalErrors(jsonlPath);
-  const { added, entries } = syncFrontmatterToEntries(
+  const { added, updated, entries } = syncFrontmatterToEntries(
     lintResult.parsed,
     flags.edition,
     existing,
@@ -99,14 +112,21 @@ function main(): number {
     process.stderr.write(
       `[sync-intentional-error] entry adicionada pra edição ${flags.edition} (category: ${newEntry.error_type})\n`,
     );
+  } else if (updated) {
+    // #1589: entry pre-existente divergiu do frontmatter — re-escreve o JSONL
+    // inteiro com a versão atualizada. MD é fonte autoritativa.
+    rewriteJsonl(jsonlPath, entries);
+    process.stderr.write(
+      `[sync-intentional-error] entry atualizada pra edição ${flags.edition} (frontmatter divergia do JSONL)\n`,
+    );
   } else {
     process.stderr.write(
-      `[sync-intentional-error] edição ${flags.edition} já tem entry de frontmatter — no-op\n`,
+      `[sync-intentional-error] edição ${flags.edition} já tem entry de frontmatter (bate) — no-op\n`,
     );
   }
 
   process.stdout.write(
-    JSON.stringify({ added, edition: flags.edition }, null, 2) + "\n",
+    JSON.stringify({ added, updated, edition: flags.edition }, null, 2) + "\n",
   );
   return 0;
 }
