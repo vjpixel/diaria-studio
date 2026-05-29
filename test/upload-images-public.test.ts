@@ -122,15 +122,26 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     // Renderer (render-newsletter-html.ts) só substitui placeholders pra
     // cover D1 + È IA? A/B. D2/D3 não têm imagem inline na newsletter
     // (memory feedback_newsletter_only_d1_image.md).
+    //
+    // #1583: d1 (1x1) ADICIONADO pra cobrir social preview HTML que constrói
+    // `img-{edition}-04-d1-1x1.jpg` esperando Cloudflare KV. D2/D3 continuam
+    // excluídos.
     const specs = imageSpecsFor("newsletter");
     const keys = specs.map((s) => s.key);
     assert.ok(!keys.includes("d2"), "d2 não deve estar em newsletter mode");
     assert.ok(!keys.includes("d3"), "d3 não deve estar em newsletter mode");
     assert.deepEqual(
       keys.sort(),
-      ["cover", "eia_a", "eia_b"].sort(),
-      "newsletter = cover + eia_a + eia_b",
+      ["cover", "d1", "eia_a", "eia_b"].sort(),
+      "newsletter = cover + d1 + eia_a + eia_b",
     );
+  });
+
+  it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {
+    const specs = imageSpecsFor("newsletter");
+    const d1Spec = specs.find((s) => s.key === "d1");
+    assert.ok(d1Spec, "d1 spec deve estar em newsletter mode");
+    assert.equal(d1Spec!.filename, "04-d1-1x1.jpg");
   });
 
   it("newsletter mode com editionDir + 01-eia-A.jpg + 01-eia-B.jpg → eia_a/eia_b", () => {

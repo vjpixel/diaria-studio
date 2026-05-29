@@ -168,14 +168,17 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
 
   // #1121: newsletter mode upload-a só o que o renderer de fato substitui via
   // `{{IMG:...}}`: cover D1 + È IA? A/B. D2/D3 não têm imagem inline na
-  // newsletter (memory `feedback_newsletter_only_d1_image.md`). Histórico:
-  // antes da #1121, d2/d3 estavam aqui por histórico de quando newsletter
-  // tinha imagem em todos os destaques — não atualizado quando regra mudou.
-  // Mantê-los causava (a) upload desnecessário e (b) churn entre target=drive
-  // (social) ↔ target=cloudflare (newsletter), criando file_ids órfãos no
-  // Drive a cada flip.
+  // newsletter (memory `feedback_newsletter_only_d1_image.md`).
+  //
+  // #1583: também subir 04-d1-1x1.jpg (key="d1") pra Cloudflare KV. Sem isso,
+  // render-social-html constrói `img-{edition}-04-d1-1x1.jpg` mas a chave não
+  // existe → 404 silencioso (social preview quebra). D2/D3 1x1 sobem pelo
+  // mode=social (target=drive) e render-social-html resolve via cache. D1
+  // precisa estar disponível em CF antes do social mode rodar porque o
+  // pre-render do preview HTML acontece na fase newsletter.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
+    { key: "d1", filename: "04-d1-1x1.jpg" },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;
@@ -396,7 +399,9 @@ export function assertCacheCompleteness(
 ): void {
   const expectedKeys = (() => {
     if (mode === "social") return ["d1", "d2", "d3"];
-    if (mode === "newsletter") return ["cover", "eia_a", "eia_b"];
+    // #1583: newsletter now also uploads d1 (1x1) pro Cloudflare KV pra que
+    // o social preview HTML resolva `img-{edition}-04-d1-1x1.jpg`.
+    if (mode === "newsletter") return ["cover", "d1", "eia_a", "eia_b"];
     // mode === "all"
     return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
   })();
