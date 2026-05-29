@@ -24,7 +24,16 @@ const imagesPath = imagesIdx >= 0 ? args[imagesIdx + 1] : null;
 
 const md = readFileSync(mdPath, "utf8");
 
-interface ImageMap { [key: string]: { url: string; filename?: string; md5?: string } }
+interface ImageMap {
+  [key: string]: {
+    url: string;
+    filename?: string;
+    md5?: string;
+    /** #1584: Cloudflare URL preservada quando upload-images-public roda em
+     * múltiplos modes (newsletter primeiro CF, social depois Drive). */
+    cloudflare_url?: string;
+  };
+}
 let imageUrls: ImageMap = {};
 if (imagesPath) {
   try {
@@ -110,6 +119,13 @@ function getImageUrl(destaque: string): string {
   const key = `d${dNum}`;
   const entry = imageUrls[key];
   if (!entry) return "";
+  // #1584: prefere cloudflare_url quando presente. Setado por upload-images-public
+  // sempre que upload pra Cloudflare aconteceu (mode=newsletter pra d1, ou
+  // futuros uploads explícitos pra d2/d3). Inclui md5 suffix pra cache-bust.
+  if (entry.cloudflare_url) return entry.cloudflare_url;
+  // Fallback legacy: entry.url é Drive (social mode) — construir URL Cloudflare
+  // sem md5 suffix. Quebra se a key Cloudflare foi criada com suffix; nesse
+  // caso, garantir que mode=newsletter rode pra setar cloudflare_url.
   if (entry.url?.includes("drive.google.com")) {
     return `${WORKER_IMG_BASE}img-${editionId}-${entry.filename || `04-d${dNum}-1x1.jpg`}`;
   }
