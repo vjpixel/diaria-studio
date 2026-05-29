@@ -100,13 +100,13 @@ Retorne JSON:
 
 ## Diferenças vs writer (parent)
 
-`writer` faz a newsletter **inteira** sequencialmente: cobertura + 3 destaques + É IA? + LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS + ERRO INTENCIONAL + ASSINE. Wall-clock ~30min em prod.
+`writer` faz a newsletter **inteira** sequencialmente: cobertura + 3 destaques + É IA? + LANÇAMENTOS/RADAR + ERRO INTENCIONAL + ASSINE. Wall-clock ~30min em prod.
 
 `writer-destaque` faz **só 1 destaque**. 3 instâncias em paralelo cortam wall-clock pra ~10min (max do mais lento). Coordenador (writer ou orchestrator) faz merge:
 
 - Pré: cobertura line + extract destaques metadata
 - Paralelo: 3× dispatch writer-destaque
-- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, PESQUISAS, OUTRAS) + ERRO INTENCIONAL + ASSINE
+- Pós: stitch destaques + emit É IA? + sections (LANÇAMENTOS, RADAR — #1569) + ERRO INTENCIONAL + ASSINE
 
 Trade-off: voice consistency pode sofrer (cada agente vê só seu destaque + peer_titles). Lint pós-stitch valida overlap; se detectar, o coordenador re-dispatcha o destaque com peer_titles atualizado.
 

@@ -104,26 +104,25 @@ describe("stitchNewsletter (#1463)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
       });
-      // Ordem canonical: coverage > D1 > D2 > É IA? > D3 > LANÇAMENTOS > PESQUISAS > OUTRAS > ERRO > SORTEIO > PARA ENCERRAR
+      // Ordem canonical (#1569): coverage > D1 > D2 > É IA? > D3 > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
+      // RADAR mergea pesquisa + noticias em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
-      const d1Pos = result.indexOf("DESTAQUE 1");
       const d2Pos = result.indexOf("DESTAQUE 2");
       const eiaPos = result.indexOf("É IA?");
       const d3Pos = result.indexOf("DESTAQUE 3");
-      const lancPos = result.indexOf("🚀 LANÇAMENTO");
-      const pesqPos = result.indexOf("PESQUISAS");
-      const notPos = result.indexOf("OUTRA NOTÍCIA");
+      const radarPos = result.indexOf("📡 RADAR");
       const erroPos = result.indexOf("ERRO INTENCIONAL");
       const sortPos = result.indexOf("SORTEIO");
       const encerrarPos = result.indexOf("PARA ENCERRAR");
-      // Skip d1Pos check — "DESTAQUE 1" aparece no 🚀 LANÇAMENTO header também
       assert.ok(d2Pos > 0 && d2Pos < eiaPos, `D2 antes de É IA? (d2=${d2Pos} eia=${eiaPos})`);
       assert.ok(eiaPos < d3Pos, "É IA? antes de D3");
-      assert.ok(d3Pos < pesqPos, "D3 antes de PESQUISAS");
-      assert.ok(pesqPos < notPos, "PESQUISAS antes de OUTRA NOTÍCIA");
-      assert.ok(notPos < erroPos, "OUTRA antes de ERRO");
+      assert.ok(d3Pos < radarPos, "D3 antes de RADAR");
+      assert.ok(radarPos < erroPos, "RADAR antes de ERRO");
       assert.ok(erroPos < sortPos, "ERRO antes de SORTEIO");
       assert.ok(sortPos < encerrarPos, "SORTEIO antes de PARA ENCERRAR");
+      // RADAR deve incluir items das duas categorias (pesquisa + noticias)
+      assert.match(result, /https:\/\/p\.com\/1/);
+      assert.match(result, /https:\/\/n\.com\/1/);
     } finally {
       cleanup();
     }
@@ -151,8 +150,12 @@ describe("stitchNewsletter (#1463)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
       });
+      // #1569: PESQUISA agora vai em RADAR (sem seção PESQUISAS dedicada).
       assert.doesNotMatch(result, /LANÇAMENTOS|LANÇAMENTO/);
-      assert.match(result, /PESQUISA/);
+      assert.match(result, /📡 RADAR/);
+      assert.match(result, /https:\/\/p\.com/);
+      // PESQUISAS antigo header não aparece mais
+      assert.doesNotMatch(result, /\*\*🔬 PESQUISAS\*\*|\*\*🔬 PESQUISA\*\*/);
       assert.doesNotMatch(result, /OUTRA NOTÍCIA|OUTRAS NOTÍCIAS/);
     } finally {
       cleanup();

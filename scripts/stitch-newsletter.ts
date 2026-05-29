@@ -160,8 +160,15 @@ export function stitchNewsletter(input: StitchInput): string {
   const eiaBlock = readEiaBlock(input.editionDir);
 
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
-  const pesquisas = renderSection("🔬", "PESQUISA", "PESQUISAS", approved.pesquisa ?? []);
-  const noticias = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", approved.noticias ?? []);
+  // #1569: PESQUISAS removida como seção dedicada — papers entram no RADAR
+  // junto com noticias/opiniões. Ordem dentro do RADAR: pesquisas primeiro
+  // (signal de "leitura mais densa") seguido de noticias. Editor pode podar
+  // ou re-ordenar no gate Stage 2.
+  const radarItems = [
+    ...(approved.pesquisa ?? []),
+    ...(approved.noticias ?? []),
+  ];
+  const radar = renderSection("📡", "RADAR", "RADAR", radarItems);
   const videos = renderSection("📺", "VÍDEO", "VÍDEOS", approved.video ?? []);
 
   const parts: string[] = [
@@ -193,14 +200,9 @@ export function stitchNewsletter(input: StitchInput): string {
     parts.push("---");
     parts.push("");
   }
-  if (pesquisas) {
-    parts.push(pesquisas);
-    parts.push("");
-    parts.push("---");
-    parts.push("");
-  }
-  if (noticias) {
-    parts.push(noticias);
+  // #1569: PESQUISAS + OUTRAS NOTÍCIAS combinadas em RADAR.
+  if (radar) {
+    parts.push(radar);
     parts.push("");
     parts.push("---");
     parts.push("");

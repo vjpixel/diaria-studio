@@ -242,6 +242,8 @@ export function splitConcatenatedSectionItem(
 const SECTION_HEADERS = [
   "LANÇAMENTOS",
   "LANCAMENTOS",
+  "RADAR", // #1569 — substitui OUTRAS NOTÍCIAS + PESQUISAS
+  // Legacy headers mantidos pra back-compat com edições antigas (re-render):
   "PESQUISAS",
   "OUTRAS NOTÍCIAS",
   "OUTRAS NOTICIAS",

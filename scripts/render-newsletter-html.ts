@@ -175,11 +175,15 @@ export function truncateAtSectionTerminator(text: string): string {
 //   `singularize-md-sections.ts` per #1324/#1328
 // - singular (LANÇAMENTO, NOTÍCIA, PESQUISA) ou plural (idem + S)
 // - C ou Ç em LANÇAMENTO (compat com OS sem cedilha)
+// - RADAR (#1569) — substitui PESQUISAS + OUTRAS NOTÍCIAS pós-rename
+//
+// Legacy aliases (PESQUISAS, OUTRAS NOTÍCIAS) mantidos pra re-rendering de
+// edições antigas — render-newsletter-html não distingue, só extrai items.
 //
 // Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
 // seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
 // NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
-const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?)(?:\*\*)?$/m;
+const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?)(?:\*\*)?$/m;
 
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
@@ -191,8 +195,9 @@ export function parseSections(text: string): Section[] {
 
     // #1363: normalizar pra plural pro switch em sectionEmojiPrefix
     // (mapping aceita só plural). LANÇAMENTO → LANÇAMENTOS etc.
+    // #1569: RADAR é invariante (singular = plural) — não pluralizar.
     const rawName = sectionMatch[1];
-    const name = rawName.endsWith("S") ? rawName : rawName + "S";
+    const name = rawName === "RADAR" || rawName.endsWith("S") ? rawName : rawName + "S";
     const emoji = sectionEmojiPrefix(name).trim() || "📰";
     // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
     // consumir esses blocos como items quando writer omitir `---`.

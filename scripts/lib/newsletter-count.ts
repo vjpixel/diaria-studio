@@ -66,7 +66,7 @@ const EMOJI_PREFIX_FRAGMENT =
 
 // Nomes válidos das seções secundárias (não-destaque, não-eia).
 const SECTION_NAME_FRAGMENT =
-  "LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?|USE\\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO";
+  "LAN[ÇC]AMENTOS?|RADAR|PESQUISAS?|OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?|USE\\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO";
 
 // Regex pra reconhecer header de seção secundária. Aceita:
 //   **LANÇAMENTOS** / **LANÇAMENTO** (plural/singular)
@@ -108,7 +108,7 @@ function bucketHeaderRe(nameFragment: string): RegExp {
 const LANCAMENTOS_RE = bucketHeaderRe("LAN[ÇC]AMENTOS?");
 const PESQUISAS_RE = bucketHeaderRe("PESQUISAS?");
 const NOTICIAS_RE = bucketHeaderRe(
-  "OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?",
+  "OUTRAS?\\s+NOT[ÍI]CIAS?|OUTRA\\s+NOT[ÍI]CIA|OUTROS?\\s+LINKS?|RADAR",
 );
 const TUTORIAIS_RE = bucketHeaderRe("USE\\s+MELHOR");
 const VIDEOS_RE = bucketHeaderRe("V[ÍI]DEOS?");
