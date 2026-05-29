@@ -519,6 +519,87 @@ describe("categorize() — bucket tutorial (#59 slice 2)", () => {
     );
   });
 
+  describe("novas fontes #1568 (Use melhor)", () => {
+    it("cookbook.openai.com → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://cookbook.openai.com/examples/agents" }),
+        "tutorial",
+      );
+    });
+
+    it("magazine.sebastianraschka.com → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://magazine.sebastianraschka.com/p/llms-from-scratch" }),
+        "tutorial",
+      );
+    });
+
+    it("fast.ai → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://www.fast.ai/posts/2026-01-15-course.html" }),
+        "tutorial",
+      );
+    });
+
+    it("blog.langchain.dev → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://blog.langchain.dev/agents-tutorial/" }),
+        "tutorial",
+      );
+    });
+
+    it("pinecone.io/learn/ → tutorial (path-prefix)", () => {
+      assert.equal(
+        categorize({ url: "https://www.pinecone.io/learn/series/rag/" }),
+        "tutorial",
+      );
+    });
+
+    it("hamel.dev → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://hamel.dev/posts/llm-eval.html" }),
+        "tutorial",
+      );
+    });
+
+    it("eugeneyan.com → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://eugeneyan.com/writing/llm-patterns/" }),
+        "tutorial",
+      );
+    });
+
+    it("hub.asimov.academy → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://hub.asimov.academy/blog/llms-praticos/" }),
+        "tutorial",
+      );
+    });
+
+    it("kaggle.com/learn → tutorial (path-prefix)", () => {
+      assert.equal(
+        categorize({ url: "https://www.kaggle.com/learn/intro-to-deep-learning" }),
+        "tutorial",
+      );
+    });
+
+    it("wandb.ai/site/articles → tutorial (path-prefix)", () => {
+      assert.equal(
+        categorize({ url: "https://wandb.ai/site/articles/llm-fine-tuning" }),
+        "tutorial",
+      );
+    });
+
+    it("learn.microsoft.com training path → tutorial", () => {
+      assert.equal(
+        categorize({
+          url: "https://learn.microsoft.com/en-us/training/paths/get-started-azure-openai/",
+        }),
+        "tutorial",
+      );
+    });
+  });
+
   describe("precedência tutorial vs pesquisa", () => {
     it("arxiv paper com 'Tutorial on X' vence como PESQUISA (não tutorial)", () => {
       // Papers acadêmicos com "Tutorial" no título vão pra pesquisa

@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 46 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 57 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -229,3 +229,54 @@
 - URL: https://aws.amazon.com/blogs/machine-learning/
 - Site query: `site:aws.amazon.com/blogs/machine-learning`
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
+
+### OpenAI Cookbook
+- URL: https://cookbook.openai.com/
+- Site query: `site:cookbook.openai.com`
+- RSS: https://cookbook.openai.com/rss.xml
+
+### Sebastian Raschka (Ahead of AI)
+- URL: https://magazine.sebastianraschka.com/
+- Site query: `site:magazine.sebastianraschka.com`
+- RSS: https://magazine.sebastianraschka.com/feed
+
+### Fast.ai
+- URL: https://www.fast.ai/
+- Site query: `site:fast.ai`
+- RSS: https://www.fast.ai/atom.xml
+
+### LangChain Blog
+- URL: https://blog.langchain.dev/
+- Site query: `site:blog.langchain.dev`
+- RSS: https://blog.langchain.dev/rss/
+
+### Pinecone Learn
+- URL: https://www.pinecone.io/learn/
+- Site query: `site:pinecone.io/learn`
+
+### Hamel Husain
+- URL: https://hamel.dev/
+- Site query: `site:hamel.dev`
+- RSS: https://hamel.dev/index.xml
+
+### Eugene Yan
+- URL: https://eugeneyan.com/
+- Site query: `site:eugeneyan.com`
+- RSS: https://eugeneyan.com/rss/
+
+### Asimov Academy
+- URL: https://hub.asimov.academy/
+- Site query: `site:hub.asimov.academy`
+
+### Kaggle Learn
+- URL: https://www.kaggle.com/learn
+- Site query: `site:kaggle.com/learn`
+
+### Weights & Biases
+- URL: https://wandb.ai/site/articles
+- Site query: `site:wandb.ai/site/articles`
+- RSS: https://wandb.ai/site/articles/rss.xml
+
+### Microsoft Learn AI
+- URL: https://learn.microsoft.com/en-us/training/browse/?products=ai-services
+- Site query: `site:learn.microsoft.com/en-us/training/browse`

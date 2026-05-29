@@ -73,6 +73,14 @@ Por que isso importa:
 
 ---
 
+**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate)
+
+**[Título acionável do item](URL)**
+
+[Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses]
+
+---
+
 **VÍDEOS** (opcional — omitir se bucket vazio)
 
 **[Título do Vídeo]** — [Canal](URL)

@@ -311,12 +311,14 @@ export function validateSequentialNumbering(
  * (#488); centralizado aqui pra rodar como assertion deterministica antes
  * do gate.
  *
- * Defaults: lancamento ≥ 3, pesquisa ≥ 3, noticias ≥ 5. Override via opts.
+ * Defaults: lancamento ≥ 3, pesquisa ≥ 3, noticias ≥ 5, tutorial ≥ 3 (#1568).
+ * Override via opts.
  */
 export interface SectionMinimumsOptions {
   minLancamento?: number;
   minPesquisa?: number;
   minNoticias?: number;
+  minTutorial?: number;
 }
 
 export function validateSectionMinimums(
@@ -326,29 +328,35 @@ export function validateSectionMinimums(
   const minL = opts.minLancamento ?? 3;
   const minP = opts.minPesquisa ?? 3;
   const minN = opts.minNoticias ?? 5;
+  const minT = opts.minTutorial ?? 3;
 
   const counts = {
     lancamento: ((categorized.lancamento as Article[] | undefined) ?? []).length,
     pesquisa: ((categorized.pesquisa as Article[] | undefined) ?? []).length,
     noticias: ((categorized.noticias as Article[] | undefined) ?? []).length,
+    tutorial: ((categorized.tutorial as Article[] | undefined) ?? []).length,
   };
   const shortfalls: string[] = [];
   if (counts.lancamento < minL) shortfalls.push(`lancamento ${counts.lancamento}/${minL}`);
   if (counts.pesquisa < minP) shortfalls.push(`pesquisa ${counts.pesquisa}/${minP}`);
   if (counts.noticias < minN) shortfalls.push(`noticias ${counts.noticias}/${minN}`);
+  // #1568: tutorial bucket precisa ter ≥3 candidatos pra alimentar a seção
+  // "USE MELHOR" — editor escolhe 1 no gate. Warn (não blocker) porque a
+  // seção é opcional na newsletter.
+  if (counts.tutorial < minT) shortfalls.push(`tutorial ${counts.tutorial}/${minT}`);
 
   if (shortfalls.length > 0) {
     return {
       name: "section_minimums",
       status: "warn",
-      message: `Mínimos por seção abaixo do alvo (#488): ${shortfalls.join(", ")}.`,
-      details: { counts, minimums: { minL, minP, minN } },
+      message: `Mínimos por seção abaixo do alvo (#488, #1568): ${shortfalls.join(", ")}.`,
+      details: { counts, minimums: { minL, minP, minN, minT } },
     };
   }
   return {
     name: "section_minimums",
     status: "ok",
-    message: `Mínimos por seção atendidos: lançamentos ${counts.lancamento}, pesquisas ${counts.pesquisa}, notícias ${counts.noticias}.`,
+    message: `Mínimos por seção atendidos: lançamentos ${counts.lancamento}, pesquisas ${counts.pesquisa}, notícias ${counts.noticias}, tutoriais ${counts.tutorial}.`,
     details: { counts },
   };
 }

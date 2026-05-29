@@ -89,6 +89,9 @@ export function parseSections(md: string): Record<BucketName, string[]> {
     "Lançamentos": "lancamento",
     "Pesquisas": "pesquisa",
     "Notícias": "noticias",
+    // #1568: renomeada de "Aprenda hoje" pra "Use melhor". Aceitar ambas
+    // pra retrocompat com edições anteriores que ainda usam o nome antigo.
+    "Use melhor": "tutorial",
     "Aprenda hoje": "tutorial",
     "Vídeos": "video",
   };
