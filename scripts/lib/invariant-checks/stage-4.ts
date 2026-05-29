@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
+import { lintIntroCount } from "../newsletter-count.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -184,6 +185,37 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
 }
 
 /**
+ * #1578: garante que intro line "Selecionamos os Z mais relevantes" bate com
+ * a contagem real de items visíveis no `02-reviewed.md`. Stage 2 já tem este
+ * lint, mas editor pode reorder / editar mid-Stage 4 (Drive pull, manual
+ * tweak) e re-introduzir mismatch.
+ *
+ * Caso 260529: intro saiu "6 mais relevantes" quando real era 11 — bug em
+ * countSelectedItems + edição editorial mid-stage. Sem re-check em stage 4,
+ * email final foi enviado com mismatch.
+ */
+function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = lintIntroCount(md);
+  if (result.ok) return [];
+  return [
+    {
+      rule: "intro-count-consistent",
+      message:
+        `intro line declara ${result.claimed} items mas contagem real é ${result.actual}. ` +
+        `Fix manual: editar "Selecionamos os ${result.claimed}" → "Selecionamos os ${result.actual}" ` +
+        `em ${path}. Re-rodar sync-coverage-line só se quiser também recomputar X/Y ` +
+        `(consome tmp-articles-raw.json — pode mudar mais que Z).`,
+      source_issue: "#1578",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
+/**
  * `FACEBOOK_PAGE_ID` env var deve estar setada — publish-facebook usa pra postar
  * via Graph API. Nome confirmado em scripts/publish-facebook.ts:376.
  */
@@ -296,6 +328,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkSocialHashFresh,
   },
   {
+    id: "intro-count-consistent",
+    description: "intro line Z = contagem real de items visíveis (#1578)",
+    source_issue: "#1578",
+    stage: 4,
+    run: checkIntroCountConsistent,
+  },
+  {
     id: "facebook-page-id-set",
     description: "FACEBOOK_PAGE_ID env var presente",
     source_issue: "#facebook",
@@ -328,6 +367,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
 export {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
+  checkIntroCountConsistent,
   checkFbPageIdSet,
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,

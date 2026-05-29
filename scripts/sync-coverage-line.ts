@@ -285,11 +285,21 @@ export function rewriteCoverageLine(
   return { md: updated, changed: updated !== md };
 }
 
+// Flags that have no value (boolean) — recognized as `--name` standalone.
+const BOOL_FLAGS = new Set(["check"]);
+
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      out[argv[i].slice(2)] = argv[i + 1];
+    const a = argv[i];
+    if (!a.startsWith("--")) continue;
+    const key = a.slice(2);
+    if (BOOL_FLAGS.has(key)) {
+      out[key] = "1";
+      continue;
+    }
+    if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+      out[key] = argv[i + 1];
       i++;
     }
   }
@@ -355,9 +365,19 @@ function main(): void {
     console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...'");
     process.exit(1);
   }
-  if (changed) writeFileSync(mdPath, updatedMd, "utf8");
+  const isCheckMode = args["check"] !== undefined;
+  if (changed && !isCheckMode) writeFileSync(mdPath, updatedMd, "utf8");
 
   console.log(JSON.stringify({ x, y, z, changed, mdPath, source }, null, 2));
+  // #1578: --check exit 1 se intro line precisa de fix (não muta o arquivo).
+  // Útil pra invariant check em stage 4 que só valida.
+  if (isCheckMode && changed) {
+    console.error(
+      `[check] intro line precisa de fix: X=${x} Y=${y} Z=${z}. ` +
+      `Rodar sem --check pra persistir.`,
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 
