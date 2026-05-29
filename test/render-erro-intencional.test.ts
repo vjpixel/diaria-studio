@@ -524,6 +524,57 @@ describe("insertOrUpdateSection (#911)", () => {
     assert.match(r.md, /\*\*ERRO INTENCIONAL\*\*/);
   });
 
+  it("#1588: insere ANTES de SORTEIO quando ambos SORTEIO e PARA ENCERRAR existem", () => {
+    // Template real Diar.ia tem SORTEIO + PARA ENCERRAR mas SEM ASSINE.
+    // Pré-fix: ASSINE_RE/ENCERRAMENTO_RE não matcham nenhum dos dois headers
+    // → cai no fim do MD (após PARA ENCERRAR). Pós-fix: SORTEIO_HEADER_RE
+    // bate primeiro → seção fica antes do SORTEIO.
+    const md = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[N1](https://n.com/1)",
+      "",
+      "---",
+      "",
+      "**🎁 SORTEIO**",
+      "",
+      "Texto sorteio.",
+      "",
+      "---",
+      "",
+      "**🙋🏼‍♀️ PARA ENCERRAR**",
+      "",
+      "Texto encerrar.",
+    ].join("\n");
+    const r = insertOrUpdateSection(md, "Reveal anterior.");
+    assert.equal(r.action, "inserted");
+    const erroIdx = r.md.indexOf("ERRO INTENCIONAL");
+    const sorteioIdx = r.md.indexOf("🎁 SORTEIO");
+    const encerrarIdx = r.md.indexOf("PARA ENCERRAR");
+    assert.ok(erroIdx > 0, "ERRO INTENCIONAL inserido");
+    assert.ok(erroIdx < sorteioIdx, `ERRO antes de SORTEIO (got erro=${erroIdx}, sorteio=${sorteioIdx})`);
+    assert.ok(sorteioIdx < encerrarIdx, "SORTEIO antes de PARA ENCERRAR (estrutura preservada)");
+  });
+
+  it("#1588: fallback pra PARA ENCERRAR quando SORTEIO ausente", () => {
+    const md = [
+      "OUTRAS NOTÍCIAS",
+      "",
+      "Item.",
+      "",
+      "---",
+      "",
+      "**🙋🏼‍♀️ PARA ENCERRAR**",
+      "",
+      "Texto.",
+    ].join("\n");
+    const r = insertOrUpdateSection(md, "Reveal X.");
+    assert.equal(r.action, "inserted");
+    const erroIdx = r.md.indexOf("ERRO INTENCIONAL");
+    const encerrarIdx = r.md.indexOf("PARA ENCERRAR");
+    assert.ok(erroIdx < encerrarIdx);
+  });
+
   it("#1279: por default, reveal computado SOBRESCREVE existente (evita stale herdado)", () => {
     // Bug recorrente em 260513-260515: template MD da nova edição herdava
     // "Na última edição..." stale da edição anterior, e #1079 preservava

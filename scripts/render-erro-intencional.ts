@@ -51,6 +51,13 @@ const SECTION_HEADER = "**ERRO INTENCIONAL**";
 
 const ASSINE_RE = /^(?:\*\*)?ASSINE(?:\*\*)?\s*$/m;
 const ENCERRAMENTO_RE = /^(?:Encerrando|Até amanhã|Até a próxima)/m;
+// #1588: posição canônica é ANTES de SORTEIO. Fallback pra PARA ENCERRAR /
+// ASSINE / ENCERRAMENTO quando SORTEIO ausente (edição legacy ou template
+// custom). Match aceita emoji opcional (🎁) + bold opcional + whitespace.
+const SORTEIO_HEADER_RE =
+  /^\s*(?:\*\*)?[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+SORTEIO(?:\*\*)?\s*$|^\s*(?:\*\*)?SORTEIO(?:\*\*)?\s*$/imu;
+const PARA_ENCERRAR_HEADER_RE =
+  /^\s*(?:\*\*)?[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+PARA\s+ENCERRAR(?:\*\*)?\s*$|^\s*(?:\*\*)?PARA\s+ENCERRAR(?:\*\*)?\s*$/imu;
 
 /**
  * Pure: dado o conjunto de erros e a edição corrente (`AAMMDD`), retorna
@@ -440,17 +447,29 @@ export function insertOrUpdateSection(
   }
 
   const lines = mdClean.split("\n");
+  // #1588: posição canônica = antes de SORTEIO. Cai em PARA ENCERRAR / ASSINE
+  // / ENCERRAMENTO quando SORTEIO ausente (back-compat). Antes do fix, o
+  // renderer só procurava ASSINE/ENCERRAMENTO — em edições com SORTEIO + PARA
+  // ENCERRAR mas sem ASSINE explícito, caía no fim do MD (após PARA ENCERRAR).
+  const ANCHOR_REGEXES = [
+    SORTEIO_HEADER_RE,
+    PARA_ENCERRAR_HEADER_RE,
+    ASSINE_RE,
+    ENCERRAMENTO_RE,
+  ];
   let insertAt = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    if (ASSINE_RE.test(lines[i]) || ENCERRAMENTO_RE.test(lines[i])) {
-      let j = i - 1;
-      while (j >= 0 && lines[j].trim() === "") j--;
-      if (j >= 0 && lines[j].trim() === "---") {
-        insertAt = j;
-      } else {
-        insertAt = i;
+  outer: for (const anchorRe of ANCHOR_REGEXES) {
+    for (let i = 0; i < lines.length; i++) {
+      if (anchorRe.test(lines[i])) {
+        let j = i - 1;
+        while (j >= 0 && lines[j].trim() === "") j--;
+        if (j >= 0 && lines[j].trim() === "---") {
+          insertAt = j;
+        } else {
+          insertAt = i;
+        }
+        break outer;
       }
-      break;
     }
   }
 
