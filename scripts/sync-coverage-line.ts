@@ -355,9 +355,19 @@ function main(): void {
     console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...'");
     process.exit(1);
   }
-  if (changed) writeFileSync(mdPath, updatedMd, "utf8");
+  const isCheckMode = args["check"] !== undefined;
+  if (changed && !isCheckMode) writeFileSync(mdPath, updatedMd, "utf8");
 
   console.log(JSON.stringify({ x, y, z, changed, mdPath, source }, null, 2));
+  // #1578: --check exit 1 se intro line precisa de fix (não muta o arquivo).
+  // Útil pra invariant check em stage 4 que só valida.
+  if (isCheckMode && changed) {
+    console.error(
+      `[check] intro line precisa de fix: X=${x} Y=${y} Z=${z}. ` +
+      `Rodar sem --check pra persistir.`,
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 

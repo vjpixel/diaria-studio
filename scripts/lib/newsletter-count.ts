@@ -12,7 +12,9 @@
  *   - DESTAQUE N blocks (com ou sem emoji+pipe) — 1 URL por bloco
  *   - LANÇAMENTO(S) section items (singular ou plural, com ou sem emoji prefix)
  *   - PESQUISA(S) section items
- *   - OUTRA(S) NOTÍCIA(S) section items
+ *   - OUTRA(S) NOTÍCIA(S) / OUTRO(S) LINK(S) section items
+ *   - USE MELHOR section items (#1568 — bucket `tutorial`)
+ *   - VÍDEOS section items (bucket `video`)
  *
  * Skipped:
  *   - Bloco É IA?, SORTEIO, PARA ENCERRAR, ERRO INTENCIONAL, TÍTULO/SUBTÍTULO
@@ -25,6 +27,8 @@ export interface SelectedCounts {
   lancamentos: number;
   pesquisas: number;
   noticias: number;
+  tutoriais: number;
+  videos: number;
   total: number;
 }
 
@@ -60,7 +64,7 @@ const SKIP_HEADER_NAMES = [
 // Restrição: prefixo entre `**` e nome da seção é `[^\n\[]*?` (sem `[`)
 // pra evitar matchar `**[Título A](url)**` onde "Título" bateria com TÍTULO.
 const SECTION_HEADER_LOOKAHEAD =
-  /(?=^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|DESTAQUE\s+\d)[^\n]*\*\*\s*$)|(?=^##\s+É\s+IA\?)/im;
+  /(?=^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?|USE\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|DESTAQUE\s+\d)[^\n]*\*\*\s*$)|(?=^##\s+É\s+IA\?)/imu;
 
 /**
  * Pure: parsea o MD e retorna a contagem por bucket + total visível.
@@ -73,7 +77,7 @@ const SECTION_HEADER_LOOKAHEAD =
 // que `section.includes(name)` — só casa quando o nome aparece numa linha que
 // é APENAS o header (com bold opcional + emoji prefix opcional).
 const SECTION_HEADER_LINE_RE =
-  /^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?(LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|É\s+IA\?)\s*(?:\*\*)?\s*$/imu;
+  /^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?(LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?|USE\s+MELHOR|V[ÍI]DEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|T[ÍI]TULO|SUBT[ÍI]TULO|É\s+IA\?)\s*(?:\*\*)?\s*$/imu;
 // Production format: `**DESTAQUE 1 | 🚀 LANÇAMENTO**`. Pipe é canonical mas
 // tolerante a `**DESTAQUE 1**` standalone (fixtures de teste).
 const DESTAQUE_HEADER_LINE_RE = /^\s*(?:\*\*)?DESTAQUE\s+\d+(?:\s*\||\s*(?:\*\*)?\s*$)/im;
@@ -111,6 +115,8 @@ export function countSelectedItems(md: string): SelectedCounts {
     lancamentos: 0,
     pesquisas: 0,
     noticias: 0,
+    tutoriais: 0,
+    videos: 0,
     total: 0,
   };
 
@@ -136,11 +142,20 @@ export function countSelectedItems(md: string): SelectedCounts {
     // Identifica o bucket pela header em LINHA (não substring).
     // Fix #1455: antes `section.includes("DESTAQUE")` casava texto de body
     // (artigo que mencionasse \"DESTAQUE\" em descrição) e inflava destaques.
-    let bucket: "destaques" | "lancamentos" | "pesquisas" | "noticias" | null = null;
+    let bucket:
+      | "destaques"
+      | "lancamentos"
+      | "pesquisas"
+      | "noticias"
+      | "tutoriais"
+      | "videos"
+      | null = null;
     if (DESTAQUE_HEADER_LINE_RE.test(section)) bucket = "destaques";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?LAN[ÇC]AMENTOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "lancamentos";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?PESQUISAS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "pesquisas";
-    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s+)?(?:OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA)\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "noticias";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?LAN[ÇC]AMENTOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "lancamentos";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?PESQUISAS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "pesquisas";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?(?:OUTRAS?\s+NOT[ÍI]CIAS?|OUTRA\s+NOT[ÍI]CIA|OUTROS?\s+LINKS?)\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "noticias";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?USE\s+MELHOR\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "tutoriais";
+    else if (/^\s*(?:\*\*)?(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}]*\s+)?V[ÍI]DEOS?\s*(?:\*\*)?\s*$/imu.test(section)) bucket = "videos";
 
     if (!bucket) continue;
 
