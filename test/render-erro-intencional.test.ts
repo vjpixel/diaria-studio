@@ -650,6 +650,47 @@ describe("insertOrUpdateSection (#911)", () => {
     const second = insertOrUpdateSection(first.md, "Na última edição, A.");
     assert.equal(second.action, "no_change");
   });
+
+  it("#1612: strip de ERRO INTENCIONAL termina em **📡 RADAR** (emoji prefix)", () => {
+    // Pré-fix: strip regex sentinelas eram bare words (RADAR, SORTEIO, ...).
+    // Em MD onde ERRO INTENCIONAL é seguido DIRETAMENTE por seção com emoji
+    // prefix (sem `---` separator entre), strip caía pra EOF e engolia tudo.
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, X.",
+      "",
+      "Nessa edição, Y.",
+      "**📡 RADAR**",
+      "",
+      "**[Item radar](https://r.com)**",
+      "Desc radar.",
+    ].join("\n");
+    const result = insertOrUpdateSection(md, "Na última edição, Z.");
+    // RADAR deve continuar presente — strip não pode engolir
+    assert.match(result.md, /\*\*📡 RADAR\*\*/, "RADAR preservada após strip");
+    assert.match(result.md, /Item radar/, "conteúdo do RADAR preservado");
+  });
+
+  it("#1612: strip termina em **🎁 SORTEIO** (emoji prefix)", () => {
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, X.",
+      "",
+      "Nessa edição, Y.",
+      "**🎁 SORTEIO**",
+      "",
+      "Texto sorteio.",
+    ].join("\n");
+    const result = insertOrUpdateSection(md, "Na última edição, Z.");
+    assert.match(result.md, /\*\*🎁 SORTEIO\*\*/);
+    assert.match(result.md, /Texto sorteio/);
+  });
 });
 
 describe("currentHasIntentionalErrorFlag (#911)", () => {

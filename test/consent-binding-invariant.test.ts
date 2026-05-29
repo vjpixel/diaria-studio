@@ -1,7 +1,8 @@
 /**
- * test/consent-binding-invariant.test.ts (#1575)
+ * test/consent-binding-invariant.test.ts (#1575, moved to stage-5 in #1612)
  *
- * Cobre o invariant `consent-binding` em stage-4: canais com consent=auto
+ * Cobre o invariant `consent-binding` em stage-5 (era stage-4 até review
+ * #1612 — data verificada só existe pós-dispatch). Canais com consent=auto
  * devem ter dispatch real (não pending_manual / ausente / vazio).
  */
 
@@ -15,7 +16,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { checkConsentBinding } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { checkConsentBinding, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 function makeEditionDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "consent-binding-"));
@@ -52,6 +54,22 @@ function writeSocialPublished(
     JSON.stringify({ posts }),
   );
 }
+
+describe("consent-binding stage registration (#1612 followup)", () => {
+  it("rule registrada em STAGE_5_RULES (data verificada é pós-dispatch)", () => {
+    assert.ok(
+      STAGE_5_RULES.some((r) => r.id === "consent-binding"),
+      "consent-binding deve estar em STAGE_5_RULES",
+    );
+  });
+
+  it("rule NÃO está em STAGE_4_RULES (regression guard #1602)", () => {
+    assert.ok(
+      !STAGE_4_RULES.some((r) => r.id === "consent-binding"),
+      "consent-binding em STAGE_4_RULES short-circuita (files post-dispatch ausentes em 4a-bis)",
+    );
+  });
+});
 
 describe("checkConsentBinding (#1575)", () => {
   it("sem 05-publish-consent.json → no-op (zero violations)", () => {

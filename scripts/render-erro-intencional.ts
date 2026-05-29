@@ -442,9 +442,15 @@ export function insertOrUpdateSection(
     // Review #1593: `\Z` é literal Z em JS (não EOF) — usar `$(?![\s\S])`.
     // #1569 + review: SORTEIO, PARA ENCERRAR, RADAR como sentinelas pra strip
     // funcionar em edições novas. Legacy PESQUISAS/OUTRAS preservados.
+    // Review #1612: sentinelas precisam aceitar emoji prefix (📡 RADAR,
+    // 🎁 SORTEIO, 🙋🏼‍♀️ PARA ENCERRAR) — sem isso, strip cai pra EOF e
+    // engole tudo até o fim do MD em edições sem `---` separator entre
+    // ERRO INTENCIONAL e a próxima seção.
+    const emojiOpt =
+      "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
     const stripRe = new RegExp(
-      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
-      "m",
+      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?${emojiOpt}(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
+      "mu",
     );
     mdClean = md.replace(stripRe, "").replace(/\n{3,}/g, "\n\n");
   }
