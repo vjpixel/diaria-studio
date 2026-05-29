@@ -22,7 +22,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
-import { parseInlineLink } from "./lib/inline-link.ts"; // #599
+import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -256,6 +256,19 @@ export function parseListItems(text: string): SectionItem[] {
         title: firstInlineLink.title,
         url: firstInlineLink.url,
         description: block.slice(1).join(" "),
+      });
+      continue;
+    }
+    // #1581 — Drive round-trip (#1582) reformata `**[Title](url)**  \nsummary`
+    // pra `[**Title**](url) summary` (title + summary inline mesma linha).
+    // parseInlineLink rejeita; tentar variante que captura trailing text.
+    const inlineWithTrailing = parseInlineLinkWithTrailing(block[0]);
+    if (inlineWithTrailing) {
+      const trailingParts = [inlineWithTrailing.trailing, ...block.slice(1)];
+      items.push({
+        title: inlineWithTrailing.title,
+        url: inlineWithTrailing.url,
+        description: trailingParts.join(" ").trim(),
       });
       continue;
     }

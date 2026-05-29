@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseInlineLink, isInlineLinkLine } from "../scripts/lib/inline-link.ts";
+import {
+  parseInlineLink,
+  isInlineLinkLine,
+  parseInlineLinkWithTrailing,
+} from "../scripts/lib/inline-link.ts";
 
 describe("parseInlineLink (#599)", () => {
   it("extrai título e URL de markdown link bem-formado", () => {
@@ -126,5 +130,57 @@ describe("parseInlineLink — strip de **...** dentro do título (regression: **
       "[**Modelos se replicam sozinhos, diz estudo inédito**](https://www.theguardian.com/technology/2026/may/07/no-one-has-done-this-in-the-wild-study-observes-ai-replicate-itself)",
     );
     assert.equal(r?.title, "Modelos se replicam sozinhos, diz estudo inédito");
+  });
+});
+
+describe("parseInlineLinkWithTrailing (#1581)", () => {
+  // Drive round-trip (#1582) reformata `**[Title](url)**  \nsummary` pra
+  // `[**Title**](url) summary` (title + summary inline). parseInlineLink
+  // rejeita; este helper captura o trailing text.
+
+  it("extrai title + url + trailing summary inline", () => {
+    const r = parseInlineLinkWithTrailing(
+      "[**NVIDIA Research avança robótica**](https://blogs.nvidia.com/blog/x) Robótica entra em nova fase.",
+    );
+    assert.deepEqual(r, {
+      title: "NVIDIA Research avança robótica",
+      url: "https://blogs.nvidia.com/blog/x",
+      trailing: "Robótica entra em nova fase.",
+    });
+  });
+
+  it("strippa **...** balanceado no título (mesma normalização que parseInlineLink)", () => {
+    const r = parseInlineLinkWithTrailing(
+      "[**Título em bold**](https://example.com) descrição",
+    );
+    assert.equal(r?.title, "Título em bold");
+  });
+
+  it("retorna null quando link consome a linha toda (sem trailing)", () => {
+    assert.equal(
+      parseInlineLinkWithTrailing("[Título](https://example.com)"),
+      null,
+    );
+  });
+
+  it("retorna null quando linha começa com texto antes do link", () => {
+    assert.equal(
+      parseInlineLinkWithTrailing("Texto antes [Título](https://example.com) depois"),
+      null,
+    );
+  });
+
+  it("retorna null quando link malformado", () => {
+    assert.equal(
+      parseInlineLinkWithTrailing("[Título](example.com) trailing"),
+      null,
+    );
+  });
+
+  it("trailing preserva pontuação e caracteres acentuados", () => {
+    const r = parseInlineLinkWithTrailing(
+      "[**Título**](https://x.com) Frase com vírgulas, pontos, e mais.",
+    );
+    assert.equal(r?.trailing, "Frase com vírgulas, pontos, e mais.");
   });
 });
