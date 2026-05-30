@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractScores,
   mergeChunks,
+  loadChunks,
   type ChunkScoreFile,
 } from "../scripts/merge-scored-chunks.ts";
 import type { Categorized } from "../scripts/split-articles-for-scoring.ts";
@@ -26,6 +27,54 @@ describe("extractScores", () => {
   it("descarta entradas sem url; score ausente vira 0", () => {
     const out = extractScores({ scored: [{ score: 5 } as never, { url: "b" } as never] });
     assert.deepEqual(out, [{ url: "b", score: 0 }]);
+  });
+});
+
+describe("loadChunks (resiliência a chunk corrompido #1611)", () => {
+  // reader fake: mapeia path → conteúdo; lança pra paths "ausentes".
+  const reader = (store: Record<string, string>) => (p: string) => {
+    if (!(p in store)) throw new Error("ENOENT");
+    return store[p];
+  };
+
+  it("lê todos os chunks válidos", () => {
+    const store = {
+      a: JSON.stringify({ scored: [{ url: "x", score: 1 }] }),
+      b: JSON.stringify({ scored: [{ url: "y", score: 2 }] }),
+    };
+    const { chunks, failed } = loadChunks(["a", "b"], reader(store));
+    assert.equal(chunks.length, 2);
+    assert.deepEqual(failed, []);
+  });
+
+  it("pula chunk com JSON truncado (socket error) sem derrubar os demais", () => {
+    const store = {
+      a: JSON.stringify({ scored: [{ url: "x", score: 1 }] }),
+      b: '{"scored":[{"url":"y","sco', // truncado
+      c: JSON.stringify({ scored: [{ url: "z", score: 3 }] }),
+    };
+    const { chunks, failed } = loadChunks(["a", "b", "c"], reader(store));
+    assert.equal(chunks.length, 2); // a e c sobrevivem
+    assert.deepEqual(failed, ["b"]);
+  });
+
+  it("pula chunk ausente", () => {
+    const store = { a: JSON.stringify({ scored: [] }) };
+    const { chunks, failed } = loadChunks(["a", "missing"], reader(store));
+    assert.equal(chunks.length, 1);
+    assert.deepEqual(failed, ["missing"]);
+  });
+
+  it("merge com chunk faltando → demais sobrevivem + incomplete", () => {
+    const store = {
+      a: JSON.stringify({ scored: [{ url: "p2", score: 90 }, { url: "n1", score: 80 }] }),
+      b: "{corrompido",
+    };
+    const { chunks } = loadChunks(["a", "b"], reader(store));
+    const r = mergeChunks(CAT, chunks, 15);
+    assert.equal(r.scored_count, 2); // só do chunk válido
+    assert.equal(r.incomplete, true);
+    assert.equal(r.all_scored.length, 5); // pool inteiro ainda presente
   });
 });
 

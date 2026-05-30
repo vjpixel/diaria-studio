@@ -69,6 +69,32 @@ function bucketOf(a: Article): string {
   return (BUCKET_ORDER as readonly string[]).includes(c ?? "") ? (c as string) : "noticias";
 }
 
+/**
+ * Lê e parseia os chunk files, tolerando arquivos ausentes/corrompidos. Um chunk
+ * que falha (não escrito, truncado por socket error, JSON inválido) é PULADO com
+ * warning — os demais chunks sobrevivem, e os artigos do chunk perdido caem no
+ * guard `incomplete` do mergeChunks (score 0 → filtrados em finalize-stage1).
+ * Sem isso, 1 chunk corrompido derrubaria todo o trabalho paralelo (#1611).
+ */
+export function loadChunks(
+  paths: string[],
+  readFile: (p: string) => string,
+): { chunks: ChunkScoreFile[]; failed: string[] } {
+  const chunks: ChunkScoreFile[] = [];
+  const failed: string[] = [];
+  for (const p of paths) {
+    try {
+      chunks.push(JSON.parse(readFile(p)));
+    } catch (e) {
+      failed.push(p);
+      process.stderr.write(
+        `WARN [merge-scored-chunks]: chunk ilegível pulado (${p}): ${(e as Error).message}\n`,
+      );
+    }
+  }
+  return { chunks, failed };
+}
+
 /** Extrai os pares {url, score} de um chunk (aceita `all_scored` ou `scored`). */
 export function extractScores(chunk: ChunkScoreFile): ScorePair[] {
   const arr = chunk.all_scored ?? chunk.scored ?? [];
@@ -152,8 +178,8 @@ export function main(): void {
   const categorized: Categorized = raw.categorized ?? raw;
 
   const chunkFiles = chunkScoresArg.split(",").map((s) => s.trim()).filter(Boolean);
-  const chunks: ChunkScoreFile[] = chunkFiles.map((f) =>
-    JSON.parse(readFileSync(resolve(ROOT, f), "utf8")),
+  const { chunks, failed } = loadChunks(chunkFiles, (f) =>
+    readFileSync(resolve(ROOT, f), "utf8"),
   );
 
   const result = mergeChunks(categorized, chunks, topN);
@@ -182,6 +208,7 @@ export function main(): void {
       scored_count: result.scored_count,
       finalists_count: result.finalists.length,
       incomplete: result.incomplete,
+      failed_chunks: failed.length,
     }) + "\n",
   );
 }
