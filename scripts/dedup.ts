@@ -357,6 +357,61 @@ function readApprovedTitles(approvedPath: string): string[] {
  *
  * Refs #897.
  */
+
+/**
+ * Nome de edição válido: AAMMDD = 6 dígitos com mês 01-12 e dia 01-31. Exclui
+ * dirs-lixo como `260999` (dia 99) que, sendo lexicalmente "altos", roubavam um
+ * slot da janela de dedup e derrubavam uma edição REAL do window (#1567 audit).
+ * Validação de calendário leve — o objetivo é barrar markers/sintéticos, não
+ * datas reais (não checa fim-de-mês).
+ */
+export function isValidEditionDir(name: string): boolean {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(name);
+  if (!m) return false;
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+/**
+ * true se o dir contém algum artefato de edição real (não é um marker vazio).
+ * Espelha as fontes que extractPastDestaqueUrls/extractPastEditionArticleTitles
+ * sabem ler: MD revisado, HTML final publicado, ou approved.json (root/_internal).
+ */
+function hasEditionArtifact(editionsDir: string, name: string): boolean {
+  return [
+    resolve(editionsDir, name, "02-reviewed.md"),
+    resolve(editionsDir, name, "_internal", "newsletter-final.html"),
+    resolve(editionsDir, name, "_internal", "01-approved.json"),
+    resolve(editionsDir, name, "01-approved.json"),
+  ].some((p) => existsSync(p));
+}
+
+/**
+ * As `window` edições REAIS mais recentes em `editionsDir` (ordem decrescente),
+ * excluindo `currentAammdd`, dirs com nome inválido (ex: `260999`) e dirs sem
+ * artefato de edição (markers de teste). Centraliza a seleção de janela usada
+ * pelo dedup contra past-editions locais — antes o filtro `/^\d{6}$/` sozinho
+ * deixava um dir sintético poluir a janela de 3 edições (#1567 audit).
+ */
+export function recentEditionDirs(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): string[] {
+  let dirs: string[];
+  try {
+    dirs = readdirSync(editionsDir).filter(
+      (d) => isValidEditionDir(d) && hasEditionArtifact(editionsDir, d),
+    );
+  } catch {
+    return [];
+  }
+  dirs.sort().reverse();
+  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
+  return dirs.slice(0, window);
+}
+
 /**
  * Pure (#1068): agrega URLs que **foram destaques** (highlights D1/D2/D3) nas
  * últimas `window` edições salvas em `editionsDir`. Usado pra dedup com
@@ -374,15 +429,7 @@ export function extractPastDestaqueUrls(
   currentAammdd?: string,
 ): Set<string> {
   if (!existsSync(editionsDir)) return new Set();
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir).filter((d) => /^\d{6}$/.test(d));
-  } catch {
-    return new Set();
-  }
-  dirs.sort().reverse();
-  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
-  const recent = dirs.slice(0, window);
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
 
   const urls = new Set<string>();
   for (const aammdd of recent) {
@@ -426,16 +473,7 @@ export function extractPastEditionArticleTitles(
   currentAammdd?: string,
 ): string[] {
   if (!existsSync(editionsDir)) return [];
-  let dirs: string[];
-  try {
-    dirs = readdirSync(editionsDir).filter((d) => /^\d{6}$/.test(d));
-  } catch {
-    return [];
-  }
-  // Sort decrescente (mais recente primeiro), excluir current.
-  dirs.sort().reverse();
-  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
-  const recent = dirs.slice(0, window);
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
 
   const titles = new Set<string>();
   for (const aammdd of recent) {
