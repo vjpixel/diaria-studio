@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import Papa from "papaparse";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = resolve(ROOT, "context/audience-profile.md");
@@ -101,7 +102,7 @@ export function decayWeight(rowDate: string, today: Date = new Date()): number {
   return Math.exp(-days / DECAY_TIME_CONSTANT_DAYS);
 }
 
-function parseCtr(): {
+export interface CtrParseResult {
   byCategory: Map<string, CtrAgg>;
   byCatOrigin: Map<string, CtrAgg>;
   byOrigin: Map<string, CtrAgg>;
@@ -109,35 +110,42 @@ function parseCtr(): {
   totalLinks: number;
   totalEditions: number;
   filteredAprofunde: number;
-} | null {
-  if (!existsSync(CTR_CSV)) return null;
+}
 
-  const lines = readFileSync(CTR_CSV, "utf8").split("\n").slice(1).filter(Boolean);
-  if (lines.length === 0) return null;
+/**
+ * Pure: agrega o CTR table (string CSV) por categoria/origem/domínio, aplicando
+ * o filtro Aprofunde (#1564) e o exponential decay.
+ *
+ * Usa papaparse (header) e lê campos por NOME — NÃO faz split posicional. Isso
+ * corrige o bug do #1567 audit (finding A): o anchor era lido em `parts[3]`
+ * (front-anchored) num `split(",")` ingênuo, mas vírgulas em post_title/
+ * section_title deslocam esse índice. Resultado: ~14% das rows Aprofunde (35 de
+ * 255 no CTR table real) vazavam pro profile do scorer, reinflando o CTR de
+ * categorias com o regime antigo que o filtro existe pra excluir. Ler `rec.anchor`
+ * por nome elimina a fragilidade posicional (mesma técnica do build-link-ctr e
+ * analyze-scorer-impact).
+ */
+export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParseResult | null {
+  const { data } = Papa.parse<Record<string, string>>(csv, {
+    header: true,
+    skipEmptyLines: true,
+  });
+  if (data.length === 0) return null;
 
   const byCategory = new Map<string, CtrAgg>();
   const byCatOrigin = new Map<string, CtrAgg>();
   const byOrigin = new Map<string, CtrAgg>();
   const byDomain = new Map<string, CtrAgg>();
   const dates = new Set<string>();
-  const today = new Date();
   let filteredAprofunde = 0;
 
-  for (const line of lines) {
-    // CSV columns: date,post_title,section_title,anchor,base_url,domain,
-    //              unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin
-    // Text fields (post_title, anchor etc) may contain commas inside quotes,
-    // so parse from the END where fields are safe (no commas in numbers/category/origin).
-    const parts = line.split(",");
-    const origin = parts[parts.length - 1];
-    const category = parts[parts.length - 2];
-    const uniqueOpens = +parts[parts.length - 6];
-    const uniqueVerifiedClicks = +parts[parts.length - 4];
-    const domain = parts[parts.length - 7];
-    const date = parts[0];
-    // anchor é parts[3] mas pode ter vírgulas; prefixo "Aprofunde" é literal curto
-    // sem vírgula, então checar parts[3] é suficiente pra detecção.
-    const anchor = parts[3] ?? "";
+  const num = (s: string | undefined): number => {
+    const v = parseFloat(s ?? "");
+    return Number.isFinite(v) ? v : 0;
+  };
+
+  for (const rec of data) {
+    const anchor = (rec.anchor ?? "").trim();
 
     // #1564: skip Aprofunde rows (regime antigo de destaque)
     if (isAprofundeAnchor(anchor)) {
@@ -145,9 +153,16 @@ function parseCtr(): {
       continue;
     }
 
-    dates.add(date);
+    const date = (rec.date ?? "").trim();
+    const origin = (rec.origin ?? "").trim();
+    const category = (rec.category ?? "").trim();
+    const domain = (rec.domain ?? "").trim();
+    const uniqueOpens = num(rec.unique_opens);
+    const uniqueVerifiedClicks = num(rec.unique_verified_clicks);
 
-    // #1564: exponential decay (90d half-life) — rows mais recentes pesam mais
+    if (date) dates.add(date);
+
+    // #1564: exponential decay (90d time constant) — rows mais recentes pesam mais
     const w = decayWeight(date, today);
 
     const add = (map: Map<string, CtrAgg>, key: string) => {
@@ -169,10 +184,15 @@ function parseCtr(): {
     byCatOrigin,
     byOrigin,
     byDomain,
-    totalLinks: lines.length - filteredAprofunde,
+    totalLinks: data.length - filteredAprofunde,
     totalEditions: dates.size,
     filteredAprofunde,
   };
+}
+
+function parseCtr(): CtrParseResult | null {
+  if (!existsSync(CTR_CSV)) return null;
+  return parseCtrFromCsv(readFileSync(CTR_CSV, "utf8"));
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
