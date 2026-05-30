@@ -99,22 +99,50 @@ export function isEditorial(url: string): boolean {
 
 // ─── Origin (BR / INT) ────────────────────────────────────────────────────────
 
-function classifyOrigin(signal: string): 'BR' | 'INT' {
+/**
+ * Classifica a origem (BR/INT) de UM link a partir da evidência do PRÓPRIO link
+ * (anchor + section + context) e do domínio.
+ *
+ * #1567 audit (finding B): antes o `signal` incluía o `title` do POST (a manchete
+ * líder, idêntica pra todos os links da edição). Numa edição com lead brasileiro,
+ * TODO link secundário/internacional herdava o keyword BR e virava BR (~30% das
+ * rows BR eram domínios estrangeiros mislabeled). O fix: o caller NÃO passa mais
+ * o title; a origem vem só da evidência por-link + um override forte por TLD `.br`.
+ * Tokens ambíguos que geravam falsos positivos ('senado'→'senador americano',
+ * ' usp'→"unique selling proposition", ' r$'→"r$ values") foram endurecidos.
+ */
+export function classifyOrigin(signal: string, domain = ''): 'BR' | 'INT' {
+  // Domínio .br (.com.br, .gov.br, .org.br …) é sinal forte de fonte/conteúdo BR.
+  const host = domain.toLowerCase().replace(/^www\./, '');
+  if (/(^|\.)br$/.test(host)) return 'BR';
+
   const s = signal.normalize('NFC').toLowerCase();
-  const brKw = [
+  const brStrong = [
     'brasil', 'brasileir', 'brazil',
     'são paulo', 'brasília', 'rio de janeiro', 'belo horizonte',
     'curitiba', 'porto alegre', 'recife', 'salvador', 'fortaleza',
     'minas gerais', 'paraná', 'bahia', 'pernambuco',
     'lula', 'governo federal', 'governo brasileiro', 'planalto',
-    'anvisa', 'bndes', 'senado', ' stf ', 'anatel', 'cade',
+    'anvisa', 'bndes', 'anatel', 'cade',
     'câmara dos deputados', 'congresso nacional', 'pgr',
     'fapesp', 'cnpq', 'capes', 'embrapa', 'serpro',
     'no país', 'no brasil', 'ao brasil', 'do brasil', 'pelo brasil',
-    'mercado nacional', ' r$ ', ' r$',
-    ' usp', 'unicamp', 'ufrj', 'ufrn', 'ufmg',
+    'mercado nacional',
+    // antes eram tokens curtos com falsos positivos (#1567 finding B):
+    'senado federal', 'senado brasileiro', // 'senado' cru pegava 'senador americano'
+    'unicamp', 'ufrj', 'ufrn', 'ufmg',
   ];
-  return brKw.some(k => s.includes(k)) ? 'BR' : 'INT';
+  if (brStrong.some(k => s.includes(k))) return 'BR';
+
+  // Tokens ambíguos: só com word boundary / co-sinal de moeda.
+  //  - \bstf\b: STF (Supremo) — token raro em inglês.
+  //  - R$ só conta como moeda quando seguido de dígito ("R$ 23 bi"), não "r$ values".
+  //  ('usp' cru foi removido: colidia com "unique selling proposition"; conteúdo
+  //   da USP real quase sempre traz 'são paulo'/'brasil' ou domínio .br.)
+  if (/\bstf\b/.test(s)) return 'BR';
+  if (/\br\$\s*\d/.test(s)) return 'BR';
+
+  return 'INT';
 }
 
 // ─── Categorization ───────────────────────────────────────────────────────────
@@ -1244,7 +1272,9 @@ function main() {
         unique_verified_clicks: clickStat.unique_verified_clicks,
         ctr_pct: ctr,
         category: categorize(link.baseUrl, link.anchor, link.sectionTitle, title, link.context),
-        origin: classifyOrigin(link.anchor + ' ' + link.sectionTitle + ' ' + title + ' ' + link.context),
+        // #1567 finding B: NÃO incluir `title` (manchete do post) — ele vazava o
+        // ângulo BR do lead pra todos os links. Origem vem da evidência por-link + domínio.
+        origin: classifyOrigin(link.anchor + ' ' + link.sectionTitle + ' ' + link.context, domain),
       });
     }
 
