@@ -728,3 +728,55 @@ describe("DEFAULT_PAST_WINDOW (#1086 regression)", () => {
     assert.ok(dedupMod.DEFAULT_PAST_WINDOW >= 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1567 audit (finding D) — o pool passado a finalizeStage1 deve ser o pool que
+// o scorer pontuou (tmp-dates-reviewed), NÃO o superset pré-review (tmp-clustered).
+// Documenta por que o orchestrator (step 1s) passa tmp-dates-reviewed: passar o
+// superset gera url_mismatches espúrios que soterram os mismatches reais (#720).
+// ---------------------------------------------------------------------------
+
+describe("#1567 finding D — join pool == scored pool ⇒ sem url_mismatch espúrio", () => {
+  const scoredOutput: ScoredOutput = {
+    highlights: [],
+    runners_up: [],
+    // all_scored carrega só {url, score} (sem título) — como na produção real
+    all_scored: [
+      { url: "https://a.com/1", score: 80 },
+      { url: "https://b.com/2", score: 75 },
+      { url: "https://c.com/3", score: 60 },
+    ],
+  };
+
+  it("pool == scored (dates-reviewed): zero url_mismatches numa edição saudável", () => {
+    const categorized: CategorizedBuckets = {
+      lancamento: [{ url: "https://a.com/1", title: "Lançamento A com título longo o suficiente" }],
+      pesquisa: [{ url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" }],
+      noticias: [{ url: "https://c.com/3", title: "Notícia C com título longo o suficiente" }],
+    };
+    const r = finalizeStage1(categorized, scoredOutput);
+    assert.equal(r.url_mismatches.length, 0);
+  });
+
+  it("pool superset (clustered): cada extra não-pontuado vira mismatch espúrio (#720 ruído)", () => {
+    // 2 artigos extras (removidos pela janela de datas) que NÃO foram pontuados —
+    // exatamente o que tmp-clustered teria a mais que tmp-dates-reviewed.
+    const categorized: CategorizedBuckets = {
+      lancamento: [
+        { url: "https://a.com/1", title: "Lançamento A com título longo o suficiente" },
+        { url: "https://extra1.com/x", title: "Removida por data 1 título longo o suficiente" },
+      ],
+      pesquisa: [{ url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" }],
+      noticias: [
+        { url: "https://c.com/3", title: "Notícia C com título longo o suficiente" },
+        { url: "https://extra2.com/y", title: "Removida por data 2 título longo o suficiente" },
+      ],
+    };
+    const r = finalizeStage1(categorized, scoredOutput);
+    // exatamente os 2 extras não-pontuados — false positives que o orchestrator evita
+    // passando tmp-dates-reviewed em vez de tmp-clustered.
+    assert.equal(r.url_mismatches.length, 2);
+    const urls = r.url_mismatches.map((m) => m.article_url).sort();
+    assert.deepEqual(urls, ["https://extra1.com/x", "https://extra2.com/y"]);
+  });
+});
