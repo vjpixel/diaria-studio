@@ -24,7 +24,7 @@ function baseUrl(raw: string): string {
   }
 }
 
-function isEditorial(url: string): boolean {
+export function isEditorial(url: string): boolean {
   let host: string, pathname: string;
   try {
     const u = new URL(url);
@@ -56,6 +56,14 @@ function isEditorial(url: string): boolean {
     'beehiivstatus.com', 'omnivery_honeypot', 'archive.is',
   ];
   if (noisePatterns.some(s => url.includes(s))) return false;
+
+  // Skip own infra + non-editorial utility links (#1567 audit, finding G):
+  // the poll-vote Workers, Google Meet invites e atribuição Creative Commons
+  // não são links editoriais — vazavam como rows "Outro" e deslocavam fontes
+  // reais do Top-15 de domínios que o scorer lê.
+  if (host.endsWith('.workers.dev')) return false; // poll.diaria.workers.dev etc.
+  if (host === 'meet.google.com') return false;
+  if (host === 'creativecommons.org') return false;
 
   // Skip referral links (pplx.ai/username style)
   if (host === 'pplx.ai' && /^\/[a-z0-9_-]+$/i.test(new URL(url).pathname)) return false;
@@ -1067,41 +1075,40 @@ interface ClickStat {
   unique_clicks: number;
 }
 
-function matchClick(bu: string, clicks: any[]): ClickStat {
-  if (!clicks || clicks.length === 0) return { verified_clicks: 0, unique_verified_clicks: 0, unique_clicks: 0 };
+export function matchClick(bu: string, clicks: any[]): ClickStat {
+  const zero: ClickStat = { verified_clicks: 0, unique_verified_clicks: 0, unique_clicks: 0 };
+  if (!clicks || clicks.length === 0) return zero;
 
-  // Try exact base_url match first
-  const exactMatch = clicks.find(c => {
+  // baseUrl() strips the entire query string, so per-subscriber link variants
+  // (bhcl_id, sid, utm, …) collapse to the same base. Beehiiv emits one click
+  // row PER variant, so a split link must SUM across ALL matching rows — a single
+  // .find() recorded only the first row's clicks and undercounted real editorial
+  // CTR (#1567 audit, finding C). Exact-base bucket still takes precedence over
+  // the fuzzy bucket; we sum within whichever bucket matches.
+  const sum = (rows: any[]): ClickStat =>
+    rows.reduce(
+      (acc, c) => ({
+        verified_clicks: acc.verified_clicks + (c.email?.verified_clicks ?? 0),
+        unique_verified_clicks: acc.unique_verified_clicks + (c.email?.unique_verified_clicks ?? 0),
+        unique_clicks: acc.unique_clicks + (c.email?.unique_clicks ?? 0),
+      }),
+      { ...zero },
+    );
+
+  const buTrim = bu.replace(/\/$/, '');
+  const exact = clicks.filter(c => {
     const cb = c.base_url || baseUrl(c.url);
-    return cb === bu || cb.replace(/\/$/, '') === bu.replace(/\/$/, '');
+    return cb === bu || cb.replace(/\/$/, '') === buTrim;
   });
-
-  if (exactMatch) {
-    return {
-      verified_clicks: exactMatch.email?.verified_clicks ?? 0,
-      unique_verified_clicks: exactMatch.email?.unique_verified_clicks ?? 0,
-      unique_clicks: exactMatch.email?.unique_clicks ?? 0,
-    };
-  }
+  if (exact.length > 0) return sum(exact);
 
   // Fuzzy: match by stripping protocol + trailing slash
   const normalize = (u: string) => u.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
   const buNorm = normalize(bu);
+  const fuzzy = clicks.filter(c => normalize(c.base_url || baseUrl(c.url)) === buNorm);
+  if (fuzzy.length > 0) return sum(fuzzy);
 
-  const fuzzyMatch = clicks.find(c => {
-    const cb = c.base_url || baseUrl(c.url);
-    return normalize(cb) === buNorm;
-  });
-
-  if (fuzzyMatch) {
-    return {
-      verified_clicks: fuzzyMatch.email?.verified_clicks ?? 0,
-      unique_verified_clicks: fuzzyMatch.email?.unique_verified_clicks ?? 0,
-      unique_clicks: fuzzyMatch.email?.unique_clicks ?? 0,
-    };
-  }
-
-  return { verified_clicks: 0, unique_verified_clicks: 0, unique_clicks: 0 };
+  return zero;
 }
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
@@ -1288,4 +1295,13 @@ function main() {
   }
 }
 
-main();
+// CLI guard (#1567 audit): só roda main() quando invocado direto. Sem isto, um
+// test que importe isEditorial/matchClick dispararia main() — que lê o cache
+// Beehiiv e escreve o CSV — no CI (que não tem `data/`).
+const _argv1 = process.argv[1]?.replaceAll('\\', '/') ?? '';
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, '')}`
+) {
+  main();
+}
