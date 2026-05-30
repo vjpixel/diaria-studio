@@ -26,8 +26,8 @@
  * o decay era pra ponderar o profile; aqui queremos CTR observado cru por janela.
  *
  * ⚠️ A janela TREATMENT (#1565 mergeado 2026-05-28) só tem dados maduros a
- * partir de ~2026-06-11 (Beehiiv leva ~7d/edição). Rodar antes disso reporta
- * `editions_found: 0` no treatment — é esperado, não bug.
+ * partir de ~2026-06-11 (Beehiiv leva ~7d/edição). Rodar antes disso mostra
+ * `0 edições c/ destaques` + o aviso "Treatment sem edições" — esperado, não bug.
  *
  * Uso:
  *   npx tsx scripts/analyze-scorer-impact.ts \
