@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { matchClick, isEditorial, classifyOrigin } from "../scripts/build-link-ctr.ts";
+import { matchClick, isEditorial, classifyOrigin, postKey, shouldSkipPost } from "../scripts/build-link-ctr.ts";
 
 describe("matchClick — soma variantes split do mesmo base_url (#1567 finding C)", () => {
   it("soma unique_verified/verified/unique de todas as rows que colapsam pro mesmo base", () => {
@@ -98,5 +98,29 @@ describe("classifyOrigin — origem por-link, sem vazamento do título (#1567 fi
     assert.equal(classifyOrigin("earn 100 r$ values inside the app", "producthunt.com"), "INT");
     // 'usp' cru não dispara mais BR (colidia com unique selling proposition)
     assert.equal(classifyOrigin("the main usp of this product is speed", "producthunt.com"), "INT");
+  });
+});
+
+describe("shouldSkipPost — incremental skip por identidade (#1567 finding H)", () => {
+  const processedKeys = new Set<string>([
+    postKey("2026-05-20", "Edição A de 20/05"), // irmã A já no CSV
+  ]);
+  const base = { isBootstrap: false, lastDate: "2026-05-20", processedKeys };
+
+  it("bootstrap nunca pula", () => {
+    assert.equal(shouldSkipPost({ ...base, isBootstrap: true, date: "2026-05-20", title: "qualquer" }), false);
+  });
+  it("date < lastDate ⇒ pula (run anterior)", () => {
+    assert.equal(shouldSkipPost({ ...base, date: "2026-05-10", title: "Velha" }), true);
+  });
+  it("date > lastDate ⇒ não pula (nova)", () => {
+    assert.equal(shouldSkipPost({ ...base, date: "2026-05-21", title: "Nova" }), false);
+  });
+  it("MESMA data + já no CSV ⇒ pula (irmã A já processada)", () => {
+    assert.equal(shouldSkipPost({ ...base, date: "2026-05-20", title: "Edição A de 20/05" }), true);
+  });
+  it("MESMA data + NÃO no CSV ⇒ NÃO pula (o fix: irmã B de mesma data)", () => {
+    // Antes (date <= lastDate) isto era pulado pra sempre, perdendo os links da edição B.
+    assert.equal(shouldSkipPost({ ...base, date: "2026-05-20", title: "Edição B de 20/05" }), false);
   });
 });
