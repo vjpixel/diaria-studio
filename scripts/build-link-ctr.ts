@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import Papa from 'papaparse';
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
@@ -143,6 +144,38 @@ export function classifyOrigin(signal: string, domain = ''): 'BR' | 'INT' {
   if (/\br\$\s*\d/.test(s)) return 'BR';
 
   return 'INT';
+}
+
+// ─── Incremental skip identity (#1567 finding H) ───────────────────────────────
+
+/** Chave de identidade de um post no CSV incremental: data + título. */
+export function postKey(date: string, title: string): string {
+  return `${date} ${title}`;
+}
+
+/**
+ * Decide se um post deve ser pulado no modo incremental.
+ *
+ * #1567 audit (finding H): o skip antigo era `date <= lastDate`, que derrubava
+ * PERMANENTEMENTE uma 2ª edição publicada na MESMA data quando ela só amadurecia
+ * (>7d) num run posterior — a irmã `date == lastDate` era pulada e seus links
+ * editoriais nunca entravam no CSV. Agora: `date < lastDate` ainda pula por
+ * eficiência (runs anteriores), mas no boundary `date == lastDate` consultamos o
+ * set de (data,título) já no CSV, então uma irmã de mesma data ainda não
+ * processada NÃO é pulada.
+ */
+export function shouldSkipPost(opts: {
+  date: string;
+  title: string;
+  isBootstrap: boolean;
+  lastDate: string;
+  processedKeys: Set<string>;
+}): boolean {
+  const { date, title, isBootstrap, lastDate, processedKeys } = opts;
+  if (isBootstrap) return false;
+  if (date < lastDate) return true;
+  if (date === lastDate && processedKeys.has(postKey(date, title))) return true;
+  return false;
 }
 
 // ─── Categorization ───────────────────────────────────────────────────────────
@@ -1180,10 +1213,14 @@ function main() {
   // Incremental: read existing CSV to find the most recent date already processed
   let existingLines: string[] = [];
   let lastDate = '';
+  // #1567 finding H: identidade (data,título) dos posts já no CSV — usada pra não
+  // pular uma 2ª edição de mesma data que só amadureceu num run posterior.
+  const processedKeys = new Set<string>();
   const isBootstrap = !fs.existsSync(OUT_CSV);
 
   if (!isBootstrap) {
-    const existing = fs.readFileSync(OUT_CSV, 'utf8').split('\n');
+    const rawExisting = fs.readFileSync(OUT_CSV, 'utf8');
+    const existing = rawExisting.split('\n');
     const oldHeader = existing[0] ?? '';
     // If column schema changed (e.g. removed 'url' column), re-bootstrap
     if (oldHeader !== header.join(',')) {
@@ -1194,6 +1231,14 @@ function main() {
       for (const line of existingLines) {
         const date = line.split(',')[0];
         if (date > lastDate) lastDate = date;
+      }
+      // Parse properly (post_title pode ter vírgulas) pra montar o set de identidade.
+      const parsed = Papa.parse<Record<string, string>>(rawExisting, {
+        header: true,
+        skipEmptyLines: true,
+      });
+      for (const rec of parsed.data) {
+        if (rec.date) processedKeys.add(postKey(rec.date, rec.post_title ?? ''));
       }
     }
   }
@@ -1235,14 +1280,15 @@ function main() {
     }
 
     const date = new Date(post.publish_date * 1000).toISOString().slice(0, 10);
+    const title = post.title ?? '';
 
-    // Incremental: skip posts already in the CSV
-    if (!isBootstrap && date <= lastDate) {
+    // Incremental: skip posts already in the CSV (#1567 finding H — por identidade
+    // (data,título) no boundary, não só `date <= lastDate`, pra não derrubar uma
+    // 2ª edição de mesma data que amadureceu depois).
+    if (shouldSkipPost({ date, title, isBootstrap, lastDate, processedKeys })) {
       alreadyProcessed++;
       continue;
     }
-
-    const title = post.title ?? '';
     const uniqueOpens = post.stats?.email?.unique_opens ?? 0;
     const clicks = post.stats?.clicks ?? [];
 
