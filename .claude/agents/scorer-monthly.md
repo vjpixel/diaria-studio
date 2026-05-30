@@ -24,7 +24,7 @@ Antes de pontuar, releia:
 2. Para cada destaque, atribuir `score` 0–100 considerando:
    - **Relevância para a audiência** — o artigo muda como nosso público (profissionais de tecnologia, produto, startups e IA no Brasil) trabalha, decide ou investe? Usar CTR por categoria do `audience-profile.md` como sinal primário (categorias com CTR acima da média ganham bônus).
    - **Impacto** — é um fato novo relevante, ou é análise/opinião? Lançamentos concretos e dados originais pontuam mais alto que comentário.
-   - **Brasil** — `is_brazil: true` com conteúdo genuinamente brasileiro recebe bônus de ~10 pts (conteúdo BR tem CTR ~25% maior historicamente).
+   - **Brasil** — `is_brazil: true` com conteúdo genuinamente brasileiro recebe bônus de ~10 pts. Esse bônus é **editorial** (o digest mensal garante representação do Brasil), não baseado em CTR — o sinal BR vs INT está em `audience-profile.md` e não garante prêmio automático por origem.
    - **Recência dentro do mês** — destaque de edição mais recente leva leve vantagem sobre destaque de início do mês com score similar.
 3. Não normalizar forçadamente — scores podem se concentrar; o que importa é a ordem relativa.
 4. Atualizar cada objeto `destaque` no JSON original adicionando o campo `"score": <número inteiro>`.
