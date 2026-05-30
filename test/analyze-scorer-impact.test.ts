@@ -11,6 +11,7 @@ import {
   computeWindowMetrics,
   renderReport,
   type CtrRow,
+  type EditionHighlights,
 } from "../scripts/analyze-scorer-impact.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
 
@@ -93,8 +94,8 @@ describe("computeWindowMetrics", () => {
     // fora da janela
     { date: "2026-06-01", base_url: D1, unique_opens: 100, unique_verified_clicks: 9, ctr_pct: 9, category: "Aplicação", origin: "BR" },
   ];
-  const highlights = new Map<string, Set<string>>([
-    ["260520", new Set([canonicalize(D1), canonicalize(D2)])],
+  const highlights = new Map<string, EditionHighlights>([
+    ["260520", { found: true, urls: new Set([canonicalize(D1), canonicalize(D2)]) }],
   ]);
 
   const m = computeWindowMetrics(rows, "2026-05-20", "2026-05-28", highlights);
@@ -106,6 +107,14 @@ describe("computeWindowMetrics", () => {
   it("H2 — CTR médio destaques vs secundárias", () => {
     assert.equal(m.destaque_ctr_mean, 5); // (6+4)/2
     assert.equal(m.secondary_ctr_mean, 2); // só SEC
+  });
+
+  it("expõe cobertura do join (edição com match completo)", () => {
+    assert.equal(m.expected_highlights, 2); // D1 + D2 carregados
+    assert.equal(m.matched_highlights, 2); // ambos casaram
+    assert.equal(m.join_coverage_pct, 100);
+    assert.equal(m.editions_partial, 0);
+    assert.equal(m.editions_unresolved, 0);
   });
 
   it("H1 — edições com >=1 destaque por categoria-alvo", () => {
@@ -128,6 +137,64 @@ describe("computeWindowMetrics", () => {
     assert.equal(empty.editions_found, 0);
     assert.equal(empty.destaque_rows, 0);
     assert.equal(empty.destaque_ctr_mean, null);
+  });
+});
+
+// Regressão #1567 review: o approved.json guarda o URL de PESQUISA do destaque,
+// mas o CTR table usa o link PUBLICADO — divergem em ~22% dos destaques (dados
+// reais). Antes do fix, destaques não-casados (ou edições sem approved.json)
+// caíam silenciosamente no pool de secundárias, enviesando o Δ H2. Estes testes
+// exercem o shape real que os fixtures de identidade (D1==base_url) não pegavam.
+describe("computeWindowMetrics — cobertura do join (#1567 review)", () => {
+  it("edição sem approved.json (found:false) é EXCLUÍDA de ambos os pools, não vira secundária", () => {
+    const rows: CtrRow[] = [
+      { date: "2026-05-20", base_url: "https://a.com/1", unique_opens: 100, unique_verified_clicks: 5, ctr_pct: 5, category: "Lançamento", origin: "BR" },
+      { date: "2026-05-20", base_url: "https://a.com/2", unique_opens: 100, unique_verified_clicks: 3, ctr_pct: 3, category: "Mercado", origin: "INT" },
+    ];
+    // approved.json ausente → found:false (loadEditionHighlights devolve isso)
+    const hl = new Map<string, EditionHighlights>([
+      ["260520", { found: false, urls: new Set() }],
+    ]);
+    const m = computeWindowMetrics(rows, "2026-05-20", "2026-05-28", hl);
+    assert.equal(m.editions_unresolved, 1);
+    assert.equal(m.editions_found, 0);
+    assert.equal(m.destaque_rows, 0);
+    // o ponto do fix: NÃO empurra os 5%/3% para secundárias (antes: mean = 4)
+    assert.equal(m.secondary_ctr_mean, null);
+    assert.equal(m.expected_highlights, 0);
+  });
+
+  it("edição sub-casada: linha não-casada NÃO contamina secundárias; destaque casado conta", () => {
+    const D1 = "https://d1.com/a"; // destaque que casa
+    const D3 = "https://d3.com/c"; // destaque cujo link publicado divergiu → sem linha no CTR
+    const EX = "https://ex.com/y"; // link extra publicado (ambíguo: pode ser o D3 real)
+    const rows: CtrRow[] = [
+      { date: "2026-05-20", base_url: D1, unique_opens: 100, unique_verified_clicks: 8, ctr_pct: 8, category: "Aplicação", origin: "BR" },
+      { date: "2026-05-20", base_url: EX, unique_opens: 100, unique_verified_clicks: 1, ctr_pct: 1, category: "Mercado", origin: "INT" },
+    ];
+    const hl = new Map<string, EditionHighlights>([
+      ["260520", { found: true, urls: new Set([canonicalize(D1), canonicalize(D3)]) }],
+    ]);
+    const m = computeWindowMetrics(rows, "2026-05-20", "2026-05-28", hl);
+    assert.equal(m.expected_highlights, 2); // D1 + D3 carregados
+    assert.equal(m.matched_highlights, 1); // só D1 achou linha
+    assert.equal(m.editions_partial, 1);
+    assert.equal(Math.round(m.join_coverage_pct!), 50);
+    assert.equal(m.destaque_rows, 1); // D1
+    assert.equal(m.destaque_ctr_mean, 8);
+    // o ponto do fix: EX fica de fora (edição sub-casada → não-confiável). Antes: 1
+    assert.equal(m.secondary_ctr_mean, null);
+  });
+
+  it("relatório mostra a seção de cobertura e avisa quando baixa", () => {
+    const rows: CtrRow[] = [
+      { date: "2026-05-20", base_url: "https://a.com/1", unique_opens: 100, unique_verified_clicks: 5, ctr_pct: 5, category: "Lançamento", origin: "BR" },
+    ];
+    const base = computeWindowMetrics(rows, "2026-05-20", "2026-05-28", new Map([["260520", { found: false, urls: new Set<string>() }]]));
+    const treat = computeWindowMetrics([], "2026-05-30", "2026-06-12", new Map<string, EditionHighlights>());
+    const md = renderReport(base, treat);
+    assert.ok(md.includes("Cobertura do join"));
+    assert.ok(md.includes("Cobertura do join baixa")); // aviso, pois baseline tem edição não-resolvida
   });
 });
 

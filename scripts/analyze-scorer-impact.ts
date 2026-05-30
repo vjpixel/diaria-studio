@@ -10,6 +10,16 @@
  * (join por URL canonicalizada). O CTR table sozinho não marca quais linhas são
  * os 3 destaques da edição — a fonte da verdade é o approved.json.
  *
+ * Cobertura do join (#1567 review): o approved.json guarda o URL de PESQUISA do
+ * destaque, mas o CTR table é montado a partir dos links PUBLICADOS na newsletter
+ * — eles divergem (ex.: LANÇAMENTOS linkam o site oficial; o editor troca o link
+ * no gate). Quando um destaque não casa, ele NÃO vira secundária: a edição inteira
+ * (se o approved.json está ausente) ou apenas as linhas não-casadas (se o join foi
+ * parcial) são EXCLUÍDAS das médias, e a seção "Cobertura do join" do relatório
+ * mostra a taxa de match. Sem isso, destaques reais não-casados contaminavam o
+ * pool de secundárias e enviesavam o Δ H2 — cobertura assimétrica entre baseline
+ * e treatment enviesa o delta na mesma direção que ele reporta.
+ *
  * Parsing do CSV: ancorado no FIM (origin=-1, category=-2, ctr=-3, ...,
  * base_url=-8) porque title/section_title podem ter vírgulas — mesma técnica do
  * update-audience.ts. `date` é o 1º campo (sempre seguro). NÃO usa decay aqui:
@@ -84,28 +94,40 @@ export function inWindow(date: string, from: string, to: string): boolean {
 }
 
 export interface EditionHighlights {
-  edition: string;
-  highlightUrls: Set<string>; // canonicalizadas
+  /**
+   * true se 01-approved.json existe E parseou. Distingue "edição sem highlights
+   * carregados" (arquivo ausente/inválido) de "carregado, mas 0 match no join" —
+   * sem esse flag, edições sem approved.json viravam empty Set e TODAS as suas
+   * linhas (incluindo os 3 destaques reais) caíam no pool de secundárias (#1567 review).
+   */
+  found: boolean;
+  urls: Set<string>; // URLs dos destaques, canonicalizadas
 }
 
-/** Carrega os URLs dos 3 destaques de uma edição (canonicalizados). */
+/**
+ * Carrega os URLs dos 3 destaques de uma edição (canonicalizados).
+ * Retorna `found: false` quando o approved.json está ausente ou inválido — essas
+ * edições são EXCLUÍDAS das métricas (não viram secundárias), senão os destaques
+ * reais contaminariam o pool de secundárias (#1567 review).
+ */
 export function loadEditionHighlights(
   editionsDir: string,
   edition: string,
-): Set<string> {
+): EditionHighlights {
   const p = resolve(ROOT, editionsDir, edition, "_internal", "01-approved.json");
   const urls = new Set<string>();
-  if (!existsSync(p)) return urls;
+  if (!existsSync(p)) return { found: false, urls };
   try {
     const data = JSON.parse(readFileSync(p, "utf8"));
     for (const h of data.highlights ?? []) {
       const url = h.article?.url ?? h.url;
       if (typeof url === "string" && url) urls.add(canonicalize(url));
     }
+    return { found: true, urls };
   } catch {
-    /* edição sem approved.json válido — ignora */
+    /* edição sem approved.json válido — trata como ausente */
+    return { found: false, urls };
   }
-  return urls;
 }
 
 export interface WindowMetrics {
@@ -113,6 +135,14 @@ export interface WindowMetrics {
   to: string;
   editions_found: number;
   destaque_rows: number;
+  // Cobertura do join (#1567 review): expõe quantos destaques esperados de fato
+  // casaram, pra distinguir "poucos destaques" de "join falhou silenciosamente".
+  editions_in_window: number; // edições distintas com linhas na janela
+  editions_unresolved: number; // approved.json ausente/inválido → excluídas
+  editions_partial: number; // carregadas mas matched < esperado
+  expected_highlights: number; // soma de destaques carregados (edições resolvidas)
+  matched_highlights: number; // destaques que acharam linha no CTR
+  join_coverage_pct: number | null; // matched / expected
   // H2
   destaque_ctr_mean: number | null;
   secondary_ctr_mean: number | null;
@@ -144,13 +174,20 @@ export function computeWindowMetrics(
   rows: CtrRow[],
   from: string,
   to: string,
-  highlightsByEdition: Map<string, Set<string>>,
+  highlightsByEdition: Map<string, EditionHighlights>,
 ): WindowMetrics {
   const windowRows = rows.filter((r) => inWindow(r.date, from, to));
-  const editionsInWindow = new Set(windowRows.map((r) => dateToEdition(r.date)));
-  const editionsFound = [...editionsInWindow].filter(
-    (e) => (highlightsByEdition.get(e)?.size ?? 0) > 0,
-  ).length;
+
+  // Agrupa linhas por edição — precisamos do match POR EDIÇÃO antes de decidir
+  // o que entra no pool de secundárias: uma edição sub-casada esconde destaques
+  // reais entre suas linhas não-casadas (o URL publicado diverge do approved.json),
+  // então essas linhas não são confiáveis como "secundárias" (#1567 review).
+  const rowsByEdition = new Map<string, CtrRow[]>();
+  for (const r of windowRows) {
+    const ed = dateToEdition(r.date);
+    if (!rowsByEdition.has(ed)) rowsByEdition.set(ed, []);
+    rowsByEdition.get(ed)!.push(r);
+  }
 
   const destaqueCtrs: number[] = [];
   const secondaryCtrs: number[] = [];
@@ -160,21 +197,50 @@ export function computeWindowMetrics(
   const catsByEdition = new Map<string, Set<string>>();
   let destaqueRows = 0;
 
-  for (const r of windowRows) {
-    const ed = dateToEdition(r.date);
-    const hl = highlightsByEdition.get(ed);
-    const isDestaque = hl ? hl.has(canonicalize(r.base_url)) : false;
-    const ctr = rowCtr(r);
+  let editionsUnresolved = 0;
+  let editionsPartial = 0;
+  let expectedHighlights = 0;
+  let matchedHighlights = 0;
 
-    if (isDestaque) {
-      destaqueRows++;
-      if (ctr !== null) destaqueCtrs.push(ctr);
-      destaqueOrigin[r.origin] = (destaqueOrigin[r.origin] ?? 0) + 1;
-      destaqueCategory[r.category] = (destaqueCategory[r.category] ?? 0) + 1;
-      if (!catsByEdition.has(ed)) catsByEdition.set(ed, new Set());
-      catsByEdition.get(ed)!.add(r.category);
-    } else if (ctr !== null) {
-      secondaryCtrs.push(ctr);
+  for (const [ed, edRows] of rowsByEdition) {
+    const info = highlightsByEdition.get(ed);
+    // Edição sem highlights carregados (approved.json ausente/inválido, ou 0 URLs):
+    // não dá pra classificar nenhuma linha — exclui a edição inteira de AMBOS os
+    // pools, senão os 3 destaques reais virariam secundárias e enviesariam o H2.
+    if (!info || !info.found || info.urls.size === 0) {
+      editionsUnresolved++;
+      continue;
+    }
+    const urls = info.urls;
+    const expected = urls.size;
+    expectedHighlights += expected;
+
+    // Destaques desta edição que acharam linha no CTR (URLs distintas casadas).
+    const matchedUrls = new Set<string>();
+    for (const r of edRows) {
+      const key = canonicalize(r.base_url);
+      if (urls.has(key)) matchedUrls.add(key);
+    }
+    matchedHighlights += matchedUrls.size;
+    const fullyMatched = matchedUrls.size === expected;
+    if (!fullyMatched) editionsPartial++;
+
+    for (const r of edRows) {
+      const isDestaque = urls.has(canonicalize(r.base_url));
+      const ctr = rowCtr(r);
+      if (isDestaque) {
+        destaqueRows++;
+        if (ctr !== null) destaqueCtrs.push(ctr);
+        destaqueOrigin[r.origin] = (destaqueOrigin[r.origin] ?? 0) + 1;
+        destaqueCategory[r.category] = (destaqueCategory[r.category] ?? 0) + 1;
+        if (!catsByEdition.has(ed)) catsByEdition.set(ed, new Set());
+        catsByEdition.get(ed)!.add(r.category);
+      } else if (fullyMatched && ctr !== null) {
+        // Só conta como secundária quando o join da edição foi COMPLETO. Numa
+        // edição sub-casada, uma linha não-casada pode ser um destaque real cujo
+        // URL publicado difere do approved.json — ambígua, então fica de fora.
+        secondaryCtrs.push(ctr);
+      }
     }
   }
 
@@ -191,8 +257,15 @@ export function computeWindowMetrics(
   return {
     from,
     to,
-    editions_found: editionsFound,
+    editions_found: rowsByEdition.size - editionsUnresolved,
     destaque_rows: destaqueRows,
+    editions_in_window: rowsByEdition.size,
+    editions_unresolved: editionsUnresolved,
+    editions_partial: editionsPartial,
+    expected_highlights: expectedHighlights,
+    matched_highlights: matchedHighlights,
+    join_coverage_pct:
+      expectedHighlights > 0 ? (matchedHighlights / expectedHighlights) * 100 : null,
     destaque_ctr_mean: mean(destaqueCtrs),
     secondary_ctr_mean: mean(secondaryCtrs),
     h1_editions_with_category: h1,
@@ -229,6 +302,34 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
     );
   }
 
+  // Cobertura do join (#1567 review): destaques que não casam no join são
+  // EXCLUÍDOS (não viram secundárias). Surfaçar a taxa evita ler ruído de
+  // cobertura como achado editorial — e cobertura assimétrica entre as janelas
+  // enviesa o Δ H2 na mesma direção que ele reporta.
+  L.push("## Cobertura do join", "");
+  L.push("| Janela | Edições | s/ highlights | match parcial | destaques casados | cobertura |");
+  L.push("|---|---|---|---|---|---|");
+  for (const [name, w] of [["Baseline", baseline], ["Treatment", treatment]] as const) {
+    L.push(
+      `| ${name} | ${w.editions_in_window} | ${w.editions_unresolved} | ${w.editions_partial} | ` +
+        `${w.matched_highlights}/${w.expected_highlights} | ${fmt(w.join_coverage_pct, 0)}% |`,
+    );
+  }
+  const lowCoverage = [baseline, treatment].some(
+    (w) => w.join_coverage_pct !== null && w.join_coverage_pct < 80,
+  );
+  const hasUnresolved = baseline.editions_unresolved + treatment.editions_unresolved > 0;
+  if (lowCoverage || hasUnresolved) {
+    L.push(
+      "",
+      "> ⚠️ **Cobertura do join baixa.** Destaques cujo URL no approved.json diverge do " +
+        "link publicado no CTR (ou edições sem approved.json) são EXCLUÍDOS das métricas — " +
+        "não contados como secundárias. Cobertura assimétrica entre baseline e treatment " +
+        "enviesa o Δ H2; interprete com cautela.",
+    );
+  }
+  L.push("");
+
   L.push("## H2 — CTR médio dos destaques", "");
   L.push("| Janela | CTR destaques | CTR secundárias | nº linhas destaque |");
   L.push("|---|---|---|---|");
@@ -256,7 +357,13 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
   L.push("|---|---|---|---|");
   L.push(`| Baseline | ${baseline.destaque_origin["BR"] ?? 0} | ${baseline.destaque_origin["INT"] ?? 0} | ${fmt(baseline.destaque_br_pct, 0)}% |`);
   L.push(`| Treatment | ${treatment.destaque_origin["BR"] ?? 0} | ${treatment.destaque_origin["INT"] ?? 0} | ${fmt(treatment.destaque_br_pct, 0)}% |`);
-  L.push("", "Esperado por H3: BR cai de ~60% pra ~50% (annotation removeu prêmio automático BR).", "");
+  L.push("", "Esperado por H3: BR cai de ~60% pra ~50% (annotation removeu prêmio automático BR).");
+  L.push(
+    "⚠️ Ressalva: `origin` vem de classifyOrigin (build-link-ctr) por palavra-chave no TEXTO " +
+      "editorial, não pela nacionalidade da fonte — domínios internacionais com pauta sobre o " +
+      "Brasil contam como BR. Trate como sinal de enquadramento, não de origem da fonte.",
+    "",
+  );
 
   L.push("## Distribuição de categorias dos destaques", "");
   const cats = [...new Set([...Object.keys(baseline.destaque_category), ...Object.keys(treatment.destaque_category)])].sort();
@@ -271,6 +378,10 @@ export function renderReport(baseline: WindowMetrics, treatment: WindowMetrics):
   L.push("- Audience drift: base ainda crescendo → CTR pode cair mesmo com scorer melhor.");
   L.push("- #1560/#1562 (Brave) mergearam junto → efeito combinado, atribuir conservadoramente.");
   L.push("- Pool menor (P0/P1/P2) → menos diversidade de seleção.");
+  L.push(
+    "- Cobertura do join (ver seção acima): só edições com approved.json e join " +
+      "completo entram nas médias; cobertura desigual entre janelas enviesa o Δ.",
+  );
   L.push("- H4 (top-6 scorer vs observado) não computado aqui — requer ranking por edição; ver issue.");
   L.push("");
 
@@ -303,14 +414,14 @@ export function highlightsForWindows(
   rows: CtrRow[],
   editionsDir: string,
   windows: Array<{ from: string; to: string }>,
-): Map<string, Set<string>> {
+): Map<string, EditionHighlights> {
   const editions = new Set<string>();
   for (const r of rows) {
     for (const w of windows) {
       if (inWindow(r.date, w.from, w.to)) editions.add(dateToEdition(r.date));
     }
   }
-  const map = new Map<string, Set<string>>();
+  const map = new Map<string, EditionHighlights>();
   for (const ed of editions) map.set(ed, loadEditionHighlights(editionsDir, ed));
   return map;
 }
