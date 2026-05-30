@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  parseCtrRow,
+  recordToCtrRow,
+  loadCtrRows,
   dateToEdition,
   inWindow,
   computeWindowMetrics,
@@ -10,33 +14,53 @@ import {
 } from "../scripts/analyze-scorer-impact.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
 
-describe("parseCtrRow", () => {
-  // colunas: date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin
-  it("parseia linha limpa", () => {
-    const line = "2026-05-20,Post,Sec,Aprofunde,https://x.com/a,x.com,100,5,4,4.00,Aplicação,BR";
-    const r = parseCtrRow(line)!;
+describe("recordToCtrRow", () => {
+  it("mapeia record limpo", () => {
+    const r = recordToCtrRow({
+      date: "2026-05-20", base_url: "https://x.com/a", unique_opens: "100",
+      unique_verified_clicks: "4", ctr_pct: "4.00", category: "Aplicação", origin: "BR",
+    })!;
     assert.equal(r.date, "2026-05-20");
     assert.equal(r.base_url, "https://x.com/a");
     assert.equal(r.unique_opens, 100);
     assert.equal(r.unique_verified_clicks, 4);
-    assert.equal(r.ctr_pct, 4);
     assert.equal(r.category, "Aplicação");
     assert.equal(r.origin, "BR");
   });
 
-  it("ancora no FIM — title/section com vírgulas não corrompem category/origin", () => {
-    const line = '2026-05-21,"Título, com vírgula",Seção, e mais,Aprofunde,https://y.com/b,y.com,200,10,8,4.00,Segurança,INT';
-    const r = parseCtrRow(line)!;
-    assert.equal(r.date, "2026-05-21");
-    assert.equal(r.category, "Segurança");
-    assert.equal(r.origin, "INT");
-    assert.equal(r.unique_verified_clicks, 8);
-    assert.equal(r.unique_opens, 200);
+  it("rejeita record sem date válida", () => {
+    assert.equal(recordToCtrRow({ date: "lixo" }), null);
+    assert.equal(recordToCtrRow({}), null);
   });
 
-  it("rejeita linha sem date válida ou curta demais", () => {
-    assert.equal(parseCtrRow("lixo,sem,data"), null);
-    assert.equal(parseCtrRow("not-a-date,a,b,c,d,e,f,g,h,i,j,k"), null);
+  it("campos numéricos ausentes/inválidos viram 0", () => {
+    const r = recordToCtrRow({ date: "2026-05-20", unique_opens: "abc" })!;
+    assert.equal(r.unique_opens, 0);
+  });
+});
+
+describe("loadCtrRows (papaparse — vírgulas em campos quotados)", () => {
+  it("parseia CSV com vírgula em title E em base_url sem corromper colunas", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ctr-"));
+    try {
+      const csv = [
+        "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin",
+        '2026-05-20,"Título, com vírgula",Seção,Aprofunde,"https://y.com/a,b",y.com,200,10,8,4.00,Segurança,INT',
+        "2026-05-21,Limpo,Sec,Aprofunde,https://z.com/c,z.com,100,3,3,3.00,Aplicação,BR",
+      ].join("\n");
+      const p = join(dir, "ctr.csv");
+      writeFileSync(p, csv);
+      const rows = loadCtrRows(p.replace(/\\/g, "/"));
+      assert.equal(rows.length, 2);
+      // base_url com vírgula preservado inteiro; category/origin corretos
+      assert.equal(rows[0].base_url, "https://y.com/a,b");
+      assert.equal(rows[0].category, "Segurança");
+      assert.equal(rows[0].origin, "INT");
+      assert.equal(rows[0].unique_verified_clicks, 8);
+      assert.equal(rows[1].base_url, "https://z.com/c");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

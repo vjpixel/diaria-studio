@@ -27,7 +27,8 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve } from "node:path";
+import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -46,29 +47,27 @@ export interface CtrRow {
 }
 
 /**
- * Parseia uma linha do CTR table ancorando no FIM (campos seguros, sem vírgula).
- * Colunas: date,post_title,section_title,anchor,base_url,domain,unique_opens,
- *          verified_clicks,unique_verified_clicks,ctr_pct,category,origin
- * Retorna null se a linha não tiver campos suficientes ou date inválida.
+ * Mapeia uma linha já parseada (papaparse, header) pra CtrRow. papaparse trata
+ * corretamente campos com vírgula entre aspas (title/section/base_url) — por isso
+ * NÃO ancoramos no fim como o update-audience.ts (que não lê base_url). 2 rows do
+ * CTR table real têm base_url com vírgula; split ingênuo as corromperia.
+ * Retorna null se faltar date válida.
  */
-export function parseCtrRow(line: string): CtrRow | null {
-  const parts = line.split(",");
-  if (parts.length < 12) return null;
-  const date = parts[0].trim();
+export function recordToCtrRow(rec: Record<string, string>): CtrRow | null {
+  const date = (rec.date ?? "").trim();
   if (!/^\d{4}-\d{2}-\d{2}/.test(date)) return null;
-  const n = parts.length;
-  const num = (s: string): number => {
-    const v = parseFloat(s);
+  const num = (s: string | undefined): number => {
+    const v = parseFloat(s ?? "");
     return Number.isFinite(v) ? v : 0;
   };
   return {
     date: date.slice(0, 10),
-    base_url: (parts[n - 8] ?? "").trim(),
-    unique_opens: num(parts[n - 6]),
-    unique_verified_clicks: num(parts[n - 4]),
-    ctr_pct: num(parts[n - 3]),
-    category: (parts[n - 2] ?? "").trim(),
-    origin: (parts[n - 1] ?? "").trim(),
+    base_url: (rec.base_url ?? "").trim(),
+    unique_opens: num(rec.unique_opens),
+    unique_verified_clicks: num(rec.unique_verified_clicks),
+    ctr_pct: num(rec.ctr_pct),
+    category: (rec.category ?? "").trim(),
+    origin: (rec.origin ?? "").trim(),
   };
 }
 
@@ -291,8 +290,12 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 export function loadCtrRows(ctrPath: string): CtrRow[] {
-  const lines = readFileSync(resolve(ROOT, ctrPath), "utf8").trim().split("\n").slice(1);
-  return lines.map(parseCtrRow).filter((r): r is CtrRow => r !== null);
+  const csv = readFileSync(resolve(ROOT, ctrPath), "utf8");
+  const { data } = Papa.parse<Record<string, string>>(csv, {
+    header: true,
+    skipEmptyLines: true,
+  });
+  return data.map(recordToCtrRow).filter((r): r is CtrRow => r !== null);
 }
 
 /** Coleta os destaques de todas as edições que aparecem nas janelas dadas. */
