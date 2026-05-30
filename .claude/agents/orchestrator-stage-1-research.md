@@ -384,7 +384,10 @@ npx tsx scripts/merge-scored-chunks.ts \
   --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
   --top 15
 ```
-Se o manifest trouxer `incomplete: true`, logar warning (`level: warn`, `agent: orchestrator`) — um chunk `scorer-chunk` falhou; artigos sem score viraram 0 e serão filtrados em 1s.
+Tratar o manifest por severidade (#1567 audit, finding F — split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores; sem isto o #1 highlight some silenciosamente com só um warning):
+- **`catastrophic: true`** (um chunk inteiro ilegível — `failed_chunks > 0` — ou `missing_count > 2`): **NÃO seguir com o resultado degradado.** (a) **Retry** o(s) `scorer-chunk` do(s) chunk(s) que falhou(aram) — re-disparar o agent só pros `scored-chunk-{i}.json` ausentes/inválidos — e re-rodar o merge (1q.3). (b) Se ainda `catastrophic` após o retry, **cair no 1q-fallback** (single-call `scorer` sobre o `tmp-dates-reviewed.json` inteiro), descartando o resultado chunked. Logar `level: error`.
+- **`incomplete: true` mas não `catastrophic`** (gap ≤ 2 artigos): logar `level: warn` e seguir — os artigos sem score viraram 0 e serão filtrados em 1s (ruído recuperável).
+- Caso contrário: seguir normalmente.
 
 **1q.4 — Seleção.** Disparar 1 agent `scorer-select`: input = `tmp-finalists.json`, out_path = `tmp-selection.json`. Retorna `highlights[]` (≤6, ordem editorial) + `runners_up[]`.
 

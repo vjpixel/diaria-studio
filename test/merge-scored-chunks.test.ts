@@ -132,3 +132,50 @@ describe("mergeChunks", () => {
     assert.equal(r.finalists.length, 5);
   });
 });
+
+// #1567 audit (finding F): distinguir perda CATASTRÓFICA (chunk inteiro perdido)
+// de gap benigno (1-2 artigos). O split é round-robin, então um chunk perdido
+// leva uma fatia dos MELHORES artigos — não pode sumir com só um warning.
+describe("mergeChunks — sinal catastrophic (#1567 finding F)", () => {
+  // pool = 5 artigos: l1, p1, p2, n1, n2
+  it("failed_chunks > 0 ⇒ catastrophic, mesmo com gap pequeno", () => {
+    // só 1 artigo sem score (gap benigno), MAS um chunk file não carregou
+    const chunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "l1", score: 50 }, { url: "p1", score: 60 }, { url: "p2", score: 70 }, { url: "n1", score: 40 }] },
+    ];
+    const r = mergeChunks(CAT, chunks, 15, /* failedChunks */ 1);
+    assert.equal(r.missing_count, 1);
+    assert.equal(r.failed_chunks, 1);
+    assert.equal(r.catastrophic, true); // chunk ilegível ⇒ não confiar, retry/fallback
+  });
+
+  it("gap grande (> MAX_BENIGN_MISSING) ⇒ catastrophic mesmo sem failed file", () => {
+    // chunk "sucedeu" mas devolveu quase nada (agent escreveu all_scored curto)
+    const chunks: ChunkScoreFile[] = [{ all_scored: [{ url: "l1", score: 50 }] }];
+    const r = mergeChunks(CAT, chunks, 15, 0);
+    assert.equal(r.missing_count, 4); // 5 - 1
+    assert.equal(r.failed_chunks, 0);
+    assert.equal(r.catastrophic, true);
+  });
+
+  it("gap pequeno (≤ MAX_BENIGN_MISSING) ⇒ incomplete mas NÃO catastrophic", () => {
+    // 4 de 5 pontuados — 1 artigo omitido por um agent que senão funcionou
+    const chunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "l1", score: 50 }, { url: "p1", score: 60 }, { url: "p2", score: 70 }, { url: "n1", score: 40 }] },
+    ];
+    const r = mergeChunks(CAT, chunks, 15, 0);
+    assert.equal(r.missing_count, 1);
+    assert.equal(r.incomplete, true);
+    assert.equal(r.catastrophic, false); // recuperável — segue com warning
+  });
+
+  it("pool completo ⇒ nem incomplete nem catastrophic", () => {
+    const chunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "l1", score: 50 }, { url: "p1", score: 60 }, { url: "p2", score: 70 }, { url: "n1", score: 40 }, { url: "n2", score: 30 }] },
+    ];
+    const r = mergeChunks(CAT, chunks, 15, 0);
+    assert.equal(r.missing_count, 0);
+    assert.equal(r.incomplete, false);
+    assert.equal(r.catastrophic, false);
+  });
+});

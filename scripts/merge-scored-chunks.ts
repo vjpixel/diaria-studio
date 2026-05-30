@@ -60,8 +60,21 @@ export interface MergeResult {
   finalists: Finalist[];
   pool_size: number;
   scored_count: number;
-  incomplete: boolean;
+  missing_count: number; // pool_size - scored_count
+  failed_chunks: number; // chunk files que não carregaram (ausente/corrompido)
+  incomplete: boolean; // qualquer gap (scored_count < pool_size)
+  /**
+   * Perda CATASTRÓFICA — um chunk inteiro sumiu (failed_chunks > 0) ou o gap é
+   * grande demais pra ser ruído de agente (> MAX_BENIGN_MISSING). Distingue
+   * "1-2 artigos omitidos" (recuperável, segue com warning) de "~30 artigos —
+   * uma fatia round-robin dos MELHORES — perdidos" (exige retry/single-call
+   * fallback, senão o #1 highlight some silenciosamente). #1567 audit finding F.
+   */
+  catastrophic: boolean;
 }
+
+/** Gap ≤ isto = ruído recuperável de agente; acima (ou chunk inteiro perdido) = catastrófico. */
+export const MAX_BENIGN_MISSING = 2;
 
 const BUCKET_ORDER = ["lancamento", "pesquisa", "noticias", "tutorial"] as const;
 function bucketOf(a: Article): string {
@@ -114,6 +127,7 @@ export function mergeChunks(
   categorized: Categorized,
   chunks: ChunkScoreFile[],
   topN: number,
+  failedChunks = 0,
 ): MergeResult {
   const pool = flattenCategorized(categorized);
 
@@ -138,12 +152,17 @@ export function mergeChunks(
   const all_scored: ScorePair[] = enriched.map((e) => ({ url: e.url, score: e.score }));
   const finalists: Finalist[] = enriched.slice(0, Math.max(0, topN));
 
+  const missing = pool.length - scoredCount;
+
   return {
     all_scored,
     finalists,
     pool_size: pool.length,
     scored_count: scoredCount,
-    incomplete: scoredCount < pool.length,
+    missing_count: missing,
+    failed_chunks: failedChunks,
+    incomplete: missing > 0,
+    catastrophic: failedChunks > 0 || missing > MAX_BENIGN_MISSING,
   };
 }
 
@@ -182,7 +201,7 @@ export function main(): void {
     readFileSync(resolve(ROOT, f), "utf8"),
   );
 
-  const result = mergeChunks(categorized, chunks, topN);
+  const result = mergeChunks(categorized, chunks, topN, failed.length);
 
   writeFileSync(
     resolve(ROOT, allscoredOut),
@@ -195,10 +214,18 @@ export function main(): void {
     "utf8",
   );
 
-  if (result.incomplete) {
+  if (result.catastrophic) {
+    // Perda de chunk inteiro: NÃO é só warning — o orchestrator (1q.3) deve
+    // retry o(s) chunk(s) e, se persistir, cair no single-call fallback (#1567 F).
+    process.stderr.write(
+      `ERROR [merge-scored-chunks]: perda CATASTRÓFICA — ${result.scored_count}/${result.pool_size} ` +
+        `pontuados (${result.missing_count} sem score, ${result.failed_chunks} chunk(s) ilegível). ` +
+        `Retry o(s) chunk(s) ou caia no single-call fallback antes de seguir.\n`,
+    );
+  } else if (result.incomplete) {
     process.stderr.write(
       `WARN [merge-scored-chunks]: ${result.scored_count}/${result.pool_size} artigos pontuados — ` +
-        `${result.pool_size - result.scored_count} sem score (chunk falhou?). Recebem score 0.\n`,
+        `${result.missing_count} sem score (gap pequeno, recuperável). Recebem score 0.\n`,
     );
   }
 
@@ -207,8 +234,10 @@ export function main(): void {
       pool_size: result.pool_size,
       scored_count: result.scored_count,
       finalists_count: result.finalists.length,
+      missing_count: result.missing_count,
+      failed_chunks: result.failed_chunks,
       incomplete: result.incomplete,
-      failed_chunks: failed.length,
+      catastrophic: result.catastrophic,
     }) + "\n",
   );
 }
