@@ -22,7 +22,7 @@ Antes de pontuar, releia:
 
 1. Achatar todos os artigos dos 3 buckets em uma lista única para comparação.
 2. Para cada artigo, atribuir nota 0-100 considerando:
-   - **Relevância para a audiência** — julgamento editorial informado por `context/audience-profile.md`: perfil do público (profissionais de tecnologia, produto, startups e IA no Brasil), CTR por categoria (acima da média ~0.65% = bônus, abaixo = penalidade; conteúdo BR tem CTR ~25% maior que INT) e CTR por domínio (fontes com CTR histórico alto indicam confiança da audiência). O artigo muda como nosso público trabalha, decide ou investe?
+   - **Relevância para a audiência** — julgamento editorial informado por `context/audience-profile.md`: perfil do público (profissionais de tecnologia, produto, startups e IA no Brasil), CTR por categoria (categorias acima da média geral = bônus, abaixo = penalidade — usar os números ATUAIS do profile, não valores fixos), sinal BR vs INT (seção "Engajamento por origem" do profile — ler a direção de lá, não assumir prêmio por origem) e CTR por domínio (fontes com CTR histórico alto indicam confiança da audiência). O artigo muda como nosso público trabalha, decide ou investe?
    - **Atualidade** (mais recente > mais antigo dentro da janela)
    - **Impacto prático na rotina (#357)** — o artigo descreve algo que já afeta (ou afetará em <6 meses) como as pessoas trabalham, estudam, são contratadas ou tomam decisões do dia a dia? +10 pontos se sim; +5 extra se com ângulo ou dado brasileiro. Não substitui os critérios anteriores — é bônus aditivo para evitar que artigos de alto impacto sejam preteridos por falta de sinal histórico de CTR.
 3. Ordenar por score desc.

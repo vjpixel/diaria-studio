@@ -22,7 +22,7 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
 
 1. Achatar todos os artigos dos buckets do chunk numa lista única.
 2. Para cada artigo, atribuir nota **0-100** considerando (idêntico ao scorer):
-   - **Relevância para a audiência** — julgamento informado por `audience-profile.md`: público de tecnologia/produto/startups/IA no Brasil; CTR por categoria (acima da média ~0.65% = bônus, abaixo = penalidade; conteúdo BR ~25% mais CTR que INT); CTR por domínio (fontes com histórico alto = confiança). O artigo muda como nosso público trabalha, decide ou investe?
+   - **Relevância para a audiência** — julgamento informado por `audience-profile.md`: público de tecnologia/produto/startups/IA no Brasil; CTR por categoria (categorias acima da média geral = bônus, abaixo = penalidade — use os números ATUAIS do profile, não valores fixos); sinal BR vs INT (seção "Engajamento por origem" do profile — ler a direção/magnitude de lá, não assumir); CTR por domínio (fontes com histórico alto = confiança). O artigo muda como nosso público trabalha, decide ou investe?
    - **Atualidade** (mais recente > mais antigo dentro da janela).
    - **Impacto prático na rotina (#357)** — afeta (ou afetará em <6 meses) como as pessoas trabalham, estudam, são contratadas ou decidem? +10 se sim; +5 extra com ângulo/dado brasileiro. Bônus aditivo.
 
