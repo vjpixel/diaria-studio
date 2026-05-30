@@ -10,7 +10,11 @@ import {
   isAprofundeAnchor,
   decayWeight,
   DECAY_HALF_LIFE_DAYS,
+  parseCtrFromCsv,
 } from "../scripts/update-audience.ts";
+
+const CTR_HEADER =
+  "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
 
 describe("isAprofundeAnchor", () => {
   it("detecta anchor 'Aprofunde' exato", () => {
@@ -112,5 +116,62 @@ describe("decayWeight monotonicidade", () => {
     assert.ok(w_today > w_30d, "today > 30 dias atrás");
     assert.ok(w_30d > w_90d, "30d > 90d");
     assert.ok(w_90d > w_180d, "90d > 180d");
+  });
+});
+
+// Regressão #1567 audit (finding A): o anchor era lido em parts[3] de um
+// split(",") ingênuo. Vírgulas em post_title/section_title deslocavam o índice,
+// então rows Aprofunde com vírgula no título VAZAVAM o filtro #1564 e
+// reinflavam o CTR das categorias no profile do scorer (35 de 255 no CSV real).
+// parseCtrFromCsv agora usa papaparse e lê rec.anchor por nome.
+describe("parseCtrFromCsv — Aprofunde filter robusto a vírgulas (regressão #1567 finding A)", () => {
+  const today = new Date("2026-05-21");
+
+  it("filtra row Aprofunde mesmo com vírgulas em post_title/section_title", () => {
+    const csv = [
+      CTR_HEADER,
+      // anchor REAL = Aprofunde, mas split(",")[3] daria " com vírgula" (fragmento do título)
+      '2026-05-20,"Título, com vírgula","Seção, também",Aprofunde,https://a.com/x,a.com,100,5,5,5.00,Estratégia,BR',
+      // row normal (regime título), sem vírgulas
+      "2026-05-20,Limpo,Seção,GPT-5 chega,https://b.com/y,b.com,100,3,3,3.00,Lançamento,INT",
+      // row NÃO-Aprofunde COM vírgulas no título — prova que os campos finais (categoria/origem/domínio/números) são lidos certo
+      '2026-05-21,"Outro, título, com, vírgulas",Seção,Saiba mais,https://c.com/z,c.com,200,8,8,4.00,Pesquisa,BR',
+    ].join("\n");
+
+    const r = parseCtrFromCsv(csv, today)!;
+
+    // O fix: a row Aprofunde (com vírgula no título) É detectada e excluída
+    assert.equal(r.filteredAprofunde, 1);
+    assert.equal(r.byCategory.has("Estratégia"), false); // a categoria da row Aprofunde NÃO vaza
+    assert.equal(r.totalLinks, 2); // 3 rows - 1 Aprofunde
+
+    // As rows legítimas (incl. uma com vírgulas no título) são agregadas corretamente
+    assert.equal(r.byCategory.get("Lançamento")?.count, 1);
+    assert.equal(r.byCategory.get("Pesquisa")?.count, 1);
+
+    // Campos lidos por nome continuam corretos numa row com vírgulas no título:
+    // a row Pesquisa (data == today → decay weight 1) deve ter opens=200, clicks=8
+    const pesquisa = r.byCategory.get("Pesquisa")!;
+    assert.equal(pesquisa.opens, 200);
+    assert.equal(pesquisa.clicks, 8);
+    assert.equal(r.byDomain.get("c.com")?.count, 1); // domínio lido certo apesar das vírgulas
+
+    // origin: a única BR remanescente é a row Pesquisa (a BR Aprofunde foi filtrada)
+    assert.equal(r.byOrigin.get("BR")?.count, 1);
+    assert.equal(r.byOrigin.get("INT")?.count, 1);
+  });
+
+  it("conta múltiplas rows Aprofunde e devolve null pra CSV só com header", () => {
+    const csv = [
+      CTR_HEADER,
+      '2026-05-20,"A, B",Sec,Aprofunde,https://a.com,a.com,100,2,2,2.00,Mercado,BR',
+      "2026-05-20,Limpo,Sec,aprofunde — extra,https://b.com,b.com,100,1,1,1.00,Mercado,INT",
+      "2026-05-20,Limpo,Sec,Título normal,https://d.com,d.com,100,4,4,4.00,Tendência,INT",
+    ].join("\n");
+    const r = parseCtrFromCsv(csv, today)!;
+    assert.equal(r.filteredAprofunde, 2);
+    assert.equal(r.totalLinks, 1);
+
+    assert.equal(parseCtrFromCsv(CTR_HEADER, today), null); // só header → sem dados
   });
 });
