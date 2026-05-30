@@ -360,9 +360,44 @@ Se em produção surgirem casos de tema repetido escapando dedup.ts, considerar:
 
 Input do scorer (1q) agora vem direto de `tmp-dates-reviewed.json` (output de 1p1).
 
-### 1q. Scorer
+### 1q. Scorer (chunked-parallel, #1611)
 
-Disparar `scorer` (Opus) passando `categorized` (saída de 1p1 `tmp-dates-reviewed.json`) e `out_path: data/editions/{AAMMDD}/_internal/tmp-scored.json`. Retorna `highlights[]` (top 6 rankeados, ao menos 1 por bucket), `runners_up[]` (1-2) e `all_scored[]` (todos os artigos com score, ordenados por score desc).
+O scorer single-call (Opus sobre ~80-150 artigos numa passada) gastava ~8min. Agora roda em 5 sub-passos: pontuação em K chamadas paralelas (mesmo rubrico) + seleção holística sobre os finalistas. Paridade validada (top-6 overlap 5/6 vs. single-call, dentro do ruído run-to-run do próprio scorer). Pools pequenos caem no caminho legado — ver **1q-fallback**.
+
+**1q.1 — Split.** Dividir o pool em chunks de ~30:
+```bash
+npx tsx scripts/split-articles-for-scoring.ts \
+  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
+  --out-dir data/editions/{AAMMDD}/_internal/scoring-chunks \
+  --chunk-size 30
+```
+O manifest stdout traz `chunk_count` + `chunk_files[]`. **Se `chunk_count <= 1`, pular pro 1q-fallback.**
+
+**1q.2 — Pontuar em paralelo.** Disparar `chunk_count` agents `scorer-chunk` **EM PARALELO** (uma chamada `Agent` por chunk, todas no MESMO bloco de tool calls). Cada um: input = `scoring-chunks/scoring-chunk-{i}.json`, out_path = `scoring-chunks/scored-chunk-{i}.json`.
+
+**1q.3 — Merge.**
+```bash
+npx tsx scripts/merge-scored-chunks.ts \
+  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
+  --chunk-scores data/editions/{AAMMDD}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-{N-1}.json \
+  --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
+  --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
+  --top 15
+```
+Se o manifest trouxer `incomplete: true`, logar warning (`level: warn`, `agent: orchestrator`) — um chunk `scorer-chunk` falhou; artigos sem score viraram 0 e serão filtrados em 1s.
+
+**1q.4 — Seleção.** Disparar 1 agent `scorer-select`: input = `tmp-finalists.json`, out_path = `tmp-selection.json`. Retorna `highlights[]` (≤6, ordem editorial) + `runners_up[]`.
+
+**1q.5 — Assemble.**
+```bash
+npx tsx scripts/assemble-scored.ts \
+  --selection data/editions/{AAMMDD}/_internal/tmp-selection.json \
+  --allscored data/editions/{AAMMDD}/_internal/tmp-allscored.json \
+  --out data/editions/{AAMMDD}/_internal/tmp-scored.json
+```
+Daqui em diante `tmp-scored.json` tem o **mesmo contrato** de antes (`highlights`, `runners_up`, `all_scored`) — 1r/1s seguem inalterados.
+
+**1q-fallback (pool ≤ chunk-size).** Disparar `scorer` (Opus) passando `categorized` (de `tmp-dates-reviewed.json`) e `out_path: tmp-scored.json` — caminho single-call legado (`scorer` agent mantido). Para pools pequenos o overhead dos 5 passos não compensa. Também é o fallback se o split/merge falhar.
 
 ### 1r. Validação pós-scorer (#104)
 
