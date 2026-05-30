@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { matchClick, isEditorial } from "../scripts/build-link-ctr.ts";
+import { matchClick, isEditorial, classifyOrigin } from "../scripts/build-link-ctr.ts";
 
 describe("matchClick — soma variantes split do mesmo base_url (#1567 finding C)", () => {
   it("soma unique_verified/verified/unique de todas as rows que colapsam pro mesmo base", () => {
@@ -66,5 +66,37 @@ describe("isEditorial — filtra infra própria / utilitários (#1567 finding G)
     );
     // google.com com path editorial continua válido (só a raiz é filtrada)
     assert.equal(isEditorial("https://blog.google/technology/ai/gemini-update"), true);
+  });
+});
+
+describe("classifyOrigin — origem por-link, sem vazamento do título (#1567 finding B)", () => {
+  it("link internacional NÃO herda o ângulo BR do lead do post (title não é mais passado)", () => {
+    // anchor/section/context do próprio link (US funding), domínio estrangeiro → INT.
+    // Antes, o title "Brasil investe R$ 23 bi" era concatenado e forçava BR.
+    assert.equal(
+      classifyOrigin("LayerX levanta US$ 100 milhões em rodada Série B", "techcrunch.com"),
+      "INT",
+    );
+    assert.equal(classifyOrigin("OpenAI releases GPT-5", "openai.com"), "INT");
+  });
+
+  it("domínio .br é override forte de BR", () => {
+    assert.equal(classifyOrigin("OpenAI lança novo modelo", "canaltech.com.br"), "BR");
+    assert.equal(classifyOrigin("qualquer texto", "gov.br"), "BR");
+    // .com de outlet estrangeiro continua INT sem keyword BR
+    assert.equal(classifyOrigin("AI startup raises funding", "theverge.com"), "INT");
+  });
+
+  it("keyword BR no texto do próprio link classifica BR", () => {
+    assert.equal(classifyOrigin("IA no Brasil avança em 2026", "x.com"), "BR");
+    assert.equal(classifyOrigin("Investimento de R$ 23 bilhões em IA", "x.com"), "BR");
+    assert.equal(classifyOrigin("Senado Federal aprova marco da IA", "x.com"), "BR");
+  });
+
+  it("tokens ambíguos endurecidos: senador americano / r$ sem dígito → INT", () => {
+    assert.equal(classifyOrigin("US senator / senador americano propõe lei de IA", "reuters.com"), "INT");
+    assert.equal(classifyOrigin("earn 100 r$ values inside the app", "producthunt.com"), "INT");
+    // 'usp' cru não dispara mais BR (colidia com unique selling proposition)
+    assert.equal(classifyOrigin("the main usp of this product is speed", "producthunt.com"), "INT");
   });
 });
