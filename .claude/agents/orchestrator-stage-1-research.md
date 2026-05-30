@@ -409,10 +409,19 @@ Rodar via script determinístico:
 ```bash
 npx tsx scripts/finalize-stage1.ts \
   --scored data/editions/{AAMMDD}/_internal/tmp-scored.json \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-clustered.json \
+  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
   --out data/editions/{AAMMDD}/_internal/tmp-finalized.json \
   --edition {AAMMDD}
 ```
+
+⚠️ `--categorized` **deve** ser `tmp-dates-reviewed.json` (o pool que o scorer de
+fato pontuou em 1q), **não** `tmp-clustered.json` (#1567 audit, finding D). O
+clustered é um superset pré-review-de-datas: passá-lo faz cada artigo removido
+pela janela de datas cair no join sem score (`url_mismatch: true`) e disparar um
+warn `#720` espúrio (até ~48/edição), soterrando os mismatches REAIS (drift de
+URL do scorer) que o canal `#720` existe pra pegar. Os buckets finais são
+idênticos (esses artigos são removidos pelo filtro `<40` de qualquer forma) —
+só o ruído de warning some.
 
 O script: join por URL exata (#720 — sem canonicalizar); recovery por título se mismatch (`score_recovered: true`); loga warn + run-log por cada mismatch; remove `score < 40` exceto highlights/runners_up e `flag === 'editor_submitted'` válidos; bypass endurece (#721): título não-placeholder, `length >= 15`, sem `/buttondown|subscribe|newsletter|sign.?up/i` — falha → `editor_submitted_placeholder: true`; ordena por score desc.
 
