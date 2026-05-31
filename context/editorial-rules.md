@@ -139,7 +139,7 @@ Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, d
 
 ### Garantia de mínimo no pipeline
 
-Stage 1 deve garantir **mínimo 3 candidatos** no bucket `tutorial` de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
+Stage 1 deve garantir **mínimo 3 candidatos** no bucket `use_melhor` (#1629, ex-`tutorial`) de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
 
 Editor escolhe 0-1 pra publicar no gate da Etapa 1. Se nenhum candidato bom, seção é omitida da edição.
 
@@ -183,7 +183,7 @@ Após ~10 edições com a seção ativa, avaliar:
 ### Integração no pipeline
 
 Status (após #1568): implementado.
-- `categorize.ts` bucket `tutorial` ativo (TUTORIAL_DOMAINS + TUTORIAL_PATTERNS + TUTORIAL_KEYWORDS_RE)
+- `categorize.ts` category `tutorial` → bucket `use_melhor` (#1629; TUTORIAL_DOMAINS + TUTORIAL_PATTERNS + TUTORIAL_KEYWORDS_RE)
 - Stage 1 garante mínimo 3 candidatos em `01-approved.json` (scorer guardrail)
 - Template `context/templates/newsletter.md` tem bloco opcional
 - Writer renderiza quando selecionado, omite seção inteira caso contrário

@@ -304,7 +304,7 @@ Em seguida, rodar **enrich-primary-source** (#487) pra sinalizar notícias que p
 npx tsx scripts/enrich-primary-source.ts \
   --in data/editions/{AAMMDD}/_internal/tmp-categorized.json
 ```
-In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, pesquisa, noticias }` para usar daqui em diante.
+In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, radar, use_melhor, video }` (#1629) para usar daqui em diante.
 
 ### 1n. Topic clustering (#237)
 
@@ -328,7 +328,7 @@ npx tsx scripts/filter-date-window.ts \
   --window-days {window_days} \
   --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
 ```
-Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, pesquisa, noticias, tutorial, video } }`) — extrair `kept` e usar como `categorized`.
+Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, radar, use_melhor, video } }`, #1629) — extrair `kept` e usar como `categorized`.
 
 ### 1p1. Research-review-dates (script, Filtro 1) — #1112
 
@@ -432,24 +432,24 @@ Daqui em diante usar `_internal/tmp-finalized.json` como os buckets enriquecidos
 
 ### 1t. Verificação de mínimos por seção (#488)
 
-Após o filtro de score, contar itens remanescentes em cada bucket e preparar lista de avisos para o gate:
+Após o filtro de score, contar itens remanescentes em cada bucket e preparar lista de avisos para o gate (#1629: 4 buckets agora):
 - Se `lancamento.length < 3`: registrar `⚠️ Apenas {N} lançamento(s) — mínimo esperado: 3`
-- Se `pesquisa.length < 3`: registrar `⚠️ Apenas {N} pesquisa(s) — mínimo esperado: 3`
-- Se `pesquisa.length > 5`: truncar para top-5 por score antes de salvar o `01-categorized.json` e renderizar o MD.
-- Se `noticias.length < 5`: registrar `⚠️ Apenas {N} notícia(s) — mínimo esperado: 5`
+- Se `radar.length < 8`: registrar `⚠️ Apenas {N} item(ns) em RADAR — mínimo esperado: 8` (fusão de pesquisa + outras notícias do esquema pré-#1629)
+- Se `use_melhor.length < 3`: registrar `⚠️ Apenas {N} tutorial(is) — mínimo esperado: 3` (opcional na newsletter, warn não-bloqueante)
 
 Avisos são exibidos no GATE HUMANO. Mínimos são avisos — não bloqueiam o gate.
 
 ### 1u. Estrutura e salvamento
 
-Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON). Estrutura final de `_internal/01-categorized.json`:
+Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis chegaram até aqui; o campo é redundante e polui o JSON). Estrutura final de `_internal/01-categorized.json` (#1629):
 ```json
 {
   "highlights": ["...top 6 com rank/score/reason/article (scorer retorna 6; editor seleciona 3 no gate)..."],
   "runners_up": ["...2-3 candidatos com score..."],
   "lancamento": ["...artigos com campo score, ordenados por score desc..."],
-  "pesquisa": ["..."],
-  "noticias": ["..."],
+  "radar": ["...mistura pesquisa+noticias do esquema antigo; cada artigo carrega category individual..."],
+  "use_melhor": ["...tutoriais/cookbooks..."],
+  "video": ["...vídeos curtos..."],
   "clusters": ["...metadata de topic-cluster, runners-up consolidados (#237) — pode ser []..."]
 }
 ```
@@ -597,7 +597,7 @@ Apresentar ao usuário:
        será revisado no gate da Etapa 3 quando as imagens forem aprovadas.
        Se a imagem do É IA? já estiver disponível, aprovação aqui consolida o review.
    ```
-   (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = `lancamento.length` + `pesquisa.length` + `noticias.length` do categorized.json)
+   (Derivar: `total_brutos` = soma de `articles[]` de todos researchers; `kept_dedup` = `kept[].length` do dedup.ts; `total_categorized` = `lancamento.length` + `radar.length` + `use_melhor.length` + `video.length` do categorized.json — #1629)
 
 2. **Métricas de cobertura (#346):** derivar perdas (janela, dedup, link-verify) a partir dos arquivos de pipeline e exibir:
    ```

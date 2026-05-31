@@ -37,7 +37,7 @@ JSON gravado em `out_path`:
   "highlights": [
     {
       "score": 87,
-      "bucket": "noticias",
+      "bucket": "radar",
       "reason": "1-2 frases citando sinais concretos (audience-profile, editorial-rules, recência)",
       "article": { ...artigo completo do finalista... }
     }

@@ -11,7 +11,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 
 ## Input
 
-- `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias`, `tutorial`, `video` — output de `research-review-dates.ts` (datas já verificadas + janela aplicada).
+- `categorized`: objeto JSON com chaves `lancamento`, `radar`, `use_melhor`, `video` (#1629) — output de `research-review-dates.ts` (datas já verificadas + janela aplicada).
 - `edition_date`: data da edição no formato `AAMMDD` (ex: `260423`). Para Date math, converter para ISO: `20${s.slice(0,2)}-${s.slice(2,4)}-${s.slice(4,6)}`.
 - `edition_iso`: data da edição no formato ISO (ex: `2026-04-23`).
 - `edition_dir`: diretório da edição (ex: `data/editions/260421/`).
@@ -22,7 +22,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 ### Filtro 2 — Cobertura recente de temas
 
 1. Ler `context/past-editions.md`. Extrair apenas as edições dos últimos **7 dias** em relação a `edition_date` (filtrar por data de cabeçalho das seções).
-2. Para cada artigo nos 5 buckets (`lancamento`, `pesquisa`, `noticias`, `tutorial`, `video`), avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
+2. Para cada artigo nos 4 buckets (`lancamento`, `radar`, `use_melhor`, `video` — #1629), avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
    - Comparar o `title` (e `summary` se disponível) do artigo com os títulos e resumos das edições recentes.
    - Critério conservador: remover **só** quando o overlap temático for claro e direto (mesma notícia, mesmo produto, mesmo anúncio). Artigos que aprofundam, contradizem ou atualizam um tema coberto devem ser **mantidos**.
    - Exemplos de remoção: "OpenAI lança GPT-5" quando Diar.ia já cobriu "OpenAI anuncia GPT-5" 3 dias atrás. Exemplo de manutenção: "Críticas ao lançamento do GPT-5" é atualização relevante, não repetição.
@@ -37,9 +37,8 @@ Gravar em `{out_path}` exato (input arg, #1271). Schema:
 {
   "categorized": {
     "lancamento": [...artigos restantes...],
-    "pesquisa": [...],
-    "noticias": [...],
-    "tutorial": [...],
+    "radar": [...mistura pesquisa+noticias (#1629)...],
+    "use_melhor": [...tutoriais (#1568)...],
     "video": [...]
   },
   "stats": {
