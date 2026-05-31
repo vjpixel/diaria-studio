@@ -61,15 +61,24 @@ interface CategorizedJson {
   highlights?: Array<{ url?: string; article?: { url?: string } }>;
   runners_up?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
   lancamento?: CategorizedArticle[];
+  // #1629: buckets renomeados
+  radar?: CategorizedArticle[];
+  use_melhor?: CategorizedArticle[];
+  video?: CategorizedArticle[];
+  // Legacy (parsear edições históricas)
   pesquisa?: CategorizedArticle[];
   noticias?: CategorizedArticle[];
   tutorial?: CategorizedArticle[];
-  video?: CategorizedArticle[];
 }
 
 interface ApprovedJson {
   highlights?: Array<{ url?: string; article?: { url?: string } }>;
   lancamento?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
+  // #1629: buckets renomeados
+  radar?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
+  use_melhor?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
+  video?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
+  // Legacy
   pesquisa?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
   noticias?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
 }
@@ -85,6 +94,11 @@ export function collectApprovedUrls(approved: ApprovedJson | null): Set<string> 
   const buckets: Array<unknown> = [
     ...(approved.highlights ?? []),
     ...(approved.lancamento ?? []),
+    // #1629
+    ...(approved.radar ?? []),
+    ...(approved.use_melhor ?? []),
+    ...(approved.video ?? []),
+    // Legacy
     ...(approved.pesquisa ?? []),
     ...(approved.noticias ?? []),
   ];
@@ -114,10 +128,14 @@ export function flattenCategorized(categorized: CategorizedJson): CategorizedArt
 
   for (const bucket of [
     categorized.lancamento,
+    // #1629
+    categorized.radar,
+    categorized.use_melhor,
+    categorized.video,
+    // Legacy
     categorized.pesquisa,
     categorized.noticias,
     categorized.tutorial,
-    categorized.video,
   ]) {
     for (const a of bucket ?? []) {
       if (a && a.url) all.push(a);

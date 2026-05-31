@@ -40,29 +40,31 @@ describe("capRadar (#358, #1629)", () => {
 });
 
 describe("applyStage2Caps", () => {
-  it("trunca buckets que excedem cap, preserva resto", () => {
+  it("trunca buckets que excedem cap, preserva resto (#1629)", () => {
     const approved = {
       highlights: new Array(3).fill({}).map((_, i) => ({ url: `https://h.${i}` })),
       lancamento: new Array(8).fill({}).map((_, i) => ({ url: `https://l.${i}` })),
-      radar: new Array(7).fill({}).map((_, i) => ({ url: `https://p.${i}` })),
-      radar: new Array(20).fill({}).map((_, i) => ({ url: `https://n.${i}` })),
+      // radar combinou pesquisa+noticias: 27 total
+      radar: [
+        ...new Array(7).fill({}).map((_, i) => ({ url: `https://p.${i}` })),
+        ...new Array(20).fill({}).map((_, i) => ({ url: `https://n.${i}` })),
+      ],
       runners_up: [{ url: "https://ru.0" }],
     };
     const { approved: capped, report } = applyStage2Caps(approved);
 
     assert.equal(capped.highlights?.length, 3); // unchanged
     assert.equal(capped.lancamento?.length, STAGE_2_CAP_LANCAMENTOS); // 5
-    assert.equal(capped.radar?.length, STAGE_2_CAP_PESQUISAS); // 3
-    // Outras: max(2, 12 - 3 - 5 - 3) = 2
-    assert.equal(capped.radar?.length, 2);
+    // Radar cap: max(5, 12-3-5) = 5
+    assert.equal(capped.radar?.length, 5);
     // Runners-up preservados
     assert.equal(capped.runners_up?.length, 1);
 
     assert.equal(report.before.lancamento, 8);
     assert.equal(report.after.lancamento, 5);
     assert.equal(report.truncated.lancamento, 3);
-    assert.equal(report.before.radar, 20);
-    assert.equal(report.after.radar, 2);
+    assert.equal(report.before.radar, 27);
+    assert.equal(report.after.radar, 5);
   });
 
   it("não muta o input (devolve cópia)", () => {
@@ -103,27 +105,21 @@ describe("applyStage2Caps", () => {
     assert.equal((capped.lancamento?.[4] as { url: string }).url, "https://l/4");
   });
 
-  it("caso 260507: 3 dest + 2 lanç + 5 pesq + 20 outras → 3+2+3+4 (cap aplica)", () => {
+  it("caso 260507 pós-#1629: 3 dest + 2 lanç + 25 radar → 3+2+7 (radar cap=max(5,12-3-2)=7)", () => {
     const approved = {
       highlights: [{ url: "h1" }, { url: "h2" }, { url: "h3" }],
       lancamento: [{ url: "l1" }, { url: "l2" }],
       radar: [
-        { url: "p1" },
-        { url: "p2" },
-        { url: "p3" },
-        { url: "p4" },
-        { url: "p5" },
+        ...["p1", "p2", "p3", "p4", "p5"].map((u) => ({ url: u })),
+        ...new Array(20).fill({}).map((_, i) => ({ url: `n${i}` })),
       ],
-      radar: new Array(20).fill({}).map((_, i) => ({ url: `n${i}` })),
     };
     const { approved: capped, report } = applyStage2Caps(approved);
     assert.equal(capped.highlights?.length, 3);
     assert.equal(capped.lancamento?.length, 2); // não cortou (≤5)
-    assert.equal(capped.radar?.length, 3); // truncou de 5 → 3
-    assert.equal(capped.radar?.length, 4); // max(2, 12-3-2-3) = 4
-    assert.equal(report.truncated.radar, 2);
-    assert.equal(report.truncated.radar, 16);
-    assert.equal(report.caps.radar, 4);
+    assert.equal(capped.radar?.length, 7); // truncou de 25 → 7
+    assert.equal(report.truncated.radar, 18);
+    assert.equal(report.caps.radar, 7);
   });
 
   it("buckets ausentes/vazios viram arrays vazios no output", () => {
@@ -248,46 +244,41 @@ describe("checkStage2Caps", () => {
     const approved = {
       highlights: [{}, {}, {}],
       lancamento: new Array(5).fill({}),
-      radar: new Array(3).fill({}),
-      radar: new Array(2).fill({}), // cap = max(2, 12-3-5-3) = 2
+      radar: new Array(5).fill({}), // cap = max(5, 12-3-5) = 5
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
     assert.deepEqual(r.violations, []);
   });
 
-  it("ok=false quando outras_noticias passa cap (caso 260507)", () => {
+  it("ok=false quando radar passa cap (#1629)", () => {
     const approved = {
       highlights: [{}, {}, {}],
       lancamento: [{}, {}], // 2
-      radar: [
-        {}, {}, {}], // 3
-      radar: new Array(9).fill({}), // cap esperado = max(2, 12-3-2-3) = 4, real = 9
+      radar: new Array(12).fill({}), // cap = max(5, 12-3-2) = 7, real = 12 → viola
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, false);
     assert.equal(r.violations.length, 1);
-    assert.match(r.violations[0], /OUTRAS NOTÍCIAS: 9 > cap 4/);
+    assert.match(r.violations[0], /RADAR: 12 > cap 7/);
   });
 
-  it("detecta múltiplas violações simultâneas", () => {
+  it("detecta múltiplas violações simultâneas (#1629)", () => {
     const approved = {
       highlights: [{}, {}, {}],
       lancamento: new Array(7).fill({}), // cap=5, real=7 → viola
-      radar: new Array(4).fill({}), // cap=3, real=4 → viola
-      radar: new Array(20).fill({}), // viola
+      radar: new Array(20).fill({}), // cap=max(5, 12-3-5)=5, real=20 → viola
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, false);
-    assert.equal(r.violations.length, 3);
+    assert.equal(r.violations.length, 2);
   });
 
   it("dentro do cap mesmo com 0 destaques", () => {
     const approved = {
       highlights: [],
       lancamento: new Array(5).fill({}),
-      radar: new Array(3).fill({}),
-      radar: new Array(4).fill({}), // max(2, 12-0-5-3) = 4
+      radar: new Array(7).fill({}), // cap = max(5, 12-0-5) = 7
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
@@ -317,17 +308,19 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     assert.equal(capped.lancamento?.[0].url, "https://google.com/blog/fraud");
     assert.equal(report.removed_overlap.lancamento, 1);
     assert.equal(report.removed_overlap.radar, 0);
-    assert.equal(report.removed_overlap.radar, 0);
   });
 
-  it("caso 260511: 2 highlights de radar E radar bucket tem os mesmos → removidos", () => {
-    // Pool: 10 radar. Top 2 (n0, n1) viraram destaques.
-    // #1240: dedup remove n0, n1 do bucket antes do cap. nCap = max(2, 12-3-1-1) = 7.
-    // Bucket apos dedup tem 8 (n2..n9). Slice pra 7. Renderiza 7 outras = target ok.
-    const radar = Array.from({ length: 10 }, (_, i) => ({
-      url: `https://example.com/n${i}`,
-      title: `News ${i}`,
-    }));
+  it("caso 260511 pós-#1629: 2 highlights de radar E radar bucket tem os mesmos → removidos", () => {
+    // Pool: 11 radar (1 distinto + 10 do array gerado).
+    // 2 viraram destaques. #1240: dedup remove n0, n1 antes do cap.
+    // rCap = max(5, 12-3-1) = 8. Bucket após dedup tem 9. Slice pra 8.
+    const radarArray = [
+      { url: "https://x.com/p1", title: "p1" },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        url: `https://example.com/n${i}`,
+        title: `News ${i}`,
+      })),
+    ];
     const approved = {
       highlights: [
         { url: "https://example.com/n0", bucket: "radar" },
@@ -335,14 +328,12 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
         { url: "https://other.com/lanc", bucket: "lancamento" },
       ],
       lancamento: [{ url: "https://x.com/l1" }],
-      radar: [
-        { url: "https://x.com/p1" }],
-      radar,
+      radar: radarArray,
     };
     const { approved: capped, report } = applyStage2Caps(approved);
     assert.equal(report.removed_overlap.radar, 2, "n0 e n1 removidos do bucket");
-    assert.equal(report.caps.radar, 7, "cap sem inflacao (#1071 obsoleto pos-#1240)");
-    assert.equal(capped.radar?.length, 7, "7 renderizadas = target editorial");
+    assert.equal(report.caps.radar, 8, "cap = max(5, 12-3-1) = 8");
+    assert.equal(capped.radar?.length, 8);
     // Confirma que n0 e n1 nao estao no output
     const outputUrls = (capped.radar ?? []).map((n) => n.url);
     assert.ok(!outputUrls.includes("https://example.com/n0"));
@@ -353,8 +344,10 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     const approved = {
       highlights: [
         { url: "https://example.com/news?utm_source=newsletter" },
+      ],
+      radar: [
         { url: "https://example.com/news" }, // mesma URL sem utm — overlap
-        { url: "https://example.com/other" }
+        { url: "https://example.com/other" },
       ],
     };
     const { approved: capped, report } = applyStage2Caps(approved);
@@ -373,16 +366,15 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
       lancamento: [{ url: "https://example.com/l1" }],
       radar: [
         { url: "https://example.com/p1" },
-        { url: "https://example.com/n1" }, { url: "https://example.com/n2" }
+        { url: "https://example.com/n1" },
+        { url: "https://example.com/n2" },
       ],
     };
     const { approved: capped, report } = applyStage2Caps(approved);
     assert.equal(report.removed_overlap.lancamento, 0);
     assert.equal(report.removed_overlap.radar, 0);
-    assert.equal(report.removed_overlap.radar, 0);
     assert.equal(capped.lancamento?.length, 1);
-    assert.equal(capped.radar?.length, 1);
-    assert.equal(capped.radar?.length, 2);
+    assert.equal(capped.radar?.length, 3);
   });
 
   it("highlights vazio → buckets intactos", () => {
@@ -436,18 +428,17 @@ describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes
     };
     const { approved: capped, report } = applyStage2Caps(approved);
 
-    // Cada bucket teve 1 item dropado por overlap
+    // Após #1629: radar combinou pesquisa+noticias → 2 itens dropados de radar.
     assert.equal(report.removed_overlap.lancamento, 1);
-    assert.equal(report.removed_overlap.radar, 1);
-    assert.equal(report.removed_overlap.radar, 1);
+    assert.equal(report.removed_overlap.radar, 2);
 
     // Output só contém os non-duplicados
     assert.equal(capped.lancamento?.length, 1);
     assert.equal(capped.lancamento?.[0].url, "https://blog.google/asset-studio/");
-    assert.equal(capped.radar?.length, 1);
-    assert.equal(capped.radar?.[0].url, "https://arxiv.org/abs/2605.19192");
-    assert.equal(capped.radar?.length, 1);
-    assert.equal(capped.radar?.[0].url, "https://cybersecuritynews.com/rce/");
+    assert.equal(capped.radar?.length, 2);
+    const radarUrls = (capped.radar ?? []).map((a) => a.url);
+    assert.ok(radarUrls.includes("https://arxiv.org/abs/2605.19192"));
+    assert.ok(radarUrls.includes("https://cybersecuritynews.com/rce/"));
   });
 });
 
@@ -565,11 +556,11 @@ describe("cap calculation pós-#1240 (sem inflacao do #1071)", () => {
       radar,
     };
     const { report } = applyStage2Caps(approved);
-    // max(2, 12-3-0-0) = 9 (cap direto, sem inflacao)
+    // #1629: max(5, 12-3-0) = 9 (cap direto, sem inflacao)
     assert.equal(report.caps.radar, 9);
   });
 
-  it("checkStage2Caps com radar dentro do cap → ok=true", () => {
+  it("checkStage2Caps com radar dentro do cap → ok=true (#1629)", () => {
     const approved = {
       highlights: [
         { url: "x", bucket: "lancamento" },
@@ -577,12 +568,11 @@ describe("cap calculation pós-#1240 (sem inflacao do #1071)", () => {
         { url: "z", bucket: "lancamento" },
       ],
       lancamento: [{ url: "l1" }],
-      radar: [{ url: "p1" }],
-      // 7 radar <= max(2, 12-3-1-1) = 7
-      radar: Array.from({ length: 7 }, (_, i) => ({ url: `n${i}` })),
+      // 8 radar <= max(5, 12-3-1) = 8
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `n${i}` })),
     };
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
-    assert.equal(r.expectedCaps.radar, 7);
+    assert.equal(r.expectedCaps.radar, 8);
   });
 });

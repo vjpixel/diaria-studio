@@ -76,22 +76,21 @@ describe("toCategorized", () => {
 });
 
 describe("buildChunks", () => {
-  it("80 artigos / chunk-size 30 → 3 chunks shape categorized", () => {
+  it("80 artigos / chunk-size 30 → 3 chunks shape categorized (#1629)", () => {
     const big: Categorized = {
       lancamento: Array.from({ length: 5 }, (_, i) => mk(`l${i}`, "lancamento")),
-      radar: Array.from({ length: 26 }, (_, i) => mk(`p${i}`, "radar")),
-      radar: Array.from({ length: 49 }, (_, i) => mk(`n${i}`, "radar")),
+      radar: Array.from({ length: 75 }, (_, i) => mk(`r${i}`, "radar")),
       use_melhor: [],
     };
     const chunks = buildChunks(big, 30);
     assert.equal(chunks.length, 3);
     // cada chunk é shape categorized
     for (const c of chunks) {
-      assert.ok(Array.isArray(c.lancamento) && Array.isArray(c.radar) && Array.isArray(c.radar));
+      assert.ok(Array.isArray(c.lancamento) && Array.isArray(c.radar) && Array.isArray(c.use_melhor));
     }
     // total preservado
     const total = chunks.reduce(
-      (a, c) => a + c.lancamento.length + c.radar.length + c.radar.length + c.use_melhor.length,
+      (a, c) => a + c.lancamento.length + c.radar.length + c.use_melhor.length,
       0,
     );
     assert.equal(total, 80);
@@ -105,7 +104,7 @@ describe("buildChunks", () => {
     const chunks = buildChunks(SAMPLE, 30);
     assert.equal(chunks.length, 1);
     assert.equal(
-      chunks[0].lancamento.length + chunks[0].radar.length + chunks[0].radar.length,
+      chunks[0].lancamento.length + chunks[0].radar.length + chunks[0].use_melhor.length,
       7,
     );
   });

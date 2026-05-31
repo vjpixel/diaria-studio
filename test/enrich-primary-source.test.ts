@@ -77,27 +77,34 @@ describe("detectLaunchCandidate (#487)", () => {
 });
 
 describe("enrichPrimarySource", () => {
-  it("flaga só artigos da bucket radar", () => {
+  it("flaga só artigos com category=noticias dentro do bucket radar (#1629)", () => {
+    // #1629: bucket radar mistura pesquisa + noticias. Enrich só toca
+    // articles com category=noticias (papers de category=pesquisa NÃO viram
+    // launch_candidates — eles já são primary sources).
     const input = {
       lancamento: [],
       radar: [
-        { url: "https://arxiv.org/abs/x", title: "OpenAI releases new paper" },
+        { url: "https://arxiv.org/abs/x", title: "OpenAI releases new paper", category: "pesquisa" },
         {
           url: "https://venturebeat.com/x",
           title: "Anthropic launches Claude 4.7",
+          category: "noticias",
         },
         {
           url: "https://canaltech.com.br/y",
           title: "Aplicações de IA crescem no Brasil",
+          category: "noticias",
         }
       ],
     };
     const { output, flagged } = enrichPrimarySource(input);
     assert.equal(flagged, 1);
-    assert.equal((output.radar as { launch_candidate?: boolean }[])[0].launch_candidate, true);
-    assert.equal((output.radar as { launch_candidate?: boolean }[])[1].launch_candidate, undefined);
-    // radar não é tocada (mesmo com palavra "releases")
+    // arxiv (pesquisa) não foi tocado
     assert.equal((output.radar as { launch_candidate?: boolean }[])[0].launch_candidate, undefined);
+    // Anthropic (noticias com keyword "launches") foi flagado
+    assert.equal((output.radar as { launch_candidate?: boolean }[])[1].launch_candidate, true);
+    // canaltech (noticias sem launch keyword) não foi flagado
+    assert.equal((output.radar as { launch_candidate?: boolean }[])[2].launch_candidate, undefined);
   });
 
   it("preserva campos originais e adiciona suggested_primary_domain", () => {
@@ -108,6 +115,7 @@ describe("enrichPrimarySource", () => {
           title: "Mistral unveils Codestral 2 for code generation",
           summary: "Modelo focado em programação com 22B parâmetros",
           score: 75,
+          category: "noticias",
         },
       ],
     };
@@ -120,10 +128,10 @@ describe("enrichPrimarySource", () => {
     assert.match(a.matched_launch_keyword as string, /unveil/i);
   });
 
-  it("input sem radar não quebra", () => {
+  it("input com radar vazio não quebra", () => {
     const { output, flagged } = enrichPrimarySource({ radar: [], lancamento: [] });
     assert.equal(flagged, 0);
-    assert.equal(output.radar, undefined);
+    assert.deepEqual(output.radar, []);
   });
 
   it("preserva campos extras top-level (clusters, etc)", () => {

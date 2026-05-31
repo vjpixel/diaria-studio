@@ -21,9 +21,10 @@ import {
 // assertions adicionados pós-#776 (drive_sync, section_minimums) — fixtures
 // existentes não populam drive-cache nem 5+ artigos por bucket. #1568 adiciona
 // minTutorial=0 pra fixtures que não populam o bucket use_melhor.
+// #1629: section minimums atualizados para nova nomenclatura de buckets.
 const TEST_OPTS_NO_AUX = {
   driveCachePath: null,
-  sectionMinimums: { minLancamento: 0, minPesquisa: 0, minNoticias: 0, minTutorial: 0 },
+  sectionMinimums: { minLancamento: 0, minRadar: 0, minUseMelhor: 0 },
 };
 
 describe("validateOutputsPresent (#581)", () => {
@@ -342,26 +343,22 @@ describe("validateSequentialNumbering (#581 → #579)", () => {
   });
 });
 
-describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
-  it("ok quando todos os mínimos atingidos (3/3/5/3)", () => {
+describe("validateSectionMinimums (#581 → #488 → #1568 → #1629)", () => {
+  it("ok quando todos os mínimos atingidos (3/8/3) — pós #1629", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: [
-        { url: "1" }, { url: "2" }, { url: "3" },
-        { url: "1" }, { url: "2" }, { url: "3" }, { url: "4" }, { url: "5" }
-      ],
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
       use_melhor: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "ok");
-    assert.ok(result.message.includes("tutoriais 3"));
+    assert.ok(result.message.includes("radar 8"));
   });
 
   it("warn quando lançamentos abaixo do mínimo", () => {
     const categorized = {
       lancamento: [{ url: "1" }],
-      radar: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
       use_melhor: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
@@ -372,8 +369,7 @@ describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
   it("warn quando use_melhor abaixo do mínimo (#1568)", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
       use_melhor: [{ url: "1" }],
     };
     const result = validateSectionMinimums(categorized);
@@ -384,8 +380,7 @@ describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
   it("warn quando use_melhor ausente do JSON (#1568)", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      radar: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
       // use_melhor omitido — deve ser tratado como 0
     };
     const result = validateSectionMinimums(categorized);
@@ -394,22 +389,20 @@ describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
   });
 
   it("warn lista todos os shortfalls juntos", () => {
-    const categorized = { lancamento: [], radar: [], radar: [], use_melhor: [] };
+    const categorized = { lancamento: [], radar: [], use_melhor: [] };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("lancamento 0/3"));
-    assert.ok(result.message.includes("radar 0/3"));
-    assert.ok(result.message.includes("radar 0/5"));
+    assert.ok(result.message.includes("radar 0/8"));
     assert.ok(result.message.includes("use_melhor 0/3"));
   });
 
-  it("respeita opts override (mínimos custom — minTutorial)", () => {
-    const categorized = { lancamento: [{ url: "1" }], radar: [], radar: [], use_melhor: [] };
+  it("respeita opts override (mínimos custom)", () => {
+    const categorized = { lancamento: [{ url: "1" }], radar: [], use_melhor: [] };
     const result = validateSectionMinimums(categorized, {
       minLancamento: 1,
-      minPesquisa: 0,
-      minNoticias: 0,
-      minTutorial: 0,
+      minRadar: 0,
+      minUseMelhor: 0,
     });
     assert.equal(result.status, "ok");
   });

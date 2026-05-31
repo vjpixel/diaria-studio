@@ -114,7 +114,7 @@ describe("applyVerifyResults (#1112)", () => {
     const stats = applyVerifyResults(cat, results);
     assert.equal(cat.lancamento[0].date, "2026-05-10");
     assert.equal(cat.radar[0].date, "2026-05-11");
-    assert.equal(cat.radar[0].date, "2026-05-03");
+    assert.equal(cat.radar[1].date, "2026-05-03");
     assert.equal(stats.dateCorrected, 2);
   });
 

@@ -50,8 +50,8 @@
     "rendered_md_snippet": "## Destaques\n\n\n## Lançamentos\n\n- [--] OpenAI lança GPT-5 — https://openai.com/news/gpt-5-launch/ — 2026-04-23\n- [--] Anthropic announces Claude 4.7 — https://anthropic.com/news/claude-4-7-launch/ — 20",
     "parsed_back": {
       "lancamento": 2,
-      "pesquisa": 1,
-      "noticias": 4
+      "radar": 5,
+      "use_melhor": 0
     }
   }
 }

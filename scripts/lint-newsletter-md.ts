@@ -59,7 +59,8 @@ interface ApprovedJson {
   [key: string]: unknown;
 }
 
-type Bucket = "lancamento" | "pesquisa" | "noticias";
+// #1629: Bucket internal = section name na newsletter.
+type Bucket = "lancamento" | "radar";
 
 interface SectionMapping {
   header: RegExp;
@@ -69,14 +70,14 @@ interface SectionMapping {
 
 // Headers podem ser plain (legacy) ou em **negrito** (#590). Aceita ambos
 // pra backwards-compat com edições antigas + suporta o novo formato.
-// #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Aliases legacy
+// #1569 / #1629: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Aliases legacy
 // mantidos pra re-lint de edições antigas; novos lints emitem RADAR.
 const SECTIONS: SectionMapping[] = [
   { header: /^(?:\*\*)?LAN[ÇC]AMENTOS(?:\*\*)?\s*$/m, bucket: "lancamento", label: "LANÇAMENTOS" },
-  { header: /^(?:\*\*)?RADAR(?:\*\*)?\s*$/m, bucket: "noticias", label: "RADAR" },
+  { header: /^(?:\*\*)?RADAR(?:\*\*)?\s*$/m, bucket: "radar", label: "RADAR" },
   // Legacy aliases — qualquer edição antiga ainda lint normalmente.
-  { header: /^(?:\*\*)?PESQUISAS(?:\*\*)?\s*$/m, bucket: "pesquisa", label: "PESQUISAS" },
-  { header: /^(?:\*\*)?OUTRAS\s+NOT[ÍI]CIAS(?:\*\*)?\s*$/m, bucket: "noticias", label: "OUTRAS NOTÍCIAS" },
+  { header: /^(?:\*\*)?PESQUISAS(?:\*\*)?\s*$/m, bucket: "radar", label: "PESQUISAS" },
+  { header: /^(?:\*\*)?OUTRAS\s+NOT[ÍI]CIAS(?:\*\*)?\s*$/m, bucket: "radar", label: "OUTRAS NOTÍCIAS" },
 ];
 
 const SECTION_BREAK_RE = /^---\s*$/;
@@ -176,8 +177,8 @@ export function buildUrlBucketMap(
     if (h.url) byUrl.set(h.url, { bucket: "highlights", title: h.title });
   }
 
-  // Buckets — só seta se URL ainda não está como highlight
-  for (const bucket of ["lancamento", "pesquisa", "noticias"] as const) {
+  // Buckets — só seta se URL ainda não está como highlight (#1629)
+  for (const bucket of ["lancamento", "radar"] as const) {
     for (const a of (approved[bucket] as ApprovedArticle[] | undefined) ?? []) {
       if (a.url && !byUrl.has(a.url)) {
         byUrl.set(a.url, { bucket, title: a.title });
@@ -1726,7 +1727,7 @@ intentional_error:
   if (!coverage.ok) {
     result.errors.push({
       section: "coverage_line",
-      expected_bucket: "noticias",
+      expected_bucket: "radar",
       url: "",
       line: 1,
       found_in_bucket: "missing",
