@@ -312,8 +312,7 @@ export function lintNewsletter(
  */
 export interface SectionCounts {
   lancamento: number;
-  pesquisa: number;
-  noticias: number;
+  radar: number;
 }
 
 export function countItemsPerSection(md: string): SectionCounts {
@@ -322,17 +321,16 @@ export function countItemsPerSection(md: string): SectionCounts {
     if (!entries) return 0;
     return new Set(entries.map((e) => e.url)).size;
   };
-  // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Pra back-compat com
-  // testes antigos + edições legacy, somar todos os 3 buckets em `noticias`
-  // se RADAR não existir; quando RADAR existe, ele já agrega.
+  // #1569/#1629: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Soma todos os
+  // 3 nomes (RADAR atual, PESQUISAS/OUTRAS NOTÍCIAS legacy pra parsear
+  // newsletters históricas pré-#1569).
   const lancamento = dedup(urlsBySection["LANÇAMENTOS"]);
-  const radar = dedup(urlsBySection["RADAR"]);
-  const pesquisa = dedup(urlsBySection["PESQUISAS"]);
-  const outrasNoticias = dedup(urlsBySection["OUTRAS NOTÍCIAS"]);
+  const radarCurrent = dedup(urlsBySection["RADAR"]);
+  const pesquisasLegacy = dedup(urlsBySection["PESQUISAS"]);
+  const outrasNoticiasLegacy = dedup(urlsBySection["OUTRAS NOTÍCIAS"]);
   return {
     lancamento,
-    pesquisa, // legacy — 0 em edições pós-#1569
-    noticias: radar + outrasNoticias,
+    radar: radarCurrent + pesquisasLegacy + outrasNoticiasLegacy,
   };
 }
 
@@ -349,7 +347,7 @@ export function countItemsPerSection(md: string): SectionCounts {
 export interface SectionCountsResult {
   ok: boolean;
   counts: SectionCounts;
-  caps: { lancamento: number; pesquisa: number; noticias: number };
+  caps: { lancamento: number; radar: number };
   destaques: number;
   violations: string[];
 }
@@ -363,10 +361,11 @@ export function checkSectionCounts(
   const fakeApproved: CapsApprovedJson = {
     highlights: approved.highlights ?? [],
     lancamento: new Array(counts.lancamento),
-    pesquisa: new Array(counts.pesquisa),
-    noticias: new Array(counts.noticias),
+    radar: new Array(counts.radar),
   };
   const r = checkStage2Caps(fakeApproved);
+  // dest used only via fakeApproved.highlights
+  void dest;
   return {
     ok: r.ok,
     counts,
@@ -1577,8 +1576,8 @@ intentional_error:
       for (const v of result.violations) console.error(`  ${v}`);
       console.error(
         `\nDestaques na edição: ${result.destaques}. Caps esperados: ` +
-          `lançamentos≤${result.caps.lancamento}, pesquisas≤${result.caps.pesquisa}, ` +
-          `outras≤${result.caps.noticias} (formula: max(2, 12-${result.destaques}-l-p))`,
+          `lançamentos≤${result.caps.lancamento}, radar≤${result.caps.radar} ` +
+          `(#1629: radar = max(5, 12-${result.destaques}-l))`,
       );
       console.error(
         `\nFix: re-rodar /diaria-2-escrita ${args.md.match(/\d{6}/)?.[0] ?? "AAMMDD"} newsletter — ` +

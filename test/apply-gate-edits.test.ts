@@ -15,20 +15,16 @@ describe("parseSections", () => {
 
 - [70] Lan 1 — https://c.com/3 — 2026-04-24
 
-## Pesquisas
+## Radar
 
-- [75] Pes 1 — https://d.com/4 — 2026-04-24
-
-## Notícias
-
-- [65] Not 1 — https://e.com/5 — 2026-04-24
-- [60] Not 2 — https://f.com/6 — 2026-04-24
+- [75] R 1 — https://d.com/4 — 2026-04-24
+- [65] R 2 — https://e.com/5 — 2026-04-24
+- [60] R 3 — https://f.com/6 — 2026-04-24
 `;
     const result = parseSections(md);
     assert.deepEqual(result.destaques, ["https://a.com/1", "https://b.com/2"]);
     assert.deepEqual(result.lancamento, ["https://c.com/3"]);
-    assert.deepEqual(result.pesquisa, ["https://d.com/4"]);
-    assert.deepEqual(result.noticias, ["https://e.com/5", "https://f.com/6"]);
+    assert.deepEqual(result.radar, ["https://d.com/4", "https://e.com/5", "https://f.com/6"]);
   });
 
   it("preserva ordem física das URLs (não ordena por score)", () => {
@@ -72,7 +68,7 @@ describe("parseSections", () => {
 `;
     const result = parseSections(md);
     assert.deepEqual(result.destaques, ["https://a.com/1"]);
-    assert.deepEqual(result.noticias, ["https://n.com/1"]);
+    assert.deepEqual(result.radar, ["https://n.com/1"]);
     // Rascunhos não é uma seção válida — ignorado
   });
 
@@ -90,7 +86,7 @@ Tudo certo.
 - não-url: https://fake.com/no — isso é ruído
 `;
     const result = parseSections(md);
-    assert.deepEqual(result.noticias, ["https://n.com/1"]);
+    assert.deepEqual(result.radar, ["https://n.com/1"]);
   });
 
   it("aceita linhas sem data trailing", () => {
@@ -107,14 +103,13 @@ Tudo certo.
     assert.deepEqual(result, {
       destaques: [],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
-      tutorial: [],
+      radar: [],
+      use_melhor: [],
       video: [],
     });
   });
 
-  it("parseia seção 'Aprenda hoje' (#59 tutorial, legacy)", () => {
+  it("parseia seção 'Aprenda hoje' (#59 use_melhor, legacy)", () => {
     const md = `## Aprenda hoje
 
 - [70] Tutorial de RAG — https://simonwillison.net/rag — 2026-04-24
@@ -124,11 +119,11 @@ Tudo certo.
 - [60] Notícia — https://a.com/x — 2026-04-24
 `;
     const result = parseSections(md);
-    assert.deepEqual(result.tutorial, ["https://simonwillison.net/rag"]);
-    assert.deepEqual(result.noticias, ["https://a.com/x"]);
+    assert.deepEqual(result.use_melhor, ["https://simonwillison.net/rag"]);
+    assert.deepEqual(result.radar, ["https://a.com/x"]);
   });
 
-  it("parseia seção 'Use melhor' (#1568, novo nome para tutorial)", () => {
+  it("parseia seção 'Use melhor' (#1568, novo nome para use_melhor)", () => {
     const md = `## Use melhor
 
 - [70] Tutorial de RAG — https://cookbook.openai.com/rag — 2026-04-24
@@ -138,8 +133,8 @@ Tudo certo.
 - [60] Notícia — https://a.com/x — 2026-04-24
 `;
     const result = parseSections(md);
-    assert.deepEqual(result.tutorial, ["https://cookbook.openai.com/rag"]);
-    assert.deepEqual(result.noticias, ["https://a.com/x"]);
+    assert.deepEqual(result.use_melhor, ["https://cookbook.openai.com/rag"]);
+    assert.deepEqual(result.radar, ["https://a.com/x"]);
   });
 
   it("ignora linhas que não começam com - (não são bullets)", () => {
@@ -181,7 +176,7 @@ Texto qualquer com https://foo.com/x.
 - [70] Título Y – https://y.com/2 – 2026-04-24
 `;
     const result = parseSections(md);
-    assert.deepEqual(result.noticias, ["https://y.com/2"]);
+    assert.deepEqual(result.radar, ["https://y.com/2"]);
   });
 
   it("#661: mistura de em-dash e double-hyphen no mesmo arquivo", () => {
@@ -207,9 +202,8 @@ describe("mergeWithNewJson (#293)", () => {
       highlights: [],
       runners_up: [],
       lancamento: [makeArticle("https://lan1.com", 70), makeArticle("https://lan2.com", 80)],
-      pesquisa: [],
-      noticias: [],
-      tutorial: [],
+      radar: [],
+      use_melhor: [],
     };
     const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
     // Editor colocou lan2 antes de lan1 → preservar essa ordem
@@ -224,13 +218,14 @@ describe("mergeWithNewJson (#293)", () => {
       highlights: [],
       runners_up: [],
       lancamento: [],
-      pesquisa: [],
-      noticias: [makeArticle("https://b.com", 50), makeArticle("https://art.com", 90)],
-      tutorial: [],
+      radar: [
+        makeArticle("https://b.com", 50), makeArticle("https://art.com", 90)
+      ],
+      use_melhor: [],
     };
     const { merged } = mergeWithNewJson(existingMd, newJson);
-    // art.com estava nos Destaques → deve ser o primeiro em noticias
-    assert.equal(merged.noticias[0].url, "https://art.com");
+    // art.com estava nos Destaques → deve ser o primeiro em radar
+    assert.equal(merged.radar[0].url, "https://art.com");
   });
 
   it("artigo novo no JSON recebe new_in_pool=true", () => {
@@ -238,7 +233,8 @@ describe("mergeWithNewJson (#293)", () => {
     const newJson = {
       highlights: [], runners_up: [],
       lancamento: [makeArticle("https://a.com", 70), makeArticle("https://new.com", 80)],
-      pesquisa: [], noticias: [], tutorial: [],
+      radar: [],
+      use_melhor: [],
     };
     const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
     const newArticle = merged.lancamento.find((a) => a.url === "https://new.com");
@@ -251,13 +247,13 @@ describe("mergeWithNewJson (#293)", () => {
     const existingMd = `## Destaques\n\n## Notícias\n\n- [60] Old — https://old.com — 2026-04-01\n\n## Lançamentos\n\n## Pesquisas\n\n`;
     const newJson = {
       highlights: [], runners_up: [],
-      lancamento: [], pesquisa: [],
-      noticias: [makeArticle("https://novo.com", 70)],
-      tutorial: [],
+      lancamento: [],
+      radar: [makeArticle("https://novo.com", 70)],
+      use_melhor: [],
     };
     const { merged, warnings } = mergeWithNewJson(existingMd, newJson);
     assert.ok(warnings.some((w) => w.includes("https://old.com")));
-    assert.ok(!merged.noticias.some((a) => a.url === "https://old.com"));
+    assert.ok(!merged.radar.some((a) => a.url === "https://old.com"));
   });
 
   it("editor moveu artigo entre buckets — respeita bucket do editor", () => {
@@ -265,14 +261,14 @@ describe("mergeWithNewJson (#293)", () => {
     const newJson = {
       highlights: [], runners_up: [],
       lancamento: [],
-      pesquisa: [makeArticle("https://art.com", 80)], // scorer coloca em pesquisa
-      noticias: [], tutorial: [],
+      radar: [makeArticle("https://art.com", 80)], // scorer coloca em radar
+      use_melhor: [],
     };
     const { merged } = mergeWithNewJson(existingMd, newJson);
     // Editor moveu para lancamento — deve respeitar isso
     assert.equal(merged.lancamento.length, 1);
     assert.equal(merged.lancamento[0].url, "https://art.com");
-    assert.equal(merged.pesquisa.length, 0);
+    assert.equal(merged.radar.length, 0);
   });
 });
 
@@ -334,12 +330,12 @@ describe("resolveDestaques (#663) — fallback respeita intenção do editor", (
     { rank: 3, url: "https://c.com/3" },
   ];
 
-  const makeSection = (destaques: string[], noticias: string[]) => ({
+  const makeSection = (destaques: string[], radar: string[]) => ({
     destaques,
     lancamento: [],
-    pesquisa: [],
-    noticias,
-    tutorial: [],
+    radar: [],
+    radar,
+    use_melhor: [],
     video: [],
   });
 

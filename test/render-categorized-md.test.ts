@@ -347,8 +347,7 @@ describe("buildHighlightUrls", () => {
     const urls = buildHighlightUrls({
       highlights: [{ url: "https://a.com/1" }, { url: "https://b.com/2" }],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://a.com/1"));
@@ -361,8 +360,7 @@ describe("buildHighlightUrls", () => {
         { rank: 2, score: 88, article: { url: "https://b.com/2", title: "B" } },
       ],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://a.com/1"));
@@ -376,8 +374,7 @@ describe("buildHighlightUrls", () => {
         { rank: 2, article: { url: "https://nested.com/2" } },
       ],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://flat.com/1"));
@@ -390,8 +387,9 @@ describe("buildHighlightUrls", () => {
         { url: "https://a.com/1", highlight: true },
         { url: "https://a.com/normal" },
       ],
-      pesquisa: [{ url: "https://b.com/2", highlight: true }],
-      noticias: [],
+      radar: [
+        { url: "https://b.com/2", highlight: true }
+      ],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://a.com/1"));
@@ -403,8 +401,7 @@ describe("buildHighlightUrls", () => {
     const urls = buildHighlightUrls({
       highlights: [{ url: "https://a.com/1" }],
       lancamento: [{ url: "https://a.com/1", highlight: true }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 1);
   });
@@ -412,8 +409,7 @@ describe("buildHighlightUrls", () => {
   it("retorna Set vazio quando não há highlights", () => {
     const urls = buildHighlightUrls({
       lancamento: [{ url: "https://a.com/1" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 0);
   });
@@ -424,8 +420,7 @@ describe("buildRunnerUpUrls (#104)", () => {
     const urls = buildRunnerUpUrls({
       runners_up: [{ url: "https://r.com/1" }, { url: "https://r.com/2" }],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://r.com/1"));
@@ -435,8 +430,7 @@ describe("buildRunnerUpUrls (#104)", () => {
   it("retorna Set vazio quando runners_up ausente", () => {
     const urls = buildRunnerUpUrls({
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 0);
   });
@@ -449,8 +443,7 @@ describe("buildRunnerUpUrls (#104)", () => {
         { url: 123 } as unknown,
       ],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 1);
     assert.ok(urls.has("https://r.com/1"));
@@ -463,8 +456,7 @@ describe("buildRunnerUpUrls (#104)", () => {
         { rank: 5, score: 70, url: "https://r.com/flat" },
       ],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     assert.equal(urls.size, 2);
     assert.ok(urls.has("https://r.com/nested"));
@@ -476,8 +468,7 @@ describe("buildRunnerUpUrls (#104)", () => {
       highlights: [{ url: "https://a.com/1" }, { url: "https://a.com/2" }],
       runners_up: [{ url: "https://b.com/3" }, { url: "https://b.com/4" }],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const h = buildHighlightUrls(data);
     const r = buildRunnerUpUrls(data);
@@ -699,8 +690,7 @@ describe("buildHighlightUrls — inclui bucket video (#359)", () => {
   it("extrai URL com highlight=true do bucket video", () => {
     const urls = buildHighlightUrls({
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
       video: [{ url: "https://www.youtube.com/watch?v=abc", highlight: true }],
     });
     assert.ok(urls.has("https://www.youtube.com/watch?v=abc"));
@@ -709,8 +699,7 @@ describe("buildHighlightUrls — inclui bucket video (#359)", () => {
   it("não adiciona video sem highlight flag", () => {
     const urls = buildHighlightUrls({
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
       video: [{ url: "https://www.youtube.com/watch?v=abc" }],
     });
     assert.equal(urls.size, 0);
@@ -719,7 +708,8 @@ describe("buildHighlightUrls — inclui bucket video (#359)", () => {
 
 describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
   it("usa total_considered do JSON se presente", () => {
-    const data = { lancamento: [], pesquisa: [], noticias: [], total_considered: 42 };
+    const data = { lancamento: [], radar: [
+          ], radar: [], total_considered: 42 };
     assert.equal(computeTotalConsidered("/any/path/01-categorized.json", data), 42);
   });
 
@@ -730,18 +720,19 @@ describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
       dir + "/_internal/tmp-categorized.json",
       JSON.stringify({
         lancamento: [{ url: "a" }, { url: "b" }],
-        pesquisa: [{ url: "c" }],
-        noticias: [{ url: "d" }, { url: "e" }, { url: "f" }],
+        radar: [{ url: "c" },
+          { url: "d" }, { url: "e" }, { url: "f" }
+        ],
       }),
     );
-    const data = { lancamento: [], pesquisa: [], noticias: [] };
+    const data = { lancamento: [], radar: [] };
     const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
     assert.equal(result, 6);
     rmSync(dir, { recursive: true });
   });
 
   it("retorna null quando nem campo nem tmp-categorized.json existem", () => {
-    const data = { lancamento: [], pesquisa: [], noticias: [] };
+    const data = { lancamento: [], radar: [] };
     assert.equal(computeTotalConsidered("/nonexistent/path/01-categorized.json", data), null);
   });
 
@@ -750,10 +741,10 @@ describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
     mkdirSync(dir + "/_internal", { recursive: true });
     writeFileSync(
       dir + "/_internal/tmp-categorized.json",
-      JSON.stringify({ lancamento: [{ url: "x" }], pesquisa: [], noticias: [] }),
+      JSON.stringify({ lancamento: [{ url: "x" }], radar: [] }),
     );
     // Campo explícito tem prioridade — deve retornar 99, não 1
-    const data = { lancamento: [], pesquisa: [], noticias: [], total_considered: 99 };
+    const data = { lancamento: [], radar: [], total_considered: 99 };
     const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
     assert.equal(result, 99);
     rmSync(dir, { recursive: true });

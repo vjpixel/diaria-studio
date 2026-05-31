@@ -1333,9 +1333,8 @@ describe("isUnresolvableInboxArticle (#722 — drop unresolvable inbox articles)
     const result = categorizeArticles(articles);
     const allArticles = [
       ...result.lancamento,
-      ...result.noticias,
-      ...result.pesquisa,
-      ...result.tutorial,
+      ...result.radar,
+      ...(result.use_melhor ?? []),
       ...result.video,
     ];
     assert.ok(

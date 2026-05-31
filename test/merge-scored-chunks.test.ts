@@ -12,9 +12,11 @@ const mk = (url: string, category: string) => ({ url, title: url, category });
 
 const CAT: Categorized = {
   lancamento: [mk("l1", "lancamento")],
-  pesquisa: [mk("p1", "pesquisa"), mk("p2", "pesquisa")],
-  noticias: [mk("n1", "noticias"), mk("n2", "noticias")],
-  tutorial: [],
+  radar: [
+    mk("p1", "radar"), mk("p2", "radar"),
+    mk("n1", "radar"), mk("n2", "radar")
+  ],
+  use_melhor: [],
 };
 
 describe("extractScores", () => {
@@ -95,8 +97,8 @@ describe("mergeChunks", () => {
     const r = mergeChunks(CAT, chunks, 3);
     assert.equal(r.finalists.length, 3);
     assert.deepEqual(r.finalists.map((f) => f.url), ["p2", "n1", "p1"]);
-    assert.equal(r.finalists[0].bucket, "pesquisa");
-    assert.equal(r.finalists[1].bucket, "noticias");
+    assert.equal(r.finalists[0].bucket, "radar");
+    assert.equal(r.finalists[1].bucket, "radar");
     assert.ok(r.finalists[0].article.title); // artigo completo presente
   });
 

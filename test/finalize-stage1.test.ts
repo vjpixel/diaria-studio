@@ -406,16 +406,17 @@ describe("finalizeStage1", () => {
     const truncUrl = "https://canaltech.com.br/produtos/foo-";
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url: truncUrl, title: "Foo product" }],
+      radar: [
+        { url: truncUrl, title: "Foo product" }
+      ],
     };
     const scored = makeScoredOutput([{ url: truncUrl, score: 75, title: "Foo product" }]);
 
     const { buckets, url_mismatches } = finalizeStage1(categorized, scored);
 
     assert.equal(url_mismatches.length, 0, "sem mismatch quando URL é exata");
-    assert.equal(buckets.noticias[0].url, truncUrl, "URL deve ser preservada");
-    assert.equal(buckets.noticias[0].score, 75);
+    assert.equal(buckets.radar[0].url, truncUrl, "URL deve ser preservada");
+    assert.equal(buckets.radar[0].score, 75);
   });
 
   it("#720 — recovery via título quando URLs diferem", () => {
@@ -425,25 +426,27 @@ describe("finalizeStage1", () => {
 
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url: poolUrl, title }],
+      radar: [
+        { url: poolUrl, title }
+      ],
     };
     const scored = makeScoredOutput([{ url: scoredUrl, score: 65, title }]);
 
     const { buckets, url_mismatches } = finalizeStage1(categorized, scored);
 
     assert.equal(url_mismatches.length, 1, "mismatch detectado");
-    assert.equal(buckets.noticias[0].url, poolUrl, "URL do pool preservada");
-    assert.equal(buckets.noticias[0].score, 65, "score recuperado via título");
-    assert.equal(buckets.noticias[0].score_recovered, true);
+    assert.equal(buckets.radar[0].url, poolUrl, "URL do pool preservada");
+    assert.equal(buckets.radar[0].score, 65, "score recuperado via título");
+    assert.equal(buckets.radar[0].score_recovered, true);
   });
 
   it("#721 — '(inbox)' title incluído mas marcado placeholder", () => {
     const url = "https://x.com/article";
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url, title: "(inbox)", flag: "editor_submitted", score: 5 }],
+      radar: [
+        { url, title: "(inbox)", flag: "editor_submitted", score: 5 }
+      ],
     };
     // Scorer não tem score pra essa URL (mismatch total)
     const scored = makeScoredOutput([]);
@@ -452,8 +455,8 @@ describe("finalizeStage1", () => {
 
     // Artigo com score null mas flag editor_submitted → bypass tentado
     // título "(inbox)" → bypass falha → placeholder
-    assert.equal(buckets.noticias.length, 1, "artigo incluído");
-    assert.equal(buckets.noticias[0].editor_submitted_placeholder, true);
+    assert.equal(buckets.radar.length, 1, "artigo incluído");
+    assert.equal(buckets.radar[0].editor_submitted_placeholder, true);
     assert.equal(bypass_placeholders.length, 1);
   });
 
@@ -461,19 +464,20 @@ describe("finalizeStage1", () => {
     const url = "https://x.com/valid";
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{
+      radar: [
+        {
         url,
         title: "OpenAI lança GPT-5 para todos os usuários",
         flag: "editor_submitted",
-      }],
+      }
+      ],
     };
     const scored = makeScoredOutput([{ url, score: 10, title: "OpenAI lança GPT-5 para todos os usuários" }]);
 
     const { buckets, bypass_placeholders } = finalizeStage1(categorized, scored);
 
-    assert.equal(buckets.noticias.length, 1);
-    assert.equal(buckets.noticias[0].editor_submitted_placeholder, undefined);
+    assert.equal(buckets.radar.length, 1);
+    assert.equal(buckets.radar[0].editor_submitted_placeholder, undefined);
     assert.equal(bypass_placeholders.length, 0);
   });
 
@@ -481,14 +485,15 @@ describe("finalizeStage1", () => {
     const url = "https://ok.com/article";
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url, title: "Good article", score: 60 }],
+      radar: [
+        { url, title: "Good article", score: 60 }
+      ],
     };
     const scored = makeScoredOutput([{ url, score: 60, title: "Good article" }]);
 
     const { buckets, removed_total } = finalizeStage1(categorized, scored);
 
-    assert.equal(buckets.noticias.length, 1);
+    assert.equal(buckets.radar.length, 1);
     assert.equal(removed_total, 0);
   });
 
@@ -496,15 +501,16 @@ describe("finalizeStage1", () => {
     const url = "https://noscored.com/x";
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url, title: "Unscored article" }],
+      radar: [
+        { url, title: "Unscored article" }
+      ],
     };
     const scored = makeScoredOutput([]); // scorer não pontuou este artigo
 
     const { buckets, removed_total } = finalizeStage1(categorized, scored);
 
     // score = null → abaixo do threshold 40 → removido
-    assert.equal(buckets.noticias.length, 0);
+    assert.equal(buckets.radar.length, 0);
     assert.equal(removed_total, 1);
   });
 });
@@ -518,18 +524,17 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
     };
   }
 
-  it("cap aplica cross-bucket — 6 exame.com (3 em noticias + 3 em lancamento) → drop 3", () => {
+  it("cap aplica cross-bucket — 6 exame.com (3 em radar + 3 em lancamento) → drop 3", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [
         { url: "https://exame.com/l1" },
         { url: "https://exame.com/l2" },
         { url: "https://exame.com/l3" },
       ],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://exame.com/n1" },
         { url: "https://exame.com/n2" },
-        { url: "https://exame.com/n3" },
+        { url: "https://exame.com/n3" }
       ],
     };
     const scored = mkOutput([
@@ -542,19 +547,18 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
     ]);
     const { buckets, domain_capped } = finalizeStage1(categorized, scored);
     const totalKept =
-      (buckets.lancamento?.length ?? 0) + (buckets.noticias?.length ?? 0);
+      (buckets.lancamento?.length ?? 0) + (buckets.radar?.length ?? 0);
     assert.equal(totalKept, 3); // só top 3 globais do domínio
     assert.equal(domain_capped.length, 3);
     // Os top 3 por score vencem (l1=95, l2=90, l3=85)
     assert.equal(buckets.lancamento.length, 3);
-    assert.equal(buckets.noticias.length, 0);
+    assert.equal(buckets.radar.length, 0);
   });
 
   it("highlights bypassam cap mesmo cross-bucket", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://exame.com/highlight" },
         { url: "https://exame.com/a" },
         { url: "https://exame.com/b" },
@@ -575,7 +579,7 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
     };
     const { buckets, domain_capped } = finalizeStage1(categorized, scored);
     // highlight + top 3 não-highlight do domínio = 4 kept; d droppado
-    assert.equal(buckets.noticias.length, 4);
+    assert.equal(buckets.radar.length, 4);
     assert.equal(domain_capped.length, 1);
     assert.equal(domain_capped[0].url, "https://exame.com/d");
   });
@@ -583,12 +587,11 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
   it("domínios diferentes não competem por cap", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://a.com/1" },
         { url: "https://b.com/1" },
         { url: "https://c.com/1" },
-        { url: "https://d.com/1" },
+        { url: "https://d.com/1" }
       ],
     };
     const scored = mkOutput([
@@ -598,7 +601,7 @@ describe("finalizeStage1 — domain cap GLOBAL (#1067)", () => {
       { url: "https://d.com/1", score: 60 },
     ]);
     const { buckets, domain_capped } = finalizeStage1(categorized, scored);
-    assert.equal(buckets.noticias.length, 4);
+    assert.equal(buckets.radar.length, 4);
     assert.equal(domain_capped.length, 0);
   });
 });
@@ -666,10 +669,9 @@ describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => 
   it("past-secondary que não viraram highlight são droppados pós-scorer", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://example.com/new" },
-        { url: "https://example.com/past-secondary-repeat" },
+        { url: "https://example.com/past-secondary-repeat" }
       ],
     };
     const scored = mkOutput([
@@ -680,17 +682,16 @@ describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => 
     const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
       pastSecondaryUrls,
     });
-    assert.equal(buckets.noticias.length, 1);
-    assert.equal(buckets.noticias[0].url, "https://example.com/new");
+    assert.equal(buckets.radar.length, 1);
+    assert.equal(buckets.radar[0].url, "https://example.com/new");
     assert.equal(past_secondary_dropped.length, 1);
   });
 
   it("past-secondary que VIROU highlight passa (promoção permitida)", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
-        { url: "https://example.com/promoted" },
+      radar: [
+        { url: "https://example.com/promoted" }
       ],
     };
     const scored = mkOutput(
@@ -701,19 +702,20 @@ describe("finalizeStage1 — past-secondary integration (#1068 phase 2)", () => 
     const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored, {
       pastSecondaryUrls,
     });
-    assert.equal(buckets.noticias.length, 1);
+    assert.equal(buckets.radar.length, 1);
     assert.equal(past_secondary_dropped.length, 0);
   });
 
   it("sem pastSecondaryUrls (back-compat): nada é droppado por essa razão", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url: "https://example.com/x" }],
+      radar: [
+        { url: "https://example.com/x" }
+      ],
     };
     const scored = mkOutput([{ url: "https://example.com/x", score: 80 }]);
     const { buckets, past_secondary_dropped } = finalizeStage1(categorized, scored);
-    assert.equal(buckets.noticias.length, 1);
+    assert.equal(buckets.radar.length, 1);
     assert.equal(past_secondary_dropped.length, 0);
   });
 });
@@ -751,8 +753,10 @@ describe("#1567 finding D — join pool == scored pool ⇒ sem url_mismatch esp�
   it("pool == scored (dates-reviewed): zero url_mismatches numa edição saudável", () => {
     const categorized: CategorizedBuckets = {
       lancamento: [{ url: "https://a.com/1", title: "Lançamento A com título longo o suficiente" }],
-      pesquisa: [{ url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" }],
-      noticias: [{ url: "https://c.com/3", title: "Notícia C com título longo o suficiente" }],
+      radar: [
+        { url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" },
+        { url: "https://c.com/3", title: "Notícia C com título longo o suficiente" }
+      ],
     };
     const r = finalizeStage1(categorized, scoredOutput);
     assert.equal(r.url_mismatches.length, 0);
@@ -766,10 +770,10 @@ describe("#1567 finding D — join pool == scored pool ⇒ sem url_mismatch esp�
         { url: "https://a.com/1", title: "Lançamento A com título longo o suficiente" },
         { url: "https://extra1.com/x", title: "Removida por data 1 título longo o suficiente" },
       ],
-      pesquisa: [{ url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" }],
-      noticias: [
+      radar: [
+        { url: "https://b.com/2", title: "Pesquisa B com título longo o suficiente" },
         { url: "https://c.com/3", title: "Notícia C com título longo o suficiente" },
-        { url: "https://extra2.com/y", title: "Removida por data 2 título longo o suficiente" },
+        { url: "https://extra2.com/y", title: "Removida por data 2 título longo o suficiente" }
       ],
     };
     const r = finalizeStage1(categorized, scoredOutput);

@@ -151,9 +151,9 @@ describe("parseCtrFromCsv — Aprofunde filter robusto a vírgulas (regressão #
 
     // Campos lidos por nome continuam corretos numa row com vírgulas no título:
     // a row Pesquisa (data == today → decay weight 1) deve ter opens=200, clicks=8
-    const pesquisa = r.byCategory.get("Pesquisa")!;
-    assert.equal(pesquisa.opens, 200);
-    assert.equal(pesquisa.clicks, 8);
+    const radar = r.byCategory.get("Pesquisa")!;
+    assert.equal(radar.opens, 200);
+    assert.equal(radar.clicks, 8);
     assert.equal(r.byDomain.get("c.com")?.count, 1); // domínio lido certo apesar das vírgulas
 
     // origin: a única BR remanescente é a row Pesquisa (a BR Aprofunde foi filtrada)

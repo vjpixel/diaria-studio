@@ -36,7 +36,7 @@ function fakeResult(
 }
 
 describe("unwrapCategorized (#1112)", () => {
-  it("aceita shape direto {lancamento, pesquisa, ...}", () => {
+  it("aceita shape direto {lancamento, radar, ...}", () => {
     const input = { lancamento: [{ url: "a", date: "2026-05-01" }] };
     const result = unwrapCategorized(input);
     assert.deepEqual(result, input);
@@ -55,8 +55,9 @@ describe("unwrapCategorized (#1112)", () => {
   });
 
   it("aceita object com buckets vazios", () => {
-    const result = unwrapCategorized({ lancamento: [], pesquisa: [] });
-    assert.deepEqual(result, { lancamento: [], pesquisa: [] });
+    const result = unwrapCategorized({ lancamento: [], radar: [
+        ] });
+    assert.deepEqual(result, { lancamento: [], radar: [] });
   });
 });
 
@@ -64,8 +65,8 @@ describe("applyVerifyResults (#1112)", () => {
   it("aplica verified_date quando changed && !fetch_failed", () => {
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [
+      ],
     };
     const results = [fakeResult("u1", true, false, "2026-05-10")];
     const stats = applyVerifyResults(cat, results);
@@ -77,8 +78,7 @@ describe("applyVerifyResults (#1112)", () => {
   it("preserva data original quando changed=false", () => {
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const results = [fakeResult("u1", false, false, "2026-05-01")];
     applyVerifyResults(cat, results);
@@ -88,8 +88,7 @@ describe("applyVerifyResults (#1112)", () => {
   it("preserva data original quando fetch_failed (e marca date_unverified)", () => {
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }] as Array<{ url: string; date: string; date_unverified?: boolean }>,
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const results = [fakeResult("u1", true, true, null, true)];
     const stats = applyVerifyResults(cat, results);
@@ -102,8 +101,10 @@ describe("applyVerifyResults (#1112)", () => {
   it("aplica em múltiplos buckets na mesma chamada", () => {
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }],
-      pesquisa: [{ url: "u2", date: "2026-05-02" }],
-      noticias: [{ url: "u3", date: "2026-05-03" }],
+      radar: [
+        { url: "u2", date: "2026-05-02" },
+        { url: "u3", date: "2026-05-03" }
+      ],
     };
     const results = [
       fakeResult("u1", true, false, "2026-05-10"),
@@ -112,16 +113,15 @@ describe("applyVerifyResults (#1112)", () => {
     ];
     const stats = applyVerifyResults(cat, results);
     assert.equal(cat.lancamento[0].date, "2026-05-10");
-    assert.equal(cat.pesquisa[0].date, "2026-05-11");
-    assert.equal(cat.noticias[0].date, "2026-05-03");
+    assert.equal(cat.radar[0].date, "2026-05-11");
+    assert.equal(cat.radar[0].date, "2026-05-03");
     assert.equal(stats.dateCorrected, 2);
   });
 
   it("ignora resultados sem entry correspondente no categorized", () => {
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const results = [
       fakeResult("u1", true, false, "2026-05-10"),
@@ -136,8 +136,7 @@ describe("applyVerifyResults (#1112)", () => {
     // edge case: API retornou changed=true mas verified_date=null (fetch ok mas no date found)
     const cat = {
       lancamento: [{ url: "u1", date: "2026-05-01" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const results = [fakeResult("u1", true, false, null)];
     const stats = applyVerifyResults(cat, results);
@@ -148,8 +147,7 @@ describe("applyVerifyResults (#1112)", () => {
   it("processa bucket vazio sem erro", () => {
     const cat = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const stats = applyVerifyResults(cat, []);
     assert.equal(stats.dateCorrected, 0);

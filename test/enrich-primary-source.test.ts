@@ -77,13 +77,11 @@ describe("detectLaunchCandidate (#487)", () => {
 });
 
 describe("enrichPrimarySource", () => {
-  it("flaga só artigos da bucket noticias", () => {
+  it("flaga só artigos da bucket radar", () => {
     const input = {
       lancamento: [],
-      pesquisa: [
+      radar: [
         { url: "https://arxiv.org/abs/x", title: "OpenAI releases new paper" },
-      ],
-      noticias: [
         {
           url: "https://venturebeat.com/x",
           title: "Anthropic launches Claude 4.7",
@@ -91,20 +89,20 @@ describe("enrichPrimarySource", () => {
         {
           url: "https://canaltech.com.br/y",
           title: "Aplicações de IA crescem no Brasil",
-        },
+        }
       ],
     };
     const { output, flagged } = enrichPrimarySource(input);
     assert.equal(flagged, 1);
-    assert.equal((output.noticias as { launch_candidate?: boolean }[])[0].launch_candidate, true);
-    assert.equal((output.noticias as { launch_candidate?: boolean }[])[1].launch_candidate, undefined);
-    // pesquisa não é tocada (mesmo com palavra "releases")
-    assert.equal((output.pesquisa as { launch_candidate?: boolean }[])[0].launch_candidate, undefined);
+    assert.equal((output.radar as { launch_candidate?: boolean }[])[0].launch_candidate, true);
+    assert.equal((output.radar as { launch_candidate?: boolean }[])[1].launch_candidate, undefined);
+    // radar não é tocada (mesmo com palavra "releases")
+    assert.equal((output.radar as { launch_candidate?: boolean }[])[0].launch_candidate, undefined);
   });
 
   it("preserva campos originais e adiciona suggested_primary_domain", () => {
     const input = {
-      noticias: [
+      radar: [
         {
           url: "https://techcrunch.com/x",
           title: "Mistral unveils Codestral 2 for code generation",
@@ -114,7 +112,7 @@ describe("enrichPrimarySource", () => {
       ],
     };
     const { output } = enrichPrimarySource(input);
-    const a = (output.noticias as Array<Record<string, unknown>>)[0];
+    const a = (output.radar as Array<Record<string, unknown>>)[0];
     assert.equal(a.score, 75);
     assert.equal(a.title, "Mistral unveils Codestral 2 for code generation");
     assert.equal(a.launch_candidate, true);
@@ -122,15 +120,15 @@ describe("enrichPrimarySource", () => {
     assert.match(a.matched_launch_keyword as string, /unveil/i);
   });
 
-  it("input sem noticias não quebra", () => {
-    const { output, flagged } = enrichPrimarySource({ pesquisa: [], lancamento: [] });
+  it("input sem radar não quebra", () => {
+    const { output, flagged } = enrichPrimarySource({ radar: [], lancamento: [] });
     assert.equal(flagged, 0);
-    assert.equal(output.noticias, undefined);
+    assert.equal(output.radar, undefined);
   });
 
   it("preserva campos extras top-level (clusters, etc)", () => {
     const input = {
-      noticias: [],
+      radar: [],
       clusters: [{ id: 1 }],
       metadata: { foo: "bar" },
     };

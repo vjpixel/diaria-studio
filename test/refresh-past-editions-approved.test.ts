@@ -108,10 +108,10 @@ describe("extractUrlsFromApproved (#238)", () => {
         { url: "https://l1.com/launch" },
         { url: "https://l2.com/launch" },
       ],
-      pesquisa: [{ url: "https://p1.com/paper" }],
-      noticias: [
+      radar: [
+        { url: "https://p1.com/paper" },
         { url: "https://n1.com/news" },
-        { url: "https://n2.com/news" },
+        { url: "https://n2.com/news" }
       ],
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
@@ -128,8 +128,7 @@ describe("extractUrlsFromApproved (#238)", () => {
       highlights: [{ article: { url: "https://shared.com/x" } }],
       runners_up: [],
       lancamento: [{ url: "https://shared.com/x" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
     assert.equal(urls.length, 1);
@@ -144,8 +143,7 @@ describe("extractUrlsFromApproved (#238)", () => {
       ],
       runners_up: [],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
     assert.equal(urls.length, 2);
@@ -158,22 +156,20 @@ describe("extractUrlsFromApproved (#238)", () => {
       highlights: [{ article: {} }, { article: { url: "" } }],
       runners_up: [],
       lancamento: [{ url: "https://valid.com/post" }, {}],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
     assert.equal(urls.length, 1);
     assert.equal(urls[0], "https://valid.com/post");
   });
 
-  it("aceita tutorial bucket opcional (#59)", () => {
+  it("aceita use_melhor bucket opcional (#59)", () => {
     writeApproved("260425", {
       highlights: [],
       runners_up: [],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
-      tutorial: [{ url: "https://tut.com/aprenda" }],
+      radar: [],
+      use_melhor: [{ url: "https://tut.com/aprenda" }],
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
     assert.deepEqual(urls, ["https://tut.com/aprenda"]);
@@ -197,8 +193,7 @@ describe("populateLinksFromApproved (#238)", () => {
       highlights: [],
       runners_up: [],
       lancamento: urls.map((url) => ({ url })),
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     writeFileSync(join(dir, "01-approved.json"), JSON.stringify(content), "utf8");
   }

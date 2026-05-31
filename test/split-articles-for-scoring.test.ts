@@ -14,9 +14,11 @@ const mk = (url: string, category: string): Article => ({ url, title: url, categ
 
 const SAMPLE: Categorized = {
   lancamento: [mk("l1", "lancamento"), mk("l2", "lancamento")],
-  pesquisa: [mk("p1", "pesquisa"), mk("p2", "pesquisa"), mk("p3", "pesquisa")],
-  noticias: [mk("n1", "noticias"), mk("n2", "noticias")],
-  tutorial: [],
+  radar: [
+    mk("p1", "radar"), mk("p2", "radar"), mk("p3", "radar"),
+    mk("n1", "radar"), mk("n2", "radar")
+  ],
+  use_melhor: [],
 };
 
 describe("flattenCategorized", () => {
@@ -26,7 +28,7 @@ describe("flattenCategorized", () => {
   });
 
   it("inclui buckets fora da ordem canônica ao final", () => {
-    const flat = flattenCategorized({ noticias: [mk("n1", "noticias")], custom: [mk("x1", "custom")] });
+    const flat = flattenCategorized({ radar: [mk("n1", "radar")], custom: [mk("x1", "custom")] });
     assert.deepEqual(flat.map((a) => a.url), ["n1", "x1"]);
   });
 });
@@ -57,7 +59,7 @@ describe("splitRoundRobin", () => {
   });
 
   it("não perde nem duplica artigos", () => {
-    const flat = Array.from({ length: 80 }, (_, i) => mk(`a${i}`, "noticias"));
+    const flat = Array.from({ length: 80 }, (_, i) => mk(`a${i}`, "radar"));
     const chunks = splitRoundRobin(flat, 3);
     const all = chunks.flat().map((a) => a.url).sort();
     assert.equal(all.length, 80);
@@ -66,10 +68,10 @@ describe("splitRoundRobin", () => {
 });
 
 describe("toCategorized", () => {
-  it("reconstrói buckets a partir de category, fallback noticias", () => {
+  it("reconstrói buckets a partir de category, fallback radar", () => {
     const cat = toCategorized([mk("l1", "lancamento"), mk("x", "desconhecido")]);
     assert.deepEqual(cat.lancamento.map((a) => a.url), ["l1"]);
-    assert.deepEqual(cat.noticias.map((a) => a.url), ["x"]);
+    assert.deepEqual(cat.radar.map((a) => a.url), ["x"]);
   });
 });
 
@@ -77,33 +79,33 @@ describe("buildChunks", () => {
   it("80 artigos / chunk-size 30 → 3 chunks shape categorized", () => {
     const big: Categorized = {
       lancamento: Array.from({ length: 5 }, (_, i) => mk(`l${i}`, "lancamento")),
-      pesquisa: Array.from({ length: 26 }, (_, i) => mk(`p${i}`, "pesquisa")),
-      noticias: Array.from({ length: 49 }, (_, i) => mk(`n${i}`, "noticias")),
-      tutorial: [],
+      radar: Array.from({ length: 26 }, (_, i) => mk(`p${i}`, "radar")),
+      radar: Array.from({ length: 49 }, (_, i) => mk(`n${i}`, "radar")),
+      use_melhor: [],
     };
     const chunks = buildChunks(big, 30);
     assert.equal(chunks.length, 3);
     // cada chunk é shape categorized
     for (const c of chunks) {
-      assert.ok(Array.isArray(c.lancamento) && Array.isArray(c.pesquisa) && Array.isArray(c.noticias));
+      assert.ok(Array.isArray(c.lancamento) && Array.isArray(c.radar) && Array.isArray(c.radar));
     }
     // total preservado
     const total = chunks.reduce(
-      (a, c) => a + c.lancamento.length + c.pesquisa.length + c.noticias.length + c.tutorial.length,
+      (a, c) => a + c.lancamento.length + c.radar.length + c.radar.length + c.use_melhor.length,
       0,
     );
     assert.equal(total, 80);
   });
 
   it("pool vazio → 0 chunks", () => {
-    assert.deepEqual(buildChunks({ noticias: [] }, 30), []);
+    assert.deepEqual(buildChunks({ radar: [] }, 30), []);
   });
 
   it("pool pequeno → 1 chunk com tudo", () => {
     const chunks = buildChunks(SAMPLE, 30);
     assert.equal(chunks.length, 1);
     assert.equal(
-      chunks[0].lancamento.length + chunks[0].pesquisa.length + chunks[0].noticias.length,
+      chunks[0].lancamento.length + chunks[0].radar.length + chunks[0].radar.length,
       7,
     );
   });

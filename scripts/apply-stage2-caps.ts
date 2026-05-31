@@ -69,9 +69,8 @@ function main(): void {
     const selectedCapped =
       (capped.highlights?.length ?? 0) +
       (capped.lancamento?.length ?? 0) +
-      (capped.pesquisa?.length ?? 0) +
-      (capped.noticias?.length ?? 0) +
-      ((capped.tutorial as unknown[] | undefined)?.length ?? 0) +
+      (capped.radar?.length ?? 0) +
+      ((capped.use_melhor as unknown[] | undefined)?.length ?? 0) +
       ((capped.video as unknown[] | undefined)?.length ?? 0);
     capped.coverage = {
       ...cov,
@@ -94,8 +93,7 @@ function main(): void {
   console.error(
     `[apply-stage2-caps] dest=${approved.highlights?.length ?? 0}, ` +
       `lanç=${report.before.lancamento}→${report.after.lancamento} (cap ${report.caps.lancamento}), ` +
-      `pesq=${report.before.pesquisa}→${report.after.pesquisa} (cap ${report.caps.pesquisa}), ` +
-      `outras=${report.before.noticias}→${report.after.noticias} (cap ${report.caps.noticias})`,
+      `radar=${report.before.radar}→${report.after.radar} (cap ${report.caps.radar})`,
   );
   process.stdout.write(
     JSON.stringify({ out: outPath, report }, null, 2) + "\n",

@@ -646,7 +646,7 @@ describe("extractPastEditionArticleTitles (#897)", () => {
         JSON.stringify({
           highlights: [{ article: { title: "Destaque 1: GPT-5.5" } }],
           runners_up: [{ article: { title: "Runner-up: Gemma 4" } }],
-          noticias: [{ title: "Noticia X" }],
+          radar: [{ title: "Noticia X" }],
         }),
       );
     });
@@ -771,7 +771,7 @@ describe("extractPastDestaqueUrls (#1068)", () => {
           { rank: 1, url: "https://example.com/d1", article: { title: "D1" } },
           { rank: 2, article: { url: "https://example.com/d2", title: "D2" } },
         ],
-        noticias: [
+        radar: [
           { url: "https://other.com/secondary", title: "Secondary" },
         ],
       }),

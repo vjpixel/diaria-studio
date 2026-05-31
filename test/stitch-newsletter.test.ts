@@ -90,11 +90,11 @@ describe("stitchNewsletter (#1463)", () => {
         JSON.stringify({
           coverage: { line: "Para esta edição, eu enviei 5 e a Diar.ia 100. Selecionamos os 10." },
           lancamento: [{ title: "L1", url: "https://l.com/1", summary: "ldesc" }],
-          pesquisa: [
+          radar: [
             { title: "P1", url: "https://p.com/1", summary: "p1desc" },
             { title: "P2", url: "https://p.com/2", summary: "p2desc" },
+            { title: "N1", url: "https://n.com/1", summary: "ndesc" }
           ],
-          noticias: [{ title: "N1", url: "https://n.com/1", summary: "ndesc" }],
         }),
       );
       const result = stitchNewsletter({
@@ -105,7 +105,7 @@ describe("stitchNewsletter (#1463)", () => {
         editionDir: dir,
       });
       // Ordem canonical (#1569): coverage > D1 > D2 > É IA? > D3 > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
-      // RADAR mergea pesquisa + noticias em uma só seção (papers + notícias).
+      // RADAR mergea radar + radar em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
       const d2Pos = result.indexOf("DESTAQUE 2");
       const eiaPos = result.indexOf("É IA?");
@@ -120,7 +120,7 @@ describe("stitchNewsletter (#1463)", () => {
       assert.ok(radarPos < erroPos, "RADAR antes de ERRO");
       assert.ok(erroPos < sortPos, "ERRO antes de SORTEIO");
       assert.ok(sortPos < encerrarPos, "SORTEIO antes de PARA ENCERRAR");
-      // RADAR deve incluir items das duas categorias (pesquisa + noticias)
+      // RADAR deve incluir items das duas categorias (radar + radar)
       assert.match(result, /https:\/\/p\.com\/1/);
       assert.match(result, /https:\/\/n\.com\/1/);
     } finally {
@@ -139,8 +139,9 @@ describe("stitchNewsletter (#1463)", () => {
         JSON.stringify({
           coverage: { line: "Coverage." },
           lancamento: [], // vazio
-          pesquisa: [{ title: "P", url: "https://p.com", summary: "x" }],
-          noticias: [],
+          radar: [
+            { title: "P", url: "https://p.com", summary: "x" }
+          ],
         }),
       );
       const result = stitchNewsletter({
@@ -170,7 +171,7 @@ describe("stitchNewsletter (#1463)", () => {
       writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
-        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
       );
       // 01-eia.md em formato real de produção (com YAML frontmatter)
       writeFileSync(
@@ -213,7 +214,7 @@ Foto descrição.
       writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
-        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
       );
       writeFileSync(
         join(dir, "01-eia.md"),
@@ -241,7 +242,7 @@ Foto descrição.
       writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
-        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
       );
       const result = stitchNewsletter({
         d1Path: join(internalDir, "02-d1-draft.md"),
@@ -264,7 +265,7 @@ Foto descrição.
       writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
-        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
       );
       assert.throws(
         () =>
@@ -290,7 +291,7 @@ Foto descrição.
       writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
-        JSON.stringify({ coverage: { line: "c" }, lancamento: [], pesquisa: [], noticias: [] }),
+        JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
       );
       const result = stitchNewsletter({
         d1Path: join(internalDir, "02-d1-draft.md"),
