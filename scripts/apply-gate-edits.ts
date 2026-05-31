@@ -50,7 +50,7 @@ interface CoverageStats {
   line: string;
 }
 
-type BucketName = "destaques" | "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
+type BucketName = "destaques" | "lancamento" | "radar" | "use_melhor" | "video";
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -78,21 +78,25 @@ export function parseSections(md: string): Record<BucketName, string[]> {
   const result: Record<BucketName, string[]> = {
     destaques: [],
     lancamento: [],
-    pesquisa: [],
-    noticias: [],
-    tutorial: [],
+    radar: [],
+    use_melhor: [],
     video: [],
   };
 
+  // #1629: buckets internos alinhados com seções publicadas.
+  // Aceita aliases legacy (Pesquisas/Notícias/Aprenda hoje) → radar/use_melhor
+  // pra parsear MDs editados em Drive de edições históricas.
   const headingToBucket: Record<string, BucketName> = {
     "Destaques": "destaques",
     "Lançamentos": "lancamento",
-    "Pesquisas": "pesquisa",
-    "Notícias": "noticias",
-    // #1568: renomeada de "Aprenda hoje" pra "Use melhor". Aceitar ambas
-    // pra retrocompat com edições anteriores que ainda usam o nome antigo.
-    "Use melhor": "tutorial",
-    "Aprenda hoje": "tutorial",
+    "Radar": "radar",
+    // Aliases legacy
+    "Pesquisas": "radar",
+    "Notícias": "radar",
+    "Outras Notícias": "radar",
+    // #1568: renomeada de "Aprenda hoje" pra "Use melhor"
+    "Use melhor": "use_melhor",
+    "Aprenda hoje": "use_melhor",
     "Vídeos": "video",
   };
 
@@ -166,9 +170,8 @@ export function resolveDestaques(
     // #663: só aceitar URLs que ainda estão em algum bucket do MD
     const mdBucketUrls = new Set([
       ...sections.lancamento,
-      ...sections.pesquisa,
-      ...sections.noticias,
-      ...sections.tutorial,
+      ...sections.radar,
+      ...sections.use_melhor,
       ...sections.video,
     ]);
     const scorerRanked = [...originalHighlights].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
@@ -236,13 +239,12 @@ function main() {
   const sections = parseSections(md);
   const originalHighlights = data.highlights ?? [];
   const originalBuckets = {
-    lancamento: data.lancamento,
-    pesquisa: data.pesquisa,
-    noticias: data.noticias,
-    tutorial: data.tutorial ?? [],
+    lancamento: data.lancamento ?? [],
+    radar: data.radar ?? [],
+    use_melhor: data.use_melhor ?? [],
     video: data.video ?? [],
   };
-  const allPools = [data.lancamento, data.pesquisa, data.noticias, data.tutorial ?? [], data.video ?? []];
+  const allPools = [originalBuckets.lancamento, originalBuckets.radar, originalBuckets.use_melhor, originalBuckets.video];
 
   // ---- Destaques ---------------------------------------------------------
   const destaquesUrls = resolveDestaques(sections, originalHighlights);
@@ -275,7 +277,8 @@ function main() {
     // O bucket do destaque é o bucket ORIGINAL do artigo (onde ele estava antes
     // de ser movido para Destaques). O editor move linhas do bucket para o topo
     // sem sair da seção editorial original.
-    const bucket = found.origBucket ?? "noticias";
+    // #1629: bucket here uses Category labels (per-article); fallback radar.
+    const bucket = found.origBucket ?? "radar";
     highlights.push(buildHighlight(url, i + 1, bucket, found.article, originalHighlights));
   }
 
@@ -295,15 +298,14 @@ function main() {
     return out;
   }
 
-  const tutorialResolved = resolveBucket(sections.tutorial);
+  const useMelhorResolved = resolveBucket(sections.use_melhor);
   const videoResolved = resolveBucket(sections.video);
   const approved: ApprovedJson = {
     highlights,
     runners_up: data.runners_up ?? [],
     lancamento: resolveBucket(sections.lancamento),
-    pesquisa: resolveBucket(sections.pesquisa),
-    noticias: resolveBucket(sections.noticias),
-    tutorial: tutorialResolved, // sempre array — consumers não precisam de ?? [] (#328)
+    radar: resolveBucket(sections.radar),
+    use_melhor: useMelhorResolved, // sempre array — consumers não precisam de ?? [] (#328)
     video: videoResolved, // sempre array
   };
 
@@ -315,9 +317,8 @@ function main() {
   const totalSelected =
     approved.highlights.length +
     approved.lancamento.length +
-    approved.pesquisa.length +
-    approved.noticias.length +
-    (approved.tutorial?.length ?? 0) +
+    approved.radar.length +
+    (approved.use_melhor?.length ?? 0) +
     (approved.video?.length ?? 0);
   if (totalConsidered !== null) {
     const diariaDiscovered = Math.max(0, totalConsidered - editorSubmissions);
@@ -335,8 +336,8 @@ function main() {
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
-  const origTotals = `L=${originalBuckets.lancamento.length} P=${originalBuckets.pesquisa.length} N=${originalBuckets.noticias.length} T=${originalBuckets.tutorial.length} V=${originalBuckets.video.length}`;
-  const approvedTotals = `L=${approved.lancamento.length} P=${approved.pesquisa.length} N=${approved.noticias.length} T=${approved.tutorial?.length ?? 0} V=${approved.video?.length ?? 0}`;
+  const origTotals = `L=${originalBuckets.lancamento.length} R=${originalBuckets.radar.length} U=${originalBuckets.use_melhor.length} V=${originalBuckets.video.length}`;
+  const approvedTotals = `L=${approved.lancamento.length} R=${approved.radar.length} U=${approved.use_melhor?.length ?? 0} V=${approved.video?.length ?? 0}`;
   console.error(
     `[apply-gate-edits] original ${origTotals} → approved ${approvedTotals} — destaques: ${approved.highlights.length}`,
   );
@@ -345,9 +346,9 @@ function main() {
       out: outPath,
       destaques: approved.highlights.length,
       lancamento: approved.lancamento.length,
-      pesquisa: approved.pesquisa.length,
-      noticias: approved.noticias.length,
-      tutorial: approved.tutorial?.length ?? 0,
+      radar: approved.radar.length,
+      use_melhor: approved.use_melhor?.length ?? 0,
+      video: approved.video?.length ?? 0,
     }) + "\n",
   );
 }
@@ -374,10 +375,9 @@ export function mergeWithNewJson(
   // Índice url → { article, origBucket } do novo JSON
   const urlToNew = new Map<string, { article: Article; origBucket: string }>();
   const bucketEntries: [string, Article[]][] = [
-    ["lancamento", newJson.lancamento],
-    ["pesquisa", newJson.pesquisa],
-    ["noticias", newJson.noticias],
-    ["tutorial", newJson.tutorial ?? []],
+    ["lancamento", newJson.lancamento ?? []],
+    ["radar", newJson.radar ?? []],
+    ["use_melhor", newJson.use_melhor ?? []],
     ["video", newJson.video ?? []],
   ];
   for (const [bucketName, pool] of bucketEntries) {
@@ -390,9 +390,8 @@ export function mergeWithNewJson(
   const editorAllUrls = new Set<string>([
     ...editorSections.destaques,
     ...editorSections.lancamento,
-    ...editorSections.pesquisa,
-    ...editorSections.noticias,
-    ...editorSections.tutorial,
+    ...editorSections.radar,
+    ...editorSections.use_melhor,
     ...editorSections.video,
   ]);
 
@@ -405,7 +404,7 @@ export function mergeWithNewJson(
 
   // Construir buckets do resultado mesclado
   const out: Record<string, Article[]> = {
-    lancamento: [], pesquisa: [], noticias: [], tutorial: [], video: [],
+    lancamento: [], radar: [], use_melhor: [], video: [],
   };
   const placed = new Set<string>();
 
@@ -420,9 +419,8 @@ export function mergeWithNewJson(
   // 2. URLs nas seções regulares do editor → bucket do editor, na ordem do editor
   for (const [editorBucket, urls] of [
     ["lancamento", editorSections.lancamento],
-    ["pesquisa", editorSections.pesquisa],
-    ["noticias", editorSections.noticias],
-    ["tutorial", editorSections.tutorial],
+    ["radar", editorSections.radar],
+    ["use_melhor", editorSections.use_melhor],
     ["video", editorSections.video],
   ] as [string, string[]][]) {
     for (const url of urls) {
@@ -445,9 +443,8 @@ export function mergeWithNewJson(
     merged: {
       ...newJson,
       lancamento: out.lancamento,
-      pesquisa: out.pesquisa,
-      noticias: out.noticias,
-      tutorial: out.tutorial,
+      radar: out.radar,
+      use_melhor: out.use_melhor,
       video: out.video,
     },
     warnings,

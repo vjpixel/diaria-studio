@@ -76,10 +76,22 @@ export interface MergeResult {
 /** Gap ≤ isto = ruído recuperável de agente; acima (ou chunk inteiro perdido) = catastrófico. */
 export const MAX_BENIGN_MISSING = 2;
 
-const BUCKET_ORDER = ["lancamento", "pesquisa", "noticias", "tutorial"] as const;
+const BUCKET_ORDER = ["lancamento", "radar", "use_melhor", "video"] as const;
 function bucketOf(a: Article): string {
-  const c = a.category;
-  return (BUCKET_ORDER as readonly string[]).includes(c ?? "") ? (c as string) : "noticias";
+  // #1629: article.category é Category (per-article) — mapear pra Bucket (per-seção).
+  switch (a.category) {
+    case "lancamento":
+      return "lancamento";
+    case "pesquisa":
+    case "noticias":
+      return "radar";
+    case "tutorial":
+      return "use_melhor";
+    case "video":
+      return "video";
+    default:
+      return "radar"; // fallback safe
+  }
 }
 
 /**

@@ -51,8 +51,9 @@ interface ApprovedJsonShape {
   coverage?: { line?: string };
   highlights?: Array<{ article: ArticleLike }>;
   lancamento?: ArticleLike[];
-  pesquisa?: ArticleLike[];
-  noticias?: ArticleLike[];
+  // #1629: buckets renomeados
+  radar?: ArticleLike[];
+  use_melhor?: ArticleLike[];
   video?: ArticleLike[];
 }
 
@@ -160,15 +161,9 @@ export function stitchNewsletter(input: StitchInput): string {
   const eiaBlock = readEiaBlock(input.editionDir);
 
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
-  // #1569: PESQUISAS removida como seção dedicada — papers entram no RADAR
-  // junto com noticias/opiniões. Ordem dentro do RADAR: pesquisas primeiro
-  // (signal de "leitura mais densa") seguido de noticias. Editor pode podar
-  // ou re-ordenar no gate Stage 2.
-  const radarItems = [
-    ...(approved.pesquisa ?? []),
-    ...(approved.noticias ?? []),
-  ];
-  const radar = renderSection("📡", "RADAR", "RADAR", radarItems);
+  // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
+  // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
+  const radar = renderSection("📡", "RADAR", "RADAR", approved.radar ?? []);
   const videos = renderSection("📺", "VÍDEO", "VÍDEOS", approved.video ?? []);
 
   const parts: string[] = [

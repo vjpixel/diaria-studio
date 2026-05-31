@@ -13,7 +13,7 @@
  * Uso:
  *   npx tsx scripts/topic-cluster.ts --in <categorized.json> --out <clustered.json> [--threshold 0.85]
  *
- * Input:  { lancamento: Article[], pesquisa: Article[], noticias: Article[] }
+ * Input:  { lancamento: Article[], radar: Article[], use_melhor: Article[], video: Article[] }
  * Output: mesmo shape + { clusters: ClusterMetadata[] } com os artigos
  *         "runners-up" removidos dos buckets e capturados nos clusters
  *         pra rastreabilidade.
@@ -47,8 +47,9 @@ export interface Cluster {
 
 export interface CategorizedInput {
   lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
+  radar: Article[];
+  use_melhor: Article[];
+  video: Article[];
 }
 
 export interface ClusterOutput extends CategorizedInput {
@@ -317,16 +318,20 @@ export async function clusterCategorized(
   input: CategorizedInput,
   threshold: number,
 ): Promise<ClusterOutput> {
-  const [l, p, n] = await Promise.all([
+  // #1629: cluster TODOS os 4 buckets. Antes só processava 3 e dropava
+  // tutorial/video silenciosamente (#1628).
+  const [l, r, u, v] = await Promise.all([
     clusterBucket(input.lancamento, threshold),
-    clusterBucket(input.pesquisa, threshold),
-    clusterBucket(input.noticias, threshold),
+    clusterBucket(input.radar, threshold),
+    clusterBucket(input.use_melhor, threshold),
+    clusterBucket(input.video, threshold),
   ]);
   return {
     lancamento: l.kept,
-    pesquisa: p.kept,
-    noticias: n.kept,
-    clusters: [...l.clusters, ...p.clusters, ...n.clusters],
+    radar: r.kept,
+    use_melhor: u.kept,
+    video: v.kept,
+    clusters: [...l.clusters, ...r.clusters, ...u.clusters, ...v.clusters],
   };
 }
 
@@ -364,8 +369,8 @@ async function main(): Promise<void> {
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
   const result = await clusterCategorized(input, threshold);
 
-  const totalIn = input.lancamento.length + input.pesquisa.length + input.noticias.length;
-  const totalOut = result.lancamento.length + result.pesquisa.length + result.noticias.length;
+  const totalIn = input.lancamento.length + input.radar.length + input.use_melhor.length + input.video.length;
+  const totalOut = result.lancamento.length + result.radar.length + result.use_melhor.length + result.video.length;
   const method = result.clusters[0]?.similarity_method ?? (hasKey ? "cosine" : "jaccard");
   console.error(
     `topic-cluster: ${totalIn} in → ${totalOut} kept, ${result.clusters.length} cluster(s) com runners-up (threshold=${threshold}, method=${method})`,

@@ -7,9 +7,9 @@
  * Layout:
  *   ## Destaques          — candidatos do scorer (editor mantém 3, remove o resto)
  *   ## Lançamentos        — bucket lancamento
- *   ## Pesquisas          — bucket pesquisa
- *   ## Notícias           — bucket noticias
- *   ## Use melhor         — bucket tutorial (#1568, antes "Aprenda hoje" #59)
+ *   ## Radar              — bucket radar (#1569: ex-Pesquisas + ex-Outras Notícias)
+ *   ## Use melhor         — bucket use_melhor (#1568, antes "Aprenda hoje" #59)
+ *   ## Vídeos             — bucket video (#1629)
  *
  * O editor escolhe destaques movendo linhas para/de a seção Destaques.
  * A ordem física dentro de Destaques define D1/D2/D3 (de cima para baixo).
@@ -54,9 +54,8 @@ interface CategorizedJson {
   highlights?: Highlight[];
   runners_up?: unknown[];
   lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
-  tutorial?: Article[];
+  radar: Article[];
+  use_melhor?: Article[];
   video?: Article[];
   /** Número total de artigos considerados antes da filtragem do scorer.
    * Injetado pelo orchestrator a partir de `_internal/tmp-categorized.json`
@@ -292,7 +291,7 @@ export function buildHighlightUrls(data: CategorizedJson): Set<string> {
   }
 
   // Formato legado: inline em cada artigo
-  for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
+  for (const bucket of [data.lancamento, data.radar, data.use_melhor, data.video]) {
     for (const a of bucket ?? []) {
       if (a.highlight) urls.add(a.url);
     }
@@ -415,7 +414,7 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
     );
     if (uncertainUrls.size === 0) return;
 
-    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
+    for (const bucket of [data.lancamento, data.radar, data.use_melhor, data.video]) {
       for (const a of bucket ?? []) {
         if (uncertainUrls.has(a.url)) a.date_unverified = true;
       }
@@ -442,7 +441,7 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
   try {
     const scored: { url: string; score: number }[] = JSON.parse(readFileSync(scoredPath, 'utf8')).all_scored ?? [];
     const scoreMap = new Map(scored.map(s => [s.url, s.score]));
-    for (const bucket of [data.lancamento, data.pesquisa, data.noticias, data.tutorial, data.video]) {
+    for (const bucket of [data.lancamento, data.radar, data.use_melhor, data.video]) {
       for (const art of (bucket ?? [])) {
         if (art.url && scoreMap.has(art.url)) {
           art.score = scoreMap.get(art.url);
@@ -604,9 +603,9 @@ function main() {
   mergeVerifiedFlags(cli.in, data);
   mergeScores(cli.in, data);
 
-  if (!data.lancamento || !data.pesquisa || !data.noticias) {
+  if (!data.lancamento || !data.radar) {
     console.error(
-      `render-categorized-md: input JSON não tem os buckets esperados (lancamento/pesquisa/noticias)`
+      `render-categorized-md: input JSON não tem os buckets esperados (lancamento/radar)`
     );
     process.exit(1);
   }
@@ -616,8 +615,8 @@ function main() {
 
   // #477, #592: métricas de cobertura — X submissões / Y descobertos / Z selecionados.
   const totalSelected =
-    data.lancamento.length + data.pesquisa.length + data.noticias.length +
-    (data.tutorial?.length ?? 0) + (data.video?.length ?? 0);
+    data.lancamento.length + data.radar.length +
+    (data.use_melhor?.length ?? 0) + (data.video?.length ?? 0);
   const totalConsidered = computeTotalConsidered(cli.in, data);
 
   // #592 / #666: linha de cobertura — resolvida em 3 steps pela função pura
@@ -683,17 +682,16 @@ function main() {
 
   // #579: numeração contínua entre seções — editor referencia "linha N" sem
   // precisar contar offset por seção. Calcula offset acumulado conforme renderiza.
+  // #1629: Pesquisas + Notícias fundidos em Radar; Tutorial renomeado Use melhor.
   let cumOffset = 1;
   const lancSec = renderSection("Lançamentos", data.lancamento, highlightUrls, runnerUpUrls, cumOffset);
   cumOffset += data.lancamento.length;
-  const pesqSec = renderSection("Pesquisas", data.pesquisa, highlightUrls, runnerUpUrls, cumOffset);
-  cumOffset += data.pesquisa.length;
-  const notSec = renderSection("Notícias", data.noticias, highlightUrls, runnerUpUrls, cumOffset);
-  cumOffset += data.noticias.length;
-  const tutSec = data.tutorial && data.tutorial.length > 0
-    ? renderSection("Use melhor", data.tutorial, highlightUrls, runnerUpUrls, cumOffset)
+  const radarSec = renderSection("Radar", data.radar, highlightUrls, runnerUpUrls, cumOffset);
+  cumOffset += data.radar.length;
+  const useMelhorSec = data.use_melhor && data.use_melhor.length > 0
+    ? renderSection("Use melhor", data.use_melhor, highlightUrls, runnerUpUrls, cumOffset)
     : null;
-  if (tutSec) cumOffset += data.tutorial!.length;
+  if (useMelhorSec) cumOffset += data.use_melhor!.length;
   const vidSec = data.video && data.video.length > 0
     ? renderSection("Vídeos", data.video, highlightUrls, runnerUpUrls, cumOffset)
     : null;
@@ -701,10 +699,9 @@ function main() {
   const sections = [
     coverageLine + destaquesSection,
     lancSec,
-    pesqSec,
     eaiBlock,
-    notSec,
-    ...(tutSec ? [tutSec] : []),
+    radarSec,
+    ...(useMelhorSec ? [useMelhorSec] : []),
     ...(vidSec ? [vidSec] : []),
   ].join("\n");
 
@@ -733,9 +730,8 @@ function main() {
       );
       Object.assign(data, {
         lancamento: merged.lancamento,
-        pesquisa: merged.pesquisa,
-        noticias: merged.noticias,
-        tutorial: merged.tutorial,
+        radar: merged.radar,
+        use_melhor: merged.use_melhor,
         video: merged.video,
       });
       if (mergeWarnings.length > 0) {
@@ -797,9 +793,8 @@ function main() {
   const highlighted = highlightUrls.size;
   const unverified = [
     ...data.lancamento,
-    ...data.pesquisa,
-    ...data.noticias,
-    ...(data.tutorial ?? []),
+    ...data.radar,
+    ...(data.use_melhor ?? []),
     ...(data.video ?? []),
   ].filter((a) => a.date_unverified).length;
 

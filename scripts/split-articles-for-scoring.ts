@@ -4,7 +4,7 @@
  * Etapa 1 do scorer chunked-parallel. Achata os buckets categorizados em uma
  * lista única e divide em N chunks de ~`chunk-size` artigos, preservando o
  * bucket de cada artigo (`category`). Cada chunk é gravado no MESMO shape que o
- * scorer espera (`{ categorized: { lancamento, pesquisa, noticias, tutorial } }`)
+ * scorer espera (`{ categorized: { lancamento, radar, use_melhor, video } }`)
  * para que os agents `scorer-chunk` paralelos pontuem em wall-clock reduzido.
  *
  * Por que: o scorer Opus single-call gasta ~8min raciocinando sobre ~80-150
@@ -33,9 +33,26 @@ import { resolve, join } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
-// Ordem de bucket canônica — fixa para tornar a divisão determinística.
-export const BUCKET_ORDER = ["lancamento", "pesquisa", "noticias", "tutorial"] as const;
+// Ordem de bucket canônica (#1629) — fixa para tornar a divisão determinística.
+export const BUCKET_ORDER = ["lancamento", "radar", "use_melhor", "video"] as const;
 export type Bucket = (typeof BUCKET_ORDER)[number];
+
+/** Mapping Category → Bucket (#1629), duplicado de categorize.ts pra evitar import circular. */
+function categoryToBucket(c: string): Bucket {
+  switch (c) {
+    case "lancamento":
+      return "lancamento";
+    case "pesquisa":
+    case "noticias":
+      return "radar";
+    case "tutorial":
+      return "use_melhor";
+    case "video":
+      return "video";
+    default:
+      return "radar"; // fallback safe
+  }
+}
 
 export interface Article {
   url: string;
@@ -66,17 +83,14 @@ export function flattenCategorized(categorized: Categorized): Article[] {
   return flat;
 }
 
-/** Mapeia um artigo de volta pro bucket categorizado (fallback noticias). */
+/** Mapeia um artigo de volta pro bucket categorizado (#1629). */
 function bucketOf(a: Article): Bucket {
-  const c = a.category;
-  return (BUCKET_ORDER as readonly string[]).includes(c ?? "")
-    ? (c as Bucket)
-    : "noticias";
+  return categoryToBucket(a.category ?? "");
 }
 
 /** Reconstrói o shape `categorized` a partir de uma lista de artigos. */
 export function toCategorized(articles: Article[]): Categorized {
-  const out: Categorized = { lancamento: [], pesquisa: [], noticias: [], tutorial: [] };
+  const out: Categorized = { lancamento: [], radar: [], use_melhor: [], video: [] };
   for (const a of articles) out[bucketOf(a)].push(a);
   return out;
 }

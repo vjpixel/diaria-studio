@@ -28,7 +28,7 @@
  *
  * Output: JSON com:
  *   {
- *     "categorized": { lancamento, pesquisa, noticias, tutorial, video },
+ *     "categorized": { lancamento, radar, use_melhor, video },
  *     "stats": {
  *       "total_input": N,
  *       "date_corrected": M,
@@ -86,14 +86,13 @@ interface ArticleEntry {
 
 interface CategorizedShape {
   lancamento?: ArticleEntry[];
-  pesquisa?: ArticleEntry[];
-  noticias?: ArticleEntry[];
-  tutorial?: ArticleEntry[];
+  radar?: ArticleEntry[];
+  use_melhor?: ArticleEntry[];
   video?: ArticleEntry[];
   [k: string]: unknown;
 }
 
-const BUCKET_KEYS = ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const;
+const BUCKET_KEYS = ["lancamento", "radar", "use_melhor", "video"] as const;
 
 export interface ReviewStats {
   total_input: number;
@@ -297,10 +296,9 @@ async function main(): Promise<void> {
   // input mal-formado.
   const filterInput = {
     lancamento: categorized.lancamento ?? [],
-    pesquisa: categorized.pesquisa ?? [],
-    noticias: categorized.noticias ?? [],
-    tutorial: categorized.tutorial ?? [],
-    ...(categorized.video !== undefined ? { video: categorized.video } : {}),
+    radar: categorized.radar ?? [],
+    use_melhor: categorized.use_melhor ?? [],
+    video: categorized.video ?? [],
   } as Parameters<typeof filterDateWindow>[0];
   const filterResult = filterDateWindow(
     filterInput,

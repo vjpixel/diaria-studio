@@ -63,9 +63,8 @@ export interface ScoredOutput {
 
 export interface CategorizedBuckets {
   lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
-  tutorial?: Article[];
+  radar: Article[];
+  use_melhor?: Article[];
   video?: Article[];
   [key: string]: unknown;
 }
@@ -430,7 +429,7 @@ export function finalizeStage1(
   // #1067: highlights + runners_up bypassam o cap por domínio (issue explicit).
   const protectedUrls = new Set([...highlightUrls, ...runnerUpUrls]);
 
-  const bucketNames = ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const;
+  const bucketNames = ["lancamento", "radar", "use_melhor", "video"] as const;
   const enriched: Record<string, Article[]> = {};
 
   for (const bucket of bucketNames) {
@@ -498,7 +497,7 @@ export function finalizeStage1(
   }
 
   // Step 3.5 (#1067 — global): cap N URLs por domínio ATRAVÉS de todos os
-  // buckets. Antes (per-bucket) editor podia ter 3 exame.com em noticias + 3
+  // buckets. Antes (per-bucket) editor podia ter 3 exame.com em radar + 3
   // em lancamento = 6 totais do mesmo domínio. Agora cap é global: top N por
   // hostname considerando o universo inteiro de candidatos kept.
   //
@@ -619,7 +618,7 @@ function main(): void {
 
   const scoredOutput: ScoredOutput = JSON.parse(readFileSync(resolve(ROOT, scoredPath), "utf8"));
   const raw = JSON.parse(readFileSync(resolve(ROOT, categorizedPath), "utf8"));
-  // categorized pode ser `{ kept: { lancamento, pesquisa, noticias } }` ou flat
+  // categorized pode ser `{ kept: { lancamento, radar, use_melhor, video } }` ou flat
   const categorized: CategorizedBuckets = raw.kept ?? raw;
 
   // #1068 phase 2: carrega past URLs flat - past destaque URLs = past-secondary.
