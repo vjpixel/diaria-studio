@@ -51,6 +51,15 @@ interface Article {
    * existem.
    */
   published_at?: string | null;
+  /**
+   * #1631: data extraída da página por `verify-accessibility` (og:article:
+   * published_time, JSON-LD, etc — 7 estratégias do extract-date.ts). Costuma
+   * ser reconciliada em `date` pelo research-review-dates, mas quando um bucket
+   * pula essa etapa (caso histórico do `tutorial`/`use_melhor`, #1628) o campo
+   * chegava aqui ignorado → tutorial datado parecia sem data. effectiveDate
+   * agora honra esse campo como fallback não-verificado.
+   */
+  published_date?: string | null;
   date_unverified?: boolean;
   [key: string]: unknown;
 }
@@ -63,8 +72,15 @@ interface Article {
 export function effectiveDate(article: {
   date?: string | null;
   published_at?: string | null;
-}): { value: string | null; source: "date" | "published_at" | null } {
+  published_date?: string | null;
+}): { value: string | null; source: "date" | "published_date" | "published_at" | null } {
   if (article.date) return { value: article.date.slice(0, 10), source: "date" };
+  // #1631: published_date (extraído da página por verify-accessibility) é um
+  // fallback não-verificado — preferido sobre published_at (RSS pubDate) por
+  // vir de metadata estruturada (JSON-LD/og). Ambos marcam date_unverified.
+  if (article.published_date) {
+    return { value: article.published_date.slice(0, 10), source: "published_date" };
+  }
   if (article.published_at) {
     return { value: article.published_at.slice(0, 10), source: "published_at" };
   }
@@ -96,7 +112,7 @@ interface RemovedEntry {
    * `published_at` (fallback do RSS, #1322). Vai pro log pra editor saber
    * por que um artigo caiu.
    */
-  source_field: "date" | "published_at";
+  source_field: "date" | "published_date" | "published_at";
   detail: string;
 }
 
@@ -199,9 +215,10 @@ export function filterDateWindow(
           source_field: eff.source!,
           detail: `${eff.source} ${normDate} < cutoff ${bucketCutoff}${bucketDetailSuffix}`,
         });
-      } else if (eff.source === "published_at") {
-        // Caiu no fallback de published_at — date verificado nunca rolou,
-        // marcar como unverified pra editor reconsiderar no gate (#1322).
+      } else if (eff.source !== "date") {
+        // Caiu num fallback não-verificado (published_date extraído #1631, ou
+        // published_at do RSS #1322) — date verificado nunca rolou; marcar como
+        // unverified pra editor reconsiderar no gate.
         kept[bucket].push({ ...article, date_unverified: true });
       } else {
         kept[bucket].push(article);

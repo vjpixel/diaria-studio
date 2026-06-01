@@ -250,6 +250,81 @@ describe("effectiveDate fallback chain (#1322)", () => {
     const r = effectiveDate({ date: null, published_at: "2026-05-12T08:30:00Z" });
     assert.equal(r.value, "2026-05-12");
   });
+
+  // #1631: published_date (extraído por verify-accessibility) entra na cadeia.
+  it("honra published_date quando date e published_at faltam (#1631)", () => {
+    const r = effectiveDate({ date: null, published_at: null, published_date: "2026-05-14" });
+    assert.equal(r.value, "2026-05-14");
+    assert.equal(r.source, "published_date");
+  });
+
+  it("published_date é preferido sobre published_at (metadata estruturada)", () => {
+    const r = effectiveDate({ published_date: "2026-05-14", published_at: "2026-05-10" });
+    assert.equal(r.value, "2026-05-14");
+    assert.equal(r.source, "published_date");
+  });
+
+  it("date verificado ainda vence published_date", () => {
+    const r = effectiveDate({ date: "2026-05-09", published_date: "2026-05-14" });
+    assert.equal(r.source, "date");
+    assert.equal(r.value, "2026-05-09");
+  });
+});
+
+describe("use_melhor com published_date (#1631)", () => {
+  it("tutorial datado só via published_date é mantido (dentro da janela) com date_unverified", () => {
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://tut.dev/x",
+          title: "Tutorial datado via OG",
+          date: null,
+          published_at: null,
+          published_date: "2026-05-14",
+          category: "tutorial",
+        },
+      ],
+      video: [],
+    };
+    const { kept } = filterDateWindow(input, "2026-05-15", 3);
+    assert.equal(kept.use_melhor.length, 1);
+    assert.equal(kept.use_melhor[0].date_unverified, true);
+  });
+
+  it("tutorial datado via published_date FORA da janela é removido (não escapa)", () => {
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://tut.dev/old",
+          title: "Tutorial velho",
+          date: null,
+          published_date: "2026-01-02",
+          category: "tutorial",
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-05-15", 3);
+    assert.equal(kept.use_melhor.length, 0);
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].source_field, "published_date");
+  });
+
+  it("tutorial SEM nenhuma data → mantido com date_unverified (flag, não null silencioso)", () => {
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [{ url: "https://tut.dev/nodate", title: "Sem data", category: "tutorial" }],
+      video: [],
+    };
+    const { kept } = filterDateWindow(input, "2026-05-15", 3);
+    assert.equal(kept.use_melhor.length, 1);
+    assert.equal(kept.use_melhor[0].date_unverified, true);
+  });
 });
 
 describe("filterDateWindow — fallback published_at (#1322)", () => {
