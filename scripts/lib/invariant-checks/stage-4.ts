@@ -307,6 +307,28 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
               severity: "error",
               file: socialPath,
             });
+            continue;
+          }
+          // #1664: existir não basta — dispatch real exige um status de
+          // dispatch (scheduled/draft/published/failed...). O marcador de
+          // bypass pra paste manual é status="pending_manual"; um post sem
+          // status nenhum é stub vazio. NÃO usar url como sinal: o LinkedIn
+          // auto-dispatch (route worker_queue) grava url=null no write — a URL
+          // só existe depois que o Worker dispara o post agendado, então !url
+          // dava false-positive em TODA edição real (260525-260601).
+          const noneDispatched = platformPosts.every(
+            (p) => !p.status || p.status === "pending_manual",
+          );
+          if (noneDispatched) {
+            violations.push({
+              rule: `consent-binding-${platform}`,
+              message:
+                `consent.${platform}="auto" mas todos os posts[platform="${platform}"] ` +
+                `têm status="pending_manual" ou ausente — dispatch automático não aconteceu.`,
+              source_issue: "#1575",
+              severity: "error",
+              file: socialPath,
+            });
           }
         }
       } catch (e) {
