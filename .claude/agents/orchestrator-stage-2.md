@@ -69,15 +69,19 @@ Exit code handling:
 
 **Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. Verificar que `highlights.length === 3` (fallback condition). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
 
-`category_label` é derivado de `highlights[N-1].bucket` (= article category interno):
+`category_label` é a **Category editorial do destaque** — o tema que aparece no header `DESTAQUE N | {emoji} {CATEGORY}` (ex.: EDUCAÇÃO, MERCADO, REGULAÇÃO). Derive de `highlights[N-1].article.category` e **refine pelo tema do artigo** quando a category interna for genérica:
 - `lancamento` → "LANÇAMENTO"
 - `pesquisa` → "PESQUISA"
-- `noticias` → "MERCADO" (ou ajustar baseado no tema)
+- `noticias` → category temática do artigo (ex.: MERCADO, EDUCAÇÃO, REGULAÇÃO) — **não** o literal "NOTÍCIAS"
 - `tutorial` → "USE MELHOR"
 - `video` → "VÍDEO"
 
-(#1629: `bucket` no highlight carrega a Category individual do artigo; o
-mapping pra seção da newsletter — RADAR — acontece no render layer.)
+⚠️ **Não** derive de `highlights[N-1].bucket` (#1668): pós-#1629/#1611 o `bucket`
+carrega o bucket de SEÇÃO da newsletter (`lancamento`/`radar`/`use_melhor`/`video`,
+emitido por `merge-scored-chunks` → `scorer-select`), **não** a category do
+artigo — um highlight com `bucket="radar"`/`"use_melhor"` (o caso mais comum)
+não bate nenhum dos cases acima e cairia no fallback. `article.category` é a
+fonte correta. (O mapping bucket→seção da newsletter acontece no render layer.)
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
