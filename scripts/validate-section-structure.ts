@@ -36,9 +36,10 @@ export interface StructureToken {
 /**
  * Extrai a "structural fingerprint" — tokens que importam pra ordem:
  *   - separators `---` em linha própria
- *   - headers reconhecidos: `DESTAQUE N | ...`, `É IA?`, `LANÇAMENTOS`,
- *     `PESQUISAS`, `OUTRAS NOTÍCIAS`, `🎁 SORTEIO`, `🙋🏼‍♀️ PARA ENCERRAR`,
- *     `ERRO INTENCIONAL`, e variantes com `**` ou frontmatter prefix.
+ *   - headers reconhecidos: `DESTAQUE N | ...`, `É IA?`, `USE MELHOR`,
+ *     `LANÇAMENTOS`, `RADAR`, `VÍDEOS`, `PESQUISAS`, `OUTRAS NOTÍCIAS`,
+ *     `🎁 SORTEIO`, `🙋🏼‍♀️ PARA ENCERRAR`, `ERRO INTENCIONAL`, e variantes
+ *     com `**` ou frontmatter prefix.
  *
  * Headers normalizados pra string canônica (lowercase, sem **, sem emojis).
  */
@@ -52,6 +53,12 @@ const HEADER_PATTERNS: Array<{ re: RegExp; canonical: string }> = [
   { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}LAN[ÇC]AMENTOS\\*{0,2}\\s*$`, "iu"), canonical: "lancamentos" },
   // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS.
   { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}RADAR\\*{0,2}\\s*$`, "iu"), canonical: "radar" },
+  // #1660: USE MELHOR (🛠️, #1568 — antes de LANÇAMENTOS) e VÍDEOS (📺, após
+  // RADAR) são seções top-level que faltavam no fingerprint. Sem elas, um
+  // move/remoção dessas seções pelo title-picker passava sem detecção (mesma
+  // classe da falha 260517). VÍDEO/VÍDEOS cobre singular e plural.
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}USE\\s+MELHOR\\*{0,2}\\s*$`, "iu"), canonical: "use-melhor" },
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}V[ÍI]DEOS?\\*{0,2}\\s*$`, "iu"), canonical: "videos" },
   // Legacy patterns mantidos pra validar fingerprint de edições antigas:
   { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}PESQUISAS\\*{0,2}\\s*$`, "iu"), canonical: "pesquisas" },
   { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}OUTRAS\\s+NOT[ÍI]CIAS\\*{0,2}\\s*$`, "iu"), canonical: "outras-noticias" },
