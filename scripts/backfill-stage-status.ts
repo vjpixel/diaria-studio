@@ -30,6 +30,7 @@ import { dirname } from "node:path";
 import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
+import { isValidEditionDir } from "./dedup.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -88,15 +89,20 @@ function applyFixes(editionDir: string, editionId: string, fixes: Fix[]): number
   return applied;
 }
 
-function main(): void {
-  const args = parseArgs(process.argv.slice(2));
-  const editionsDir = resolve(ROOT, "data", "editions");
-  if (!existsSync(editionsDir)) {
-    console.error(`Edições dir não encontrado: ${editionsDir}`);
-    process.exit(1);
-  }
-  const entries = readdirSync(editionsDir).filter((name) => {
-    if (args.editionFilter && name !== args.editionFilter) return false;
+/**
+ * Lista os dirs de edição válidos em `editionsDir` (opcionalmente filtrados por
+ * `editionFilter`).
+ *
+ * #1661: exige nome AAMMDD válido via isValidEditionDir — exclui dirs de backup
+ * (ex.: `260527-backup-20260526203126`, `260422-local-backup`) que, sem o guard,
+ * teriam seu `_internal/stage-status.json` SOBRESCRITO por applyFixes quando
+ * rodado sem --dry-run (escrita destrutiva em edições arquivadas). Mesmo guard
+ * que dedup.ts adotou no #1567/#1627.
+ */
+export function listEditionDirs(editionsDir: string, editionFilter?: string): string[] {
+  return readdirSync(editionsDir).filter((name) => {
+    if (editionFilter && name !== editionFilter) return false;
+    if (!isValidEditionDir(name)) return false;
     const p = resolve(editionsDir, name);
     try {
       return statSync(p).isDirectory();
@@ -104,6 +110,16 @@ function main(): void {
       return false;
     }
   });
+}
+
+function main(): void {
+  const args = parseArgs(process.argv.slice(2));
+  const editionsDir = resolve(ROOT, "data", "editions");
+  if (!existsSync(editionsDir)) {
+    console.error(`Edições dir não encontrado: ${editionsDir}`);
+    process.exit(1);
+  }
+  const entries = listEditionDirs(editionsDir, args.editionFilter);
   const allFixes: Fix[] = [];
   for (const editionId of entries) {
     const editionDir = resolve(editionsDir, editionId);
