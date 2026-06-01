@@ -35,6 +35,24 @@ import { fileURLToPath } from "node:url";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { isHardFailure } from "./lib/source-runs.ts";
+import { parseSourcesMd } from "./list-active-sources.ts";
+
+/**
+ * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
+ * seed/sources.csv). Usado pra suprimir sinais de fontes já removidas (#1637).
+ * Retorna `undefined` se o arquivo não existir — nesse caso nenhum filtro é
+ * aplicado (back-compat: sinaliza todas as fontes do health).
+ */
+function loadActiveSourceNames(rootDir: string): Set<string> | undefined {
+  const sourcesMdPath = resolve(rootDir, "context/sources.md");
+  if (!existsSync(sourcesMdPath)) return undefined;
+  try {
+    const md = readFileSync(sourcesMdPath, "utf8");
+    return new Set(parseSourcesMd(md).map((s) => s.name));
+  } catch {
+    return undefined;
+  }
+}
 
 export type Severity = "low" | "medium" | "high";
 
@@ -166,9 +184,23 @@ export function signalsFromSourceHealth(
   health: SourceHealthFile,
   minStreak = 3,
   dryThreshold = 6,
+  activeSources?: Set<string>,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
+    // #1637/#1638/#1639: não sinalizar fontes que já foram REMOVIDAS de
+    // seed/sources.csv — o histórico de falhas em source-health.json persiste
+    // e geraria issues "nunca produziu artigos" toda edição mesmo após a
+    // desativação. Quando `activeSources` é provido, só sinalizamos fontes
+    // ainda ativas. Queries de discovery (`discovery:*`) não vivem no CSV mas
+    // são ativas por definição — sempre mantidas.
+    if (
+      activeSources &&
+      !activeSources.has(source) &&
+      !source.startsWith("discovery:")
+    ) {
+      continue;
+    }
     const recent = entry.recent_outcomes ?? [];
     if (recent.length === 0) continue;
     const reversed = recent.slice().reverse();
@@ -747,7 +779,10 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       const health: SourceHealthFile = JSON.parse(
         readFileSync(healthPath, "utf8"),
       );
-      signals.push(...signalsFromSourceHealth(health, opts.minStreak ?? 3));
+      const activeSources = loadActiveSourceNames(rootDir);
+      signals.push(
+        ...signalsFromSourceHealth(health, opts.minStreak ?? 3, 6, activeSources),
+      );
     } catch {
       // ignore malformed health file
     }
