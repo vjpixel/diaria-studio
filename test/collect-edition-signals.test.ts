@@ -205,6 +205,54 @@ describe("signalsFromSourceHealth", () => {
     assert.equal(signals.length, 1);
     assert.equal(signals[0].kind, "source_streak");
   });
+
+  // #1637/#1638/#1639: filtro de fontes ativas — fontes removidas de
+  // sources.csv não devem mais gerar sinais (histórico em source-health
+  // persiste após a desativação).
+  describe("filtro activeSources (#1637)", () => {
+    const deadDry = {
+      sources: {
+        "AI Breakfast": {
+          successes: 0,
+          recent_outcomes: Array.from({ length: 8 }, () => ({ outcome: "empty" as const })),
+        },
+      },
+    };
+
+    it("fonte REMOVIDA (fora de activeSources) é suprimida", () => {
+      const signals = signalsFromSourceHealth(deadDry, 3, 6, new Set(["OpenAI", "Anthropic"]));
+      assert.equal(signals.length, 0);
+    });
+
+    it("fonte ATIVA (em activeSources) ainda sinaliza", () => {
+      const signals = signalsFromSourceHealth(deadDry, 3, 6, new Set(["AI Breakfast"]));
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].kind, "source_dry");
+    });
+
+    it("query de discovery (discovery:*) nunca é suprimida, mesmo fora de activeSources", () => {
+      const signals = signalsFromSourceHealth(
+        {
+          sources: {
+            "discovery:ai-safety": {
+              successes: 0,
+              recent_outcomes: Array.from({ length: 7 }, () => ({ outcome: "empty" as const })),
+            },
+          },
+        },
+        3,
+        6,
+        new Set(["OpenAI"]),
+      );
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].kind, "source_dry");
+    });
+
+    it("sem activeSources (undefined) → back-compat, sinaliza tudo", () => {
+      const signals = signalsFromSourceHealth(deadDry);
+      assert.equal(signals.length, 1);
+    });
+  });
 });
 
 describe("signalsFromPublished", () => {

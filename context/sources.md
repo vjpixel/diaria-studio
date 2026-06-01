@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 54 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 53 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -96,10 +96,6 @@
 - Site query: `site:anthropic.com/news`
 
 ## Secundária
-
-### Agent Pulse
-- URL: https://agentpulse.beehiiv.com/
-- Site query: `site:agentpulse.beehiiv.com`
 
 ### AlphaSignal
 - URL: https://alphasignal.ai/
