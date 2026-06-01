@@ -1,0 +1,12 @@
+# Config do lychee para o job opcional `external-links`.
+# Aceita 403/429 porque Wikipedia, Fast Company e similares bloqueiam UAs
+# de CI por padrão — isso não significa que o link está quebrado. Excluímos
+# também o badge do próprio workflow: ele só passa a existir depois do
+# primeiro run na branch default.
+
+max_concurrency = 4
+no_progress = true
+accept = [200, 203, 206, 403, 429]
+exclude = [
+    "https://github.com/vjpixel/humanizador/actions/workflows/test\\.yml/badge\\.svg",
+]
