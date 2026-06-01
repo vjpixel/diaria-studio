@@ -54,13 +54,20 @@ interface ApprovedJson {
   highlights?: ApprovedArticle[];
   runners_up?: ApprovedArticle[];
   lancamento?: ApprovedArticle[];
+  // #1691: buckets reais do 01-approved-capped.json são per-categoria
+  // (pesquisa/noticias/tutorial/video), não per-seção. `radar` é aceito pra
+  // forward-compat (e os fixtures de teste usam). Mapeados pra seção em
+  // buildUrlBucketMap (pesquisa/noticias → RADAR, tutorial → USE MELHOR).
+  radar?: ApprovedArticle[];
   pesquisa?: ApprovedArticle[];
   noticias?: ApprovedArticle[];
+  tutorial?: ApprovedArticle[];
+  video?: ApprovedArticle[];
   [key: string]: unknown;
 }
 
-// #1629: Bucket internal = section name na newsletter.
-type Bucket = "lancamento" | "radar";
+// #1629: Bucket internal = section name na newsletter. #1691: + use_melhor, video.
+type Bucket = "lancamento" | "radar" | "use_melhor" | "video";
 
 interface SectionMapping {
   header: RegExp;
@@ -72,18 +79,47 @@ interface SectionMapping {
 // pra backwards-compat com edições antigas + suporta o novo formato.
 // #1569 / #1629: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Aliases legacy
 // mantidos pra re-lint de edições antigas; novos lints emitem RADAR.
+//
+// #1691: prefixo de emoji opcional `(?:[^\sA-Za-zÁ-ú]+\s+)?` — sem isso os
+// headers REAIS (`**📡 RADAR**`, `**🛠️ USE MELHOR**`) não casavam e
+// extractUrlsBySection devolvia [] → o lint de URL×bucket era NO-OP em toda
+// edição de produção (sempre ok:true validando 0 URLs). + USE MELHOR (#1568) e
+// VÍDEOS (#1674) que faltavam. Espelha o SECTION_HEADER_RE do render (#1363).
+// #1691 review: prefixo restrito ao range Unicode de emoji (espelha
+// singularize-md-sections + stripEmojiPrefix). O pattern antigo
+// `[^\sA-Za-zÁ-ú]+` casava dígitos/pontuação ("123 RADAR", "*** RADAR") como
+// header válido. `️?` cobre o variation selector U+FE0F (ex: 🛠️).
+const EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?`;
+// `name` é um FRAGMENTO de regex (não escapado de propósito) — todos os callers
+// passam String.raw literais (ex: LAN[ÇC]AMENTOS?). flags "mu": m pro ^/$
+// multiline, u pros code points \u{...} do EMOJI_PREFIX.
+const sectionHeaderRe = (name: string) =>
+  new RegExp(String.raw`^(?:\*\*)?${EMOJI_PREFIX}(?:${name})(?:\*\*)?\s*$`, "mu");
 const SECTIONS: SectionMapping[] = [
-  { header: /^(?:\*\*)?LAN[ÇC]AMENTOS(?:\*\*)?\s*$/m, bucket: "lancamento", label: "LANÇAMENTOS" },
-  { header: /^(?:\*\*)?RADAR(?:\*\*)?\s*$/m, bucket: "radar", label: "RADAR" },
+  { header: sectionHeaderRe(String.raw`LAN[ÇC]AMENTOS?`), bucket: "lancamento", label: "LANÇAMENTOS" },
+  { header: sectionHeaderRe(String.raw`RADAR`), bucket: "radar", label: "RADAR" },
+  { header: sectionHeaderRe(String.raw`USE\s+MELHOR`), bucket: "use_melhor", label: "USE MELHOR" },
+  { header: sectionHeaderRe(String.raw`V[ÍI]DEOS?`), bucket: "video", label: "VÍDEOS" },
   // Legacy aliases — qualquer edição antiga ainda lint normalmente.
-  { header: /^(?:\*\*)?PESQUISAS(?:\*\*)?\s*$/m, bucket: "radar", label: "PESQUISAS" },
-  { header: /^(?:\*\*)?OUTRAS\s+NOT[ÍI]CIAS(?:\*\*)?\s*$/m, bucket: "radar", label: "OUTRAS NOTÍCIAS" },
+  { header: sectionHeaderRe(String.raw`PESQUISAS?`), bucket: "radar", label: "PESQUISAS" },
+  { header: sectionHeaderRe(String.raw`OUTRAS?\s+NOT[ÍI]CIAS?`), bucket: "radar", label: "OUTRAS NOTÍCIAS" },
 ];
 
 const SECTION_BREAK_RE = /^---\s*$/;
 // Match URL up to whitespace OR markdown delimiter (`)`, `]`, `>`)
 // para que [url](url) extraia 2 instâncias da mesma URL e o dedup capture.
 const URL_RE = /https?:\/\/[^\s\)\]>]+/g;
+
+// #1691 review: pro JOIN newsletter↔approved, ignora SÓ o fragmento (`#...`) —
+// é client-side, nunca identifica recurso diferente (RFC 3986 §3.5). Caso real
+// 260521: approved tinha `.../claude-code-rce-flaw/#amp` e a newsletter a versão
+// limpa → match exato falhava e a URL aprovada virava falso "missing". Não
+// normaliza trailing-slash/query/www (podem ser semânticos) — mantém o espírito
+// "URLs opacas" (#720), relaxando só o que é comprovadamente seguro.
+function normalizeUrlForMatch(url: string): string {
+  const hash = url.indexOf("#");
+  return hash === -1 ? url : url.slice(0, hash);
+}
 
 export interface LintError {
   section: string;
@@ -172,16 +208,38 @@ export function buildUrlBucketMap(
     { bucket: Bucket | "highlights"; title?: string }
   >();
 
-  // Highlights primeiro — sobrescreve buckets se artigo é destaque
+  // Highlights primeiro — sobrescreve buckets se artigo é destaque.
+  // #1691 review: highlights podem ter shape flat (h.url) OU nested
+  // (h.article.url) — #229. Sem ler o nested, um destaque que reaparece numa
+  // seção secundária era falsamente marcado "missing" (a regra #165 re-dispararia
+  // o writer à toa). Mesmo padrão do pickEntry em canonical-urls.ts.
   for (const h of approved.highlights ?? []) {
-    if (h.url) byUrl.set(h.url, { bucket: "highlights", title: h.title });
+    const url = h.url ?? h.article?.url;
+    if (url) byUrl.set(normalizeUrlForMatch(url), { bucket: "highlights", title: h.title ?? h.article?.title });
   }
 
-  // Buckets — só seta se URL ainda não está como highlight (#1629)
-  for (const bucket of ["lancamento", "radar"] as const) {
-    for (const a of (approved[bucket] as ApprovedArticle[] | undefined) ?? []) {
-      if (a.url && !byUrl.has(a.url)) {
-        byUrl.set(a.url, { bucket, title: a.title });
+  // #1691: o 01-approved-capped.json usa buckets per-CATEGORIA
+  // (pesquisa/noticias/tutorial/video), mas as SEÇÕES da newsletter são
+  // per-bucket (RADAR = pesquisa+noticias, USE MELHOR = tutorial). Mapeia
+  // categoria → seção (mesma lógica do bucketOf em merge-scored-chunks). O
+  // map antigo só lia ["lancamento","radar"] — e como approved não tem chave
+  // `radar`, NENHUMA URL de pesquisa/noticias/tutorial/video era mapeada (todas
+  // viravam "missing" se o lint chegasse a rodar). `radar` mantido pra
+  // forward-compat + fixtures de teste.
+  const APPROVED_BUCKET_TO_SECTION: Record<string, Bucket> = {
+    lancamento: "lancamento",
+    radar: "radar",
+    pesquisa: "radar",
+    noticias: "radar",
+    tutorial: "use_melhor",
+    video: "video",
+  };
+  // Só seta se URL ainda não está como highlight (#1629)
+  for (const [approvedKey, sectionBucket] of Object.entries(APPROVED_BUCKET_TO_SECTION)) {
+    for (const a of (approved[approvedKey] as ApprovedArticle[] | undefined) ?? []) {
+      const url = a.url ? normalizeUrlForMatch(a.url) : undefined;
+      if (url && !byUrl.has(url)) {
+        byUrl.set(url, { bucket: sectionBucket, title: a.title });
       }
     }
   }
@@ -270,7 +328,7 @@ export function lintNewsletter(
     for (const { url, line } of urls) {
       if (seen.has(url)) continue; // dedup markdown link [url](url)
       seen.add(url);
-      const found = byUrl.get(url);
+      const found = byUrl.get(normalizeUrlForMatch(url));
       if (!found) {
         errors.push({
           section: sec.label,

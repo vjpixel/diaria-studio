@@ -2,9 +2,9 @@
  * singularize-md-sections.ts (#1324)
  *
  * Lê um MD da newsletter (pós-writer, pós-normalize), conta items em cada
- * seção secundária (LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS), e re-escreve
- * o header com o nome correto (singular quando N=1) + emoji prefix
- * canônico (#1328).
+ * seção secundária (LANÇAMENTOS, RADAR, USE MELHOR, VÍDEOS + aliases legacy
+ * PESQUISAS/OUTRAS NOTÍCIAS), e re-escreve o header com o nome correto
+ * (singular quando N=1) + emoji prefix canônico (#1328).
  *
  * Idempotente: rodar 2x não muda nada (idempotência preservada via
  * `displaySectionName` que normaliza o prefix).
@@ -41,10 +41,14 @@ interface SingularizeResult {
  *   - `**LANÇAMENTO**` (já singular)
  *   - `**🚀 LANÇAMENTO**`
  *
+ * #1691: inclui RADAR (#1569), USE MELHOR (#1568) e VÍDEOS (#1674) — antes
+ * faltavam, então um `**📺 VÍDEOS**` com 1 item nunca singularizava pra VÍDEO.
+ * `V[ÍI]DEOS?` espelha o render-newsletter-html (compat sem acento).
+ *
  * Capture group 1 = full header text (entre os `**`), inclui emoji se
  * presente.
  */
-const SECTION_HEADER_REGEX = /^\*\*((?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?(?:LANÇAMENTOS?|PESQUISAS?|OUTRAS? NOTÍCIAS?|OUTRA NOTÍCIA))\*\*$/u;
+const SECTION_HEADER_REGEX = /^\*\*((?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?(?:LANÇAMENTOS?|RADAR|USE MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS? NOTÍCIAS?|OUTRA NOTÍCIA))\*\*$/u;
 
 /**
  * Conta itens da seção lendo linhas até o próximo header de seção (---,
@@ -55,9 +59,13 @@ function countItemsAfter(lines: string[], startIdx: number): number {
   let count = 0;
   for (let i = startIdx; i < lines.length; i++) {
     const line = lines[i];
-    // Stop em separator ou próximo header em uppercase
+    // Stop em separator ou próximo header em uppercase.
+    // #1691: o char-class antigo `[A-Z🚀🔬📰 ]` (a) não tinha 📡/🛠️/📺 (boundary
+    // de RADAR/USE MELHOR/VÍDEOS), e (b) nem casava nomes acentuados (Ç em
+    // LANÇAMENTOS, Í em VÍDEOS) — usar emoji prefix opcional (range Unicode) +
+    // uppercase acentuado cobre todos sem listar emoji a emoji.
     if (line.trim() === "---") break;
-    if (/^\*\*[A-Z🚀🔬📰 ]+\*\*$/u.test(line.trim()) && i > startIdx) break;
+    if (/^\*\*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?[A-ZÀ-Ú][A-ZÀ-Ú ]*\*\*$/u.test(line.trim()) && i > startIdx) break;
     // Item começa com `**[`
     if (/^\*\*\[/.test(line.trim())) count++;
   }
