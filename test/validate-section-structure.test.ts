@@ -101,6 +101,31 @@ describe("extractStructure (#1205)", () => {
     const tokens = extractStructure(md);
     assert.ok(tokens.length > 5);
   });
+
+  it("#1660: fingerprint detecta USE MELHOR (🛠️) e VÍDEOS (📺)", () => {
+    const md = [
+      "**DESTAQUE 1 | BRASIL**",
+      "x",
+      "",
+      "---",
+      "",
+      "**🛠️ USE MELHOR**",
+      "**[Tut](https://t.com)**",
+      "",
+      "---",
+      "",
+      "**📡 RADAR**",
+      "**[R](https://r.com)**",
+      "",
+      "---",
+      "",
+      "**📺 VÍDEOS**",
+      "**[V](https://v.com)**",
+    ].join("\n");
+    const labels = extractStructure(md).map((t) => t.label);
+    assert.ok(labels.includes("use-melhor"), `use-melhor faltando: ${labels.join(", ")}`);
+    assert.ok(labels.includes("videos"), `videos faltando: ${labels.join(", ")}`);
+  });
 });
 
 describe("diffStructure (#1205)", () => {
@@ -190,5 +215,22 @@ describe("diffStructure (#1205)", () => {
       tokens.some((t) => t.label === "lancamentos"),
       `lancamentos deveria estar no fingerprint, got: ${tokens.map((t) => t.label).join(", ")}`,
     );
+  });
+
+  it("#1660: detecta USE MELHOR removido pelo title-picker", () => {
+    const before = [
+      "**DESTAQUE 1 | BRASIL**", "x", "", "---", "",
+      "**🛠️ USE MELHOR**", "**[Tut](https://t.com)**", "", "---", "",
+      "**📡 RADAR**", "**[R](https://r.com)**",
+    ].join("\n");
+    // title-picker removeu a seção USE MELHOR inteira
+    const after = [
+      "**DESTAQUE 1 | BRASIL**", "x", "", "---", "",
+      "**📡 RADAR**", "**[R](https://r.com)**",
+    ].join("\n");
+    const r = diffStructure(extractStructure(before), extractStructure(after));
+    assert.equal(r.ok, false, "remoção de USE MELHOR deveria ser detectada");
+    const details = r.changes.map((c) => c.detail).join(" | ");
+    assert.match(details, /use-melhor/);
   });
 });
