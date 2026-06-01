@@ -52,7 +52,8 @@ describe("sources RSS fixes (#1266)", () => {
     "Microsoft",          // feed 200 mas 0 items (stale)
     "Mistral AI News",    // sem feed oficial conhecido
     "Anthropic",          // sem feed oficial conhecido
-    "Agent Pulse",        // feed alternativo retornava 0 items
+    // "Agent Pulse" removida em #1637-39: roundup newsletter no aggregator-blocklist
+    // (agentpulse.beehiiv.com), conteúdo sempre filtrado → desativada de sources.csv.
   ];
 
   for (const name of SOURCES_WITHOUT_RSS) {
@@ -62,6 +63,14 @@ describe("sources RSS fixes (#1266)", () => {
       assert.equal(s!.rss, undefined, `${name} não deve ter RSS — era ${s!.rss ?? '<none>'}`);
     });
   }
+
+  it("Agent Pulse removida — aggregator blocklisted (#1637-39)", () => {
+    assert.equal(
+      byName.get("Agent Pulse"),
+      undefined,
+      "Agent Pulse não deve mais existir em sources.md (roundup newsletter no aggregator-blocklist)",
+    );
+  });
 
   it("DeepMind mantida com RSS oficial (baixa cadência mas válido)", () => {
     const s = byName.get("DeepMind");
