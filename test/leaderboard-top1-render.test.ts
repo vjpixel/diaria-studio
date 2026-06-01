@@ -29,7 +29,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
     assert.equal(r, "");
   });
 
-  it("single leader (rank 1 só): apenas o nome", () => {
+  it("single leader (rank 1 só): posição ordinal + nome", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
@@ -37,11 +37,11 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, />🏆 <strong>Liderança de Maio:<\/strong> Alice<\/p>/);
+    assert.match(r, />🏆 <strong>Vencedores de Maio<\/strong>: 1º Alice<\/p>/);
     assert.doesNotMatch(r, /100%/);
   });
 
-  it("2 leitores no podium: 'X e Y'", () => {
+  it("2 leitores no podium: '1º X, 2º Y'", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -52,10 +52,10 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Alice e Bob/);
+    assert.match(r, /1º Alice, 2º Bob/);
   });
 
-  it("3 leitores no podium (1+1+1): 'X, Y e Z' na ordem", () => {
+  it("3 leitores no podium (1,2,3): '1º X, 2º Y, 3º Z' na ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -67,10 +67,10 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Alice, Bob e Carol/);
+    assert.match(r, /1º Alice, 2º Bob, 3º Carol/);
   });
 
-  it("3 empatados em rank 1: lista todos os 3 na mesma ordem", () => {
+  it("3 empatados em rank 1: cada um marcado 1º na mesma ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -82,10 +82,10 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Davyd, Luisao P e Vanessa/);
+    assert.match(r, /1º Davyd, 1º Luisao P, 1º Vanessa/);
   });
 
-  it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): lista todos em ordem", () => {
+  it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): ordinais em ordem", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [
@@ -99,7 +99,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Alice, Bob, Carol, Dave e Eve/);
+    assert.match(r, /1º Alice, 1º Bob, 2º Carol, 3º Dave, 3º Eve/);
   });
 
   it("período ausente: omite ' de {mês}'", () => {
@@ -109,8 +109,8 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Liderança:/);
-    assert.doesNotMatch(r, /Liderança de/);
+    assert.match(r, /Vencedores<\/strong>:/);
+    assert.doesNotMatch(r, /Vencedores de/);
   });
 
   it("HTML escape em nickname com caracteres especiais", () => {

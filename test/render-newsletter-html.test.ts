@@ -662,14 +662,14 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
         ...fixtureComEia.eia,
         leaderboardPeriod: "Maio",
         leaderboardPodium: [
-          { nickname: "Davyd Wilkerson", correct_pct: 100 },
-          { nickname: "Luisao P", correct_pct: 100 },
+          { nickname: "Davyd Wilkerson", rank: 1 },
+          { nickname: "Luisao P", rank: 2 },
         ],
       },
     };
     const html = renderHTML(fixtureWithLeaderboard);
-    // Linha "🏆 Liderança de Maio: Davyd Wilkerson e Luisao P" não pode ter italic.
-    const leaderboardMatch = html.match(/<p style="([^"]+)">🏆 <strong>Liderança/);
+    // Linha "🏆 Vencedores de Maio: 1º Davyd Wilkerson, 2º Luisao P" não pode ter italic.
+    const leaderboardMatch = html.match(/<p style="([^"]+)">🏆 <strong>Vencedores/);
     assert.ok(leaderboardMatch, "leaderboard <p> deve existir");
     assert.ok(
       !/font-style:italic/.test(leaderboardMatch![1]),
