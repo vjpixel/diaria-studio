@@ -48,6 +48,20 @@
     ]
   },
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-create-review.mjs\"",
+            "shell": "bash",
+            "if": "Bash(gh pr create*)",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
