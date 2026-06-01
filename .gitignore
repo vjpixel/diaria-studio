@@ -15,3 +15,5 @@ data/
 .claude/scheduled_tasks.lock
 .DS_Store
 .tmp/
+# Cloudflare Wrangler local build/cache state (root + workers/*/.wrangler)
+.wrangler/
