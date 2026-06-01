@@ -120,10 +120,25 @@ export function buildCoverUploadJs(imageUrl: string): string {
  * Caller dispatchou o JS e recebeu `{ thumbnailSrc?, steps?, error? }`.
  */
 export function classifyUploadResult(
-  result: { thumbnailSrc?: string | null; steps?: string[]; error?: string },
+  result:
+    | { thumbnailSrc?: string | null; steps?: string[]; error?: string }
+    | null
+    | undefined,
 ):
   | { ok: true; thumbnailUrl: string }
   | { ok: false; reason: string; lastStep?: string } {
+  // #1640: o `javascript_tool` do claude-in-chrome às vezes retorna vazio/null
+  // (sintoma de disconnect intermitente — "empty returns after cover upload" na
+  // 260601). Sem este guard, `result.error` lançaria TypeError e derrubaria o
+  // stage em vez de o retry loop (§4b) tratar como falha. Tratamos como falha
+  // retryable; se persistir, não bloqueia (cover é cosmético).
+  if (!result || typeof result !== "object") {
+    return {
+      ok: false,
+      reason:
+        "resultado vazio/null do MCP — provável disconnect do claude-in-chrome (#1640); retry",
+    };
+  }
   if (result.error) {
     return {
       ok: false,
