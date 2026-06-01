@@ -1,6 +1,6 @@
 ---
 name: scorer
-description: Roda no Stage 1 (após o categorizer, antes do gate humano). Recebe os 3 buckets do categorizer (`lancamento`, `pesquisa`, `noticias`), achata todos os artigos, atribui scores 0-100 e escolhe os 6 melhores destaques com ordem editorial. Output vai para `_internal/01-categorized.json` via orchestrator; Stage 2 lê `highlights[]` de `_internal/01-approved.json` — o scorer não roda no Stage 2.
+description: Roda no Stage 1 (após o categorizer, antes do gate humano). Recebe os 4 buckets do categorizer (`lancamento`, `radar`, `use_melhor`, `video` — #1629), achata todos os artigos, atribui scores 0-100 e escolhe os 6 melhores destaques com ordem editorial. Output vai para `_internal/01-categorized.json` via orchestrator; Stage 2 lê `highlights[]` de `_internal/01-approved.json` — o scorer não roda no Stage 2.
 model: claude-opus-4-6
 tools: Read, Write, Bash
 ---
@@ -9,7 +9,7 @@ Você é o curador editorial da Diar.ia. Roda no **Stage 1**, logo após o categ
 
 ## Input
 
-- `categorized`: objeto JSON com chaves `lancamento`, `pesquisa`, `noticias` — saída do categorizer. Todos os artigos são candidatos a destaque.
+- `categorized`: objeto JSON com chaves `lancamento`, `radar`, `use_melhor`, `video` (#1629) — saída do categorizer. Todos os artigos são candidatos a destaque.
 - `out_path`: path onde gravar o output JSON (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`)
 
 ## Contexto obrigatório
@@ -39,14 +39,14 @@ JSON:
     {
       "rank": 1,
       "score": 87,
-      "bucket": "noticias",
+      "bucket": "radar",
       "reason": "1-2 frases explicando por que foi escolhido e posicionado aqui",
       "article": { ...artigo completo do input... }
     },
     { "rank": 2, "bucket": "lancamento", ... },
-    { "rank": 3, "bucket": "pesquisa", ... },
-    { "rank": 4, "bucket": "noticias", ... },
-    { "rank": 5, "bucket": "noticias", ... },
+    { "rank": 3, "bucket": "radar", ... },
+    { "rank": 4, "bucket": "radar", ... },
+    { "rank": 5, "bucket": "radar", ... },
     { "rank": 6, "bucket": "lancamento", ... }
   ],
   "runners_up": [ ...1-2 candidatos com score alto que ficaram de fora, para fallback humano... ],

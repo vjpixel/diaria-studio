@@ -1,19 +1,19 @@
 /**
- * apply-stage2-caps.ts (#358, #907, #1240)
+ * apply-stage2-caps.ts (#358, #907, #1240, #1629)
  *
  * Helper puro pra aplicar os caps editoriais de Stage 2 no `01-approved.json`
- * antes de passar pro writer agent. Caps definidos em #358:
+ * antes de passar pro writer agent. Caps atualizados pra refletir buckets
+ * pós-#1629 (radar substituiu pesquisa + noticias):
  *
- *   | Bucket          | Cap                                                       |
- *   |-----------------|-----------------------------------------------------------|
- *   | Destaques       | sem corte (sempre 3 após gate Stage 1)                    |
- *   | Lançamentos     | ≤ 5                                                       |
- *   | Pesquisas       | ≤ 3                                                       |
- *   | Outras Notícias | max(2, 12 − destaques − lançamentos_final − pesquisas)    |
+ *   | Bucket          | Cap                                              |
+ *   |-----------------|--------------------------------------------------|
+ *   | Destaques       | sem corte (sempre 3 após gate Stage 1)           |
+ *   | Lançamentos     | ≤ 5                                              |
+ *   | Radar           | max(5, 12 − destaques − lançamentos_final)       |
  *
- * Composição alvo: 12 artigos editoriais por edição (3 destaques + 5
- * lançamentos + 3 pesquisas + 4 outras = 15 worst case; mais comum
- * 3+2+3+4 = 12 quando nem todos os buckets têm cap cheio).
+ * Antes (#358 original): lancamento ≤5 + pesquisa ≤3 + outras notícias
+ * max(2, 12-d-l-p). Após #1629 a soma efetiva é mantida: lancamento ≤5 +
+ * radar ≤ 5 = ~10 + 3 destaques = 13 worst case, batendo o alvo de ~12.
  *
  * O orchestrator-stage-2.md documentava os caps como spec, mas nem
  * orchestrator nem writer tinham enforcement. Editor (Pixel) detectou em
@@ -93,50 +93,51 @@ export interface ApprovedJson {
   highlights?: ScoredHighlight[];
   runners_up?: ScoredRunnerUp[];
   lancamento?: StageArticle[];
-  pesquisa?: StageArticle[];
-  noticias?: StageArticle[];
-  tutorial?: StageArticle[];
+  // #1629: buckets renomeados (pesquisa+noticias→radar, tutorial→use_melhor)
+  radar?: StageArticle[];
+  use_melhor?: StageArticle[];
   video?: StageArticle[];
   coverage?: unknown;
   [key: string]: unknown;
 }
 
 /**
- * Caps fixos definidos em #358. Outras notícias é função.
+ * Caps fixos definidos em #358 / #1629. Radar é função.
  */
 export const STAGE_2_CAP_LANCAMENTOS = 5;
-export const STAGE_2_CAP_PESQUISAS = 3;
 export const STAGE_2_TARGET_TOTAL = 12;
-export const STAGE_2_MIN_OUTRAS = 2;
+export const STAGE_2_MIN_RADAR = 5;
 
 /**
- * Cap pra Outras Notícias dado contagem dos outros buckets já capados.
+ * Cap pra Radar dado contagem dos outros buckets já capados (#1629).
  *
- *   max(2, 12 - destaques - lançamentos - pesquisas)
+ *   max(5, 12 - destaques - lançamentos)
+ *
+ * Antes da fusão (#1629), Pesquisas tinha cap 3 e Outras Notícias tinha
+ * max(2, 12-d-l-p). Soma equivalente após fusão dá 5 mínimo.
  *
  * Exemplos:
- *   - dest=3, lanç=5, pesq=3 → max(2, 1) = 2
- *   - dest=3, lanç=2, pesq=3 → max(2, 4) = 4
- *   - dest=3, lanç=0, pesq=0 → max(2, 9) = 9
+ *   - dest=3, lanç=5 → max(5, 4) = 5
+ *   - dest=3, lanç=2 → max(5, 7) = 7
+ *   - dest=3, lanç=0 → max(5, 9) = 9
  */
-export function capOutrasNoticias(
+export function capRadar(
   destaques: number,
   lancamentos: number,
-  pesquisas: number,
 ): number {
   return Math.max(
-    STAGE_2_MIN_OUTRAS,
-    STAGE_2_TARGET_TOTAL - destaques - lancamentos - pesquisas,
+    STAGE_2_MIN_RADAR,
+    STAGE_2_TARGET_TOTAL - destaques - lancamentos,
   );
 }
 
 export interface CapReport {
-  before: { lancamento: number; pesquisa: number; noticias: number };
-  after: { lancamento: number; pesquisa: number; noticias: number };
-  caps: { lancamento: number; pesquisa: number; noticias: number };
-  truncated: { lancamento: number; pesquisa: number; noticias: number };
+  before: { lancamento: number; radar: number };
+  after: { lancamento: number; radar: number };
+  caps: { lancamento: number; radar: number };
+  truncated: { lancamento: number; radar: number };
   /** #1240: artigos removidos de cada bucket por já estarem em highlights[]. */
-  removed_overlap: { lancamento: number; pesquisa: number; noticias: number };
+  removed_overlap: { lancamento: number; radar: number };
 }
 
 /**
@@ -176,25 +177,16 @@ export function applyStage2Caps(
 ): { approved: ApprovedJson; report: CapReport } {
   const dest = approved.highlights?.length ?? 0;
   const lOriginal = approved.lancamento?.length ?? 0;
-  const pOriginal = approved.pesquisa?.length ?? 0;
-  const nOriginal = approved.noticias?.length ?? 0;
+  const rOriginal = approved.radar?.length ?? 0;
 
   // #1240: build set de URLs já em highlights (canonicalizadas) pra
   // remover overlap dos buckets ANTES de truncar.
-  //
-  // #1445: tipo ScoredHighlight cobre ambos shapes (nested `article.url` do
-  // scorer e flat `url` legacy/tests). Helper `highlightUrl()` substitui
-  // o cast `as { url?, article? }` que existia pré-#1445.
   const highlightUrlsCanon = new Set<string>();
   for (const h of approved.highlights ?? []) {
     const url = highlightUrl(h);
     if (url) highlightUrlsCanon.add(canonicalize(url));
   }
 
-  // #1445 defense-in-depth: highlights non-empty mas zero URLs extraídas é
-  // sinal de schema mudou — script silenciosamente faria dedup no-op, mascarando
-  // o bug. Warning explícito facilita debug futuro (caso original #1440 ficou
-  // silencioso por 1+ edições antes do editor notar).
   if ((approved.highlights?.length ?? 0) > 0 && highlightUrlsCanon.size === 0) {
     console.warn(
       "[apply-stage2-caps] WARN: highlights presentes mas nenhuma URL extraída — " +
@@ -202,23 +194,17 @@ export function applyStage2Caps(
     );
   }
   const lDeduped = dedupAgainstHighlights(approved.lancamento, highlightUrlsCanon);
-  const pDeduped = dedupAgainstHighlights(approved.pesquisa, highlightUrlsCanon);
-  const nDeduped = dedupAgainstHighlights(approved.noticias, highlightUrlsCanon);
+  const rDeduped = dedupAgainstHighlights(approved.radar, highlightUrlsCanon);
 
   const lCap = STAGE_2_CAP_LANCAMENTOS;
-  const pCap = STAGE_2_CAP_PESQUISAS;
   const lFinal = Math.min(lDeduped.kept.length, lCap);
-  const pFinal = Math.min(pDeduped.kept.length, pCap);
-  // #1240: com dedup contra highlights aplicado antes do cap, não precisa mais
-  // do `+ destFromNoticias` (#1071) — não há duplicatas pro writer dropar.
-  const nCap = capOutrasNoticias(dest, lFinal, pFinal);
-  const nFinal = Math.min(nDeduped.kept.length, nCap);
+  const rCap = capRadar(dest, lFinal);
+  const rFinal = Math.min(rDeduped.kept.length, rCap);
 
   const out: ApprovedJson = {
     ...approved,
     lancamento: lDeduped.kept.slice(0, lFinal),
-    pesquisa: pDeduped.kept.slice(0, pFinal),
-    noticias: nDeduped.kept.slice(0, nFinal),
+    radar: rDeduped.kept.slice(0, rFinal),
   };
 
   return {
@@ -226,24 +212,20 @@ export function applyStage2Caps(
     report: {
       before: {
         lancamento: lOriginal,
-        pesquisa: pOriginal,
-        noticias: nOriginal,
+        radar: rOriginal,
       },
       after: {
         lancamento: lFinal,
-        pesquisa: pFinal,
-        noticias: nFinal,
+        radar: rFinal,
       },
-      caps: { lancamento: lCap, pesquisa: pCap, noticias: nCap },
+      caps: { lancamento: lCap, radar: rCap },
       truncated: {
         lancamento: lDeduped.kept.length - lFinal,
-        pesquisa: pDeduped.kept.length - pFinal,
-        noticias: nDeduped.kept.length - nFinal,
+        radar: rDeduped.kept.length - rFinal,
       },
       removed_overlap: {
         lancamento: lDeduped.removed,
-        pesquisa: pDeduped.removed,
-        noticias: nDeduped.removed,
+        radar: rDeduped.removed,
       },
     },
   };
@@ -255,25 +237,19 @@ export function applyStage2Caps(
  */
 export function checkStage2Caps(
   approved: ApprovedJson,
-): { ok: boolean; violations: string[]; expectedCaps: { lancamento: number; pesquisa: number; noticias: number } } {
+): { ok: boolean; violations: string[]; expectedCaps: { lancamento: number; radar: number } } {
   const dest = approved.highlights?.length ?? 0;
   const lCap = STAGE_2_CAP_LANCAMENTOS;
-  const pCap = STAGE_2_CAP_PESQUISAS;
   const lCount = approved.lancamento?.length ?? 0;
-  const pCount = approved.pesquisa?.length ?? 0;
-  // Outras: cap usa contagens REAIS (capadas) dos outros buckets.
-  // #1240: com dedup contra highlights aplicado em applyStage2Caps, cap não
-  // precisa mais inflar pra compensar (#1071) — writer nunca vê duplicatas.
-  const nCap = capOutrasNoticias(dest, Math.min(lCount, lCap), Math.min(pCount, pCap));
-  const nCount = approved.noticias?.length ?? 0;
+  const rCap = capRadar(dest, Math.min(lCount, lCap));
+  const rCount = approved.radar?.length ?? 0;
 
   const violations: string[] = [];
   if (lCount > lCap) violations.push(`LANÇAMENTOS: ${lCount} > cap ${lCap}`);
-  if (pCount > pCap) violations.push(`PESQUISAS: ${pCount} > cap ${pCap}`);
-  if (nCount > nCap) violations.push(`OUTRAS NOTÍCIAS: ${nCount} > cap ${nCap}`);
+  if (rCount > rCap) violations.push(`RADAR: ${rCount} > cap ${rCap}`);
   return {
     ok: violations.length === 0,
     violations,
-    expectedCaps: { lancamento: lCap, pesquisa: pCap, noticias: nCap },
+    expectedCaps: { lancamento: lCap, radar: rCap },
   };
 }

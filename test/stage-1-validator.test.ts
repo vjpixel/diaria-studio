@@ -20,10 +20,11 @@ import {
 // Default options pra rodar os testes de integração sem trip nos novos
 // assertions adicionados pós-#776 (drive_sync, section_minimums) — fixtures
 // existentes não populam drive-cache nem 5+ artigos por bucket. #1568 adiciona
-// minTutorial=0 pra fixtures que não populam o bucket tutorial.
+// minTutorial=0 pra fixtures que não populam o bucket use_melhor.
+// #1629: section minimums atualizados para nova nomenclatura de buckets.
 const TEST_OPTS_NO_AUX = {
   driveCachePath: null,
-  sectionMinimums: { minLancamento: 0, minPesquisa: 0, minNoticias: 0, minTutorial: 0 },
+  sectionMinimums: { minLancamento: 0, minRadar: 0, minUseMelhor: 0 },
 };
 
 describe("validateOutputsPresent (#581)", () => {
@@ -46,7 +47,7 @@ describe("validateOutputsPresent (#581)", () => {
 
   it("warn quando arquivo presente mas < 200 bytes", () => {
     writeFileSync(join(tmpDir, "01-categorized.md"), "# tiny\n", "utf8");
-    writeFileSync(join(tmpDir, "_internal", "01-categorized.json"), JSON.stringify({ noticias: [] }), "utf8");
+    writeFileSync(join(tmpDir, "_internal", "01-categorized.json"), JSON.stringify({ radar: [] }), "utf8");
     const result = validateOutputsPresent(tmpDir);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("pequenos"));
@@ -54,7 +55,7 @@ describe("validateOutputsPresent (#581)", () => {
 
   it("ok quando ambos arquivos presentes e > 200 bytes", () => {
     writeFileSync(join(tmpDir, "01-categorized.md"), "x".repeat(300), "utf8");
-    writeFileSync(join(tmpDir, "_internal", "01-categorized.json"), JSON.stringify({ noticias: [], extra: "x".repeat(300) }), "utf8");
+    writeFileSync(join(tmpDir, "_internal", "01-categorized.json"), JSON.stringify({ radar: [], extra: "x".repeat(300) }), "utf8");
     const result = validateOutputsPresent(tmpDir);
     assert.equal(result.status, "ok");
   });
@@ -63,7 +64,7 @@ describe("validateOutputsPresent (#581)", () => {
 describe("validateAiRelevanceRatio (#581 → #580)", () => {
   it("ok quando 100% on-topic", () => {
     const categorized = {
-      noticias: [
+      radar: [
         { url: "u1", title: "GPT-5 launches" },
         { url: "u2", title: "New diffusion model from Anthropic" },
         { url: "u3", title: "LLM benchmarks update" },
@@ -76,7 +77,7 @@ describe("validateAiRelevanceRatio (#581 → #580)", () => {
 
   it("warn quando < 70% on-topic (default threshold)", () => {
     const categorized = {
-      noticias: [
+      radar: [
         { url: "u1", title: "GPT-5 release" }, // on-topic (match GPT)
         { url: "u2", title: "Stock market analysis" }, // off-topic
         { url: "u3", title: "Political coverage" }, // off-topic
@@ -93,14 +94,14 @@ describe("validateAiRelevanceRatio (#581 → #580)", () => {
   });
 
   it("ok quando bucket vazio", () => {
-    const result = validateAiRelevanceRatio({ noticias: [] });
+    const result = validateAiRelevanceRatio({ radar: [] });
     assert.equal(result.status, "ok");
     assert.ok(result.message.includes("vazio"));
   });
 
   it("threshold customizado", () => {
     const categorized = {
-      noticias: [
+      radar: [
         { url: "u1", title: "GPT-5 launches" },
         { url: "u2", title: "Stock market analysis" },
       ],
@@ -110,20 +111,20 @@ describe("validateAiRelevanceRatio (#581 → #580)", () => {
     assert.equal(validateAiRelevanceRatio(categorized, { threshold: 0.5 }).status, "ok");
   });
 
-  it("respeita opts.bucket pra checar lancamento ou pesquisa", () => {
+  it("respeita opts.bucket pra checar lancamento ou radar", () => {
     const categorized = {
-      noticias: [{ url: "u1", title: "Stock analysis" }],
+      radar: [{ url: "u1", title: "Stock analysis" }],
       lancamento: [{ url: "u2", title: "GPT-5 launches" }],
     };
-    // noticias: 0% on-topic → warn
-    assert.equal(validateAiRelevanceRatio(categorized, { bucket: "noticias" }).status, "warn");
+    // radar: 0% on-topic → warn
+    assert.equal(validateAiRelevanceRatio(categorized, { bucket: "radar" }).status, "warn");
     // lancamento: 100% on-topic → ok
     assert.equal(validateAiRelevanceRatio(categorized, { bucket: "lancamento" }).status, "ok");
   });
 
   it("inclui lista dos URLs off-topic em details (max 10)", () => {
     const categorized = {
-      noticias: Array.from({ length: 15 }, (_, i) => ({
+      radar: Array.from({ length: 15 }, (_, i) => ({
         url: `https://x.com/${i}`,
         title: "stock market trends",
       })),
@@ -179,7 +180,7 @@ describe("runStage1Validation (#581) — integration", () => {
     writeFileSync(
       join(tmpDir, "_internal", "01-categorized.json"),
       JSON.stringify({
-        noticias: [
+        radar: [
           { url: "u1", title: "GPT-5 release", summary: "x".repeat(60) },
           { url: "u2", title: "AI alignment progress", summary: "x".repeat(60) },
           { url: "u3", title: "Transformer benchmarks", summary: "x".repeat(60) },
@@ -213,7 +214,7 @@ describe("runStage1Validation (#581) — integration", () => {
     writeFileSync(
       join(tmpDir, "_internal", "01-categorized.json"),
       JSON.stringify({
-        noticias: [
+        radar: [
           { url: "u1", title: "Stock market down", summary: "x".repeat(60) },
           { url: "u2", title: "Soccer scores", summary: "x".repeat(60) },
           { url: "u3", title: "Recipe corner", summary: "x".repeat(60) },
@@ -342,72 +343,66 @@ describe("validateSequentialNumbering (#581 → #579)", () => {
   });
 });
 
-describe("validateSectionMinimums (#581 → #488 → #1568)", () => {
-  it("ok quando todos os mínimos atingidos (3/3/5/3)", () => {
+describe("validateSectionMinimums (#581 → #488 → #1568 → #1629)", () => {
+  it("ok quando todos os mínimos atingidos (3/8/3) — pós #1629", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      noticias: [{ url: "1" }, { url: "2" }, { url: "3" }, { url: "4" }, { url: "5" }],
-      tutorial: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
+      use_melhor: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "ok");
-    assert.ok(result.message.includes("tutoriais 3"));
+    assert.ok(result.message.includes("radar 8"));
   });
 
   it("warn quando lançamentos abaixo do mínimo", () => {
     const categorized = {
       lancamento: [{ url: "1" }],
-      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
-      tutorial: [{ url: "1" }, { url: "2" }, { url: "3" }],
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
+      use_melhor: [{ url: "1" }, { url: "2" }, { url: "3" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("lancamento 1/3"));
   });
 
-  it("warn quando tutorial abaixo do mínimo (#1568)", () => {
+  it("warn quando use_melhor abaixo do mínimo (#1568)", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
-      tutorial: [{ url: "1" }],
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
+      use_melhor: [{ url: "1" }],
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
-    assert.ok(result.message.includes("tutorial 1/3"));
+    assert.ok(result.message.includes("use_melhor 1/3"));
   });
 
-  it("warn quando tutorial ausente do JSON (#1568)", () => {
+  it("warn quando use_melhor ausente do JSON (#1568)", () => {
     const categorized = {
       lancamento: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      pesquisa: [{ url: "1" }, { url: "2" }, { url: "3" }],
-      noticias: Array.from({ length: 5 }, (_, i) => ({ url: `${i}` })),
-      // tutorial omitido — deve ser tratado como 0
+      radar: Array.from({ length: 8 }, (_, i) => ({ url: `r${i}` })),
+      // use_melhor omitido — deve ser tratado como 0
     };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
-    assert.ok(result.message.includes("tutorial 0/3"));
+    assert.ok(result.message.includes("use_melhor 0/3"));
   });
 
   it("warn lista todos os shortfalls juntos", () => {
-    const categorized = { lancamento: [], pesquisa: [], noticias: [], tutorial: [] };
+    const categorized = { lancamento: [], radar: [], use_melhor: [] };
     const result = validateSectionMinimums(categorized);
     assert.equal(result.status, "warn");
     assert.ok(result.message.includes("lancamento 0/3"));
-    assert.ok(result.message.includes("pesquisa 0/3"));
-    assert.ok(result.message.includes("noticias 0/5"));
-    assert.ok(result.message.includes("tutorial 0/3"));
+    assert.ok(result.message.includes("radar 0/8"));
+    assert.ok(result.message.includes("use_melhor 0/3"));
   });
 
-  it("respeita opts override (mínimos custom — minTutorial)", () => {
-    const categorized = { lancamento: [{ url: "1" }], pesquisa: [], noticias: [], tutorial: [] };
+  it("respeita opts override (mínimos custom)", () => {
+    const categorized = { lancamento: [{ url: "1" }], radar: [], use_melhor: [] };
     const result = validateSectionMinimums(categorized, {
       minLancamento: 1,
-      minPesquisa: 0,
-      minNoticias: 0,
-      minTutorial: 0,
+      minRadar: 0,
+      minUseMelhor: 0,
     });
     assert.equal(result.status, "ok");
   });

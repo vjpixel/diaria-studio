@@ -256,23 +256,26 @@ describe("clusterCategorized (com fallback Jaccard — sem GEMINI_API_KEY)", () 
     else delete process.env.GEMINI_API_KEY;
   });
 
-  it("processa os 3 buckets separadamente", async () => {
+  it("processa todos os 4 buckets (#1629)", async () => {
     const input = {
       lancamento: [
         { url: "https://a.com/1", title: "OpenAI anuncia novo modelo GPT-5 com features avançadas", summary: "" },
         { url: "https://b.com/1", title: "OpenAI lança GPT-5 com features", summary: "novo modelo OpenAI GPT-5 features avançadas" },
       ],
-      pesquisa: [
+      radar: [
         { url: "https://arxiv.org/1", title: "Paper sobre attention routing", summary: "" },
-      ],
-      noticias: [
         { url: "https://c.com/1", title: "Regulação de IA no Brasil avança", summary: "" },
       ],
+      use_melhor: [
+        { url: "https://t.com/1", title: "Tutorial Claude Agents", summary: "" },
+      ],
+      video: [],
     };
     const result = await clusterCategorized(input, 0.3);
     assert.equal(result.lancamento.length, 1); // GPT-5 cluster colapsou
-    assert.equal(result.pesquisa.length, 1);
-    assert.equal(result.noticias.length, 1);
+    assert.equal(result.radar.length, 2);
+    assert.equal(result.use_melhor.length, 1); // #1628: agora processa use_melhor/video
+    assert.equal(result.video.length, 0);
     assert.equal(result.clusters.length, 1);
   });
 });

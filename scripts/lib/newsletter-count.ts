@@ -25,9 +25,11 @@
 export interface SelectedCounts {
   destaques: number;
   lancamentos: number;
+  /** #1629: legacy — só conta em newsletters históricas (pré-#1569). */
   pesquisas: number;
-  noticias: number;
-  tutoriais: number;
+  /** #1629: bucket `radar` (substituiu OUTRAS NOTÍCIAS em #1569). */
+  radar: number;
+  use_melhor: number;
   videos: number;
   total: number;
 }
@@ -148,8 +150,8 @@ export function countSelectedItems(md: string): SelectedCounts {
     destaques: 0,
     lancamentos: 0,
     pesquisas: 0,
-    noticias: 0,
-    tutoriais: 0,
+    radar: 0,
+    use_melhor: 0,
     videos: 0,
     total: 0,
   };
@@ -183,15 +185,15 @@ export function countSelectedItems(md: string): SelectedCounts {
       | "destaques"
       | "lancamentos"
       | "pesquisas"
-      | "noticias"
-      | "tutoriais"
+      | "radar"
+      | "use_melhor"
       | "videos"
       | null = null;
     if (DESTAQUE_HEADER_LINE_RE.test(section)) bucket = "destaques";
     else if (LANCAMENTOS_RE.test(section)) bucket = "lancamentos";
     else if (PESQUISAS_RE.test(section)) bucket = "pesquisas";
-    else if (NOTICIAS_RE.test(section)) bucket = "noticias";
-    else if (TUTORIAIS_RE.test(section)) bucket = "tutoriais";
+    else if (NOTICIAS_RE.test(section)) bucket = "radar"; // RADAR + legacy OUTRAS NOTÍCIAS
+    else if (TUTORIAIS_RE.test(section)) bucket = "use_melhor";
     else if (VIDEOS_RE.test(section)) bucket = "videos";
 
     if (!bucket) continue;

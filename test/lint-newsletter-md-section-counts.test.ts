@@ -38,16 +38,15 @@ describe("countItemsPerSection (#907)", () => {
     ].join("\n");
     const c = countItemsPerSection(md);
     assert.equal(c.lancamento, 2);
-    assert.equal(c.pesquisa, 1);
-    assert.equal(c.noticias, 2);
+    // #1629: radar acumula RADAR atual + PESQUISAS/OUTRAS NOTÍCIAS legacy
+    assert.equal(c.radar, 3);
   });
 
   it("seções vazias retornam 0", () => {
     const md = "DESTAQUE 1 | PRODUTO\n\nhttps://x.com/1\n\nTexto.\n";
     const c = countItemsPerSection(md);
     assert.equal(c.lancamento, 0);
-    assert.equal(c.pesquisa, 0);
-    assert.equal(c.noticias, 0);
+    assert.equal(c.radar, 0);
   });
 });
 
@@ -75,32 +74,21 @@ describe("checkSectionCounts (#907)", () => {
     assert.deepEqual(r.violations, []);
   });
 
-  it("ok=false quando OUTRAS NOTÍCIAS passa cap (caso 260507: 9 > 4)", () => {
-    const lines = ["OUTRAS NOTÍCIAS", ""];
-    for (let i = 0; i < 9; i++) {
-      lines.push(`Item ${i}`);
-      lines.push(`https://n.com/${i}`);
+  it("ok=false quando RADAR passa cap (#1629: cap=max(5, 12-d-l))", () => {
+    // 3 destaques + 2 lançamentos → radar cap = max(5, 12-3-2) = 7
+    // Render 12 itens em RADAR → viola
+    const lines = ["RADAR", ""];
+    for (let i = 0; i < 12; i++) {
+      lines.push(`[R${i}](https://r.com/${i})`);
+      lines.push("Desc");
       lines.push("");
     }
-    // Tem 3 destaques + 2 lançamentos + 3 pesquisas (preencher seções inteiras
-    // pra que `checkStage2Caps` calcule cap=max(2, 12-3-2-3)=4)
     const md = [
       "LANÇAMENTOS",
       "[L1](https://l.com/1)",
       "Desc",
       "",
       "[L2](https://l.com/2)",
-      "Desc",
-      "",
-      "---",
-      "PESQUISAS",
-      "[P1](https://p.com/1)",
-      "Desc",
-      "",
-      "[P2](https://p.com/2)",
-      "Desc",
-      "",
-      "[P3](https://p.com/3)",
       "Desc",
       "",
       "---",
@@ -112,10 +100,9 @@ describe("checkSectionCounts (#907)", () => {
     const r = checkSectionCounts(md, approved);
     assert.equal(r.ok, false);
     assert.equal(r.counts.lancamento, 2);
-    assert.equal(r.counts.pesquisa, 3);
-    assert.equal(r.counts.noticias, 9);
-    assert.equal(r.caps.noticias, 4); // max(2, 12-3-2-3)
-    assert.match(r.violations[0], /OUTRAS NOTÍCIAS: 9 > cap 4/);
+    assert.equal(r.counts.radar, 12);
+    assert.equal(r.caps.radar, 7);
+    assert.match(r.violations[0], /RADAR: 12 > cap 7/);
   });
 
   it("ok=false quando LANÇAMENTOS passa cap=5", () => {
@@ -130,19 +117,5 @@ describe("checkSectionCounts (#907)", () => {
     const r = checkSectionCounts(md, approved);
     assert.equal(r.ok, false);
     assert.match(r.violations[0], /LAN.*: 7 > cap 5/);
-  });
-
-  it("ok=false quando PESQUISAS passa cap=3", () => {
-    const lines = ["PESQUISAS", ""];
-    for (let i = 0; i < 4; i++) {
-      lines.push(`[P${i}](https://p.com/${i})`);
-      lines.push("Desc");
-      lines.push("");
-    }
-    const md = lines.join("\n");
-    const approved = { highlights: [{}, {}, {}] };
-    const r = checkSectionCounts(md, approved);
-    assert.equal(r.ok, false);
-    assert.match(r.violations[0], /PESQUISAS: 4 > cap 3/);
   });
 });

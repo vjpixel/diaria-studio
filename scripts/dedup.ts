@@ -196,7 +196,12 @@ interface ApprovedArticleLike {
 interface ApprovedJsonShape {
   highlights?: ApprovedArticleLike[];
   runners_up?: ApprovedArticleLike[];
+  // #1629: buckets renomeados
   lancamento?: ApprovedArticleLike[];
+  radar?: ApprovedArticleLike[];
+  use_melhor?: ApprovedArticleLike[];
+  video?: ApprovedArticleLike[];
+  // Legacy fields (preservados pra parsear approved.json de edições históricas)
   pesquisa?: ApprovedArticleLike[];
   noticias?: ApprovedArticleLike[];
   tutorial?: ApprovedArticleLike[];
@@ -329,10 +334,14 @@ function readApprovedTitles(approvedPath: string): string[] {
     return [];
   }
   const titles = new Set<string>();
+  // #1629: lê buckets novos (radar/use_melhor/video) + legacy (pesquisa/noticias/tutorial).
   const buckets: ApprovedArticleLike[][] = [
     parsed.highlights ?? [],
     parsed.runners_up ?? [],
     parsed.lancamento ?? [],
+    parsed.radar ?? [],
+    parsed.use_melhor ?? [],
+    parsed.video ?? [],
     parsed.pesquisa ?? [],
     parsed.noticias ?? [],
     parsed.tutorial ?? [],

@@ -4,13 +4,15 @@ import { parseApprovedJson, parseCategorizedJson } from "../../scripts/lib/schem
 
 const validApproved = {
   highlights: [
-    { rank: 1, score: 92, bucket: "noticias", url: "https://a.com/", article: { url: "https://a.com/", title: "A", date: "2026-05-05", score: 92 } },
-    { rank: 2, score: 85, bucket: "noticias", url: "https://b.com/", article: { url: "https://b.com/", title: "B", date: "2026-05-05", score: 85 } },
-    { rank: 3, score: 78, bucket: "noticias", url: "https://c.com/", article: { url: "https://c.com/", title: "C", date: "2026-05-05", score: 78 } },
+    { rank: 1, score: 92, bucket: "radar", url: "https://a.com/", article: { url: "https://a.com/", title: "A", date: "2026-05-05", score: 92 } },
+    { rank: 2, score: 85, bucket: "radar", url: "https://b.com/", article: { url: "https://b.com/", title: "B", date: "2026-05-05", score: 85 } },
+    { rank: 3, score: 78, bucket: "radar", url: "https://c.com/", article: { url: "https://c.com/", title: "C", date: "2026-05-05", score: 78 } },
   ],
   lancamento: [{ url: "https://anthropic.com/news/x", title: "T", date: "2026-05-05", score: 70 }],
-  pesquisa: [{ url: "https://arxiv.org/abs/1234", title: "P", date: "2026-05-04", score: 60 }],
-  noticias: [{ url: "https://techcrunch.com/y", title: "N", date: "2026-05-05", score: 50 }],
+  radar: [
+    { url: "https://arxiv.org/abs/1234", title: "P", date: "2026-05-04", score: 60 },
+    { url: "https://techcrunch.com/y", title: "N", date: "2026-05-05", score: 50 }
+  ],
 };
 
 describe("edition-state schemas (#632)", () => {
@@ -50,20 +52,19 @@ describe("edition-state schemas (#632)", () => {
     it("parse mínimo com buckets obrigatórios", () => {
       const result = parseCategorizedJson({
         lancamento: [],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
       });
       assert.deepEqual(result.lancamento, []);
     });
 
     it("aceita highlights opcional", () => {
-      const result = parseCategorizedJson({ lancamento: [], pesquisa: [], noticias: [], highlights: [] });
+      const result = parseCategorizedJson({ lancamento: [], radar: [], radar: [], highlights: [] });
       assert.deepEqual(result.highlights, []);
     });
 
     it("rejeita missing lancamento", () => {
       assert.throws(
-        () => parseCategorizedJson({ pesquisa: [], noticias: [] }),
+        () => parseCategorizedJson({ radar: [], radar: [] }),
         /required|invalid/i,
       );
     });

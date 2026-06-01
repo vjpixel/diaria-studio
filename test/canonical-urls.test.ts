@@ -29,8 +29,10 @@ describe("getCanonicalUrls (#1456)", () => {
     const map = getCanonicalUrls({
       runners_up: [{ article: { title: "Runner", url: "https://r.com/x" } }],
       lancamento: [{ title: "Lanca", url: "https://l.com/x" }],
-      pesquisa: [{ title: "Pesq", url: "https://p.com/x" }],
-      noticias: [{ title: "Not", url: "https://n.com/x" }],
+      radar: [
+        { title: "Pesq", url: "https://p.com/x" },
+        { title: "Not", url: "https://n.com/x" }
+      ],
     });
     assert.equal(lookupCanonicalUrl(map, "Runner"), "https://r.com/x");
     assert.equal(lookupCanonicalUrl(map, "Lanca"), "https://l.com/x");
@@ -40,7 +42,7 @@ describe("getCanonicalUrls (#1456)", () => {
 
   it("normalizeTitle: aceita variações de case/acentos no lookup", () => {
     const map = getCanonicalUrls({
-      noticias: [{ title: "SoberanIA: plataforma nacional", url: "https://br247.com/x" }],
+      radar: [{ title: "SoberanIA: plataforma nacional", url: "https://br247.com/x" }],
     });
     // Lookup com case diferente ainda casa via normalizeTitle
     assert.equal(
@@ -51,7 +53,7 @@ describe("getCanonicalUrls (#1456)", () => {
 
   it("retorna undefined pra título não encontrado", () => {
     const map = getCanonicalUrls({
-      noticias: [{ title: "Real Title", url: "https://x.com/y" }],
+      radar: [{ title: "Real Title", url: "https://x.com/y" }],
     });
     assert.equal(lookupCanonicalUrl(map, "Hallucinated Title"), undefined);
   });
@@ -102,7 +104,7 @@ describe("findMismatchedUrls (#1456)", () => {
   it("retorna URLs do MD que não estão no approved JSON", () => {
     const approved = {
       highlights: [{ article: { title: "T1", url: "https://example.com/d1" } }],
-      noticias: [{ title: "N1", url: "https://example.com/n1" }],
+      radar: [{ title: "N1", url: "https://example.com/n1" }],
     };
     const md = `
 [**T1**](https://example.com/d1)
@@ -115,7 +117,7 @@ describe("findMismatchedUrls (#1456)", () => {
   });
 
   it("ignora footer/affiliate URLs", () => {
-    const approved = { noticias: [{ title: "N", url: "https://example.com/n" }] };
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
     const md = `
 [**N**](https://example.com/n)
 [Cursos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)
@@ -128,7 +130,7 @@ describe("findMismatchedUrls (#1456)", () => {
   it("retorna vazio quando MD não introduziu URLs novas", () => {
     const approved = {
       highlights: [{ article: { url: "https://a.com/x" } }],
-      noticias: [{ url: "https://b.com/y" }],
+      radar: [{ url: "https://b.com/y" }],
     };
     const md = `
 [T1](https://a.com/x)

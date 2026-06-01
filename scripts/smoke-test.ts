@@ -56,7 +56,7 @@ interface PipelineSnapshot {
   sample_rendered_lines: string[];
   roundtrip: {
     rendered_md_snippet: string;
-    parsed_back: { lancamento: number; pesquisa: number; noticias: number };
+    parsed_back: { lancamento: number; radar: number; use_melhor: number };
   };
 }
 
@@ -81,7 +81,7 @@ function runPipeline(): PipelineSnapshot {
   // 1. Dedup
   const dedupResult = dedup(articles, pastUrls, 0.85);
 
-  // 2. Categorize
+  // 2. Categorize — per-article category preserved, agrupado por bucket (#1629).
   const buckets = { lancamento: [] as string[], pesquisa: [] as string[], noticias: [] as string[], tutorial: [] as string[], video: [] as string[] };
   const articlesByBucket = { lancamento: [], pesquisa: [], noticias: [], tutorial: [], video: [] } as Record<string, unknown[]>;
   for (const art of dedupResult.kept) {
@@ -90,11 +90,12 @@ function runPipeline(): PipelineSnapshot {
     articlesByBucket[cat].push({ ...art, category: cat });
   }
 
-  // 3. Render lines (e detectar tema BR)
+  // 3. Render lines (e detectar tema BR) — buildHighlightUrls espera shape #1629.
   const highlightUrls = buildHighlightUrls({
     lancamento: articlesByBucket.lancamento as never[],
-    pesquisa: articlesByBucket.pesquisa as never[],
-    noticias: articlesByBucket.noticias as never[],
+    radar: [...(articlesByBucket.pesquisa as never[]), ...(articlesByBucket.noticias as never[])],
+    use_melhor: articlesByBucket.tutorial as never[],
+    video: articlesByBucket.video as never[],
   });
   const brazilianThemes: string[] = [];
   const sampleLines: string[] = [];
@@ -143,8 +144,8 @@ function runPipeline(): PipelineSnapshot {
       rendered_md_snippet: md.slice(0, 200),
       parsed_back: {
         lancamento: parsed.lancamento.length,
-        pesquisa: parsed.pesquisa.length,
-        noticias: parsed.noticias.length,
+        radar: parsed.radar.length,
+        use_melhor: parsed.use_melhor.length,
       },
     },
   };

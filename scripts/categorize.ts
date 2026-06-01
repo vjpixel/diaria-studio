@@ -1,21 +1,24 @@
 /**
  * categorize.ts
  *
- * Classifica artigos em lancamento / pesquisa / noticias usando regras de domínio.
+ * Classifica artigos em buckets que refletem as seções da newsletter (#1629).
  * Substitui o subagente `categorizer` (Haiku) por lógica determinística.
  *
  * Uso:
  *   npx tsx scripts/categorize.ts --articles <articles.json> [--out <out.json>]
  *
  * Input:  array JSON de artigos (post-dedup, com { url, title?, type_hint?, ... })
- * Output: { lancamento: [...], pesquisa: [...], noticias: [...] }
- *         cada artigo recebe campo adicional `category`
+ * Output: { lancamento: [...], radar: [...], use_melhor: [...], video: [...] }
+ *         cada artigo recebe campo adicional `category` (lancamento/pesquisa/
+ *         noticias/tutorial/video) — Category é o tipo do artigo; Bucket é a
+ *         seção pra onde ele vai.
  *
  * Regras (espelham context/editorial-rules.md):
- *   - lancamento: URL no domínio oficial de empresa de tech (blog, news, release)
- *   - pesquisa:   URL em site acadêmico/de pesquisa (arxiv, openreview, etc.)
- *                 ou type_hint === "pesquisa" quando domínio não enquadra em lancamento
- *   - noticias:   todo o resto (jornalismo, análise, cobertura secundária, opinião)
+ *   - Category `lancamento`: URL no domínio oficial de empresa de tech (blog, news, release) → Bucket `lancamento`
+ *   - Category `pesquisa`:   URL em site acadêmico/de pesquisa (arxiv, openreview, etc.) → Bucket `radar`
+ *   - Category `noticias`:   todo o resto (jornalismo, análise, cobertura secundária, opinião) → Bucket `radar`
+ *   - Category `tutorial`:   tutorial, cookbook, how-to → Bucket `use_melhor`
+ *   - Category `video`:      youtube/vimeo → Bucket `video`
  *
  * Dúvida entre lancamento e noticias: se URL não for do domínio oficial → noticias.
  */
@@ -32,6 +35,47 @@ export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
 export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
+
+/**
+ * Bucket (= seção da newsletter): a chave usada em todo JSON intermediário
+ * do pipeline (`_internal/01-categorized.json`, `01-approved.json`, etc).
+ *
+ * **Bucket ≠ Category.** Category é o tipo de artigo (per-article); Bucket
+ * é a seção pra qual ele será endereçado (1 seção pode reunir múltiplas
+ * categorias). Mapping em `categoryToBucket()`.
+ *
+ * #1629: introduzido pra alinhar nomenclatura interna com seções
+ * publicadas (RADAR substituiu PESQUISAS + OUTRAS NOTÍCIAS — #1569;
+ * USE MELHOR substituiu TUTORIAIS — #1568).
+ */
+export type Bucket = "lancamento" | "radar" | "use_melhor" | "video";
+
+/**
+ * Mapping Category → Bucket (#1629).
+ * - `pesquisa` e `noticias` ambas vão pra `radar` (fundidas em #1569).
+ * - `tutorial` vira `use_melhor` (#1568).
+ * - `lancamento` e `video` mantêm nome.
+ */
+export function categoryToBucket(c: Category): Bucket {
+  switch (c) {
+    case "lancamento":
+      return "lancamento";
+    case "pesquisa":
+    case "noticias":
+      return "radar";
+    case "tutorial":
+      return "use_melhor";
+    case "video":
+      return "video";
+  }
+}
+
+export interface BucketedArticles {
+  lancamento: Article[];
+  radar: Article[];
+  use_melhor: Article[];
+  video: Article[];
+}
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam LANÇAMENTO (anúncio oficial) — #566
@@ -888,12 +932,11 @@ export function isUnresolvableInboxArticle(article: Article): boolean {
   return titleIsPlaceholder && summaryTooShort;
 }
 
-export function categorizeArticles(articles: Article[]): Record<Category, Article[]> {
-  const result: Record<Category, Article[]> = {
+export function categorizeArticles(articles: Article[]): BucketedArticles {
+  const result: BucketedArticles = {
     lancamento: [],
-    pesquisa: [],
-    noticias: [],
-    tutorial: [],
+    radar: [],
+    use_melhor: [],
     video: [],
   };
 
@@ -911,14 +954,15 @@ export function categorizeArticles(articles: Article[]): Record<Category, Articl
       continue;
     }
     const cat = categorize(article);
-    result[cat].push({ ...article, category: cat });
+    const bucket = categoryToBucket(cat);
+    result[bucket].push({ ...article, category: cat });
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.
   // Heurística simples: contar stop words inglesas vs portuguesas no summary.
   let englishCount = 0;
-  for (const cat of Object.keys(result) as Category[]) {
-    for (const article of result[cat]) {
+  for (const bucket of Object.keys(result) as Bucket[]) {
+    for (const article of result[bucket]) {
       if (looksEnglish(article.summary ?? "")) {
         (article as any).summary_lang = "en";
         englishCount++;
@@ -957,7 +1001,7 @@ function main(): void {
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
   const result = categorizeArticles(articles);
 
-  const stats = `lancamento:${result.lancamento.length} pesquisa:${result.pesquisa.length} noticias:${result.noticias.length} tutorial:${result.tutorial.length} video:${result.video.length}`;
+  const stats = `lancamento:${result.lancamento.length} radar:${result.radar.length} use_melhor:${result.use_melhor.length} video:${result.video.length}`;
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {

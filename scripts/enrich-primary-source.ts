@@ -18,7 +18,7 @@
  * In-place também é seguro (input == output).
  *
  * Output: mesmo shape do input, com campos extras nos artigos da bucket
- * "noticias" que casarem o detector. Imprime resumo no stderr.
+ * `radar` (#1629: ex-noticias) que casarem o detector. Imprime resumo no stderr.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -28,6 +28,7 @@ interface Article {
   url?: string;
   title?: string;
   summary?: string | null;
+  category?: string;
   launch_candidate?: boolean;
   suggested_primary_domain?: string;
   matched_launch_keyword?: string;
@@ -37,18 +38,23 @@ interface Article {
 
 interface Categorized {
   lancamento?: Article[];
-  pesquisa?: Article[];
-  noticias?: Article[];
-  tutorial?: Article[];
+  // #1629: buckets renomeados
+  radar?: Article[];
+  use_melhor?: Article[];
+  video?: Article[];
   [key: string]: unknown;
 }
 
 export function enrichPrimarySource(
   input: Categorized,
 ): { output: Categorized; flagged: number } {
-  if (!input.noticias) return { output: input, flagged: 0 };
+  if (!input.radar) return { output: input, flagged: 0 };
   let flagged = 0;
-  const enriched = input.noticias.map((a) => {
+  const enriched = input.radar.map((a) => {
+    // #1629: só artigos com category=noticias (excluir pesquisa do enrichment).
+    // Pré-#1629 a bucket `noticias` só tinha articles de category=noticias,
+    // mantém esse filtro semântico.
+    if (a.category && a.category !== "noticias") return a;
     const det = detectLaunchCandidate(a);
     if (!det.is_candidate) return a;
     flagged++;
@@ -60,7 +66,7 @@ export function enrichPrimarySource(
       matched_company: det.matched_company,
     };
   });
-  return { output: { ...input, noticias: enriched }, flagged };
+  return { output: { ...input, radar: enriched }, flagged };
 }
 
 function parseArgs(argv: string[]) {
@@ -90,12 +96,12 @@ function main() {
   const input: Categorized = JSON.parse(readFileSync(inputPath, "utf8"));
   const { output, flagged } = enrichPrimarySource(input);
   writeFileSync(outputPath, JSON.stringify(output, null, 2), "utf8");
-  const total = (output.noticias ?? []).length;
+  const total = (output.radar ?? []).length;
   console.error(
     `enrich-primary-source: ${flagged}/${total} notícia(s) sinalizadas como launch_candidate`,
   );
   if (flagged > 0) {
-    for (const a of output.noticias ?? []) {
+    for (const a of output.radar ?? []) {
       if (a.launch_candidate) {
         console.error(
           `  - ${a.title?.slice(0, 80)} → suggested: ${a.suggested_primary_domain}`,

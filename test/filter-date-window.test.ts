@@ -9,8 +9,7 @@ describe("filterDateWindow", () => {
         { url: "https://a.com/1", title: "Hoje", date: "2026-04-24" },
         { url: "https://a.com/2", title: "Antigo", date: "2026-04-10" },
       ],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(kept.lancamento.length, 1);
@@ -19,58 +18,56 @@ describe("filterDateWindow", () => {
     assert.equal(removed[0].title, "Antigo");
   });
 
-  it("cutoff = edition_date - window_days (testando bucket noticias que segue default)", () => {
-    // #1155: lancamento e pesquisa usam janela maior; teste reformulado
-    // pra usar noticias que segue o windowDays passado.
+  it("cutoff = edition_date - window_days (testando bucket radar que segue default)", () => {
+    // #1155: lancamento e radar usam janela maior; teste reformulado
+    // pra usar radar que segue o windowDays passado.
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://a.com/1", title: "Dia do corte", date: "2026-04-21" },
-        { url: "https://a.com/2", title: "Dia antes do corte", date: "2026-04-20" },
+        { url: "https://a.com/2", title: "Dia antes do corte", date: "2026-04-20" }
       ],
     };
     const { kept, removed, cutoff } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(cutoff, "2026-04-21");
-    assert.equal(kept.noticias.length, 1);
-    assert.equal(kept.noticias[0].title, "Dia do corte");
+    assert.equal(kept.radar.length, 1);
+    assert.equal(kept.radar[0].title, "Dia do corte");
     assert.equal(removed[0].title, "Dia antes do corte");
   });
 
   it("mantém artigos sem data com flag date_unverified", () => {
     const input = {
       lancamento: [{ url: "https://a.com/1", title: "Sem data", date: null }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { kept } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(kept.lancamento.length, 1);
     assert.equal(kept.lancamento[0].date_unverified, true);
   });
 
-  it("processa os 3 buckets separadamente", () => {
+  it("processa os 2 buckets ativos: lancamento + radar (#1629)", () => {
     const input = {
       lancamento: [{ url: "https://a.com/1", title: "L", date: "2026-04-24" }],
-      pesquisa: [{ url: "https://b.com/1", title: "P antigo", date: "2026-04-10" }],
-      noticias: [{ url: "https://c.com/1", title: "N", date: "2026-04-23" }],
+      radar: [
+        { url: "https://b.com/1", title: "P antigo", date: "2026-04-10", category: "pesquisa" },
+        { url: "https://c.com/1", title: "N", date: "2026-04-23", category: "noticias" }
+      ],
     };
     const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(kept.lancamento.length, 1);
-    assert.equal(kept.pesquisa.length, 0);
-    assert.equal(kept.noticias.length, 1);
-    assert.equal(removed[0].bucket, "pesquisa");
+    assert.equal(kept.radar.length, 1, "só N fica (P antigo cai pela janela pesquisa 5d)");
+    assert.equal(removed[0].bucket, "radar");
   });
 
   it("aceita buckets vazios ou ausentes", () => {
     const input = {
       lancamento: [{ url: "https://a.com/1", title: "L", date: "2026-04-24" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { kept } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(kept.lancamento.length, 1);
-    assert.equal(kept.pesquisa.length, 0);
-    assert.equal(kept.noticias.length, 0);
+    assert.equal(kept.radar.length, 0);
+    assert.equal(kept.radar.length, 0);
   });
 
   it("normaliza datas ISO completas antes de comparar", () => {
@@ -78,19 +75,19 @@ describe("filterDateWindow", () => {
       lancamento: [
         { url: "https://a.com/1", title: "ISO full", date: "2026-04-24T12:00:00Z" },
       ],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { kept } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(kept.lancamento.length, 1);
   });
 
   it("removed inclui detail descritivo", () => {
-    // #1155: usa noticias pra validar cutoff = anchor - 3 sem extensão
+    // #1155: usa radar pra validar cutoff = anchor - 3 sem extensão
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url: "https://a.com/1", title: "Antigo", date: "2026-04-10" }],
+      radar: [
+        { url: "https://a.com/1", title: "Antigo", date: "2026-04-10" }
+      ],
     };
     const { removed } = filterDateWindow(input, "2026-04-24", 3);
     assert.equal(removed.length, 1);
@@ -99,21 +96,20 @@ describe("filterDateWindow", () => {
     assert.ok(removed[0].detail.includes("2026-04-21"));
   });
 
-  it("window=1 permite só ontem e hoje (testando noticias que segue default)", () => {
-    // #1155: lancamento usa min 7d; teste reformulado pra noticias.
+  it("window=1 permite só ontem e hoje (testando radar que segue default)", () => {
+    // #1155: lancamento usa min 7d; teste reformulado pra radar.
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://a.com/1", title: "Hoje", date: "2026-04-24" },
         { url: "https://a.com/2", title: "Ontem", date: "2026-04-23" },
-        { url: "https://a.com/3", title: "Anteontem", date: "2026-04-22" },
+        { url: "https://a.com/3", title: "Anteontem", date: "2026-04-22" }
       ],
     };
     const { kept } = filterDateWindow(input, "2026-04-24", 1);
-    assert.equal(kept.noticias.length, 2);
+    assert.equal(kept.radar.length, 2);
     assert.deepEqual(
-      kept.noticias.map((a) => a.title),
+      kept.radar.map((a) => a.title),
       ["Hoje", "Ontem"],
     );
   });
@@ -122,8 +118,7 @@ describe("filterDateWindow", () => {
     it("preserva clusters[] do topic-cluster output", () => {
       const input = {
         lancamento: [{ url: "https://a.com/1", title: "ok", date: "2026-04-24" }],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
         clusters: [
           { top_url: "https://a.com/1", member_urls: ["https://a.com/1"], jaccard_min: 0.42 },
         ],
@@ -138,8 +133,7 @@ describe("filterDateWindow", () => {
     it("preserva metadata arbitrária", () => {
       const input = {
         lancamento: [],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
         metadata: { source: "smoke", version: 3 },
         custom_field: ["a", "b"],
       };
@@ -159,8 +153,7 @@ describe("filterDateWindow", () => {
         lancamento: [
           { url: "https://a.com/old", title: "Antigo", date: "2026-04-10" }, // será removido
         ],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
         clusters: [
           {
             top_url: "https://a.com/old",
@@ -183,8 +176,7 @@ describe("filterDateWindow", () => {
       // pelo destructure, mas vale defensivo) — buckets reset garantidos.
       const input = {
         lancamento: [{ url: "https://a.com/1", title: "ok", date: "2026-04-24" }],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
       };
       const { kept } = filterDateWindow(input, "2026-04-24", 3);
       assert.ok(Array.isArray(kept.lancamento));
@@ -198,12 +190,11 @@ describe("filterDateWindow", () => {
       const input = {
         // anchor=2026-05-04, window=3 → cutoff=2026-05-01
         // edition_date=2026-05-09 (futuro) — não deve mudar nada.
-        // #1155: usa noticias (default windowDays) pra teste do cutoff anchor-based
+        // #1155: usa radar (default windowDays) pra teste do cutoff anchor-based
         lancamento: [],
-        pesquisa: [],
-        noticias: [
+        radar: [
           { url: "https://a.com/1", title: "Recente", date: "2026-05-03" },
-          { url: "https://a.com/2", title: "Antes do cutoff", date: "2026-04-30" },
+          { url: "https://a.com/2", title: "Antes do cutoff", date: "2026-04-30" }
         ],
       };
       const { kept, removed, cutoff, anchor } = filterDateWindow(
@@ -214,8 +205,8 @@ describe("filterDateWindow", () => {
       );
       assert.equal(anchor, "2026-05-04");
       assert.equal(cutoff, "2026-05-01");
-      assert.equal(kept.noticias.length, 1);
-      assert.equal(kept.noticias[0].title, "Recente");
+      assert.equal(kept.radar.length, 1);
+      assert.equal(kept.radar[0].title, "Recente");
       assert.equal(removed[0].title, "Antes do cutoff");
       assert.ok(removed[0].detail.includes("edition 2026-05-09"));
     });
@@ -223,8 +214,7 @@ describe("filterDateWindow", () => {
     it("removed.detail menciona anchor e (quando passado) edition_date", () => {
       const input = {
         lancamento: [{ url: "https://a.com/1", title: "Antigo", date: "2026-04-10" }],
-        pesquisa: [],
-        noticias: [],
+        radar: [],
       };
       const { removed: r1 } = filterDateWindow(input, "2026-04-24", 3);
       assert.ok(r1[0].detail.includes("anchor 2026-04-24"));
@@ -268,16 +258,15 @@ describe("filterDateWindow — fallback published_at (#1322)", () => {
   it("remove artigo com date=null mas published_at fora da janela", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://a.com/1", title: "Recente", date: "2026-05-15" },
         { url: "https://sindpd.org.br/1", title: "SINDPD 12/05", date: null, published_at: "2026-05-12" },
-        { url: "https://iblnews.com/1", title: "IBL 11/05", date: null, published_at: "2026-05-11" },
+        { url: "https://iblnews.com/1", title: "IBL 11/05", date: null, published_at: "2026-05-11" }
       ],
     };
     const { kept, removed } = filterDateWindow(input, "2026-05-17", 4);
-    assert.equal(kept.noticias.length, 1);
-    assert.equal(kept.noticias[0].title, "Recente");
+    assert.equal(kept.radar.length, 1);
+    assert.equal(kept.radar[0].title, "Recente");
     assert.equal(removed.length, 2);
     assert.equal(removed[0].source_field, "published_at");
     assert.equal(removed[1].source_field, "published_at");
@@ -286,47 +275,45 @@ describe("filterDateWindow — fallback published_at (#1322)", () => {
   it("mantém artigo com date=null mas published_at dentro da janela", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
-        { url: "https://a.com/1", title: "RSS recente", date: null, published_at: "2026-05-15" },
+      radar: [
+        { url: "https://a.com/1", title: "RSS recente", date: null, published_at: "2026-05-15" }
       ],
     };
     const { kept } = filterDateWindow(input, "2026-05-17", 4);
-    assert.equal(kept.noticias.length, 1);
+    assert.equal(kept.radar.length, 1);
     // Mantido mas com date_unverified=true (verify-dates não rodou)
-    assert.equal(kept.noticias[0].date_unverified, true);
+    assert.equal(kept.radar[0].date_unverified, true);
   });
 
   it("artigo com date dentro mas published_at fora — usa date (verificado)", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
-        { url: "https://a.com/1", title: "Conflitante", date: "2026-05-15", published_at: "2026-05-10" },
+      radar: [
+        { url: "https://a.com/1", title: "Conflitante", date: "2026-05-15", published_at: "2026-05-10" }
       ],
     };
     const { kept } = filterDateWindow(input, "2026-05-17", 4);
-    assert.equal(kept.noticias.length, 1, "date verified vence published_at");
+    assert.equal(kept.radar.length, 1, "date verified vence published_at");
   });
 
   it("artigo sem date nem published_at continua kept com date_unverified", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [{ url: "https://a.com/1", title: "Sem nada", date: null }],
+      radar: [
+        { url: "https://a.com/1", title: "Sem nada", date: null }
+      ],
     };
     const { kept } = filterDateWindow(input, "2026-05-17", 4);
-    assert.equal(kept.noticias.length, 1);
-    assert.equal(kept.noticias[0].date_unverified, true);
+    assert.equal(kept.radar.length, 1);
+    assert.equal(kept.radar[0].date_unverified, true);
   });
 
   it("source_field aparece no removed[]", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
+      radar: [
         { url: "https://a.com/1", title: "Antigo via date", date: "2026-05-08" },
-        { url: "https://a.com/2", title: "Antigo via published_at", date: null, published_at: "2026-05-09" },
+        { url: "https://a.com/2", title: "Antigo via published_at", date: null, published_at: "2026-05-09" }
       ],
     };
     const { removed } = filterDateWindow(input, "2026-05-17", 4);
@@ -337,27 +324,30 @@ describe("filterDateWindow — fallback published_at (#1322)", () => {
   });
 });
 
-describe("bucketWindowDays (#1155)", () => {
-  it("lancamento usa max(default, 7) — 7 dias mínimo", () => {
+describe("bucketWindowDays (#1155, #1629 — agora aceita Category)", () => {
+  // #1629: bucketWindowDays foi adaptado pra receber a Category do artigo
+  // (não o Bucket). Bucket `radar` mistura articles com category=pesquisa
+  // (5d) e category=noticias (3-4d) — cada artigo usa sua category.
+  it("category lancamento usa max(default, 7) — 7 dias mínimo", () => {
     assert.equal(bucketWindowDays("lancamento", 3), 7);
     assert.equal(bucketWindowDays("lancamento", 4), 7);
     assert.equal(bucketWindowDays("lancamento", 7), 7);
     assert.equal(bucketWindowDays("lancamento", 10), 10);
   });
 
-  it("pesquisa usa max(default, 5) — 5 dias mínimo", () => {
+  it("category pesquisa usa max(default, 5) — 5 dias mínimo", () => {
     assert.equal(bucketWindowDays("pesquisa", 3), 5);
     assert.equal(bucketWindowDays("pesquisa", 5), 5);
     assert.equal(bucketWindowDays("pesquisa", 7), 7);
   });
 
-  it("noticias e tutorial usam default direto", () => {
+  it("categories noticias e tutorial usam default direto", () => {
     assert.equal(bucketWindowDays("noticias", 3), 3);
     assert.equal(bucketWindowDays("noticias", 7), 7);
     assert.equal(bucketWindowDays("tutorial", 3), 3);
   });
 
-  it("bucket desconhecido usa default", () => {
+  it("category video usa default", () => {
     assert.equal(bucketWindowDays("video", 3), 3);
     assert.equal(bucketWindowDays("foo", 5), 5);
   });
@@ -370,8 +360,7 @@ describe("filterDateWindow — janela adaptativa por bucket (#1155)", () => {
         { url: "https://a.com/1", title: "5 dias atrás", date: "2026-05-10" },
         { url: "https://a.com/2", title: "8 dias atrás", date: "2026-05-07" },
       ],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     // Default windowDays=3, mas lancamento usa 7
     const { kept, removed } = filterDateWindow(input, "2026-05-15", 3);
@@ -381,41 +370,40 @@ describe("filterDateWindow — janela adaptativa por bucket (#1155)", () => {
     assert.equal(removed[0].title, "8 dias atrás");
   });
 
-  it("pesquisa mantém artigo até 5 dias atrás (vs default 3)", () => {
+  it("radar com category=pesquisa mantém artigo até 5 dias atrás (#1629)", () => {
+    // #1629: bucket `radar` mistura pesquisa (5d) e noticias (3-4d).
+    // Window é per-article via category.
     const input = {
       lancamento: [],
-      pesquisa: [
-        { url: "https://a.com/1", title: "4 dias atrás", date: "2026-05-11" },
-        { url: "https://a.com/2", title: "6 dias atrás", date: "2026-05-09" },
+      radar: [
+        { url: "https://a.com/1", title: "4 dias atrás", date: "2026-05-11", category: "pesquisa" },
+        { url: "https://a.com/2", title: "6 dias atrás", date: "2026-05-09", category: "pesquisa" }
       ],
-      noticias: [],
     };
     const { kept, removed } = filterDateWindow(input, "2026-05-15", 3);
-    assert.equal(kept.pesquisa.length, 1, "4 dias atrás passa (≤5d)");
-    assert.equal(kept.pesquisa[0].title, "4 dias atrás");
+    assert.equal(kept.radar.length, 1, "4 dias atrás passa (≤5d para pesquisa)");
+    assert.equal(kept.radar[0].title, "4 dias atrás");
     assert.equal(removed[0].title, "6 dias atrás");
   });
 
-  it("noticias mantém comportamento default — 5 dias atrás removido", () => {
+  it("radar com category=noticias usa default 3d (#1629)", () => {
     const input = {
       lancamento: [],
-      pesquisa: [],
-      noticias: [
-        { url: "https://a.com/1", title: "1 dia atrás", date: "2026-05-14" },
-        { url: "https://a.com/2", title: "5 dias atrás", date: "2026-05-10" },
+      radar: [
+        { url: "https://a.com/1", title: "1 dia atrás", date: "2026-05-14", category: "noticias" },
+        { url: "https://a.com/2", title: "5 dias atrás", date: "2026-05-10", category: "noticias" }
       ],
     };
     const { kept, removed } = filterDateWindow(input, "2026-05-15", 3);
-    assert.equal(kept.noticias.length, 1, "1 dia atrás passa (≤3d)");
-    assert.equal(kept.noticias[0].title, "1 dia atrás");
+    assert.equal(kept.radar.length, 1, "1 dia atrás passa (≤3d)");
+    assert.equal(kept.radar[0].title, "1 dia atrás");
     assert.equal(removed[0].title, "5 dias atrás");
   });
 
   it("removed.detail menciona bucket-window pra debug", () => {
     const input = {
       lancamento: [{ url: "https://a.com/1", title: "Antigo", date: "2026-04-30" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { removed } = filterDateWindow(input, "2026-05-15", 3);
     assert.ok(removed[0].detail.includes("bucket-window=7d"));

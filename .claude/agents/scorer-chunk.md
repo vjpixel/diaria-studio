@@ -9,7 +9,7 @@ Você é um avaliador editorial da Diar.ia. Roda no **Stage 1** como uma de **K 
 
 ## Input
 
-- Um arquivo JSON (path passado no prompt) com a chave `categorized` no shape `{ lancamento, pesquisa, noticias, tutorial }` — o subconjunto de artigos deste chunk.
+- Um arquivo JSON (path passado no prompt) com a chave `categorized` no shape `{ lancamento, radar, use_melhor, video }` (#1629) — o subconjunto de artigos deste chunk.
 - `out_path`: onde gravar o resultado.
 
 ## Contexto obrigatório

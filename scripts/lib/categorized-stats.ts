@@ -14,10 +14,14 @@ import { existsSync, readFileSync } from "node:fs";
 export interface CategorizedLikeJson {
   total_considered?: number;
   lancamento?: unknown[];
+  // #1629: buckets renomeados
+  radar?: unknown[];
+  use_melhor?: unknown[];
+  video?: unknown[];
+  // Legacy (parsear edições históricas)
   pesquisa?: unknown[];
   noticias?: unknown[];
   tutorial?: unknown[];
-  video?: unknown[];
 }
 
 /**
@@ -50,12 +54,16 @@ export function computeTotalConsidered(
       const tmpData: Record<string, unknown[]> = JSON.parse(
         readFileSync(tmpCategorizedPath, "utf8"),
       );
+      // #1629: soma buckets novos + legacy pra cobrir tmp-categorized.json
+      // de edições pré-refactor.
       const total =
         (tmpData.lancamento?.length ?? 0) +
+        (tmpData.radar?.length ?? 0) +
+        (tmpData.use_melhor?.length ?? 0) +
+        (tmpData.video?.length ?? 0) +
         (tmpData.pesquisa?.length ?? 0) +
         (tmpData.noticias?.length ?? 0) +
-        (tmpData.tutorial?.length ?? 0) +
-        (tmpData.video?.length ?? 0);
+        (tmpData.tutorial?.length ?? 0);
       if (total > 0) return total;
     } catch {
       // Non-fatal — tmp-categorized.json may be malformed
@@ -65,9 +73,11 @@ export function computeTotalConsidered(
   // Fallback: sum buckets do JSON corrente
   const fallback =
     (data.lancamento?.length ?? 0) +
+    (data.radar?.length ?? 0) +
+    (data.use_melhor?.length ?? 0) +
+    (data.video?.length ?? 0) +
     (data.pesquisa?.length ?? 0) +
     (data.noticias?.length ?? 0) +
-    (data.tutorial?.length ?? 0) +
-    (data.video?.length ?? 0);
+    (data.tutorial?.length ?? 0);
   return fallback > 0 ? fallback : null;
 }

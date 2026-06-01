@@ -259,6 +259,11 @@ export function extractUrlsFromApproved(
     highlights?: Array<{ url?: string; article?: { url?: string } }>;
     runners_up?: Array<{ url?: string; article?: { url?: string } }>;
     lancamento?: Array<{ url?: string }>;
+    // #1629: buckets renomeados
+    radar?: Array<{ url?: string }>;
+    use_melhor?: Array<{ url?: string }>;
+    video?: Array<{ url?: string }>;
+    // Legacy (parsear edições históricas pré-#1629)
     pesquisa?: Array<{ url?: string }>;
     noticias?: Array<{ url?: string }>;
     tutorial?: Array<{ url?: string }>;
@@ -266,6 +271,11 @@ export function extractUrlsFromApproved(
 
   const urls = new Set<string>();
   for (const a of r.lancamento ?? []) if (a.url) urls.add(a.url);
+  // #1629 buckets
+  for (const a of r.radar ?? []) if (a.url) urls.add(a.url);
+  for (const a of r.use_melhor ?? []) if (a.url) urls.add(a.url);
+  for (const a of r.video ?? []) if (a.url) urls.add(a.url);
+  // Legacy buckets
   for (const a of r.pesquisa ?? []) if (a.url) urls.add(a.url);
   for (const a of r.noticias ?? []) if (a.url) urls.add(a.url);
   for (const a of r.tutorial ?? []) if (a.url) urls.add(a.url);

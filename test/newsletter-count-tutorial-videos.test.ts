@@ -43,8 +43,8 @@ Texto.
 `;
     const counts = countSelectedItems(md);
     assert.equal(counts.destaques, 1);
-    assert.equal(counts.noticias, 1);
-    assert.equal(counts.tutoriais, 1, "USE MELHOR deve contar como 1 tutorial");
+    assert.equal(counts.radar, 1);
+    assert.equal(counts.use_melhor, 1, "USE MELHOR deve contar como 1 tutorial");
     assert.equal(counts.total, 3);
   });
 
@@ -101,7 +101,7 @@ Frase.
 Frase.
 `;
     const counts = countSelectedItems(md);
-    assert.equal(counts.noticias, 2);
+    assert.equal(counts.radar, 2);
     assert.equal(counts.total, 3);
   });
 
@@ -146,7 +146,7 @@ Frase.
 Descrição.
 `;
     const counts = countSelectedItems(md);
-    assert.equal(counts.tutoriais, 1);
+    assert.equal(counts.use_melhor, 1);
     assert.equal(counts.total, 1);
   });
 

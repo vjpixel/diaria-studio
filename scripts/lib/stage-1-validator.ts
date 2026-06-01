@@ -89,7 +89,7 @@ export function validateOutputsPresent(editionDir: string): AssertionResult {
 }
 
 /**
- * Pure: calcula ratio de IA-relevance no bucket noticias e avisa se < 70%.
+ * Pure: calcula ratio de IA-relevance no bucket radar e avisa se < 70%.
  * Usa scripts/lib/ai-relevance.ts pra single source of truth do regex (#642).
  *
  * Bug coberto (#580): feeds generalistas (g1, exame) sem topic_filter
@@ -102,9 +102,9 @@ export function validateOutputsPresent(editionDir: string): AssertionResult {
  */
 export interface RelevanceRatioOptions {
   threshold?: number;
-  /** Restringe a checagem a este bucket. Default `noticias` (mais sujeito a
-   *  feeds generalistas). */
-  bucket?: "noticias" | "lancamento" | "pesquisa" | "tutorial";
+  /** Restringe a checagem a este bucket. Default `radar` (#1629 — antes
+   * `noticias`; mais sujeito a feeds generalistas). */
+  bucket?: "radar" | "lancamento" | "use_melhor" | "video";
 }
 
 export function validateAiRelevanceRatio(
@@ -112,7 +112,7 @@ export function validateAiRelevanceRatio(
   opts: RelevanceRatioOptions = {},
 ): AssertionResult {
   const threshold = opts.threshold ?? 0.7;
-  const bucket = opts.bucket ?? "noticias";
+  const bucket = opts.bucket ?? "radar";
   const articles = (categorized[bucket] ?? []) as Article[];
 
   if (articles.length === 0) {
@@ -311,14 +311,14 @@ export function validateSequentialNumbering(
  * (#488); centralizado aqui pra rodar como assertion deterministica antes
  * do gate.
  *
- * Defaults: lancamento ≥ 3, pesquisa ≥ 3, noticias ≥ 5, tutorial ≥ 3 (#1568).
+ * Defaults (#1629): lancamento ≥ 3, radar ≥ 8, use_melhor ≥ 3.
+ * Antes radar era 2 buckets (pesquisa ≥ 3 + noticias ≥ 5); somados dão 8.
  * Override via opts.
  */
 export interface SectionMinimumsOptions {
   minLancamento?: number;
-  minPesquisa?: number;
-  minNoticias?: number;
-  minTutorial?: number;
+  minRadar?: number;
+  minUseMelhor?: number;
 }
 
 export function validateSectionMinimums(
@@ -326,37 +326,34 @@ export function validateSectionMinimums(
   opts: SectionMinimumsOptions = {},
 ): AssertionResult {
   const minL = opts.minLancamento ?? 3;
-  const minP = opts.minPesquisa ?? 3;
-  const minN = opts.minNoticias ?? 5;
-  const minT = opts.minTutorial ?? 3;
+  const minR = opts.minRadar ?? 8;
+  const minU = opts.minUseMelhor ?? 3;
 
   const counts = {
     lancamento: ((categorized.lancamento as Article[] | undefined) ?? []).length,
-    pesquisa: ((categorized.pesquisa as Article[] | undefined) ?? []).length,
-    noticias: ((categorized.noticias as Article[] | undefined) ?? []).length,
-    tutorial: ((categorized.tutorial as Article[] | undefined) ?? []).length,
+    radar: ((categorized.radar as Article[] | undefined) ?? []).length,
+    use_melhor: ((categorized.use_melhor as Article[] | undefined) ?? []).length,
   };
   const shortfalls: string[] = [];
   if (counts.lancamento < minL) shortfalls.push(`lancamento ${counts.lancamento}/${minL}`);
-  if (counts.pesquisa < minP) shortfalls.push(`pesquisa ${counts.pesquisa}/${minP}`);
-  if (counts.noticias < minN) shortfalls.push(`noticias ${counts.noticias}/${minN}`);
-  // #1568: tutorial bucket precisa ter ≥3 candidatos pra alimentar a seção
+  if (counts.radar < minR) shortfalls.push(`radar ${counts.radar}/${minR}`);
+  // #1568: use_melhor bucket precisa ter ≥3 candidatos pra alimentar a seção
   // "USE MELHOR" — editor escolhe 1 no gate. Warn (não blocker) porque a
   // seção é opcional na newsletter.
-  if (counts.tutorial < minT) shortfalls.push(`tutorial ${counts.tutorial}/${minT}`);
+  if (counts.use_melhor < minU) shortfalls.push(`use_melhor ${counts.use_melhor}/${minU}`);
 
   if (shortfalls.length > 0) {
     return {
       name: "section_minimums",
       status: "warn",
-      message: `Mínimos por seção abaixo do alvo (#488, #1568): ${shortfalls.join(", ")}.`,
-      details: { counts, minimums: { minL, minP, minN, minT } },
+      message: `Mínimos por seção abaixo do alvo (#488, #1568, #1629): ${shortfalls.join(", ")}.`,
+      details: { counts, minimums: { minL, minR, minU } },
     };
   }
   return {
     name: "section_minimums",
     status: "ok",
-    message: `Mínimos por seção atendidos: lançamentos ${counts.lancamento}, pesquisas ${counts.pesquisa}, notícias ${counts.noticias}, tutoriais ${counts.tutorial}.`,
+    message: `Mínimos por seção atendidos: lançamentos ${counts.lancamento}, radar ${counts.radar}, use_melhor ${counts.use_melhor}.`,
     details: { counts },
   };
 }

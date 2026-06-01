@@ -62,9 +62,10 @@ export const CategorizedJsonSchema = z.object({
   highlights: z.array(HighlightSchema).optional(),
   runners_up: z.array(HighlightSchema).optional(),
   lancamento: z.array(ArticleSchema),
-  pesquisa: z.array(ArticleSchema),
-  noticias: z.array(ArticleSchema),
-  tutorial: z.array(ArticleSchema).optional(),
+  // #1629: buckets renomeados pra refletir seções da newsletter.
+  // pesquisa + noticias fundidos em radar; tutorial → use_melhor.
+  radar: z.array(ArticleSchema),
+  use_melhor: z.array(ArticleSchema).optional(),
   video: z.array(ArticleSchema).optional(),
   total_considered: z.number().optional(),
   clusters: z.unknown().optional(),
@@ -80,9 +81,9 @@ export const ApprovedJsonSchema = z.object({
   highlights: z.array(HighlightSchema).min(1).max(3),
   runners_up: z.array(HighlightSchema).optional(),
   lancamento: z.array(ArticleSchema),
-  pesquisa: z.array(ArticleSchema),
-  noticias: z.array(ArticleSchema),
-  tutorial: z.array(ArticleSchema).optional(),
+  // #1629: buckets renomeados pra refletir seções da newsletter.
+  radar: z.array(ArticleSchema),
+  use_melhor: z.array(ArticleSchema).optional(),
   video: z.array(ArticleSchema).optional(),
   coverage: z.object({
     editor_submitted: z.number().optional(),

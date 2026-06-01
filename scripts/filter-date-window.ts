@@ -23,10 +23,10 @@
  *     [--edition-date YYYY-MM-DD] \
  *     [--out <out.json>]
  *
- * Input:  objeto JSON com chaves { lancamento, pesquisa, noticias },
+ * Input:  objeto JSON com chaves { lancamento, radar, use_melhor, video },
  *         cada uma contendo array de artigos com campo `date` (YYYY-MM-DD ou null).
  *
- * Output: { kept: { lancamento, pesquisa, noticias }, removed: [...], cutoff, anchor }
+ * Output: { kept: { lancamento, radar, use_melhor, video }, removed: [...], cutoff, anchor }
  *         `removed` inclui motivo e detalhes para log.
  *
  * Artigos com date=null são mantidos (benefício da dúvida) mas marcados
@@ -73,9 +73,9 @@ export function effectiveDate(article: {
 
 interface CategorizedInput {
   lancamento: Article[];
-  pesquisa: Article[];
-  noticias: Article[];
-  tutorial?: Article[];
+  radar: Article[];
+  use_melhor: Article[];
+  video?: Article[];
   /**
    * Campos extras (ex: `clusters[]` produzido por `topic-cluster.ts`, ou
    * metadata de stages futuros) são passados through inalterados pelo
@@ -117,6 +117,10 @@ export function todayUtcIso(): string {
  * aumenta precisão (só o que é REALMENTE recente vai pra leitor).
  */
 export function bucketWindowDays(bucket: string, defaultDays: number): number {
+  // #1629: a função recebe a `category` do artigo (não o bucket). Antes
+  // bucket e category eram nomes idênticos; após o rename, bucket `radar`
+  // agrupa articles de category `pesquisa` (5d) e `noticias` (3-4d) — então
+  // a janela tem que ser per-article via category.
   switch (bucket) {
     case "lancamento":
       return Math.max(defaultDays, 7);
@@ -124,6 +128,7 @@ export function bucketWindowDays(bucket: string, defaultDays: number): number {
       return Math.max(defaultDays, 5);
     case "noticias":
     case "tutorial":
+    case "video":
     default:
       return defaultDays;
   }
@@ -151,27 +156,30 @@ export function filterDateWindow(
   // Passthrough de campos extras (#247): `clusters[]` do topic-cluster, ou
   // qualquer metadata adicional do input. Os 4 buckets são reinicializados
   // logo abaixo — não tem como o spread lá em cima sobrescrever.
-  const { lancamento, pesquisa, noticias, tutorial, ...rest } = input;
-  void lancamento; void pesquisa; void noticias; void tutorial; // descartar — substituídos abaixo
+  const { lancamento, radar, use_melhor, video, ...rest } = input;
+  void lancamento; void radar; void use_melhor; void video; // descartar — substituídos abaixo
   const kept: Required<CategorizedInput> = {
     ...rest,
     lancamento: [],
-    pesquisa: [],
-    noticias: [],
-    tutorial: [],
+    radar: [],
+    use_melhor: [],
+    video: [],
   };
 
-  for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial"] as const) {
-    // #1155: cada bucket tem seu próprio windowDays
-    const bucketDays = bucketWindowDays(bucket, windowDays);
-    const bucketAnchor = new Date(anchorDate + "T00:00:00Z");
-    bucketAnchor.setUTCDate(bucketAnchor.getUTCDate() - bucketDays);
-    const bucketCutoff = bucketAnchor.toISOString().split("T")[0];
-    const bucketDetailSuffix = editionDate
-      ? ` (anchor ${anchorDate} - ${bucketDays}d; edition ${editionDate}; bucket-window=${bucketDays}d)`
-      : ` (anchor ${anchorDate} - ${bucketDays}d; bucket-window=${bucketDays}d)`;
-
+  for (const bucket of ["lancamento", "radar", "use_melhor", "video"] as const) {
     for (const article of input[bucket] || []) {
+      // #1629: a janela é por-category do artigo, não por-bucket. Bucket
+      // `radar` mistura `pesquisa` (5d) e `noticias` (3-4d) — cada artigo
+      // usa sua category individual.
+      const articleCategory = (article.category as string | undefined) ?? bucket;
+      const bucketDays = bucketWindowDays(articleCategory, windowDays);
+      const bucketAnchor = new Date(anchorDate + "T00:00:00Z");
+      bucketAnchor.setUTCDate(bucketAnchor.getUTCDate() - bucketDays);
+      const bucketCutoff = bucketAnchor.toISOString().split("T")[0];
+      const bucketDetailSuffix = editionDate
+        ? ` (anchor ${anchorDate} - ${bucketDays}d; edition ${editionDate}; bucket-window=${bucketDays}d)`
+        : ` (anchor ${anchorDate} - ${bucketDays}d; bucket-window=${bucketDays}d)`;
+
       const eff = effectiveDate(article);
       // Sem date nem published_at = mantém com benefício da dúvida (#1322
       // preserva regra antiga). Editor-submitted normalmente cai aqui e está
@@ -267,12 +275,12 @@ function main() {
 
   const totalInput =
     (input.lancamento?.length || 0) +
-    (input.pesquisa?.length || 0) +
-    (input.noticias?.length || 0) +
-    (input.tutorial?.length || 0);
+    (input.radar?.length || 0) +
+    (input.use_melhor?.length || 0) +
+    (input.video?.length || 0);
 
   const totalKept =
-    kept.lancamento.length + kept.pesquisa.length + kept.noticias.length + kept.tutorial.length;
+    kept.lancamento.length + kept.radar.length + kept.use_melhor.length + kept.video.length;
 
   console.error(
     `filter-date-window: ${totalInput} input → ${totalKept} kept, ${removed.length} removed`

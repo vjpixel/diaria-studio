@@ -42,10 +42,9 @@ Exit code handling:
       --write-removed data/editions/{AAMMDD}/_internal/02-lancamentos-removed.json
     ```
     Exit 1 (URLs removidas) é esperado quando o approved tem URL não-oficial — não bloquear, só informativo.
-- Pesquisas: top-3 por score (se houver mais de 3, truncar nos 3 de maior score).
-- Outras Notícias: `max(2, 12 − destaques − lançamentos_final − pesquisas_final)` — mínimo de 2 garantido.
+- Radar: `max(5, 12 − destaques − lançamentos_final)` (#1629 — substitui caps separados de Pesquisas + Outras Notícias).
   - `lançamentos_final` deve ser contado **após** o passo de validação acima (lançamentos inválidos já removidos).
-  - Se validação de lançamentos removeu N itens, os N slots liberados são preenchidos a partir do pool de `noticias` (top por score, respeitando o cap resultante).
+  - Se validação de lançamentos removeu N itens, os N slots liberados são preenchidos a partir do pool de `radar` (top por score, respeitando o cap resultante).
 - **Aplicar caps via script TS (#907)** — não confiar no writer LLM pra respeitar:
   ```bash
   npx tsx scripts/apply-stage2-caps.ts \
@@ -70,10 +69,15 @@ Exit code handling:
 
 **Pré:** ler `_internal/01-approved-capped.json` direto via `Read` tool e extrair `highlights[]`. Cada highlight tem `{ rank, score, bucket, reason, article }`. Verificar que `highlights.length === 3` (fallback condition). Construir `peer_titles_per_destaque` inline: para cada destaque N, peer_titles é o array de `highlights[i].article.title` para i ≠ N-1.
 
-`category_label` é derivado de `highlights[N-1].bucket`:
+`category_label` é derivado de `highlights[N-1].bucket` (= article category interno):
 - `lancamento` → "LANÇAMENTO"
 - `pesquisa` → "PESQUISA"
 - `noticias` → "MERCADO" (ou ajustar baseado no tema)
+- `tutorial` → "USE MELHOR"
+- `video` → "VÍDEO"
+
+(#1629: `bucket` no highlight carrega a Category individual do artigo; o
+mapping pra seção da newsletter — RADAR — acontece no render layer.)
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
@@ -163,9 +167,9 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
     --md data/editions/{AAMMDD}/_internal/02-draft.md \
     --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
   ```
-  Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com `bucket: "noticias"` que o writer põe em LANÇAMENTOS por associação temática.
+  Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
 
-- **Lint section-counts (#358, #907).** Validar que cada seção secundária respeita o cap de #358 (lançamentos≤5, pesquisas≤3, outras=`max(2, 12-d-l-p)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante:
+- **Lint section-counts (#358, #907, #1629).** Validar que cada seção secundária respeita o cap (lançamentos≤5, radar=`max(5, 12-d-l)`). O writer pode ignorar caps mesmo recebendo `01-approved-capped.json` se ele decidir incluir runners-up por achar relevante:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --check section-counts \

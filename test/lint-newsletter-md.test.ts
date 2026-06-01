@@ -85,8 +85,7 @@ describe("buildUrlBucketMap", () => {
     const approved = {
       highlights: [{ url: "https://x/destaque", title: "D1" }],
       lancamento: [{ url: "https://x/destaque", title: "D1" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const { byUrl } = buildUrlBucketMap(approved);
     assert.equal(byUrl.get("https://x/destaque")?.bucket, "highlights");
@@ -96,13 +95,15 @@ describe("buildUrlBucketMap", () => {
     const approved = {
       highlights: [],
       lancamento: [{ url: "https://l/x" }],
-      pesquisa: [{ url: "https://p/x" }],
-      noticias: [{ url: "https://n/x" }],
+      radar: [
+        { url: "https://p/x" },
+        { url: "https://n/x" }
+      ],
     };
     const { byUrl } = buildUrlBucketMap(approved);
     assert.equal(byUrl.get("https://l/x")?.bucket, "lancamento");
-    assert.equal(byUrl.get("https://p/x")?.bucket, "pesquisa");
-    assert.equal(byUrl.get("https://n/x")?.bucket, "noticias");
+    assert.equal(byUrl.get("https://p/x")?.bucket, "radar");
+    assert.equal(byUrl.get("https://n/x")?.bucket, "radar");
   });
 });
 
@@ -111,8 +112,10 @@ describe("lintNewsletter", () => {
     const approved = {
       highlights: [],
       lancamento: [{ url: "https://openai.com/x" }],
-      pesquisa: [{ url: "https://arxiv.org/y" }],
-      noticias: [{ url: "https://techcrunch.com/z" }],
+      radar: [
+        { url: "https://arxiv.org/y" },
+        { url: "https://techcrunch.com/z" }
+      ],
     };
     const md = [
       "**LANÇAMENTOS**",
@@ -132,13 +135,12 @@ describe("lintNewsletter", () => {
     assert.equal(r.errors.length, 0);
   });
 
-  it("erro quando URL com bucket noticias está em LANÇAMENTOS (caso ComfyUI 260426)", () => {
+  it("erro quando URL com bucket radar está em LANÇAMENTOS (caso ComfyUI 260426)", () => {
     const approved = {
       highlights: [],
       lancamento: [],
-      pesquisa: [],
-      noticias: [
-        { url: "https://techcrunch.com/comfyui-500m", title: "ComfyUI hits $500M valuation" },
+      radar: [
+        { url: "https://techcrunch.com/comfyui-500m", title: "ComfyUI hits $500M valuation" }
       ],
     };
     const md = [
@@ -150,12 +152,13 @@ describe("lintNewsletter", () => {
     assert.equal(r.ok, false);
     assert.equal(r.errors.length, 1);
     assert.equal(r.errors[0].expected_bucket, "lancamento");
-    assert.equal(r.errors[0].found_in_bucket, "noticias");
+    assert.equal(r.errors[0].found_in_bucket, "radar");
     assert.ok(r.errors[0].title?.includes("ComfyUI"));
   });
 
   it("erro quando URL não existe no approved", () => {
-    const approved = { highlights: [], lancamento: [], pesquisa: [], noticias: [] };
+    const approved = { highlights: [], lancamento: [], radar: [
+        ], radar: [] };
     const md = [
       "**LANÇAMENTOS**",
       "Artigo fantasma",
@@ -170,8 +173,8 @@ describe("lintNewsletter", () => {
     const approved = {
       highlights: [{ url: "https://x/destaque", title: "Destaque" }],
       lancamento: [],
-      pesquisa: [],
-      noticias: [],
+      radar: [
+      ],
     };
     const md = [
       "**LANÇAMENTOS**",
@@ -188,8 +191,7 @@ describe("lintNewsletter", () => {
     const approved = {
       highlights: [],
       lancamento: [{ url: "https://openai.com/x" }],
-      pesquisa: [],
-      noticias: [],
+      radar: [],
     };
     const md = [
       "**LANÇAMENTOS**",
@@ -1491,7 +1493,7 @@ describe("lintIntroCount (#743)", () => {
       "Descrição.",
     ].join("\n");
     const counts = countSelectedItems(md);
-    assert.equal(counts.noticias, 2, `expected 2, got ${counts.noticias}`);
+    assert.equal(counts.radar, 2, `expected 2, got ${counts.radar}`);
     assert.equal(counts.total, 2);
   });
 

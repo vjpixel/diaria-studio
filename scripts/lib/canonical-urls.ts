@@ -34,9 +34,9 @@ interface ApprovedJsonShape {
   highlights?: ArticleLike[];
   runners_up?: ArticleLike[];
   lancamento?: ArticleLike[];
-  pesquisa?: ArticleLike[];
-  noticias?: ArticleLike[];
-  tutorial?: ArticleLike[];
+  // #1629: buckets renomeados
+  radar?: ArticleLike[];
+  use_melhor?: ArticleLike[];
   video?: ArticleLike[];
 }
 
@@ -75,7 +75,7 @@ export function getCanonicalUrls(approved: ApprovedJsonShape): Map<string, strin
     const e = pickEntry(r);
     addEntry(e.title, e.url);
   }
-  for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const) {
+  for (const bucket of ["lancamento", "radar", "use_melhor", "video"] as const) {
     for (const a of approved[bucket] ?? []) {
       const e = pickEntry(a);
       addEntry(e.title, e.url);
@@ -153,7 +153,7 @@ export function findMismatchedUrls(
     addUrl(r.article?.url);
     addUrl(r.url);
   }
-  for (const bucket of ["lancamento", "pesquisa", "noticias", "tutorial", "video"] as const) {
+  for (const bucket of ["lancamento", "radar", "use_melhor", "video"] as const) {
     for (const a of approved[bucket] ?? []) {
       addUrl(a.url);
     }

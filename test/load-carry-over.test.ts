@@ -20,8 +20,9 @@ describe("collectApprovedUrls", () => {
         { article: { url: "https://b.com" } },
       ],
       lancamento: [{ article: { url: "https://c.com" } }],
-      pesquisa: [{ url: "https://d.com" }],
-      noticias: [],
+      radar: [
+        { url: "https://d.com" }
+      ],
     });
     assert.equal(urls.size, 4);
     assert.ok(urls.has("https://a.com"));
@@ -43,10 +44,10 @@ describe("flattenCategorized", () => {
         { url: "https://r2.com", score: 65 } as { url: string; score: number },
       ],
       lancamento: [{ url: "https://l1.com", score: 80 }],
-      pesquisa: [{ url: "https://p1.com", score: 75 }],
-      noticias: [
+      radar: [
+        { url: "https://p1.com", score: 75 },
         { url: "https://n1.com", score: 60 },
-        { url: "https://n2.com", score: 55 },
+        { url: "https://n2.com", score: 55 }
       ],
     });
     assert.equal(all.length, 6);
