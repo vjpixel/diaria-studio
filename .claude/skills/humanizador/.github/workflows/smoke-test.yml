@@ -1,0 +1,67 @@
+name: smoke test
+
+# Disparado manualmente: vai em Actions → smoke test → Run workflow.
+# Não roda em cada push porque cada execução custa API + saída do LLM
+# é não-determinística. Use antes de cada release ou para investigar
+# regressão suspeita.
+#
+# Requer secret ANTHROPIC_API_KEY no repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Modelo (ex.: claude-sonnet-4-6, claude-haiku-4-5-20251001)"
+        required: false
+        default: "claude-sonnet-4-6"
+      fixture:
+        description: "Substring para filtrar fixtures (vazio = todos)"
+        required: false
+        default: ""
+      runs:
+        description: "Quantas vezes rodar cada fixture (vazio = default 3)"
+        required: false
+        default: ""
+      tolerance:
+        description: "Falhas toleradas por fixture, de N runs (vazio = default 1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke test (manual)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet anthropic==0.45.0 pyyaml==6.0.2
+
+      - name: Run smoke test
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SMOKE_MODEL: ${{ inputs.model }}
+          SMOKE_FIXTURE: ${{ inputs.fixture }}
+          SMOKE_RUNS: ${{ inputs.runs }}
+          SMOKE_TOLERANCE: ${{ inputs.tolerance }}
+        run: |
+          args=(--model "$SMOKE_MODEL")
+          if [ -n "$SMOKE_FIXTURE" ]; then
+            args+=(--fixture "$SMOKE_FIXTURE")
+          fi
+          if [ -n "$SMOKE_RUNS" ]; then
+            args+=(--runs "$SMOKE_RUNS")
+          fi
+          if [ -n "$SMOKE_TOLERANCE" ]; then
+            args+=(--tolerance "$SMOKE_TOLERANCE")
+          fi
+          python3 scripts/smoke_test.py "${args[@]}"

@@ -189,7 +189,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false), {
+    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition)), {
       status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -262,7 +262,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       }
     : null;
 
-  return new Response(votePageHtml(msg, true, nicknameForm, resultImages), {
+  return new Response(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition)), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
 }
@@ -682,6 +682,17 @@ export function scoreByMonthEntriesToLeaderboard(
 }
 
 /**
+ * Pure (260601): decide se mostra a tela "ainda não começou" pro mês pedido.
+ * Só quando o mês é estritamente futuro (`slugCmp > 0`) E não há nenhum voto
+ * registrado ainda (`entryCount === 0`). Edição D+1 publica no dia 1º e já
+ * acumula votos no bucket do mês antes de `currentMonthSlugBrt` virar — então
+ * um mês "futuro" com votos deve renderizar a leaderboard, não a mensagem.
+ */
+export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): boolean {
+  return slugCmp > 0 && entryCount === 0;
+}
+
+/**
  * Handler `/leaderboard/{YYYY-MM}` — lê apenas score-by-month:{slug}:* e
  * renderiza o mesmo HTML do leaderboard atual. Cache header diferente
  * conforme mês passado (immutable) vs corrente (1h).
@@ -699,7 +710,16 @@ async function handleLeaderboardByMonth(
 
   const currentSlug = currentMonthSlugBrt(new Date());
   const slugCmp = monthSlugCompare(monthSlug, currentSlug);
-  if (slugCmp > 0) {
+
+  // #1348: usa snapshot pré-computado em vez de list+gets inline.
+  const entries = await getOrComputeSnapshot(env, monthSlug);
+  const scores = scoreByMonthEntriesToLeaderboard(entries);
+
+  // "Ainda não começou" só quando o mês é futuro E não há votos ainda.
+  // Edição D+1 (publica dia 1º) já acumula votos no bucket do mês antes de
+  // `currentMonthSlugBrt` virar — sem o `entries.length === 0`, o leitor que
+  // votou via o link e via "ainda não começou" em vez do próprio voto (260601).
+  if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
     return new Response(votePageHtml(
       `O leaderboard de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
       false,
@@ -707,10 +727,6 @@ async function handleLeaderboardByMonth(
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
-
-  // #1348: usa snapshot pré-computado em vez de list+gets inline.
-  const entries = await getOrComputeSnapshot(env, monthSlug);
-  const scores = scoreByMonthEntriesToLeaderboard(entries);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   const isPast = slugCmp < 0;
   // #1345 followup: cache curto pro mês corrente — votos atualizam em real-time
@@ -855,11 +871,12 @@ export interface VoteResultImages {
   clickedSide: "A" | "B";
 }
 
-function votePageHtml(
+export function votePageHtml(
   message: string,
   success: boolean,
   nicknameForm?: { email: string; sig: string } | null,
   resultImages?: VoteResultImages | null,
+  leaderboardSlug?: string | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -906,7 +923,7 @@ function votePageHtml(
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${formHtml}
-<p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="/leaderboard">Ver leaderboard</a></p>
+<p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="${leaderboardSlug ? `/leaderboard/${leaderboardSlug}` : "/leaderboard"}">Ver leaderboard</a></p>
 </body>
 </html>`;
 }

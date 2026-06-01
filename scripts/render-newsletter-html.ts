@@ -89,6 +89,9 @@ export interface EIA {
   leaderboardPodium?: { nickname: string; rank: number }[];
   /** Label do período pro título do bloco (ex: "Maio"). */
   leaderboardPeriod?: string;
+  /** Slug YYYY-MM do período — usado pra linkar o bloco pra
+   * `/leaderboard/{YYYY-MM}` (URL histórica permanente, #1345). */
+  leaderboardPeriodSlug?: string;
 }
 
 interface NewsletterContent {
@@ -108,6 +111,12 @@ interface NewsletterContent {
    * outros Y artigos. Selecionamos os Z mais relevantes...". Parseada do reviewed.md, renderizada
    * como bloco transparente no topo do email (após o título, antes do primeiro destaque). */
   coverageLine?: string | null;
+  /** #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). Parseado
+   * de um parágrafo `**🎉 ...**` ou `**📣 ...**` na região de intro do reviewed.md
+   * (após a coverage line, antes do primeiro destaque). Renderizado como callout
+   * com borda teal — diferente da coverage line (cinza itálico), pra não passar
+   * despercebido. */
+  introCallout?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -183,7 +192,7 @@ export function truncateAtSectionTerminator(text: string): string {
 // Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
 // seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
 // NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
-const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?)(?:\*\*)?$/m;
+const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?|USE MELHOR)(?:\*\*)?$/m;
 
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
@@ -197,7 +206,7 @@ export function parseSections(text: string): Section[] {
     // (mapping aceita só plural). LANÇAMENTO → LANÇAMENTOS etc.
     // #1569: RADAR é invariante (singular = plural) — não pluralizar.
     const rawName = sectionMatch[1];
-    const name = rawName === "RADAR" || rawName.endsWith("S") ? rawName : rawName + "S";
+    const name = rawName === "RADAR" || rawName === "USE MELHOR" || rawName.endsWith("S") ? rawName : rawName + "S";
     const emoji = sectionEmojiPrefix(name).trim() || "📰";
     // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
     // consumir esses blocos como items quando writer omitir `---`.
@@ -466,6 +475,21 @@ export function extractCoverageLine(text: string): string | null {
   return m ? m[0].trim() : null;
 }
 
+/**
+ * Pure (#1648): extrai um CTA de destaque (ex: convite pro sorteio ao vivo) da
+ * região de intro — um parágrafo em negrito iniciado por 🎉 ou 📣, posicionado
+ * antes do primeiro `**DESTAQUE`. Retorna o texto interno (markdown de links
+ * preservado pra processInlineLinks), ou `null` se ausente.
+ *
+ * Diferente da coverage line: renderizado como callout com borda, não some no
+ * meio do parágrafo cinza (feedback 260601 — sorteio não era encontrado no topo).
+ */
+export function extractIntroCallout(text: string): string | null {
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  const m = introRegion.match(/^\*\*\s*((?:🎉|📣)[\s\S]+?)\*\*\s*$/m);
+  return m ? m[1].trim() : null;
+}
+
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -511,6 +535,9 @@ function extractContent(editionDir: string): NewsletterContent {
         eia.leaderboardTop1 = parsed.top1;
       }
       eia.leaderboardPeriod = parsed.period || undefined;
+      // #1345: slug YYYY-MM pra linkar o bloco pra /leaderboard/{slug}
+      // (URL histórica). Mantido mesmo sem líderes — habilita o link-convite.
+      eia.leaderboardPeriodSlug = parsed.period_slug || undefined;
     } catch {
       // Corrupted → skip, bloco omitido
     }
@@ -524,6 +551,8 @@ function extractContent(editionDir: string): NewsletterContent {
 
   // #1093: linha de cobertura no topo da newsletter.
   const coverageLine = extractCoverageLine(reviewedText);
+  // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
+  const introCallout = extractIntroCallout(reviewedText);
 
   return {
     title: destaques[0].title,
@@ -536,6 +565,7 @@ function extractContent(editionDir: string): NewsletterContent {
     encerrar,
     erroIntencional,
     coverageLine,
+    introCallout,
   };
 }
 
@@ -772,6 +802,23 @@ export function renderCoverage(text: string): string {
 </td></tr>`;
 }
 
+/**
+ * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). Callout com
+ * fundo claro + borda esquerda teal, texto em peso 600 — visualmente distinto da
+ * coverage line (cinza itálico) pra não passar despercebido. Links em markdown
+ * são processados via processInlineLinks.
+ */
+export function renderIntroCallout(text: string): string {
+  return `<!-- #1648 intro callout (sorteio/CTA) -->
+<tr><td align="left" style="padding:16px 2px 0 2px;text-align:left;word-break:break-word;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border-left:4px solid ${TEAL};border-radius:4px;">
+    <tr><td style="padding:12px 16px;">
+      <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
+    </td></tr>
+  </table>
+</td></tr>`;
+}
+
 function renderDestaque(d: RenderDestaque): string {
   // #1085: sem box ciano — destaques separados por <hr> finos. Mantém
   // imagem inline em D1 (cover) e D2/D3 sem (#1077, memory
@@ -795,10 +842,20 @@ function renderEIA(eia: EIA): string {
   // tem semântica de label, não de caption.
   const captionStyle = paragraphStyle + "font-style:italic;";
 
-  // #1160: bloco leaderboard top1 no rodapé do È IA?. Omitido quando ausente.
-  // Formato: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
-  // Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
+  // #1160: bloco leaderboard no rodapé do È IA?. Omitido quando ausente.
+  // #1646: posições ordinais por acertos, sem percentual.
+  // Formato: "🏆 Vencedores de Maio: 1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida"
   const leaderboardRow = renderLeaderboardTop1Row(eia, paragraphStyle);
+
+  // #1630: emite a linha "Resultado da última edição: X% acertaram" (parseada
+  // em prevResultLine mas antes nunca renderizada). Mostra o % de acertos da
+  // edição anterior no rodapé do bloco É IA?.
+  const prevResultHtml = eia.prevResultLine
+    ? `
+        <tr><td align="left" style="padding:8px 0 0 0;">
+          <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(eia.prevResultLine)}</p>
+        </td></tr>`
+    : "";
 
   // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
   // interativo, sem o border ciano grosso dos destaques antigos. Padding
@@ -835,7 +892,7 @@ ${renderRule()}
         </td></tr>
         <tr><td align="left" style="padding:16px 0 0 0;">
           <p style="${captionStyle}">${creditHtml}</p>
-        </td></tr>
+        </td></tr>${prevResultHtml}
 ${leaderboardRow}
       </table>
     </td></tr>
@@ -846,38 +903,56 @@ ${leaderboardRow}
 /**
  * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
  * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
- * público. Só nomes — sem percentual nem placement (decisão editorial pós-#1160).
+ * público. #1646: posições ordinais por acertos, sem percentual nem % de ranking.
  *
  * Formato:
- *   - 1 leader: "🏆 Liderança de Maio: Davyd Wilkerson"
- *   - 2 leitores: "🏆 Liderança de Maio: Davyd e Luisao P"
- *   - 3+ leitores: "🏆 Liderança de Maio: Davyd, Luisao P, Vanessa, Alice e Bob"
- *   - Vazio: retorna ""
+ *   - 1 leader: "🏆 Vencedores de Maio: 1º Davyd Wilkerson"
+ *   - 2 leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P"
+ *   - 3+ leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P, 3º Vanessa"
+ *   - Vazio (1ª edição do mês): convite linkado pra leaderboard do mês, ou ""
  *
  * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
  * only) pra compat com arquivos legacy.
  */
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
-  // Source: prefere podium (#1160 followup), cai em top1 legacy.
-  const names: string[] = eia.leaderboardPodium && eia.leaderboardPodium.length > 0
-    ? eia.leaderboardPodium.map((e) => e.nickname)
-    : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
-      ? eia.leaderboardTop1.map((e) => e.nickname)
-      : [];
-  if (names.length === 0) return "";
+  // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
+  // rank pra exibir posições ordinais (1º, 2º, 3º). #1646: ranking por acertos.
+  const ranked: { nickname: string; rank: number }[] =
+    eia.leaderboardPodium && eia.leaderboardPodium.length > 0
+      ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
+      : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
+        ? eia.leaderboardTop1.map((e, i) => ({ nickname: e.nickname, rank: i + 1 }))
+        : [];
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+  // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
+  const slug = eia.leaderboardPeriodSlug || "";
+  const lbUrl = slug ? `${POLL_WORKER_URL}/leaderboard/${slug}` : "";
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
 
-  let phrase: string;
-  if (names.length === 1) {
-    phrase = names[0];
-  } else if (names.length === 2) {
-    phrase = `${names[0]} e ${names[1]}`;
-  } else {
-    phrase = `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
+  // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
+  // convidar o leitor pra acompanhar a leaderboard do mês na URL histórica.
+  if (ranked.length === 0) {
+    if (!lbUrl) return "";
+    const label = eia.leaderboardPeriod
+      ? `Acompanhe a leaderboard de ${eia.leaderboardPeriod}`
+      : "Acompanhe a leaderboard do mês";
+    return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">🏆 <a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${esc(label)}</a></p>
+      </td></tr>`;
   }
 
+  // Posições ordinais: "1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida".
+  const phrase = ranked
+    .map((e) => `${e.rank}º ${esc(e.nickname)}`)
+    .join(", ");
+
+  // Quando há slug, o título "Vencedores de {mês}" vira link pra leaderboard histórica.
+  const heading = lbUrl
+    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Vencedores${period}</a>`
+    : `<strong>Vencedores${period}</strong>`;
+
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">🏆 <strong>Liderança${period}:</strong> ${esc(phrase)}</p>
+        <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
       </td></tr>`;
 }
 
@@ -1077,6 +1152,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // skip quando ausente (edições antigas pré-#1095/#1097).
   if (content.coverageLine) {
     parts.push(renderCoverage(content.coverageLine));
+  }
+
+  // #1648: CTA de destaque (ex: sorteio ao vivo) logo após a coverage line.
+  if (content.introCallout) {
+    parts.push(renderIntroCallout(content.introCallout));
   }
 
   // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory

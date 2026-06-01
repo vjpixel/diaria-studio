@@ -1,0 +1,4 @@
+description: Texto AI-flavored com 14 travessões em 4 parágrafos — meta da 1.4.0 é ≤1 a cada 3-4 parágrafos.
+travessoes_max: 2
+required_paragraph_count_min: 2
+min_chars: 400
