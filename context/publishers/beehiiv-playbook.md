@@ -509,6 +509,18 @@ Se o campo Subject não for encontrado após 2 tentativas, registrar em
 `unfixed_issues[]` com `reason: "subject_field_not_found"` e prosseguir
 com o test email — editor pode editar manualmente.
 
+### 6.6. Confirmar que o título PERSISTIU na API antes do test email (#1645)
+
+**Bloqueador determinístico — NÃO enviar o test email enquanto o título não persistir.** O autosave do Beehiiv tem latência (#1198) e o título setado via Chrome pode levar segundos pra serializar no backend; setters programáticos (execCommand/setNative) **nunca** persistem (memory `feedback_beehiiv_title_real_keystrokes` — usar teclado real). Em 260601 o `get_post` retornou `"New post"` por minutos. Sem este guard, o test email sai com subject errado e o loop de review só pega depois (ou nem pega).
+
+Procedimento (retry pra absorver a latência do autosave):
+
+1. Esperar ~8s após o blur do campo título.
+2. `mcp__claude_ai_Beehiiv__get_post` com o `post_id`.
+3. Comparar `post.title` (e `post.subject_line` / `email_settings.email_subject_line`) com o `{title}` esperado.
+4. Se `post.title === "New post"` ou diverge do esperado: re-setar o título via **teclado real** (computer click + ctrl+a + Delete + type + blur), esperar ~8s, repetir o `get_post`. Até 3 tentativas.
+5. Só prosseguir pro passo 7 quando `post.title` bater com o esperado. Se após 3 tentativas ainda divergir, **halt** (render-halt-banner) — não enviar test email com subject errado.
+
 ### 7. Enviar email de teste
 
 **⚠️ Rate limit silencioso #1419**: Beehiiv tem rate limit em "Send test email" (~10 sends/hora). Sends posteriores são absorvidos sem erro visual nem API error — popover de sucesso aparece mas o email NÃO chega ao Gmail. Em 260520, sends 11-14 foram stale; loop verify→fix iterou sobre o 10º (mais antigo). Antes de cada click, consultar o counter:

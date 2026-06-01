@@ -55,7 +55,11 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export type IssueType = "blocker" | "warning" | "info";
-export type IssueCategory = "version_inconsistency" | "semantic_drift" | "intentional_error_confirmed";
+export type IssueCategory =
+  | "version_inconsistency"
+  | "semantic_drift"
+  | "intentional_error_confirmed"
+  | "subject_mismatch";
 
 export interface LintIssue {
   type: IssueType;
@@ -75,16 +79,86 @@ export interface LintResult {
 }
 
 /**
+ * #1645: normaliza o subject de um email Beehiiv pra comparação. Remove o
+ * prefixo `[TEST] ` que o Beehiiv auto-adiciona em test emails (pode até
+ * repetir — `[TEST] [TEST] `, ver #1215) e apara espaços.
+ */
+export function normalizeSubject(s: string): string {
+  let out = s.trim();
+  while (/^\[TEST\]\s*/i.test(out)) out = out.replace(/^\[TEST\]\s*/i, "");
+  return out.trim();
+}
+
+/**
+ * #1645: valida o subject do test email recebido contra o título esperado.
+ * Pega 3 falhas que o lint de corpo não pegava (260601 / 260505):
+ *   - placeholder `New post` (título nunca persistiu na Beehiiv — autosave #1198),
+ *   - subject == título da edição anterior (título atual não foi setado),
+ *   - divergência genérica do título esperado.
+ * Retorna uma LintIssue blocker, ou null se ok. O prefixo `[TEST] ` é ignorado.
+ */
+export function checkSubject(
+  received: string,
+  expected: string,
+  prevTitle?: string,
+): LintIssue | null {
+  const r = normalizeSubject(received);
+  const norm = (x: string) => x.trim().toLowerCase();
+
+  if (r === "" || norm(r) === "new post") {
+    return {
+      type: "blocker",
+      category: "subject_mismatch",
+      destaque: "(subject)",
+      detail: `Subject do test email é placeholder '${received}' — título não persistiu na Beehiiv (autosave #1198). Re-setar via teclado real + confirmar via get_post antes do envio.`,
+    };
+  }
+  if (prevTitle && norm(r) === norm(prevTitle)) {
+    return {
+      type: "blocker",
+      category: "subject_mismatch",
+      destaque: "(subject)",
+      detail: `Subject do test email '${r}' == título da edição anterior — título da edição atual não foi setado.`,
+      source_md_value: prevTitle,
+    };
+  }
+  if (expected && norm(r) !== norm(expected)) {
+    return {
+      type: "blocker",
+      category: "subject_mismatch",
+      destaque: "(subject)",
+      detail: `Subject do test email '${r}' diverge do título esperado '${expected}'.`,
+      source_md_value: expected,
+    };
+  }
+  return null;
+}
+
+/**
  * Pure: roda os lints sobre email + source e retorna issues classificadas.
  * Cross-referenciada com intentional errors da edição.
+ *
+ * #1645: `subject` (opcional) ativa a verificação do subject do email recebido
+ * contra o título esperado — divergência vira blocker `subject_mismatch`.
  */
 export function runLints(
   emailText: string,
   sourceMd: string,
   edition: string,
   intentionalErrors: IntentionalError[],
+  subject?: { received: string; expected: string; prevTitle?: string },
 ): LintResult {
   const issues: LintIssue[] = [];
+
+  // Check 0 (#1645): subject do email recebido vs título esperado.
+  if (subject) {
+    const subjectIssue = checkSubject(
+      subject.received,
+      subject.expected,
+      subject.prevTitle,
+    );
+    if (subjectIssue) issues.push(subjectIssue);
+  }
 
   // Check 8: version consistency intra-destaque (no email).
   // Detectamos no email — divergência V4 vs V5 dentro do mesmo destaque é o caso.
@@ -195,10 +269,16 @@ function main(): void {
   const edition = values["edition"];
   const intentionalPath = values["intentional-errors"] ?? "data/intentional-errors.jsonl";
   const outPath = values["out"];
+  // #1645: subject check (opcional). O agent passa o subject recebido (header
+  // Gmail) + o título esperado (05-published.json > title) + o título da edição
+  // anterior pra detectar 'New post' / título stale.
+  const subjectReceived = values["subject-received"];
+  const subjectExpected = values["subject-expected"];
+  const prevTitle = values["prev-title"];
 
   if (!emailFile || !sourceMdPath || !edition) {
     console.error(
-      "Uso: lint-test-email.ts --email-file <path> --source-md <path> --edition <AAMMDD> [--intentional-errors <path>] [--out <path>]",
+      "Uso: lint-test-email.ts --email-file <path> --source-md <path> --edition <AAMMDD> [--intentional-errors <path>] [--out <path>] [--subject-received <s> --subject-expected <s> [--prev-title <s>]]",
     );
     process.exit(2);
   }
@@ -220,7 +300,16 @@ function main(): void {
   const sourceMd = readFileSync(sourceAbs, "utf8");
   const intentionalErrors = loadIntentionalErrors(intentionalAbs);
 
-  const result = runLints(emailText, sourceMd, edition, intentionalErrors);
+  const subject =
+    typeof subjectReceived === "string" && typeof subjectExpected === "string"
+      ? {
+          received: subjectReceived,
+          expected: subjectExpected,
+          prevTitle: typeof prevTitle === "string" ? prevTitle : undefined,
+        }
+      : undefined;
+
+  const result = runLints(emailText, sourceMd, edition, intentionalErrors, subject);
   const json = JSON.stringify(result, null, 2);
 
   if (outPath) {
