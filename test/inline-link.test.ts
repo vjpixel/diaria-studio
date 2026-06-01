@@ -184,3 +184,70 @@ describe("parseInlineLinkWithTrailing (#1581)", () => {
     assert.equal(r?.trailing, "Frase com vírgulas, pontos, e mais.");
   });
 });
+
+describe("parseInlineLink — URL com parênteses balanceados (#1662)", () => {
+  // Bug: o regex antigo `(https?:\/\/[^\s)]+)` cortava a URL no PRIMEIRO `)`,
+  // então URLs com parênteses literais (Wikipedia, PDFs do Drive com `(1)`)
+  // caíam no fallback (link morto + markdown cru no email). Mesmo defeito que
+  // o #1634 corrigiu em processInlineLinks; este helper (#1581) ficou pra trás.
+
+  it("URL com parênteses literais não é cortada no 1º ')'", () => {
+    const r = parseInlineLink("[GPT](https://en.wikipedia.org/wiki/GPT_(modelo))");
+    assert.deepEqual(r, {
+      title: "GPT",
+      url: "https://en.wikipedia.org/wiki/GPT_(modelo)",
+    });
+  });
+
+  it("URL com (1) literal — caso #1634 (PDF do Drive)", () => {
+    const r = parseInlineLink("[**Founders Playbook**](https://x.com/file%20(1).pdf)");
+    assert.deepEqual(r, {
+      title: "Founders Playbook",
+      url: "https://x.com/file%20(1).pdf",
+    });
+  });
+
+  it("isInlineLinkLine: true mesmo com parênteses na URL", () => {
+    assert.equal(
+      isInlineLinkLine("[GPT](https://en.wikipedia.org/wiki/GPT_(modelo))"),
+      true,
+    );
+  });
+
+  it("parênteses aninhados (2 níveis) balanceiam corretamente", () => {
+    const r = parseInlineLink("[Foo](https://x.com/a_(b_(c)))");
+    assert.equal(r?.url, "https://x.com/a_(b_(c))");
+  });
+
+  it("parseInlineLinkWithTrailing: URL com parênteses + summary inline (#1582 round-trip)", () => {
+    const r = parseInlineLinkWithTrailing(
+      "[Doc](https://x.com/file%20(1).pdf) resumo do item aqui",
+    );
+    assert.deepEqual(r, {
+      title: "Doc",
+      url: "https://x.com/file%20(1).pdf",
+      trailing: "resumo do item aqui",
+    });
+  });
+});
+
+describe("inline-link — contrato preservado vs regex antigo (#1662 review)", () => {
+  // A reescrita pro scan balanceado é cirúrgica: SÓ muda o tratamento de
+  // parênteses. Estes locks garantem que ela não afrouxou outros gates.
+
+  it("URL com espaço cru → null (gate [^\\s)] do regex antigo preservado)", () => {
+    assert.equal(parseInlineLink("[T](https://x.com/a b)"), null);
+    assert.equal(parseInlineLinkWithTrailing("[T](https://x.com/a b) x"), null);
+  });
+
+  it("trailing colado em pontuação (sem espaço) → null (\\s+ do regex antigo preservado)", () => {
+    assert.equal(parseInlineLinkWithTrailing("[T](https://x.com)."), null);
+    assert.equal(parseInlineLinkWithTrailing("[T](https://x.com),"), null);
+    // separado por espaço continua funcionando
+    assert.equal(parseInlineLinkWithTrailing("[T](https://x.com) ok")?.trailing, "ok");
+  });
+
+  it("isInlineLinkLine([****](url)) → false (consistente com parseInlineLink; corrige inconsistência antiga)", () => {
+    assert.equal(isInlineLinkLine("[****](https://x.com)"), false);
+  });
+});
