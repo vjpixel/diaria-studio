@@ -337,6 +337,60 @@ describe("parseSections (#172)", () => {
     assert.equal(sections[0].name, "LANÇAMENTOS");
     assert.equal(sections[1].name, "PESQUISAS");
   });
+
+  // #1674: seção VÍDEOS era dropada silenciosamente — SECTION_HEADER_RE não
+  // tinha VÍDEO(S) no grupo de captura. Mesma classe da falha 260519.
+  it("parseSections preserva **📺 VÍDEOS** (não dropa) — #1674", () => {
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "Lan",
+      "https://x.com/y",
+      "Desc.",
+      "",
+      "---",
+      "",
+      "**📺 VÍDEOS**",
+      "Canal explica o modelo novo",
+      "https://youtube.com/watch?v=abc",
+      "Resumo do vídeo.",
+    ].join("\n");
+
+    const sections = parseSections(md);
+    assert.equal(sections.length, 2, JSON.stringify(sections));
+    assert.equal(sections[1].name, "VÍDEOS");
+    assert.equal(sections[1].emoji, "📺"); // do mapa canônico, não fallback 📰
+    assert.equal(sections[1].items.length, 1);
+    assert.equal(sections[1].items[0].title, "Canal explica o modelo novo");
+  });
+
+  it("parseSections aceita **📺 VÍDEO** singular → normaliza pra VÍDEOS — #1674", () => {
+    const md = ["**📺 VÍDEO**", "Único", "https://youtube.com/watch?v=z", "Resumo."].join("\n");
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1, JSON.stringify(sections));
+    assert.equal(sections[0].name, "VÍDEOS");
+    assert.equal(sections[0].emoji, "📺");
+  });
+
+  // #1689 review: header com trailing whitespace (editor/copy-paste) não pode
+  // dropar a seção. O `\s*$` no SECTION_HEADER_RE tolera o espaço.
+  it("parseSections tolera trailing whitespace no header — #1689", () => {
+    const md = ["**📺 VÍDEOS** ", "Canal", "https://youtube.com/watch?v=ws", "Resumo."].join("\n");
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1, JSON.stringify(sections));
+    assert.equal(sections[0].name, "VÍDEOS");
+    assert.equal(sections[0].items.length, 1);
+  });
+
+  // #1689 review: o `V[ÍI]DEOS?` aceita header SEM acento (compat teclado/OS,
+  // espelho do C/Ç em LANÇAMENTOS). Comportamento by-design: a seção é
+  // RECONHECIDA (não dropada) — degrada graceful pro emoji fallback 📰 porque o
+  // SECTION_EMOJI_MAP só tem chaves acentuadas. Reconhecer-e-degradar > sumir.
+  it("parseSections reconhece VIDEOS sem acento (degrada pra 📰, não dropa) — #1689", () => {
+    const md = ["**VIDEOS**", "Canal", "https://youtube.com/watch?v=na", "Resumo."].join("\n");
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1, JSON.stringify(sections)); // NÃO dropada
+    assert.equal(sections[0].emoji, "📰"); // fallback graceful (sem acento → sem 📺)
+  });
 });
 
 describe("parseEIA (#192 — frontmatter + runtime detection)", () => {
