@@ -89,6 +89,9 @@ export interface EIA {
   leaderboardPodium?: { nickname: string; rank: number }[];
   /** Label do período pro título do bloco (ex: "Maio"). */
   leaderboardPeriod?: string;
+  /** Slug YYYY-MM do período — usado pra linkar o bloco pra
+   * `/leaderboard/{YYYY-MM}` (URL histórica permanente, #1345). */
+  leaderboardPeriodSlug?: string;
 }
 
 interface NewsletterContent {
@@ -183,7 +186,7 @@ export function truncateAtSectionTerminator(text: string): string {
 // Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
 // seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
 // NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
-const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?)(?:\*\*)?$/m;
+const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?|USE MELHOR)(?:\*\*)?$/m;
 
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
@@ -197,7 +200,7 @@ export function parseSections(text: string): Section[] {
     // (mapping aceita só plural). LANÇAMENTO → LANÇAMENTOS etc.
     // #1569: RADAR é invariante (singular = plural) — não pluralizar.
     const rawName = sectionMatch[1];
-    const name = rawName === "RADAR" || rawName.endsWith("S") ? rawName : rawName + "S";
+    const name = rawName === "RADAR" || rawName === "USE MELHOR" || rawName.endsWith("S") ? rawName : rawName + "S";
     const emoji = sectionEmojiPrefix(name).trim() || "📰";
     // #1118: truncar afterHeader em markers de SORTEIO/PARA ENCERRAR pra não
     // consumir esses blocos como items quando writer omitir `---`.
@@ -511,6 +514,9 @@ function extractContent(editionDir: string): NewsletterContent {
         eia.leaderboardTop1 = parsed.top1;
       }
       eia.leaderboardPeriod = parsed.period || undefined;
+      // #1345: slug YYYY-MM pra linkar o bloco pra /leaderboard/{slug}
+      // (URL histórica). Mantido mesmo sem líderes — habilita o link-convite.
+      eia.leaderboardPeriodSlug = parsed.period_slug || undefined;
     } catch {
       // Corrupted → skip, bloco omitido
     }
@@ -800,6 +806,16 @@ function renderEIA(eia: EIA): string {
   // Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
   const leaderboardRow = renderLeaderboardTop1Row(eia, paragraphStyle);
 
+  // #1630: emite a linha "Resultado da última edição: X% acertaram" (parseada
+  // em prevResultLine mas antes nunca renderizada). Mostra o % de acertos da
+  // edição anterior no rodapé do bloco É IA?.
+  const prevResultHtml = eia.prevResultLine
+    ? `
+        <tr><td align="left" style="padding:8px 0 0 0;">
+          <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(eia.prevResultLine)}</p>
+        </td></tr>`
+    : "";
+
   // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
   // interativo, sem o border ciano grosso dos destaques antigos. Padding
   // simétrico em ambos <td> das imagens (#1085) — alinha A/B no stack mobile.
@@ -835,7 +851,7 @@ ${renderRule()}
         </td></tr>
         <tr><td align="left" style="padding:16px 0 0 0;">
           <p style="${captionStyle}">${creditHtml}</p>
-        </td></tr>
+        </td></tr>${prevResultHtml}
 ${leaderboardRow}
       </table>
     </td></tr>
@@ -864,8 +880,23 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
     : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
       ? eia.leaderboardTop1.map((e) => e.nickname)
       : [];
-  if (names.length === 0) return "";
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+  // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
+  const slug = eia.leaderboardPeriodSlug || "";
+  const lbUrl = slug ? `${POLL_WORKER_URL}/leaderboard/${slug}` : "";
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
+
+  // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
+  // convidar o leitor pra acompanhar a leaderboard do mês na URL histórica.
+  if (names.length === 0) {
+    if (!lbUrl) return "";
+    const label = eia.leaderboardPeriod
+      ? `Acompanhe a leaderboard de ${eia.leaderboardPeriod}`
+      : "Acompanhe a leaderboard do mês";
+    return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">🏆 <a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${esc(label)}</a></p>
+      </td></tr>`;
+  }
 
   let phrase: string;
   if (names.length === 1) {
@@ -876,8 +907,13 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
     phrase = `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
   }
 
+  // Quando há slug, o título "Liderança de {mês}" vira link pra leaderboard histórica.
+  const heading = lbUrl
+    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Liderança${period}</a>`
+    : `<strong>Liderança${period}</strong>`;
+
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">🏆 <strong>Liderança${period}:</strong> ${esc(phrase)}</p>
+        <p style="${paragraphStyle}">🏆 ${heading}: ${esc(phrase)}</p>
       </td></tr>`;
 }
 

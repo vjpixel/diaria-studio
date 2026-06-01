@@ -18,6 +18,7 @@ const SECTION_EMOJI_MAP: Record<string, string> = {
   "LANÇAMENTO": "🚀",
   "LANÇAMENTOS": "🚀",
   "RADAR": "📡",
+  "USE MELHOR": "🛠️",
   // #1569: legacy aliases — render-newsletter-html ainda precisa reconhecer
   // headers de edições antigas pra re-rendering. Não emitir esses nomes em
   // edições novas.
