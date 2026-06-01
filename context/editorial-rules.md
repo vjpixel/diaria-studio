@@ -136,6 +136,7 @@ Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, d
 - **Atual**: referencia ferramentas/APIs/modelos vigentes (≤ 12 meses de shelf life).
 - **Independente de plano pago**: se requer subscription paga, alertar no blurb.
 - **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior.
+- **Título no idioma original, nunca traduzir (#1634).** O título/link do item preserva o nome original do recurso (PT ou EN) — `Claude 101`, `The Founders Playbook`, não `Claude 101: curso gratuito da Anthropic`. Não adaptar nem traduzir. A *descrição* abaixo do título pode ser em PT (descritiva). Mesma regra do RADAR.
 
 ### Garantia de mínimo no pipeline
 
@@ -171,7 +172,9 @@ Técnica de encadear chamadas de LLM com exemplo em Python (15 min).
 
 ### Posição na newsletter
 
-Após **OUTRAS NOTÍCIAS**, antes de **SORTEIO**. Seção opcional — omitir bloco inteiro se editor não selecionou candidato.
+**Antes de LANÇAMENTOS (#1633).** É a primeira seção secundária após os destaques + É IA?. Nova ordem: (destaques + É IA?) → **USE MELHOR** → LANÇAMENTOS → RADAR → VÍDEOS → SORTEIO → PARA ENCERRAR. Seção opcional — omitir bloco inteiro se editor não selecionou candidato. (A seção ainda é montada manualmente pelo editor no `02-reviewed.md`; a automação do stitch nessa posição é o #1632.)
+
+**Links com parênteses (#1634):** se a URL do item contém `(` ou `)` (ex: PDF com `(1)` no nome), o render já tolera parênteses balanceados (`processInlineLinks`). Mesmo assim, prefira URL-encode (`%28`/`%29`) na fonte quando houver parênteses desbalanceados.
 
 ### Validação pós-piloto
 

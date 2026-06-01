@@ -15,6 +15,7 @@ import {
   renderCoverage,
   unescapeMd,
   processInlineItalics,
+  processInlineLinks,
   truncateAtSectionTerminator,
   joinMultilineLinks,
   singularizeSectionName,
@@ -675,6 +676,25 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
       !/font-style:italic/.test(leaderboardMatch![1]),
       "leaderboard não pode ser italic — só caption do POTD"
     );
+  });
+
+  it("#1630: renderHTML emite a linha 'Resultado da última edição: X%'", () => {
+    const fixtureWithPrevResult = {
+      ...fixtureComEia,
+      eia: {
+        ...fixtureComEia.eia,
+        prevResultLine: "Resultado da última edição: 67% das pessoas acertaram.",
+      },
+    };
+    const html = renderHTML(fixtureWithPrevResult);
+    // O bug #1630: prevResultLine era parseada mas nunca emitida no HTML.
+    assert.match(html, /Resultado da última edição: 67% das pessoas acertaram\./);
+    assert.match(html, /67%/);
+  });
+
+  it("#1630: sem prevResultLine → não emite a linha (graceful)", () => {
+    const html = renderHTML(fixtureComEia);
+    assert.doesNotMatch(html, /Resultado da última edição/);
   });
 
   it("split: body + standalone juntos têm os mesmos destaques que renderHTML default", () => {
@@ -1428,5 +1448,46 @@ describe("processInlineItalics (#1364)", () => {
       processInlineItalics("foo *open\nclose* bar"),
       "foo *open\nclose* bar",
     );
+  });
+});
+
+describe("processInlineLinks — parênteses balanceados na URL (#1634)", () => {
+  it("URL com '(1).pdf' não trunca o href (o bug do Founders Playbook)", () => {
+    const url =
+      "https://cdn.example.com/The-Founders-Playbook-05062026_v3%20(1).pdf";
+    const html = processInlineLinks(`Baixe [The Founders Playbook](${url}) agora`);
+    assert.match(html, /href="https:\/\/cdn\.example\.com\/The-Founders-Playbook-05062026_v3%20\(1\)\.pdf"/);
+    assert.match(html, />The Founders Playbook<\/a>/);
+    // o ')' final do .pdf não pode ter vazado como texto após o link
+    assert.doesNotMatch(html, /\.pdf"[^>]*>The Founders Playbook<\/a>\)/);
+    assert.match(html, /agora$/);
+  });
+
+  it("link simples sem parênteses continua funcionando", () => {
+    const html = processInlineLinks("veja [Claude 101](https://anthropic.skilljar.com/claude-101)");
+    assert.match(html, /href="https:\/\/anthropic\.skilljar\.com\/claude-101"/);
+    assert.match(html, />Claude 101<\/a>/);
+  });
+
+  it("dois links na mesma string, um com parênteses", () => {
+    const html = processInlineLinks(
+      "[A](https://a.com/x(1).pdf) e [B](https://b.com/y)",
+    );
+    assert.match(html, /href="https:\/\/a\.com\/x\(1\)\.pdf"/);
+    assert.match(html, /href="https:\/\/b\.com\/y"/);
+    assert.match(html, />A<\/a> e <a /);
+  });
+
+  it("colchete sem fechamento de parêntese → não vira link (texto cru escapado)", () => {
+    const html = processInlineLinks("[texto](sem-fechar");
+    assert.doesNotMatch(html, /<a /);
+    assert.match(html, /\[texto\]\(sem-fechar/);
+  });
+
+  it("URL vazia '[texto]()' → não vira link (paridade com regex antiga)", () => {
+    const html = processInlineLinks("antes [texto]() depois [B](https://b.com)");
+    assert.doesNotMatch(html, /href=""/);
+    assert.match(html, /\[texto\]\(\)/); // preservado como texto literal
+    assert.match(html, /href="https:\/\/b\.com"/); // link válido seguinte ainda funciona
   });
 });
