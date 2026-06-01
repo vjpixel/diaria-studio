@@ -842,9 +842,9 @@ function renderEIA(eia: EIA): string {
   // tem semântica de label, não de caption.
   const captionStyle = paragraphStyle + "font-style:italic;";
 
-  // #1160: bloco leaderboard top1 no rodapé do È IA?. Omitido quando ausente.
-  // Formato: "🏆 Liderança de Maio: Davyd Wilkerson, Luisao P e Vanessa — 100%"
-  // Single leader: "🏆 Liderança de Maio: Davyd Wilkerson — 100% (12/12)"
+  // #1160: bloco leaderboard no rodapé do È IA?. Omitido quando ausente.
+  // #1646: posições ordinais por acertos, sem percentual.
+  // Formato: "🏆 Vencedores de Maio: 1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida"
   const leaderboardRow = renderLeaderboardTop1Row(eia, paragraphStyle);
 
   // #1630: emite a linha "Resultado da última edição: X% acertaram" (parseada
@@ -903,13 +903,13 @@ ${leaderboardRow}
 /**
  * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
  * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
- * público. Só nomes — sem percentual nem placement (decisão editorial pós-#1160).
+ * público. #1646: posições ordinais por acertos, sem percentual nem % de ranking.
  *
  * Formato:
- *   - 1 leader: "🏆 Liderança de Maio: Davyd Wilkerson"
- *   - 2 leitores: "🏆 Liderança de Maio: Davyd e Luisao P"
- *   - 3+ leitores: "🏆 Liderança de Maio: Davyd, Luisao P, Vanessa, Alice e Bob"
- *   - Vazio: retorna ""
+ *   - 1 leader: "🏆 Vencedores de Maio: 1º Davyd Wilkerson"
+ *   - 2 leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P"
+ *   - 3+ leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P, 3º Vanessa"
+ *   - Vazio (1ª edição do mês): convite linkado pra leaderboard do mês, ou ""
  *
  * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
  * only) pra compat com arquivos legacy.
