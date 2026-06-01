@@ -81,6 +81,13 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 
 Verificar cada item e registrar como `ok` ou `issue`:
 
+0. **Subject/título do email (#1645) — CRÍTICO, verificar PRIMEIRO.** Extrair o header **Subject** do email recebido (Gmail MCP retorna no thread). O subject correto é `[TEST] {edition_title}` (o Beehiiv auto-adiciona `[TEST] `). Comparar com o título esperado (`edition_title`, ou `{edition_dir}/05-published.json` > `title`). Falhas a pegar:
+   - Subject é `New post` (ou `[TEST] New post`) → o título nunca persistiu na Beehiiv (autosave latency #1198). `"email:subject_mismatch: subject é placeholder 'New post' — título não persistiu"`
+   - Subject == título da **edição anterior** → o título da edição atual não foi setado. `"email:subject_mismatch: subject == título da edição anterior '{prev}'"`
+   - Subject diverge do esperado → `"email:subject_mismatch: subject '{recebido}' diverge do esperado '{edition_title}'"`
+
+   A verificação é **determinística** via o lint script (passo 8-9 abaixo) quando você passa as flags `--subject-received`/`--subject-expected`/`--prev-title` — prefira isso a comparar à mão. O prefixo `[TEST] ` é normalizado pelo script. Subject errado mata o open rate; **subject_mismatch é blocker**, nunca classificar como falso-positivo.
+
 1. **Cor dos labels de categoria/secao.** O label no topo de cada box de destaque (ex: "LANCAMENTO", "PESQUISA") deve estar em cor verde (cor do template). Se estiver preto ou outra cor, registrar issue:
    `"label_color_wrong: D{N} label '{texto}' aparece em cor preta, deveria ser verde do template"`
 
@@ -121,13 +128,19 @@ Verificar cada item e registrar como `ok` ou `issue`:
    # 1. Salvar conteúdo bruto do email (do MCP) em arquivo temp
    echo "$EMAIL_CONTENT" > /tmp/test-email-{AAMMDD}.txt
 
-   # 2. Rodar lint determinístico
+   # 2. Rodar lint determinístico (#1645: inclui o subject check — passar o
+   #    Subject recebido + o título esperado + o título da edição anterior)
    npx tsx scripts/lint-test-email.ts \
      --email-file /tmp/test-email-{AAMMDD}.txt \
      --source-md {edition_dir}/02-reviewed.md \
      --edition {AAMMDD} \
+     --subject-received "{SUBJECT_RECEBIDO_DO_GMAIL}" \
+     --subject-expected "{edition_title}" \
+     --prev-title "{titulo_da_edicao_anterior_se_conhecido}" \
      --out /tmp/lint-result-{AAMMDD}.json
    # Exit 0 = sem blockers; exit 1 = pelo menos 1 blocker; exit 2 = erro de uso
+   # Omitir --prev-title se desconhecido; --subject-* são opcionais mas
+   # recomendados (sem eles o subject não é checado).
    ```
 
    3. Ler `/tmp/lint-result-{AAMMDD}.json` — formato:
@@ -135,7 +148,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
       {
         "issues": [
           { "type": "blocker"|"warning"|"info",
-            "category": "version_inconsistency"|"semantic_drift"|"intentional_error_confirmed",
+            "category": "subject_mismatch"|"version_inconsistency"|"semantic_drift"|"intentional_error_confirmed",
             "destaque": "DESTAQUE 2",
             "detail": "...",
             "source_md_value": "..." }
@@ -145,6 +158,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
       ```
 
    4. Mapear cada `issues[]` do CLI pra string compatível com o output do agent:
+      - `type:blocker` + `category:subject_mismatch` → `"email:subject_mismatch: {detail}"` (#1645 — sempre blocker, nunca falso-positivo)
       - `type:blocker` + `category:version_inconsistency` → `"email:version_inconsistency: {destaque} {detail} — source: {source_md_value}"`
       - `type:warning` + `category:semantic_drift` → `"email:semantic_drift: {destaque} {detail}"`
       - `type:info` + `category:intentional_error_confirmed` → `"info:intentional_error_confirmed: {destaque} {detail}"`
