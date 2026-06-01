@@ -682,6 +682,17 @@ export function scoreByMonthEntriesToLeaderboard(
 }
 
 /**
+ * Pure (260601): decide se mostra a tela "ainda não começou" pro mês pedido.
+ * Só quando o mês é estritamente futuro (`slugCmp > 0`) E não há nenhum voto
+ * registrado ainda (`entryCount === 0`). Edição D+1 publica no dia 1º e já
+ * acumula votos no bucket do mês antes de `currentMonthSlugBrt` virar — então
+ * um mês "futuro" com votos deve renderizar a leaderboard, não a mensagem.
+ */
+export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): boolean {
+  return slugCmp > 0 && entryCount === 0;
+}
+
+/**
  * Handler `/leaderboard/{YYYY-MM}` — lê apenas score-by-month:{slug}:* e
  * renderiza o mesmo HTML do leaderboard atual. Cache header diferente
  * conforme mês passado (immutable) vs corrente (1h).
@@ -699,7 +710,16 @@ async function handleLeaderboardByMonth(
 
   const currentSlug = currentMonthSlugBrt(new Date());
   const slugCmp = monthSlugCompare(monthSlug, currentSlug);
-  if (slugCmp > 0) {
+
+  // #1348: usa snapshot pré-computado em vez de list+gets inline.
+  const entries = await getOrComputeSnapshot(env, monthSlug);
+  const scores = scoreByMonthEntriesToLeaderboard(entries);
+
+  // "Ainda não começou" só quando o mês é futuro E não há votos ainda.
+  // Edição D+1 (publica dia 1º) já acumula votos no bucket do mês antes de
+  // `currentMonthSlugBrt` virar — sem o `entries.length === 0`, o leitor que
+  // votou via o link e via "ainda não começou" em vez do próprio voto (260601).
+  if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
     return new Response(votePageHtml(
       `O leaderboard de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
       false,
@@ -707,10 +727,6 @@ async function handleLeaderboardByMonth(
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
-
-  // #1348: usa snapshot pré-computado em vez de list+gets inline.
-  const entries = await getOrComputeSnapshot(env, monthSlug);
-  const scores = scoreByMonthEntriesToLeaderboard(entries);
   const periodLabel = `${MONTH_NAMES_PT[parsed.month - 1].charAt(0).toUpperCase()}${MONTH_NAMES_PT[parsed.month - 1].slice(1)}`;
   const isPast = slugCmp < 0;
   // #1345 followup: cache curto pro mês corrente — votos atualizam em real-time
