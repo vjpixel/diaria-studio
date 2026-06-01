@@ -12,7 +12,7 @@ Inspeciona a saúde das fontes usadas no Stage 1 da pipeline.
 1. Ler `data/source-health.json`.
 2. Para cada fonte, computar:
    - `success_rate = successes / attempts` (em %)
-   - `consecutive_failures` = contar entradas não-ok do fim de `recent_outcomes` até o primeiro `ok` (cada entrada é `{ outcome, timestamp }`)
+   - `consecutive_failures` = contar só falhas DURAS (`fail`/`timeout`) do fim de `recent_outcomes`, parando na primeira entrada que NÃO é falha dura (`ok` **ou** `empty`). `empty` (fetch OK, zero artigos) não conta como falha (#1576/#1665). Cada entrada é `{ outcome, timestamp }`.
    - status indicador: 🟢 success_rate ≥ 80% e sem streak; 🟡 success_rate ≥ 50% ou streak 1-2; 🔴 success_rate < 50% ou streak 3+
 3. Apresentar tabela ordenada por status (pior primeiro):
 
