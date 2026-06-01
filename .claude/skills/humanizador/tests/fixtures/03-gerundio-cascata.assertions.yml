@@ -1,0 +1,11 @@
+description: Texto com cascatas longas de gerúndios — IA-tic clássico.
+banned_phrases:
+  - "atendendo à crescente"
+  - "proporcionando uma experiência"
+  - "contribuindo significativamente"
+  - "alavancando resultados"
+  - "gerando valor"
+  - "estabelecendo novos padrões"
+  - "garantindo o sucesso"
+  - "consolidando a empresa"
+required_paragraph_count_min: 2
