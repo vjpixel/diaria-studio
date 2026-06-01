@@ -252,6 +252,18 @@ export function main(): void {
       catastrophic: result.catastrophic,
     }) + "\n",
   );
+
+  // #1669: guard DETERMINÍSTICO. Perda catastrófica → exit 2 (arquivos +
+  // manifest já foram escritos acima pra diagnóstico/retry). Sem isso o script
+  // saía 0 e a decisão de retry/single-call-fallback dependia do orchestrator
+  // (LLM) parsear `catastrophic:true` do stdout — não-determinístico e contra a
+  // invariante CLAUDE.md ("validar via TS determinístico, não o gloss do LLM").
+  // O passo 1q.3 do orchestrator ramifica no exit code (|| fallback).
+  //
+  // Usar `process.exitCode = 2` (NÃO `process.exit(2)`): o exit() força saída
+  // imediata e pode TRUNCAR o write assíncrono do manifest pro stdout; setar o
+  // código deixa main() retornar e o event loop drenar o stdout antes de sair.
+  if (result.catastrophic) process.exitCode = 2;
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
