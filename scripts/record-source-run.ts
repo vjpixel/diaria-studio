@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { computeFailureStreak } from "./lib/source-runs.ts";
 
 type Outcome = "ok" | "fail" | "timeout";
 
@@ -185,14 +186,12 @@ const logEntry = {
 
 appendFileSync(sourceLogPath, JSON.stringify(logEntry) + "\n", "utf8");
 
-// Calcular failure streak para retornar ao orchestrator
-const reversed = entry.recent_outcomes.slice().reverse();
-const streak = reversed.findIndex((e) => e.outcome === "ok");
-const consecutive_failures = streak === -1 ? entry.recent_outcomes.length : streak;
-const failure_timestamps = reversed
-  .slice(0, streak === -1 ? undefined : streak)
-  .map((e) => e.timestamp)
-  .reverse();
+// Calcular failure streak via helper compartilhado (#1665). A lógica inline
+// antiga (findIndex outcome==="ok") contava `empty` (fetch OK, zero artigos —
+// escrito pelo batch path no MESMO data/source-health.json) como falha,
+// inflando o streak. computeFailureStreak conta só falhas DURAS (fail/timeout).
+// O #1576 corrigiu o helper mas esqueceu esta cópia inline duplicada.
+const { consecutive_failures, failure_timestamps } = computeFailureStreak(entry);
 
 console.log(
   JSON.stringify({
