@@ -8,6 +8,7 @@ import {
   extractMetadata,
   mergeMetadata,
   enrichArticles,
+  titleFromSubmittedSubject,
 } from "../scripts/enrich-inbox-articles.ts";
 import { bodyCacheFilename } from "../scripts/lib/url-body-cache.ts";
 
@@ -403,5 +404,82 @@ describe("enrichArticles — body cache integration (#717 hyp 7)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("titleFromSubmittedSubject — fallback anti-bot (#1641)", () => {
+  it("recupera título do submitted_subject quando título é placeholder", () => {
+    const t = titleFromSubmittedSubject({
+      url: "https://venturebeat.com/x",
+      title: "(inbox)",
+      flag: "editor_submitted",
+      submitted_subject: "DeepSeek lança modelo V4",
+    });
+    assert.equal(t, "DeepSeek lança modelo V4");
+  });
+
+  it("limpa prefixos de forward/reply (Re:/Fwd:/Enc:)", () => {
+    assert.equal(
+      titleFromSubmittedSubject({ url: "u", title: "(inbox)", flag: "editor_submitted", submitted_subject: "Fwd: Notícia X" }),
+      "Notícia X",
+    );
+    assert.equal(
+      titleFromSubmittedSubject({ url: "u", title: "(inbox)", flag: "editor_submitted", submitted_subject: "[INBOX] Re: Tema" }),
+      "Tema",
+    );
+  });
+
+  it("retorna null quando o artigo já tem título bom (não clobbera)", () => {
+    assert.equal(
+      titleFromSubmittedSubject({ url: "u", title: "Título real do editor", summary: "tem", flag: "editor_submitted", submitted_subject: "outro" }),
+      null,
+    );
+  });
+
+  it("retorna null quando não há submitted_subject aproveitável", () => {
+    assert.equal(titleFromSubmittedSubject({ url: "u", title: "(inbox)", flag: "editor_submitted" }), null);
+    assert.equal(
+      titleFromSubmittedSubject({ url: "u", title: "(inbox)", flag: "editor_submitted", submitted_subject: "   " }),
+      null,
+    );
+  });
+
+  it("retorna null pra artigo não-inbox (sem flag/source), mesmo com subject", () => {
+    assert.equal(
+      titleFromSubmittedSubject({ url: "u", title: "(inbox)", submitted_subject: "qualquer" }),
+      null,
+    );
+  });
+});
+
+describe("enrichArticles — fallback submitted_subject quando fetch falha (#1641)", () => {
+  it("fetch_failed + submitted_subject → título recuperado, não dropa", async () => {
+    const articles = [
+      { url: "https://anti-bot.com/x", title: "(inbox)", flag: "editor_submitted", submitted_subject: "Anúncio importante de IA" },
+    ];
+    const fetcher = async () => null; // simula anti-bot (fetch falha)
+    const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
+    assert.equal(out[0].title, "Anúncio importante de IA");
+    assert.equal(outcomes[0].reason, "title_from_submitted_subject");
+    assert.equal(outcomes[0].title_updated, true);
+    assert.equal(outcomes[0].enriched, true);
+  });
+
+  it("fetch_failed SEM submitted_subject → reason fetch_failed (comportamento antigo)", async () => {
+    const articles = [{ url: "https://anti-bot.com/x", title: "(inbox)", flag: "editor_submitted" }];
+    const fetcher = async () => null;
+    const { outcomes } = await enrichArticles(articles, fetcher);
+    assert.equal(outcomes[0].reason, "fetch_failed");
+    assert.equal(outcomes[0].title_updated, false);
+  });
+
+  it("página sem metadata + submitted_subject → título recuperado", async () => {
+    const articles = [
+      { url: "https://x.com/y", title: "(inbox)", flag: "editor_submitted", submitted_subject: "Recuperado do assunto" },
+    ];
+    const fetcher = async () => "<html><body>sem og nem title</body></html>";
+    const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
+    assert.equal(out[0].title, "Recuperado do assunto");
+    assert.equal(outcomes[0].reason, "title_from_submitted_subject");
   });
 });

@@ -199,6 +199,26 @@ export function mergeMetadata(
   return { article: out, titleUpdated, summaryUpdated };
 }
 
+/**
+ * #1641: fallback de título quando o fetch da página falha. URLs com proteção
+ * anti-bot (DeepSeek, VentureBeat) bloqueiam o GET → sem og:title/<title>, o
+ * artigo ficaria com placeholder e seria DROPADO na categorização. O editor
+ * enviou esse link pelo inbox com um assunto (`submitted_subject`); usamos esse
+ * assunto como título em vez de descartar. Retorna o título recuperado, ou null
+ * quando não há subject aproveitável (ou o artigo já tem título bom).
+ *
+ * Pure — exportado pra teste.
+ */
+export function titleFromSubmittedSubject(article: InboxArticle): string | null {
+  if (!needsEnrichment(article)) return null; // título atual já é bom
+  let cleaned =
+    typeof article.submitted_subject === "string" ? article.submitted_subject.trim() : "";
+  // Tira prefixos empilhados em qualquer ordem: "[INBOX] Re: ...", "Fwd: ...".
+  const PREFIX_RE = /^\s*(?:\[inbox\]|(?:re|fwd?|enc|res):)\s*/i;
+  while (PREFIX_RE.test(cleaned)) cleaned = cleaned.replace(PREFIX_RE, "").trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 // ---------------------------------------------------------------------------
 // Network — fetch HTML with timeout
 // ---------------------------------------------------------------------------
@@ -280,33 +300,71 @@ export async function enrichArticles(
         html = await fetcher(job.article.url);
       }
       if (!html) {
-        outcomes.push({
-          url: job.article.url,
-          enriched: false,
-          title_updated: false,
-          summary_updated: false,
-          reason: "fetch_failed",
-        });
+        // #1641: fetch falhou (anti-bot) — recupera o título do submitted_subject
+        // antes de desistir, evitando o drop na categorização.
+        const recovered = titleFromSubmittedSubject(job.article);
+        if (recovered) {
+          out[job.idx] = { ...job.article, title: recovered };
+          outcomes.push({
+            url: job.article.url,
+            enriched: true,
+            title_updated: true,
+            summary_updated: false,
+            reason: "title_from_submitted_subject",
+          });
+        } else {
+          outcomes.push({
+            url: job.article.url,
+            enriched: false,
+            title_updated: false,
+            summary_updated: false,
+            reason: "fetch_failed",
+          });
+        }
         continue;
       }
       const meta = extractMetadata(html);
       if (!meta.title && !meta.summary) {
-        outcomes.push({
-          url: job.article.url,
-          enriched: false,
-          title_updated: false,
-          summary_updated: false,
-          reason: "no_metadata_found",
-          ...(cacheHit ? { cache_hit: true } : {}),
-        });
+        // #1641: página acessível mas sem metadata extraível — mesmo fallback.
+        const recovered = titleFromSubmittedSubject(job.article);
+        if (recovered) {
+          out[job.idx] = { ...job.article, title: recovered };
+          outcomes.push({
+            url: job.article.url,
+            enriched: true,
+            title_updated: true,
+            summary_updated: false,
+            reason: "title_from_submitted_subject",
+            ...(cacheHit ? { cache_hit: true } : {}),
+          });
+        } else {
+          outcomes.push({
+            url: job.article.url,
+            enriched: false,
+            title_updated: false,
+            summary_updated: false,
+            reason: "no_metadata_found",
+            ...(cacheHit ? { cache_hit: true } : {}),
+          });
+        }
         continue;
       }
       const merged = mergeMetadata(job.article, meta);
+      // #1641: metadata veio só com summary (sem title) e o título seguiu
+      // placeholder — recupera do submitted_subject pra não dropar na categorização.
+      if (!merged.titleUpdated && needsEnrichment(merged.article)) {
+        const recovered = titleFromSubmittedSubject(merged.article);
+        if (recovered) merged.article.title = recovered;
+      }
       out[job.idx] = merged.article;
+      const titleUpdated =
+        merged.titleUpdated ||
+        (out[job.idx].title !== job.article.title &&
+          typeof out[job.idx].title === "string");
       outcomes.push({
         url: job.article.url,
-        enriched: merged.titleUpdated || merged.summaryUpdated,
-        title_updated: merged.titleUpdated,
+        enriched: titleUpdated || merged.summaryUpdated,
+        title_updated: titleUpdated,
         summary_updated: merged.summaryUpdated,
         ...(cacheHit ? { cache_hit: true } : {}),
       });
