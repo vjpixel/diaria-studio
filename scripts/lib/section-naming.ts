@@ -19,6 +19,10 @@ const SECTION_EMOJI_MAP: Record<string, string> = {
   "LANÇAMENTOS": "🚀",
   "RADAR": "📡",
   "USE MELHOR": "🛠️",
+  // #1674: seção VÍDEOS (bucket `video`). Sem isso parseSections dropa a seção
+  // inteira do HTML (mesma classe da falha silenciosa 260519).
+  "VÍDEO": "📺",
+  "VÍDEOS": "📺",
   // #1569: legacy aliases — render-newsletter-html ainda precisa reconhecer
   // headers de edições antigas pra re-rendering. Não emitir esses nomes em
   // edições novas.
@@ -46,6 +50,7 @@ export function singularizeSectionName(name: string, count: number): string {
   if (count !== 1) return name;
   const bare = stripEmojiPrefix(name);
   if (bare === "LANÇAMENTOS") return "LANÇAMENTO";
+  if (bare === "VÍDEOS") return "VÍDEO";
   if (bare === "PESQUISAS") return "PESQUISA";
   if (bare === "OUTRAS NOTÍCIAS") return "OUTRA NOTÍCIA";
   // #1569: RADAR não singulariza (radar é radar, mesmo com 1 item)
@@ -69,9 +74,9 @@ export function sectionEmojiPrefix(name: string): string {
  * Remove emoji prefix de um nome de seção, retornando só o nome base.
  * Idempotente — se não tem emoji, retorna o input.
  *
- * Regex cobre os 3 emojis canônicos (🚀 🔬 📰) + qualquer emoji Unicode
- * high (defensivo pra evitar drift se outros emojis entrarem). Aceita
- * variation selector U+FE0F opcional após o emoji.
+ * Regex cobre todos os emojis canônicos das seções (🚀 📡 🛠️ 📺 🔬 📰) via
+ * range Unicode high — defensivo, casa qualquer emoji novo sem precisar atualizar
+ * esta regex. Aceita variation selector U+FE0F opcional após o emoji.
  */
 export function stripEmojiPrefix(name: string): string {
   return name.replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+/u, "");

@@ -26,9 +26,15 @@ describe("singularizeSectionName (#1070, #1324)", () => {
     assert.equal(singularizeSectionName("📰 OUTRAS NOTÍCIAS", 1), "OUTRA NOTÍCIA");
   });
 
+  it("VÍDEOS → VÍDEO quando N=1 (#1674)", () => {
+    assert.equal(singularizeSectionName("VÍDEOS", 1), "VÍDEO");
+    assert.equal(singularizeSectionName("VÍDEOS", 3), "VÍDEOS");
+    assert.equal(singularizeSectionName("📺 VÍDEOS", 1), "VÍDEO");
+  });
+
   it("nome desconhecido passa direto", () => {
-    assert.equal(singularizeSectionName("VÍDEOS", 1), "VÍDEOS");
     assert.equal(singularizeSectionName("DESTAQUES", 1), "DESTAQUES");
+    assert.equal(singularizeSectionName("OBSERVAÇÕES", 1), "OBSERVAÇÕES");
   });
 });
 
@@ -51,9 +57,15 @@ describe("sectionEmojiPrefix (#1328)", () => {
     assert.equal(sectionEmojiPrefix("OUTRA NOTÍCIA"), "📰 ");
   });
 
+  it("VÍDEOS/VÍDEO → 📺 (#1674)", () => {
+    assert.equal(sectionEmojiPrefix("VÍDEOS"), "📺 ");
+    assert.equal(sectionEmojiPrefix("VÍDEO"), "📺 ");
+    assert.equal(sectionEmojiPrefix("📺 VÍDEOS"), "📺 ");
+  });
+
   it("nome desconhecido → string vazia", () => {
-    assert.equal(sectionEmojiPrefix("VÍDEOS"), "");
     assert.equal(sectionEmojiPrefix("OBSERVAÇÕES"), "");
+    assert.equal(sectionEmojiPrefix("DESTAQUES"), "");
   });
 
   it("idempotente — aceita nome com emoji existente", () => {
@@ -96,7 +108,13 @@ describe("displaySectionName — orquestrador (#1324, #1328)", () => {
     assert.equal(displaySectionName("🔬 PESQUISAS", 2), "🔬 PESQUISAS");
   });
 
+  it("VÍDEOS com emoji + singular quando N=1 (#1674)", () => {
+    assert.equal(displaySectionName("VÍDEOS", 1), "📺 VÍDEO");
+    assert.equal(displaySectionName("VÍDEOS", 3), "📺 VÍDEOS");
+    assert.equal(displaySectionName("📺 VÍDEOS", 1), "📺 VÍDEO");
+  });
+
   it("nome desconhecido sem emoji, sem singularização", () => {
-    assert.equal(displaySectionName("VÍDEOS", 1), "VÍDEOS");
+    assert.equal(displaySectionName("OBSERVAÇÕES", 1), "OBSERVAÇÕES");
   });
 });

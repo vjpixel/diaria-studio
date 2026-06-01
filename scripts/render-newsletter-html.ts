@@ -182,9 +182,14 @@ export function truncateAtSectionTerminator(text: string): string {
 // - `**SECTION**` ou `SECTION` (com/sem markdown bold)
 // - prefix opcional emoji + whitespace (ex: `**🚀 LANÇAMENTOS**`) inserido pelo
 //   `singularize-md-sections.ts` per #1324/#1328
-// - singular (LANÇAMENTO, NOTÍCIA, PESQUISA) ou plural (idem + S)
-// - C ou Ç em LANÇAMENTO (compat com OS sem cedilha)
-// - RADAR (#1569) — substitui PESQUISAS + OUTRAS NOTÍCIAS pós-rename
+// - singular (LANÇAMENTO, NOTÍCIA, PESQUISA, VÍDEO) ou plural (idem + S)
+// - C ou Ç em LANÇAMENTO / I ou Í em VÍDEO (compat com OS/teclado sem acento).
+//   Sem acento o nome cai no fallback de emoji 📰 (degradação graceful — a seção
+//   é reconhecida e renderizada, só sem o emoji canônico — em vez de sumir; é o
+//   mesmo trade-off do C/Ç). #1689 review (#1674).
+// - RADAR (#1569), USE MELHOR (#1568), VÍDEOS (#1674) — seções secundárias.
+// - trailing whitespace no header (`\s*$`): editor/copy-paste às vezes deixa
+//   espaço após `**…**`; sem isso a seção inteira sumia (silent-drop). #1689.
 //
 // Legacy aliases (PESQUISAS, OUTRAS NOTÍCIAS) mantidos pra re-rendering de
 // edições antigas — render-newsletter-html não distingue, só extrai items.
@@ -192,7 +197,7 @@ export function truncateAtSectionTerminator(text: string): string {
 // Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
 // seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
 // NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
-const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?|USE MELHOR)(?:\*\*)?$/m;
+const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?|USE MELHOR|V[ÍI]DEOS?)(?:\*\*)?\s*$/m;
 
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
