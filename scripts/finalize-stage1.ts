@@ -142,6 +142,65 @@ export function joinScore(
 }
 
 /**
+ * Chaves de bucket reconhecidas. Inclui os nomes novos (#1629) e os legados
+ * (pré-#1629) pra detecção robusta de qual nível do JSON contém os buckets.
+ */
+const KNOWN_BUCKET_KEYS = [
+  "lancamento",
+  "radar",
+  "use_melhor",
+  "video",
+  // legacy (pré-#1629) — só pra detecção do nível correto em inputs antigos
+  "pesquisa",
+  "noticias",
+  "tutorial",
+] as const;
+
+/**
+ * Desembrulha o JSON de input pro shape `CategorizedBuckets`, aceitando os três
+ * formatos que aparecem no pipeline (#1642):
+ *   - `{ kept: { lancamento, radar, ... } }`        (filter-date-window.ts)
+ *   - `{ categorized: { lancamento, radar, ... } }` (research-review-dates.ts)
+ *   - `{ lancamento, radar, ... }`                  (flat)
+ *
+ * Antes desta função, o main() lia `raw.kept ?? raw` — quando o input vinha de
+ * `research-review-dates.ts` (buckets sob `.categorized`), `raw.kept` era
+ * undefined, caía em `raw`, e `raw.lancamento` ficava undefined → buckets
+ * vazios → **perda silenciosa de artigos** (#1642). Aqui detectamos o nível que
+ * de fato contém arrays de bucket e, se nenhum candidato tiver buckets
+ * reconhecíveis, **falhamos alto** em vez de produzir output vazio.
+ */
+export function unwrapCategorizedInput(raw: unknown): CategorizedBuckets {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("[finalize-stage1] input categorized inválido: não é objeto");
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const hasKnownBucket = (c: Record<string, unknown>): boolean =>
+    KNOWN_BUCKET_KEYS.some((k) => Array.isArray(c[k]));
+
+  // Ordem: wrappers explícitos antes do flat (um wrapper { kept: {...} } também
+  // é um objeto e poderia falsa-positivar no flat se top-level tivesse buckets).
+  const candidates: Array<unknown> = [obj.kept, obj.categorized, obj];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") {
+      const c = candidate as Record<string, unknown>;
+      if (hasKnownBucket(c)) {
+        return c as unknown as CategorizedBuckets;
+      }
+    }
+  }
+
+  // Nenhum bucket reconhecível em .kept, .categorized ou top-level → schema
+  // mismatch. Falhar alto previne a perda silenciosa do #1642.
+  throw new Error(
+    "[finalize-stage1] schema mismatch: nenhum bucket reconhecível em " +
+      ".kept, .categorized ou top-level. Keys encontradas: " +
+      `[${Object.keys(obj).join(", ")}]`,
+  );
+}
+
+/**
  * Constrói os índices usados por joinScore a partir de `all_scored`.
  */
 export function buildScoreIndexes(allScored: ScoredEntry[]): {
@@ -618,8 +677,11 @@ function main(): void {
 
   const scoredOutput: ScoredOutput = JSON.parse(readFileSync(resolve(ROOT, scoredPath), "utf8"));
   const raw = JSON.parse(readFileSync(resolve(ROOT, categorizedPath), "utf8"));
-  // categorized pode ser `{ kept: { lancamento, radar, use_melhor, video } }` ou flat
-  const categorized: CategorizedBuckets = raw.kept ?? raw;
+  // categorized pode vir como `{ kept: {...} }` (filter-date-window),
+  // `{ categorized: {...} }` (research-review-dates, #1642) ou flat. unwrap
+  // detecta o nível correto e falha alto em caso de mismatch (em vez de
+  // produzir buckets vazios silenciosamente).
+  const categorized: CategorizedBuckets = unwrapCategorizedInput(raw);
 
   // #1068 phase 2: carrega past URLs flat - past destaque URLs = past-secondary.
   // Caller pode override via --past-editions e --editions-dir; defaults
