@@ -680,18 +680,49 @@ export function joinMultilineLinks(md: string): string {
  * Input é normalizado via `unescapeMd` antes (#1117) — remove backslash escapes
  * de pontuação ASCII que o writer pode ter adicionado. URLs em markdown não
  * usam backslash escape (usam % encoding), então unescape upfront é seguro. */
-function processInlineLinks(s: string): string {
+/**
+ * Processa markdown links inline `[texto](url)` → `<a>`.
+ *
+ * #1634: o destino é parseado contando parênteses balanceados, não com
+ * `\(([^)]+)\)`. A regex antiga fechava o link no PRIMEIRO `)`, então uma URL
+ * com parênteses (ex: `.../The-Founders-Playbook-05062026_v3%20(1).pdf`)
+ * quebrava — o href saía truncado em `...(1` e o resto vazava como texto.
+ * CommonMark permite pares de parênteses balanceados no destino; aqui um `(`
+ * aumenta a profundidade e só um `)` em profundidade 0 fecha o link.
+ */
+export function processInlineLinks(s: string): string {
   const input = unescapeMd(s);
   const parts: string[] = [];
   let lastIdx = 0;
-  const re = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const linkStart = /\[([^\]]+)\]\(/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(input)) !== null) {
+  while ((m = linkStart.exec(input)) !== null) {
+    const destStart = m.index + m[0].length;
+    // Varre o destino balanceando parênteses: `(` aprofunda, `)` em depth 0 fecha.
+    let depth = 0;
+    let j = destStart;
+    for (; j < input.length; j++) {
+      const ch = input[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= input.length) continue; // sem `)` de fechamento → não é link válido
+    const url = input.substring(destStart, j);
+    // URL vazia (`[texto]()`) não é link — preserva o comportamento da regex
+    // antiga (`[^)]+` exigia destino não-vazio) e evita emitir `<a href="">`.
+    if (url.length === 0) {
+      linkStart.lastIndex = j + 1;
+      continue;
+    }
     if (m.index > lastIdx) parts.push(esc(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${esc(m[2])}" style="color:${TEXT_COLOR};text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
+      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
     );
-    lastIdx = m.index + m[0].length;
+    lastIdx = j + 1;
+    linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
   }
   if (lastIdx < input.length) parts.push(esc(input.substring(lastIdx)));
   return parts.join("");

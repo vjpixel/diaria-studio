@@ -49,6 +49,14 @@ Por que isso importa:
 
 ---
 
+**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS)
+
+**[Título acionável do item](URL)**
+
+[Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses. #1634: título no idioma original, nunca traduzir]
+
+---
+
 **🚀 LANÇAMENTOS**
 
 **[Título do item](URL)**
@@ -64,14 +72,6 @@ Por que isso importa:
 **📡 RADAR**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas. Papers podem ganhar prefix 🔬 inline pra dica visual — opcional, decidir após 2 edições piloto. #1569]
-
----
-
-**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate)
-
-**[Título acionável do item](URL)**
-
-[Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses]
 
 ---
 
