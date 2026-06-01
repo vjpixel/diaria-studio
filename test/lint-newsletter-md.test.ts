@@ -203,6 +203,105 @@ describe("lintNewsletter", () => {
   });
 });
 
+// #1691: headers REAIS de produção têm emoji prefix (`**📡 RADAR**`) e o
+// 01-approved-capped.json usa buckets per-CATEGORIA (pesquisa/noticias/tutorial/
+// video), não `radar`. Antes desta fix, extractUrlsBySection não casava headers
+// com emoji → o lint era NO-OP em toda edição (ok:true validando 0 URLs), e
+// buildUrlBucketMap só lia ["lancamento","radar"] → URLs de pesquisa/noticias/
+// tutorial/video nunca eram mapeadas.
+describe("lintNewsletter — emoji prefix + buckets per-categoria (#1691)", () => {
+  it("detecta seções emoji-prefixed (regressão do NO-OP) e valida pesquisa/noticias → RADAR", () => {
+    const approved = {
+      highlights: [],
+      lancamento: [{ url: "https://openai.com/x" }],
+      pesquisa: [{ url: "https://arxiv.org/y" }],
+      noticias: [{ url: "https://techcrunch.com/z" }],
+    };
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "Item",
+      "https://openai.com/x",
+      "",
+      "---",
+      "**📡 RADAR**",
+      "https://arxiv.org/y",
+      "https://techcrunch.com/z",
+    ].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("URL categoria noticias na seção LANÇAMENTOS → erro (#165, agora com emoji)", () => {
+    const approved = {
+      highlights: [],
+      noticias: [{ url: "https://techcrunch.com/comfyui", title: "ComfyUI" }],
+    };
+    const md = ["**🚀 LANÇAMENTOS**", "ComfyUI", "https://techcrunch.com/comfyui"].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors[0].expected_bucket, "lancamento");
+    assert.equal(r.errors[0].found_in_bucket, "radar"); // noticias → RADAR
+  });
+
+  it("seção USE MELHOR valida bucket tutorial", () => {
+    const approved = { highlights: [], tutorial: [{ url: "https://x.com/tut" }] };
+    const md = ["**🛠️ USE MELHOR**", "Tutorial", "https://x.com/tut"].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("seção VÍDEOS valida bucket video; URL de outro bucket na seção → erro", () => {
+    const approved = {
+      highlights: [],
+      video: [{ url: "https://youtube.com/watch?v=ok" }],
+      lancamento: [{ url: "https://x.com/lanc", title: "Lanc" }],
+    };
+    const md = [
+      "**📺 VÍDEOS**",
+      "OK",
+      "https://youtube.com/watch?v=ok",
+      "Errado (é lancamento)",
+      "https://x.com/lanc",
+    ].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, false);
+    const err = r.errors.find((e) => e.url === "https://x.com/lanc");
+    assert.ok(err, JSON.stringify(r.errors));
+    assert.equal(err.expected_bucket, "video");
+    assert.equal(err.found_in_bucket, "lancamento");
+  });
+
+  it("VÍDEO singular (pós-singularize, 1 item) também é reconhecido", () => {
+    const approved = { highlights: [], video: [{ url: "https://youtube.com/watch?v=s" }] };
+    const md = ["**📺 VÍDEO**", "Único", "https://youtube.com/watch?v=s"].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("ignora fragmento #amp no join (caso real 260521 — não falso 'missing')", () => {
+    // approved tem `...#amp`, newsletter tem a URL limpa → fragmento ignorado.
+    const approved = {
+      highlights: [],
+      noticias: [{ url: "https://cybersecuritynews.com/claude-code-rce-flaw/#amp" }],
+    };
+    const md = ["**📡 RADAR**", "Item", "https://cybersecuritynews.com/claude-code-rce-flaw/"].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("highlight com URL nested (article.url) é reconhecido na seção (warning, não 'missing')", () => {
+    // #229: highlights podem ser nested. Sem ler article.url, virava falso 'missing'.
+    const approved = {
+      highlights: [{ article: { url: "https://blog.google/x", title: "D1" } }],
+    };
+    const md = ["**📡 RADAR**", "Item", "https://blog.google/x"].join("\n");
+    const r = lintNewsletter(md, approved);
+    assert.equal(r.ok, true, JSON.stringify(r.errors)); // highlight em seção = warning, não erro
+    assert.equal(r.warnings.length, 1);
+  });
+});
+
 describe("countTitlesPerHighlight (#178, #245)", () => {
   it("ok quando todos 3 destaques têm exatamente 1 título — formato single-newline (legado)", () => {
     const md = [
