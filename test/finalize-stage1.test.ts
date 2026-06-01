@@ -15,6 +15,7 @@ import {
   applyDomainCap,
   applyPastSecondaryFilter,
   finalizeStage1,
+  unwrapCategorizedInput,
   DEFAULT_DOMAIN_CAP,
   type Article,
   type ScoredEntry,
@@ -782,5 +783,62 @@ describe("#1567 finding D — join pool == scored pool ⇒ sem url_mismatch esp�
     assert.equal(r.url_mismatches.length, 2);
     const urls = r.url_mismatches.map((m) => m.article_url).sort();
     assert.deepEqual(urls, ["https://extra1.com/x", "https://extra2.com/y"]);
+  });
+});
+
+describe("#1642 — unwrapCategorizedInput (perda silenciosa de artigos)", () => {
+  const buckets = {
+    lancamento: [{ url: "https://a.com/1", title: "Lançamento A título longo o suficiente" }],
+    radar: [{ url: "https://b.com/2", title: "Notícia B título longo o suficiente" }],
+    use_melhor: [],
+    video: [],
+  };
+
+  it("desembrulha wrapper { categorized: {...} } (output de research-review-dates) — o bug do #1642", () => {
+    // research-review-dates.ts grava { categorized: filterResult.kept, stats }.
+    // Antes do fix, raw.kept ?? raw caía em raw → buckets vazios silenciosos.
+    const raw = { categorized: buckets, stats: { total_input: 2, total_output: 2 } };
+    const out = unwrapCategorizedInput(raw);
+    assert.equal(out.lancamento.length, 1);
+    assert.equal(out.radar.length, 1);
+    assert.equal(out.lancamento[0].url, "https://a.com/1");
+  });
+
+  it("desembrulha wrapper { kept: {...} } (output de filter-date-window)", () => {
+    const raw = { kept: buckets, removed: [] };
+    const out = unwrapCategorizedInput(raw);
+    assert.equal(out.lancamento.length, 1);
+    assert.equal(out.radar.length, 1);
+  });
+
+  it("aceita shape flat { lancamento, radar, ... }", () => {
+    const out = unwrapCategorizedInput(buckets);
+    assert.equal(out.lancamento.length, 1);
+    assert.equal(out.radar.length, 1);
+  });
+
+  it("prefere wrapper .kept sobre flat quando ambos existem", () => {
+    // top-level tem chaves de bucket espúrias, mas .kept é o container real.
+    const raw = { kept: buckets, lancamento: [] };
+    const out = unwrapCategorizedInput(raw);
+    assert.equal(out.lancamento.length, 1);
+  });
+
+  it("reconhece buckets legados (pesquisa/noticias/tutorial) sob .categorized", () => {
+    const legacy = { categorized: { pesquisa: [{ url: "https://x/1" }], noticias: [] } };
+    const out = unwrapCategorizedInput(legacy);
+    assert.equal((out as Record<string, unknown[]>).pesquisa.length, 1);
+  });
+
+  it("FALHA ALTO em schema mismatch (nenhum bucket reconhecível) — não retorna vazio silencioso", () => {
+    // Exatamente o cenário do #1642 sem o fix: buckets aninhados num wrapper
+    // desconhecido. Antes: buckets vazios. Agora: throw explícito.
+    const bogus = { resultado: { lancamento: [{ url: "https://x/1" }] }, stats: {} };
+    assert.throws(() => unwrapCategorizedInput(bogus), /schema mismatch/);
+  });
+
+  it("rejeita input não-objeto", () => {
+    assert.throws(() => unwrapCategorizedInput(null), /não é objeto/);
+    assert.throws(() => unwrapCategorizedInput("foo"), /não é objeto/);
   });
 });
