@@ -1,8 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   aammddToIso,
   isWithinPendingWindow,
+  extractUrlsFromApproved,
 } from "../scripts/merge-local-pending.ts";
 
 describe("aammddToIso (#863)", () => {
@@ -85,5 +89,56 @@ describe("isWithinPendingWindow — anchor em today, não em edition (#863)", ()
     const editionMs = new Date("2026-05-04T00:00:00Z").getTime();
     const daysAgo = Math.round((anchorMs - editionMs) / oneDayMs);
     assert.equal(daysAgo, 3, "edição de 3d atrás relativa ao anchor");
+  });
+});
+
+describe("extractUrlsFromApproved — buckets #1629 (#1659)", () => {
+  function writeApproved(obj: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), "mlp-"));
+    const p = join(dir, "01-approved.json");
+    writeFileSync(p, JSON.stringify(obj), "utf8");
+    return p;
+  }
+
+  it("regression #1659: extrai URLs dos buckets novos radar/use_melhor/video", () => {
+    const p = writeApproved({
+      lancamento: [{ url: "https://x.com/lanc" }],
+      radar: [{ url: "https://x.com/radar1" }, { url: "https://x.com/radar2" }],
+      use_melhor: [{ url: "https://x.com/um" }],
+      video: [{ url: "https://x.com/vid" }],
+      highlights: [{ url: "https://x.com/h1" }],
+      runners_up: [{ article: { url: "https://x.com/ru" } }],
+    });
+    const urls = extractUrlsFromApproved(p);
+    for (const u of [
+      "https://x.com/lanc",
+      "https://x.com/radar1",
+      "https://x.com/radar2",
+      "https://x.com/um",
+      "https://x.com/vid",
+      "https://x.com/h1",
+      "https://x.com/ru",
+    ]) {
+      assert.ok(urls.includes(u), `bucket URL faltando: ${u} — got: ${urls.join(", ")}`);
+    }
+  });
+
+  it("ainda extrai buckets legacy (pesquisa/noticias/tutorial) de edições pré-#1629", () => {
+    const p = writeApproved({
+      pesquisa: [{ url: "https://x.com/pesq" }],
+      noticias: [{ url: "https://x.com/not" }],
+      tutorial: [{ url: "https://x.com/tut" }],
+    });
+    assert.deepEqual(
+      extractUrlsFromApproved(p).sort(),
+      ["https://x.com/not", "https://x.com/pesq", "https://x.com/tut"],
+    );
+  });
+
+  it("retorna [] quando o arquivo não existe", () => {
+    assert.deepEqual(
+      extractUrlsFromApproved(join(tmpdir(), "nonexistent-mlp-dir", "01-approved.json")),
+      [],
+    );
   });
 });

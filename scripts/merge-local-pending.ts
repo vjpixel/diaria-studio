@@ -31,6 +31,11 @@ interface ApprovedJson {
   highlights?: Array<{ url?: string; article?: { url?: string } }>;
   runners_up?: Array<{ url?: string; article?: { url?: string } }>;
   lancamento?: Array<{ url?: string }>;
+  // #1629: buckets renomeados (pesquisa+noticias → radar, tutorial → use_melhor)
+  radar?: Array<{ url?: string }>;
+  use_melhor?: Array<{ url?: string }>;
+  video?: Array<{ url?: string }>;
+  // Legacy (parsear edições históricas pré-#1629)
   pesquisa?: Array<{ url?: string }>;
   noticias?: Array<{ url?: string }>;
   tutorial?: Array<{ url?: string }>;
@@ -77,7 +82,7 @@ export function isWithinPendingWindow(
   return true;
 }
 
-function extractUrlsFromApproved(approvedPath: string): string[] {
+export function extractUrlsFromApproved(approvedPath: string): string[] {
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJson;
   try {
@@ -87,6 +92,13 @@ function extractUrlsFromApproved(approvedPath: string): string[] {
   }
   const urls = new Set<string>();
   for (const a of parsed.lancamento ?? []) if (a.url) urls.add(a.url);
+  // #1629: buckets renomeados — sem isso, URLs de RADAR/Use melhor/Vídeos de
+  // edições pending vazavam pro dedup (mesma migração já feita em
+  // refresh-past-editions.ts; merge-local-pending foi esquecido).
+  for (const a of parsed.radar ?? []) if (a.url) urls.add(a.url);
+  for (const a of parsed.use_melhor ?? []) if (a.url) urls.add(a.url);
+  for (const a of parsed.video ?? []) if (a.url) urls.add(a.url);
+  // Legacy buckets (edições históricas pré-#1629)
   for (const a of parsed.pesquisa ?? []) if (a.url) urls.add(a.url);
   for (const a of parsed.noticias ?? []) if (a.url) urls.add(a.url);
   for (const a of parsed.tutorial ?? []) if (a.url) urls.add(a.url);
