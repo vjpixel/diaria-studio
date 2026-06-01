@@ -10,7 +10,8 @@
  * convite linkado em vez de omitir o bloco.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import { renderLeaderboardTop1Row, type EIA } from "../scripts/render-newsletter-html.ts";
 
 const STYLE = "font-family:sans-serif;";
@@ -32,16 +33,17 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       baseEia({ leaderboardPeriod: "Junho", leaderboardPeriodSlug: "2026-06" }),
       STYLE,
     );
-    expect(html).toContain(`href="${LB}/2026-06"`);
-    expect(html).toContain("Acompanhe a leaderboard de Junho");
-    expect(html).toContain("🏆");
+    assert.match(html, new RegExp(`href="${LB}/2026-06"`));
+    assert.match(html, /Acompanhe a leaderboard de Junho/);
+    assert.match(html, /🏆/);
   });
 
   it("sem líderes e sem slug → string vazia (back-compat)", () => {
-    expect(renderLeaderboardTop1Row(baseEia(), STYLE)).toBe("");
-    expect(
+    assert.equal(renderLeaderboardTop1Row(baseEia(), STYLE), "");
+    assert.equal(
       renderLeaderboardTop1Row(baseEia({ leaderboardPeriod: "Junho" }), STYLE),
-    ).toBe("");
+      "",
+    );
   });
 
   it("com líderes + slug → cabeçalho 'Liderança' é link pra /leaderboard/{slug}", () => {
@@ -53,9 +55,9 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       }),
       STYLE,
     );
-    expect(html).toContain(`href="${LB}/2026-05"`);
-    expect(html).toContain(">Liderança de Maio</a>");
-    expect(html).toContain("Davyd");
+    assert.match(html, new RegExp(`href="${LB}/2026-05"`));
+    assert.match(html, />Liderança de Maio<\/a>/);
+    assert.match(html, /Davyd/);
   });
 
   it("com líderes sem slug → cabeçalho em <strong> (back-compat, sem link)", () => {
@@ -66,8 +68,8 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       }),
       STYLE,
     );
-    expect(html).not.toContain("/leaderboard/");
-    expect(html).toContain("<strong>Liderança de Maio</strong>");
-    expect(html).toContain("Davyd");
+    assert.doesNotMatch(html, /\/leaderboard\//);
+    assert.match(html, /<strong>Liderança de Maio<\/strong>/);
+    assert.match(html, /Davyd/);
   });
 });

@@ -189,7 +189,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false), {
+    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition)), {
       status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -262,7 +262,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       }
     : null;
 
-  return new Response(votePageHtml(msg, true, nicknameForm, resultImages), {
+  return new Response(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition)), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
 }
@@ -855,11 +855,12 @@ export interface VoteResultImages {
   clickedSide: "A" | "B";
 }
 
-function votePageHtml(
+export function votePageHtml(
   message: string,
   success: boolean,
   nicknameForm?: { email: string; sig: string } | null,
   resultImages?: VoteResultImages | null,
+  leaderboardSlug?: string | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -906,7 +907,7 @@ function votePageHtml(
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${formHtml}
-<p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="/leaderboard">Ver leaderboard</a></p>
+<p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="${leaderboardSlug ? `/leaderboard/${leaderboardSlug}` : "/leaderboard"}">Ver leaderboard</a></p>
 </body>
 </html>`;
 }
