@@ -547,7 +547,7 @@ interface SnapshotPayload {
  * Reduz subrequest budget de ~500 (1 list + N gets) pra 1 KV get no hot path.
  * Cold path (após invalidate) paga compute uma vez, próximos reads hit cache.
  */
-async function getOrComputeSnapshot(
+export async function getOrComputeSnapshot(
   env: Env,
   slug: string,
 ): Promise<SnapshotEntry[]> {
@@ -562,6 +562,14 @@ async function getOrComputeSnapshot(
     }
   }
   const entries = await computeSnapshotEntries(env, slug);
+  // #1666: não persistir snapshot VAZIO. handleLeaderboardByMonth precisa ler
+  // entries mesmo pra mês futuro (o gate "ainda não começou" depende de
+  // entries.length por causa do D+1 que acumula votos antes do slug virar), mas
+  // um GET /leaderboard/{mês-futuro} sem votos (rota não-autenticada;
+  // parseMonthSlug aceita anos 2000-2099) gravava um snapshot vazio por slug →
+  // write amplification. Sem votos não há o que cachear; o 1º voto invalida e
+  // reinicia o ciclo normal (o list de checagem segue cheap p/ prefix vazio).
+  if (entries.length === 0) return entries;
   const payload: SnapshotPayload = {
     entries,
     computed_at: new Date().toISOString(),
