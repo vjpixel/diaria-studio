@@ -383,11 +383,14 @@ npx tsx scripts/merge-scored-chunks.ts \
   --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
   --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
   --top 15
+MERGE_EXIT=$?   # capturar ANTES do echo (echo zera o $?)
+echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável · 1 = erro de args/input · 2 = CATASTRÓFICO (#1669)
 ```
-Tratar o manifest por severidade (#1567 audit, finding F — split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores; sem isto o #1 highlight some silenciosamente com só um warning):
-- **`catastrophic: true`** (um chunk inteiro ilegível — `failed_chunks > 0` — ou `missing_count > 2`): **NÃO seguir com o resultado degradado.** (a) **Retry** o(s) `scorer-chunk` do(s) chunk(s) que falhou(aram) — re-disparar o agent só pros `scored-chunk-{i}.json` ausentes/inválidos — e re-rodar o merge (1q.3). (b) Se ainda `catastrophic` após o retry, **cair no 1q-fallback** (single-call `scorer` sobre o `tmp-dates-reviewed.json` inteiro), descartando o resultado chunked. Logar `level: error`.
-- **`incomplete: true` mas não `catastrophic`** (gap ≤ 2 artigos): logar `level: warn` e seguir — os artigos sem score viraram 0 e serão filtrados em 1s (ruído recuperável).
-- Caso contrário: seguir normalmente.
+**Ramificar pelo EXIT CODE em `$MERGE_EXIT` (#1669 — determinístico; NÃO dependa de parsear `catastrophic` do manifest stdout).** Split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores — sem o guard o #1 highlight some silenciosamente. **Os 3 códigos são exaustivos — não há catch-all "seguir":**
+- **exit 2** (= `catastrophic: true` — um chunk inteiro ilegível `failed_chunks > 0`, ou `missing_count > 2`): **NÃO seguir com o resultado degradado** (os arquivos `tmp-allscored.json`/`tmp-finalists.json` foram escritos só pra diagnóstico). (a) **Retry** o(s) `scorer-chunk` que falhou(aram) — re-disparar o agent só pros `scored-chunk-{i}.json` ausentes/inválidos — e re-rodar o merge (1q.3). (b) Se ainda sair 2 após o retry, **cair no 1q-fallback** (single-call `scorer` sobre o `tmp-dates-reviewed.json` inteiro), descartando o resultado chunked. Logar `level: error`.
+- **exit 1** (erro de invocação — args malformados — ou `tmp-dates-reviewed.json` ausente/corrompido; **nenhum output novo foi escrito**): **HALT — NÃO seguir.** Os `tmp-finalists.json`/`tmp-allscored.json` podem estar stale de um run anterior; **não** consumir em 1q.4/1q.5. Corrigir os args/input e re-rodar, ou cair no 1q-fallback. Logar `level: error`.
+- **exit 0 + `incomplete: true`** (gap ≤ 2 artigos): logar `level: warn` e seguir — os artigos sem score viraram 0 e serão filtrados em 1s (ruído recuperável).
+- **exit 0** (sem `incomplete`): seguir normalmente.
 
 **1q.4 — Seleção.** Disparar 1 agent `scorer-select`: input = `tmp-finalists.json`, out_path = `tmp-selection.json`. Retorna `highlights[]` (≤6, ordem editorial) + `runners_up[]`.
 

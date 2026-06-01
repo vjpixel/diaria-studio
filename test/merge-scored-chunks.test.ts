@@ -7,6 +7,10 @@ import {
   type ChunkScoreFile,
 } from "../scripts/merge-scored-chunks.ts";
 import type { Categorized } from "../scripts/split-articles-for-scoring.ts";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const mk = (url: string, category: string) => ({ url, title: url, category });
 
@@ -179,5 +183,72 @@ describe("mergeChunks — sinal catastrophic (#1567 finding F)", () => {
     assert.equal(r.missing_count, 0);
     assert.equal(r.incomplete, false);
     assert.equal(r.catastrophic, false);
+  });
+});
+
+describe("main() CLI — exit code determinístico (#1669)", () => {
+  const ROOT = resolve(import.meta.dirname, "..");
+  const POOL = {
+    lancamento: [mk("l1", "lancamento")],
+    radar: [mk("p1", "radar"), mk("p2", "radar"), mk("n1", "radar"), mk("n2", "radar")],
+    use_melhor: [],
+  };
+
+  function runMerge(chunkContents: string[]): { status: number; stdout: string } {
+    const dir = mkdtempSync(join(tmpdir(), "msc-cli-"));
+    try {
+      const catPath = join(dir, "cat.json");
+      writeFileSync(catPath, JSON.stringify({ categorized: POOL }));
+      const chunkPaths = chunkContents.map((c, i) => {
+        const p = join(dir, `chunk-${i}.json`);
+        writeFileSync(p, c);
+        return p;
+      });
+      const r = spawnSync(
+        "npx",
+        [
+          "tsx", "scripts/merge-scored-chunks.ts",
+          "--categorized", catPath,
+          "--chunk-scores", chunkPaths.join(","),
+          "--allscored-out", join(dir, "all.json"),
+          "--finalists-out", join(dir, "fin.json"),
+          "--top", "15",
+        ],
+        { cwd: ROOT, encoding: "utf8", shell: true },
+      );
+      return { status: r.status ?? -1, stdout: r.stdout ?? "" };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("chunk ilegível (catastrophic) → exit 2 + manifest de diagnóstico no stdout (#1669)", () => {
+    // JSON inválido → loadChunks marca failed → catastrophic. Pré-fix saía 0.
+    const r = runMerge(["{corrompido"]);
+    assert.equal(r.status, 2, "perda catastrófica deve sair com exit 2");
+    // Manifest de diagnóstico é emitido no stdout mesmo no exit catastrófico.
+    // (NB: o manifest é pequeno e drena sync mesmo sob process.exit; o uso de
+    // process.exitCode — não exit() — é robustez contra truncar writes maiores e
+    // NÃO é distinguível por este assert; é uma decisão documentada no script.)
+    assert.match(r.stdout, /"catastrophic":true/, "manifest de diagnóstico presente no stdout");
+  });
+
+  it("args ausentes → exit 1 (erro de invocação, distinto de catastrophic) (#1669)", () => {
+    // Exit 1 ≠ exit 2: 1q.3 deve HALT (não 'seguir'), pois nenhum output novo é
+    // escrito (process.exit(1) acontece antes dos writeFileSync).
+    const r = spawnSync("npx", ["tsx", "scripts/merge-scored-chunks.ts"], {
+      cwd: ROOT, encoding: "utf8", shell: true,
+    });
+    assert.equal(r.status ?? -1, 1);
+  });
+
+  it("todos os artigos pontuados → exit 0", () => {
+    const valid = JSON.stringify({
+      scored: [
+        { url: "l1", score: 9 }, { url: "p1", score: 8 }, { url: "p2", score: 7 },
+        { url: "n1", score: 6 }, { url: "n2", score: 5 },
+      ],
+    });
+    assert.equal(runMerge([valid]).status, 0);
   });
 });
