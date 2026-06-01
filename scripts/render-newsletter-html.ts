@@ -111,6 +111,12 @@ interface NewsletterContent {
    * outros Y artigos. Selecionamos os Z mais relevantes...". Parseada do reviewed.md, renderizada
    * como bloco transparente no topo do email (após o título, antes do primeiro destaque). */
   coverageLine?: string | null;
+  /** #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). Parseado
+   * de um parágrafo `**🎉 ...**` ou `**📣 ...**` na região de intro do reviewed.md
+   * (após a coverage line, antes do primeiro destaque). Renderizado como callout
+   * com borda teal — diferente da coverage line (cinza itálico), pra não passar
+   * despercebido. */
+  introCallout?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -469,6 +475,21 @@ export function extractCoverageLine(text: string): string | null {
   return m ? m[0].trim() : null;
 }
 
+/**
+ * Pure (#1648): extrai um CTA de destaque (ex: convite pro sorteio ao vivo) da
+ * região de intro — um parágrafo em negrito iniciado por 🎉 ou 📣, posicionado
+ * antes do primeiro `**DESTAQUE`. Retorna o texto interno (markdown de links
+ * preservado pra processInlineLinks), ou `null` se ausente.
+ *
+ * Diferente da coverage line: renderizado como callout com borda, não some no
+ * meio do parágrafo cinza (feedback 260601 — sorteio não era encontrado no topo).
+ */
+export function extractIntroCallout(text: string): string | null {
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  const m = introRegion.match(/^\*\*\s*((?:🎉|📣)[\s\S]+?)\*\*\s*$/m);
+  return m ? m[1].trim() : null;
+}
+
 function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -530,6 +551,8 @@ function extractContent(editionDir: string): NewsletterContent {
 
   // #1093: linha de cobertura no topo da newsletter.
   const coverageLine = extractCoverageLine(reviewedText);
+  // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
+  const introCallout = extractIntroCallout(reviewedText);
 
   return {
     title: destaques[0].title,
@@ -542,6 +565,7 @@ function extractContent(editionDir: string): NewsletterContent {
     encerrar,
     erroIntencional,
     coverageLine,
+    introCallout,
   };
 }
 
@@ -778,6 +802,23 @@ export function renderCoverage(text: string): string {
 </td></tr>`;
 }
 
+/**
+ * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). Callout com
+ * fundo claro + borda esquerda teal, texto em peso 600 — visualmente distinto da
+ * coverage line (cinza itálico) pra não passar despercebido. Links em markdown
+ * são processados via processInlineLinks.
+ */
+export function renderIntroCallout(text: string): string {
+  return `<!-- #1648 intro callout (sorteio/CTA) -->
+<tr><td align="left" style="padding:16px 2px 0 2px;text-align:left;word-break:break-word;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border-left:4px solid ${TEAL};border-radius:4px;">
+    <tr><td style="padding:12px 16px;">
+      <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
+    </td></tr>
+  </table>
+</td></tr>`;
+}
+
 function renderDestaque(d: RenderDestaque): string {
   // #1085: sem box ciano — destaques separados por <hr> finos. Mantém
   // imagem inline em D1 (cover) e D2/D3 sem (#1077, memory
@@ -874,12 +915,14 @@ ${leaderboardRow}
  * only) pra compat com arquivos legacy.
  */
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
-  // Source: prefere podium (#1160 followup), cai em top1 legacy.
-  const names: string[] = eia.leaderboardPodium && eia.leaderboardPodium.length > 0
-    ? eia.leaderboardPodium.map((e) => e.nickname)
-    : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
-      ? eia.leaderboardTop1.map((e) => e.nickname)
-      : [];
+  // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
+  // rank pra exibir posições ordinais (1º, 2º, 3º). #1646: ranking por acertos.
+  const ranked: { nickname: string; rank: number }[] =
+    eia.leaderboardPodium && eia.leaderboardPodium.length > 0
+      ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
+      : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
+        ? eia.leaderboardTop1.map((e, i) => ({ nickname: e.nickname, rank: i + 1 }))
+        : [];
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
   const slug = eia.leaderboardPeriodSlug || "";
@@ -888,7 +931,7 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
 
   // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
   // convidar o leitor pra acompanhar a leaderboard do mês na URL histórica.
-  if (names.length === 0) {
+  if (ranked.length === 0) {
     if (!lbUrl) return "";
     const label = eia.leaderboardPeriod
       ? `Acompanhe a leaderboard de ${eia.leaderboardPeriod}`
@@ -898,22 +941,18 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
       </td></tr>`;
   }
 
-  let phrase: string;
-  if (names.length === 1) {
-    phrase = names[0];
-  } else if (names.length === 2) {
-    phrase = `${names[0]} e ${names[1]}`;
-  } else {
-    phrase = `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
-  }
+  // Posições ordinais: "1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida".
+  const phrase = ranked
+    .map((e) => `${e.rank}º ${esc(e.nickname)}`)
+    .join(", ");
 
-  // Quando há slug, o título "Liderança de {mês}" vira link pra leaderboard histórica.
+  // Quando há slug, o título "Vencedores de {mês}" vira link pra leaderboard histórica.
   const heading = lbUrl
-    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Liderança${period}</a>`
-    : `<strong>Liderança${period}</strong>`;
+    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Vencedores${period}</a>`
+    : `<strong>Vencedores${period}</strong>`;
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">🏆 ${heading}: ${esc(phrase)}</p>
+        <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
       </td></tr>`;
 }
 
@@ -1113,6 +1152,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // skip quando ausente (edições antigas pré-#1095/#1097).
   if (content.coverageLine) {
     parts.push(renderCoverage(content.coverageLine));
+  }
+
+  // #1648: CTA de destaque (ex: sorteio ao vivo) logo após a coverage line.
+  if (content.introCallout) {
+    parts.push(renderIntroCallout(content.introCallout));
   }
 
   // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory

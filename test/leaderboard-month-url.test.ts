@@ -46,7 +46,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
     );
   });
 
-  it("com líderes + slug → cabeçalho 'Liderança' é link pra /leaderboard/{slug}", () => {
+  it("com líderes + slug → cabeçalho 'Vencedores' é link pra /leaderboard/{slug}", () => {
     const html = renderLeaderboardTop1Row(
       baseEia({
         leaderboardPodium: [{ nickname: "Davyd", rank: 1 }],
@@ -56,7 +56,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.match(html, new RegExp(`href="${LB}/2026-05"`));
-    assert.match(html, />Liderança de Maio<\/a>/);
+    assert.match(html, />Vencedores de Maio<\/a>/);
     assert.match(html, /Davyd/);
   });
 
@@ -69,7 +69,25 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.doesNotMatch(html, /\/leaderboard\//);
-    assert.match(html, /<strong>Liderança de Maio<\/strong>/);
+    assert.match(html, /<strong>Vencedores de Maio<\/strong>/);
     assert.match(html, /Davyd/);
+  });
+
+  it("pódio com 3 → posições ordinais '1º X, 2º Y, 3º Z' por acertos (#1646)", () => {
+    const html = renderLeaderboardTop1Row(
+      baseEia({
+        leaderboardPodium: [
+          { nickname: "Bruna Quevedo", rank: 1 },
+          { nickname: "Joshu", rank: 2 },
+          { nickname: "Ana Cândida", rank: 3 },
+        ],
+        leaderboardPeriod: "Maio",
+        leaderboardPeriodSlug: "2026-05",
+      }),
+      STYLE,
+    );
+    assert.match(html, /1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida/);
+    // sem percentuais no texto (#1646)
+    assert.doesNotMatch(html, /%/);
   });
 });
