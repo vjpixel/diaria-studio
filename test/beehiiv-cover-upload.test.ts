@@ -83,6 +83,29 @@ describe("classifyUploadResult (#1416)", () => {
       assert.match(r.reason, /não bate com pattern/);
     }
   });
+
+  // #1640: MCP claude-in-chrome retorna vazio/null em disconnect intermitente.
+  it("#1640: result null → ok=false retryable, NÃO lança TypeError", () => {
+    const r = classifyUploadResult(null);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.reason, /disconnect.*claude-in-chrome|#1640/);
+  });
+
+  it("#1640: result undefined → ok=false retryable", () => {
+    const r = classifyUploadResult(undefined);
+    assert.equal(r.ok, false);
+  });
+
+  it("#1640: result não-objeto (string vazia) → ok=false retryable", () => {
+    // @ts-expect-error — simula retorno degenerado do MCP
+    const r = classifyUploadResult("");
+    assert.equal(r.ok, false);
+  });
+
+  it("#1640: objeto vazio {} → ok=false (thumbnail ausente, não crash)", () => {
+    const r = classifyUploadResult({});
+    assert.equal(r.ok, false);
+  });
 });
 
 describe("buildCoverReplaceJs (#1457)", () => {
