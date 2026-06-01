@@ -47,7 +47,7 @@ function writePublished(
 
 function writeSocialPublished(
   dir: string,
-  posts: Array<{ platform: string; status?: string; url?: string }>,
+  posts: Array<{ platform: string; status?: string; url?: string | null }>,
 ): void {
   writeFileSync(
     resolve(dir, "_internal", "06-social-published.json"),
@@ -172,11 +172,81 @@ describe("checkConsentBinding (#1575)", () => {
     try {
       writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "auto" });
       writeSocialPublished(dir, [
-        { platform: "linkedin", status: "scheduled", url: "https://linkedin.com/x" },
+        // Shape REAL: LinkedIn worker_queue grava url=null no write (a URL só
+        // existe depois que o Worker dispara o post agendado). Facebook (Graph
+        // API) retorna url na hora.
+        { platform: "linkedin", status: "scheduled", url: null },
         { platform: "facebook", status: "draft", url: "https://facebook.com/x" },
       ]);
       const violations = checkConsentBinding(dir);
       assert.equal(violations.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("regression #1664 false-positive: LinkedIn auto-dispatch (scheduled, url=null) NÃO viola", () => {
+    // O review da PR pegou: o check `!p.url` flagava TODA edição real
+    // (260525-260601) porque LinkedIn worker_queue grava url=null no write.
+    // Um post scheduled sem url é dispatch legítimo, não bypass.
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      writeSocialPublished(dir, [
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "linkedin", status: "scheduled", url: null },
+      ]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        !violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `LinkedIn scheduled/url=null é dispatch real, não deveria violar; got: ${JSON.stringify(violations)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("regression #1664: consent.linkedin=auto + post stub pending_manual (sem url) → violation", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      // O bypass que escapava pré-#1664: post existe mas é pending_manual (não dispatchado).
+      writeSocialPublished(dir, [{ platform: "linkedin", status: "pending_manual" }]);
+      const violations = checkConsentBinding(dir);
+      const li = violations.find((v) => v.rule === "consent-binding-linkedin");
+      assert.ok(li, `esperava violation linkedin; got: ${JSON.stringify(violations)}`);
+      assert.match(li!.message, /pending_manual|dispatch automático/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#1664: consent.facebook=auto + post sem url → violation", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "manual", facebook: "auto" });
+      writeSocialPublished(dir, [{ platform: "facebook" }]); // sem url, sem status
+      const violations = checkConsentBinding(dir);
+      assert.ok(violations.some((v) => v.rule === "consent-binding-facebook"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#1664: dispatch parcial (1 post real + 1 manual) NÃO viola — pelo menos um real", () => {
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      writeSocialPublished(dir, [
+        { platform: "linkedin", status: "scheduled", url: null }, // dispatch real (worker_queue)
+        { platform: "linkedin", status: "pending_manual" },
+      ]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        !violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `não esperava violation linkedin (há 1 dispatch real); got: ${JSON.stringify(violations)}`,
+      );
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -189,8 +259,8 @@ describe("checkConsentBinding (#1575)", () => {
       // Newsletter ausente (orchestrator bypassou Chrome MCP)
       // Social com posts
       writeSocialPublished(dir, [
-        { platform: "linkedin", status: "scheduled", url: "..." },
-        { platform: "facebook", status: "draft", url: "..." },
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "facebook", status: "draft", url: "https://facebook.com/x" },
       ]);
       const violations = checkConsentBinding(dir);
       assert.ok(violations.length > 0);
