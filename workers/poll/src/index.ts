@@ -364,8 +364,11 @@ async function updateScoreByMonth(
 
 /**
  * #1657: entrada do log de votos pra analytics de comportamento (latência
- * envio→voto, hora-do-dia, recorrência, acerto×latência). `email_hash` é HMAC
- * (mesmo do poll_sig) — id estável de coorte SEM PII crua.
+ * envio→voto, hora-do-dia, recorrência, acerto×latência). `email_hash` é um
+ * HMAC domain-separado (`votelog:{email}`) — id estável de coorte SEM PII crua.
+ * Review: NÃO reusar o poll_sig (HMAC do email cru) — ele viaja no `?sig=` das
+ * URLs de voto; se uma URL vazar, o dump do log permitiria re-identificar o
+ * histórico. O prefixo `votelog:` desacopla o id de coorte do sig de auth.
  */
 export interface VoteLogEntry {
   ts: string;
@@ -412,7 +415,10 @@ export async function recordVoteLog(
 ): Promise<void> {
   const monthSlug = editionToMonthSlug(edition);
   if (monthSlug === null) return;
-  const emailHash = await hmacSign(env.POLL_SECRET, email);
+  // Review #1736: domain-separado (`votelog:`) — NÃO é o poll_sig (HMAC do email
+  // cru, que vaza no ?sig= das URLs). Mantém estabilidade por coorte sem permitir
+  // re-identificação cruzando log + sig vazado.
+  const emailHash = await hmacSign(env.POLL_SECRET, `votelog:${email}`);
   const entry = buildVoteLogEntry({ ts, edition, monthSlug, emailHash, choice, correct });
   await env.POLL.put(
     `vote-log:${monthSlug}:${edition}:${emailHash}`,

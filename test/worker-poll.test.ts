@@ -941,5 +941,21 @@ describe("recordVoteLog (#1657)", () => {
     await recordVoteLog(env, "x@y.com", "naoehdata", "A", null, "t");
     assert.equal(puts.length, 0);
   });
+
+  it("email_hash domain-separado: ≠ poll_sig do email cru, = HMAC(votelog:email) (review #1736)", async () => {
+    const { puts, env } = mockEnv();
+    await recordVoteLog(env, "user@example.com", "260602", "A", null, "t");
+    const logHash = JSON.parse(puts[0].value).email_hash;
+    const { createHmac } = await import("node:crypto");
+    const bareEmailSig = createHmac("sha256", "test-poll-secret")
+      .update("user@example.com")
+      .digest("hex");
+    const domainSep = createHmac("sha256", "test-poll-secret")
+      .update("votelog:user@example.com")
+      .digest("hex");
+    // poll_sig (HMAC do email cru) viaja no ?sig= — o id de coorte NÃO pode ser ele.
+    assert.notEqual(logHash, bareEmailSig, "não pode ser o poll_sig");
+    assert.equal(logHash, domainSep, "deve ser HMAC de votelog:{email}");
+  });
 });
 
