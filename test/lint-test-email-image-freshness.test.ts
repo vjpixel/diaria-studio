@@ -67,6 +67,31 @@ describe("resolveExpectedLocalFile (#1212)", () => {
     assert.equal(r, "04-d1-2x1.jpg");
   });
 
+  it("#1714: Worker URL com sufixo md5short (8 hex, #1584) → strip pro nome local", () => {
+    // cover/d1 são gravados como `...-{md5.slice(0,8)}.jpg` (cloudflareKvKey).
+    // Sem stripar o md5, a freshness lint pulava cover/d1 silenciosamente.
+    const r = resolveExpectedLocalFile(
+      "https://poll.diaria.workers.dev/img/img-260602-04-d1-2x1-8ff353aa.jpg",
+    );
+    assert.equal(r, "04-d1-2x1.jpg");
+  });
+
+  it("#1714: md5short em d2/d3 1x1 também resolve", () => {
+    assert.equal(
+      resolveExpectedLocalFile("https://poll.diaria.workers.dev/img/img-260602-04-d2-1x1-503c963f.jpg"),
+      "04-d2-1x1.jpg",
+    );
+  });
+
+  it("#1714: não estripa nome legítimo (sem sufixo hex de 8) — 04-d1-2x1 intacto", () => {
+    // `2x1` não é 8 hex → o strip não toca; já coberto pelo 1º teste, mas
+    // garante que a alternância -v\d+|[0-9a-f]{8} não over-fire.
+    const r = resolveExpectedLocalFile(
+      "https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg",
+    );
+    assert.equal(r, "04-d1-2x1.jpg");
+  });
+
   it("Worker URL eia → strip prefix", () => {
     const r = resolveExpectedLocalFile(
       "https://poll.diaria.workers.dev/img/img-260514-01-eia-A.jpg",

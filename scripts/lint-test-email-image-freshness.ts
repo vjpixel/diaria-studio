@@ -99,8 +99,12 @@ export function resolveExpectedLocalFile(url: string): string | null {
     let name = workerMatch[1];
     // strip img-{AAMMDD}- prefix
     name = name.replace(/^img-\d{6}-/, "");
-    // strip cache-bust suffix -v{N} before extension
-    name = name.replace(/-v\d+(\.[^.]+)$/i, "$1");
+    // #1714: strip cache-bust suffix antes da extensão — `-v{N}` (legacy) OU
+    // `-{md5short}` (8 hex, #1584; ver `cloudflareKvKey` em upload-images-public.ts,
+    // que grava cover/d1 como `...-{md5.slice(0,8)}.jpg`). Sem o strip do md5, a
+    // freshness lint pulava silenciosamente cover/d1 (nome não existia em disco).
+    // Os nomes locais (`04-d1-2x1`, `01-eia-A`) nunca terminam em 8 hex → sem colisão.
+    name = name.replace(/-(?:v\d+|[0-9a-f]{8})(\.[^.]+)$/i, "$1");
     return name;
   }
   // Direct path: capture last segment if matches 04-d{N}-{spec}.jpg or 01-eia-{A|B}.jpg
