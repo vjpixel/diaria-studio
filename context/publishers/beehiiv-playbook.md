@@ -257,15 +257,21 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   // Editor pode subir manualmente via dashboard (visível no gate).
   log_warn(`Cover upload falhou após 3 tentativas: ${decision.reason}. Editor pode subir manualmente.`);
 }
-// Validar via API que web_thumbnail_url está populado:
-sleep(3_000);
-const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
-if (!post.web_thumbnail_url) {
-  log_warn("Thumbnail não setado — editor pode subir cover manualmente via Beehiiv dashboard.");
-}
 ```
 
-Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares. Gate deve indicar separadamente se cover está presente ou ausente (não misturar com status das imagens inline, que são automáticas via Worker KV).
+**⚠️ #1705 (2026-06-02): o auto-apply da capa NÃO é confirmável e provavelmente NÃO funciona na UI atual.** Dois fatos verificados ao vivo:
+1. **Sem via de confirmação:** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente na resposta) — então NÃO dá pra validar a capa via API. Também não há via de API/MCP pra **setar** a capa (thumbnail é UI-only no Beehiiv; o MCP só tem leitura de posts).
+2. **O "aplicar da library" quebrou:** o Beehiiv mudou o media-picker — clicar no card recém-uploadado abre **preview**, não aplica (não há mais botão Insert/Select pra imagens do workspace). O `buildCoverUploadJs` sobe a imagem pro library (isso funciona), mas o passo de selecioná-la como thumbnail virou no-op.
+
+**Regra (não declarar done silenciosamente):** como NÃO há sinal confiável de que a capa foi aplicada, **NUNCA** afirme "capa aplicada". Após a tentativa de upload, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
+
+```
+⚠️ Cover NÃO confirmada — suba manualmente no Beehiiv (Add thumbnail → Upload a new image).
+   A imagem da capa já está no media library (o upload funciona), mas o passo de aplicar
+   como thumbnail está quebrado na UI atual (#1705). Verifique no editor do post.
+```
+
+Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
 
 **Método alternativo que funciona (#1500, testado 260526):** Se `buildCoverUploadJs` falhar, usar DataTransfer no file input:
 

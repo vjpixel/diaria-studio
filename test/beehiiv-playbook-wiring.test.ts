@@ -51,4 +51,21 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
   it("#1419: §7 menciona rate limit do Beehiiv como motivação", () => {
     assert.match(playbook, /rate.?limit/i);
   });
+
+  it("#1705: §4b nunca declara capa aplicada sem confirmar + warning explícito de cover não confirmada", () => {
+    // O dano real do #1705 foi declarar "capa aplicada" silenciosamente quando
+    // o auto-apply (quebrado na UI atual) falhou. O playbook DEVE mandar emitir
+    // o warning explícito — este guard impede que a instrução suma num refactor.
+    assert.match(playbook, /#1705/, "deve referenciar #1705");
+    assert.match(
+      playbook,
+      /cover\s+N[ÃA]O\s+confirmada/i,
+      "playbook deve mandar emitir '⚠️ Cover NÃO confirmada'",
+    );
+    assert.match(
+      playbook,
+      /NUNCA.*afirme.*capa aplicada|nunca.*declar.*capa aplicada/i,
+      "playbook deve proibir declarar 'capa aplicada' sem sinal confiável",
+    );
+  });
 });
