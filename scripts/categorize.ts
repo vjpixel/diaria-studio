@@ -500,6 +500,59 @@ export function hasLaunchVerb(article: Article): boolean {
 }
 
 /**
+ * #1698: explainer/análise — título COMEÇA com prefixo de explicação
+ * ("How X helps/works", "Why ...", "Beyond ...", "Understanding ...",
+ * "A guide to ...", "What is ...", "The case for ...", "Lessons from ...").
+ * Em domínio oficial isso NÃO é anúncio de produto → noticias (radar).
+ * Per editorial-rules: LANÇAMENTOS = anúncio oficial de produto/atualização;
+ * análise/opinião/explainer vão pra RADAR.
+ *
+ * Casos reais (260602) que caíam em LANÇAMENTOS indevidamente:
+ *   - "How Cosmos 3 Helps Physical AI Think Before It Acts" (blogs.nvidia.com)
+ *   - "Beyond LLMs: Why Scalable Enterprise AI Adoption Depends on Agent Logic"
+ *
+ * Anchored no INÍCIO do título (alta confiança — esses prefixos quase nunca
+ * iniciam um anúncio de produto). A branch "How" pede um verbo de explicação
+ * (helps/works/thinks/…) pra não colidir com customer-story ("How we built X",
+ * já coberto por isCustomerStory) nem com tutorial ("How to use X", coberto por
+ * isTutorialByKeyword antes do bloco de lançamento). Guard: não dispara se há
+ * verbo de anúncio — anúncio sempre vence (evita falso-negativo em launches).
+ */
+const EXPLAINER_TITLE_RE =
+  /^\s*(how\s+\S+.*\b(help|helps|works?|thinks?|enabl\w+|chang\w+|matters?|powers?|reshap\w+|learns?)\b|why\s+\w|what\s+(is|are|makes?|the|happens?)\b|beyond\s+\w|understanding\s+\w|a\s+(guide|primer|deep[-\s]?dive|look)\s+(to|on|into|at)\b|the\s+case\s+for\b|lessons?\s+(from|learned|of)\b|rethinking\s+\w|demystif\w+|explained\b)/i;
+
+export function isExplainerByTitle(article: Article): boolean {
+  if (hasLaunchVerb(article)) return false; // anúncio explícito vence
+  return EXPLAINER_TITLE_RE.test(article.title ?? "");
+}
+
+/**
+ * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
+ * notícia/comentário/análise. Os domínios de "Use Melhor" (simonwillison.net,
+ * blogs de devrel) também postam comentário/cobertura, e a classificação por
+ * domínio (sem checagem de intenção) os jogava em use_melhor indevidamente.
+ *
+ * Conservador — só DESCLASSIFICA de tutorial com sinal CLARO de não-tutorial e
+ * nenhum sinal de how-to:
+ *   - type_hint do agent (que LEU a página) = noticia/opiniao/analise, OU
+ *   - prefixo explainer (#1698), business deal, ou relatório.
+ * Mantém tutorial pra títulos ambíguos (o domínio é predominantemente tutorial,
+ * então o default conservador é tutorial — não inverter pra evitar falso-negativo
+ * em tutoriais com título product-name-only tipo "Embeddings", "RAG from scratch").
+ */
+export function isNewsNotTutorial(article: Article): boolean {
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence
+  if (
+    article.type_hint === "noticia" ||
+    article.type_hint === "opiniao" ||
+    article.type_hint === "analise"
+  ) {
+    return true;
+  }
+  return isExplainerByTitle(article) || isBusinessDeal(article) || isReport(article);
+}
+
+/**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente
  * seria lançamento. Patterns são CONSERVADORES — pedem contexto explícito
  * pra evitar match em marketing copy ("breakthrough in performance",
@@ -797,8 +850,11 @@ export function categorize(article: Article): Category {
   //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
   //    Keyword tutorial vem DEPOIS de pesquisa pra evitar falso positivo
   //    em papers acadêmicos ("A Tutorial on Diffusion Models" em arxiv).
-  if (TUTORIAL_DOMAINS.has(host)) return "tutorial";
-  if (TUTORIAL_PATTERNS.some((p) => p.test(full))) return "tutorial";
+  // #1712: o domínio/pattern de tutorial é forte, mas esses blogs também postam
+  // notícia/comentário/análise. Desclassificar (cair pro fluxo geral) quando há
+  // sinal claro de não-tutorial — senão use_melhor fica poluído.
+  if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return "tutorial";
+  if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) return "tutorial";
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {
@@ -856,6 +912,7 @@ export function categorize(article: Article): Category {
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
+    if (isExplainerByTitle(article)) return "noticias"; // #1698 — "How X helps", "Why...", "Beyond..." em blog oficial = explainer, não anúncio
     if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
     if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
 

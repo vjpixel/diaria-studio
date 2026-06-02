@@ -10,6 +10,8 @@ import {
   isNonLaunchPath,
   hasLaunchVerb,
   isThirdPartyBlogAboutOtherCompany,
+  isExplainerByTitle,
+  isNewsNotTutorial,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -80,6 +82,98 @@ describe("categorize() — regras de domínio", () => {
   it("URL inválida cai em noticias sem crashar", () => {
     const art: Article = { url: "not-a-url" };
     assert.equal(categorize(art), "noticias");
+  });
+});
+
+describe("categorize() — explainer/análise em domínio oficial → noticias (#1698)", () => {
+  it("'How Cosmos 3 Helps Physical AI...' (blogs.nvidia.com) → noticias, não lancamento", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/cosmos-3-physical-ai/",
+      title: "How Cosmos 3 Helps Physical AI Think Before It Acts",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("'Beyond LLMs: Why Scalable Enterprise AI...' em domínio oficial → noticias", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/enterprise-agent-logic/",
+      title: "Beyond LLMs: Why Scalable Enterprise AI Adoption Depends on Agent Logic",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("anúncio real ('Introducing X') no MESMO domínio continua lancamento", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/mellum2-moe/",
+      title: "Introducing Mellum2: A 12B MoE Model",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+
+  it("'Understanding X' / 'A guide to Y' → explainer", () => {
+    assert.equal(isExplainerByTitle({ url: "x", title: "Understanding diffusion transformers" }), true);
+    assert.equal(isExplainerByTitle({ url: "x", title: "A guide to building agents" }), true);
+    assert.equal(isExplainerByTitle({ url: "x", title: "Why context windows matter" }), true);
+  });
+
+  it("título product-name-only NÃO é explainer (não falso-positiva launch)", () => {
+    assert.equal(isExplainerByTitle({ url: "x", title: "Gemini 2.0 Flash" }), false);
+    assert.equal(isExplainerByTitle({ url: "x", title: "Claude 4 Sonnet" }), false);
+  });
+
+  it("verbo de anúncio vence o prefixo explainer (defensivo)", () => {
+    // "Introducing: How X works" — anúncio explícito → não desclassifica
+    assert.equal(
+      isExplainerByTitle({ url: "x", title: "Introducing Atlas: how our new model works" }),
+      false,
+    );
+  });
+
+  it("'How to use X' continua tutorial (não vira explainer)", () => {
+    // isTutorialByKeyword roda antes do bloco de lançamento.
+    const art: Article = {
+      url: "https://huggingface.co/blog/how-to-fine-tune",
+      title: "How to fine-tune your first model",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+});
+
+describe("categorize() — tutorial domain poluído com notícia (#1712)", () => {
+  it("comentário/notícia (type_hint) em domínio de tutorial NÃO vira use_melhor", () => {
+    const art: Article = {
+      url: "https://simonwillison.net/2026/Jun/01/some-commentary/",
+      title: "Thoughts on the latest model release",
+      type_hint: "opiniao",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("explainer em domínio de tutorial NÃO vira use_melhor", () => {
+    const art: Article = {
+      url: "https://eugeneyan.com/writing/why-evals/",
+      title: "Why evals are the bottleneck",
+    };
+    assert.notEqual(categorize(art), "tutorial");
+  });
+
+  it("tutorial real em domínio de tutorial CONTINUA tutorial (regressão)", () => {
+    const art: Article = {
+      url: "https://simonwillison.net/2026/Jun/01/embeddings/",
+      title: "Embeddings: a deep technical reference",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("tutorial com how-to keyword vence sinal de notícia (mixed)", () => {
+    // isTutorialByKeyword tem precedência em isNewsNotTutorial.
+    const art: Article = {
+      url: "https://simonwillison.net/2026/Jun/01/walkthrough/",
+      title: "How to build your first agent — cookbook walkthrough",
+      type_hint: "noticia",
+    };
+    assert.equal(categorize(art), "tutorial");
+    assert.equal(isNewsNotTutorial(art), false);
   });
 });
 
