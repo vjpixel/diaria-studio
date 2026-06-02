@@ -422,6 +422,51 @@ describe("categorize() — non-product announcement override (#77)", () => {
   });
 });
 
+describe("categorize() — relatório sinalizado no summary, NÃO lançamento (#1765)", () => {
+  it("caso real 260603: título product-y + summary 'report explores' → não lançamento", () => {
+    // O relatório 'The Next Era of Knowledge Work' caiu em lancamento porque
+    // isReport só olhava o TÍTULO ("Codex is becoming a productivity tool...").
+    const cat = categorize({
+      url: "https://openai.com/index/codex-for-knowledge-work",
+      title: "Codex is becoming a productivity tool for everyone",
+      summary:
+        "The Next Era of Knowledge Work report explores how Codex is transforming productivity through AI-powered research, data analysis",
+    });
+    assert.notEqual(cat, "lancamento", `esperado != lancamento, veio ${cat}`);
+  });
+
+  it("PT-BR: summary 'relatório mostra' em domínio oficial → não lançamento", () => {
+    const cat = categorize({
+      url: "https://openai.com/index/estado-do-trabalho",
+      title: "Codex para todos os times",
+      summary: "O relatório anual da OpenAI mostra como a IA muda o trabalho de conhecimento.",
+    });
+    assert.notEqual(cat, "lancamento");
+  });
+
+  it("guard: lançamento real continua lançamento (sem padrão de relatório)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/gpt-6",
+        title: "Introducing GPT-6",
+        summary: "Today we are launching GPT-6, our most capable model.",
+      }),
+      "lancamento",
+    );
+  });
+
+  it("guard: 'launching ... report' NÃO vira relatório (launch-verb vence)", () => {
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/ai-report-launch",
+        title: "Launching our new AI report",
+        summary: "Announcing our report exploring trends in AI.",
+      }),
+      "lancamento",
+    );
+  });
+});
+
 describe("categorize() — geographic program announcement override (#1442)", () => {
   it("'Introducing OpenAI for Singapore' em domínio oficial vira noticias", () => {
     assert.equal(
