@@ -358,6 +358,82 @@ describe("dedupForwards (#656) — original preferido sobre Fwd: no mesmo thread
   });
 });
 
+describe("dedupForwards (#1716) — dup intra-thread (sent + received sem Fwd:)", () => {
+  // Constrói uma mensagem com corpo text/plain (base64url, como o Gmail retorna).
+  // `messageId` opcional adiciona o header Message-ID (dedup por identidade RFC822).
+  function makeMessageWithBody(
+    subject: string,
+    bodyText: string,
+    id: string,
+    messageId?: string,
+  ) {
+    const data = Buffer.from(bodyText, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_");
+    const headers: Array<{ name: string; value: string }> = [
+      { name: "Subject", value: subject },
+    ];
+    if (messageId) headers.push({ name: "Message-ID", value: messageId });
+    return {
+      id,
+      internalDate: "0",
+      payload: { mimeType: "text/plain", body: { data }, headers },
+    };
+  }
+
+  it("colapsa cópia Sent + recebida do mesmo email (mesmo corpo, nenhuma Fwd:) → 1 entrada", () => {
+    // Cenário do #1716: editor compõe direto pra diariaeditor@; o Gmail agrupa
+    // a cópia em Sent + a cópia recebida no mesmo thread, ambas sem `Fwd:`.
+    const body = "Olha esse link https://example.com/artigo";
+    const sent = makeMessageWithBody("Link interessante", body, "sent");
+    const received = makeMessageWithBody("Link interessante", body, "received");
+    const result = dedupForwards([sent as any, received as any]);
+    assert.equal(result.length, 1, "deve ingerir só 1 cópia");
+    assert.equal((result[0] as any).id, "sent", "preserva a primeira (cronológica = Sent)");
+  });
+
+  it("tolera diferença de whitespace (CRLF vs LF) entre as cópias", () => {
+    const sent = makeMessageWithBody("Sub", "linha 1\nlinha 2 https://x.com", "sent");
+    const received = makeMessageWithBody("Sub", "linha 1\r\nlinha 2  https://x.com", "received");
+    const result = dedupForwards([sent as any, received as any]);
+    assert.equal(result.length, 1);
+  });
+
+  it("NÃO colapsa mensagens distintas no mesmo thread (corpos diferentes)", () => {
+    const a = makeMessageWithBody("Sub", "primeiro link https://a.com", "a");
+    const b = makeMessageWithBody("Sub", "segundo link https://b.com", "b");
+    const result = dedupForwards([a as any, b as any]);
+    assert.equal(result.length, 2, "submissões distintas devem ser preservadas");
+  });
+
+  it("corpos vazios NÃO colapsam entre si (key vazia é ignorada na dedup)", () => {
+    const a = makeMessageWithBody("Sub A", "", "a");
+    const b = makeMessageWithBody("Sub B", "", "b");
+    const result = dedupForwards([a as any, b as any]);
+    assert.equal(result.length, 2, "mensagens sem corpo não devem colapsar por key vazia");
+  });
+
+  it("colapsa por Message-ID idêntico mesmo se o corpo divergir (re-encoding/footer)", () => {
+    // Se o auto-forward preserva o Message-ID mas re-encoda/adiciona footer ao
+    // corpo, a dedup por corpo falharia — a key Message-ID (identidade RFC822)
+    // ainda colapsa.
+    const mid = "<CADxyz@mail.gmail.com>";
+    const sent = makeMessageWithBody("Sub", "link https://x.com", "sent", mid);
+    const received = makeMessageWithBody("Sub", "link https://x.com\n-- enviado", "received", mid);
+    const result = dedupForwards([sent as any, received as any]);
+    assert.equal(result.length, 1, "mesmo Message-ID → 1 entrada");
+    assert.equal((result[0] as any).id, "sent");
+  });
+
+  it("Message-IDs distintos + corpos distintos NÃO colapsam", () => {
+    const a = makeMessageWithBody("Sub", "primeiro https://a.com", "a", "<id-a@mail>");
+    const b = makeMessageWithBody("Sub", "segundo https://b.com", "b", "<id-b@mail>");
+    const result = dedupForwards([a as any, b as any]);
+    assert.equal(result.length, 2);
+  });
+});
+
 describe("inbox-drain main() integration (#306)", () => {
   let originalFetch: typeof globalThis.fetch;
   let savedConfig: string | null = null;
