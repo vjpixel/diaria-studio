@@ -30,6 +30,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
 import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
+import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -186,7 +187,15 @@ export function unwrapCategorizedInput(raw: unknown): CategorizedBuckets {
     if (candidate && typeof candidate === "object") {
       const c = candidate as Record<string, unknown>;
       if (hasKnownBucket(c)) {
-        return c as unknown as CategorizedBuckets;
+        // #1670: remapear keys legacy (pesquisa+noticias→radar, tutorial→use_melhor)
+        // pros nomes novos que o loop de bucketNames itera. Sem isso, um input
+        // legacy-keyed passa hasKnownBucket mas seus artigos somem silenciosamente
+        // (mesma classe do #1642). Spread preserva metadata extra; os 4 buckets
+        // canônicos são sobrescritos pelos normalizados.
+        return {
+          ...c,
+          ...normalizeCategorizedBuckets<Article>(c),
+        } as unknown as CategorizedBuckets;
       }
     }
   }

@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
 
 export interface Article {
   url: string;
@@ -320,11 +321,17 @@ export async function clusterCategorized(
 ): Promise<ClusterOutput> {
   // #1629: cluster TODOS os 4 buckets. Antes só processava 3 e dropava
   // tutorial/video silenciosamente (#1628).
+  // #1671: normalizeCategorizedBuckets garante `[]` (sem crash em shape legacy
+  // sem os buckets novos) + remapeia pesquisa/noticias→radar, tutorial→use_melhor
+  // (legacy categorized.json de resume pré-#1629 não some).
+  const buckets = normalizeCategorizedBuckets<Article>(
+    input as unknown as Record<string, unknown>,
+  );
   const [l, r, u, v] = await Promise.all([
-    clusterBucket(input.lancamento, threshold),
-    clusterBucket(input.radar, threshold),
-    clusterBucket(input.use_melhor, threshold),
-    clusterBucket(input.video, threshold),
+    clusterBucket(buckets.lancamento, threshold),
+    clusterBucket(buckets.radar, threshold),
+    clusterBucket(buckets.use_melhor, threshold),
+    clusterBucket(buckets.video, threshold),
   ]);
   return {
     lancamento: l.kept,
