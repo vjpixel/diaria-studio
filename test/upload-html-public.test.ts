@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createHmac } from "node:crypto";
@@ -15,6 +15,8 @@ import {
   htmlPutSig,
   buildDraftUrl,
   findUnresolvedImgPlaceholders,
+  mergeFieldIntoJson,
+  persistFieldToJsonFile,
 } from "../scripts/upload-html-public.ts";
 
 const SECRET = "test-admin";
@@ -157,6 +159,102 @@ describe("findUnresolvedImgPlaceholders (#1277)", () => {
     const html =
       '<img src="{{IMG:cover.jpg}}"/><img src="{{IMG:cover.jpg}}"/>';
     assert.deepEqual(findUnresolvedImgPlaceholders(html), ["{{IMG:cover.jpg}}"]);
+  });
+});
+
+describe("mergeFieldIntoJson (#1734)", () => {
+  it("seta o campo num objeto vazio quando existing é null/undefined", () => {
+    assert.deepEqual(mergeFieldIntoJson(null, "social_preview_url", "https://x/1"), {
+      social_preview_url: "https://x/1",
+    });
+    assert.deepEqual(mergeFieldIntoJson(undefined, "url", "https://x/2"), {
+      url: "https://x/2",
+    });
+  });
+
+  it("preserva chaves existentes ao adicionar o campo", () => {
+    const existing = { edition: "260602", review_completed: true };
+    const out = mergeFieldIntoJson(existing, "social_preview_url", "https://x/3");
+    assert.deepEqual(out, {
+      edition: "260602",
+      review_completed: true,
+      social_preview_url: "https://x/3",
+    });
+  });
+
+  it("sobrescreve o campo se já existir (idempotente em re-upload)", () => {
+    const existing = { social_preview_url: "https://old" };
+    const out = mergeFieldIntoJson(existing, "social_preview_url", "https://new");
+    assert.equal(out.social_preview_url, "https://new");
+  });
+
+  it("array/valor não-objeto vira {} (fail-open)", () => {
+    assert.deepEqual(
+      mergeFieldIntoJson([1, 2] as unknown as Record<string, unknown>, "url", "https://x"),
+      { url: "https://x" },
+    );
+  });
+});
+
+describe("persistFieldToJsonFile (#1734)", () => {
+  it("cria o arquivo com o campo quando não existe", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "persist-"));
+    const p = resolve(dir, "05-social-preview.json");
+    persistFieldToJsonFile(p, "social_preview_url", "https://draft/260602-social-abc123");
+    assert.ok(existsSync(p));
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    assert.equal(parsed.social_preview_url, "https://draft/260602-social-abc123");
+  });
+
+  it("merge num arquivo existente preservando chaves", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "persist-"));
+    const p = resolve(dir, "05-social-preview.json");
+    writeFileSync(p, JSON.stringify({ edition: "260602" }), "utf8");
+    persistFieldToJsonFile(p, "social_preview_url", "https://draft/x");
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    assert.equal(parsed.edition, "260602");
+    assert.equal(parsed.social_preview_url, "https://draft/x");
+  });
+
+  it("JSON corrompido → recomeça de {} sem lançar (fail-open)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "persist-"));
+    const p = resolve(dir, "05-social-preview.json");
+    writeFileSync(p, "{corrompido", "utf8");
+    persistFieldToJsonFile(p, "social_preview_url", "https://draft/y");
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    assert.equal(parsed.social_preview_url, "https://draft/y");
+  });
+});
+
+describe("uploadHtml + --persist-to integração (#1734)", () => {
+  it("após PUT real, a URL é persistível no JSON dedicado (não só stdout)", async () => {
+    // Simula o fluxo do Stage 4 §3: uploadHtml retorna a URL com hash; o caller
+    // persiste via persistFieldToJsonFile. Antes do #1734 a URL só ia pro stdout
+    // e morria com o TTL 12h do KV — irrecuperável.
+    const dir = mkdtempSync(resolve(tmpdir(), "upload-persist-"));
+    const htmlPath = resolve(dir, "social-preview.html");
+    writeFileSync(htmlPath, "<p>social preview</p>", "utf8");
+
+    const fetchStub = (): Promise<Response> =>
+      Promise.resolve(
+        new Response(JSON.stringify({ bytes: 100, ttl_seconds: 43200 }), {
+          status: 200,
+        }),
+      );
+
+    const r = await uploadHtml({
+      edition: "260602-social",
+      htmlPath,
+      secret: SECRET,
+      fetchImpl: fetchStub as unknown as typeof fetch,
+    });
+    assert.match(r.url, /260602-social-[0-9a-f]{6}$/);
+    assert.notEqual(r.dry_run, true);
+
+    const persistPath = resolve(dir, "05-social-preview.json");
+    persistFieldToJsonFile(persistPath, "social_preview_url", r.url);
+    const parsed = JSON.parse(readFileSync(persistPath, "utf8"));
+    assert.equal(parsed.social_preview_url, r.url);
   });
 });
 

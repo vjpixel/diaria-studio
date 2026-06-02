@@ -42,6 +42,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DRAFT_WORKER_URL =
@@ -64,6 +65,57 @@ export interface UploadHtmlResult {
 export function buildDraftUrl(workerBaseUrl: string, edition: string): string {
   const base = workerBaseUrl.replace(/\/+$/, "");
   return `${base}/${encodeURIComponent(edition)}`;
+}
+
+/**
+ * Pure (#1734): mescla `{ [field]: value }` num objeto JSON existente,
+ * preservando as demais chaves. `existing` null/inválido → começa de `{}`.
+ * Sobrescreve se a chave já existir (idempotente em re-upload).
+ */
+export function mergeFieldIntoJson(
+  existing: Record<string, unknown> | null | undefined,
+  field: string,
+  value: string,
+): Record<string, unknown> {
+  const base =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? { ...existing }
+      : {};
+  base[field] = value;
+  return base;
+}
+
+/**
+ * #1734: persiste a URL do upload num arquivo JSON dedicado (ex:
+ * `_internal/05-social-preview.json`), mesclando com conteúdo existente via
+ * `mergeFieldIntoJson` + write atômico. Resolve o gap onde a URL do preview
+ * social só era `console.log`ada e nunca registrada — com TTL 12h no KV, a
+ * URL morria irrecuperável (a da newsletter persiste em `draft_preview_url`,
+ * a do social não persistia em lugar nenhum).
+ *
+ * Arquivo dedicado (não `05-published.json`) porque este último exige
+ * `draft_url` (Beehiiv, só existe pós-dispatch) e é reescrito pelo publisher
+ * — escrever ali no prep seria clobbered.
+ */
+export function persistFieldToJsonFile(
+  filePath: string,
+  field: string,
+  value: string,
+): void {
+  let existing: Record<string, unknown> | null = null;
+  if (existsSync(filePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // JSON corrompido → recomeça de {} (fail-open, não trava o upload).
+      existing = null;
+    }
+  }
+  const merged = mergeFieldIntoJson(existing, field, value);
+  writeFileAtomic(filePath, JSON.stringify(merged, null, 2) + "\n");
 }
 
 /**
@@ -200,10 +252,16 @@ async function main(): Promise<void> {
   const edition = values["edition"];
   const dryRun = flags.has("dry-run");
   const htmlPathOverride = values["html"];
+  // #1734: --persist-to grava a URL resultante num JSON dedicado (merge).
+  // --field nomeia a chave (default "url"). Usado pelo Stage 4 pro preview
+  // social: --persist-to .../05-social-preview.json --field social_preview_url.
+  const persistTo = values["persist-to"];
+  const persistField = values["field"] ?? "url";
 
   if (!edition) {
     console.error(
-      "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--html <path>]",
+      "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--html <path>] " +
+        "[--persist-to <json> --field <nome>]",
     );
     process.exit(2);
   }
@@ -230,6 +288,14 @@ async function main(): Promise<void> {
     secret,
     dryRun,
   });
+
+  // #1734: persiste a URL só após upload REAL — dry-run não sobe nada, então
+  // gravar a URL seria registrar um link que dá 404.
+  if (persistTo && !result.dry_run) {
+    const persistPath = resolve(ROOT, persistTo);
+    persistFieldToJsonFile(persistPath, persistField, result.url);
+  }
+
   console.log(JSON.stringify(result, null, 2));
 }
 
