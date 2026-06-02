@@ -212,7 +212,9 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
     });
   }
 
-  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: new Date().toISOString(), correct }));
+  // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
+  const voteTs = new Date().toISOString();
+  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
 
   // Atualizar counter agregado (evita N+1 reads no /stats)
   await updateStatsCounter(env, edition, choice as "A" | "B", correct);
@@ -226,6 +228,15 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // da edição (não pela data do vote). Voto na edição 260531 conta em Maio
   // 2026 mesmo se chegou em 02/jun.
   await updateScoreByMonth(env, email, edition, correct);
+
+  // #1657: log de voto pra analytics. SECUNDÁRIO — try/catch pra nunca quebrar
+  // o voto do leitor se a escrita do log falhar. Só roda em voto novo (dup
+  // retorna acima; test mode short-circuita antes do put).
+  try {
+    await recordVoteLog(env, email, edition, choice as "A" | "B", correct, voteTs);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "vote_log_failed", edition, error: String(e) }));
+  }
 
   const msg = correct === true
     ? "✅ Acertou! Era a imagem gerada por IA."
@@ -349,6 +360,64 @@ async function updateScoreByMonth(
   await env.POLL.put(key, JSON.stringify(entry));
   // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
   await invalidateSnapshot(env, monthSlug);
+}
+
+/**
+ * #1657: entrada do log de votos pra analytics de comportamento (latência
+ * envio→voto, hora-do-dia, recorrência, acerto×latência). `email_hash` é HMAC
+ * (mesmo do poll_sig) — id estável de coorte SEM PII crua.
+ */
+export interface VoteLogEntry {
+  ts: string;
+  edition: string;
+  month_slug: string;
+  email_hash: string;
+  choice: "A" | "B";
+  correct: boolean | null;
+}
+
+/** Pure (#1657): monta a entrada do vote-log. Exportada pra teste. */
+export function buildVoteLogEntry(args: {
+  ts: string;
+  edition: string;
+  monthSlug: string;
+  emailHash: string;
+  choice: "A" | "B";
+  correct: boolean | null;
+}): VoteLogEntry {
+  return {
+    ts: args.ts,
+    edition: args.edition,
+    month_slug: args.monthSlug,
+    email_hash: args.emailHash,
+    choice: args.choice,
+    correct: args.correct,
+  };
+}
+
+/**
+ * #1657: grava 1 entrada por voto em key PRÓPRIA — race-free, sem
+ * read-modify-write (votos concorrentes logo após o envio não se sobrescrevem,
+ * que é justamente a janela que a análise de latência quer medir).
+ * Key: `vote-log:{month}:{edition}:{email_hash}` — listável por mês.
+ * `monthSlug` null (edition malformado) → skip silencioso.
+ */
+export async function recordVoteLog(
+  env: Env,
+  email: string,
+  edition: string,
+  choice: "A" | "B",
+  correct: boolean | null,
+  ts: string,
+): Promise<void> {
+  const monthSlug = editionToMonthSlug(edition);
+  if (monthSlug === null) return;
+  const emailHash = await hmacSign(env.POLL_SECRET, email);
+  const entry = buildVoteLogEntry({ ts, edition, monthSlug, emailHash, choice, correct });
+  await env.POLL.put(
+    `vote-log:${monthSlug}:${edition}:${emailHash}`,
+    JSON.stringify(entry),
+  );
 }
 
 async function updateScore(
