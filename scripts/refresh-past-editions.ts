@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -253,41 +254,9 @@ export function extractUrlsFromApproved(
   } catch {
     return [];
   }
-  if (!parsed || typeof parsed !== "object") return [];
-
-  const r = parsed as {
-    highlights?: Array<{ url?: string; article?: { url?: string } }>;
-    runners_up?: Array<{ url?: string; article?: { url?: string } }>;
-    lancamento?: Array<{ url?: string }>;
-    // #1629: buckets renomeados
-    radar?: Array<{ url?: string }>;
-    use_melhor?: Array<{ url?: string }>;
-    video?: Array<{ url?: string }>;
-    // Legacy (parsear edições históricas pré-#1629)
-    pesquisa?: Array<{ url?: string }>;
-    noticias?: Array<{ url?: string }>;
-    tutorial?: Array<{ url?: string }>;
-  };
-
-  const urls = new Set<string>();
-  for (const a of r.lancamento ?? []) if (a.url) urls.add(a.url);
-  // #1629 buckets
-  for (const a of r.radar ?? []) if (a.url) urls.add(a.url);
-  for (const a of r.use_melhor ?? []) if (a.url) urls.add(a.url);
-  for (const a of r.video ?? []) if (a.url) urls.add(a.url);
-  // Legacy buckets
-  for (const a of r.pesquisa ?? []) if (a.url) urls.add(a.url);
-  for (const a of r.noticias ?? []) if (a.url) urls.add(a.url);
-  for (const a of r.tutorial ?? []) if (a.url) urls.add(a.url);
-  for (const h of r.highlights ?? []) {
-    const url = h.url ?? h.article?.url;
-    if (url) urls.add(url);
-  }
-  for (const h of r.runners_up ?? []) {
-    const url = h.url ?? h.article?.url;
-    if (url) urls.add(url);
-  }
-  return [...urls];
+  // #1678: bucket-walk delegado ao helper compartilhado (single-source — antes
+  // duplicado aqui e em merge-local-pending; a divergência causou o #1659).
+  return extractUrlsFromBuckets(parsed as Parameters<typeof extractUrlsFromBuckets>[0]);
 }
 
 /**

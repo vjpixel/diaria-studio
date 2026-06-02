@@ -13,7 +13,21 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EDITIONS_DIR = resolve(ROOT, "data", "editions");
 
-const AAMMDD_RE = /^\d{6}$/;
+/**
+ * #1680: validação ESTRITA de nome de pasta de edição AAMMDD — 6 dígitos +
+ * mês 01-12 + dia 01-31. Consolidada aqui (era duplicada em `dedup.ts`, que
+ * agora re-exporta). Substitui o `/^\d{6}$/` frouxo anterior: barra sentinels
+ * como `260999` (dia 99) e `261301` (mês 13), que NÃO devem entrar na lista de
+ * edições reais (carry-over/getPreviousEditionDate não devem tratá-los como
+ * edição anterior).
+ */
+export function isValidEditionDir(name: string): boolean {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(name);
+  if (!m) return false;
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
 
 /**
  * Lista todas as pastas de edição válidas (AAMMDD), em ordem decrescente
@@ -22,7 +36,7 @@ const AAMMDD_RE = /^\d{6}$/;
 export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
   if (!existsSync(editionsDir)) return [];
   return readdirSync(editionsDir)
-    .filter((name) => AAMMDD_RE.test(name))
+    .filter((name) => isValidEditionDir(name))
     .sort((a, b) => b.localeCompare(a));
 }
 
@@ -41,7 +55,7 @@ export function getPreviousEditionDate(
   currentAammdd: string,
   editionsDir: string = EDITIONS_DIR,
 ): string | null {
-  if (!AAMMDD_RE.test(currentAammdd)) {
+  if (!isValidEditionDir(currentAammdd)) {
     throw new Error(`getPreviousEditionDate: AAMMDD inválido: ${currentAammdd}`);
   }
   const editions = listEditions(editionsDir);
@@ -82,7 +96,7 @@ export function firstEditionOfCurrentMonth(
  *   "260504" → "2026/05/04"
  */
 export function aammddToGmailDate(aammdd: string): string {
-  if (!AAMMDD_RE.test(aammdd)) {
+  if (!isValidEditionDir(aammdd)) {
     throw new Error(`aammddToGmailDate: AAMMDD inválido: ${aammdd}`);
   }
   const yyyy = `20${aammdd.slice(0, 2)}`;

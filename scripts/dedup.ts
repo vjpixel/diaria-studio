@@ -21,6 +21,7 @@ import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: validador consolidado
 import {
   detectEntityDuplicates,
   extractPastHighlights,
@@ -367,20 +368,12 @@ function readApprovedTitles(approvedPath: string): string[] {
  * Refs #897.
  */
 
-/**
- * Nome de edição válido: AAMMDD = 6 dígitos com mês 01-12 e dia 01-31. Exclui
- * dirs-lixo como `260999` (dia 99) que, sendo lexicalmente "altos", roubavam um
- * slot da janela de dedup e derrubavam uma edição REAL do window (#1567 audit).
- * Validação de calendário leve — o objetivo é barrar markers/sintéticos, não
- * datas reais (não checa fim-de-mês).
- */
-export function isValidEditionDir(name: string): boolean {
-  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(name);
-  if (!m) return false;
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
-}
+// #1680: isValidEditionDir consolidado em scripts/lib/edition-utils.ts (era
+// duplicado aqui e no AAMMDD_RE frouxo do edition-utils). Re-exportado pra compat
+// com importadores existentes (test/dedup-edition-window.test.ts). Usado em
+// pruneEditionWindow (excluir dirs-lixo tipo 260999 que roubavam slot da janela
+// e derrubavam edição REAL — #1567 audit).
+export { isValidEditionDir };
 
 /**
  * true se o dir contém algum artefato de edição real (não é um marker vazio).

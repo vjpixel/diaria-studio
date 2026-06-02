@@ -352,6 +352,22 @@ describe("edition-utils", () => {
     }
   });
 
+  it("#1680: listEditions exclui sentinels com data inválida (260999, 261301, 260500)", () => {
+    // Validação consolidada ESTRITA — antes (/^\d{6}$/ frouxo) 260999 entrava na
+    // lista e podia virar "edição anterior" no carry-over indevidamente.
+    const { dir, cleanup } = withTempEditions((d) => {
+      mkdirSync(join(d, "260427"));
+      mkdirSync(join(d, "260999")); // dia 99
+      mkdirSync(join(d, "261301")); // mês 13
+      mkdirSync(join(d, "260500")); // dia 00
+    });
+    try {
+      assert.deepEqual(listEditions(dir), ["260427"]);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("getPreviousEditionDate retorna a edição imediatamente anterior", () => {
     const { dir, cleanup } = withTempEditions((d) => {
       mkdirSync(join(d, "260427"));

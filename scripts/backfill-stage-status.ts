@@ -30,7 +30,7 @@ import { dirname } from "node:path";
 import { loadDoc, STAGES } from "./update-stage-status.ts";
 import { readSentinel } from "./lib/pipeline-state.ts";
 import { autoUpdateStageStatusOnSentinel } from "./pipeline-sentinel.ts";
-import { isValidEditionDir } from "./dedup.ts";
+import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1680: desacopla do módulo dedup inteiro
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

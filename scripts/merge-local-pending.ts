@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
 const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const MD_PATH = resolve(ROOT, "context/past-editions.md");
@@ -90,27 +91,9 @@ export function extractUrlsFromApproved(approvedPath: string): string[] {
   } catch {
     return [];
   }
-  const urls = new Set<string>();
-  for (const a of parsed.lancamento ?? []) if (a.url) urls.add(a.url);
-  // #1629: buckets renomeados — sem isso, URLs de RADAR/Use melhor/Vídeos de
-  // edições pending vazavam pro dedup (mesma migração já feita em
-  // refresh-past-editions.ts; merge-local-pending foi esquecido).
-  for (const a of parsed.radar ?? []) if (a.url) urls.add(a.url);
-  for (const a of parsed.use_melhor ?? []) if (a.url) urls.add(a.url);
-  for (const a of parsed.video ?? []) if (a.url) urls.add(a.url);
-  // Legacy buckets (edições históricas pré-#1629)
-  for (const a of parsed.pesquisa ?? []) if (a.url) urls.add(a.url);
-  for (const a of parsed.noticias ?? []) if (a.url) urls.add(a.url);
-  for (const a of parsed.tutorial ?? []) if (a.url) urls.add(a.url);
-  for (const h of parsed.highlights ?? []) {
-    const url = h.url ?? h.article?.url;
-    if (url) urls.add(url);
-  }
-  for (const h of parsed.runners_up ?? []) {
-    const url = h.url ?? h.article?.url;
-    if (url) urls.add(url);
-  }
-  return [...urls];
+  // #1678: bucket-walk delegado ao helper compartilhado (single-source da lista
+  // de buckets — a duplicação aqui vs refresh-past-editions causou o #1659).
+  return extractUrlsFromBuckets(parsed);
 }
 
 function isPublished(editionDir: string): boolean {
