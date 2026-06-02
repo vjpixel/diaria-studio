@@ -60,6 +60,12 @@ interface DrainResult {
   errors?: number;
   /** Primeiras mensagens de erro (max 3, slice 200 chars cada). */
   error_samples?: string[];
+  /** #1700: setado quando o fallback `to:{address}` capturou ≥1 submissão que a
+   * query primária (label) NÃO pegou — sinal de que o filtro/forward do label
+   * quebrou. Surfaçado no output estruturado pro orchestrator alertar o editor
+   * no gate do Stage 1 (o warn em run-log usa edition:null e não vira issue do
+   * auto-reporter — ver collect-edition-signals.ts). */
+  label_filter_warning?: { only_via_fallback: number; primary_query: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +271,25 @@ export function isLabelQuery(query: string): boolean {
 }
 
 /**
- * #1700: monta a query de fallback `to:{address}` que captura submissões
- * endereçadas ao inbox editorial MAS que não receberam o label (filtro/forward
- * do Gmail quebrou ou atrasou). Diferente da heurística removida em #900 (que
- * usava uma query SEM filtro nenhum, pegando todo o mail pessoal de vjpixel@):
- * `to:{address}` é escopado ao endereço dedicado diariaeditor@, então não
- * captura newsletters pessoais / GitHub / system mail que chegam direto em
- * vjpixel@ sem passar pelo inbox editorial.
+ * #1700: monta a query de fallback `to:{address} in:inbox` que captura
+ * submissões endereçadas ao inbox editorial MAS que não receberam o label
+ * (filtro/forward do Gmail quebrou ou atrasou).
+ *
+ * Por que `to:{address} in:inbox` (e NÃO só `to:{address}`):
+ * - Per docs/gmail-inbox-setup.md Opção A (setup configurado), o OAuth é da
+ *   conta PESSOAL vjpixel@, e o filtro do label pode "Skip the Inbox (Archive)".
+ *   Quando o filtro funciona, o mail é labeled+arquivado → pego pela primary
+ *   (`label:`). Quando o filtro QUEBRA (cenário deste fix), o mail não recebe
+ *   label nem archive → fica no INBOX → `in:inbox` o pega.
+ * - `in:inbox` exclui a cópia em Sent do próprio editor (`to:` casa All Mail
+ *   incl. Sent) e qualquer thread arquivada/CC não-submissão. Sem isso, o
+ *   fallback reintroduziria a classe de falso-positivo do #900 (poluição com
+ *   mail do próprio editor / threads aleatórias).
+ * - NÃO usar `-from:me`: submissões do editor SÃO enviadas de vjpixel@ (ele
+ *   manda os links pro inbox editorial) — excluí-las quebraria o fix.
+ *
+ * Diferente da heurística removida em #900 (query SEM filtro nenhum, pegando
+ * todo o mail pessoal): aqui é escopado a `to:{address dedicado} in:inbox`.
  *
  * Retorna `null` quando:
  * - não há `address` configurado, ou
@@ -286,7 +304,7 @@ export function buildFallbackQuery(
   if (!addr) return null;
   const toClause = `to:${addr}`;
   if (primaryQuery.toLowerCase().includes(toClause.toLowerCase())) return null;
-  return `${toClause} after:${afterDate}`;
+  return `${toClause} in:inbox after:${afterDate}`;
 }
 
 /**
@@ -639,15 +657,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // #1700 observabilidade: se a primary (label) volta 0 mas o fallback captura
-  // submissões, o filtro/forward do label provavelmente quebrou. Logar warn
-  // explícito pro auto-reporter pegar — antes essa perda era silenciosa.
+  // #1700 observabilidade: QUALQUER thread capturada só pelo fallback é uma
+  // submissão que o label não pegou — sinal de que o filtro/forward quebrou
+  // (total OU parcialmente). Antes a perda era silenciosa. Dispara em
+  // onlyViaFallback>0 (não só quando primary==0 — quebra parcial também conta).
   const primaryIds = new Set(primaryThreads.map((t) => t.id));
   const onlyViaFallback = fallbackThreads.filter((t) => !primaryIds.has(t.id));
-  if (primaryThreads.length === 0 && onlyViaFallback.length > 0) {
+  let labelFilterWarning: DrainResult["label_filter_warning"];
+  if (onlyViaFallback.length > 0) {
+    labelFilterWarning = { only_via_fallback: onlyViaFallback.length, primary_query: gmailQuery };
     logDrainWarn(
-      `${onlyViaFallback.length} submissão(ões) capturada(s) via to:${config.inbox?.address} mas 0 via '${gmailQuery}' — filtro/forward do label pode ter quebrado. Verifique o filtro automático no Gmail.`,
-      { only_via_fallback: onlyViaFallback.length, primary_query: gmailQuery },
+      `${onlyViaFallback.length} submissão(ões) capturada(s) via to:${config.inbox?.address} sem o label (primary '${gmailQuery}' pegou ${primaryThreads.length}) — filtro/forward do label pode ter quebrado. Verifique o filtro automático no Gmail.`,
+      { only_via_fallback: onlyViaFallback.length, primary_query: gmailQuery, primary_count: primaryThreads.length },
     );
   }
 
@@ -705,6 +726,8 @@ async function main(): Promise<void> {
     ...(warnReason ? { reason: warnReason } : {}),
     // #667: expor erros de thread pra visibilidade no orchestrator.
     ...(threadErrors > 0 ? { errors: threadErrors, error_samples: threadErrorSamples } : {}),
+    // #1700: sinal estruturado de filtro de label quebrado (pro Stage 1 alertar).
+    ...(labelFilterWarning ? { label_filter_warning: labelFilterWarning } : {}),
   };
   console.log(JSON.stringify(result, null, 2));
 }

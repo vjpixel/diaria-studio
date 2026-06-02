@@ -167,12 +167,18 @@ describe("labelExistsInList() — checagem case-insensitive", () => {
   });
 });
 
-describe("buildFallbackQuery (#1700) — rede de segurança to:address", () => {
-  it("monta to:{address} after:{date} quando address presente", () => {
+describe("buildFallbackQuery (#1700) — rede de segurança to:address in:inbox", () => {
+  it("monta to:{address} in:inbox after:{date} quando address presente", () => {
     assert.equal(
       buildFallbackQuery("diariaeditor@gmail.com", "2026/05/30", "label:Diaria.Editor"),
-      "to:diariaeditor@gmail.com after:2026/05/30",
+      "to:diariaeditor@gmail.com in:inbox after:2026/05/30",
     );
+  });
+
+  it("inclui in:inbox — exclui Sent do editor e threads arquivadas (anti-#900)", () => {
+    const q = buildFallbackQuery("diariaeditor@gmail.com", "2026/05/30", "label:X");
+    assert.ok(q!.includes("in:inbox"), "fallback deve escopar a inbox");
+    assert.ok(!q!.includes("-from:"), "NÃO deve excluir from: (submissões vêm do editor)");
   });
 
   it("retorna null quando address ausente/vazio", () => {
@@ -190,7 +196,7 @@ describe("buildFallbackQuery (#1700) — rede de segurança to:address", () => {
   it("trim do address", () => {
     assert.equal(
       buildFallbackQuery("  diariaeditor@gmail.com  ", "2026/05/30", "label:X"),
-      "to:diariaeditor@gmail.com after:2026/05/30",
+      "to:diariaeditor@gmail.com in:inbox after:2026/05/30",
     );
   });
 });
@@ -625,6 +631,62 @@ describe("inbox-drain main() integration (#306)", () => {
       (output.urls as Array<{ url: string }>).some((u) => u.url === "https://openai.com/academy/prompting"),
       "URL da submissão sem label deve estar no resultado",
     );
+    // #1700 observabilidade: sinal estruturado de filtro quebrado no output.
+    const warning = output.label_filter_warning as { only_via_fallback: number } | undefined;
+    assert.ok(warning, "label_filter_warning deve estar presente quando fallback captura");
+    assert.equal(warning!.only_via_fallback, 1);
+  });
+
+  it("#1700: mesmo thread nas DUAS queries (label + to:) → ingerido 1× (dedup)", async () => {
+    // Submissão COM label aparece tanto no label search quanto no to: search
+    // (mesmo thread.id). mergeThreadsDedup deve evitar ingerir 2×.
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-01-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    const bodyText = "Pick https://example.com/artigo-unico";
+    const b64 = Buffer.from(bodyText).toString("base64")
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        // AMBAS as queries retornam o MESMO thread.id
+        return makeGmailResponse({ threads: [{ id: "tshared", snippet: "x" }] });
+      }
+      if (u.includes("/threads/tshared")) {
+        return makeGmailResponse({
+          id: "tshared",
+          messages: [{
+            id: "m1",
+            internalDate: String(new Date("2026-04-20T10:00:00Z").getTime()),
+            payload: {
+              mimeType: "text/plain",
+              body: { data: b64 },
+              headers: [
+                { name: "From", value: "vjpixel@gmail.com" },
+                { name: "Subject", value: "Pick" },
+                { name: "To", value: "diariaeditor@gmail.com" },
+              ],
+            },
+          }],
+        });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(output.new_entries, 1, "thread nas duas listas deve ser ingerido 1× (não 2)");
+    assert.equal(
+      (output.urls as Array<unknown>).length, 1,
+      "URL não deve ser duplicada",
+    );
+    // label funcionando (thread no primary) → sem warning de filtro quebrado.
+    assert.equal(output.label_filter_warning, undefined);
   });
 
   it("primary query empty acima do threshold → silent_reset, new_entries=0 (#900)", async () => {
