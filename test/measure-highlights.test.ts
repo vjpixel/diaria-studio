@@ -4,6 +4,7 @@ import {
   parseHighlights,
   flagOutOfRange,
   formatMeasureResult,
+  stripExtraTitleOptions,
   HEALTHY_RANGE_MIN,
   HEALTHY_RANGE_MAX,
 } from "../scripts/lib/measure-highlights.ts";
@@ -52,6 +53,70 @@ Outro item qualquer
 Não conta como destaque.
 https://example.com/outro
 `;
+
+describe("stripExtraTitleOptions (#1709) — body + 1 título", () => {
+  it("3 opções de título no formato link → mantém 1", () => {
+    const body = [
+      "",
+      "**[Opção de título um](https://x.com/a)**",
+      "",
+      "**[Opção de título dois](https://x.com/a)**",
+      "",
+      "**[Opção de título três](https://x.com/a)**",
+      "",
+      "A OpenAI anunciou hoje o novo modelo, com capacidade ampliada.",
+      "",
+      "Por que isso importa: muda o jogo.",
+    ].join("\n");
+    const out = stripExtraTitleOptions(body);
+    const titleCount = (out.match(/\]\(https:\/\/x\.com\/a\)/g) ?? []).length;
+    assert.equal(titleCount, 1, "deve manter exatamente 1 título");
+    assert.match(out, /Opção de título um/);
+    assert.doesNotMatch(out, /Opção de título dois/);
+    assert.doesNotMatch(out, /Opção de título três/);
+    assert.match(out, /A OpenAI anunciou/, "a prosa deve ser preservada");
+  });
+
+  it("não toca a prosa nem 'Por que isso importa'", () => {
+    const body = "**[T](https://x.com/a)**\n\nParágrafo de prosa.\n\nPor que isso importa: razão.";
+    const out = stripExtraTitleOptions(body);
+    assert.match(out, /Parágrafo de prosa\./);
+    assert.match(out, /Por que isso importa: razão\./);
+  });
+
+  it("1 título só → inalterado (pós-picker / publicado)", () => {
+    const body = "**[Único título](https://x.com/a)**\n\nProsa aqui.";
+    const out = stripExtraTitleOptions(body);
+    assert.equal((out.match(/x\.com\/a/g) ?? []).length, 1);
+    assert.match(out, /Prosa aqui\./);
+  });
+
+  it("título plain-text (legacy, sem link) NÃO é tocado", () => {
+    const body = "Título plain sem link\n\nProsa.";
+    assert.equal(stripExtraTitleOptions(body), body);
+  });
+});
+
+describe("parseHighlights — #1709: char count invariante ao nº de opções de título", () => {
+  function destaque(titleLines: string): string {
+    return `DESTAQUE 1 | LANÇAMENTO\n\n${titleLines}\n\nA empresa anunciou o produto novo nesta terça-feira, com recursos ampliados para desenvolvedores.\n\nPor que isso importa: muda a forma de trabalhar.\n\nhttps://example.com/x`;
+  }
+  it("3 opções de título medem o MESMO body que 1 título", () => {
+    const oneTitle = parseHighlights(destaque("**[Título publicado](https://example.com/x)**"));
+    const threeTitles = parseHighlights(
+      destaque(
+        "**[Título publicado](https://example.com/x)**\n\n**[Opção dois bem mais longa que a primeira](https://example.com/x)**\n\n**[Opção três também extensa pra inflar](https://example.com/x)**",
+      ),
+    );
+    assert.equal(oneTitle.highlights.length, 1);
+    assert.equal(threeTitles.highlights.length, 1);
+    assert.equal(
+      threeTitles.highlights[0].chars,
+      oneTitle.highlights[0].chars,
+      "char count deve ser igual com 1 ou 3 opções de título (body + 1 título)",
+    );
+  });
+});
 
 describe("parseHighlights — extrai destaques d1/d2/d3 (#739)", () => {
   it("retorna result vazio pra string vazia", () => {

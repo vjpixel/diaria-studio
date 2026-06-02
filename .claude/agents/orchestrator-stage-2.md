@@ -59,7 +59,7 @@ Exit code handling:
     --in data/editions/{AAMMDD}/_internal/01-approved-capped.json \
     --out data/editions/{AAMMDD}/_internal/01-approved-capped.json
   ```
-  O script é idempotente (marca `summary_translated: true` após processar). Strip de prefixo arXiv + 1ª frase + truncate em 150 chars; **não faz tradução LLM** — apenas cleanup determinístico pra evitar prefix bruto `[TRADUZIR]` no MD final. Items com `summary_lang: "en"` (categorize.ts #1473) e/ou arXiv abstract são afetados. Stitch ainda adiciona `[TRADUZIR]` no título quando `summary_lang === "en"` — esse prefix é removido pelo writer-destaque ou pelo editor no gate (#1572). Sem este step, prefixo `[TRADUZIR]` + summary em inglês cru vazaram pro newsletter HTML em 260529 (LANÇAMENTOS + PESQUISAS sections).
+  O script é idempotente (marca `summary_translated: true` após processar). Strip de prefixo arXiv + 1ª frase + truncate em 150 chars; **não faz tradução LLM** — apenas cleanup determinístico pra evitar prefix bruto `[TRADUZIR]` no MD final. Items com `summary_lang: "en"` (categorize.ts #1473) e/ou arXiv abstract são afetados. Stitch adiciona `[TRADUZIR]` na **DESCRIÇÃO** (2ª linha) quando o summary está em EN — **nunca no título** (#1697/#1634: título de seção secundária preserva o nome original do recurso, nunca traduzido). O prefixo da descrição é removido pelo writer-destaque ou pelo editor no gate. Sem este step, prefixo `[TRADUZIR]` + summary em inglês cru vazaram pro newsletter HTML em 260529 (LANÇAMENTOS + PESQUISAS sections).
 
 **Em uma única mensagem**, disparar os agents simultaneamente:
 

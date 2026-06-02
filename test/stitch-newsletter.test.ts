@@ -45,20 +45,35 @@ describe("renderSection (#1463)", () => {
     assert.doesNotMatch(out, /no-title\.com/);
   });
 
-  it("#1525: itens em inglês recebem prefixo [TRADUZIR]", () => {
+  it("#1697: [TRADUZIR] vai na DESCRIÇÃO em EN, NUNCA no título (regra #1634)", () => {
     const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
-      { title: "The rise in plastic surgeons asked to create AI face", url: "https://x.com/en", summary: "Growing numbers of people are seeking cosmetic surgery based on chatbot recommendations." },
+      { title: "The rise in plastic surgeons asked to create AI face", url: "https://x.com/en", summary: "The number of people who want the face that the chatbot has generated for them is on the rise." },
       { title: "IA generativa no Brasil avança", url: "https://x.com/pt", summary: "O mercado brasileiro de IA cresce." },
     ]);
-    assert.match(out, /\[TRADUZIR\].*plastic surgeons/);
-    assert.doesNotMatch(out, /\[TRADUZIR\].*Brasil/);
+    // Título do recurso EN preservado verbatim — SEM prefixo [TRADUZIR].
+    assert.match(out, /\*\*\[The rise in plastic surgeons asked to create AI face\]/);
+    assert.doesNotMatch(out, /\[TRADUZIR\] The rise in plastic surgeons/);
+    assert.doesNotMatch(out, /\*\*\[\[TRADUZIR\]/); // nunca dentro do link do título
+    // Descrição em EN recebe [TRADUZIR] (a descrição pode ser PT, #1634).
+    assert.match(out, /\[TRADUZIR\] The number of people/);
+    // Item PT não recebe prefixo em lugar nenhum.
+    assert.doesNotMatch(out, /\[TRADUZIR\].*mercado brasileiro/);
   });
 
-  it("#1525: summary_lang=en também dispara [TRADUZIR]", () => {
+  it("#1697: summary_lang=en dispara [TRADUZIR] na descrição (não no título)", () => {
     const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
       { title: "Short EN title", url: "https://x.com/en", summary: "Brief.", summary_lang: "en" },
     ]);
-    assert.match(out, /\[TRADUZIR\]/);
+    assert.match(out, /\[TRADUZIR\] Brief\./);
+    assert.match(out, /\*\*\[Short EN title\]\(https:\/\/x\.com\/en\)\*\*/); // título limpo
+  });
+
+  it("#1697: título EN com descrição PT NÃO recebe [TRADUZIR] (detecção por summary)", () => {
+    const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
+      { title: "GPT-5 Turbo", url: "https://x.com/en", summary: "Modelo lançado pela OpenAI nesta terça." },
+    ]);
+    assert.doesNotMatch(out, /\[TRADUZIR\]/);
+    assert.match(out, /\*\*\[GPT-5 Turbo\]/);
   });
 });
 
