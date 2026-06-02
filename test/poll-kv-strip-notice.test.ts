@@ -36,10 +36,15 @@ describe("stripWranglerNotice (#1703) — remove banner do wrangler do stdout", 
     assert.equal(stripWranglerNotice(BANNER), "");
   });
 
-  it("não remove uma linha de valor que mencione 'wrangler' no meio", () => {
-    // Só linhas que SÃO o notice (começam com 'Run wrangler' / contêm as frases
-    // do banner) são removidas — um valor arbitrário com a palavra no meio fica.
-    const stdout = '{"note":"configured via wrangler"}';
-    assert.equal(stripWranglerNotice(stdout), '{"note":"configured via wrangler"}');
+  it("#1726 review: valor legítimo com substring solta NÃO é removido (regex específico)", () => {
+    // Frases soltas como '--install-skills' ou 'run wrangler' NÃO disparam o
+    // strip — só as frases específicas do banner. wranglerKvGet é genérico.
+    for (const v of [
+      '{"note":"configured via wrangler"}',
+      '["--install-skills-flag","260602"]',
+      '"run wrangler to deploy"',
+    ]) {
+      assert.equal(stripWranglerNotice(v), v, `valor "${v}" não deve ser removido`);
+    }
   });
 });

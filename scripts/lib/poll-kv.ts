@@ -39,8 +39,12 @@ const POLL_KV_NAMESPACE_ID =
  * linha (genérico — conserta todos os reads do KV, não só valid_editions).
  * Exportada pra teste.
  */
+// #1703 review: frases ESPECÍFICAS do banner (não substrings soltos como
+// `--install-skills` ou `run wrangler`, que poderiam casar um valor legítimo do
+// KV — wranglerKvGet é genérico). Cada linha do banner (incl. wrap em 2 linhas)
+// contém uma dessas frases; um JSON de valor real não.
 const WRANGLER_NOTICE_RE =
-  /cloudflare agent skills|interactive terminal to install|--install-skills|^\s*run\s+`?wrangler/i;
+  /Cloudflare agent skills are available|interactive terminal to install them/i;
 
 export function stripWranglerNotice(stdout: string): string {
   return stdout
