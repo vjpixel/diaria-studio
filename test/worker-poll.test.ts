@@ -36,6 +36,7 @@ import {
   computeSnapshotEntries,
   requiredSecretsForRoute,
   missingSecretsForRoute,
+  votePageHtml,
   type Env,
 } from "../workers/poll/src/index.ts";
 
@@ -792,6 +793,54 @@ describe("missingSecretsForRoute (#1420)", () => {
     assert.deepEqual(missingSecretsForRoute(env, "/img/foo.jpg", "GET"), []);
     assert.deepEqual(missingSecretsForRoute(env, "/stats", "GET"), []);
     assert.deepEqual(missingSecretsForRoute(env, "/leaderboard", "GET"), []);
+  });
+});
+
+describe("votePageHtml — mobile-friendly (#1675)", () => {
+  it("declara viewport meta (escala pra largura do dispositivo)", () => {
+    const html = votePageHtml("Acertou!", true);
+    assert.match(html, /<meta name="viewport" content="width=device-width,initial-scale=1">/);
+  });
+
+  it("inclui media query mobile que reduz margem topo e ajusta layout", () => {
+    // O bug #1675: 60px de margem topo + form lado-a-lado deixavam o conteúdo
+    // espremido no topo no celular. A media query <=480px é o fix.
+    const html = votePageHtml("Acertou!", true);
+    assert.match(html, /@media \(max-width: 480px\)/);
+    // body margin reduzida dentro da media query (24px no mobile)
+    assert.match(html, /@media[^}]*body\s*{\s*margin:\s*24px auto/);
+  });
+
+  it("form de nickname usa classes (não inline flex) pra media query empilhar", () => {
+    // Regressão: estilos inline `display:flex` no form não podiam ser
+    // sobrepostos por media query. Mover pra classes .nick-form/.nick-save é o fix.
+    const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
+    assert.match(html, /<form action="\/set-name" method="GET" class="nick-form">/);
+    assert.match(html, /<button type="submit" class="nick-save">/);
+    assert.match(html, /<input type="text" name="name"[^>]*class="nick-input">/);
+    // O form NÃO deve carregar mais o inline display:flex (que bloqueava o stack).
+    assert.doesNotMatch(html, /<form action="\/set-name"[^>]*style="display:flex/);
+  });
+
+  it("media query empilha o form e dá largura total ao botão (tap target)", () => {
+    const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
+    assert.match(html, /@media[^@]*\.nick-form\s*{\s*flex-direction:\s*column/);
+    assert.match(html, /@media[^@]*\.nick-save\s*{\s*width:\s*100%/);
+  });
+
+  it("links do rodapé usam classe footer-links (tap target no mobile)", () => {
+    const html = votePageHtml("Acertou!", true);
+    assert.match(html, /<p class="footer-links">/);
+    assert.match(html, /\.footer-links a\s*{\s*display:\s*inline-block/);
+  });
+
+  it("não quebra render sem nickname form (formHtml vazio)", () => {
+    const html = votePageHtml("Acertou!", true);
+    // O <form> não é renderizado (CSS .nick-form fica no <style>, mas o elemento não).
+    assert.doesNotMatch(html, /<form action="\/set-name"/);
+    assert.doesNotMatch(html, /<div class="nick-box">/);
+    // Mas a media query e o body responsivo continuam presentes.
+    assert.match(html, /@media \(max-width: 480px\)/);
   });
 });
 

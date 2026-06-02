@@ -894,14 +894,14 @@ export function votePageHtml(
   // preenchido. Texto explícito sobre consequência (aparecer como email
   // mascarado no leaderboard) incentiva preenchimento.
   const formHtml = nicknameForm ? `
-<div style="margin:30px auto;padding:20px;background:#f5f5f5;border-radius:8px;max-width:380px;">
+<div class="nick-box">
   <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Defina seu nickname pra aparecer no leaderboard mensal</p>
   <p style="font-size:0.85rem;color:#444;margin:0 0 12px 0;line-height:1.5;">Sem nickname você aparece como <code style="background:#fff;padding:1px 4px;border-radius:3px;">${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
-  <form action="/set-name" method="GET" style="display:flex;gap:8px;">
+  <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
-    <input type="text" name="name" placeholder="Seu nome" maxlength="40" required style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:0.95rem;">
-    <button type="submit" style="padding:8px 16px;background:#00A0A0;color:#fff;border:none;border-radius:4px;font-weight:600;cursor:pointer;">Salvar</button>
+    <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
+    <button type="submit" class="nick-save">Salvar</button>
   </form>
   <p style="font-size:0.75rem;color:#666;margin:10px 0 0 0;">Pode ser apelido. Mostrado publicamente.</p>
 </div>` : "";
@@ -916,7 +916,7 @@ export function votePageHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | Diar.ia</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 60px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
+  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
   .msg { font-size: 1.3rem; margin: 20px 0; }
   a { color: #0066cc; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
@@ -925,13 +925,30 @@ export function votePageHtml(
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-size: 0.85rem; margin-top: 8px; color: #444; font-weight: 600; }
   .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #fff; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
+  /* #1675: nickname form + links como classes pra media query mobile sobrepor. */
+  .nick-box { margin: 30px auto; padding: 20px; background: #f5f5f5; border-radius: 8px; max-width: 380px; }
+  .nick-form { display: flex; gap: 8px; }
+  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
+  .nick-save { padding: 8px 16px; background: #00A0A0; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; }
+  .footer-links a { display: inline-block; padding: 6px 4px; }
+  /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
+     form empilhado, botão full-width, tap targets ~44px. */
+  @media (max-width: 480px) {
+    body { margin: 24px auto; padding: 0 16px; }
+    .msg { font-size: 1.15rem; }
+    .result-image { flex-basis: 140px; }
+    .nick-form { flex-direction: column; }
+    .nick-input { padding: 12px; font-size: 1rem; }
+    .nick-save { width: 100%; padding: 12px 16px; font-size: 1rem; }
+    .footer-links a { padding: 10px 6px; }
+  }
 </style>
 </head>
 <body>
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${formHtml}
-<p><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="${leaderboardSlug ? `/leaderboard/${leaderboardSlug}` : "/leaderboard"}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="${leaderboardSlug ? `/leaderboard/${leaderboardSlug}` : "/leaderboard"}">Ver leaderboard</a></p>
 </body>
 </html>`;
 }
