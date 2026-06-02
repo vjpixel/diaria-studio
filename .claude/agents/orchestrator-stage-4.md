@@ -100,9 +100,9 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
 3. Pre-render do social preview HTML:
    ```bash
    npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html
-   # upload-html-public.ts aceita --edition + --html. Capturar `url` do stdout —
-   # contém o hash de conteúdo no fim (ex: 260529-social-a1b2c3).
-   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html
+   # #1734: --persist-to grava a URL (com hash, ex: 260529-social-a1b2c3) em
+   # 05-social-preview.json — fonte durável (stdout sozinho morria no TTL 12h do KV).
+   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
    ```
 4. close-poll (set gabarito — script já é idempotente, sem flag):
    ```bash
@@ -389,12 +389,12 @@ npx tsx scripts/render-social-html.ts \
   --out data/editions/{AAMMDD}/_internal/social-preview.html \
   --images data/editions/{AAMMDD}/06-public-images.json
 
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
-  --key {AAMMDD}-social \
-  --html data/editions/{AAMMDD}/_internal/social-preview.html
+# #1734: `--edition {AAMMDD}-social` (não `--key`, que o script ignora) + `--persist-to` registra a URL durável.
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
+  --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
 ```
 
-Capturar a URL retornada (campo `url` do JSON stdout) e incluir no bloco de links do gate 4g como `Social Preview HTML: {url}`.
+Capturar a URL retornada (`url` do stdout) pro bloco de links do gate 4g — fonte durável é `05-social-preview.json`.
 
 Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente. Logar warn e prosseguir.
 
@@ -421,7 +421,7 @@ Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente.
 
   **Links de preview e rascunhos (#1484)**
 
-  Antes das seções detalhadas, exibir bloco consolidado de links para acesso rápido. O `draft_preview_url` vem de `05-published.json` (campo `draft_preview_url`, gerado por `upload-html-public.ts`) ou é construído inline com `https://draft.diaria.workers.dev/{AAMMDD}`. URLs sociais vêm de `06-social-published.json` (campo `url` e `scheduled_at` de cada post).
+  Antes das seções detalhadas, exibir bloco consolidado de links para acesso rápido. O `draft_preview_url` vem de `05-published.json` (campo `draft_preview_url`, gerado por `upload-html-public.ts`) ou é construído inline com `https://draft.diaria.workers.dev/{AAMMDD}`. O `social_preview_url` vem de `05-social-preview.json` (campo `social_preview_url`, persistido por `upload-html-public.ts --persist-to` no passo 4c-pre §3, #1734) — **não** reconstruir inline (precisa do hash de conteúdo, senão 404). URLs dos posts sociais vêm de `06-social-published.json` (campo `url` e `scheduled_at` de cada post).
 
   ```
   📰 Newsletter:
