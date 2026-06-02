@@ -3,7 +3,7 @@
  * render-erro-intencional.ts (#911)
  *
  * Concurso "Ache o erro" — cada edição declara 1 erro intencional pros
- * assinantes acharem (sorteio mensal premia com livro). Pra fechar o
+ * assinantes acharem (sorteio mensal premia com uma caneca da Diar.ia). Pra fechar o
  * loop:
  *
  *   1. Edição N revela o gabarito do erro da edição N-1 (com nome do

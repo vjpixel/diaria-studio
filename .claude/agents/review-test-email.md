@@ -363,7 +363,7 @@ if (matching) → classificar como `info:intentional_error_confirmed` (não bloq
 else → classificar como `blocker` com nota "verificar com editor antes de publicar"
 ```
 
-Toda edição da Diar.ia inclui 1 erro intencional para o concurso mensal (assinantes que acharem ganham livro). Detectar é correto; bloquear erro intencional é incorreto.
+Toda edição da Diar.ia inclui 1 erro intencional para o concurso mensal (assinantes que acharem concorrem a uma caneca da Diar.ia). Detectar é correto; bloquear erro intencional é incorreto.
 
 ### 4. Retornar
 
