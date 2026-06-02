@@ -139,6 +139,24 @@ describe("orchestrator-prompt (#634)", () => {
     }
   });
 
+  it("#1708: resume §0b referencia 05/06-published.json em _internal/ (não na raiz)", () => {
+    // Pós-#158 os published.json moram em _internal/. Se o §0b checar a raiz, o
+    // resume não detecta Stage 4 completo → re-publica (rascunho Beehiiv duplicado
+    // + re-agenda 6 posts). Toda menção deve ser _internal/-prefixada.
+    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    // Nenhuma menção bare (sem _internal/ logo antes).
+    const bare = stage0.match(/(^|[^/])(05-published\.json|06-social-published\.json)/gm) ?? [];
+    const bareNonInternal = bare.filter((m) => !m.includes("_internal"));
+    assert.equal(
+      bareNonInternal.length,
+      0,
+      `refs bare a published.json no §0b (devem ser _internal/): ${bareNonInternal.join(", ")}`,
+    );
+    // E ao menos uma menção _internal/ presente (sanity — não foi tudo removido).
+    assert.ok(stage0.includes("_internal/05-published.json"), "deve referenciar _internal/05-published.json");
+    assert.ok(stage0.includes("_internal/06-social-published.json"), "deve referenciar _internal/06-social-published.json");
+  });
+
   it("sub-arquivos de stage referenciados no orchestrator.md raiz", () => {
     const root = contents["orchestrator.md"];
     assert.ok(root.includes("orchestrator-stage-0-preflight.md"), "orchestrator.md não referencia stage-0-preflight");

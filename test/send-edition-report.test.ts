@@ -47,6 +47,24 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes("5m"), "pipeline_ms of 300000 should render as 5m");
   });
 
+  it("#1706: stage sem duração medida → '(não medido)', não '-'", () => {
+    const docSemDuracao: StageStatusDoc = {
+      ...MINIMAL_DOC,
+      rows: [
+        { stage: 0, status: "done", models: [] }, // sem start/end/duration
+        ...MINIMAL_DOC.rows.slice(1),
+      ],
+    };
+    const html = renderHtmlReport("260525", docSemDuracao, null, null, [], []);
+    assert.ok(html.includes("(não medido)"), "stage sem dados deve dizer '(não medido)' explícito");
+  });
+
+  it("#1706: stage com duration_ms (sem pipeline_ms) renderiza o total, não '(não medido)'", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+    // stage 2 tem duration_ms=900000 (15m) e sem pipeline_ms → mostra 15m.
+    assert.ok(html.includes("15m"), "duration_ms de 900000 deve renderizar 15m");
+  });
+
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate).
   // MINIMAL_DOC: 60k(s0) + 300k(s1 pipeline) + 900k(s2) + 300k(s3) + 300k(s4)
   // = 1.860.000ms = 31m. Soma de duration_ms (antes) seria 35m.

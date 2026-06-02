@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import {
   makeInitialDoc,
   applyUpdate,
+  computeDurationMs,
   renderStageStatus,
   parseStageStatus,
   loadDoc,
@@ -20,6 +21,49 @@ import {
   STAGES,
   type StageStatusDoc,
 } from "../scripts/update-stage-status.ts";
+
+describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido", () => {
+  const emptyRow = { stage: 1, status: "done" as const };
+  it("duration_ms > 0 passado é usado", () => {
+    assert.equal(computeDurationMs({ stage: 1, status: "done", duration_ms: 5000 }, emptyRow), 5000);
+  });
+  it("duration_ms 0 + start/end → computa end - start (não fica 0)", () => {
+    const ms = computeDurationMs(
+      { stage: 1, status: "done", duration_ms: 0, start: "2026-06-02T10:00:00Z", end: "2026-06-02T10:03:00Z" },
+      emptyRow,
+    );
+    assert.equal(ms, 180000); // 3 min
+  });
+  it("duration_ms ausente + start/end → computa", () => {
+    const ms = computeDurationMs(
+      { stage: 1, status: "done", start: "2026-06-02T10:00:00Z", end: "2026-06-02T10:01:30Z" },
+      emptyRow,
+    );
+    assert.equal(ms, 90000);
+  });
+  it("0 não sobrescreve valor já computado antes (existing)", () => {
+    const ms = computeDurationMs(
+      { stage: 1, status: "done", duration_ms: 0 },
+      { stage: 1, status: "done", duration_ms: 120000 },
+    );
+    assert.equal(ms, 120000);
+  });
+  it("sem dados → undefined (report mostra '(não medido)')", () => {
+    assert.equal(computeDurationMs({ stage: 1, status: "done" }, emptyRow), undefined);
+  });
+  it("integração: applyUpdate com --duration-ms 0 + start/end grava duração real", () => {
+    let doc = makeInitialDoc("260602");
+    doc = applyUpdate(doc, {
+      stage: 1,
+      status: "done",
+      start: "2026-06-02T08:00:00Z",
+      end: "2026-06-02T08:12:00Z",
+      duration_ms: 0, // o orchestrator passava isso — não deve virar 0
+    });
+    const row = doc.rows.find((r) => r.stage === 1)!;
+    assert.equal(row.duration_ms, 720000); // 12 min, não 0
+  });
+});
 
 describe("makeInitialDoc (#960)", () => {
   it("cria doc com 5 stages todos pending", () => {
