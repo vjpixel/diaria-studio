@@ -512,7 +512,7 @@ export function extractIntroCallout(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function extractContent(editionDir: string): NewsletterContent {
+export function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
 

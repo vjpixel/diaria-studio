@@ -9,6 +9,7 @@ import {
   parseEIA,
   fallbackEIA,
   resolvePrevResultLine,
+  extractContent,
   renderHTML,
   renderEiaStandalone,
   extractTemplateBlock,
@@ -439,6 +440,48 @@ describe("resolvePrevResultLine (#1707 — fallback do % da edição anterior)",
     const dir = makeEdition({ pct_correct: null, total_responses: 3, below_threshold: true });
     try {
       assert.equal(resolvePrevResultLine(undefined, dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1707 E2E: extractContent injeta a linha no eia quando 01-eia.md não tem mas poll-stats tem", () => {
+    // Guarda o WIRING (extractContent → resolvePrevResultLine) — não só o helper.
+    const dir = mkdtempSync(join(tmpdir(), "diaria-prevresult-e2e-"));
+    try {
+      const reviewed = [
+        "**DESTAQUE 1 | LANÇAMENTO**", "",
+        "**[Título um](https://example.com/1)**", "",
+        "Corpo do destaque um com contexto suficiente pra render.", "",
+        "Por que isso importa: razão um.", "",
+        "---", "",
+        "**DESTAQUE 2 | RADAR**", "",
+        "**[Título dois](https://example.com/2)**", "",
+        "Corpo dois.", "",
+        "Por que isso importa: razão dois.", "",
+        "---", "",
+        "**DESTAQUE 3 | PESQUISA**", "",
+        "**[Título três](https://example.com/3)**", "",
+        "Corpo três.", "",
+        "Por que isso importa: razão três.", "",
+      ].join("\n");
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      // 01-eia.md SEM a linha "Resultado da última edição" (só crédito).
+      writeFileSync(join(dir, "01-eia.md"), "É IA?\n\nCrédito da imagem [link](https://x.com).\n", "utf8");
+      writeFileSync(join(dir, "01-eia-A.jpg"), "x", "utf8");
+      writeFileSync(join(dir, "01-eia-B.jpg"), "x", "utf8");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "04-eia-poll-stats.json"),
+        JSON.stringify({ pct_correct: 75, total_responses: 120 }),
+        "utf8",
+      );
+      const content = extractContent(dir);
+      assert.equal(
+        content.eia.prevResultLine,
+        "Resultado da última edição: 75% das pessoas acertaram.",
+        "extractContent deve injetar a linha do poll-stats (wiring do #1707)",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
