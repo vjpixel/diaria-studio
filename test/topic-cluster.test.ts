@@ -1,5 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, readFileSync as rf, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   tokenize,
   jaccard,
@@ -401,5 +405,63 @@ describe("clusterArticlesWithEmbeddings — caminho com embeddings (fetch mockad
     assert.equal(clusters.length, 2);
     // Fallback total deve usar Jaccard, não cosine
     assert.equal(clusters[0].method, "jaccard");
+  });
+});
+
+describe("clusterCategorized — legacy shape #1629 (#1671)", () => {
+  let savedKey: string | undefined;
+  beforeEach(() => {
+    savedKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY; // força fallback jaccard (sem network)
+  });
+  afterEach(() => {
+    if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+    else delete process.env.GEMINI_API_KEY;
+  });
+
+  it("input legacy (pesquisa/noticias/tutorial, sem buckets novos) → não crasha + remapeia pra radar/use_melhor", async () => {
+    const legacy = {
+      lancamento: [{ url: "https://x/l", title: "Lançamento X", summary: "produto novo" }],
+      pesquisa: [{ url: "https://x/p", title: "Paper Y", summary: "estudo sobre Z" }],
+      noticias: [{ url: "https://x/n", title: "Notícia W", summary: "cobertura de mercado" }],
+      tutorial: [{ url: "https://x/t", title: "Como usar V", summary: "passo a passo" }],
+    };
+    // Antes do #1671: clusterBucket(input.radar=undefined) → crash no .map.
+    const out = await clusterCategorized(legacy as unknown as Parameters<typeof clusterCategorized>[0], 0.85);
+    const urls = (b: { url: string }[]) => b.map((a) => a.url).sort();
+    assert.deepEqual(urls(out.radar), ["https://x/n", "https://x/p"], "pesquisa+noticias → radar");
+    assert.deepEqual(urls(out.use_melhor), ["https://x/t"], "tutorial → use_melhor");
+    assert.deepEqual(urls(out.lancamento), ["https://x/l"]);
+    assert.deepEqual(out.video, []);
+  });
+});
+
+describe("topic-cluster CLI main() — legacy shape não crasha (#1671 — site real do bug)", () => {
+  it("CLI com categorized.json legacy → exit 0 + output escrito (não crasha em totalIn)", () => {
+    const ROOT = resolve(import.meta.dirname, "..");
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cli-"));
+    try {
+      const legacy = {
+        lancamento: [{ url: "https://x/l", title: "Lançamento", summary: "produto" }],
+        pesquisa: [{ url: "https://x/p", title: "Paper", summary: "estudo" }],
+        noticias: [{ url: "https://x/n", title: "Notícia", summary: "mercado" }],
+      };
+      const inPath = join(dir, "legacy-categorized.json");
+      const outPath = join(dir, "clustered.json");
+      writeFileSync(inPath, JSON.stringify(legacy), "utf8");
+      const env = { ...process.env };
+      delete env.GEMINI_API_KEY; // jaccard determinístico, sem network
+      const r = spawnSync(
+        "npx",
+        ["tsx", "scripts/topic-cluster.ts", "--in", inPath, "--out", outPath, "--threshold", "0.5"],
+        { cwd: ROOT, env, encoding: "utf8", shell: true, timeout: 120000 },
+      );
+      assert.equal(r.status, 0, `CLI deve sair 0 (legacy não crasha). stderr: ${r.stderr?.slice(0, 400)}`);
+      assert.ok(existsSync(outPath), "output deve ser escrito (não abortado pré-write)");
+      const out = JSON.parse(rf(outPath, "utf8"));
+      assert.deepEqual(out.radar.map((a: { url: string }) => a.url).sort(), ["https://x/n", "https://x/p"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -376,7 +376,11 @@ async function main(): Promise<void> {
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
   const result = await clusterCategorized(input, threshold);
 
-  const totalIn = input.lancamento.length + input.radar.length + input.use_melhor.length + input.video.length;
+  // #1671: totalIn dos buckets NORMALIZADOS (não do input cru) — senão um
+  // categorized.json legacy sem radar/use_melhor/video crasha aqui (`undefined.length`)
+  // DEPOIS do cluster já ter rodado, descartando o resultado sem escrever o output.
+  const inBuckets = normalizeCategorizedBuckets<Article>(input as unknown as Record<string, unknown>);
+  const totalIn = inBuckets.lancamento.length + inBuckets.radar.length + inBuckets.use_melhor.length + inBuckets.video.length;
   const totalOut = result.lancamento.length + result.radar.length + result.use_melhor.length + result.video.length;
   const method = result.clusters[0]?.similarity_method ?? (hasKey ? "cosine" : "jaccard");
   console.error(
