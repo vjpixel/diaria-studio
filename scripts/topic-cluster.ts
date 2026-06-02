@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
 
 export interface Article {
   url: string;
@@ -320,11 +321,17 @@ export async function clusterCategorized(
 ): Promise<ClusterOutput> {
   // #1629: cluster TODOS os 4 buckets. Antes só processava 3 e dropava
   // tutorial/video silenciosamente (#1628).
+  // #1671: normalizeCategorizedBuckets garante `[]` (sem crash em shape legacy
+  // sem os buckets novos) + remapeia pesquisa/noticias→radar, tutorial→use_melhor
+  // (legacy categorized.json de resume pré-#1629 não some).
+  const buckets = normalizeCategorizedBuckets<Article>(
+    input as unknown as Record<string, unknown>,
+  );
   const [l, r, u, v] = await Promise.all([
-    clusterBucket(input.lancamento, threshold),
-    clusterBucket(input.radar, threshold),
-    clusterBucket(input.use_melhor, threshold),
-    clusterBucket(input.video, threshold),
+    clusterBucket(buckets.lancamento, threshold),
+    clusterBucket(buckets.radar, threshold),
+    clusterBucket(buckets.use_melhor, threshold),
+    clusterBucket(buckets.video, threshold),
   ]);
   return {
     lancamento: l.kept,
@@ -369,7 +376,11 @@ async function main(): Promise<void> {
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
   const result = await clusterCategorized(input, threshold);
 
-  const totalIn = input.lancamento.length + input.radar.length + input.use_melhor.length + input.video.length;
+  // #1671: totalIn dos buckets NORMALIZADOS (não do input cru) — senão um
+  // categorized.json legacy sem radar/use_melhor/video crasha aqui (`undefined.length`)
+  // DEPOIS do cluster já ter rodado, descartando o resultado sem escrever o output.
+  const inBuckets = normalizeCategorizedBuckets<Article>(input as unknown as Record<string, unknown>);
+  const totalIn = inBuckets.lancamento.length + inBuckets.radar.length + inBuckets.use_melhor.length + inBuckets.video.length;
   const totalOut = result.lancamento.length + result.radar.length + result.use_melhor.length + result.video.length;
   const method = result.clusters[0]?.similarity_method ?? (hasKey ? "cosine" : "jaccard");
   console.error(

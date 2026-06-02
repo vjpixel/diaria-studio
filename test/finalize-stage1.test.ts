@@ -830,6 +830,23 @@ describe("#1642 — unwrapCategorizedInput (perda silenciosa de artigos)", () =>
     assert.equal((out as Record<string, unknown[]>).pesquisa.length, 1);
   });
 
+  it("#1670: remapeia legacy pesquisa+noticias→radar, tutorial→use_melhor (não somem no loop de bucketNames)", () => {
+    const legacy = {
+      categorized: {
+        lancamento: [{ url: "https://x/l" }],
+        pesquisa: [{ url: "https://x/p" }],
+        noticias: [{ url: "https://x/n" }],
+        tutorial: [{ url: "https://x/t" }],
+      },
+    };
+    const out = unwrapCategorizedInput(legacy);
+    // O loop de finalizeStage1 itera [lancamento, radar, use_melhor, video] —
+    // os artigos legacy precisam estar sob esses nomes ou somem (#1642 class).
+    assert.deepEqual((out.radar as Array<{ url: string }>).map((a) => a.url), ["https://x/p", "https://x/n"]);
+    assert.deepEqual((out.use_melhor as Array<{ url: string }>).map((a) => a.url), ["https://x/t"]);
+    assert.equal(out.lancamento.length, 1);
+  });
+
   it("FALHA ALTO em schema mismatch (nenhum bucket reconhecível) — não retorna vazio silencioso", () => {
     // Exatamente o cenário do #1642 sem o fix: buckets aninhados num wrapper
     // desconhecido. Antes: buckets vazios. Agora: throw explícito.
