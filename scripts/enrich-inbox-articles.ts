@@ -76,24 +76,39 @@ const PLACEHOLDER_TITLES = [
   "(sem título)",
 ];
 
-/** Whether an article looks like an unenriched inbox synthetic. */
-export function needsEnrichment(article: InboxArticle): boolean {
-  const isInbox =
-    article.flag === "editor_submitted" ||
-    article.source === "inbox";
-  if (!isInbox) return false;
+/** Submissão do inbox editorial (network-eligible pro fetch de enrichment). */
+export function isInboxArticle(article: InboxArticle): boolean {
+  return article.flag === "editor_submitted" || article.source === "inbox";
+}
 
+function hasPlaceholderTitle(article: InboxArticle): boolean {
   const title = (article.title ?? "").trim();
-  const summary = (article.summary ?? "").trim();
-
-  // Placeholder title or an "[INBOX]" / "(...)" prefix scheme.
-  const placeholderTitle =
+  return (
     !title ||
     PLACEHOLDER_TITLES.includes(title.toLowerCase()) ||
     /^\[inbox\]/i.test(title) ||
-    /^\(inbox/i.test(title);
+    /^\(inbox/i.test(title)
+  );
+}
 
-  return placeholderTitle || !summary;
+/**
+ * Quais artigos precisam de enrichment.
+ * - **Inbox** (editor_submitted/source=inbox): título placeholder OU summary
+ *   vazio (comportamento original #109).
+ * - **Fonte regular** (#1696): título real MAS summary vazio. Itens de seção
+ *   secundária (LANÇAMENTOS/RADAR) sem summary renderizam como título pelado
+ *   (HF Blog / Nvidia blog às vezes não trazem snippet). Preenche og:description
+ *   do body-cache. NÃO toca o título (só inbox tem título placeholder).
+ *   Custo barato: o worker enriquece esses SÓ do cache (sem network — ver
+ *   `isInboxArticle` gate no loop), e os bodies já foram cacheados no 1i.
+ */
+export function needsEnrichment(article: InboxArticle): boolean {
+  const summary = (article.summary ?? "").trim();
+  if (isInboxArticle(article)) {
+    return hasPlaceholderTitle(article) || !summary;
+  }
+  // #1696: fonte regular com título real mas sem summary.
+  return !hasPlaceholderTitle(article) && !summary;
 }
 
 function decodeHtmlEntities(input: string): string {
@@ -296,10 +311,27 @@ export async function enrichArticles(
           stats.cache_misses++;
         }
       }
-      if (html === null) {
+      // #1696: cache-miss → só faz network fetch pra artigos do INBOX. Fonte
+      // regular (summary-only enrichment) é cache-only: bound do custo (sem
+      // fetch ilimitado pro pool inteiro) e o body já foi cacheado no 1i pros
+      // acessíveis. Non-inbox cache-miss → pula (summary fica vazio, sem dano).
+      if (html === null && isInboxArticle(job.article)) {
         html = await fetcher(job.article.url);
       }
       if (!html) {
+        // #1696: non-inbox cache-only — body não estava no cache e não fetchamos.
+        // Sem submitted_subject (é inbox-only); só registra o skip (summary vazio).
+        if (!isInboxArticle(job.article)) {
+          outcomes.push({
+            url: job.article.url,
+            enriched: false,
+            title_updated: false,
+            summary_updated: false,
+            reason: "cache_miss_skipped_non_inbox",
+            ...(bodiesDir !== null ? { cache_hit: false } : {}),
+          });
+          continue;
+        }
         // #1641: fetch falhou (anti-bot) — recupera o título do submitted_subject
         // antes de desistir, evitando o drop na categorização.
         const recovered = titleFromSubmittedSubject(job.article);
