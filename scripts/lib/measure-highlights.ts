@@ -63,7 +63,12 @@ const URL_RE = /https?:\/\/[^\s)]+/g;
  * bold opcional). O writer emite 3 opções por destaque; o title-picker (#159)
  * poda pra 1 pós-gate. Usado por `stripTitleOptions`.
  */
-const TITLE_OPTION_LINE_RE = /^\s*\*{0,2}\s*\[[^\]]+\]\([^)]*\)\*{0,2}\s*$/;
+// Greedy `.+` no texto e `\S+` na URL toleram `]` no título (ex: `[GPT [beta]]`)
+// e `)` na URL (ex: Wikipedia `(modelo)`) — review #1746: regex estrita
+// `[^\]]+`/`[^)]*` deixava esses títulos sem strip → corpo super-medido,
+// mascarando min-fail. Ancorado `^...$` na linha trim + exige `https?://` →
+// só casa linha que é SÓ um link (não prosa com link inline no meio).
+const TITLE_OPTION_LINE_RE = /^\s*\*{0,2}\s*\[.+\]\(https?:\/\/\S+\)\*{0,2}\s*$/;
 
 /**
  * #1709: remove TODAS as opções de título iniciais do bloco do destaque,
@@ -195,7 +200,7 @@ export function flagOutOfRange(highlights: HighlightSize[]): string[] {
  */
 export function formatMeasureResult(result: MeasureResult): string {
   const lines: string[] = [];
-  lines.push("Tamanhos dos destaques (corpo, excluindo URLs):");
+  lines.push("Tamanhos dos destaques (corpo, excluindo URLs e títulos):");
   for (const h of result.highlights) {
     lines.push(`  d${h.number}: ${h.chars} chars (${h.words} palavras) — ${h.category}`);
   }

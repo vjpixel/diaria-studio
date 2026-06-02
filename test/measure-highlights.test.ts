@@ -244,6 +244,18 @@ describe("stripTitleOptions — mede só o corpo (#1709)", () => {
     assert.ok(out.includes("Link solo pós-corpo"), "link solo após o corpo preservado");
   });
 
+  it("strip robusto: título com ) na URL (Wikipedia) e ] no texto (#1746 review)", () => {
+    const body = [
+      "",
+      "**[GPT [beta] muda tudo](https://pt.wikipedia.org/wiki/GPT_(modelo))**",
+      "",
+      "Corpo de verdade aqui.",
+    ].join("\n");
+    const out = stripTitleOptions(body);
+    assert.ok(!out.includes("GPT [beta]"), "título com ] no texto + ) na URL deve ser descartado");
+    assert.ok(out.includes("Corpo de verdade"), "corpo preservado");
+  });
+
   it("parseHighlights mede CORPO sozinho: 3 títulos == 0 títulos", () => {
     const com3 = `DESTAQUE 1 | PRODUTO
 **[Opção A bem longa pra inflar a contagem](https://x.com/1)**
