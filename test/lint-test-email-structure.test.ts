@@ -239,6 +239,24 @@ desc
     assert.equal(m!.email_count, 2);
   });
 
+  it("#1721: seção presente com contagem divergente NÃO emite mismatch", () => {
+    // Documenta a decisão do #1721: `section_item_count_mismatch` foi removido
+    // do union porque compareStructure só compara PRESENÇA de seção (o item_count
+    // do email é heurístico → comparar exato geraria falso-positivo). Uma seção
+    // presente em ambos mas com counts diferentes não deve gerar issue alguma.
+    const source = {
+      has_eia: false,
+      destaques: [],
+      sections: [{ name: "LANÇAMENTOS", item_count: 5 }],
+    };
+    const email = {
+      has_eia: false,
+      destaques: [],
+      sections: [{ name: "LANÇAMENTOS", item_count: 3 }],
+    };
+    assert.deepEqual(compareStructure(source, email), []);
+  });
+
   it("sem issues quando estruturas batem", () => {
     const source = {
       has_eia: true,
