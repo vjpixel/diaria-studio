@@ -4,6 +4,7 @@ import {
   parseHighlights,
   flagOutOfRange,
   formatMeasureResult,
+  stripTitleOptions,
   HEALTHY_RANGE_MIN,
   HEALTHY_RANGE_MAX,
 } from "../scripts/lib/measure-highlights.ts";
@@ -204,6 +205,65 @@ Body dois.
     assert.equal(r.highlights.length, 2);
     assert.equal(r.highlights[0].category, "A");
     assert.equal(r.highlights[1].category, "B");
+  });
+});
+
+describe("stripTitleOptions — mede só o corpo (#1709)", () => {
+  it("descarta TODAS as opções de título iniciais, mantém o corpo", () => {
+    const body = [
+      "",
+      "**[Título opção A](https://x.com/1)**",
+      "",
+      "**[Título opção B](https://x.com/1)**",
+      "",
+      "**[Título opção C](https://x.com/1)**",
+      "",
+      "Lead do destaque começa aqui.",
+      "",
+      "Mais um parágrafo.",
+    ].join("\n");
+    const out = stripTitleOptions(body);
+    assert.ok(!out.includes("opção A"), "descarta a 1ª");
+    assert.ok(!out.includes("opção B"), "descarta a 2ª");
+    assert.ok(!out.includes("opção C"), "descarta a 3ª");
+    assert.ok(out.includes("Lead do destaque"), "mantém o corpo");
+  });
+
+  it("não toca em links inline DENTRO do corpo", () => {
+    const body = [
+      "",
+      "**[Título](https://x.com)**",
+      "",
+      "Parágrafo com [um link](https://y.com) no meio.",
+      "",
+      "**[Link solo pós-corpo](https://z.com)**",
+    ].join("\n");
+    const out = stripTitleOptions(body);
+    assert.ok(!out.includes("Título]"), "título inicial descartado");
+    assert.ok(out.includes("um link"), "link no meio do corpo preservado");
+    assert.ok(out.includes("Link solo pós-corpo"), "link solo após o corpo preservado");
+  });
+
+  it("parseHighlights mede CORPO sozinho: 3 títulos == 0 títulos", () => {
+    const com3 = `DESTAQUE 1 | PRODUTO
+**[Opção A bem longa pra inflar a contagem](https://x.com/1)**
+**[Opção B bem longa pra inflar a contagem](https://x.com/1)**
+**[Opção C bem longa pra inflar a contagem](https://x.com/1)**
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+---
+`;
+    const sem = `DESTAQUE 1 | PRODUTO
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+---
+`;
+    const c3 = parseHighlights(com3).highlights[0].chars;
+    const c0 = parseHighlights(sem).highlights[0].chars;
+    assert.equal(c3, c0, `com 3 títulos (${c3}) deve igualar sem títulos (${c0}) — corpo sozinho`);
+    assert.ok(c3 > 0, "corpo não-vazio");
   });
 });
 

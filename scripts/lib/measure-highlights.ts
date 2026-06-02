@@ -59,6 +59,46 @@ export interface MeasureResult {
 const URL_RE = /https?:\/\/[^\s)]+/g;
 
 /**
+ * #1709: linha que é APENAS uma opção de título (inline link `**[texto](url)**`,
+ * bold opcional). O writer emite 3 opções por destaque; o title-picker (#159)
+ * poda pra 1 pós-gate. Usado por `stripTitleOptions`.
+ */
+const TITLE_OPTION_LINE_RE = /^\s*\*{0,2}\s*\[[^\]]+\]\([^)]*\)\*{0,2}\s*$/;
+
+/**
+ * #1709: remove TODAS as opções de título iniciais do bloco do destaque,
+ * deixando só o CORPO. Decisão editorial (2026-06-02): medir o corpo separado
+ * do título — o corpo tem os limites originais (D1 1000-1200, D2/D3 900-1000,
+ * #914/#964) e o título é validado à parte por `--check title-length` (≤52, #701).
+ *
+ * Antes, `parseHighlights` media body + as 3 opções de título, divergindo do
+ * que o writer escreve (corpo) e do publicado (corpo + 1 título). Medir o corpo
+ * sozinho casa com o alvo do writer → alvo estável, sem o churn de trim/expand.
+ *
+ * Estratégia: descarta as linhas inline-link consecutivas no INÍCIO do bloco
+ * (após o header `DESTAQUE N |`); para no 1º parágrafo de corpo. Linhas em
+ * branco iniciais preservadas. Não toca links inline DENTRO do corpo.
+ */
+export function stripTitleOptions(body: string): string {
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let pastTitleBlock = false;
+  for (const line of lines) {
+    if (!pastTitleBlock) {
+      if (line.trim() === "") {
+        out.push(line);
+        continue;
+      }
+      if (TITLE_OPTION_LINE_RE.test(line)) continue; // descarta a opção de título
+      // 1ª linha não-branco e não-título = início do corpo
+      pastTitleBlock = true;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
  * Identifica blocos de destaque na markdown e mede cada um.
  *
  * Estrutura esperada (de `context/templates/newsletter.md`):
@@ -104,7 +144,9 @@ export function parseHighlights(reviewedMd: string): MeasureResult {
 
     const number = parseInt(m[1], 10);
     const category = m[2].trim();
-    const body = m[3];
+    // #1709: mede o CORPO sozinho (sem as opções de título — validadas à parte
+    // por title-length ≤52). Casa com o que o writer escreve → alvo estável.
+    const body = stripTitleOptions(m[3]);
 
     // Remove URLs antes de medir
     const bodyNoUrls = body.replace(URL_RE, "");
