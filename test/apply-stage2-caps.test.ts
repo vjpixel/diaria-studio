@@ -283,6 +283,45 @@ describe("checkStage2Caps", () => {
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, true);
   });
+
+  it("#1693: VÍDEOS > 2 viola (cap documentado editorial-rules:100)", () => {
+    const approved = {
+      highlights: [{}, {}, {}],
+      lancamento: new Array(5).fill({}),
+      radar: new Array(5).fill({}),
+      video: new Array(3).fill({}), // cap 2, real 3 → viola
+    };
+    const r = checkStage2Caps(approved);
+    assert.equal(r.ok, false);
+    assert.equal(r.violations.length, 1);
+    assert.match(r.violations[0], /V[ÍI]DEOS: 3 > cap 2/);
+  });
+
+  it("#1693: VÍDEOS ≤ 2 ok; expectedCaps.video sempre 2", () => {
+    const approved = {
+      highlights: [{}, {}, {}],
+      lancamento: new Array(5).fill({}),
+      radar: new Array(5).fill({}),
+      video: new Array(2).fill({}),
+    };
+    const r = checkStage2Caps(approved);
+    assert.equal(r.ok, true);
+    assert.equal(r.expectedCaps.video, 2);
+  });
+
+  it("#1693: USE MELHOR NÃO é capado (sem máximo documentado)", () => {
+    // use_melhor só tem mínimo 3 candidatos (editorial-rules:143); o editor
+    // cura quantos publica (:175). Mesmo com 8, não deve violar.
+    const approved = {
+      highlights: [{}, {}, {}],
+      lancamento: new Array(5).fill({}),
+      radar: new Array(5).fill({}),
+      use_melhor: new Array(8).fill({}),
+    };
+    const r = checkStage2Caps(approved);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.violations, []);
+  });
 });
 
 describe("#1240 — dedup intra-edicao (remove highlights URLs dos buckets antes do cap)", () => {

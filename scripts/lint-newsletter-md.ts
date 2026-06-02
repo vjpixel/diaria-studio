@@ -372,6 +372,10 @@ export function lintNewsletter(
 export interface SectionCounts {
   lancamento: number;
   radar: number;
+  // #1693: USE MELHOR é só observabilidade (sem cap máximo documentado);
+  // VÍDEOS é validado (≤ 2). Ambos contados pra completar o report.
+  use_melhor: number;
+  video: number;
 }
 
 export function countItemsPerSection(md: string): SectionCounts {
@@ -390,6 +394,8 @@ export function countItemsPerSection(md: string): SectionCounts {
   return {
     lancamento,
     radar: radarCurrent + pesquisasLegacy + outrasNoticiasLegacy,
+    use_melhor: dedup(urlsBySection["USE MELHOR"]),
+    video: dedup(urlsBySection["VÍDEOS"]),
   };
 }
 
@@ -406,7 +412,7 @@ export function countItemsPerSection(md: string): SectionCounts {
 export interface SectionCountsResult {
   ok: boolean;
   counts: SectionCounts;
-  caps: { lancamento: number; radar: number };
+  caps: { lancamento: number; radar: number; video: number };
   destaques: number;
   violations: string[];
 }
@@ -417,10 +423,13 @@ export function checkSectionCounts(
 ): SectionCountsResult {
   const counts = countItemsPerSection(md);
   const dest = approved.highlights?.length ?? 0;
+  // #1693: passa VÍDEOS pro cap check (≤ 2). USE MELHOR fica fora — sem cap
+  // máximo documentado; o count vai no `counts` só pra observabilidade.
   const fakeApproved: CapsApprovedJson = {
     highlights: approved.highlights ?? [],
     lancamento: new Array(counts.lancamento),
     radar: new Array(counts.radar),
+    video: new Array(counts.video),
   };
   const r = checkStage2Caps(fakeApproved);
   // dest used only via fakeApproved.highlights
@@ -1635,8 +1644,9 @@ intentional_error:
       for (const v of result.violations) console.error(`  ${v}`);
       console.error(
         `\nDestaques na edição: ${result.destaques}. Caps esperados: ` +
-          `lançamentos≤${result.caps.lancamento}, radar≤${result.caps.radar} ` +
-          `(#1629: radar = max(5, 12-${result.destaques}-l))`,
+          `lançamentos≤${result.caps.lancamento}, radar≤${result.caps.radar}, ` +
+          `vídeos≤${result.caps.video} ` +
+          `(#1629: radar = max(5, 12-${result.destaques}-l); #1693: vídeos≤2)`,
       );
       console.error(
         `\nFix: re-rodar /diaria-2-escrita ${args.md.match(/\d{6}/)?.[0] ?? "AAMMDD"} newsletter — ` +

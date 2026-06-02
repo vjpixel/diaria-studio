@@ -107,6 +107,14 @@ export interface ApprovedJson {
 export const STAGE_2_CAP_LANCAMENTOS = 5;
 export const STAGE_2_TARGET_TOTAL = 12;
 export const STAGE_2_MIN_RADAR = 5;
+/**
+ * VÍDEOS: máximo 2 por edição (#1693, editorial-rules.md:100). Cap fixo e
+ * independente do alvo de 12 (VÍDEOS é seção opcional fora da soma
+ * destaques+lançamentos+radar). USE MELHOR NÃO tem cap máximo documentado —
+ * só mínimo 3 candidatos no pipeline (editorial-rules.md:143) e é curado
+ * manualmente pelo editor (:175) — por isso não é validado aqui.
+ */
+export const STAGE_2_CAP_VIDEO = 2;
 
 /**
  * Cap pra Radar dado contagem dos outros buckets já capados (#1629).
@@ -237,19 +245,27 @@ export function applyStage2Caps(
  */
 export function checkStage2Caps(
   approved: ApprovedJson,
-): { ok: boolean; violations: string[]; expectedCaps: { lancamento: number; radar: number } } {
+): {
+  ok: boolean;
+  violations: string[];
+  expectedCaps: { lancamento: number; radar: number; video: number };
+} {
   const dest = approved.highlights?.length ?? 0;
   const lCap = STAGE_2_CAP_LANCAMENTOS;
   const lCount = approved.lancamento?.length ?? 0;
   const rCap = capRadar(dest, Math.min(lCount, lCap));
   const rCount = approved.radar?.length ?? 0;
+  // #1693: VÍDEOS ≤ 2 (cap documentado). USE MELHOR não tem cap máximo → não valida.
+  const vCap = STAGE_2_CAP_VIDEO;
+  const vCount = approved.video?.length ?? 0;
 
   const violations: string[] = [];
   if (lCount > lCap) violations.push(`LANÇAMENTOS: ${lCount} > cap ${lCap}`);
   if (rCount > rCap) violations.push(`RADAR: ${rCount} > cap ${rCap}`);
+  if (vCount > vCap) violations.push(`VÍDEOS: ${vCount} > cap ${vCap}`);
   return {
     ok: violations.length === 0,
     violations,
-    expectedCaps: { lancamento: lCap, radar: rCap },
+    expectedCaps: { lancamento: lCap, radar: rCap, video: vCap },
   };
 }
