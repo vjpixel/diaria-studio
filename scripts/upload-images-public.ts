@@ -133,10 +133,16 @@ export interface ImageSpec {
   /**
    * #1704: quando true, a KV key NÃO recebe o sufixo md5 de cache-bust (#1584).
    * Usado pelas imagens do É IA? (A/B): o Worker `poll` monta a URL do /vote
-   * com convenção FIXA `/img/img-{AAMMDD}-01-eia-{A|B}.jpg` (sem hash). Se o
-   * upload gravar a key com sufixo md5, o /vote dá 404. As imagens do É IA? são
-   * servidas com TTL 1h (#1242) — regeneração no mesmo edition já é coberta pelo
-   * TTL, então o cache-bust por hash é desnecessário (e contraproducente) aqui.
+   * com convenção FIXA `/img/img-{AAMMDD}-01-eia-{A|B}.jpg` (sem hash). Com o
+   * sufixo md5 a key gravada não bate com essa URL → /vote dá 404 em TODA edição.
+   *
+   * Trade-off (honesto): sem o sufixo, regenerar a imagem no MESMO edition
+   * reescreve a mesma key (sem cache-bust). Isso é aceitável porque (a) o /vote
+   * 404 é certo e recorrente, enquanto regen-após-envio é raro; e (b) o É IA?
+   * já era servido por convenção fixa de key antes do #1584 (design #1242). NÃO
+   * conte com o TTL 1h do edge pra invalidar cache do Gmail Image Proxy (que
+   * cacheia por URL e ignora max-age) — a real justificativa é a convenção fixa
+   * do /vote, não o TTL. cover/d1 vão pro email e MANTÊM o cache-bust por hash.
    */
   noCacheBust?: boolean;
 }
@@ -284,11 +290,26 @@ export function shouldReuseCachedUpload(
   cached: PublicImage | undefined,
   imagePath: string,
   target: UploadTarget,
+  localMd5?: string,
 ): boolean {
   if (!cached?.file_id) return false;
   if ((cached.target ?? "drive") !== target) return false;
   if (!cached.md5) return false;
-  return cached.md5 === md5OfFile(imagePath);
+  return cached.md5 === (localMd5 ?? md5OfFile(imagePath));
+}
+
+/**
+ * #1704: constrói a KV key Cloudflare pra um spec, omitindo o sufixo md5 de
+ * cache-bust (#1584) quando `spec.noCacheBust` (imagens do É IA?, que precisam
+ * casar com a convenção fixa do Worker /vote). Single source of truth — usado
+ * tanto pra decidir reuse (self-heal de keys legacy) quanto pro upload.
+ */
+export function kvKeyForSpec(
+  editionDir: string,
+  spec: ImageSpec,
+  localMd5: string,
+): string {
+  return cloudflareKvKey(editionDir, spec.filename, spec.noCacheBust ? undefined : localMd5);
 }
 
 export interface UploadOptions {
@@ -370,24 +391,28 @@ export async function uploadPublicImages(
     if (!existsSync(imagePath)) {
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
+    const mime = mimeTypeFor(spec.filename);
+    const localMd5 = md5OfFile(imagePath);
+
     // #1418: cache hit + md5 match → reuse. md5 ausente (entries pre-#1418)
     // OU mudou drive↔cloudflare OU bytes locais diferem → re-uploadar.
     const cached = cache[spec.key];
-    if (skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, target)) {
-      continue;
+    let reuse =
+      skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, target, localMd5);
+    // #1704 self-heal: pra cloudflare, a key cacheada precisa bater com a que
+    // gravaríamos agora. Uma key legacy do É IA? COM hash (cacheada antes do
+    // noCacheBust) passa no check de md5 mas aponta pra key errada → /vote 404.
+    // Forçar re-upload nesse caso pra a key sem hash de fato cair no KV.
+    if (reuse && target === "cloudflare" && cached?.file_id !== kvKeyForSpec(editionDir, spec, localMd5)) {
+      reuse = false;
     }
-    const mime = mimeTypeFor(spec.filename);
-    const localMd5 = md5OfFile(imagePath);
+    if (reuse) continue;
 
     if (target === "cloudflare") {
       // #1584: md5 suffix no key cache-busts re-uploads.
       // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
       // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
-      const key = cloudflareKvKey(
-        editionDir,
-        spec.filename,
-        spec.noCacheBust ? undefined : localMd5,
-      );
+      const key = kvKeyForSpec(editionDir, spec, localMd5);
       const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
       images[spec.key] = {
         file_id: key,

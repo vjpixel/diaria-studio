@@ -13,7 +13,9 @@ import assert from "node:assert/strict";
 import {
   defaultTargetFor,
   cloudflareKvKey,
+  kvKeyForSpec,
   type UploadMode,
+  type ImageSpec,
 } from "../scripts/upload-images-public.ts";
 
 describe("defaultTargetFor (#1119)", () => {
@@ -151,5 +153,38 @@ describe("cloudflareKvKey — É IA? sem hash bate com convenção do Worker (#1
     );
     // Worker espera img-260602-01-eia-A.jpg — com hash não bate.
     assert.notEqual(withHash, "img-260602-01-eia-A.jpg");
+  });
+});
+
+describe("kvKeyForSpec — wiring noCacheBust → key (#1704)", () => {
+  // Testa o ponto onde o bug #1704 morava: a decisão hash vs no-hash POR SPEC
+  // dentro do upload. Antes só as metades (imageSpecsFor seta noCacheBust;
+  // cloudflareKvKey omite md5 sem o arg) eram testadas isoladas — o wiring não.
+  const MD5 = "1e3bd6e6715367f984a785605a621926";
+
+  it("spec do É IA? (noCacheBust) → key SEM hash, bate com convenção do /vote", () => {
+    const spec: ImageSpec = { key: "eia_a", filename: "01-eia-A.jpg", noCacheBust: true };
+    assert.equal(
+      kvKeyForSpec("data/editions/260602", spec, MD5),
+      "img-260602-01-eia-A.jpg",
+    );
+  });
+
+  it("spec normal (cover/d1) → key COM hash (cache-bust preservado)", () => {
+    const spec: ImageSpec = { key: "cover", filename: "04-d1-2x1.jpg" };
+    assert.equal(
+      kvKeyForSpec("data/editions/260602", spec, MD5),
+      `img-260602-04-d1-2x1-${MD5.slice(0, 8)}.jpg`,
+    );
+  });
+
+  it("self-heal: key eia legacy COM hash difere da esperada (sem hash) → força re-upload", () => {
+    // Edição cacheada antes do noCacheBust: file_id = key COM hash.
+    const legacyHashedKey = `img-260602-01-eia-A-${MD5.slice(0, 8)}.jpg`;
+    const spec: ImageSpec = { key: "eia_a", filename: "01-eia-A.jpg", noCacheBust: true };
+    const expectedNow = kvKeyForSpec("data/editions/260602", spec, MD5);
+    // O guard de self-heal em uploadPublicImages compara cached.file_id vs isto.
+    assert.notEqual(legacyHashedKey, expectedNow);
+    assert.equal(expectedNow, "img-260602-01-eia-A.jpg");
   });
 });
