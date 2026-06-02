@@ -17,8 +17,15 @@
  *
  * Caller deve:
  *   - Hospedar a imagem publicamente acessível (Cloudflare Worker KV ou Drive)
- *   - Validar via `mcp__claude_ai_Beehiiv__get_post` que `web_thumbnail_url`
- *     foi populado pós-upload
+ *
+ * ⚠️ #1705 (2026-06-02): NÃO validar via `get_post > web_thumbnail_url` — esse
+ * campo NÃO é exposto pelo MCP (sempre ausente), e não há via de API/MCP pra
+ * setar/confirmar a capa (thumbnail é UI-only). Além disso, o Beehiiv mudou o
+ * media-picker: clicar no card recém-uploadado abre preview, NÃO aplica (sem
+ * botão Insert/Select pra imagens do workspace), então o step 8 abaixo virou
+ * no-op na UI atual. O upload pro library funciona; o aplicar não. Caller
+ * NUNCA deve declarar "capa aplicada" sem sinal confiável — ver beehiiv-playbook
+ * §4b: emitir "⚠️ Cover NÃO confirmada — suba manual" no gate/resumo.
  */
 
 /**
