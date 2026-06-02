@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
+import { buildPrevResultLine, readPrevPollStats } from "./eia-compose.ts"; // #1707 fallback
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -419,6 +420,22 @@ function subBlockToItem(block: string[]): SectionItem | null {
   return { title, description: descriptionParts.join(" "), url };
 }
 
+/**
+ * #1707: resolve a linha "Resultado da última edição: X% das pessoas acertaram".
+ * Usa a do `01-eia.md` se presente; senão injeta do `_internal/04-eia-poll-stats.json`
+ * (fallback anti-race — o eia-compose roda em background no Stage 1 e pode compor o
+ * 01-eia.md ANTES do fetch-poll-stats gravar o JSON, perdendo a linha). Single-source
+ * do formato + leitura via eia-compose (`buildPrevResultLine`/`readPrevPollStats`).
+ * Retorna `undefined` quando não há linha nem stats válidas (skipped/below_threshold).
+ */
+export function resolvePrevResultLine(
+  eiaPrevLine: string | undefined,
+  editionDir: string,
+): string | undefined {
+  if (eiaPrevLine) return eiaPrevLine;
+  return buildPrevResultLine(readPrevPollStats(editionDir)) ?? undefined;
+}
+
 export function fallbackEIA(editionDir: string): EIA {
   const edition = editionDir.match(/(\d{6})[/\\]?$/)?.[1] ?? "";
   const newA = resolve(editionDir, "01-eia-A.jpg");
@@ -495,7 +512,7 @@ export function extractIntroCallout(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function extractContent(editionDir: string): NewsletterContent {
+export function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
 
@@ -525,6 +542,9 @@ function extractContent(editionDir: string): NewsletterContent {
   const eia = existsSync(eiaPath)
     ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
     : fallbackEIA(editionDir);
+
+  // #1707: fallback da linha "Resultado da última edição: X%…" (defesa em profundidade).
+  eia.prevResultLine = resolvePrevResultLine(eia.prevResultLine, editionDir);
 
   // #1160: leaderboard do mês corrente. Arquivo populado por
   // fetch-leaderboard-top1.ts pré-render; ausente → bloco omitido.
