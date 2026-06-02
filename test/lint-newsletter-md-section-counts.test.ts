@@ -52,9 +52,12 @@ describe("countItemsPerSection (#907)", () => {
     assert.equal(c.video, 0);
   });
 
-  it("#1693: conta USE MELHOR + VÍDEOS (headers com emoji)", () => {
+  it("#1693: conta USE MELHOR + VÍDEOS (formato real bold+emoji)", () => {
+    // Formato de produção (verificado em 02-reviewed.md): **🛠️ USE MELHOR**,
+    // não emoji solto. Guarda o wrapper `(?:\*\*)?` do sectionHeaderRe contra
+    // regressão #1691 — sem o bold, o count voltaria a 0 e o cap viraria no-op.
     const md = [
-      "🛠️ USE MELHOR",
+      "**🛠️ USE MELHOR**",
       "[Guia A](https://u.com/a)",
       "Desc",
       "",
@@ -62,7 +65,7 @@ describe("countItemsPerSection (#907)", () => {
       "Desc",
       "",
       "---",
-      "🎬 VÍDEOS",
+      "**🎬 VÍDEOS**",
       "[Vid 1](https://yt.com/1)",
       "Desc",
       "",
@@ -97,6 +100,8 @@ describe("checkSectionCounts (#907)", () => {
     const r = checkSectionCounts(md, approved);
     assert.equal(r.ok, true);
     assert.deepEqual(r.violations, []);
+    // #1693: cap de vídeos exposto mesmo no caminho ok (sem VÍDEOS na edição).
+    assert.equal(r.caps.video, 2);
   });
 
   it("ok=false quando RADAR passa cap (#1629: cap=max(5, 12-d-l))", () => {
@@ -144,9 +149,9 @@ describe("checkSectionCounts (#907)", () => {
     assert.match(r.violations[0], /LAN.*: 7 > cap 5/);
   });
 
-  it("#1693: ok=false quando VÍDEOS passa cap=2", () => {
+  it("#1693: ok=false quando VÍDEOS passa cap=2 (formato real bold+emoji)", () => {
     const md = [
-      "🎬 VÍDEOS",
+      "**🎬 VÍDEOS**",
       "[V1](https://yt.com/1)",
       "Desc",
       "",
@@ -161,7 +166,8 @@ describe("checkSectionCounts (#907)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.counts.video, 3);
     assert.equal(r.caps.video, 2);
-    assert.match(r.violations[0], /V[ÍI]DEOS: 3 > cap 2/);
+    // Accent fixado (impl emite "VÍDEOS:" com Í) — não usar [ÍI] tolerante.
+    assert.match(r.violations[0], /VÍDEOS: 3 > cap 2/);
   });
 
   it("#1693: USE MELHOR com muitos itens NÃO viola (só observabilidade)", () => {

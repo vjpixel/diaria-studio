@@ -294,7 +294,8 @@ describe("checkStage2Caps", () => {
     const r = checkStage2Caps(approved);
     assert.equal(r.ok, false);
     assert.equal(r.violations.length, 1);
-    assert.match(r.violations[0], /V[ÍI]DEOS: 3 > cap 2/);
+    // Accent fixado: impl emite "VÍDEOS:" (Í). Tolerância [ÍI] mascararia drift.
+    assert.match(r.violations[0], /VÍDEOS: 3 > cap 2/);
   });
 
   it("#1693: VÍDEOS ≤ 2 ok; expectedCaps.video sempre 2", () => {
