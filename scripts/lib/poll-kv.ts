@@ -30,6 +30,26 @@ const CLOUDFLARE_ACCOUNT_ID =
 const POLL_KV_NAMESPACE_ID =
   process.env.POLL_KV_NAMESPACE_ID ?? "72784da4ae39444481eb422ebac357c6";
 
+/**
+ * #1703: o wrangler novo emite no STDOUT um banner de notice que polui o valor
+ * lido do KV (`JSON.parse` falha → valid_editions tratado como []):
+ *   "Cloudflare agent skills are available for: Claude Code. Run wrangler in an
+ *    interactive terminal to install them, or use `--install-skills`"
+ * Remove as linhas de notice do wrangler antes de retornar o valor. Filtro por
+ * linha (genérico — conserta todos os reads do KV, não só valid_editions).
+ * Exportada pra teste.
+ */
+const WRANGLER_NOTICE_RE =
+  /cloudflare agent skills|interactive terminal to install|--install-skills|^\s*run\s+`?wrangler/i;
+
+export function stripWranglerNotice(stdout: string): string {
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => !WRANGLER_NOTICE_RE.test(line))
+    .join("\n")
+    .trim();
+}
+
 export function wranglerKvGet(key: string): string | null {
   const r = spawnSync(
     `npx wrangler kv key get "${key}" --namespace-id=${POLL_KV_NAMESPACE_ID} --remote`,
@@ -42,7 +62,9 @@ export function wranglerKvGet(key: string): string | null {
     },
   );
   if (r.status !== 0 || !r.stdout) return null;
-  return r.stdout.trim();
+  // #1703: descartar o banner de notice antes do parse downstream.
+  const cleaned = stripWranglerNotice(r.stdout);
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 /**
