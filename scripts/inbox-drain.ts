@@ -60,6 +60,12 @@ interface DrainResult {
   errors?: number;
   /** Primeiras mensagens de erro (max 3, slice 200 chars cada). */
   error_samples?: string[];
+  /** #1700: setado quando o fallback `to:{address}` capturou ≥1 submissão que a
+   * query primária (label) NÃO pegou — sinal de que o filtro/forward do label
+   * quebrou. Surfaçado no output estruturado pro orchestrator alertar o editor
+   * no gate do Stage 1 (o warn em run-log usa edition:null e não vira issue do
+   * auto-reporter — ver collect-edition-signals.ts). */
+  label_filter_warning?: { only_via_fallback: number; primary_query: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +268,62 @@ export function buildSearchFailedResult(errorMsg: string): DrainResult {
 
 export function isLabelQuery(query: string): boolean {
   return /^\s*label:/i.test(query);
+}
+
+/**
+ * #1700: monta a query de fallback `to:{address} in:inbox` que captura
+ * submissões endereçadas ao inbox editorial MAS que não receberam o label
+ * (filtro/forward do Gmail quebrou ou atrasou).
+ *
+ * Por que `to:{address} in:inbox` (e NÃO só `to:{address}`):
+ * - Per docs/gmail-inbox-setup.md Opção A (setup configurado), o OAuth é da
+ *   conta PESSOAL vjpixel@, e o filtro do label pode "Skip the Inbox (Archive)".
+ *   Quando o filtro funciona, o mail é labeled+arquivado → pego pela primary
+ *   (`label:`). Quando o filtro QUEBRA (cenário deste fix), o mail não recebe
+ *   label nem archive → fica no INBOX → `in:inbox` o pega.
+ * - `in:inbox` exclui a cópia em Sent do próprio editor (`to:` casa All Mail
+ *   incl. Sent) e qualquer thread arquivada/CC não-submissão. Sem isso, o
+ *   fallback reintroduziria a classe de falso-positivo do #900 (poluição com
+ *   mail do próprio editor / threads aleatórias).
+ * - NÃO usar `-from:me`: submissões do editor SÃO enviadas de vjpixel@ (ele
+ *   manda os links pro inbox editorial) — excluí-las quebraria o fix.
+ *
+ * Diferente da heurística removida em #900 (query SEM filtro nenhum, pegando
+ * todo o mail pessoal): aqui é escopado a `to:{address dedicado} in:inbox`.
+ *
+ * Retorna `null` quando:
+ * - não há `address` configurado, ou
+ * - a primary query JÁ é uma query `to:{address}` (fallback redundante).
+ */
+export function buildFallbackQuery(
+  address: string | undefined,
+  afterDate: string,
+  primaryQuery: string,
+): string | null {
+  const addr = address?.trim();
+  if (!addr) return null;
+  const toClause = `to:${addr}`;
+  if (primaryQuery.toLowerCase().includes(toClause.toLowerCase())) return null;
+  return `${toClause} in:inbox after:${afterDate}`;
+}
+
+/**
+ * #1700: merge de duas listas de threads dedup por `id`, preservando ordem
+ * (primary primeiro). Submissões com label aparecem nas DUAS listas (têm label
+ * E são endereçadas a diariaeditor@) — dedup evita ingerir 2×.
+ */
+export function mergeThreadsDedup(
+  primary: GmailThread[],
+  fallback: GmailThread[],
+): GmailThread[] {
+  const seen = new Set<string>();
+  const out: GmailThread[] = [];
+  for (const t of [...primary, ...fallback]) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t);
+  }
+  return out;
 }
 
 export function extractLabelName(query: string): string {
@@ -525,6 +587,9 @@ async function main(): Promise<void> {
   }
 
   const query = `${gmailQuery} after:${afterDate}`;
+  // #1700: query de fallback `to:{address}` — rede de segurança pra submissões
+  // sem o label. Sempre presente quando `inbox.address` está configurado.
+  const fallbackQuery = buildFallbackQuery(config.inbox?.address, afterDate, gmailQuery);
 
   // Validação proativa: se a query usa label:, confirmar que o label existe
   // antes de buscar. Gmail's q=label:X não erra se o label não existe — só
@@ -542,16 +607,20 @@ async function main(): Promise<void> {
         const reason = `label_missing: '${labelName}' não existe na conta. Crie o filtro automático em ${config.inbox?.address ?? "Gmail"} (ver docs/gmail-inbox-setup.md).`;
         console.error(`⚠️  ${reason}`);
         logDrainWarn(reason, { label: labelName });
-        const result: DrainResult = {
-          new_entries: 0,
-          urls: [],
-          topics: [],
-          most_recent_iso: null,
-          skipped: true,
-          reason,
-        };
-        console.log(JSON.stringify(result, null, 2));
-        return;
+        // #1700: só dar skip TOTAL se não houver fallback. Com `to:{address}`
+        // disponível, o drain segue por ele — submissões sem label não somem.
+        if (!fallbackQuery) {
+          const result: DrainResult = {
+            new_entries: 0,
+            urls: [],
+            topics: [],
+            most_recent_iso: null,
+            skipped: true,
+            reason,
+          };
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
       }
     } catch (err) {
       // listLabels falhou — não bloquear, mas registrar pra audit
@@ -559,22 +628,51 @@ async function main(): Promise<void> {
     }
   }
 
-  // #665: searchThreads early return — falha de listagem é explicitamente
-  // sinalizada como skipped, não tratada como inbox vazio.
-  let threads: GmailThread[] = [];
+  // #665: searchThreads early return — falha de listagem (primary) é
+  // explicitamente sinalizada como skipped, não tratada como inbox vazio.
+  // cursor NÃO avança (#668) pra reprocessar na próxima tentativa.
+  let primaryThreads: GmailThread[] = [];
   try {
-    threads = await searchThreads(query);
+    primaryThreads = await searchThreads(query);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
       `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
     );
     console.log(JSON.stringify(buildSearchFailedResult(msg), null, 2));
-    // saveCursor NÃO é chamado intencionalmente (#668 review #2):
-    // drain não ocorreu, cursor deve permanecer inalterado pra próxima
-    // tentativa reprocessar os mesmos emails sem perder entradas.
     return;
   }
+
+  // #1700: rodar a query de fallback `to:{address}`. Falha aqui NÃO aborta o
+  // drain (já temos a primary) — só loga, porque o fallback é aditivo.
+  let fallbackThreads: GmailThread[] = [];
+  if (fallbackQuery) {
+    try {
+      fallbackThreads = await searchThreads(fallbackQuery);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logDrainWarn(`fallback search (to:) falhou: ${msg.slice(0, 200)}`, {
+        fallback_query: fallbackQuery,
+      });
+    }
+  }
+
+  // #1700 observabilidade: QUALQUER thread capturada só pelo fallback é uma
+  // submissão que o label não pegou — sinal de que o filtro/forward quebrou
+  // (total OU parcialmente). Antes a perda era silenciosa. Dispara em
+  // onlyViaFallback>0 (não só quando primary==0 — quebra parcial também conta).
+  const primaryIds = new Set(primaryThreads.map((t) => t.id));
+  const onlyViaFallback = fallbackThreads.filter((t) => !primaryIds.has(t.id));
+  let labelFilterWarning: DrainResult["label_filter_warning"];
+  if (onlyViaFallback.length > 0) {
+    labelFilterWarning = { only_via_fallback: onlyViaFallback.length, primary_query: gmailQuery };
+    logDrainWarn(
+      `${onlyViaFallback.length} submissão(ões) capturada(s) via to:${config.inbox?.address} sem o label (primary '${gmailQuery}' pegou ${primaryThreads.length}) — filtro/forward do label pode ter quebrado. Verifique o filtro automático no Gmail.`,
+      { only_via_fallback: onlyViaFallback.length, primary_query: gmailQuery, primary_count: primaryThreads.length },
+    );
+  }
+
+  const threads = mergeThreadsDedup(primaryThreads, fallbackThreads);
 
   const lastDrain = cursor.last_drain_iso;
   const {
@@ -628,6 +726,8 @@ async function main(): Promise<void> {
     ...(warnReason ? { reason: warnReason } : {}),
     // #667: expor erros de thread pra visibilidade no orchestrator.
     ...(threadErrors > 0 ? { errors: threadErrors, error_samples: threadErrorSamples } : {}),
+    // #1700: sinal estruturado de filtro de label quebrado (pro Stage 1 alertar).
+    ...(labelFilterWarning ? { label_filter_warning: labelFilterWarning } : {}),
   };
   console.log(JSON.stringify(result, null, 2));
 }
