@@ -332,6 +332,12 @@ npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMM
 ```
 Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. Exit 1 = matches encontrados. **Incluir os matches no prompt do gate** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
 
+**Lint anti-alucinação de cifras pré-gate (#1711):** após humanizar+Clarice, rodar:
+```bash
+npx tsx scripts/lint-social-numbers.ts --social data/editions/{AAMMDD}/03-social.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
+```
+Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0 sempre). **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Não bloqueia (heurística conservadora, mas pode ter falso-positivo se a fonte usa formato muito diferente).
+
 **Lint LinkedIn schema 3-textos pré-gate (#595):** social-linkedin agora gera main + comment_diaria + comment_pixel por destaque. Validar:
 ```bash
 npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md

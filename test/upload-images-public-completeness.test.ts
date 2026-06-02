@@ -66,7 +66,9 @@ describe("assertCacheCompleteness (#1275)", () => {
   });
 
   describe("mode=newsletter", () => {
-    it("passa com cover/d1/eia_a/eia_b (#1583)", () => {
+    it("passa com cover/d1/eia_a/eia_b (#1583; d2/d3 best-effort #1701)", () => {
+      // #1701: d2/d3 são optional no newsletter mode (best-effort pro preview) —
+      // NÃO exigidos aqui, pra não falhar o upload standalone manual/email.
       assert.doesNotThrow(() =>
         assertCacheCompleteness(
           {

@@ -145,6 +145,13 @@ export interface ImageSpec {
    * do /vote, não o TTL. cover/d1 vão pro email e MANTÊM o cache-bust por hash.
    */
   noCacheBust?: boolean;
+  /**
+   * #1701: spec best-effort — se o arquivo não existir, PULA (não lança). Usado
+   * pra d2/d3 no newsletter mode: eles sobem ao Cloudflare KV só pro social
+   * preview (o EMAIL não os usa), então não devem bloquear o newsletter-mode
+   * upload (que roda standalone na publicação manual/email — caso 260602 review).
+   */
+  optional?: boolean;
 }
 
 /**
@@ -190,15 +197,24 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   // `{{IMG:...}}`: cover D1 + È IA? A/B. D2/D3 não têm imagem inline na
   // newsletter (memory `feedback_newsletter_only_d1_image.md`).
   //
-  // #1583: também subir 04-d1-1x1.jpg (key="d1") pra Cloudflare KV. Sem isso,
-  // render-social-html constrói `img-{edition}-04-d1-1x1.jpg` mas a chave não
-  // existe → 404 silencioso (social preview quebra). D2/D3 1x1 sobem pelo
-  // mode=social (target=drive) e render-social-html resolve via cache. D1
-  // precisa estar disponível em CF antes do social mode rodar porque o
-  // pre-render do preview HTML acontece na fase newsletter.
+  // #1583/#1701: também subir d1/d2/d3 1x1 pra Cloudflare KV. Sem isso,
+  // render-social-html constrói `img-{edition}-04-dN-1x1.jpg` mas a chave não
+  // existe → 404 silencioso (social preview quebra). O newsletter mode roda
+  // ANTES do social mode (target=drive), então esses entries CF ganham
+  // `cloudflare_url`; quando o social mode sobrescreve com a entry Drive (pro OG
+  // dos posts), o branch drive PRESERVA `cloudflare_url` (#1584) → o preview
+  // resolve d1/d2/d3 via CF. #1701: antes só d1 estava aqui, então d2/d3 ficavam
+  // só com Drive (sem cloudflare_url) e não renderizavam no preview do gate.
+  // (Essas imagens NÃO entram no email — o render só substitui {{IMG:cover}} +
+  // {{IMG:04-d1-1x1.jpg}} + eia; d2/d3 ficam disponíveis no CF só pro preview.)
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d1", filename: "04-d1-1x1.jpg" },
+    // #1701: d2/d3 são best-effort (optional) — sobem ao CF pro preview quando
+    // existem, mas não bloqueiam o newsletter-mode upload se ausentes (o email
+    // não os renderiza; só cover+d1+eia entram via {{IMG}}).
+    { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
+    { key: "d3", filename: "04-d3-1x1.jpg", optional: true },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;
@@ -389,6 +405,9 @@ export async function uploadPublicImages(
   for (const spec of specs) {
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
+      // #1701: specs best-effort (d2/d3 no newsletter mode) pulam quando ausentes
+      // — não bloqueiam o upload do que o email de fato usa (cover/d1/eia).
+      if (spec.optional) continue;
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
     const mime = mimeTypeFor(spec.filename);
@@ -467,8 +486,10 @@ export function assertCacheCompleteness(
 ): void {
   const expectedKeys = (() => {
     if (mode === "social") return ["d1", "d2", "d3"];
-    // #1583: newsletter now also uploads d1 (1x1) pro Cloudflare KV pra que
-    // o social preview HTML resolva `img-{edition}-04-d1-1x1.jpg`.
+    // #1583: newsletter sobe cover/d1/eia (o que o EMAIL usa). #1701: d2/d3
+    // também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional) —
+    // NÃO entram nas keys exigidas aqui, pra não falhar o newsletter-mode upload
+    // standalone (publicação manual/email) quando d2/d3 não existem.
     if (mode === "newsletter") return ["cover", "d1", "eia_a", "eia_b"];
     // mode === "all"
     return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
