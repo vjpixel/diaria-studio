@@ -4,6 +4,7 @@ import {
   parseHighlights,
   flagOutOfRange,
   formatMeasureResult,
+  keepFirstTitleOption,
   HEALTHY_RANGE_MIN,
   HEALTHY_RANGE_MAX,
 } from "../scripts/lib/measure-highlights.ts";
@@ -204,6 +205,72 @@ Body dois.
     assert.equal(r.highlights.length, 2);
     assert.equal(r.highlights[0].category, "A");
     assert.equal(r.highlights[1].category, "B");
+  });
+});
+
+describe("keepFirstTitleOption — body + 1 título (#1709)", () => {
+  it("mantém a 1ª opção de título e descarta as outras 2", () => {
+    const body = [
+      "",
+      "**[Título opção A](https://x.com/1)**",
+      "",
+      "**[Título opção B](https://x.com/1)**",
+      "",
+      "**[Título opção C](https://x.com/1)**",
+      "",
+      "Lead do destaque começa aqui.",
+      "",
+      "Mais um parágrafo.",
+    ].join("\n");
+    const out = keepFirstTitleOption(body);
+    assert.ok(out.includes("Título opção A"), "mantém a 1ª");
+    assert.ok(!out.includes("Título opção B"), "descarta a 2ª");
+    assert.ok(!out.includes("Título opção C"), "descarta a 3ª");
+    assert.ok(out.includes("Lead do destaque"), "mantém o corpo");
+  });
+
+  it("no-op quando já tem 1 título (pós-title-picker)", () => {
+    const body = "\n**[Único título](https://x.com)**\n\nLead aqui.\n";
+    assert.equal(keepFirstTitleOption(body), body);
+  });
+
+  it("não toca em links inline DENTRO do corpo (só as opções iniciais)", () => {
+    const body = [
+      "",
+      "**[Título](https://x.com)**",
+      "",
+      "Parágrafo com [um link](https://y.com) no meio.",
+      "",
+      "**[Outro link inline solo](https://z.com)**",
+    ].join("\n");
+    const out = keepFirstTitleOption(body);
+    // o link inline no meio do corpo e o link solo PÓS-corpo são preservados
+    assert.ok(out.includes("um link"));
+    assert.ok(out.includes("Outro link inline solo"));
+    assert.ok(out.includes("Título"));
+  });
+
+  it("parseHighlights mede body+1título: 3 opções contam como 1", () => {
+    const tres = `DESTAQUE 1 | PRODUTO
+**[Opção A bem longa pra inflar a contagem de chars](https://x.com/1)**
+**[Opção B bem longa pra inflar a contagem de chars](https://x.com/1)**
+**[Opção C bem longa pra inflar a contagem de chars](https://x.com/1)**
+
+Corpo do destaque com algum texto pra medir.
+
+---
+`;
+    const um = `DESTAQUE 1 | PRODUTO
+**[Opção A bem longa pra inflar a contagem de chars](https://x.com/1)**
+
+Corpo do destaque com algum texto pra medir.
+
+---
+`;
+    const c3 = parseHighlights(tres).highlights[0].chars;
+    const c1 = parseHighlights(um).highlights[0].chars;
+    // medir 3 opções deve dar o MESMO que medir 1 (as 2 extras são descartadas)
+    assert.equal(c3, c1, `3-títulos (${c3}) deve igualar 1-título (${c1})`);
   });
 });
 

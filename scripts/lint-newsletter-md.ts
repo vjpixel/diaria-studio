@@ -447,35 +447,44 @@ export function checkSectionCounts(
  * Verifica que cada destaque atinge o mínimo de chars (#914).
  *
  * Mínimos editoriais (complementam os máximos do writer.md):
- *   D1 ≥ 1000 chars  (máx 1200)
- *   D2 ≥ 900 chars   (máx 1000)
- *   D3 ≥ 900 chars   (máx 1000)
+ *   D1 ≥ 890 chars  (máx 1110)
+ *   D2 ≥ 790 chars  (máx 900)
+ *   D3 ≥ 790 chars  (máx 890)
  *
  * Char count exclui URLs (mesma estratégia do `parseHighlights` em
- * measure-highlights.ts) — mede só o body do destaque (parágrafos +
- * "Por que isso importa" + parágrafo de impacto).
+ * measure-highlights.ts) — mede o body do destaque + **1 título** (realidade
+ * publicada), não as 3 opções.
  *
- * Em 260507 D1=999, D2=708, D3=679 — D1 quase no piso, D2/D3 bem abaixo
- * (variação D1↔D3 = +47% no peso editorial).
+ * #1709 (2026-06-02): recalibrado pra medição "body + 1 título". A medição
+ * antiga contava body + 3 opções de título; o `parseHighlights` agora mede
+ * body + 1 título (= o que é publicado pós-title-picker). Pra preservar o
+ * pass/fail atual (decisão editorial "neutro"), os thresholds caíram ~110
+ * chars (≈ 2 opções de título): MIN 1000/900/900 → 890/790/790,
+ * MAX 1200/1000/1000 → 1110/900/890. Os valores de MAX foram DERIVADOS dos
+ * dados (não o ~1090/890 aproximado): como o tamanho de 2 títulos varia por
+ * edição (Δ 89-115), um offset fixo não é perfeitamente neutro — calibrei MAX
+ * pra ≥ o maior body+1título que passava no max antigo em 8 edições reais
+ * (260601/260522 D1=1092/1101 → MAX D1 1110; 260522 D2=899 → MAX D2 900).
+ * Validado contra 8 edições (02-draft, 3 títulos): MIN 0 flips, MAX 0 flips.
+ * (MIN é o que re-dispara o writer no Stage 2 — neutralidade dele é crítica;
+ * MAX hoje é informativo, não está no loop de re-dispatch.) Sem isso, edições
+ * OK flipavam o MIN pra falhar (260602 D2 991→878) e o writer re-disparava.
  */
 export const DESTAQUE_MIN_CHARS = {
-  1: 1000,
-  2: 900,
-  3: 900,
+  1: 890,
+  2: 790,
+  3: 790,
 } as const;
 
 /**
- * Limites máximos por destaque (#964). D1 maior que D2/D3 reflete hierarquia
- * editorial (manchete > segundas histórias) — manter D2/D3 mais curtos
- * preserva ritmo de leitura, newsletter densa cai CTR.
- *
- * Em 260508 D2=1409 passou despercebido até a métrica do gate; com max
- * bloqueante o writer teria sido re-disparado automaticamente.
+ * Limites máximos por destaque (#964, recalibrado #1709 pra body+1título).
+ * D1 maior que D2/D3 reflete hierarquia editorial (manchete > segundas
+ * histórias) — manter D2/D3 mais curtos preserva ritmo de leitura.
  */
 export const DESTAQUE_MAX_CHARS = {
-  1: 1200,
-  2: 1000,
-  3: 1000,
+  1: 1110,
+  2: 900,
+  3: 890,
 } as const;
 
 export interface DestaqueMinCharsError {

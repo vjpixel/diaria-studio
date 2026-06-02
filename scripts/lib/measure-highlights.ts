@@ -59,6 +59,48 @@ export interface MeasureResult {
 const URL_RE = /https?:\/\/[^\s)]+/g;
 
 /**
+ * #1709: linha que é APENAS uma opção de título (inline link `**[texto](url)**`,
+ * bold opcional). O writer emite 3 opções por destaque; o title-picker (#159)
+ * poda pra 1 pós-gate. Usado por `keepFirstTitleOption`.
+ */
+const TITLE_OPTION_LINE_RE = /^\s*\*{0,2}\s*\[[^\]]+\]\([^)]*\)\*{0,2}\s*$/;
+
+/**
+ * #1709: mede "body + 1 título" (= realidade publicada) em vez de "body + 3
+ * títulos". O lint roda pré-title-picker (3 opções no bloco), mas o publicado
+ * tem 1 título. Sem isso, o número medido (body+3tit) ≠ writer alvo (body) ≠
+ * publicado (body+1tit) → ciclos de trim/expand com alvo móvel.
+ *
+ * Estratégia: das linhas iniciais do bloco (após o header `DESTAQUE N |`),
+ * mantém a 1ª linha de opção de título e descarta as demais opções
+ * consecutivas. Para no 1º parágrafo de corpo. Tolerante a 1, 2 ou 3 opções
+ * (pós-poda já tem 1 → descarta 0). Linhas em branco preservadas.
+ */
+export function keepFirstTitleOption(body: string): string {
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let titlesSeen = 0;
+  let pastTitleBlock = false;
+  for (const line of lines) {
+    if (!pastTitleBlock) {
+      if (line.trim() === "") {
+        out.push(line);
+        continue;
+      }
+      if (TITLE_OPTION_LINE_RE.test(line)) {
+        titlesSeen++;
+        if (titlesSeen === 1) out.push(line); // mantém só a 1ª opção
+        continue; // descarta 2ª/3ª
+      }
+      // 1ª linha não-branco e não-título = início do corpo
+      pastTitleBlock = true;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
  * Identifica blocos de destaque na markdown e mede cada um.
  *
  * Estrutura esperada (de `context/templates/newsletter.md`):
@@ -104,7 +146,8 @@ export function parseHighlights(reviewedMd: string): MeasureResult {
 
     const number = parseInt(m[1], 10);
     const category = m[2].trim();
-    const body = m[3];
+    // #1709: mede body + 1 título (realidade publicada), não as 3 opções.
+    const body = keepFirstTitleOption(m[3]);
 
     // Remove URLs antes de medir
     const bodyNoUrls = body.replace(URL_RE, "");

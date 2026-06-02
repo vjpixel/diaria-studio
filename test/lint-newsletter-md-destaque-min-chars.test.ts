@@ -60,8 +60,8 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
     assert.equal(r.ok, false);
     assert.equal(r.errors.length, 1);
     assert.equal(r.errors[0].destaque, 1);
-    assert.equal(r.errors[0].min, 1000);
-    assert.ok(r.errors[0].chars < 1000);
+    assert.equal(r.errors[0].min, 890); // #1709: 1000 → 890 (body+1título)
+    assert.ok(r.errors[0].chars < 890);
   });
 
   it("ok=false quando D2/D3 abaixo de 900 (caso 260507 D2=708, D3=679)", () => {
@@ -77,11 +77,11 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
     assert.equal(r.errors.length, 2);
     assert.equal(
       r.errors.find((e) => e.destaque === 2)?.min,
-      900,
+      790, // #1709: 900 → 790
     );
     assert.equal(
       r.errors.find((e) => e.destaque === 3)?.min,
-      900,
+      790, // #1709: 900 → 790
     );
   });
 
@@ -124,10 +124,10 @@ describe("checkDestaqueMinChars (#914) — helper puro", () => {
 });
 
 describe("DESTAQUE_MIN_CHARS constants", () => {
-  it("D1=1000, D2=900, D3=900 conforme #914", () => {
-    assert.equal(DESTAQUE_MIN_CHARS[1], 1000);
-    assert.equal(DESTAQUE_MIN_CHARS[2], 900);
-    assert.equal(DESTAQUE_MIN_CHARS[3], 900);
+  it("D1=890, D2=790, D3=790 conforme #1709 (recalibrado body+1título)", () => {
+    assert.equal(DESTAQUE_MIN_CHARS[1], 890);
+    assert.equal(DESTAQUE_MIN_CHARS[2], 790);
+    assert.equal(DESTAQUE_MIN_CHARS[3], 790);
   });
 });
 
@@ -177,7 +177,7 @@ describe("--check destaque-min-chars CLI (#914)", () => {
       writeFileSync(mdPath, md, "utf8");
       const r = runCli(["--check", "destaque-min-chars", "--md", mdPath]);
       assert.equal(r.status, 1);
-      assert.match(r.stderr, /D2.*abaixo do mínimo de 900/);
+      assert.match(r.stderr, /D2.*abaixo do mínimo de 790/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

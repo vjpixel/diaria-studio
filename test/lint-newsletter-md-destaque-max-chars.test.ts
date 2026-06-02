@@ -34,52 +34,53 @@ function makeDestaqueMd(num: number, category: string, chars: number): string {
 
 describe("checkDestaqueMaxChars (#964) — helper puro", () => {
   it("ok=true quando todos destaques estão dentro do máximo", () => {
+    // #1709: fixtures abaixados pros novos máximos (D1 1110, D2 900, D3 890).
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 1000),
       "---",
-      makeDestaqueMd(2, "PESQUISA", 950),
+      makeDestaqueMd(2, "PESQUISA", 800),
       "---",
-      makeDestaqueMd(3, "MERCADO", 950),
+      makeDestaqueMd(3, "MERCADO", 800),
     ].join("\n");
     const r = checkDestaqueMaxChars(md);
     assert.equal(r.ok, true, JSON.stringify(r.highlights));
     assert.equal(r.errors.length, 0);
   });
 
-  it("ok=false quando D2 acima de 1000 (caso 260508 D2=1409)", () => {
+  it("ok=false quando D2 acima do máximo (caso 260508 D2=1409)", () => {
     const md = [
-      makeDestaqueMd(1, "PRODUTO", 1100),
+      makeDestaqueMd(1, "PRODUTO", 1000),
       "---",
       makeDestaqueMd(2, "PESQUISA", 1409),
       "---",
-      makeDestaqueMd(3, "MERCADO", 950),
+      makeDestaqueMd(3, "MERCADO", 800),
     ].join("\n");
     const r = checkDestaqueMaxChars(md);
     assert.equal(r.ok, false);
     assert.equal(r.errors.length, 1);
     assert.equal(r.errors[0].destaque, 2);
-    assert.equal(r.errors[0].max, 1000);
-    assert.ok(r.errors[0].chars > 1000);
+    assert.equal(r.errors[0].max, 900); // #1709: 1000 → 900
+    assert.ok(r.errors[0].chars > 900);
   });
 
-  it("ok=false quando D1 acima de 1200", () => {
+  it("ok=false quando D1 acima do máximo (1110)", () => {
     const md = [
       makeDestaqueMd(1, "PRODUTO", 1500),
       "---",
-      makeDestaqueMd(2, "PESQUISA", 950),
+      makeDestaqueMd(2, "PESQUISA", 800),
       "---",
-      makeDestaqueMd(3, "MERCADO", 950),
+      makeDestaqueMd(3, "MERCADO", 800),
     ].join("\n");
     const r = checkDestaqueMaxChars(md);
     assert.equal(r.ok, false);
     assert.equal(r.errors[0].destaque, 1);
-    assert.equal(r.errors[0].max, 1200);
+    assert.equal(r.errors[0].max, 1110); // #1709: 1200 → 1110
   });
 
-  it("D2 com exatos 1000 chars: passa (boundary)", () => {
+  it("D2 no boundary do máximo (900)", () => {
     const md = makeDestaqueMd(2, "PESQUISA", 999);
     const r = checkDestaqueMaxChars(md);
-    if (r.highlights[0].chars <= 1000) {
+    if (r.highlights[0].chars <= 900) {
       assert.equal(r.ok, true);
     } else {
       assert.equal(r.ok, false);
@@ -95,10 +96,10 @@ describe("checkDestaqueMaxChars (#964) — helper puro", () => {
 });
 
 describe("DESTAQUE_MAX_CHARS constants", () => {
-  it("D1=1200, D2=1000, D3=1000 conforme #964", () => {
-    assert.equal(DESTAQUE_MAX_CHARS[1], 1200);
-    assert.equal(DESTAQUE_MAX_CHARS[2], 1000);
-    assert.equal(DESTAQUE_MAX_CHARS[3], 1000);
+  it("D1=1110, D2=900, D3=890 conforme #1709 (recalibrado body+1título)", () => {
+    assert.equal(DESTAQUE_MAX_CHARS[1], 1110);
+    assert.equal(DESTAQUE_MAX_CHARS[2], 900);
+    assert.equal(DESTAQUE_MAX_CHARS[3], 890);
   });
 });
 
@@ -118,11 +119,11 @@ describe("--check destaque-max-chars CLI (#964)", () => {
     try {
       const mdPath = join(dir, "02-reviewed.md");
       const md = [
-        makeDestaqueMd(1, "PRODUTO", 1100),
+        makeDestaqueMd(1, "PRODUTO", 1000),
         "---",
-        makeDestaqueMd(2, "PESQUISA", 950),
+        makeDestaqueMd(2, "PESQUISA", 800),
         "---",
-        makeDestaqueMd(3, "MERCADO", 950),
+        makeDestaqueMd(3, "MERCADO", 800),
       ].join("\n");
       writeFileSync(mdPath, md, "utf8");
       const r = runCli(["--check", "destaque-max-chars", "--md", mdPath]);
@@ -148,7 +149,7 @@ describe("--check destaque-max-chars CLI (#964)", () => {
       writeFileSync(mdPath, md, "utf8");
       const r = runCli(["--check", "destaque-max-chars", "--md", mdPath]);
       assert.equal(r.status, 1);
-      assert.match(r.stderr, /D2.*acima do máximo de 1000/);
+      assert.match(r.stderr, /D2.*acima do máximo de 900/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
