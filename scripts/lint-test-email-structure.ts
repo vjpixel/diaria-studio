@@ -27,12 +27,15 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export interface StructureIssue {
+  // #1721: `section_item_count_mismatch` removido — era declarado mas NUNCA
+  // emitido (compareStructure compara só PRESENÇA de seção, não contagem; o
+  // count do email é heurístico → comparar geraria falso-positivo, e o caso
+  // email=0/source>0 já é coberto por `section_missing`).
   type:
     | "eia_section_missing"
     | "section_missing"
     | "destaque_count_mismatch"
-    | "destaque_order_mismatch"
-    | "section_item_count_mismatch";
+    | "destaque_order_mismatch";
   section?: string;
   source_count?: number;
   email_count?: number;
