@@ -53,7 +53,37 @@ export interface StructureResult {
 
 // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS em edições novas.
 // Legacy aliases mantidos pra re-lint de edições antigas (re-render).
-const KNOWN_SECTIONS = ["LANÇAMENTOS", "RADAR", "PESQUISAS", "OUTRAS NOTÍCIAS"];
+// #1660: USE MELHOR (#1568) e VÍDEOS (#1629) FALTAVAM — sem eles o lint não
+// emitia section_missing quando o paste no Beehiiv dropava/truncava essas
+// seções, e o slice de RADAR corria até o fim (sem boundary de VÍDEOS),
+// super-contando links de RADAR. Cada seção carrega o `name` canônico + um
+// `body` regex que tolera acento (í/i) e singular/plural (#1324) — usado tanto
+// no path MD (regex) quanto no path email (antes `indexOf` literal, frágil).
+interface KnownSection {
+  /** Nome canônico exibido no snapshot/diff. */
+  name: string;
+  /** Corpo do regex do header (sem âncoras), igual ao newsletter-count.ts. */
+  body: string;
+}
+const KNOWN_SECTIONS: KnownSection[] = [
+  { name: "LANÇAMENTOS", body: "LAN[ÇC]AMENTOS?" },
+  { name: "RADAR", body: "RADAR" },
+  { name: "PESQUISAS", body: "PESQUISAS?" },
+  { name: "OUTRAS NOTÍCIAS", body: "OUTRAS?\\s+NOT[ÍI]CIAS?" },
+  { name: "USE MELHOR", body: "USE\\s+MELHOR" },
+  { name: "VÍDEOS", body: "V[ÍI]DEOS?" },
+];
+
+// Prefixo emoji de header de seção (📡 RADAR, 🛠️ USE MELHOR, 📺 VÍDEOS, ...).
+// OPCIONAL no path MD (que ancora em `**...**`); OBRIGATÓRIO no path email
+// (#1660 review): sem `**`, ancorar no emoji impede que um keyword bare ("vídeo",
+// "radar", "use melhor") case em prosa/headline/URL e crie seção FANTASMA — o
+// que mascarava `section_missing` (presença-por-nome em compareStructure ficava
+// satisfeita pelo fantasma). O render sempre prefixa o header com emoji
+// (section-naming.ts: 🚀📡🛠️📺, fallback 📰).
+const SECTION_EMOJI =
+  "[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+";
+const SECTION_EMOJI_OPT = `(?:${SECTION_EMOJI})?`;
 
 /**
  * Extrai snapshot estrutural de MD (source).
@@ -75,17 +105,16 @@ export function extractMdStructure(md: string): StructureSnapshot {
   // Sections: count items em `**SECTION**` block até próximo `---` ou outra section.
   // Review #1612: aceitar emoji prefix opcional (📡 RADAR, 🚀 LANÇAMENTOS,
   // 📰 OUTRAS NOTÍCIAS). Sem isso, regex `\*\*RADAR\*\*` não matchava
-  // `**📡 RADAR**` real-world.
-  const sectionEmojiOpt = "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
+  // `**📡 RADAR**` real-world. (#1660: emoji prefix movido pra const de módulo.)
   const sections: { name: string; item_count: number }[] = [];
   for (const sec of KNOWN_SECTIONS) {
-    const secRe = new RegExp(`\\*\\*${sectionEmojiOpt}${sec.replace(/\s/g, "\\s+")}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋📡]|$)`, "iu");
+    const secRe = new RegExp(`\\*\\*${SECTION_EMOJI_OPT}${sec.body}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋📡]|$)`, "iu");
     const match = md.match(secRe);
     if (!match) continue;
     const body = match[1];
     // Conta linhas de item: `**[Title](URL)**` na seção
     const items = body.match(/\*\*\[[^\]]+\]\([^)]+\)\*\*/g) ?? [];
-    sections.push({ name: sec, item_count: items.length });
+    sections.push({ name: sec.name, item_count: items.length });
   }
 
   return { has_eia, destaques, sections };
@@ -123,25 +152,41 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   // procurar trechos curtos (5-90 chars) em uppercase próximo a links.
   // Trade-off: pode pegar falso-positivo. Aceitável pra esse lint informativo.
   const sections: { name: string; item_count: number }[] = [];
+  // #1660: PRESENÇA detectada no texto STRIPADO com âncora de emoji. Após strip
+  // de tags + colapso de whitespace, `📺 VÍDEOS` fica contíguo (independente de
+  // como o template separa emoji e nome em tags), e a âncora de emoji impede
+  // fantasma de keyword bare em prosa. Tolera acento (í/i) e singular (#1324).
+  const headerInText = (body: string): boolean =>
+    new RegExp(`${SECTION_EMOJI}${body}`, "iu").test(text);
+  // Posição do header no RAW content (pra contar <a href> no slice). Best-effort
+  // — item_count é COSMÉTICO (só entra na detail string; compareStructure usa
+  // presença, não count). Se a âncora falhar no raw (tags entre emoji e nome),
+  // count=0 mas a presença (acima) já foi registrada → sem falso section_missing.
+  const rawPos = (body: string, from = 0): { idx: number; len: number } => {
+    const m = content.slice(from).match(new RegExp(`${SECTION_EMOJI}${body}`, "iu"));
+    if (m?.index === undefined) return { idx: -1, len: 0 };
+    return { idx: from + m.index, len: m[0].length };
+  };
   for (const sec of KNOWN_SECTIONS) {
-    // Procura no HTML original (case-insensitive) — assume section name aparece
-    // como texto sem entities (LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS).
-    const idx = content.toUpperCase().indexOf(sec);
-    if (idx < 0) continue;
-    const sliceStart = idx + sec.length;
-    let sliceEnd = content.length;
-    for (const other of KNOWN_SECTIONS) {
-      if (other === sec) continue;
-      const otherIdx = content.toUpperCase().indexOf(other, sliceStart);
-      if (otherIdx > sliceStart && otherIdx < sliceEnd) sliceEnd = otherIdx;
+    if (!headerInText(sec.body)) continue;
+    const { idx, len } = rawPos(sec.body);
+    let slice = "";
+    if (idx >= 0) {
+      const sliceStart = idx + len;
+      let sliceEnd = content.length;
+      for (const other of KNOWN_SECTIONS) {
+        if (other.name === sec.name) continue;
+        const o = rawPos(other.body, sliceStart);
+        if (o.idx > sliceStart && o.idx < sliceEnd) sliceEnd = o.idx;
+      }
+      slice = content.slice(sliceStart, sliceEnd);
     }
-    const slice = content.slice(sliceStart, sliceEnd);
     const linkCount = (slice.match(/<a\s+[^>]*href/gi) ?? []).length;
     // Cada item é geralmente 1 link de título — mas comments/imagens podem
     // duplicar. Fallback heurística: contar título e descrição em pares.
     // Pra reduzir ruído, contamos só hrefs primeiros do tipo cnnbrasil/anthropic etc
     // — mas isso é frágil. Mantemos contagem simples e logamos como aproximação.
-    sections.push({ name: sec, item_count: linkCount });
+    sections.push({ name: sec.name, item_count: linkCount });
   }
 
   return { has_eia, destaques, sections };
