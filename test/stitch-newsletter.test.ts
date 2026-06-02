@@ -147,6 +147,40 @@ describe("stitchNewsletter (#1463)", () => {
     }
   });
 
+  it("#1752: renderiza USE MELHOR (bucket use_melhor) antes de LANÇAMENTOS", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          use_melhor: [{ title: "UM1", url: "https://um.com/1", summary: "umdesc" }],
+          lancamento: [{ title: "L1", url: "https://l.com/1", summary: "ldesc" }],
+          radar: [{ title: "R1", url: "https://r.com/1", summary: "rdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      // Bug #1752: a seção sumia. Agora renderiza + item presente.
+      assert.match(result, /USE MELHOR/, "seção USE MELHOR deve aparecer");
+      assert.match(result, /https:\/\/um\.com\/1/, "item do use_melhor deve aparecer");
+      // Ordem editorial (260603): USE MELHOR antes de LANÇAMENTOS.
+      const umPos = result.indexOf("USE MELHOR");
+      const lancPos = result.indexOf("LANÇAMENTO");
+      assert.ok(umPos > 0 && umPos < lancPos, `USE MELHOR antes de LANÇAMENTOS (um=${umPos} lanc=${lancPos})`);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("omite section vazia (LANÇAMENTOS sem items)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {

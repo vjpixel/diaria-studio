@@ -168,6 +168,10 @@ export function stitchNewsletter(input: StitchInput): string {
 
   const eiaBlock = readEiaBlock(input.editionDir);
 
+  // #1752: USE MELHOR (bucket use_melhor) era tipado mas NUNCA renderizado —
+  // a seção sumia da newsletter mesmo com conteúdo selecionado pelo scorer.
+  // Ordem: USE MELHOR vem ANTES de LANÇAMENTOS (decisão editorial 260603).
+  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? []);
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
@@ -197,6 +201,13 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
   ];
 
+  // #1752: USE MELHOR antes de LANÇAMENTOS (decisão editorial 260603).
+  if (useMelhor) {
+    parts.push(useMelhor);
+    parts.push("");
+    parts.push("---");
+    parts.push("");
+  }
   if (lancamentos) {
     parts.push(lancamentos);
     parts.push("");
