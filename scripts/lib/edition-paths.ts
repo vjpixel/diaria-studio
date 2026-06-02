@@ -25,6 +25,7 @@ export const INTERNAL_JSON_FILES = [
   "04-d2-sd-prompt.json",
   "04-d3-sd-prompt.json",
   "05-published.json",
+  "05-social-preview.json", // #1739: URL do social preview (persistida no Stage 4)
   "06-social-published.json",
 ] as const;
 
