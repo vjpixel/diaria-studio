@@ -88,10 +88,14 @@ describe("categorize() — regras de domínio", () => {
 describe("categorize() — explainer/análise em domínio oficial → noticias (#1698)", () => {
   it("'How Cosmos 3 Helps Physical AI...' (blogs.nvidia.com) → noticias, não lancamento", () => {
     const art: Article = {
-      url: "https://blogs.nvidia.com/blog/cosmos-3-physical-ai/",
+      url: "https://blogs.nvidia.com/blog/cosmos-3-physical-ai-open-world-foundation-model/",
       title: "How Cosmos 3 Helps Physical AI Think Before It Acts",
     };
     assert.equal(categorize(art), "noticias");
+    // bucket-level (#1717 review): RADAR, não LANÇAMENTO.
+    const { lancamento, radar } = categorizeArticles([art]);
+    assert.equal(lancamento.length, 0);
+    assert.equal(radar.length, 1);
   });
 
   it("'Beyond LLMs: Why Scalable Enterprise AI...' em domínio oficial → noticias", () => {
@@ -108,6 +112,27 @@ describe("categorize() — explainer/análise em domínio oficial → noticias (
       title: "Introducing Mellum2: A 12B MoE Model",
     };
     assert.equal(categorize(art), "lancamento");
+  });
+
+  it("#1717: type_hint='lancamento' (agent leu) vence o override de explainer", () => {
+    // Decisão intencional: se o agent confirmou lançamento, o título explainer
+    // NÃO desclassifica (evita FP em "Why we built X" launch blogs). O override
+    // de explainer cobre só itens SEM type_hint (RSS/websearch) — o gap do #1698.
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/cosmos-3-physical-ai/",
+      title: "How Cosmos 3 Helps Physical AI Think Before It Acts",
+      type_hint: "lancamento",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+
+  it("PT-BR: 'Como o X funciona' em domínio oficial → noticias (#1717)", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/cosmos-explainer/",
+      title: "Como o Cosmos 3 funciona por dentro",
+    };
+    assert.equal(categorize(art), "noticias");
+    assert.equal(isExplainerByTitle({ url: "x", title: "Por que os agentes importam" }), true);
   });
 
   it("'Understanding X' / 'A guide to Y' → explainer", () => {
@@ -149,15 +174,41 @@ describe("categorize() — tutorial domain poluído com notícia (#1712)", () =>
     assert.equal(categorize(art), "noticias");
   });
 
-  it("explainer em domínio de tutorial NÃO vira use_melhor", () => {
+  it("notícia (type_hint=noticia) em domínio de tutorial NÃO vira use_melhor", () => {
     const art: Article = {
-      url: "https://eugeneyan.com/writing/why-evals/",
-      title: "Why evals are the bottleneck",
+      url: "https://simonwillison.net/2026/Jun/01/news/",
+      title: "OpenAI ships new API",
+      type_hint: "noticia",
     };
     assert.notEqual(categorize(art), "tutorial");
   });
 
-  it("tutorial real em domínio de tutorial CONTINUA tutorial (regressão)", () => {
+  it("#1717 CRÍTICO: tutorial explainer-titled em domínio de tutorial CONTINUA tutorial", () => {
+    // "How X works" / "A guide to Y" / "Understanding Z" são títulos canônicos
+    // de tutorial nesses domínios — NÃO devem ser ejetados pro RADAR. (isExplainer
+    // foi deliberadamente removido de isNewsNotTutorial.)
+    for (const title of [
+      "How attention works",
+      "A guide to fine-tuning LLMs",
+      "Understanding LoRA from scratch",
+    ]) {
+      const art: Article = { url: "https://www.fast.ai/posts/x.html", title };
+      assert.equal(categorize(art), "tutorial", `"${title}" deve permanecer tutorial`);
+      assert.equal(isNewsNotTutorial(art), false, `"${title}" não é news`);
+    }
+  });
+
+  it("#1717: deep-dive type_hint='analise' em domínio de tutorial CONTINUA tutorial", () => {
+    // 'analise' NÃO ejeta (deep-dives analíticos são frequentemente tutoriais).
+    const art: Article = {
+      url: "https://magazine.sebastianraschka.com/p/llms-from-scratch",
+      title: "Building an LLM from scratch, part 3",
+      type_hint: "analise",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("tutorial real (product-name-only) em domínio de tutorial CONTINUA tutorial", () => {
     const art: Article = {
       url: "https://simonwillison.net/2026/Jun/01/embeddings/",
       title: "Embeddings: a deep technical reference",
@@ -166,7 +217,6 @@ describe("categorize() — tutorial domain poluído com notícia (#1712)", () =>
   });
 
   it("tutorial com how-to keyword vence sinal de notícia (mixed)", () => {
-    // isTutorialByKeyword tem precedência em isNewsNotTutorial.
     const art: Article = {
       url: "https://simonwillison.net/2026/Jun/01/walkthrough/",
       title: "How to build your first agent — cookbook walkthrough",
