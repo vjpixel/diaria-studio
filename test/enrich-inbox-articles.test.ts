@@ -59,14 +59,31 @@ describe("needsEnrichment — predicate for inbox unenriched articles (#109)", (
     );
   });
 
-  it("artigo NÃO inbox (sem flag/source) nunca precisa enrich, mesmo placeholder", () => {
+  it("#1696: artigo NÃO inbox com título REAL mas summary vazio precisa enrich", () => {
+    assert.equal(
+      needsEnrichment({
+        url: "https://blogs.nvidia.com/x",
+        title: "How Cosmos 3 Helps Physical AI",
+        summary: "",
+      }),
+      true,
+    );
+  });
+
+  it("#1696: artigo NÃO inbox com summary preenchido NÃO precisa enrich", () => {
     assert.equal(
       needsEnrichment({
         url: "https://x",
-        title: "(inbox)",
+        title: "Título real",
+        summary: "Tem resumo",
       }),
       false,
     );
+  });
+
+  it("#1696: artigo NÃO inbox com título placeholder NÃO é enriquecido (só summary, não título)", () => {
+    // non-inbox não tem título placeholder legítimo; não tocamos o título dele.
+    assert.equal(needsEnrichment({ url: "https://x", title: "(inbox)" }), false);
   });
 
   it("título totalmente vazio em artigo inbox precisa enrich", () => {
@@ -214,7 +231,7 @@ describe("enrichArticles — orchestration with mocked fetcher", () => {
   it("processa só itens que precisam enrich, deixa outros intactos", async () => {
     const articles = [
       { url: "https://a.com/inbox", title: "(inbox)", flag: "editor_submitted" },
-      { url: "https://b.com/normal", title: "Real BBC story" }, // não precisa
+      { url: "https://b.com/normal", title: "Real BBC story", summary: "BBC já tem resumo" }, // não precisa (tem summary; #1696 só pega non-inbox SEM summary)
       { url: "https://c.com/curated", title: "Editor curated", source: "inbox" }, // não precisa (sem placeholder + tem título)... wait, sem summary
     ];
     const fetcher = async (url: string): Promise<string | null> => {
@@ -481,5 +498,67 @@ describe("enrichArticles — fallback submitted_subject quando fetch falha (#164
     const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
     assert.equal(out[0].title, "Recuperado do assunto");
     assert.equal(outcomes[0].reason, "title_from_submitted_subject");
+  });
+});
+
+describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () => {
+  it("non-inbox sem summary + body cacheado → preenche summary, NÃO toca título, sem network", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-1696-hit-"));
+    try {
+      const url = "https://blogs.nvidia.com/cosmos";
+      writeFileSync(
+        join(dir, bodyCacheFilename(url)),
+        `<meta property="og:title" content="Título do site"/><meta property="og:description" content="Descrição extraída da página."/>`,
+      );
+      // Fonte regular (sem flag/source inbox), título real, summary vazio.
+      const articles = [{ url, title: "How Cosmos 3 Helps Physical AI", summary: "" }];
+      let fetcherCalls = 0;
+      const fetcher = async (): Promise<string | null> => {
+        fetcherCalls++;
+        return null;
+      };
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
+      assert.equal(fetcherCalls, 0, "non-inbox não faz network");
+      assert.equal(out[0].summary, "Descrição extraída da página.", "summary preenchido do cache");
+      assert.equal(out[0].title, "How Cosmos 3 Helps Physical AI", "título NÃO é tocado (non-inbox)");
+      assert.equal(outcomes[0].summary_updated, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1696: non-inbox sem summary + cache MISS → NÃO faz network (cache-only), summary fica vazio", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-1696-miss-"));
+    try {
+      const articles = [{ url: "https://blogs.nvidia.com/uncached", title: "Título real", summary: "" }];
+      let fetcherCalls = 0;
+      const fetcher = async (): Promise<string | null> => {
+        fetcherCalls++;
+        return `<meta property="og:description" content="NÃO deveria ser usado"/>`;
+      };
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
+      assert.equal(fetcherCalls, 0, "non-inbox cache-miss NÃO faz network (bound de custo)");
+      assert.ok(!out[0].summary, "summary fica vazio (sem dano — render usa fallback/lint avisa)");
+      assert.equal(outcomes[0].reason, "cache_miss_skipped_non_inbox");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1696: inbox cache-miss AINDA faz network (comportamento original preservado)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "enrich-1696-inbox-"));
+    try {
+      const articles = [{ url: "https://x/inbox", title: "(inbox)", flag: "editor_submitted" }];
+      let fetcherCalls = 0;
+      const fetcher = async (): Promise<string | null> => {
+        fetcherCalls++;
+        return `<meta property="og:title" content="Fetched inbox"/>`;
+      };
+      const { articles: out } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
+      assert.equal(fetcherCalls, 1, "inbox cache-miss faz network (não-bound)");
+      assert.equal(out[0].title, "Fetched inbox");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
