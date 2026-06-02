@@ -389,12 +389,12 @@ npx tsx scripts/render-social-html.ts \
   --out data/editions/{AAMMDD}/_internal/social-preview.html \
   --images data/editions/{AAMMDD}/06-public-images.json
 
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} \
-  --key {AAMMDD}-social \
-  --html data/editions/{AAMMDD}/_internal/social-preview.html
+# #1734: `--edition {AAMMDD}-social` (não `--key`, que o script ignora) + `--persist-to` registra a URL durável.
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
+  --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
 ```
 
-Capturar a URL retornada (campo `url` do JSON stdout) e incluir no bloco de links do gate 4g como `Social Preview HTML: {url}`.
+Capturar a URL retornada (`url` do stdout) pro bloco de links do gate 4g — fonte durável é `05-social-preview.json`.
 
 Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente. Logar warn e prosseguir.
 

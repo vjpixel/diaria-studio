@@ -194,6 +194,12 @@ describe("mergeFieldIntoJson (#1734)", () => {
       { url: "https://x" },
     );
   });
+
+  it("lança em chaves perigosas (__proto__/constructor/prototype) em vez de perder URL", () => {
+    for (const bad of ["__proto__", "constructor", "prototype"]) {
+      assert.throws(() => mergeFieldIntoJson(null, bad, "https://x"), /campo inválido/);
+    }
+  });
 });
 
 describe("persistFieldToJsonFile (#1734)", () => {
@@ -223,6 +229,43 @@ describe("persistFieldToJsonFile (#1734)", () => {
     persistFieldToJsonFile(p, "social_preview_url", "https://draft/y");
     const parsed = JSON.parse(readFileSync(p, "utf8"));
     assert.equal(parsed.social_preview_url, "https://draft/y");
+  });
+});
+
+describe("main() --persist-to + dry-run guard via CLI (#1734 review)", () => {
+  it("dry-run com --persist-to NÃO grava arquivo (guard !dry_run) e sai 0", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const { join } = await import("node:path");
+    const projectRoot = join(import.meta.dirname, "..");
+    const dir = mkdtempSync(resolve(tmpdir(), "cli-dryrun-"));
+    const htmlPath = resolve(dir, "social-preview.html");
+    writeFileSync(htmlPath, "<p>preview</p>", "utf8");
+    const persistPath = resolve(dir, "05-social-preview.json");
+
+    const r = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        join(projectRoot, "scripts", "upload-html-public.ts"),
+        "--edition",
+        "260602-social",
+        "--dry-run",
+        "--html",
+        htmlPath,
+        "--persist-to",
+        persistPath,
+        "--field",
+        "social_preview_url",
+      ],
+      { encoding: "utf8", cwd: projectRoot },
+    );
+
+    assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
+    // dry-run não sobe nada → não pode persistir URL que daria 404.
+    assert.equal(existsSync(persistPath), false, "dry-run não deve gravar o persist file");
+    // stdout ainda traz a URL computada (com hash).
+    assert.match(r.stdout, /260602-social-[0-9a-f]{6}/);
   });
 });
 

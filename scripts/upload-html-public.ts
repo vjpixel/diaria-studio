@@ -37,7 +37,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
@@ -77,6 +77,11 @@ export function mergeFieldIntoJson(
   field: string,
   value: string,
 ): Record<string, unknown> {
+  // #1734 review: fail-loud em chaves perigosas. `base["__proto__"] = v` setaria
+  // o prototype (não uma own-key) e o JSON sairia vazio — perda silenciosa da URL.
+  if (field === "__proto__" || field === "constructor" || field === "prototype") {
+    throw new Error(`mergeFieldIntoJson: campo inválido "${field}"`);
+  }
   const base =
     existing && typeof existing === "object" && !Array.isArray(existing)
       ? { ...existing }
@@ -115,6 +120,8 @@ export function persistFieldToJsonFile(
     }
   }
   const merged = mergeFieldIntoJson(existing, field, value);
+  // #1734 review: writeFileAtomic não cria dir; garante o pai (ex: _internal/).
+  mkdirSync(dirname(filePath), { recursive: true });
   writeFileAtomic(filePath, JSON.stringify(merged, null, 2) + "\n");
 }
 
@@ -291,9 +298,19 @@ async function main(): Promise<void> {
 
   // #1734: persiste a URL só após upload REAL — dry-run não sobe nada, então
   // gravar a URL seria registrar um link que dá 404.
+  // Review: persist é SECUNDÁRIO. Se falhar (EPERM/disco), só warn — o upload
+  // (job principal) já sucedeu. Lançar aqui faria o playbook tratar exit≠0 como
+  // falha do Worker e cair no fallback chunked de 80K tokens, em vão.
   if (persistTo && !result.dry_run) {
-    const persistPath = resolve(ROOT, persistTo);
-    persistFieldToJsonFile(persistPath, persistField, result.url);
+    try {
+      const persistPath = resolve(ROOT, persistTo);
+      persistFieldToJsonFile(persistPath, persistField, result.url);
+    } catch (e) {
+      console.error(
+        `[upload-html-public] WARN: upload OK mas persist falhou (${(e as Error).message}). ` +
+          `URL não registrada em ${persistTo}, mas está live: ${result.url}`,
+      );
+    }
   }
 
   console.log(JSON.stringify(result, null, 2));
