@@ -101,11 +101,19 @@ export function renderSection(
   const lines: string[] = [header, ""];
   for (const a of items) {
     if (!a.url || !a.title) continue;
-    const isEn = a.summary_lang === "en" || looksEnglish(a.title) || looksEnglish(a.summary ?? "");
-    const titlePrefix = isEn ? "[TRADUZIR] " : "";
-    lines.push(`**[${titlePrefix}${a.title}](${a.url})**  `);
+    // #1697/#1634: o TÍTULO de item de seção secundária sai SEMPRE no idioma
+    // original — nunca prefixar [TRADUZIR] no título. O prefixo no título induzia
+    // o orchestrator a traduzir o título no pre-gate, violando #1634 (preservar o
+    // nome original do recurso). O título do recurso fica verbatim.
+    lines.push(`**[${a.title}](${a.url})**  `);
     if (a.summary) {
-      lines.push(cleanSummary(a.summary, a.title));
+      // #1697: a DESCRIÇÃO pode ser PT (#1634). Se o summary está em EN, marcar
+      // [TRADUZIR] só na descrição — o writer/editor traduz a descrição e remove
+      // o prefixo, mantendo o título original. Detecção pelo summary (não pelo
+      // título): um recurso de título EN com descrição PT não deve ser marcado.
+      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary);
+      const descPrefix = summaryIsEn ? "[TRADUZIR] " : "";
+      lines.push(descPrefix + cleanSummary(a.summary, a.title));
     }
     lines.push("");
   }
