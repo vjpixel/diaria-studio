@@ -118,23 +118,25 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!keys.includes("eia_real"));
   });
 
-  it("newsletter mode NÃO inclui d2/d3 (#1121 — não usados pelo renderer)", () => {
-    // Renderer (render-newsletter-html.ts) só substitui placeholders pra
-    // cover D1 + È IA? A/B. D2/D3 não têm imagem inline na newsletter
-    // (memory feedback_newsletter_only_d1_image.md).
-    //
-    // #1583: d1 (1x1) ADICIONADO pra cobrir social preview HTML que constrói
-    // `img-{edition}-04-d1-1x1.jpg` esperando Cloudflare KV. D2/D3 continuam
-    // excluídos.
+  it("#1701: newsletter mode inclui d1/d2/d3 1x1 (Cloudflare KV pro social preview)", () => {
+    // Renderer (render-newsletter-html.ts) só substitui placeholders pra cover
+    // D1 + È IA? A/B no EMAIL. Mas o social preview (render-social-html) resolve
+    // d1/d2/d3 via cloudflare_url — que só existe se o newsletter mode (CF, roda
+    // antes do social/drive) os subir. #1583 cobriu d1; #1701 estende a d2/d3
+    // (antes ficavam só no Drive → preview do gate quebrava).
     const specs = imageSpecsFor("newsletter");
     const keys = specs.map((s) => s.key);
-    assert.ok(!keys.includes("d2"), "d2 não deve estar em newsletter mode");
-    assert.ok(!keys.includes("d3"), "d3 não deve estar em newsletter mode");
+    assert.ok(keys.includes("d1"), "d1 em newsletter mode");
+    assert.ok(keys.includes("d2"), "d2 em newsletter mode (#1701)");
+    assert.ok(keys.includes("d3"), "d3 em newsletter mode (#1701)");
     assert.deepEqual(
       keys.sort(),
-      ["cover", "d1", "eia_a", "eia_b"].sort(),
-      "newsletter = cover + d1 + eia_a + eia_b",
+      ["cover", "d1", "d2", "d3", "eia_a", "eia_b"].sort(),
+      "newsletter = cover + d1 + d2 + d3 + eia_a + eia_b",
     );
+    // filenames 1x1 (square) — não o 2x1 do cover.
+    assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
+    assert.equal(specs.find((s) => s.key === "d3")!.filename, "04-d3-1x1.jpg");
   });
 
   it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {

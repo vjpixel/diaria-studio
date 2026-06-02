@@ -190,15 +190,21 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   // `{{IMG:...}}`: cover D1 + È IA? A/B. D2/D3 não têm imagem inline na
   // newsletter (memory `feedback_newsletter_only_d1_image.md`).
   //
-  // #1583: também subir 04-d1-1x1.jpg (key="d1") pra Cloudflare KV. Sem isso,
-  // render-social-html constrói `img-{edition}-04-d1-1x1.jpg` mas a chave não
-  // existe → 404 silencioso (social preview quebra). D2/D3 1x1 sobem pelo
-  // mode=social (target=drive) e render-social-html resolve via cache. D1
-  // precisa estar disponível em CF antes do social mode rodar porque o
-  // pre-render do preview HTML acontece na fase newsletter.
+  // #1583/#1701: também subir d1/d2/d3 1x1 pra Cloudflare KV. Sem isso,
+  // render-social-html constrói `img-{edition}-04-dN-1x1.jpg` mas a chave não
+  // existe → 404 silencioso (social preview quebra). O newsletter mode roda
+  // ANTES do social mode (target=drive), então esses entries CF ganham
+  // `cloudflare_url`; quando o social mode sobrescreve com a entry Drive (pro OG
+  // dos posts), o branch drive PRESERVA `cloudflare_url` (#1584) → o preview
+  // resolve d1/d2/d3 via CF. #1701: antes só d1 estava aqui, então d2/d3 ficavam
+  // só com Drive (sem cloudflare_url) e não renderizavam no preview do gate.
+  // (Essas imagens NÃO entram no email — o render só substitui {{IMG:cover}} +
+  // {{IMG:04-d1-1x1.jpg}} + eia; d2/d3 ficam disponíveis no CF só pro preview.)
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d1", filename: "04-d1-1x1.jpg" },
+    { key: "d2", filename: "04-d2-1x1.jpg" },
+    { key: "d3", filename: "04-d3-1x1.jpg" },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;
@@ -467,9 +473,10 @@ export function assertCacheCompleteness(
 ): void {
   const expectedKeys = (() => {
     if (mode === "social") return ["d1", "d2", "d3"];
-    // #1583: newsletter now also uploads d1 (1x1) pro Cloudflare KV pra que
-    // o social preview HTML resolva `img-{edition}-04-d1-1x1.jpg`.
-    if (mode === "newsletter") return ["cover", "d1", "eia_a", "eia_b"];
+    // #1583/#1701: newsletter also uploads d1/d2/d3 (1x1) pro Cloudflare KV pra
+    // que o social preview HTML resolva `img-{edition}-04-dN-1x1.jpg` (d2/d3
+    // antes ficavam só no Drive → preview quebrava no gate).
+    if (mode === "newsletter") return ["cover", "d1", "d2", "d3", "eia_a", "eia_b"];
     // mode === "all"
     return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
   })();

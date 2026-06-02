@@ -16,6 +16,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - **Lançamentos só com link oficial** (#160).
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post fica agendado pra D+N.
 - **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
+- **NUNCA inventar números (#1711).** Cifras financeiras (valuation, captação, receita), porcentagens, valores em $/R$/€, datas e estatísticas só entram no post se estiverem EXPLÍCITAS no `title`/`summary` do destaque aprovado. Em dúvida, OMITA a cifra. Não estime nem arredonde de memória. Humanizer e Clarice NÃO fazem fact-check. (Validado no gate por `scripts/lint-social-numbers.ts`.)
 
 ## Input
 
