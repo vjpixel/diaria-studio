@@ -224,3 +224,64 @@ describe("checkSectionItemFormat (#909)", () => {
     assert.equal(r.errors.length, 2);
   });
 });
+
+describe("checkSectionItemFormat — headers de produção emoji + USE MELHOR/VÍDEOS (#1693 parte 2)", () => {
+  // Regressão da reativação: o check era NO-OP em produção porque
+  // SECTION_ITEM_HEADER_RE era bare (sem emoji) e não cobria USE MELHOR/VÍDEOS.
+  // Estes provam que ele AGORA dispara nos headers reais (`**🛠️ USE MELHOR**`).
+
+  it("dispara em RADAR com emoji (antes era no-op): título+descrição na mesma linha", () => {
+    const md = [
+      "**📡 RADAR**",
+      "",
+      "**[Notícia](https://n.com)** descrição colada.",
+      "",
+    ].join("\n");
+    const r = checkSectionItemFormat(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors[0].type, "title_and_description_same_line");
+    assert.equal(r.errors[0].section, "RADAR");
+  });
+
+  it("dispara em USE MELHOR com emoji: título sem descrição", () => {
+    const md = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "[Guia 1](https://u.com/1)",
+      "[Guia 2](https://u.com/2)", // próximo é outro link → guia 1 sem descrição
+      "Descrição do guia 2.",
+      "",
+    ].join("\n");
+    const r = checkSectionItemFormat(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.type === "title_without_description" && e.section === "USE MELHOR"));
+  });
+
+  it("dispara em VÍDEOS com emoji: título sem descrição (fim da seção)", () => {
+    const md = [
+      "**🎬 VÍDEOS**",
+      "",
+      "**[Vídeo](https://yt.com/1)**",
+      "",
+      "---",
+    ].join("\n");
+    const r = checkSectionItemFormat(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.section === "VÍDEOS"));
+  });
+
+  it("ok quando seção emoji (USE MELHOR) está bem-formada", () => {
+    const md = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Guia 1](https://u.com/1)**",
+      "Descrição 1.",
+      "",
+      "**[Guia 2](https://u.com/2)**",
+      "Descrição 2.",
+      "",
+    ].join("\n");
+    const r = checkSectionItemFormat(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+});
