@@ -8,6 +8,8 @@ import {
   isLabelQuery,
   extractLabelName,
   labelExistsInList,
+  buildFallbackQuery,
+  mergeThreadsDedup,
   incrementEmptyDrain,
   resetEmptyDrain,
   shouldWarnEmptyDrains,
@@ -162,6 +164,53 @@ describe("labelExistsInList() — checagem case-insensitive", () => {
 
   it("string-target vazio passa (não há nome pra validar)", () => {
     assert.equal(labelExistsInList([{ name: "X" }], ""), true);
+  });
+});
+
+describe("buildFallbackQuery (#1700) — rede de segurança to:address", () => {
+  it("monta to:{address} after:{date} quando address presente", () => {
+    assert.equal(
+      buildFallbackQuery("diariaeditor@gmail.com", "2026/05/30", "label:Diaria.Editor"),
+      "to:diariaeditor@gmail.com after:2026/05/30",
+    );
+  });
+
+  it("retorna null quando address ausente/vazio", () => {
+    assert.equal(buildFallbackQuery(undefined, "2026/05/30", "label:Diaria.Editor"), null);
+    assert.equal(buildFallbackQuery("   ", "2026/05/30", "label:Diaria.Editor"), null);
+  });
+
+  it("retorna null quando a primary JÁ é uma query to:{address} (redundante)", () => {
+    assert.equal(
+      buildFallbackQuery("diariaeditor@gmail.com", "2026/05/30", "to:diariaeditor@gmail.com"),
+      null,
+    );
+  });
+
+  it("trim do address", () => {
+    assert.equal(
+      buildFallbackQuery("  diariaeditor@gmail.com  ", "2026/05/30", "label:X"),
+      "to:diariaeditor@gmail.com after:2026/05/30",
+    );
+  });
+});
+
+describe("mergeThreadsDedup (#1700) — dedup por id, primary primeiro", () => {
+  it("dedup de threads que aparecem nas duas listas (label + to:)", () => {
+    const primary = [{ id: "a" }, { id: "b" }];
+    const fallback = [{ id: "b" }, { id: "c" }];
+    const merged = mergeThreadsDedup(primary, fallback);
+    assert.deepEqual(merged.map((t) => t.id), ["a", "b", "c"]);
+  });
+
+  it("preserva ordem primary-first; fallback-only no fim", () => {
+    const primary = [{ id: "x" }];
+    const fallback = [{ id: "y" }, { id: "z" }];
+    assert.deepEqual(mergeThreadsDedup(primary, fallback).map((t) => t.id), ["x", "y", "z"]);
+  });
+
+  it("listas vazias → []", () => {
+    assert.deepEqual(mergeThreadsDedup([], []), []);
   });
 });
 
@@ -455,7 +504,14 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.equal(fetchCalled, false, "Gmail API must not be called when inbox is disabled");
   });
 
-  it("label ausente → validateLabel cria label, busca sem label → drain vazio (#430)", async () => {
+  it("label ausente E sem fallback (sem inbox.address) → skip early (#430)", async () => {
+    // #1700: sem address configurado não há rede de segurança → preserva o
+    // comportamento #430 de skip early após criar o label.
+    const config = JSON.parse(savedConfig ?? "{}");
+    config.inbox = { ...(config.inbox ?? {}) };
+    delete config.inbox.address; // remove fallback
+    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+
     writeFileSync(CURSOR_PATH, JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: 0,
@@ -466,7 +522,6 @@ describe("inbox-drain main() integration (#306)", () => {
       const u = String(url);
       if (u.includes("/labels") && (!opts?.method || opts.method === "GET")) {
         callLog.push("GET /labels");
-        // Return labels without Diaria.Editor
         return makeGmailResponse({ labels: [{ id: "0", name: "INBOX" }] });
       }
       if (u.includes("/labels") && opts?.method === "POST") {
@@ -481,15 +536,94 @@ describe("inbox-drain main() integration (#306)", () => {
     };
 
     const output = await runDrain();
-    // After createLabel, the function returns early with skipped=true and reason=label_missing
     assert.equal(output.skipped, true);
     assert.equal(output.new_entries, 0);
     assert.ok(callLog.includes("POST /labels"), "deve criar label ausente");
-    // No threads call — exits early after label creation
     assert.equal(
       callLog.filter((c) => c === "GET /threads").length,
       0,
-      "não deve buscar threads depois de criar label (retorna early)",
+      "sem fallback, não deve buscar threads (skip early)",
+    );
+  });
+
+  it("#1700: label ausente MAS com inbox.address → NÃO skip, drena via fallback to:", async () => {
+    // savedConfig tem inbox.address = diariaeditor@gmail.com → fallback ativo.
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-01-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    const callLog: string[] = [];
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/labels") && (!opts?.method || opts.method === "GET")) {
+        return makeGmailResponse({ labels: [{ id: "0", name: "INBOX" }] }); // sem o label
+      }
+      if (u.includes("/labels") && opts?.method === "POST") {
+        return makeGmailResponse({ id: "1", name: "Diaria.Editor" });
+      }
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        callLog.push(u.includes("to%3A") ? "search:to" : "search:label");
+        return makeGmailResponse({ threads: [] });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(output.skipped, false, "com fallback, NÃO deve dar skip total");
+    assert.ok(callLog.includes("search:to"), "deve rodar a query fallback to:address");
+  });
+
+  it("#1700: submissão SEM label é capturada via fallback to:address", async () => {
+    // O bug #1700: 10 picks do editor sumiram porque chegaram sem o label.
+    // Aqui a query label retorna [], a query to: retorna a submissão.
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-01-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    const bodyText = "Confira https://openai.com/academy/prompting";
+    const b64 = Buffer.from(bodyText).toString("base64")
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/labels")) {
+        return makeGmailResponse({ labels: [{ id: "1", name: "Diaria.Editor" }] });
+      }
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        // primary (label): submissão NÃO recebeu o label → vazio
+        if (u.includes("label%3A")) return makeGmailResponse({ threads: [] });
+        // fallback (to:): captura a submissão
+        if (u.includes("to%3A")) return makeGmailResponse({ threads: [{ id: "tfb", snippet: "x" }] });
+        return makeGmailResponse({ threads: [] });
+      }
+      if (u.includes("/threads/tfb")) {
+        return makeGmailResponse({
+          id: "tfb",
+          messages: [{
+            id: "m1",
+            internalDate: String(new Date("2026-04-20T10:00:00Z").getTime()),
+            payload: {
+              mimeType: "text/plain",
+              body: { data: b64 },
+              headers: [
+                { name: "From", value: "vjpixel@gmail.com" },
+                { name: "Subject", value: "Pick do dia" },
+                { name: "To", value: "diariaeditor@gmail.com" },
+              ],
+            },
+          }],
+        });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(output.new_entries, 1, "submissão sem label deve ser capturada via fallback");
+    assert.ok(
+      (output.urls as Array<{ url: string }>).some((u) => u.url === "https://openai.com/academy/prompting"),
+      "URL da submissão sem label deve estar no resultado",
     );
   });
 
