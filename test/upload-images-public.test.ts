@@ -195,6 +195,38 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     }
   });
 
+  it("#1704: specs do É IA? têm noCacheBust=true; cover/d1 não", () => {
+    // O Worker /vote monta a URL do É IA? com convenção FIXA sem hash
+    // (`/img/img-{edition}-01-eia-{A|B}.jpg`). Se o upload gravar a key com
+    // sufixo md5 (#1584), o /vote dá 404. eia_a/eia_b precisam de noCacheBust.
+    const specs = imageSpecsFor("newsletter");
+    const eiaA = specs.find((s) => s.key === "eia_a");
+    const eiaB = specs.find((s) => s.key === "eia_b");
+    assert.equal(eiaA?.noCacheBust, true, "eia_a deve ter noCacheBust=true");
+    assert.equal(eiaB?.noCacheBust, true, "eia_b deve ter noCacheBust=true");
+    // cover + d1 (newsletter/social, vão pro email → cache agressivo do Gmail
+    // proxy) continuam com cache-bust (noCacheBust ausente/falsy).
+    const cover = specs.find((s) => s.key === "cover");
+    const d1 = specs.find((s) => s.key === "d1");
+    assert.ok(!cover?.noCacheBust, "cover deve manter cache-bust");
+    assert.ok(!d1?.noCacheBust, "d1 deve manter cache-bust");
+  });
+
+  it("#1704: specs eia legacy (real/ia) também têm noCacheBust=true", () => {
+    const dir = makeDir();
+    try {
+      touch(join(dir, "01-eia-real.jpg"));
+      touch(join(dir, "01-eia-ia.jpg"));
+      const specs = imageSpecsFor("newsletter", dir);
+      const eiaReal = specs.find((s) => s.key === "eia_real");
+      const eiaIa = specs.find((s) => s.key === "eia_ia");
+      assert.equal(eiaReal?.noCacheBust, true);
+      assert.equal(eiaIa?.noCacheBust, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("social mode não inclui specs eia (independente de editionDir)", () => {
     const dir = makeDir();
     try {
