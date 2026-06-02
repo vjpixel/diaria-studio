@@ -170,6 +170,24 @@ function loadSocial(editionDir: string): PublishedSocial | null {
   }
 }
 
+/**
+ * #1739: URL do social preview hospedado no draft worker, persistida por
+ * `upload-html-public.ts --persist-to .../05-social-preview.json --field
+ * social_preview_url` no Stage 4 (#1734). A URL completa (com hash de conteúdo)
+ * vive nesse arquivo — recompor `${BASE}/${edition}-social` sem hash dá 404
+ * (#1494/#1612). Retorna null se não persistida (edição sem preview social).
+ */
+function loadSocialPreviewUrl(editionDir: string): string | null {
+  const path = resolveReadPath(editionDir, "05-social-preview.json");
+  if (!existsSync(path)) return null;
+  try {
+    const j = JSON.parse(readFileSync(path, "utf8")) as { social_preview_url?: unknown };
+    return typeof j.social_preview_url === "string" ? j.social_preview_url : null;
+  } catch {
+    return null;
+  }
+}
+
 interface LogEntry {
   timestamp?: string;
   edition?: string | null;
@@ -271,6 +289,7 @@ export function renderHtmlReport(
   warnings: LogEntry[],
   errors: LogEntry[],
   braveCredits: BraveCreditStats | null = null, // #1558
+  socialPreviewUrl: string | null = null, // #1739
 ): string {
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
   // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
@@ -306,8 +325,13 @@ export function renderHtmlReport(
     )
     .join("\n");
 
-  // Preview link
-  const previewUrl = `${DRAFT_WORKER_BASE}/${encodeURIComponent(edition)}`;
+  // Preview link. #1739/#1612: preferir o `draft_preview_url` persistido (com
+  // hash de conteúdo) — montar `${BASE}/${edition}` sem hash dá 404.
+  const previewUrl =
+    (published as { draft_preview_url?: unknown } | null)?.draft_preview_url
+    && typeof (published as { draft_preview_url?: unknown }).draft_preview_url === "string"
+      ? (published as { draft_preview_url: string }).draft_preview_url
+      : `${DRAFT_WORKER_BASE}/${encodeURIComponent(edition)}`;
 
   // Warnings/errors summary
   const warningsHtml = warnings.length > 0
@@ -373,6 +397,7 @@ export function renderHtmlReport(
   <p>${nlStatus}</p>
   <p>Rascunho: ${draftUrl}</p>
   <p>Preview: <a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a></p>
+  ${socialPreviewUrl ? `<p>Preview social (3 posts): <a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a></p>` : ""}
 
   ${(social?.posts ?? []).length > 0 ? `
   <h3 style="font-size:14px;">Social</h3>
@@ -497,6 +522,7 @@ async function main(): Promise<void> {
     warnings,
     errors,
     braveCredits,
+    loadSocialPreviewUrl(editionDir), // #1739
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5

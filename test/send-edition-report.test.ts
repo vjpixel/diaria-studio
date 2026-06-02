@@ -34,6 +34,32 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes("Publicacao"));
   });
 
+  it("#1739: renderiza a URL do social preview quando fornecida", () => {
+    const url = "https://draft.diaria.workers.dev/260525-social-2a02da";
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, url);
+    assert.ok(html.includes("Preview social"), "deve ter a linha de preview social");
+    assert.ok(html.includes(url), "deve conter a URL versionada (com hash)");
+  });
+
+  it("#1739: sem URL de social preview → sem bloco (não crasha)", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null);
+    assert.ok(!html.includes("Preview social"), "sem URL → sem linha de preview social");
+    assert.ok(html.includes("<!DOCTYPE html>"), "render normal");
+  });
+
+  it("#1739/#1612: preview da newsletter prefere draft_preview_url (com hash) ao hashless", () => {
+    const hashed = "https://draft.diaria.workers.dev/260525-796cd4";
+    const published = {
+      draft_url: "https://app.beehiiv.com/posts/abc/edit",
+      title: "Edição",
+      status: "draft",
+      draft_preview_url: hashed,
+    } as unknown as Parameters<typeof renderHtmlReport>[2];
+    const html = renderHtmlReport("260525", MINIMAL_DOC, published, null, [], []);
+    assert.ok(html.includes(hashed), "usa a URL com hash persistida");
+    assert.ok(!html.includes(">https://draft.diaria.workers.dev/260525<"), "não usa a versão hashless");
+  });
+
   // #1609: seção "Destaques" removida (redundante — editor já vê no Drive +
   // test email). highlights não é mais argumento de renderHtmlReport.
   it("omits the Destaques section", () => {
