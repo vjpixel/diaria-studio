@@ -130,6 +130,15 @@ export type UploadMode = "social" | "newsletter" | "all";
 export interface ImageSpec {
   key: string;
   filename: string;
+  /**
+   * #1704: quando true, a KV key NÃO recebe o sufixo md5 de cache-bust (#1584).
+   * Usado pelas imagens do É IA? (A/B): o Worker `poll` monta a URL do /vote
+   * com convenção FIXA `/img/img-{AAMMDD}-01-eia-{A|B}.jpg` (sem hash). Se o
+   * upload gravar a key com sufixo md5, o /vote dá 404. As imagens do É IA? são
+   * servidas com TTL 1h (#1242) — regeneração no mesmo edition já é coberta pelo
+   * TTL, então o cache-bust por hash é desnecessário (e contraproducente) aqui.
+   */
+  noCacheBust?: boolean;
 }
 
 /**
@@ -151,23 +160,23 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     const newB = editionDir ? resolve(editionDir, "01-eia-B.jpg") : null;
     if (newA && newB && existsSync(newA) && existsSync(newB)) {
       return [
-        { key: "eia_a", filename: "01-eia-A.jpg" },
-        { key: "eia_b", filename: "01-eia-B.jpg" },
+        { key: "eia_a", filename: "01-eia-A.jpg", noCacheBust: true },
+        { key: "eia_b", filename: "01-eia-B.jpg", noCacheBust: true },
       ];
     }
     if (editionDir) {
       const oldReal = resolve(editionDir, "01-eia-real.jpg");
       if (existsSync(oldReal)) {
         return [
-          { key: "eia_real", filename: "01-eia-real.jpg" },
-          { key: "eia_ia", filename: "01-eia-ia.jpg" },
+          { key: "eia_real", filename: "01-eia-real.jpg", noCacheBust: true },
+          { key: "eia_ia", filename: "01-eia-ia.jpg", noCacheBust: true },
         ];
       }
     }
     // Default sem disco: assume novo naming (caso de teste / dry-run).
     return [
-      { key: "eia_a", filename: "01-eia-A.jpg" },
-      { key: "eia_b", filename: "01-eia-B.jpg" },
+      { key: "eia_a", filename: "01-eia-A.jpg", noCacheBust: true },
+      { key: "eia_b", filename: "01-eia-B.jpg", noCacheBust: true },
     ];
   })();
 
@@ -371,9 +380,14 @@ export async function uploadPublicImages(
     const localMd5 = md5OfFile(imagePath);
 
     if (target === "cloudflare") {
-      // #1584: md5 suffix no key cache-busts re-uploads (Cloudflare serve com
-      // max-age=1ano immutable).
-      const key = cloudflareKvKey(editionDir, spec.filename, localMd5);
+      // #1584: md5 suffix no key cache-busts re-uploads.
+      // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
+      // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
+      const key = cloudflareKvKey(
+        editionDir,
+        spec.filename,
+        spec.noCacheBust ? undefined : localMd5,
+      );
       const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
       images[spec.key] = {
         file_id: key,

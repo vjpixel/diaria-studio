@@ -127,3 +127,29 @@ describe("cloudflareKvKey — md5 suffix (#1584)", () => {
     assert.match(k, /^[a-zA-Z0-9._-]+$/);
   });
 });
+
+describe("cloudflareKvKey — É IA? sem hash bate com convenção do Worker (#1704)", () => {
+  // O Worker `poll` monta a URL do /vote com convenção FIXA:
+  //   /img/img-{AAMMDD}-01-eia-{A|B}.jpg  (workers/poll/src/index.ts:958)
+  // O upload do É IA? usa noCacheBust → cloudflareKvKey é chamado SEM md5.
+  // A key resultante DEVE bater exatamente com a URL que o Worker constrói,
+  // senão o /vote dá 404 (bug #1704).
+  for (const side of ["A", "B"] as const) {
+    it(`eia-${side} sem md5 → img-{edition}-01-eia-${side}.jpg (sem sufixo)`, () => {
+      assert.equal(
+        cloudflareKvKey("data/editions/260602", `01-eia-${side}.jpg`),
+        `img-260602-01-eia-${side}.jpg`,
+      );
+    });
+  }
+
+  it("regressão: COM md5 a key NÃO bateria (demonstra o bug original)", () => {
+    const withHash = cloudflareKvKey(
+      "data/editions/260602",
+      "01-eia-A.jpg",
+      "1e3bd6e6aaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    // Worker espera img-260602-01-eia-A.jpg — com hash não bate.
+    assert.notEqual(withHash, "img-260602-01-eia-A.jpg");
+  });
+});
