@@ -145,6 +145,13 @@ export interface ImageSpec {
    * do /vote, não o TTL. cover/d1 vão pro email e MANTÊM o cache-bust por hash.
    */
   noCacheBust?: boolean;
+  /**
+   * #1701: spec best-effort — se o arquivo não existir, PULA (não lança). Usado
+   * pra d2/d3 no newsletter mode: eles sobem ao Cloudflare KV só pro social
+   * preview (o EMAIL não os usa), então não devem bloquear o newsletter-mode
+   * upload (que roda standalone na publicação manual/email — caso 260602 review).
+   */
+  optional?: boolean;
 }
 
 /**
@@ -203,8 +210,11 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d1", filename: "04-d1-1x1.jpg" },
-    { key: "d2", filename: "04-d2-1x1.jpg" },
-    { key: "d3", filename: "04-d3-1x1.jpg" },
+    // #1701: d2/d3 são best-effort (optional) — sobem ao CF pro preview quando
+    // existem, mas não bloqueiam o newsletter-mode upload se ausentes (o email
+    // não os renderiza; só cover+d1+eia entram via {{IMG}}).
+    { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
+    { key: "d3", filename: "04-d3-1x1.jpg", optional: true },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;
@@ -395,6 +405,9 @@ export async function uploadPublicImages(
   for (const spec of specs) {
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
+      // #1701: specs best-effort (d2/d3 no newsletter mode) pulam quando ausentes
+      // — não bloqueiam o upload do que o email de fato usa (cover/d1/eia).
+      if (spec.optional) continue;
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
     const mime = mimeTypeFor(spec.filename);
@@ -473,10 +486,11 @@ export function assertCacheCompleteness(
 ): void {
   const expectedKeys = (() => {
     if (mode === "social") return ["d1", "d2", "d3"];
-    // #1583/#1701: newsletter also uploads d1/d2/d3 (1x1) pro Cloudflare KV pra
-    // que o social preview HTML resolva `img-{edition}-04-dN-1x1.jpg` (d2/d3
-    // antes ficavam só no Drive → preview quebrava no gate).
-    if (mode === "newsletter") return ["cover", "d1", "d2", "d3", "eia_a", "eia_b"];
+    // #1583: newsletter sobe cover/d1/eia (o que o EMAIL usa). #1701: d2/d3
+    // também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional) —
+    // NÃO entram nas keys exigidas aqui, pra não falhar o newsletter-mode upload
+    // standalone (publicação manual/email) quando d2/d3 não existem.
+    if (mode === "newsletter") return ["cover", "d1", "eia_a", "eia_b"];
     // mode === "all"
     return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
   })();

@@ -66,14 +66,14 @@ describe("assertCacheCompleteness (#1275)", () => {
   });
 
   describe("mode=newsletter", () => {
-    it("passa com cover/d1/d2/d3/eia_a/eia_b (#1583/#1701)", () => {
+    it("passa com cover/d1/eia_a/eia_b (#1583; d2/d3 best-effort #1701)", () => {
+      // #1701: d2/d3 são optional no newsletter mode (best-effort pro preview) —
+      // NÃO exigidos aqui, pra não falhar o upload standalone manual/email.
       assert.doesNotThrow(() =>
         assertCacheCompleteness(
           {
             cover: makeImg("https://x/cover"),
             d1: makeImg("https://x/d1"),
-            d2: makeImg("https://x/d2"),
-            d3: makeImg("https://x/d3"),
             eia_a: makeImg("https://x/eia_a"),
             eia_b: makeImg("https://x/eia_b"),
           },
@@ -89,29 +89,11 @@ describe("assertCacheCompleteness (#1275)", () => {
             {
               cover: makeImg("https://x/cover"),
               d1: makeImg("https://x/d1"),
-              d2: makeImg("https://x/d2"),
-              d3: makeImg("https://x/d3"),
               eia_b: makeImg("https://x/eia_b"),
             },
             "newsletter",
           ),
         /Missing: eia_a/,
-      );
-    });
-
-    it("#1701: falha quando d2/d3 missing (social preview vai quebrar)", () => {
-      assert.throws(
-        () =>
-          assertCacheCompleteness(
-            {
-              cover: makeImg("https://x/cover"),
-              d1: makeImg("https://x/d1"),
-              eia_a: makeImg("https://x/eia_a"),
-              eia_b: makeImg("https://x/eia_b"),
-            },
-            "newsletter",
-          ),
-        /Missing: d2, d3/,
       );
     });
 
@@ -121,8 +103,6 @@ describe("assertCacheCompleteness (#1275)", () => {
           assertCacheCompleteness(
             {
               cover: makeImg("https://x/cover"),
-              d2: makeImg("https://x/d2"),
-              d3: makeImg("https://x/d3"),
               eia_a: makeImg("https://x/eia_a"),
               eia_b: makeImg("https://x/eia_b"),
             },

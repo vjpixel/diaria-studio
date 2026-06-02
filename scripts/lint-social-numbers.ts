@@ -82,10 +82,16 @@ export interface MoneyFigure {
 // Cifra de dinheiro com magnitude: símbolo de moeda + número + (opcional)
 // magnitude por extenso/abreviada. Cobre "US$ 965 bilhões", "R$2,5 bi", "$10B",
 // "€3 milhões". A magnitude pode estar colada ou separada por espaço.
-// Magnitude: palavras (bilhões/billion/...) OU abreviação single-letter glued
-// ou separada (10B, 2.5 M) — `[BMTK]` exige não-letra à frente pra não casar
-// "monthly"/"million-prefix" indevidamente.
-const MAGNITUDE = "bilh\\w*|milh\\w*|trilh\\w*|billion|million|trillion|bi|mi|tri|bn|mil|[BMTK](?![a-z])";
+// Magnitude: palavras por extenso (bilhões/billion/...) PRIMEIRO, depois
+// abreviações. Ordem importa (#1722 review):
+//  - `milh\w*`/`bilh\w*`/`trilh\w*` antes das abreviações pra "milhões" não casar
+//    "mil"/"mi".
+//  - `mil` (mil = K) antes de `mi` (mi = M) — senão "35 mil" virava "35 mi"(lhões),
+//    erro de 1000×.
+//  - todas as abreviações + `[BMTK]` exigem não-letra à frente `(?![a-z])` pra
+//    não casar "trimestre" (tri), "monthly" (m), "Bilhões"-prefix, etc.
+const MAGNITUDE =
+  "bilh\\w*|milh\\w*|trilh\\w*|billion|million|trillion|(?:mil|bn|bi|tri|mi)(?![a-z])|[BMTK](?![a-z])";
 const MONEY_RE = new RegExp(
   `(?:US\\$|R\\$|\\$|€|USD|BRL|EUR)\\s?(\\d[\\d.,]*)\\s*(${MAGNITUDE})?`,
   "gi",
@@ -149,26 +155,66 @@ export function findUnsourcedFigures(
 
 interface ApprovedShape {
   highlights?: Array<{ article?: { title?: string; summary?: string } }>;
-  lancamento?: Array<{ title?: string; summary?: string }>;
-  radar?: Array<{ title?: string; summary?: string }>;
-  use_melhor?: Array<{ title?: string; summary?: string }>;
-  video?: Array<{ title?: string; summary?: string }>;
 }
 
-/** Concatena todo o texto-fonte (títulos + summaries) do approved.json. */
-export function approvedSourceText(approved: ApprovedShape): string {
-  const parts: string[] = [];
-  for (const h of approved.highlights ?? []) {
-    if (h.article?.title) parts.push(h.article.title);
-    if (h.article?.summary) parts.push(h.article.summary);
-  }
-  for (const bucket of [approved.lancamento, approved.radar, approved.use_melhor, approved.video]) {
-    for (const a of bucket ?? []) {
-      if (a.title) parts.push(a.title);
-      if (a.summary) parts.push(a.summary);
+/**
+ * Texto-fonte do destaque N (1-based) = title + summary do highlights[N-1].
+ * É a fonte que o social-linkedin/facebook recebe pra escrever o post de dN
+ * (social-linkedin.md). Comparar o post de dN contra a fonte de dN (não contra
+ * o pool inteiro) é o que pega o caso 260602: "965B" estava num item use_melhor,
+ * mas NÃO na fonte do destaque d1 (Anthropic IPO) — então o post de d1 que cita
+ * "965B" É unsourced relativo ao d1. Vazio quando N fora de range.
+ */
+export function highlightSourceText(approved: ApprovedShape, destaque: number): string {
+  const h = approved.highlights?.[destaque - 1];
+  if (!h?.article) return "";
+  return `${h.article.title ?? ""}\n${h.article.summary ?? ""}`;
+}
+
+/**
+ * Separa o 03-social.md por destaque. Os posts (LinkedIn main + comments +
+ * Facebook) ficam sob headers `## d1`/`## d2`/`## d3` (dentro de `# LinkedIn`
+ * e `# Facebook`). Concatena TODO o texto de cada dN (os dois canais), parando
+ * em `## d{outro}` ou `# {canal}`. Exportada pra teste.
+ */
+export function parseSocialByDestaque(socialMd: string): Map<number, string> {
+  const map = new Map<number, string>();
+  let current: number | null = null;
+  for (const line of socialMd.split("\n")) {
+    const dHeader = line.match(/^##\s+d(\d)\b/i);
+    if (dHeader) {
+      current = parseInt(dHeader[1], 10);
+      continue;
+    }
+    if (/^#\s+/.test(line)) {
+      current = null; // # LinkedIn / # Facebook — fora de qualquer destaque
+      continue;
+    }
+    if (current !== null) {
+      map.set(current, (map.get(current) ?? "") + line + "\n");
     }
   }
-  return parts.join("\n");
+  return map;
+}
+
+export interface DestaqueFinding {
+  destaque: number;
+  unsourced: MoneyFigure[];
+}
+
+/**
+ * Roda o lint per-destaque: pra cada dN no social, flaga cifras de dinheiro
+ * ausentes da fonte do destaque N. Pure — exportada pra teste.
+ */
+export function lintSocialNumbers(socialMd: string, approved: ApprovedShape): DestaqueFinding[] {
+  const byDestaque = parseSocialByDestaque(socialMd);
+  const findings: DestaqueFinding[] = [];
+  for (const [n, postText] of [...byDestaque.entries()].sort((a, b) => a[0] - b[0])) {
+    const source = highlightSourceText(approved, n);
+    const unsourced = findUnsourcedFigures(postText, source);
+    if (unsourced.length > 0) findings.push({ destaque: n, unsourced });
+  }
+  return findings;
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -190,29 +236,25 @@ function main(): void {
     );
     process.exit(1);
   }
-  const socialText = readFileSync(resolve(process.cwd(), args.social), "utf8");
+  const socialMd = readFileSync(resolve(process.cwd(), args.social), "utf8");
   const approved = JSON.parse(readFileSync(resolve(process.cwd(), args.approved), "utf8")) as ApprovedShape;
-  const sourceText = approvedSourceText(approved);
 
-  const unsourced = findUnsourcedFigures(socialText, sourceText);
+  const findings = lintSocialNumbers(socialMd, approved);
+  const total = findings.reduce((acc, f) => acc + f.unsourced.length, 0);
 
-  if (unsourced.length > 0) {
+  if (total > 0) {
     console.error(
-      `\n⚠️  lint-social-numbers: ${unsourced.length} cifra(s) financeira(s) no social NÃO encontrada(s) na fonte (approved.json) — possível alucinação, confira no gate:`,
+      `\n⚠️  lint-social-numbers: ${total} cifra(s) financeira(s) no social NÃO encontrada(s) na fonte do destaque correspondente — possível alucinação, confira no gate:`,
     );
-    for (const f of unsourced) {
-      console.error(`  - "${f.raw}" (normalizado: ${f.key})`);
+    for (const f of findings) {
+      for (const fig of f.unsourced) {
+        console.error(`  - d${f.destaque}: "${fig.raw}" (normalizado: ${fig.key})`);
+      }
     }
   }
 
   // WARN-only: nunca bloqueia (exit 0). O editor decide no gate.
-  console.log(
-    JSON.stringify(
-      { ok: unsourced.length === 0, unsourced, checked: extractMoneyFigures(socialText).length },
-      null,
-      2,
-    ),
-  );
+  console.log(JSON.stringify({ ok: total === 0, findings }, null, 2));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

@@ -6,7 +6,9 @@ import {
   extractMoneyFigures,
   sourceFigureKeys,
   findUnsourcedFigures,
-  approvedSourceText,
+  highlightSourceText,
+  parseSocialByDestaque,
+  lintSocialNumbers,
 } from "../scripts/lint-social-numbers.ts";
 
 describe("normalizeMagnitude (#1711)", () => {
@@ -59,6 +61,25 @@ describe("extractMoneyFigures (#1711)", () => {
   it("NÃO extrai porcentagem", () => {
     assert.deepEqual(extractMoneyFigures("cresceu 45% no trimestre"), []);
   });
+
+  it("#1722: 'R$ 35 mil' → 35K (não 35M — mil antes de mi)", () => {
+    const f = extractMoneyFigures("concorra a R$ 35 mil em prêmios");
+    assert.equal(f[0].key, "35K");
+  });
+
+  it("#1722: 'US$ 50 milhões' → 50M (milh\\w* vence mil/mi)", () => {
+    assert.equal(extractMoneyFigures("US$ 50 milhões em receita")[0].key, "50M");
+  });
+
+  it("#1722: 'trimestre' NÃO é magnitude 'tri' (lookahead)", () => {
+    // "tri" seguido de letra (m) não casa → sem cifra fabricada.
+    assert.deepEqual(extractMoneyFigures("US$ 10 no trimestre passado"), []);
+    assert.deepEqual(extractMoneyFigures("US$ 10 trimestrais"), []);
+  });
+
+  it("'US$ 1,5 trilhão' → 1.5T", () => {
+    assert.equal(extractMoneyFigures("avaliado em US$ 1,5 trilhão")[0].key, "1.5T");
+  });
 });
 
 describe("sourceFigureKeys (#1711) — com e sem símbolo de moeda", () => {
@@ -88,15 +109,89 @@ describe("findUnsourcedFigures (#1711) — caso real 260602", () => {
   });
 });
 
-describe("approvedSourceText (#1711)", () => {
-  it("concatena títulos + summaries de highlights e buckets", () => {
+describe("highlightSourceText (#1722) — fonte do destaque N", () => {
+  const approved = {
+    highlights: [
+      { article: { title: "Anthropic planeja IPO", summary: "Sem cifra na fonte." } },
+      { article: { title: "Outro destaque", summary: "Cresceu 10 bilhões." } },
+    ],
+  };
+  it("retorna title+summary do highlight N-1", () => {
+    assert.match(highlightSourceText(approved, 1), /Anthropic planeja IPO/);
+    assert.match(highlightSourceText(approved, 2), /10 bilhões/);
+  });
+  it("N fora de range → ''", () => {
+    assert.equal(highlightSourceText(approved, 9), "");
+  });
+});
+
+describe("parseSocialByDestaque (#1722)", () => {
+  it("separa posts por ## dN (LinkedIn + Facebook concatenados)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post LinkedIn d1 com US$ 965 bilhões.
+
+### comment_diaria
+
+Comentário d1.
+
+## d2
+
+Post d2.
+
+# Facebook
+
+## d1
+
+Post Facebook d1.
+
+## d2
+
+Post Facebook d2.`;
+    const map = parseSocialByDestaque(md);
+    assert.match(map.get(1) ?? "", /Post LinkedIn d1/);
+    assert.match(map.get(1) ?? "", /Comentário d1/);
+    assert.match(map.get(1) ?? "", /Post Facebook d1/); // os dois canais juntos
+    assert.doesNotMatch(map.get(1) ?? "", /Post d2/);
+  });
+});
+
+describe("lintSocialNumbers (#1722) — per-destaque, caso 260602", () => {
+  it("flaga '965B' no post d1 mesmo que esteja na fonte de OUTRO destaque", () => {
+    // O bug 260602: "965B" aparecia num item use_melhor, mas o post d1 (Anthropic
+    // IPO) o citou como valuation — ausente da fonte do d1. Per-destaque pega isso.
+    const social = `# LinkedIn
+
+## d1
+
+A Anthropic vai abrir capital; a rodada levantou US$ 965 bilhões em valuation.
+
+## d2
+
+Post d2 sem cifras.`;
     const approved = {
-      highlights: [{ article: { title: "Anthropic IPO", summary: "Sem cifra aqui." } }],
-      radar: [{ title: "Outra", summary: "10 bilhões mencionados." }],
+      highlights: [
+        { article: { title: "Anthropic planeja IPO", summary: "Empresa busca investidores, diz Guardian." } },
+        { article: { title: "Outro", summary: "Item com US$ 965 bilhões em outro contexto." } },
+      ],
     };
-    const text = approvedSourceText(approved);
-    assert.match(text, /Anthropic IPO/);
-    assert.match(text, /10 bilhões/);
-    assert.ok(sourceFigureKeys(text).has("10B"));
+    const findings = lintSocialNumbers(social, approved);
+    const d1 = findings.find((f) => f.destaque === 1);
+    assert.ok(d1, "d1 deve ter finding");
+    assert.equal(d1!.unsourced[0].key, "965B");
+  });
+
+  it("NÃO flaga cifra que ESTÁ na fonte do próprio destaque", () => {
+    const social = `# LinkedIn
+
+## d1
+
+A startup foi avaliada em US$ 10B.`;
+    const approved = {
+      highlights: [{ article: { title: "Startup X", summary: "Atingiu valuation de 10 bilhões de dólares." } }],
+    };
+    assert.deepEqual(lintSocialNumbers(social, approved), []);
   });
 });

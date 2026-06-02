@@ -137,6 +137,12 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     // filenames 1x1 (square) — não o 2x1 do cover.
     assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
     assert.equal(specs.find((s) => s.key === "d3")!.filename, "04-d3-1x1.jpg");
+    // #1701: d2/d3 são best-effort (optional) — não bloqueiam newsletter-mode
+    // standalone se ausentes; cover/d1/eia (usados pelo email) NÃO são optional.
+    assert.equal(specs.find((s) => s.key === "d2")!.optional, true);
+    assert.equal(specs.find((s) => s.key === "d3")!.optional, true);
+    assert.ok(!specs.find((s) => s.key === "cover")!.optional);
+    assert.ok(!specs.find((s) => s.key === "d1")!.optional);
   });
 
   it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {
