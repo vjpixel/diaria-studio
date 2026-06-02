@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   parseSections,
   parseEIA,
   fallbackEIA,
+  resolvePrevResultLine,
   renderHTML,
   renderEiaStandalone,
   extractTemplateBlock,
@@ -390,6 +391,57 @@ describe("parseSections (#172)", () => {
     const sections = parseSections(md);
     assert.equal(sections.length, 1, JSON.stringify(sections)); // NÃO dropada
     assert.equal(sections[0].emoji, "📰"); // fallback graceful (sem acento → sem 📺)
+  });
+});
+
+describe("resolvePrevResultLine (#1707 — fallback do % da edição anterior)", () => {
+  function makeEdition(stats: unknown | null): string {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-prevresult-"));
+    if (stats !== null) {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "04-eia-poll-stats.json"), JSON.stringify(stats), "utf8");
+    }
+    return dir;
+  }
+
+  it("usa a linha do MD quando presente (sem fallback)", () => {
+    const dir = makeEdition({ pct_correct: 99, total_responses: 100 });
+    try {
+      const existing = "Resultado da última edição: 80% das pessoas acertaram.";
+      assert.equal(resolvePrevResultLine(existing, dir), existing);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1707: injeta do poll-stats quando a linha falta no MD (anti-race)", () => {
+    const dir = makeEdition({ pct_correct: 75, total_responses: 120 });
+    try {
+      assert.equal(
+        resolvePrevResultLine(undefined, dir),
+        "Resultado da última edição: 75% das pessoas acertaram.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("undefined quando não há linha nem poll-stats", () => {
+    const dir = makeEdition(null);
+    try {
+      assert.equal(resolvePrevResultLine(undefined, dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("undefined quando poll-stats below_threshold (não inventa %)", () => {
+    const dir = makeEdition({ pct_correct: null, total_responses: 3, below_threshold: true });
+    try {
+      assert.equal(resolvePrevResultLine(undefined, dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
