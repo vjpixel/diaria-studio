@@ -828,6 +828,27 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
     assert.match(html, /@media[^@]*\.nick-save\s*{\s*width:\s*100%/);
   });
 
+  it("imagens A/B empilham full-width no mobile (legíveis, não 2-up minúsculo)", () => {
+    // Reclamação do editor: imagens pequenas. No mobile, flex-basis:100% empilha
+    // A e B em largura total (grandes) em vez de espremer 2-up. box-sizing:border-box
+    // no base evita overflow horizontal (flex-basis incluiria padding/borda).
+    const html = votePageHtml("Acertou!", true);
+    assert.match(html, /\.result-image\s*{\s*box-sizing:\s*border-box/);
+    assert.match(html, /@media[^@]*\.result-image\s*{\s*flex-basis:\s*100%/);
+  });
+
+  it("regra base .nick-form precede o @media (cascade: override mobile vence por source order)", () => {
+    // #1675 review: o stack mobile (flex-direction:column) só vence porque o
+    // @media vem DEPOIS da regra base (mesma especificidade → source order).
+    // Inverter a ordem quebraria silenciosamente o layout responsivo.
+    const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
+    const baseIdx = html.indexOf(".nick-form { display: flex");
+    const mediaIdx = html.indexOf("@media (max-width: 480px)");
+    assert.ok(baseIdx >= 0, "regra base .nick-form deve existir");
+    assert.ok(mediaIdx >= 0, "bloco @media deve existir");
+    assert.ok(baseIdx < mediaIdx, "base .nick-form deve preceder @media pro override empilhar vencer");
+  });
+
   it("links do rodapé usam classe footer-links (tap target no mobile)", () => {
     const html = votePageHtml("Acertou!", true);
     assert.match(html, /<p class="footer-links">/);

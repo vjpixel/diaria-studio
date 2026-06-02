@@ -920,7 +920,7 @@ export function votePageHtml(
   .msg { font-size: 1.3rem; margin: 20px 0; }
   a { color: #0066cc; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
-  .result-image { flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
+  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
   .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.18); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-size: 0.85rem; margin-top: 8px; color: #444; font-weight: 600; }
@@ -936,11 +936,15 @@ export function votePageHtml(
   @media (max-width: 480px) {
     body { margin: 24px auto; padding: 0 16px; }
     .msg { font-size: 1.15rem; }
-    .result-image { flex-basis: 140px; }
+    /* Empilha A/B full-width: imagens GRANDES e legíveis (reclamação do editor
+       era "pequenas") em vez de 2-up minúsculo; também preenche o vazio vertical. */
+    .result-image { flex-basis: 100%; max-width: 100%; }
     .nick-form { flex-direction: column; }
-    .nick-input { padding: 12px; font-size: 1rem; }
+    /* flex:none reseta o flex:1 do base — em coluna, flex-grow agiria no eixo
+       vertical (input esticaria). Cross-axis stretch mantém largura total. */
+    .nick-input { flex: none; padding: 12px; font-size: 1rem; }
     .nick-save { width: 100%; padding: 12px 16px; font-size: 1rem; }
-    .footer-links a { padding: 10px 6px; }
+    .footer-links a { padding: 12px 10px; }
   }
 </style>
 </head>
