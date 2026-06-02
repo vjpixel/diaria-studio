@@ -144,15 +144,22 @@ describe("orchestrator-prompt (#634)", () => {
     // resume não detecta Stage 4 completo → re-publica (rascunho Beehiiv duplicado
     // + re-agenda 6 posts). Toda menção deve ser _internal/-prefixada.
     const stage0 = contents["orchestrator-stage-0-preflight.md"];
-    // Nenhuma menção bare (sem _internal/ logo antes).
-    const bare = stage0.match(/(^|[^/])(05-published\.json|06-social-published\.json)/gm) ?? [];
-    const bareNonInternal = bare.filter((m) => !m.includes("_internal"));
-    assert.equal(
-      bareNonInternal.length,
-      0,
-      `refs bare a published.json no §0b (devem ser _internal/): ${bareNonInternal.join(", ")}`,
+    // Remove TODAS as refs _internal/-prefixadas; qualquer ocorrência remanescente
+    // do filename é, por definição, BARE (raiz) — pega tanto " 05-published.json"
+    // (prosa) quanto ".../06-social-published.json" (path no glob inline JS, a
+    // forma exata do bug #1708). Mais robusto que um regex de lookbehind frágil.
+    const stripped = stage0
+      .replace(/_internal\/05-published\.json/g, "")
+      .replace(/_internal\/06-social-published\.json/g, "");
+    assert.ok(
+      !/05-published\.json/.test(stripped),
+      "ref bare (raiz) a 05-published.json no stage-0 — deve ser _internal/",
     );
-    // E ao menos uma menção _internal/ presente (sanity — não foi tudo removido).
+    assert.ok(
+      !/06-social-published\.json/.test(stripped),
+      "ref bare (raiz) a 06-social-published.json no stage-0 — deve ser _internal/",
+    );
+    // Sanity: ao menos uma menção _internal/ presente (não foi tudo removido).
     assert.ok(stage0.includes("_internal/05-published.json"), "deve referenciar _internal/05-published.json");
     assert.ok(stage0.includes("_internal/06-social-published.json"), "deve referenciar _internal/06-social-published.json");
   });
