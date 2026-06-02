@@ -59,54 +59,6 @@ export interface MeasureResult {
 const URL_RE = /https?:\/\/[^\s)]+/g;
 
 /**
- * #1709: uma linha que é APENAS o título do destaque — um markdown link
- * standalone, opcionalmente em **negrito**: `**[Título](URL)**` ou `[Título](URL)`
- * (formato #599 — URL embedada no título).
- */
-const TITLE_LINK_LINE_RE =
-  /^\*{0,2}\[[^\]]+\]\((?:https?:\/\/|#)[^)]*\)\*{0,2}$/;
-
-/**
- * #1709: remove do topo do corpo do destaque as OPÇÕES EXTRAS de título,
- * mantendo a primeira. Pré-title-picker o writer emite 3 opções de título
- * (`**[Opção N](URL)**`); pós-picker e a versão PUBLICADA têm 1. Medir as 3
- * inflava o char count em ~120-170 chars, gerando falso `destaque-max-chars` e
- * descasando do publicado.
- *
- * Mantém 1 título (= realidade publicada, "body + 1 título") em vez de remover
- * todos: assim o baseline contra o qual os thresholds min/max foram calibrados
- * (medição pós-poda, já com 1 título) NÃO muda — só a medição pré-poda (3 →1)
- * é corrigida. Só toca títulos no formato markdown-link no topo do bloco; prosa
- * e "Por que isso importa" são preservados. Exportada pra teste.
- */
-export function stripExtraTitleOptions(body: string): string {
-  const lines = body.split("\n");
-  const out: string[] = [];
-  let titlesKept = 0;
-  let inLeadingRegion = true;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (inLeadingRegion) {
-      if (trimmed === "") {
-        out.push(line);
-        continue;
-      }
-      if (TITLE_LINK_LINE_RE.test(trimmed)) {
-        if (titlesKept === 0) {
-          out.push(line); // mantém a 1ª opção (= título publicado)
-          titlesKept++;
-        }
-        // descarta a 2ª/3ª opção
-        continue;
-      }
-      inLeadingRegion = false; // primeira linha de prosa encerra a região de título
-    }
-    out.push(line);
-  }
-  return out.join("\n");
-}
-
-/**
  * Identifica blocos de destaque na markdown e mede cada um.
  *
  * Estrutura esperada (de `context/templates/newsletter.md`):
@@ -152,10 +104,7 @@ export function parseHighlights(reviewedMd: string): MeasureResult {
 
     const number = parseInt(m[1], 10);
     const category = m[2].trim();
-    // #1709: remove as opções EXTRAS de título (mantém 1) antes de medir —
-    // pré-title-picker há 3 opções `**[Opção](URL)**`; medir as 3 inflava ~150
-    // chars e descasava do publicado (1 título). Mede "body + 1 título".
-    const body = stripExtraTitleOptions(m[3]);
+    const body = m[3];
 
     // Remove URLs antes de medir
     const bodyNoUrls = body.replace(URL_RE, "");
