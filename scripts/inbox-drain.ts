@@ -199,17 +199,68 @@ function getHeader(msg: GmailMessage, name: string): string {
 }
 
 /**
- * Dedup forwards within a thread (#656). Quando o editor encaminha uma
- * newsletter pra inbox editorial, o Gmail agrupa o original + Fwd no mesmo
- * thread. Ingerir os dois duplica os links no pool de submissões. Se o thread
- * tem ao menos uma mensagem com subject não-Fwd: (o original), preferir essas;
- * caso contrário (thread degenerate só com Fwd:), retornar todas.
+ * Normaliza o corpo text/plain de uma mensagem pra dedup intra-thread (#1716):
+ * colapsa runs de whitespace (incl. CRLF vs LF entre cópia Sent e recebida) e
+ * trim. Duas cópias do MESMO email — a cópia em Sent (de vjpixel@) + a cópia
+ * recebida quando o editor compõe direto pra diariaeditor@ (sem prefixo Fwd:) —
+ * produzem o mesmo normalizado. NÃO faz lowercase: preservar o case evita
+ * colapsar mensagens distintas cujo único delta seria caixa (ex: paths de URL
+ * case-sensitive).
+ */
+function normalizeBodyForDedup(msg: GmailMessage): string {
+  return extractTextBody(msg.payload).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Dedup forwards within a thread (#656 + #1716). Quando o editor traz uma
+ * submissão pra inbox editorial, o Gmail pode agrupar múltiplas cópias no mesmo
+ * thread. Dois casos:
+ *
+ * 1. **Encaminhamento (#656)**: original + `Fwd:`/`Fw:` no mesmo thread. Se há
+ *    ao menos uma mensagem não-Fwd: (o original), preferir essas; caso contrário
+ *    (thread só com Fwd:), retornar todas.
+ * 2. **Compose-direto (#1716)**: o editor escreve direto pra diariaeditor@ → o
+ *    Gmail agrupa a cópia em Sent + a cópia recebida (forward de volta pra
+ *    inbox), AMBAS sem prefixo Fwd:. A dedup por subject (caso 1) não as pegava,
+ *    então a mesma URL era ingerida 2×. Colapsamos essas cópias ANTES do filtro
+ *    de subject, por DUAS keys complementares:
+ *    - **Message-ID** (identidade RFC822): robusta a re-encoding/footer entre
+ *      as cópias, quando o auto-forward preserva o header. Nunca colapsa
+ *      mensagens distintas (Message-IDs são únicos por mensagem por RFC).
+ *    - **Corpo normalizado**: pega o caso em que o auto-forward REGENERA o
+ *      Message-ID mas o corpo é idêntico (cenário canônico do #1716).
+ *    Colapsa se QUALQUER uma das keys bater. Keys vazias (sem Message-ID, ou
+ *    corpo vazio) NÃO dedupam — downstream já pula mensagens sem conteúdo, e
+ *    uma key vazia comum colapsaria mensagens legitimamente distintas.
  */
 export function dedupForwards(messages: GmailMessage[]): GmailMessage[] {
+  // #1716: passo 1 — colapsa cópias do mesmo email (sent + received) por
+  // Message-ID OU corpo, preservando a 1ª ocorrência (ordem cronológica do
+  // Gmail → Sent).
+  const seenIds = new Set<string>();
+  const seenBodies = new Set<string>();
+  const contentDeduped: GmailMessage[] = [];
+  for (const m of messages) {
+    const msgId = getHeader(m, "Message-ID").trim();
+    const bodyKey = normalizeBodyForDedup(m);
+    if (
+      (msgId !== "" && seenIds.has(msgId)) ||
+      (bodyKey !== "" && seenBodies.has(bodyKey))
+    ) {
+      continue;
+    }
+    if (msgId !== "") seenIds.add(msgId);
+    if (bodyKey !== "") seenBodies.add(bodyKey);
+    contentDeduped.push(m);
+  }
+
+  // #656: passo 2 — preferir original sobre Fwd: quando ambos coexistem.
   const isForwardSubject = (m: GmailMessage) =>
     /^\s*(Fwd:|Fw:)/i.test(getHeader(m, "Subject"));
-  const hasNonForward = messages.some((m) => !isForwardSubject(m));
-  return hasNonForward ? messages.filter((m) => !isForwardSubject(m)) : messages;
+  const hasNonForward = contentDeduped.some((m) => !isForwardSubject(m));
+  return hasNonForward
+    ? contentDeduped.filter((m) => !isForwardSubject(m))
+    : contentDeduped;
 }
 
 // ---------------------------------------------------------------------------
