@@ -95,7 +95,7 @@ Nessa edição, {curr_narrative}.
 
 Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse exercício, há pelo menos um pequeno erro em cada edição.
 
-**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a [um livro sobre IA entre os que recomendamos](https://diaria.beehiiv.com/livros-sobre-ia), a ser sorteado mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.
+**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da Diar.ia, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.
 
 ---
 

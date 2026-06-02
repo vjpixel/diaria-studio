@@ -84,7 +84,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 
    {placeholder — script render-erro-intencional.ts substitui pós-Clarice}
 
-   Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal de livros.
+   Esta edição tem um erro proposital. Responda este e-mail com a correção para concorrer ao sorteio mensal.
 
    ---
    ```
