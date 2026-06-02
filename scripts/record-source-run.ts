@@ -80,127 +80,153 @@ function slugify(s: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-const args = parseArgs(process.argv.slice(2));
-
-if (!args.source) {
-  console.error("--source é obrigatório");
-  process.exit(2);
-}
-const outcome = args.outcome as Outcome;
-if (!["ok", "fail", "timeout"].includes(outcome)) {
-  console.error(`--outcome deve ser ok|fail|timeout (recebido: ${outcome})`);
-  process.exit(2);
+export interface RunReport {
+  source: string;
+  slug: string;
+  outcome: Outcome;
+  attempts: number;
+  consecutive_failures: number;
+  failure_timestamps: string[];
+  log_path: string;
 }
 
-const now = new Date().toISOString();
-const src = args.source;
-const slug = slugify(src);
-const durationMs = args["duration-ms"] ? Number(args["duration-ms"]) : null;
-const articlesCount = (() => {
-  if (!args["articles-json"]) return 0;
-  try {
-    return JSON.parse(args["articles-json"]).length ?? 0;
-  } catch {
-    return 0;
-  }
-})();
-
-// ===== 1. Atualiza source-health.json =====
-
-const healthPath = resolve(process.cwd(), "data/source-health.json");
-let health: HealthFile = { sources: {} };
-if (existsSync(healthPath)) {
-  try {
-    health = JSON.parse(readFileSync(healthPath, "utf8"));
-    if (!health.sources) health.sources = {};
-  } catch (e) {
-    console.error(`health file corrompido, recriando: ${(e as Error).message}`);
-    health = { sources: {} };
-  }
-}
-
-const entry: SourceEntry = health.sources[src] ?? {
-  attempts: 0,
-  successes: 0,
-  failures: 0,
-  timeouts: 0,
-  last_success_iso: null,
-  last_failure_iso: null,
-  last_duration_ms: null,
-  recent_outcomes: [],
-  total_articles: 0,
-};
-
-entry.attempts += 1;
-if (durationMs !== null) entry.last_duration_ms = durationMs;
-
-if (outcome === "ok") {
-  entry.successes += 1;
-  entry.last_success_iso = now;
-  entry.total_articles += articlesCount;
-} else if (outcome === "fail") {
-  entry.failures += 1;
-  entry.last_failure_iso = now;
-} else if (outcome === "timeout") {
-  entry.timeouts += 1;
-  entry.last_failure_iso = now;
-}
-
-entry.recent_outcomes.push({ outcome, timestamp: now });
-if (entry.recent_outcomes.length > 10) {
-  entry.recent_outcomes.splice(0, entry.recent_outcomes.length - 10);
-}
-
-health.sources[src] = entry;
-writeFileSync(healthPath, JSON.stringify(health, null, 2) + "\n", "utf8");
-
-// ===== 2. Anexa log individual por fonte =====
-
-const sourceLogPath = resolve(process.cwd(), `data/sources/${slug}.jsonl`);
-mkdirSync(dirname(sourceLogPath), { recursive: true });
-
-let articles: Array<{ title?: string; url?: string; published_at?: string }> = [];
-if (args["articles-json"]) {
-  try {
-    articles = JSON.parse(args["articles-json"]);
-  } catch (e) {
-    console.error(`articles-json inválido, log individual sem detalhe: ${(e as Error).message}`);
-  }
-}
-
-const logEntry = {
-  timestamp: now,
-  source: src,
-  edition: args.edition ?? null,
-  outcome,
-  duration_ms: durationMs,
-  reason: args.reason ?? null,
-  query_used: args["query-used"] ?? null,
-  articles_count: articlesCount,
-  articles: articles.map((a) => ({
-    title: a.title ?? null,
-    url: a.url ?? null,
-    published_at: a.published_at ?? null,
-  })),
-};
-
-appendFileSync(sourceLogPath, JSON.stringify(logEntry) + "\n", "utf8");
-
-// Calcular failure streak via helper compartilhado (#1665). A lógica inline
-// antiga (findIndex outcome==="ok") contava `empty` (fetch OK, zero artigos —
-// escrito pelo batch path no MESMO data/source-health.json) como falha,
-// inflando o streak. computeFailureStreak conta só falhas DURAS (fail/timeout).
-// O #1576 corrigiu o helper mas esqueceu esta cópia inline duplicada.
-const { consecutive_failures, failure_timestamps } = computeFailureStreak(entry);
-
-console.log(
-  JSON.stringify({
-    source: src,
-    slug,
-    outcome,
+/**
+ * #1683: build do report de saída (stdout do CLI) a partir do entry agregado.
+ * Pura/testável — delega o streak ao helper compartilhado computeFailureStreak
+ * (#1665). A lógica inline antiga (findIndex outcome==="ok") contava `empty`
+ * (fetch OK, zero artigos) como falha, inflando o streak; computeFailureStreak
+ * conta só falhas DURAS (fail/timeout). Antes top-level (não-testável); extraída.
+ */
+export function buildRunReport(
+  entry: SourceEntry,
+  ctx: { source: string; slug: string; outcome: Outcome; logPath: string },
+): RunReport {
+  const { consecutive_failures, failure_timestamps } = computeFailureStreak(entry);
+  return {
+    source: ctx.source,
+    slug: ctx.slug,
+    outcome: ctx.outcome,
     attempts: entry.attempts,
     consecutive_failures,
     failure_timestamps,
-    log_path: sourceLogPath,
-  }),
-);
+    log_path: ctx.logPath,
+  };
+}
+
+function main(): void {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (!args.source) {
+    console.error("--source é obrigatório");
+    process.exit(2);
+  }
+  const outcome = args.outcome as Outcome;
+  if (!["ok", "fail", "timeout"].includes(outcome)) {
+    console.error(`--outcome deve ser ok|fail|timeout (recebido: ${outcome})`);
+    process.exit(2);
+  }
+
+  const now = new Date().toISOString();
+  const src = args.source;
+  const slug = slugify(src);
+  const durationMs = args["duration-ms"] ? Number(args["duration-ms"]) : null;
+  const articlesCount = (() => {
+    if (!args["articles-json"]) return 0;
+    try {
+      return JSON.parse(args["articles-json"]).length ?? 0;
+    } catch {
+      return 0;
+    }
+  })();
+
+  // ===== 1. Atualiza source-health.json =====
+
+  const healthPath = resolve(process.cwd(), "data/source-health.json");
+  let health: HealthFile = { sources: {} };
+  if (existsSync(healthPath)) {
+    try {
+      health = JSON.parse(readFileSync(healthPath, "utf8"));
+      if (!health.sources) health.sources = {};
+    } catch (e) {
+      console.error(`health file corrompido, recriando: ${(e as Error).message}`);
+      health = { sources: {} };
+    }
+  }
+
+  const entry: SourceEntry = health.sources[src] ?? {
+    attempts: 0,
+    successes: 0,
+    failures: 0,
+    timeouts: 0,
+    last_success_iso: null,
+    last_failure_iso: null,
+    last_duration_ms: null,
+    recent_outcomes: [],
+    total_articles: 0,
+  };
+
+  entry.attempts += 1;
+  if (durationMs !== null) entry.last_duration_ms = durationMs;
+
+  if (outcome === "ok") {
+    entry.successes += 1;
+    entry.last_success_iso = now;
+    entry.total_articles += articlesCount;
+  } else if (outcome === "fail") {
+    entry.failures += 1;
+    entry.last_failure_iso = now;
+  } else if (outcome === "timeout") {
+    entry.timeouts += 1;
+    entry.last_failure_iso = now;
+  }
+
+  entry.recent_outcomes.push({ outcome, timestamp: now });
+  if (entry.recent_outcomes.length > 10) {
+    entry.recent_outcomes.splice(0, entry.recent_outcomes.length - 10);
+  }
+
+  health.sources[src] = entry;
+  writeFileSync(healthPath, JSON.stringify(health, null, 2) + "\n", "utf8");
+
+  // ===== 2. Anexa log individual por fonte =====
+
+  const sourceLogPath = resolve(process.cwd(), `data/sources/${slug}.jsonl`);
+  mkdirSync(dirname(sourceLogPath), { recursive: true });
+
+  let articles: Array<{ title?: string; url?: string; published_at?: string }> = [];
+  if (args["articles-json"]) {
+    try {
+      articles = JSON.parse(args["articles-json"]);
+    } catch (e) {
+      console.error(`articles-json inválido, log individual sem detalhe: ${(e as Error).message}`);
+    }
+  }
+
+  const logEntry = {
+    timestamp: now,
+    source: src,
+    edition: args.edition ?? null,
+    outcome,
+    duration_ms: durationMs,
+    reason: args.reason ?? null,
+    query_used: args["query-used"] ?? null,
+    articles_count: articlesCount,
+    articles: articles.map((a) => ({
+      title: a.title ?? null,
+      url: a.url ?? null,
+      published_at: a.published_at ?? null,
+    })),
+  };
+
+  appendFileSync(sourceLogPath, JSON.stringify(logEntry) + "\n", "utf8");
+
+  console.log(JSON.stringify(buildRunReport(entry, { source: src, slug, outcome, logPath: sourceLogPath })));
+}
+
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}
