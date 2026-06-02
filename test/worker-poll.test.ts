@@ -37,6 +37,8 @@ import {
   requiredSecretsForRoute,
   missingSecretsForRoute,
   votePageHtml,
+  recordVoteLog,
+  buildVoteLogEntry,
   type Env,
 } from "../workers/poll/src/index.ts";
 
@@ -862,6 +864,98 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
     assert.doesNotMatch(html, /<div class="nick-box">/);
     // Mas a media query e o body responsivo continuam presentes.
     assert.match(html, /@media \(max-width: 480px\)/);
+  });
+});
+
+describe("buildVoteLogEntry (#1657)", () => {
+  it("monta a entrada com email_hash (campo), sem campo email cru", () => {
+    const e = buildVoteLogEntry({
+      ts: "2026-06-02T12:00:00.000Z",
+      edition: "260602",
+      monthSlug: "2026-06",
+      emailHash: "deadbeef",
+      choice: "A",
+      correct: true,
+    });
+    assert.deepEqual(e, {
+      ts: "2026-06-02T12:00:00.000Z",
+      edition: "260602",
+      month_slug: "2026-06",
+      email_hash: "deadbeef",
+      choice: "A",
+      correct: true,
+    });
+    assert.ok(!("email" in e), "não deve carregar email cru");
+  });
+});
+
+describe("recordVoteLog (#1657)", () => {
+  function mockEnv() {
+    const puts: Array<{ key: string; value: string }> = [];
+    const env = {
+      POLL_SECRET: "test-poll-secret",
+      POLL: {
+        put: async (key: string, value: string) => {
+          puts.push({ key, value });
+        },
+      },
+    };
+    return { puts, env: env as unknown as Env };
+  }
+
+  it("grava 1 entrada com email HASHED (não cru) + shape + key correta", async () => {
+    const { puts, env } = mockEnv();
+    await recordVoteLog(env, "user@example.com", "260602", "A", true, "2026-06-02T12:00:00.000Z");
+    assert.equal(puts.length, 1);
+    const { key, value } = puts[0];
+    // PII crua NUNCA aparece — nem na key nem no value.
+    assert.doesNotMatch(key, /user@example\.com/);
+    assert.doesNotMatch(value, /user@example\.com/);
+    const entry = JSON.parse(value);
+    assert.equal(entry.edition, "260602");
+    assert.equal(entry.month_slug, "2026-06");
+    assert.equal(entry.choice, "A");
+    assert.equal(entry.correct, true);
+    assert.equal(entry.ts, "2026-06-02T12:00:00.000Z");
+    assert.ok(typeof entry.email_hash === "string" && entry.email_hash.length >= 32, "hash hex");
+    assert.match(key, /^vote-log:2026-06:260602:/);
+    assert.ok(key.endsWith(entry.email_hash), "key termina com o email_hash");
+  });
+
+  it("email_hash estável por email (coorte) e distinto entre emails", async () => {
+    const a = mockEnv();
+    await recordVoteLog(a.env, "x@y.com", "260602", "A", null, "t1");
+    const b = mockEnv();
+    await recordVoteLog(b.env, "x@y.com", "260603", "B", false, "t2");
+    const c = mockEnv();
+    await recordVoteLog(c.env, "z@y.com", "260602", "A", null, "t1");
+    const ha = JSON.parse(a.puts[0].value).email_hash;
+    const hb = JSON.parse(b.puts[0].value).email_hash;
+    const hc = JSON.parse(c.puts[0].value).email_hash;
+    assert.equal(ha, hb, "mesmo email → mesma hash (recorrência por coorte)");
+    assert.notEqual(ha, hc, "emails diferentes → hashes diferentes");
+  });
+
+  it("edition malformado (monthSlug null) → não grava (não corrompe)", async () => {
+    const { puts, env } = mockEnv();
+    await recordVoteLog(env, "x@y.com", "naoehdata", "A", null, "t");
+    assert.equal(puts.length, 0);
+  });
+
+  it("email_hash domain-separado: ≠ poll_sig do email cru, = HMAC(votelog:email) (review #1736)", async () => {
+    const { puts, env } = mockEnv();
+    await recordVoteLog(env, "user@example.com", "260602", "A", null, "t");
+    const logHash = JSON.parse(puts[0].value).email_hash;
+    const { createHmac } = await import("node:crypto");
+    const bareEmailSig = createHmac("sha256", "test-poll-secret")
+      .update("user@example.com")
+      .digest("hex");
+    const domainSep = createHmac("sha256", "test-poll-secret")
+      .update("votelog:user@example.com")
+      .digest("hex");
+    // poll_sig (HMAC do email cru) viaja no ?sig= — o id de coorte NÃO pode ser ele.
+    assert.notEqual(logHash, bareEmailSig, "não pode ser o poll_sig");
+    assert.equal(logHash, domainSep, "deve ser HMAC de votelog:{email}");
   });
 });
 
