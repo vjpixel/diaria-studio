@@ -309,22 +309,32 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
             });
             continue;
           }
-          // #1664: existir não basta — dispatch real exige um status de
-          // dispatch (scheduled/draft/published/failed...). O marcador de
-          // bypass pra paste manual é status="pending_manual"; um post sem
-          // status nenhum é stub vazio. NÃO usar url como sinal: o LinkedIn
-          // auto-dispatch (route worker_queue) grava url=null no write — a URL
-          // só existe depois que o Worker dispara o post agendado, então !url
-          // dava false-positive em TODA edição real (260525-260601).
-          const noneDispatched = platformPosts.every(
-            (p) => !p.status || p.status === "pending_manual",
+          // #1664/#1682: existir não basta — dispatch real exige um status de
+          // dispatch RECONHECIDO. NÃO usar url como sinal: o LinkedIn auto-dispatch
+          // (route worker_queue) grava url=null no write — a URL só existe depois
+          // que o Worker dispara o agendado, então !url dava false-positive em
+          // TODA edição real (260525-260601).
+          //
+          // #1682: ALLOWLIST (não blacklist). O blacklist anterior
+          // (`every(p => !p.status || p.status === "pending_manual")`) tinha 2
+          // frestas: (a) bypass PARCIAL passava — dispatcha 1 de 3 e deixa 2
+          // pending_manual → `.every` false → nenhuma violation (o exato
+          // silent-bypass que o #1575 pega); (b) status off-enum ("skipped") é
+          // truthy != pending_manual → tratado como dispatched. Agora: viola se
+          // QUALQUER post não tem status de dispatch reconhecido. `failed` fica no
+          // allowlist (foi tentado; o sibling social-published-no-failed em stage-5
+          // cobre a falha).
+          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed"]);
+          const notFullyDispatched = !platformPosts.every(
+            (p) => p.status != null && DISPATCH_STATUSES.has(p.status),
           );
-          if (noneDispatched) {
+          if (notFullyDispatched) {
             violations.push({
               rule: `consent-binding-${platform}`,
               message:
-                `consent.${platform}="auto" mas todos os posts[platform="${platform}"] ` +
-                `têm status="pending_manual" ou ausente — dispatch automático não aconteceu.`,
+                `consent.${platform}="auto" mas nem todos os posts[platform="${platform}"] ` +
+                `têm status de dispatch (scheduled/draft/published/failed) — ` +
+                `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
               source_issue: "#1575",
               severity: "error",
               file: socialPath,
