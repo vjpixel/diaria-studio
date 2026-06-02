@@ -500,6 +500,66 @@ export function hasLaunchVerb(article: Article): boolean {
 }
 
 /**
+ * #1698: explainer/análise — título COMEÇA com prefixo de explicação
+ * ("How X helps/works", "Why ...", "Beyond ...", "Understanding ...",
+ * "A guide to ...", "What is ...", "The case for ...", "Lessons from ...").
+ * Em domínio oficial isso NÃO é anúncio de produto → noticias (radar).
+ * Per editorial-rules: LANÇAMENTOS = anúncio oficial de produto/atualização;
+ * análise/opinião/explainer vão pra RADAR.
+ *
+ * Casos reais (260602) que caíam em LANÇAMENTOS indevidamente:
+ *   - "How Cosmos 3 Helps Physical AI Think Before It Acts" (blogs.nvidia.com)
+ *   - "Beyond LLMs: Why Scalable Enterprise AI Adoption Depends on Agent Logic"
+ *
+ * Anchored no INÍCIO do título (alta confiança — esses prefixos quase nunca
+ * iniciam um anúncio de produto). A branch "How" pede um verbo de explicação
+ * (helps/works/thinks/…) pra não colidir com customer-story ("How we built X",
+ * já coberto por isCustomerStory) nem com tutorial ("How to use X", coberto por
+ * isTutorialByKeyword antes do bloco de lançamento). Guard: não dispara se há
+ * verbo de anúncio — anúncio sempre vence (evita falso-negativo em launches).
+ */
+// Removida a branch "what" do EN: `what the …` casava títulos de marketing/FAQ
+// de lançamento ("What the new GPT-5 API unlocks") → falso-positivo. PT-BR
+// adicionado (#1717 review) pra consistência com os helpers irmãos (DEAL/UPDATE
+// já têm PT): como X funciona/ajuda, por que, entendendo, um guia para/de.
+const EXPLAINER_TITLE_RE =
+  /^\s*(how\s+\S+.*\b(help|helps|works?|thinks?|enabl\w+|chang\w+|matters?|powers?|reshap\w+|learns?)\b|why\s+\w|beyond\s+\w|understanding\s+\w|a\s+(guide|primer|deep[-\s]?dive|look)\s+(to|on|into|at)\b|the\s+case\s+for\b|lessons?\s+(from|learned|of)\b|rethinking\s+\w|demystif\w+|explained\b|como\s+\S+.*\b(funciona|funcionam|ajuda|muda|importa|aprende)\b|por\s?que\s+\w|entendendo\s+\w|um\s+guia\s+(para|de|sobre|completo)\b|o\s+caso\s+(a\s+favor\s+)?(de|para)\b)/i;
+
+export function isExplainerByTitle(article: Article): boolean {
+  if (hasLaunchVerb(article)) return false; // anúncio explícito vence
+  return EXPLAINER_TITLE_RE.test(article.title ?? "");
+}
+
+/**
+ * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
+ * notícia/comentário/análise. Os domínios de "Use Melhor" (simonwillison.net,
+ * blogs de devrel) também postam comentário/cobertura, e a classificação por
+ * domínio (sem checagem de intenção) os jogava em use_melhor indevidamente.
+ *
+ * MUITO conservador — falso-ejetar um tutorial real custa mais que manter um
+ * comentário borderline. Só desclassifica com sinal inequívoco de não-tutorial:
+ *   - type_hint do agent (que LEU a página) = noticia OU opiniao, OU
+ *   - business deal (funding/M&A) ou relatório no título.
+ *
+ * Deliberadamente NÃO usa:
+ *   - `isExplainerByTitle` — "How X works" / "Understanding Y" / "A guide to Z"
+ *     são EXATAMENTE os títulos de tutoriais canônicos nesses domínios
+ *     (fast.ai, eugeneyan, Raschka). Usá-lo aqui ejetaria tutoriais reais
+ *     pro RADAR (#1717 review). O prefixo explainer só desclassifica em domínio
+ *     de LANÇAMENTO (lá um "How X works" é explainer, não tutorial).
+ *   - `type_hint === "analise"` — deep-dives analíticos nesses domínios são
+ *     frequentemente tutoriais ("Building an LLM from scratch", "Evaluating
+ *     LLMs: a reference"); ejetá-los esvaziaria use_melhor.
+ */
+export function isNewsNotTutorial(article: Article): boolean {
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence
+  if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
+    return true;
+  }
+  return isBusinessDeal(article) || isReport(article);
+}
+
+/**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente
  * seria lançamento. Patterns são CONSERVADORES — pedem contexto explícito
  * pra evitar match em marketing copy ("breakthrough in performance",
@@ -797,8 +857,11 @@ export function categorize(article: Article): Category {
   //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
   //    Keyword tutorial vem DEPOIS de pesquisa pra evitar falso positivo
   //    em papers acadêmicos ("A Tutorial on Diffusion Models" em arxiv).
-  if (TUTORIAL_DOMAINS.has(host)) return "tutorial";
-  if (TUTORIAL_PATTERNS.some((p) => p.test(full))) return "tutorial";
+  // #1712: o domínio/pattern de tutorial é forte, mas esses blogs também postam
+  // notícia/comentário/análise. Desclassificar (cair pro fluxo geral) quando há
+  // sinal claro de não-tutorial — senão use_melhor fica poluído.
+  if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return "tutorial";
+  if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) return "tutorial";
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {
@@ -856,6 +919,13 @@ export function categorize(article: Article): Category {
     if (isCustomerStory(article)) return "noticias"; // #898
     if (isUpdate(article)) return "noticias";
     if (isReport(article)) return "noticias"; // #1096 — relatórios/análises não são lançamentos
+    // #1698 — "How X helps", "Why...", "Beyond..." em blog oficial = explainer.
+    // Roda APÓS o short-circuit type_hint==='lancamento' (acima): isso é
+    // intencional. Se o agent LEU a página e confirmou lançamento, ele vence o
+    // heurístico de título — reordenar geraria falso-positivo em launch blogs com
+    // título explainer ("Why we built X", sem verbo de anúncio). O override de
+    // explainer cobre o gap real do #1698: itens de RSS/websearch SEM type_hint.
+    if (isExplainerByTitle(article)) return "noticias";
     if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
     if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
 
