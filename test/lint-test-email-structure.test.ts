@@ -63,6 +63,55 @@ desc 3
     assert.equal(lan?.item_count, 2);
     assert.equal(outras?.item_count, 1);
   });
+
+  it("#1660: detecta USE MELHOR e VÍDEOS (headers com emoji)", () => {
+    const md = `
+**📡 RADAR**
+
+**[Notícia 1](https://r.com/1)**
+desc
+
+**[Notícia 2](https://r.com/2)**
+desc
+
+---
+
+**🛠️ USE MELHOR**
+
+**[Tutorial X](https://t.com/x)**
+desc
+
+---
+
+**📺 VÍDEOS**
+
+**[Vídeo A](https://v.com/a)**
+desc
+
+**[Vídeo B](https://v.com/b)**
+desc
+`;
+    const r = extractMdStructure(md);
+    const radar = r.sections.find((s) => s.name === "RADAR");
+    const useMelhor = r.sections.find((s) => s.name === "USE MELHOR");
+    const videos = r.sections.find((s) => s.name === "VÍDEOS");
+    assert.equal(useMelhor?.item_count, 1, "USE MELHOR deve ser detectada");
+    assert.equal(videos?.item_count, 2, "VÍDEOS deve ser detectada");
+    // #1660 agravante: boundary de VÍDEOS impede RADAR de super-contar.
+    assert.equal(radar?.item_count, 2, "RADAR não deve super-contar itens de USE MELHOR/VÍDEOS");
+  });
+
+  it("#1660: VÍDEO singular (#1324) também é detectado", () => {
+    const md = `
+**📺 VÍDEO**
+
+**[Único vídeo](https://v.com/só)**
+desc
+`;
+    const r = extractMdStructure(md);
+    const videos = r.sections.find((s) => s.name === "VÍDEOS");
+    assert.equal(videos?.item_count, 1);
+  });
 });
 
 describe("extractEmailStructure (#1248)", () => {

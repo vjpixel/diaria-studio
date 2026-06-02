@@ -53,7 +53,26 @@ export interface StructureResult {
 
 // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS em edições novas.
 // Legacy aliases mantidos pra re-lint de edições antigas (re-render).
-const KNOWN_SECTIONS = ["LANÇAMENTOS", "RADAR", "PESQUISAS", "OUTRAS NOTÍCIAS"];
+// #1660: USE MELHOR (#1568) e VÍDEOS (#1629) FALTAVAM — sem eles o lint não
+// emitia section_missing quando o paste no Beehiiv dropava/truncava essas
+// seções, e o slice de RADAR corria até o fim (sem boundary de VÍDEOS),
+// super-contando links de RADAR. Cada seção carrega o `name` canônico + um
+// `body` regex que tolera acento (í/i) e singular/plural (#1324) — usado tanto
+// no path MD (regex) quanto no path email (antes `indexOf` literal, frágil).
+interface KnownSection {
+  /** Nome canônico exibido no snapshot/diff. */
+  name: string;
+  /** Corpo do regex do header (sem âncoras), igual ao newsletter-count.ts. */
+  body: string;
+}
+const KNOWN_SECTIONS: KnownSection[] = [
+  { name: "LANÇAMENTOS", body: "LAN[ÇC]AMENTOS?" },
+  { name: "RADAR", body: "RADAR" },
+  { name: "PESQUISAS", body: "PESQUISAS?" },
+  { name: "OUTRAS NOTÍCIAS", body: "OUTRAS?\\s+NOT[ÍI]CIAS?" },
+  { name: "USE MELHOR", body: "USE\\s+MELHOR" },
+  { name: "VÍDEOS", body: "V[ÍI]DEOS?" },
+];
 
 /**
  * Extrai snapshot estrutural de MD (source).
@@ -79,13 +98,13 @@ export function extractMdStructure(md: string): StructureSnapshot {
   const sectionEmojiOpt = "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
   const sections: { name: string; item_count: number }[] = [];
   for (const sec of KNOWN_SECTIONS) {
-    const secRe = new RegExp(`\\*\\*${sectionEmojiOpt}${sec.replace(/\s/g, "\\s+")}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋📡]|$)`, "iu");
+    const secRe = new RegExp(`\\*\\*${sectionEmojiOpt}${sec.body}\\*\\*([\\s\\S]*?)(?=\\n---|\\n\\*\\*[A-ZÇÃÕÉ\\s🎁🙋📡]|$)`, "iu");
     const match = md.match(secRe);
     if (!match) continue;
     const body = match[1];
     // Conta linhas de item: `**[Title](URL)**` na seção
     const items = body.match(/\*\*\[[^\]]+\]\([^)]+\)\*\*/g) ?? [];
-    sections.push({ name: sec, item_count: items.length });
+    sections.push({ name: sec.name, item_count: items.length });
   }
 
   return { has_eia, destaques, sections };
@@ -123,16 +142,22 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   // procurar trechos curtos (5-90 chars) em uppercase próximo a links.
   // Trade-off: pode pegar falso-positivo. Aceitável pra esse lint informativo.
   const sections: { name: string; item_count: number }[] = [];
+  // #1660: posição de cada seção via regex (tolera acento í/i + singular/plural),
+  // não `indexOf` literal — senão "VÍDEO" (singular, #1324) ou "VIDEOS" sem
+  // acento eram invisíveis e o boundary de RADAR corria até o fim.
+  const sectionPos = (body: string, from = 0): number => {
+    const re = new RegExp(body, "iu");
+    const m = content.slice(from).match(re);
+    return m?.index === undefined ? -1 : from + m.index;
+  };
   for (const sec of KNOWN_SECTIONS) {
-    // Procura no HTML original (case-insensitive) — assume section name aparece
-    // como texto sem entities (LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS).
-    const idx = content.toUpperCase().indexOf(sec);
+    const idx = sectionPos(sec.body);
     if (idx < 0) continue;
-    const sliceStart = idx + sec.length;
+    const sliceStart = idx + (content.slice(idx).match(new RegExp(sec.body, "iu"))?.[0]?.length ?? sec.name.length);
     let sliceEnd = content.length;
     for (const other of KNOWN_SECTIONS) {
-      if (other === sec) continue;
-      const otherIdx = content.toUpperCase().indexOf(other, sliceStart);
+      if (other.name === sec.name) continue;
+      const otherIdx = sectionPos(other.body, sliceStart);
       if (otherIdx > sliceStart && otherIdx < sliceEnd) sliceEnd = otherIdx;
     }
     const slice = content.slice(sliceStart, sliceEnd);
@@ -141,7 +166,7 @@ export function extractEmailStructure(content: string): StructureSnapshot {
     // duplicar. Fallback heurística: contar título e descrição em pares.
     // Pra reduzir ruído, contamos só hrefs primeiros do tipo cnnbrasil/anthropic etc
     // — mas isso é frágil. Mantemos contagem simples e logamos como aproximação.
-    sections.push({ name: sec, item_count: linkCount });
+    sections.push({ name: sec.name, item_count: linkCount });
   }
 
   return { has_eia, destaques, sections };
