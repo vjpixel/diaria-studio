@@ -69,25 +69,40 @@ describe("evaluateStaleness — orchestration (#120)", () => {
     assert.equal(social!.lag_minutes, 160);
   });
 
-  it("Stage 6: imagem 04-d1-2x1 mais antiga também flag", () => {
+  it("#1710: Stage 6 imagem 04-d1-2x1 mais antiga que SEU PROMPT também flag", () => {
     const get = mkGetter({
       "04-d1-2x1.jpg": Date.parse("2026-04-24T18:00:00Z"),
-      "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"),
+      "_internal/02-d1-prompt.md": Date.parse("2026-04-24T22:00:00Z"),
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
     const img = stale.find((s) => s.downstream === "04-d1-2x1.jpg");
     assert.ok(img);
-    assert.equal(img!.upstream, "02-reviewed.md");
+    assert.equal(img!.upstream, "_internal/02-d1-prompt.md");
   });
 
-  it("Stage 6 limpo: tudo gerado depois de 02-reviewed.md", () => {
+  it("#1710: imagem mais nova que o PROMPT mas mais velha que 02-reviewed → NÃO stale", () => {
+    // O FP do #1710: editor ajusta texto no 02-reviewed pós-imagem (ou sync pull
+    // toca o mtime). A imagem deriva do prompt, não do reviewed — não é stale.
+    const get = mkGetter({
+      "04-d1-2x1.jpg": Date.parse("2026-04-24T20:00:00Z"),
+      "_internal/02-d1-prompt.md": Date.parse("2026-04-24T19:00:00Z"), // prompt + velho que img
+      "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"), // reviewed editado DEPOIS
+    });
+    const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
+    assert.deepEqual(stale.filter((s) => s.downstream.startsWith("04-d")), []);
+  });
+
+  it("Stage 6 limpo: imagens depois dos prompts + social depois do reviewed", () => {
     const get = mkGetter({
       "03-social.md": Date.parse("2026-04-24T22:30:00Z"),
+      "02-reviewed.md": Date.parse("2026-04-24T22:13:13Z"),
       "04-d1-2x1.jpg": Date.parse("2026-04-24T22:35:00Z"),
       "04-d1-1x1.jpg": Date.parse("2026-04-24T22:35:00Z"),
       "04-d2-1x1.jpg": Date.parse("2026-04-24T22:36:00Z"),
       "04-d3-1x1.jpg": Date.parse("2026-04-24T22:37:00Z"),
-      "02-reviewed.md": Date.parse("2026-04-24T22:13:13Z"),
+      "_internal/02-d1-prompt.md": Date.parse("2026-04-24T22:13:13Z"),
+      "_internal/02-d2-prompt.md": Date.parse("2026-04-24T22:13:13Z"),
+      "_internal/02-d3-prompt.md": Date.parse("2026-04-24T22:13:13Z"),
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
     assert.deepEqual(stale, []);
@@ -111,18 +126,20 @@ describe("evaluateStaleness — orchestration (#120)", () => {
     assert.deepEqual(stale, []);
   });
 
-  it("#1413: Stage 4 checa imagens + 03-social.md vs 02-reviewed", () => {
+  it("#1413/#1710: Stage 4 checa imagem vs prompt + 03-social.md vs 02-reviewed", () => {
     const get = mkGetter({
       "04-d1-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
+      "_internal/02-d1-prompt.md": Date.parse("2026-04-24T22:00:00Z"), // imagem stale vs prompt
       "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"),
-      "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // stale (#1413)
+      "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // stale vs reviewed (#1413)
     });
     const stale = evaluateStaleness(STAGE_CHECKS["4"], get);
-    // Esperado: 04-d1-2x1.jpg (stale) + 03-social.md (stale) = 2
+    // Esperado: 04-d1-2x1.jpg (stale vs prompt) + 03-social.md (stale vs reviewed) = 2
     assert.equal(stale.length, 2);
     const downstreams = stale.map((s) => s.downstream);
     assert.ok(downstreams.includes("04-d1-2x1.jpg"));
     assert.ok(downstreams.includes("03-social.md"));
+    assert.equal(stale.find((s) => s.downstream === "04-d1-2x1.jpg")!.upstream, "_internal/02-d1-prompt.md");
   });
 
   it("Stage não-mapeado: vazio", () => {
@@ -134,9 +151,11 @@ describe("evaluateStaleness — orchestration (#120)", () => {
   it("retorna múltiplas entries quando vários downstream estão stale", () => {
     const get = mkGetter({
       "02-reviewed.md": Date.parse("2026-04-24T22:00:00Z"),
-      "03-social.md": Date.parse("2026-04-24T19:00:00Z"),
+      "03-social.md": Date.parse("2026-04-24T19:00:00Z"), // stale vs reviewed
       "04-d1-2x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
+      "_internal/02-d1-prompt.md": Date.parse("2026-04-24T22:00:00Z"), // d1 stale vs prompt
       "04-d2-1x1.jpg": Date.parse("2026-04-24T19:00:00Z"),
+      "_internal/02-d2-prompt.md": Date.parse("2026-04-24T22:00:00Z"), // d2 stale vs prompt
     });
     const stale = evaluateStaleness(STAGE_CHECKS["6"], get);
     assert.equal(stale.length, 3); // 03-social + 04-d1-2x1 + 04-d2-1x1
@@ -163,10 +182,15 @@ describe("STAGE_CHECKS config — fixture do desenho (#120)", () => {
     assert.ok(downstreams.includes("04-d3-1x1.jpg"));
   });
 
-  it("todos os checks de Stage 6 referenciam 02-reviewed.md", () => {
-    for (const c of STAGE_CHECKS["6"]) {
-      assert.ok(c.upstreams.includes("02-reviewed.md"));
-    }
+  it("#1710: 03-social → 02-reviewed; imagens → seu prompt (não reviewed)", () => {
+    const byDown = Object.fromEntries(
+      STAGE_CHECKS["6"].map((c) => [c.downstream, c.upstreams]),
+    );
+    assert.deepEqual(byDown["03-social.md"], ["02-reviewed.md"]);
+    assert.deepEqual(byDown["04-d1-2x1.jpg"], ["_internal/02-d1-prompt.md"]);
+    assert.deepEqual(byDown["04-d1-1x1.jpg"], ["_internal/02-d1-prompt.md"]);
+    assert.deepEqual(byDown["04-d2-1x1.jpg"], ["_internal/02-d2-prompt.md"]);
+    assert.deepEqual(byDown["04-d3-1x1.jpg"], ["_internal/02-d3-prompt.md"]);
   });
 
   it("#1413: Stage 4 cobre imagens + 03-social.md", () => {

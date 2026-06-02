@@ -977,7 +977,11 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
     eia.leaderboardPodium && eia.leaderboardPodium.length > 0
       ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
       : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
-        ? eia.leaderboardTop1.map((e, i) => ({ nickname: e.nickname, rank: i + 1 }))
+        // #1672: `top1` (worker computeTop1) são TODOS líderes em rank 1 —
+        // empatados (mesmo pct E mesmo correct, sem campo rank). Atribuir rank 1 a
+        // todos, não i+1, senão fabricamos 2º/3º (ordem alfabética acidental) pra
+        // quem empatou em 1º.
+        ? eia.leaderboardTop1.map((e) => ({ nickname: e.nickname, rank: 1 }))
         : [];
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.

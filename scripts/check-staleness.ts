@@ -51,24 +51,26 @@ interface StageCheck {
 }
 
 export const STAGE_CHECKS: Record<string, StageCheck[]> = {
-  // Stage 6 (publish social) usa 03-social.md (texto) e 04-d{1,2,3}*.jpg
-  // (imagens). Ambos derivam de 02-reviewed.md (corpo da newsletter,
-  // contém os highlights que viram posts + prompts de imagem).
+  // Stage 6 (publish social): 03-social.md (texto, deriva do corpo 02-reviewed.md)
+  // + 04-d{1,2,3}*.jpg (imagens). #1710: as imagens derivam do PROMPT editorial
+  // (_internal/02-d{N}-prompt.md), que é o que image-generate.ts lê — NÃO do
+  // 02-reviewed.md. Comparar vs reviewed dava falso-positivo toda vez que o
+  // editor ajustava texto pós-imagem (ou o sync pull tocava o mtime do MD).
   "6": [
     { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d1-2x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d1-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d2-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d3-1x1.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
+    { downstream: "04-d1-1x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
+    { downstream: "04-d2-1x1.jpg", upstreams: ["_internal/02-d2-prompt.md"] },
+    { downstream: "04-d3-1x1.jpg", upstreams: ["_internal/02-d3-prompt.md"] },
   ],
-  // Stage 4 (publicação): imagens + social. Tudo deriva de 02-reviewed.md
-  // (highlights). #1413: 03-social.md adicionado pra catch editor reestrutura
-  // destaques pós-Stage 2 sem re-rodar social.
+  // Stage 4 (publicação): imagens + social. #1710: imagens vs seu prompt
+  // (_internal/02-d{N}-prompt.md), não 02-reviewed.md. #1413: 03-social.md
+  // vs 02-reviewed.md (catch editor reestruturando destaques pós-Stage 2).
   "4": [
-    { downstream: "04-d1-2x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d1-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d2-1x1.jpg", upstreams: ["02-reviewed.md"] },
-    { downstream: "04-d3-1x1.jpg", upstreams: ["02-reviewed.md"] },
+    { downstream: "04-d1-2x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
+    { downstream: "04-d1-1x1.jpg", upstreams: ["_internal/02-d1-prompt.md"] },
+    { downstream: "04-d2-1x1.jpg", upstreams: ["_internal/02-d2-prompt.md"] },
+    { downstream: "04-d3-1x1.jpg", upstreams: ["_internal/02-d3-prompt.md"] },
     { downstream: "03-social.md", upstreams: ["02-reviewed.md"] },
   ],
   // Stage 3 (social) deriva de 02-reviewed.md.

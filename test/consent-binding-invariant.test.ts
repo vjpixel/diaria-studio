@@ -222,6 +222,65 @@ describe("checkConsentBinding (#1575)", () => {
     }
   });
 
+  it("#1682: bypass PARCIAL (1 scheduled + 2 pending_manual) → violation (allowlist)", () => {
+    // O blacklist anterior (.every pending_manual) NÃO pegava: 1 dispatchado já
+    // fazia .every() false. A allowlist viola se QUALQUER post não tem status de
+    // dispatch reconhecido.
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      writeSocialPublished(dir, [
+        { platform: "linkedin", status: "scheduled", url: null },
+        { platform: "linkedin", status: "pending_manual" },
+        { platform: "linkedin", status: "pending_manual" },
+      ]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `bypass parcial deveria violar; got: ${JSON.stringify(violations)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#1682: status off-enum ('skipped') → violation (allowlist, não blacklist)", () => {
+    // 'skipped' é truthy != pending_manual → o blacklist tratava como dispatched.
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      writeSocialPublished(dir, [{ platform: "linkedin", status: "skipped" }]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `status off-enum deveria violar; got: ${JSON.stringify(violations)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#1682: all-failed → SEM consent violation (foi tentado; sibling no-failed cobre)", () => {
+    // 'failed' está no allowlist de dispatch — a tentativa aconteceu. A falha em
+    // si é coberta por social-published-no-failed (stage-5), não pelo consent.
+    const dir = makeEditionDir();
+    try {
+      writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
+      writeSocialPublished(dir, [
+        { platform: "linkedin", status: "failed", url: null },
+        { platform: "linkedin", status: "failed", url: null },
+        { platform: "linkedin", status: "failed", url: null },
+      ]);
+      const violations = checkConsentBinding(dir);
+      assert.ok(
+        !violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `all-failed NÃO deve violar consent (foi dispatchado); got: ${JSON.stringify(violations)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("#1664: consent.facebook=auto + post sem url → violation", () => {
     const dir = makeEditionDir();
     try {
@@ -234,18 +293,22 @@ describe("checkConsentBinding (#1575)", () => {
     }
   });
 
-  it("#1664: dispatch parcial (1 post real + 1 manual) NÃO viola — pelo menos um real", () => {
+  it("#1682 (reverte #1664): dispatch parcial (1 real + 1 manual) VIOLA — allowlist", () => {
+    // #1664 originalmente tratava "pelo menos 1 real" como OK. #1682 reverteu:
+    // consent=auto significa que TODOS devem dispatchar; 1 real + 1 pending_manual
+    // é silent-bypass parcial (o exato gap que o #1575 existe pra pegar). A
+    // allowlist viola se QUALQUER post não tem status de dispatch reconhecido.
     const dir = makeEditionDir();
     try {
       writeConsent(dir, { newsletter: "manual", linkedin: "auto", facebook: "manual" });
       writeSocialPublished(dir, [
         { platform: "linkedin", status: "scheduled", url: null }, // dispatch real (worker_queue)
-        { platform: "linkedin", status: "pending_manual" },
+        { platform: "linkedin", status: "pending_manual" }, // não dispatchado → bypass parcial
       ]);
       const violations = checkConsentBinding(dir);
       assert.ok(
-        !violations.some((v) => v.rule === "consent-binding-linkedin"),
-        `não esperava violation linkedin (há 1 dispatch real); got: ${JSON.stringify(violations)}`,
+        violations.some((v) => v.rule === "consent-binding-linkedin"),
+        `esperava violation linkedin (bypass parcial); got: ${JSON.stringify(violations)}`,
       );
     } finally {
       rmSync(dir, { recursive: true });

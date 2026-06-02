@@ -12,6 +12,7 @@ import {
   extractContent,
   renderHTML,
   renderEiaStandalone,
+  renderLeaderboardTop1Row,
   extractTemplateBlock,
   extractCoverageLine,
   renderCoverage,
@@ -1638,5 +1639,40 @@ describe("processInlineLinks — parênteses balanceados na URL (#1634)", () => 
     assert.doesNotMatch(html, /href=""/);
     assert.match(html, /\[texto\]\(\)/); // preservado como texto literal
     assert.match(html, /href="https:\/\/b\.com"/); // link válido seguinte ainda funciona
+  });
+});
+
+describe("renderLeaderboardTop1Row top1 fallback (#1672)", () => {
+  const PARA = "margin:0;";
+  it("top1 com 3 empatados em 1º → todos '1º', não fabrica 2º/3º", () => {
+    const eia: any = {
+      leaderboardTop1: [
+        { nickname: "Ana", pct: 100, correct: 5, total: 5 },
+        { nickname: "Bruno", pct: 100, correct: 5, total: 5 },
+        { nickname: "Caio", pct: 100, correct: 5, total: 5 },
+      ],
+      leaderboardPeriod: "maio",
+    };
+    const html = renderLeaderboardTop1Row(eia, PARA);
+    assert.match(html, /1º Ana/);
+    assert.match(html, /1º Bruno/);
+    assert.match(html, /1º Caio/);
+    assert.doesNotMatch(html, /2º/, "não deve fabricar 2º pra empatados em 1º");
+    assert.doesNotMatch(html, /3º/, "não deve fabricar 3º pra empatados em 1º");
+  });
+
+  it("podium (ranks reais) preferido sobre top1 — preserva 1º/2º/3º", () => {
+    const eia: any = {
+      leaderboardPodium: [
+        { nickname: "Ana", rank: 1 },
+        { nickname: "Bruno", rank: 2 },
+        { nickname: "Caio", rank: 3 },
+      ],
+      leaderboardTop1: [{ nickname: "X", pct: 100, correct: 5, total: 5 }],
+    };
+    const html = renderLeaderboardTop1Row(eia, PARA);
+    assert.match(html, /1º Ana/);
+    assert.match(html, /2º Bruno/);
+    assert.match(html, /3º Caio/);
   });
 });
