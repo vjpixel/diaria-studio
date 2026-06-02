@@ -224,6 +224,25 @@ function computePipelineMs(opts: UpdateOpts, existing: StageRow): number | undef
 }
 
 /**
+ * #1706: duração total (start → end). Quando `--duration-ms` não é passado OU é
+ * passado como 0 (o orchestrator historicamente passava `--duration-ms 0`, o que
+ * fazia o report mostrar "-" em todo stage), computa de `end - start` a partir
+ * dos timestamps. Trata 0 como "não medido" — stages levam minutos, nunca ~0ms.
+ * Retorna `undefined` só quando não há nem duração passada (>0) nem start+end.
+ */
+export function computeDurationMs(opts: UpdateOpts, existing: StageRow): number | undefined {
+  if (opts.duration_ms != null && opts.duration_ms > 0) return opts.duration_ms;
+  const start = opts.start ?? existing.start;
+  const end = opts.end ?? existing.end;
+  if (start && end) {
+    const ms = new Date(end).getTime() - new Date(start).getTime();
+    if (ms > 0) return ms;
+  }
+  // duração passada como 0 não sobrescreve um valor já computado antes.
+  return existing.duration_ms;
+}
+
+/**
  * Atualiza idempotentemente a linha de `stage` no `doc`. Campos undefined
  * em `opts` preservam valor existente. Retorna novo doc.
  */
@@ -236,7 +255,8 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusD
       start: opts.start ?? r.start,
       end: opts.end ?? r.end,
       gate_at: opts.gate_at ?? r.gate_at,
-      duration_ms: opts.duration_ms ?? r.duration_ms,
+      // #1706: auto-computa de start/end quando não passado ou passado como 0.
+      duration_ms: computeDurationMs(opts, r),
       pipeline_ms: opts.pipeline_ms ?? computePipelineMs(opts, r),
       cost_usd: opts.cost_usd ?? r.cost_usd,
       tokens_in: opts.tokens_in ?? r.tokens_in,

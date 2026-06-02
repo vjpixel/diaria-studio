@@ -226,9 +226,15 @@ function renderStageRow(row: StageRow): string {
   const models = row.models?.join(", ") ?? "-";
   const pipeline = fmtDuration(row.pipeline_ms);
   const total = fmtDuration(row.duration_ms);
-  const durationCell = row.pipeline_ms
+  // #1706: nunca renderizar "-" silencioso. Preferir pipeline (gate-excluído);
+  // cair em total (start→end); se nenhum medido, dizer "(não medido)" explícito.
+  const hasPipeline = (row.pipeline_ms ?? 0) > 0;
+  const hasTotal = (row.duration_ms ?? 0) > 0;
+  const durationCell = hasPipeline
     ? `${escapeHtml(pipeline)} <span style="color:#999;">(+gate: ${escapeHtml(total)})</span>`
-    : escapeHtml(total);
+    : hasTotal
+      ? escapeHtml(total)
+      : `<span style="color:#999;">(não medido)</span>`;
   const statusEmoji =
     row.status === "done"
       ? "&#9989;"

@@ -37,13 +37,13 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
 
 Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
 
-- Se `06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` → Etapa 4 completa. Pipeline finalizado. (Entries `pending_manual` são LinkedIn posts aguardando retomada com Chrome MCP — tratados como "já tratados" para fins de resume.)
-- Se `06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Etapa 4 parcial; re-disparar publicação Facebook e LinkedIn — ambos são resume-aware.
-- Se `05-published.json` existe **e** `status === "skipped"` (Chrome MCP estava indisponível) → **re-probar Chrome MCP** (`mcp__claude-in-chrome__tabs_context_mcp`). Se probe suceder: deletar o arquivo marcador e tratar como se Etapa 4 não tivesse rodado. Se probe falhar: pular para auto-reporter com `CHROME_MCP = false`.
-- Se `05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `06-social-published.json`) → pular para auto-reporter (Etapa 4b).
-- Se `05-published.json` existe mas `template_used` !== template esperado → instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Etapa 4 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
-- Se `05-published.json` existe mas `review_completed` é `false` ou ausente → Etapa 4 incompleta (newsletter parcial): pular publish-newsletter, rodar só o **loop de review-test-email** a partir do `draft_url` e `title`. Após completar, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-linkedin`. Re-apresentar gate único.
-- Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2-1x1.jpg` + `04-d3-1x1.jpg` existem (mas não `05-published.json`) → pular para Etapa 4.
+- Se `_internal/06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` → Etapa 4 completa. Pipeline finalizado. (Entries `pending_manual` são LinkedIn posts aguardando retomada com Chrome MCP — tratados como "já tratados" para fins de resume.)
+- Se `_internal/06-social-published.json` existe mas com **menos de 6 entries** ou alguma `status: "failed"` → Etapa 4 parcial; re-disparar publicação Facebook e LinkedIn — ambos são resume-aware.
+- Se `_internal/05-published.json` existe **e** `status === "skipped"` (Chrome MCP estava indisponível) → **re-probar Chrome MCP** (`mcp__claude-in-chrome__tabs_context_mcp`). Se probe suceder: deletar o arquivo marcador e tratar como se Etapa 4 não tivesse rodado. Se probe falhar: pular para auto-reporter com `CHROME_MCP = false`.
+- Se `_internal/05-published.json` existe **e** `review_completed === true` **e** `template_used` === valor de `publishing.newsletter.template` em `platform.config.json` (mas não `_internal/06-social-published.json`) → pular para auto-reporter (Etapa 4b).
+- Se `_internal/05-published.json` existe mas `template_used` !== template esperado → instruir o usuário a deletar o rascunho no Beehiiv e re-rodar Etapa 4 do zero. **Verificar template ANTES de review** — não faz sentido revisar email de um rascunho com template errado.
+- Se `_internal/05-published.json` existe mas `review_completed` é `false` ou ausente → Etapa 4 incompleta (newsletter parcial): pular publish-newsletter, rodar só o **loop de review-test-email** a partir do `draft_url` e `title`. Após completar, gravar `review_completed: true`. Em paralelo (se ainda não rodaram), disparar `publish-facebook` + `publish-linkedin`. Re-apresentar gate único.
+- Se `04-d1-2x1.jpg` + `04-d1-1x1.jpg` + `04-d2-1x1.jpg` + `04-d3-1x1.jpg` existem (mas não `_internal/05-published.json`) → pular para Etapa 4.
 - Se `02-reviewed.md` + `03-social.md` existem (mas não `04-d1-2x1.jpg`) → pular para Etapa 3 (Imagens).
 - Se `02-reviewed.md` existe mas **não** `03-social.md` → Etapa 2 parcial (newsletter ok, social não rodou); re-rodar Etapa 2 com `[social]`.
 - Se `_internal/01-approved.json` existe (mas não `02-reviewed.md`) → pular para Etapa 2.
@@ -103,7 +103,7 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
   Output JSON: `{ ok, latency_ms?, error? }`. Exit 0 = saudável (`CLARICE_REST = true`); exit 2 = degradado (`CLARICE_REST = false`, logar warn com `error` e seguir). Stage 2 §3b consulta `CLARICE_REST` antes de tentar o fallback quando o MCP falha. Sem essa flag, Stage 2 ainda tenta o fallback — só perde a chance de pre-warn o editor.
 - **Pre-flight Claude in Chrome MCP (#143).** Tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
   - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve`), alertar editor e aguardar `[y/n]`. **Em `auto_approve`**, prosseguir silenciosamente.
-  - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
+  - **Na Etapa 4**: checar `CHROME_MCP`. Se `false`, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
   ```bash
   npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --init
@@ -217,7 +217,7 @@ npx tsx scripts/merge-local-pending.ts \
   --past-raw data/past-editions-raw.json
 ```
 O script:
-1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** tenham `05-published.json` com `status: "published"`.
+1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** tenham `_internal/05-published.json` com `status: "published"`.
 2. Extrai todas as URLs dessas edições e injeta em `context/past-editions.md` com flag `pending_publish: true`.
 3. Se encontrar edições pending há > 2 dias **a partir de today**, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
 
@@ -329,17 +329,17 @@ if [ -n "$PREV" ] && [ -f "data/.fb-credentials.json" ]; then
   npx tsx scripts/verify-facebook-posts.ts --edition-dir "$PREV/" || echo "verify-fb failed (non-fatal)"
 fi
 ```
-Não bloqueia — se credenciais FB não existem ou nenhuma edição anterior tem `06-social-published.json`, logar `warn` e seguir.
+Não bloqueia — se credenciais FB não existem ou nenhuma edição anterior tem `_internal/06-social-published.json`, logar `warn` e seguir.
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366)
 
-Sempre roda, após Verify FB. Busca `06-social-published.json` da edição mais recente (Glob `data/editions/*/06-social-published.json`; pegar o mais recente por nome de pasta sort alfanumérico desc):
+Sempre roda, após Verify FB. Busca `_internal/06-social-published.json` da edição mais recente (Glob `data/editions/*/_internal/06-social-published.json`; pegar o mais recente por nome de pasta sort alfanumérico desc):
 ```bash
 PREV_SOCIAL=$(node -e "
   const fs=require('fs');
   const dirs=fs.readdirSync('data/editions').filter(d=>/^\d{6}$/.test(d)).sort().reverse();
-  const found=dirs.find(d=>fs.existsSync('data/editions/'+d+'/06-social-published.json'));
-  process.stdout.write(found?'data/editions/'+found+'/06-social-published.json':'');
+  const found=dirs.find(d=>fs.existsSync('data/editions/'+d+'/_internal/06-social-published.json'));
+  process.stdout.write(found?'data/editions/'+found+'/_internal/06-social-published.json':'');
 ")
 ```
 Se o arquivo existir:

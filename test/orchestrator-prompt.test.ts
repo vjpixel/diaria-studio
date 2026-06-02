@@ -139,6 +139,31 @@ describe("orchestrator-prompt (#634)", () => {
     }
   });
 
+  it("#1708: resume §0b referencia 05/06-published.json em _internal/ (não na raiz)", () => {
+    // Pós-#158 os published.json moram em _internal/. Se o §0b checar a raiz, o
+    // resume não detecta Stage 4 completo → re-publica (rascunho Beehiiv duplicado
+    // + re-agenda 6 posts). Toda menção deve ser _internal/-prefixada.
+    const stage0 = contents["orchestrator-stage-0-preflight.md"];
+    // Remove TODAS as refs _internal/-prefixadas; qualquer ocorrência remanescente
+    // do filename é, por definição, BARE (raiz) — pega tanto " 05-published.json"
+    // (prosa) quanto ".../06-social-published.json" (path no glob inline JS, a
+    // forma exata do bug #1708). Mais robusto que um regex de lookbehind frágil.
+    const stripped = stage0
+      .replace(/_internal\/05-published\.json/g, "")
+      .replace(/_internal\/06-social-published\.json/g, "");
+    assert.ok(
+      !/05-published\.json/.test(stripped),
+      "ref bare (raiz) a 05-published.json no stage-0 — deve ser _internal/",
+    );
+    assert.ok(
+      !/06-social-published\.json/.test(stripped),
+      "ref bare (raiz) a 06-social-published.json no stage-0 — deve ser _internal/",
+    );
+    // Sanity: ao menos uma menção _internal/ presente (não foi tudo removido).
+    assert.ok(stage0.includes("_internal/05-published.json"), "deve referenciar _internal/05-published.json");
+    assert.ok(stage0.includes("_internal/06-social-published.json"), "deve referenciar _internal/06-social-published.json");
+  });
+
   it("sub-arquivos de stage referenciados no orchestrator.md raiz", () => {
     const root = contents["orchestrator.md"];
     assert.ok(root.includes("orchestrator-stage-0-preflight.md"), "orchestrator.md não referencia stage-0-preflight");
