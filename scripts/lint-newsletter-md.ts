@@ -591,8 +591,16 @@ export interface SectionItemFormatReport {
   errors: SectionItemFormatError[];
 }
 
-const SECTION_ITEM_HEADER_RE =
-  /^(?:\*\*)?(LAN[ÇC]AMENTOS|RADAR|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS)(?:\*\*)?\s*$/;
+// #1693 parte 2 (enforce): emoji-tolerante (reusa EMOJI_PREFIX) + USE MELHOR/VÍDEOS.
+// Antes era bare → `checkSectionItemFormat` era no-op em toda edição de produção
+// (headers reais carregam emoji, ex: `**🛠️ USE MELHOR**`). Grupo 1 captura o nome
+// da seção (usado em currentSection). Flag "u" pros code points do EMOJI_PREFIX.
+// NOTA (dívida #1691/#1692): esta lista de seções ainda é a 3ª cópia (lint +
+// singularize + render) — consolidar em section-naming.ts é a issue de refactor.
+const SECTION_ITEM_HEADER_RE = new RegExp(
+  String.raw`^(?:\*\*)?${EMOJI_PREFIX}(LAN[ÇC]AMENTOS|RADAR|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS|USE\s+MELHOR|V[ÍI]DEOS?)(?:\*\*)?\s*$`,
+  "u",
+);
 
 // Linha contendo APENAS um inline link bem-formado (com **bold** opcional
 // e trailing spaces opcionais). Segura pra detectar item title-line.
