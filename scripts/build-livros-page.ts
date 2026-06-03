@@ -217,7 +217,7 @@ export function renderLivrosPage(books: Book[]): string {
   </div>
   <main id="grid">
 ${cards}
-    <p class="empty" id="empty" hidden>Nenhum livro com esses filtros.</p>
+    <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
   </main>
   <footer>Diar.ia · diar.ia.br — lista em curadoria (#1744)</footer>
 <script>

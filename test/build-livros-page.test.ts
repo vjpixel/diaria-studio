@@ -182,6 +182,13 @@ describe("renderLivrosPage (#1744)", () => {
     assert.doesNotMatch(html, /emptyEl\.hidden\s*=/);
   });
 
+  it("#1744: empty-state usa inline style:display:none, não o atributo [hidden]", () => {
+    // Regressão: com `hidden` no markup, `emptyEl.style.display=''` revertia pro
+    // cascade → `[hidden]` → none → a mensagem 'Nenhum livro' nunca aparecia.
+    assert.match(html, /id="empty"[^>]*style="display:none"/);
+    assert.doesNotMatch(html, /id="empty"[^>]*\shidden/);
+  });
+
   it("escapa conteúdo dos livros (sem injeção)", () => {
     const evil = renderLivrosPage([book({ title: '<script>alert(1)</script>', summary: "x & y" })]);
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
