@@ -1,0 +1,141 @@
+{
+  "_meta": {
+    "issue": "#1744",
+    "status": "piloto — em curadoria editorial",
+    "instrucoes": "Curadoria do editor. Preencher `link` (página oficial da editora/loja) e `cover_url` (capa) de cada livro antes de publicar. Os metadados (title/author/year/language/level/themes/summary) são pontos de partida factuais — revisar livremente. Rode `npx tsx scripts/build-livros-page.ts` pra regenerar a página e ver o que ainda falta preencher.",
+    "schema": {
+      "id": "slug-kebab-case (estável; usado em âncoras)",
+      "title": "string",
+      "author": "string",
+      "year": "number",
+      "language": "pt-br | en",
+      "level": "iniciante | intermediario | avancado",
+      "themes": "array de: llms | ml-aplicado | fundamentos | etica-sociedade | negocios-produto | historia",
+      "cover_url": "string (URL da capa) — vazio = placeholder",
+      "summary": "string (1-2 frases: por que importa pro público da Diar.ia)",
+      "link": "string (URL oficial) — vazio = botão desabilitado na página"
+    }
+  },
+  "books": [
+    {
+      "id": "co-intelligence-mollick",
+      "title": "Co-Intelligence: Living and Working with AI",
+      "author": "Ethan Mollick",
+      "year": 2024,
+      "language": "en",
+      "level": "iniciante",
+      "themes": ["llms", "negocios-produto"],
+      "cover_url": "",
+      "summary": "Guia prático de como trabalhar lado a lado com IA generativa no dia a dia profissional — direto ao ponto pro público que usa LLMs no trabalho.",
+      "link": ""
+    },
+    {
+      "id": "the-coming-wave-suleyman",
+      "title": "The Coming Wave",
+      "author": "Mustafa Suleyman",
+      "year": 2023,
+      "language": "en",
+      "level": "intermediario",
+      "themes": ["etica-sociedade", "negocios-produto"],
+      "cover_url": "",
+      "summary": "Do cofundador da DeepMind: o impacto da IA e da biotecnologia e o desafio de conter tecnologias que se espalham rápido.",
+      "link": ""
+    },
+    {
+      "id": "human-compatible-russell",
+      "title": "Human Compatible: Artificial Intelligence and the Problem of Control",
+      "author": "Stuart Russell",
+      "year": 2019,
+      "language": "en",
+      "level": "avancado",
+      "themes": ["fundamentos", "etica-sociedade"],
+      "cover_url": "",
+      "summary": "Um dos autores do livro-texto canônico de IA discute alinhamento e controle — base pra quem quer entender o debate de segurança a fundo.",
+      "link": ""
+    },
+    {
+      "id": "life-3-0-tegmark",
+      "title": "Life 3.0: Being Human in the Age of Artificial Intelligence",
+      "author": "Max Tegmark",
+      "year": 2017,
+      "language": "en",
+      "level": "iniciante",
+      "themes": ["etica-sociedade", "historia"],
+      "cover_url": "",
+      "summary": "Panorama acessível sobre futuros possíveis com IA avançada e o que está em jogo pra sociedade.",
+      "link": ""
+    },
+    {
+      "id": "atlas-of-ai-crawford",
+      "title": "Atlas of AI",
+      "author": "Kate Crawford",
+      "year": 2021,
+      "language": "en",
+      "level": "intermediario",
+      "themes": ["etica-sociedade"],
+      "cover_url": "",
+      "summary": "Os custos materiais, trabalhistas e ambientais por trás dos sistemas de IA — contraponto crítico necessário ao hype.",
+      "link": ""
+    },
+    {
+      "id": "hands-on-ml-geron",
+      "title": "Hands-On Machine Learning with Scikit-Learn, Keras & TensorFlow",
+      "author": "Aurélien Géron",
+      "year": 2022,
+      "language": "en",
+      "level": "intermediario",
+      "themes": ["ml-aplicado", "fundamentos"],
+      "cover_url": "",
+      "summary": "Referência prática pra quem quer pôr a mão na massa em ML aplicado, com código e exemplos reais.",
+      "link": ""
+    },
+    {
+      "id": "deep-learning-goodfellow",
+      "title": "Deep Learning",
+      "author": "Ian Goodfellow, Yoshua Bengio, Aaron Courville",
+      "year": 2016,
+      "language": "en",
+      "level": "avancado",
+      "themes": ["fundamentos", "ml-aplicado"],
+      "cover_url": "",
+      "summary": "O tratado de referência sobre aprendizado profundo — denso, mas a base teórica pra quem leva a sério.",
+      "link": ""
+    },
+    {
+      "id": "ai-2041-lee-chen",
+      "title": "AI 2041: Ten Visions for Our Future",
+      "author": "Kai-Fu Lee, Chen Qiufan",
+      "year": 2021,
+      "language": "en",
+      "level": "iniciante",
+      "themes": ["etica-sociedade", "negocios-produto"],
+      "cover_url": "",
+      "summary": "Ficção + análise técnica: dez histórias que ilustram como a IA pode moldar a vida nas próximas duas décadas.",
+      "link": ""
+    },
+    {
+      "id": "inteligencia-artificial-russell-norvig",
+      "title": "Inteligência Artificial: Uma Abordagem Moderna",
+      "author": "Stuart Russell, Peter Norvig",
+      "year": 2022,
+      "language": "pt-br",
+      "level": "avancado",
+      "themes": ["fundamentos"],
+      "cover_url": "",
+      "summary": "O livro-texto clássico de IA em português — referência acadêmica completa do campo.",
+      "link": ""
+    },
+    {
+      "id": "novas-fronteiras-ia-generativa",
+      "title": "Inteligência Artificial Generativa (placeholder PT-BR)",
+      "author": "(editor: substituir por título PT-BR curado)",
+      "year": 2024,
+      "language": "pt-br",
+      "level": "iniciante",
+      "themes": ["llms", "negocios-produto"],
+      "cover_url": "",
+      "summary": "Slot reservado pra um título PT-BR de IA generativa — o editor escolhe o melhor pro público brasileiro.",
+      "link": ""
+    }
+  ]
+}
