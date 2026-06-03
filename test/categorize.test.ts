@@ -12,6 +12,9 @@ import {
   isThirdPartyBlogAboutOtherCompany,
   isExplainerByTitle,
   isNewsNotTutorial,
+  isCoursePage,
+  hasPreExistenceSignal,
+  isIncrementalReleaseOnThirdPartyBlog,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -2243,5 +2246,124 @@ describe("categorize() — #1544 non-launch items on official blogs", () => {
       }),
       "lancamento",
     );
+  });
+});
+
+describe("#1759 — recência de lançamento (produto re-anunciado → noticias)", () => {
+  describe("hasPreExistenceSignal — sinais textuais de pré-existência", () => {
+    const yes: Array<[string, Article]> = [
+      ["available since", { title: "Foo", summary: "Available since March 2025, Foo now adds X" }],
+      ["disponível desde", { title: "Bar disponível desde 2024" }],
+      ["launched in {ano}", { title: "Baz, launched in 2024, gets a refresh" }],
+      ["lançado em {ano}", { title: "Qux lançado em 2023 ganha update" }],
+      ["originally released", { title: "X", summary: "Originally released last year" }],
+      ["first launched", { title: "Y was first launched in beta" }],
+      ["lançado há meses", { title: "Z lançado há meses chega a mais usuários" }],
+      ["agora disponível no Brasil", { title: "Sora agora disponível no Brasil" }],
+      ["expands to Europe", { title: "Claude expands to Europe" }],
+      ["chega ao Brasil", { title: "Gemini chega ao Brasil" }],
+    ];
+    for (const [label, art] of yes) {
+      it(`detecta: ${label}`, () => assert.equal(hasPreExistenceSignal({ url: "https://x.com", ...art }), true));
+    }
+
+    const no: Array<[string, Article]> = [
+      ["released today", { title: "GPT-5 released today" }],
+      ["Gemini 2.0", { title: "Gemini 2.0" }],
+      ["Introducing Claude 4", { title: "Introducing Claude 4 Sonnet" }],
+      ["now available in the API", { title: "GPT-5 now available in the API" }],
+      ["available in 100 languages", { title: "Now available in 100 languages" }],
+    ];
+    for (const [label, art] of no) {
+      it(`não detecta (lançamento real): ${label}`, () => assert.equal(hasPreExistenceSignal({ url: "https://x.com", ...art }), false));
+    }
+  });
+
+  describe("isIncrementalReleaseOnThirdPartyBlog — versão-ponto em blog de terceiro", () => {
+    it("Holo3.1 em huggingface.co/blog → true", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://huggingface.co/blog/Hcompany/holo31",
+        title: "Holo3.1: Fast & Local Computer Use Agents",
+      }), true);
+    });
+    it("versão .0 (major) em HF blog → false (mantém launch)", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://huggingface.co/blog/Newco/foo20",
+        title: "Foo 2.0",
+      }), false);
+    });
+    it("versão-ponto em domínio oficial (NÃO terceiro) → false", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://ai.meta.com/blog/llama-3-1",
+        title: "Introducing Llama 3.1",
+      }), false);
+    });
+    it("sem versão em HF blog → false", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://huggingface.co/blog/Co/thing",
+        title: "A new thing",
+      }), false);
+    });
+  });
+
+  describe("categorize() integração", () => {
+    it("caso real 260603: Holo3.1 (HF blog, versão-ponto) → noticias, não lancamento", () => {
+      assert.equal(categorize({
+        url: "https://huggingface.co/blog/Hcompany/holo31",
+        title: "Holo3.1: Fast & Local Computer Use Agents",
+        summary: "A Blog post by H company on Hugging Face",
+      }), "noticias");
+    });
+    it("Holo3.1 sobrepõe type_hint=lancamento do agent", () => {
+      assert.equal(categorize({
+        url: "https://huggingface.co/blog/Hcompany/holo31",
+        title: "Holo3.1: Fast & Local Computer Use Agents",
+        type_hint: "lancamento",
+      }), "noticias");
+    });
+    it("pré-existência textual sobrepõe type_hint=lancamento", () => {
+      assert.equal(categorize({
+        url: "https://openai.com/index/foo",
+        title: "Foo, launched in 2024, expande recursos",
+        type_hint: "lancamento",
+      }), "noticias");
+    });
+    it("FP guard: Gemini 2.0 (oficial, sem pré-existência) → lancamento", () => {
+      assert.equal(categorize({
+        url: "https://blog.google/technology/gemini-2",
+        title: "Gemini 2.0",
+        type_hint: "lancamento",
+      }), "lancamento");
+    });
+    it("FP guard: Llama 3.1 oficial (versão-ponto mas NÃO blog terceiro) → lancamento", () => {
+      assert.equal(categorize({
+        url: "https://ai.meta.com/blog/llama-3-1",
+        title: "Introducing Llama 3.1",
+        type_hint: "lancamento",
+      }), "lancamento");
+    });
+  });
+});
+
+describe("#1754 — curso/formação → use_melhor (tutorial), não radar", () => {
+  it("isCoursePage: host .academy → true", () => {
+    assert.equal(isCoursePage("https://hub.asimov.academy/formacao/engenheiro-de-agentes-de-ia/"), true);
+  });
+  it("isCoursePage: path /course/ → true", () => {
+    assert.equal(isCoursePage("https://example.com/course/ai-agents"), true);
+  });
+  it("isCoursePage: path /curso/ → true", () => {
+    assert.equal(isCoursePage("https://example.com/cursos/ia"), true);
+  });
+  it("isCoursePage: notícia comum sem path de curso → false", () => {
+    assert.equal(isCoursePage("https://techcrunch.com/2026/06/01/empresa-lanca-formacao"), false);
+  });
+  it("caso real 260603: asimov.academy/formacao (agent rotulou noticia) → tutorial", () => {
+    assert.equal(categorize({
+      url: "https://hub.asimov.academy/formacao/engenheiro-de-agentes-de-ia/",
+      title: "Engenheiro de Agentes de IA",
+      type_hint: "noticia",
+      summary: "Aprenda a usar o Claude Code para desenvolver aplicações",
+    }), "tutorial");
   });
 });

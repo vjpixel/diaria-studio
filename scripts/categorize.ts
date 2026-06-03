@@ -348,6 +348,23 @@ function isTutorialByTitleExtra(article: Article): boolean {
 }
 
 /**
+ * #1754: página de curso/formação/treinamento — sinal de ALTA confiança de que o
+ * link É a página do curso (matrícula/conteúdo), não cobertura jornalística sobre
+ * um curso. Vence o `type_hint` do agent: o Haiku às vezes lê uma landing de
+ * formação e rotula "noticia" (caso 260603: hub.asimov.academy/formacao/... caiu
+ * em RADAR em vez de USE MELHOR). Sinais:
+ *   - host termina em `.academy` (plataformas de curso, ex: hub.asimov.academy)
+ *   - path com /formação|curso(s)|course(s)|bootcamp|trilha|learn/
+ * Conservador de propósito: notícia SOBRE curso ("Empresa X lança formação")
+ * mora em domínio jornalístico SEM esses paths → não é capturada.
+ */
+export function isCoursePage(url: string): boolean {
+  const { host, full } = hostAndPath(url);
+  if (host.endsWith(".academy")) return true;
+  return /\/(forma[çc][ãa]o|cursos?|courses?|bootcamp|trilha|learn)(\/|$)/i.test(full);
+}
+
+/**
  * Anúncios de programa / bolsa / iniciativa não-produto. Cobrem blogs
  * oficiais que falam de scholarships, fellowships, grants, etc.
  *
@@ -733,6 +750,56 @@ export function isThirdPartyBlogAboutOtherCompany(url: string): boolean {
   }
 }
 
+/**
+ * #1759: sinais TEXTUAIS de que o "lançamento" é re-anúncio de um produto que JÁ
+ * existe (pré-existência). Lançamento = novidade da janela da edição; um blog
+ * pode reescrever sobre produto antigo. A data do conteúdo estar na janela NÃO
+ * basta. Sinais (alta precisão — um lançamento real diz "hoje"/"agora", não cita
+ * ano nem "available since"):
+ *   - "available since" / "disponível desde"
+ *   - "originally/inicialmente launched/released/lançado"
+ *   - "first launched/released/introduced/unveiled"
+ *   - "lançado originalmente"
+ *   - "launched/released/introduced/lançado in/em {ano}" (ano explícito = passado)
+ *   - "lançado há meses/anos"
+ *   - expansão regional de produto existente ("agora disponível no Brasil",
+ *     "chega ao Brasil", "expande para a Europa") — disponibilidade nova de algo
+ *     que já existe, não produto novo.
+ * NÃO casa "released today", "now available in the API", "Gemini 2.0",
+ * "Introducing Claude 4" — lançamentos reais.
+ */
+const PRE_EXISTENCE_PATTERNS: RegExp[] = [
+  /\b(available|dispon[íi]vel)\s+(since|desde)\b/i,
+  /\b(originally|inicialmente)\s+(launch|releas|lan[çc]ad)/i,
+  /\bfirst\s+(launched|released|introduced|unveiled)\b/i,
+  /\blan[çc]ad[oa]\s+originalmente\b/i,
+  /\b(launched|released|introduced|unveiled|lan[çc]ad[oa]|lan[çc]ou)\s+(in|back in|em)\s+20\d{2}\b/i,
+  /\blan[çc]ad[oa]\s+h[áa]\s+(meses|anos|\d+\s+(meses|anos|dias))\b/i,
+  /\b(agora|now|finalmente)\s+(dispon[íi]vel|available)\b[^.\n]{0,30}\b(no\s+brasil|in\s+brazil|na\s+europa|in\s+europe|na\s+[ií]ndia|in\s+india|no\s+m[ée]xico|am[ée]rica\s+latina|latin\s+america)\b/i,
+  /\b(chega(ndo)?|expande|expand(s|ing)?|arrives?|llega)\b[^.\n]{0,25}\b(ao\s+brasil|to\s+brazil|[àa]\s+europa|to\s+europe|[àa]\s+am[ée]rica|to\s+latin\s+america|new\s+(markets|regions))\b/i,
+];
+
+export function hasPreExistenceSignal(article: Article): boolean {
+  const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
+  return PRE_EXISTENCE_PATTERNS.some((p) => p.test(hay));
+}
+
+/**
+ * #1759: release incremental (versão-ponto X.Y com Y≥1) num blog de hospedagem
+ * de TERCEIROS (huggingface.co/blog/...). Uma versão .1/.5 implica um predecessor
+ * → o produto já existe (re-anúncio incremental, não lançamento da janela).
+ * Escopado a THIRD_PARTY_BLOG_HOSTS de propósito: lançamentos canônicos com
+ * versão-ponto (Llama 3.1, Claude 3.5) saem no site do vendor / model page, não
+ * em /blog/ de plataforma terceira — então NÃO são afetados. Caso 260603: Holo3.1
+ * (huggingface.co/blog/Hcompany/holo31), produto lançado meses antes.
+ */
+export function isIncrementalReleaseOnThirdPartyBlog(article: Article): boolean {
+  const { host } = hostAndPath(article.url);
+  if (!THIRD_PARTY_BLOG_HOSTS.has(host)) return false;
+  // versão-ponto Y≥1 ("Holo3.1", "Foo 2.5"); um ".0" é major/canônico → mantém.
+  return /\b[A-Za-z][\w-]*\s?\d+\.[1-9]\d*\b/.test(article.title ?? "");
+}
+
 // ---------------------------------------------------------------------------
 // Detecção de vídeos — YouTube e Vimeo (#359)
 // ---------------------------------------------------------------------------
@@ -873,6 +940,10 @@ export function categorize(article: Article): Category {
   //     descartadas como redes sociais. Precedência absoluta.
   if (isVideoUrl(article.url)) return "video";
 
+  // 0a. #1754: página de curso/formação — sinal forte de USE MELHOR. Vence o
+  //     type_hint=noticia do agent (Haiku lê landing de formação e rotula mal).
+  if (isCoursePage(article.url)) return "tutorial";
+
   // 0. Tutorial — domínio/pattern DEDICADO (alta confiança).
   //    Ordem: domínio > pattern > pesquisa > keyword > lancamento > default.
   //    Keyword tutorial vem DEPOIS de pesquisa pra evitar falso positivo
@@ -927,6 +998,15 @@ export function categorize(article: Article): Category {
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
     if (isNonLaunchPath(article.url)) return "noticias"; // #898
+
+    // #1759: re-anúncio de produto pré-existente → noticias. Roda ANTES do
+    // short-circuit type_hint=lancamento: o agent às vezes rotula re-anúncio/
+    // expansão como launch, e o sinal de pré-existência é autoritativo.
+    //   (a) texto explícito ("available since", "lançado em {ano}", expansão regional);
+    //   (b) versão-ponto (X.Y, Y≥1) em blog de TERCEIRO (huggingface.co) — não é
+    //       link oficial (#160) e a versão .1/.5 implica predecessor. Caso Holo3.1.
+    if (hasPreExistenceSignal(article)) return "noticias";
+    if (isIncrementalReleaseOnThirdPartyBlog(article)) return "noticias";
 
     // #1173/#1453: type_hint=lancamento do source-researcher (Haiku que LEU
     // a página) curto-circuita TODAS as heurísticas defensivas abaixo.
