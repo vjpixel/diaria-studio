@@ -42,6 +42,11 @@ Exit code handling:
 
 ### 4a. Pré-requisitos + sync
 
+**Marcar Stage 4 `running` no início (#1783).** Garante o `start` pra que o `done` do §4i feche a duração no relatório (não depender só da convenção do `orchestrator.md`). Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status running
+```
+
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \

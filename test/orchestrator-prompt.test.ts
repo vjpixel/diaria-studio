@@ -59,6 +59,7 @@ const REQUIRED_INVARIANTS = [
   // #1783: marks de status que fecham a duração de S0/S4 no relatório
   "--stage 0 --status running",
   "--stage 0 --status done",
+  "--stage 4 --status running",
   "mark-done canônico do Stage 4 é o §4i",
 ];
 
