@@ -211,7 +211,12 @@ async function main(): Promise<void> {
       `[fetch-leaderboard-top1] edição ${args.edition} não é a 1ª do mês — ` +
         "leaderboard omitido (gravando vazio).",
     );
-    payload = { top1: [], podium: [], period: "", period_slug: targetSlug };
+    // period_slug VAZIO de propósito: o renderer (renderLeaderboardTop1Row)
+    // só OMITE o bloco quando não há slug (`if (!lbUrl) return ""`). Com um slug
+    // não-vazio + zero líderes ele renderiza o convite "Acompanhe a leaderboard
+    // de {mês}" — o que reintroduziria o bloco em toda edição (#1753). Vazio aqui
+    // = bloco totalmente omitido nas edições que não são a 1ª do mês.
+    payload = { top1: [], podium: [], period: "", period_slug: "" };
   } else {
     try {
       payload = await fetchTop1ForPeriod(targetSlug);

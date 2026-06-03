@@ -11,6 +11,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   previousMonthSlug,
   isFirstEditionOfMonth,
@@ -114,5 +118,53 @@ describe("isFirstEditionOfMonth (#1753)", () => {
       isFirstEditionOfMonth("invalid", ["2026-06-01T09:00:00.000Z"]),
       true,
     );
+  });
+});
+
+/**
+ * Integração hermética (#1753): roda o script de verdade num cenário "não é a
+ * 1ª edição do mês" e verifica que o payload gravado tem period_slug VAZIO.
+ *
+ * Isto é o que faltou na 1ª versão do fix e o code-review pegou: o renderer só
+ * OMITE o bloco quando period_slug é falsy (`if (!lbUrl) return ""`). Se o script
+ * gravar um slug não-vazio com zero líderes, o renderer mostra o convite
+ * "Acompanhe a leaderboard de {mês}" — reintroduzindo o bloco em toda edição.
+ *
+ * Caminho não-1ª-do-mês faz short-circuit ANTES de qualquer fetch → offline-safe.
+ */
+describe("main() non-first edition payload (#1753 integração)", () => {
+  it("edição que não é a 1ª do mês → grava top1/podium vazios E period_slug vazio", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lb1753-"));
+    try {
+      const pastEditions = join(dir, "past-editions-raw.json");
+      const out = join(dir, "out.json");
+      // 06-01 e 06-02 publicadas → 260603 NÃO é a 1ª de junho.
+      writeFileSync(
+        pastEditions,
+        JSON.stringify([
+          { published_at: "2026-06-01T09:00:00.000Z" },
+          { published_at: "2026-06-02T09:00:00.000Z" },
+        ]),
+      );
+      execFileSync(
+        process.execPath,
+        [
+          "--import", "tsx",
+          "scripts/fetch-leaderboard-top1.ts",
+          "--edition", "260603",
+          "--out", out,
+          "--past-editions", pastEditions,
+        ],
+        { stdio: "pipe" },
+      );
+      const written = JSON.parse(readFileSync(out, "utf8"));
+      assert.deepEqual(written.top1, []);
+      assert.deepEqual(written.podium, []);
+      // O ponto do regression: slug vazio → renderer omite o bloco.
+      assert.equal(written.period_slug, "");
+      assert.equal(written.period, "");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
