@@ -68,4 +68,17 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
       "playbook deve proibir declarar 'capa aplicada' sem sinal confiável",
     );
   });
+
+  it("#1705: §4b referencia os helpers de aplicar/verificar capa por clique real", () => {
+    assert.match(playbook, /buildCoverApplyLocateJs/);
+    assert.match(playbook, /buildCoverVerifyJs/);
+    assert.match(playbook, /classifyCoverVerify/);
+  });
+
+  it("#1764: §5.1 usa clique REAL (⋮ → Use template), não .click() sintético", () => {
+    assert.match(playbook, /buildHtmlTemplateMenuLocateJs/);
+    assert.match(playbook, /buildUseTemplateItemLocateJs/);
+    assert.match(playbook, /resolveClickPoint/);
+    assert.match(playbook, /@deprecated|deprecated|N[ÃA]O usar.*sint[ée]tico/i);
+  });
 });

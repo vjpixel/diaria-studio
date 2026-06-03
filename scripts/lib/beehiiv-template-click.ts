@@ -21,7 +21,56 @@
  *   - Se URL muda pra `/templates/posts/{uuid}/edit` → falha (template rogue)
  */
 
+import { buildLocateRectJs } from "./beehiiv-real-click.ts";
+
 /**
+ * #1764: localiza o botão de menu **⋮** do card do template "HTML" pra clique
+ * REAL (computer.left_click). O fluxo correto na UI atual é ⋮ → "Use template";
+ * o `.click()` sintético de `buildHtmlTemplateClickJs` NÃO cria o post (React
+ * gateia a criação por user-activation). Caller: dispatch este JS, converter o
+ * rect via `resolveClickPoint`, clicar de verdade, depois localizar e clicar
+ * "Use template" via `buildUseTemplateItemLocateJs`.
+ */
+export function buildHtmlTemplateMenuLocateJs(): string {
+  return buildLocateRectJs(
+    "html_template_kebab_menu",
+    `
+      const h3s = Array.from(document.querySelectorAll('h3'));
+      const htmlH3 = h3s.find((h) => (h.textContent || '').trim() === 'HTML');
+      if (!htmlH3) return null;
+      let card = htmlH3.parentElement;
+      for (let i = 0; i < 8 && card; i++) {
+        if (card.querySelector('button')) break;
+        card = card.parentElement;
+      }
+      if (!card) return null;
+      const btns = Array.from(card.querySelectorAll('button')).filter(b => b.offsetParent !== null);
+      const kebab = btns.find(b => /option|menu|more|action/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')));
+      return kebab || btns[btns.length - 1] || null;
+    `,
+  );
+}
+
+/**
+ * #1764: localiza o item **"Use template"** no dropdown aberto (após o clique
+ * real no ⋮) pra clique REAL. Cria o post + navega pra /posts/{uuid}/edit.
+ */
+export function buildUseTemplateItemLocateJs(): string {
+  return buildLocateRectJs(
+    "use_template_menuitem",
+    `
+      const items = Array.from(document.querySelectorAll('[role="menuitem"], button, a'));
+      return items.find(el => el.offsetParent !== null && /^use template/i.test((el.textContent || '').trim())) || null;
+    `,
+  );
+}
+
+/**
+ * @deprecated #1764 — `.click()` sintético NÃO cria o post na UI atual do
+ * Beehiiv (React gateia a criação por user-activation; o clique abre o menu de
+ * contexto, não a ação). Use o par `buildHtmlTemplateMenuLocateJs` +
+ * `buildUseTemplateItemLocateJs` com clique REAL. Ver beehiiv-playbook §5.1.
+ *
  * Gera JS string pra dispatch via `mcp__claude-in-chrome__javascript_tool`.
  * Retorna `{ ok: true, templateName }` quando clicou no card correto, ou
  * `{ ok: false, error, candidates? }` quando falhou (helper pra debug).

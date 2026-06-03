@@ -8,7 +8,49 @@ import {
   buildCoverUploadJs,
   buildCoverReplaceJs,
   classifyUploadResult,
+  buildCoverApplyLocateJs,
+  buildCoverVerifyJs,
+  classifyCoverVerify,
 } from "../scripts/lib/beehiiv-cover-upload.ts";
+
+describe("aplicar/verificar capa por clique real (#1705)", () => {
+  it("buildCoverApplyLocateJs localiza o card uploadado (não clica)", () => {
+    const js = buildCoverApplyLocateJs();
+    assert.match(js, /uploads.asset.file/);
+    assert.match(js, /getBoundingClientRect/);
+    assert.doesNotMatch(js, /\.click\(\)/);
+  });
+
+  it("buildCoverVerifyJs checa 'Add thumbnail' ausente + thumbnail presente", () => {
+    const js = buildCoverVerifyJs();
+    assert.match(js, /add thumbnail/i);
+    assert.match(js, /beehiiv-images-production/);
+    assert.match(js, /addThumbnailPresent/);
+  });
+
+  it("classifyCoverVerify: aplicada = Add thumbnail ausente + thumbnail presente", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: false, thumbnailSrc: "https://beehiiv-images-production/uploads/x.jpg" });
+    assert.equal(r.applied, true);
+    assert.equal((r as { thumbnailUrl: string }).thumbnailUrl, "https://beehiiv-images-production/uploads/x.jpg");
+  });
+
+  it("classifyCoverVerify: 'Add thumbnail' ainda presente → NÃO aplicada", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: true, thumbnailSrc: null });
+    assert.equal(r.applied, false);
+    assert.match((r as { reason: string }).reason, /Add thumbnail.*presente/);
+  });
+
+  it("classifyCoverVerify: resposta vazia/null (#1640) → NÃO aplicada (sem declaração silenciosa)", () => {
+    assert.equal(classifyCoverVerify(null).applied, false);
+    assert.equal(classifyCoverVerify(undefined).applied, false);
+    assert.equal(classifyCoverVerify({ error: "boom" }).applied, false);
+  });
+
+  it("classifyCoverVerify: sem thumbnail src → NÃO aplicada", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: false, thumbnailSrc: null });
+    assert.equal(r.applied, false);
+  });
+});
 
 describe("buildCoverUploadJs (#1416)", () => {
   it("encoda URL como JSON string (escape seguro)", () => {
@@ -38,49 +80,47 @@ describe("buildCoverUploadJs (#1416)", () => {
   });
 });
 
-describe("classifyUploadResult (#1416)", () => {
-  it("ok=true quando thumbnailSrc bate com pattern Beehiiv S3", () => {
+describe("classifyUploadResult (#1416, #1705)", () => {
+  it("#1705: ok=true quando a imagem chegou no library (librarySrc)", () => {
     const r = classifyUploadResult({
-      thumbnailSrc: "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset_file_abc.jpg",
-      steps: ["clicked: Add thumbnail", "clicked: uploaded image card"],
+      librarySrc: "https://uploads.asset.file/abc.jpg",
+      steps: ["clicked: Upload N media", "found: uploaded card in library"],
     });
     assert.equal(r.ok, true);
-    if (r.ok) {
-      assert.match(r.thumbnailUrl, /beehiiv-images-production/);
-    }
+    if (r.ok) assert.equal(r.libraryUrl, "https://uploads.asset.file/abc.jpg");
+  });
+
+  it("#1705: thumbnailSrc (auto-apply do Beehiiv) também conta como sucesso de upload", () => {
+    const r = classifyUploadResult({
+      thumbnailSrc: "https://beehiiv-images-production.s3.amazonaws.com/uploads/asset_file_abc.jpg",
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.match(r.libraryUrl, /beehiiv-images-production/);
+  });
+
+  it("#1705: NÃO gateia o upload no thumbnail aplicado — librarySrc só já é sucesso", () => {
+    // Antes (#1705 bug): exigia beehiiv-images-production (thumbnail aplicado),
+    // então o loop gastava 3 retries antes do apply real. Agora library basta.
+    const r = classifyUploadResult({ librarySrc: "https://random-cdn.example.com/foo.jpg" });
+    assert.equal(r.ok, true);
   });
 
   it("ok=false quando JS retornou error explícito", () => {
-    const r = classifyUploadResult({
-      error: "Add thumbnail button not found",
-      steps: [],
-    });
+    const r = classifyUploadResult({ error: "Add thumbnail button not found", steps: [] });
     assert.equal(r.ok, false);
-    if (!r.ok) {
-      assert.match(r.reason, /Add thumbnail/);
-    }
+    if (!r.ok) assert.match(r.reason, /Add thumbnail/);
   });
 
-  it("#1416: ok=false quando thumbnailSrc ausente pós-upload (UI flow falhou silently)", () => {
+  it("ok=false quando nada apareceu no library (librarySrc + thumbnailSrc ausentes)", () => {
     const r = classifyUploadResult({
+      librarySrc: null,
       thumbnailSrc: null,
       steps: ["clicked: Add thumbnail", "clicked: Use from library", "clicked: Upload tab"],
     });
     assert.equal(r.ok, false);
     if (!r.ok) {
-      assert.match(r.reason, /ausente pós-upload/);
+      assert.match(r.reason, /library/);
       assert.equal(r.lastStep, "clicked: Upload tab");
-    }
-  });
-
-  it("ok=false quando thumbnailSrc não bate pattern Beehiiv (uploadou pra outro lugar)", () => {
-    const r = classifyUploadResult({
-      thumbnailSrc: "https://random-cdn.example.com/foo.jpg",
-      steps: ["all clicks ok"],
-    });
-    assert.equal(r.ok, false);
-    if (!r.ok) {
-      assert.match(r.reason, /não bate com pattern/);
     }
   });
 
@@ -92,19 +132,16 @@ describe("classifyUploadResult (#1416)", () => {
   });
 
   it("#1640: result undefined → ok=false retryable", () => {
-    const r = classifyUploadResult(undefined);
-    assert.equal(r.ok, false);
+    assert.equal(classifyUploadResult(undefined).ok, false);
   });
 
   it("#1640: result não-objeto (string vazia) → ok=false retryable", () => {
     // @ts-expect-error — simula retorno degenerado do MCP
-    const r = classifyUploadResult("");
-    assert.equal(r.ok, false);
+    assert.equal(classifyUploadResult("").ok, false);
   });
 
-  it("#1640: objeto vazio {} → ok=false (thumbnail ausente, não crash)", () => {
-    const r = classifyUploadResult({});
-    assert.equal(r.ok, false);
+  it("#1640: objeto vazio {} → ok=false (nada no library, não crash)", () => {
+    assert.equal(classifyUploadResult({}).ok, false);
   });
 });
 
