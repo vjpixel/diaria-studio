@@ -51,6 +51,49 @@ describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido",
   it("sem dados → undefined (report mostra '(não medido)')", () => {
     assert.equal(computeDurationMs({ stage: 1, status: "done" }, emptyRow), undefined);
   });
+  it("#1783: running auto-carimba start; done auto-carimba end → duração sem o playbook passar timestamps", () => {
+    let doc = makeInitialDoc("260603");
+    // Stage 1 entra em running sem --start; auto-carimba.
+    doc = applyUpdate(doc, { stage: 1, status: "running" }, "2026-06-03T10:00:00.000Z");
+    const r1 = doc.rows.find((r) => r.stage === 1)!;
+    assert.equal(r1.start, "2026-06-03T10:00:00.000Z");
+    assert.equal(r1.end, undefined);
+    // Stage 1 conclui sem --end; auto-carimba e duração computa.
+    doc = applyUpdate(doc, { stage: 1, status: "done" }, "2026-06-03T10:05:00.000Z");
+    const r1done = doc.rows.find((r) => r.stage === 1)!;
+    assert.equal(r1done.end, "2026-06-03T10:05:00.000Z");
+    assert.equal(r1done.duration_ms, 300000); // 5 min
+  });
+
+  it("#1783: não sobrescreve start existente em resume (preserva o original)", () => {
+    let doc = makeInitialDoc("260603");
+    doc = applyUpdate(doc, { stage: 2, status: "running" }, "2026-06-03T10:00:00.000Z");
+    // Resume: re-marca running mais tarde — start original preservado.
+    doc = applyUpdate(doc, { stage: 2, status: "running" }, "2026-06-03T11:00:00.000Z");
+    assert.equal(doc.rows.find((r) => r.stage === 2)!.start, "2026-06-03T10:00:00.000Z");
+  });
+
+  it("#1783: failed também carimba end", () => {
+    let doc = makeInitialDoc("260603");
+    doc = applyUpdate(doc, { stage: 3, status: "running" }, "2026-06-03T10:00:00.000Z");
+    doc = applyUpdate(doc, { stage: 3, status: "failed" }, "2026-06-03T10:02:00.000Z");
+    const r = doc.rows.find((r) => r.stage === 3)!;
+    assert.equal(r.end, "2026-06-03T10:02:00.000Z");
+    assert.equal(r.duration_ms, 120000);
+  });
+
+  it("#1783: sem `now` (chamada legada) NÃO auto-carimba — retrocompat", () => {
+    let doc = makeInitialDoc("260603");
+    doc = applyUpdate(doc, { stage: 1, status: "running" });
+    assert.equal(doc.rows.find((r) => r.stage === 1)!.start, undefined);
+  });
+
+  it("#1783: --start/--end explícitos têm precedência sobre o auto-carimbo", () => {
+    let doc = makeInitialDoc("260603");
+    doc = applyUpdate(doc, { stage: 1, status: "running", start: "2026-06-03T09:00:00.000Z" }, "2026-06-03T10:00:00.000Z");
+    assert.equal(doc.rows.find((r) => r.stage === 1)!.start, "2026-06-03T09:00:00.000Z");
+  });
+
   it("integração: applyUpdate com --duration-ms 0 + start/end grava duração real", () => {
     let doc = makeInitialDoc("260602");
     doc = applyUpdate(doc, {
