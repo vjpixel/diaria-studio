@@ -26,6 +26,8 @@ import {
   monthSlugCompare,
   parseMonthSlug,
   MONTH_NAMES_PT,
+  validateNickname,
+  normalizeNickname,
 } from "./lib";
 
 export interface Env {
@@ -37,7 +39,7 @@ export interface Env {
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
 
-async function hmacSign(secret: string, message: string): Promise<string> {
+export async function hmacSign(secret: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
@@ -1065,7 +1067,7 @@ ${renderSide("B")}
 
 // ── /set-name — leitor escolhe nickname pra leaderboard (#1078) ─────────────
 
-async function handleSetName(url: URL, env: Env): Promise<Response> {
+export async function handleSetName(url: URL, env: Env): Promise<Response> {
   const email = url.searchParams.get("email")?.toLowerCase().trim();
   const name = url.searchParams.get("name")?.trim();
   const sig = url.searchParams.get("sig");
@@ -1091,12 +1093,38 @@ async function handleSetName(url: URL, env: Env): Promise<Response> {
     });
   }
 
+  // #1758: rejeita apelido vazio-de-conteúdo (emoji-only) ou na blacklist ("eu").
+  const validationError = validateNickname(cleanName);
+  if (validationError) {
+    return new Response(votePageHtml(validationError, false), {
+      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+
   const scoreKey = `score:${email}`;
   const raw = await env.POLL.get(scoreKey);
   if (!raw) {
     return new Response(votePageHtml("Vote primeiro antes de definir nickname.", false), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
+  }
+
+  // #1758: sem apelidos duplicados — outro email já usando o mesmo apelido
+  // (comparação normalizada, case/acento-insensitive) → rejeita. Scan de score:*
+  // (volume baixo, ~centenas de subs; mesmo padrão de propagateNicknameByMonth).
+  const targetNorm = normalizeNickname(cleanName);
+  for await (const keyName of listAllKeys(env, "score:")) {
+    if (keyName === scoreKey) continue; // pula o próprio
+    const otherRaw = await env.POLL.get(keyName);
+    if (!otherRaw) continue;
+    let other: { nickname?: string | null };
+    try { other = JSON.parse(otherRaw); } catch { continue; }
+    if (other.nickname && normalizeNickname(other.nickname) === targetNorm) {
+      return new Response(
+        votePageHtml("Esse apelido já está em uso. Escolha outro.", false),
+        { status: 409, headers: { "Content-Type": "text/html;charset=utf-8" } },
+      );
+    }
   }
 
   const score = JSON.parse(raw);
