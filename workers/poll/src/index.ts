@@ -972,15 +972,15 @@ export function votePageHtml(
   // mascarado no leaderboard) incentiva preenchimento.
   const formHtml = nicknameForm ? `
 <div class="nick-box">
-  <p style="font-size:0.95rem;margin:0 0 12px 0;font-weight:600;">Defina seu nickname pra aparecer no leaderboard mensal</p>
-  <p style="font-size:0.85rem;color:#444;margin:0 0 12px 0;line-height:1.5;">Sem nickname você aparece como <code style="background:#fff;padding:1px 4px;border-radius:3px;">${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
+  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard mensal</p>
+  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(nicknameForm.email.replace(/@.*/, "@***"))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
     <button type="submit" class="nick-save">Salvar</button>
   </form>
-  <p style="font-size:0.75rem;color:#666;margin:10px 0 0 0;">Pode ser apelido. Mostrado publicamente.</p>
+  <p class="nick-note">Pode ser apelido. Mostrado publicamente.</p>
 </div>` : "";
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
@@ -993,34 +993,48 @@ export function votePageHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | Diar.ia</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
-  .msg { font-size: 1.3rem; margin: 20px 0; }
+  body { font-family: -apple-system, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
+  .msg { font-size: 1.4rem; line-height: 1.4; margin: 20px 0; }
   a { color: #0066cc; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
   .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
   .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.18); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-size: 0.85rem; margin-top: 8px; color: #444; font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #fff; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
-  /* #1675: nickname form + links como classes pra media query mobile sobrepor. */
+  .result-image .label { font-size: 0.95rem; margin-top: 8px; color: #444; font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #fff; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #1675/#1779: nickname form + textos como classes (eram inline → media query
+     não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: #f5f5f5; border-radius: 8px; max-width: 380px; }
+  .nick-title { font-size: 1.05rem; margin: 0 0 12px 0; font-weight: 600; }
+  .nick-explain { font-size: 0.95rem; color: #444; margin: 0 0 12px 0; line-height: 1.5; }
+  .nick-explain code { background: #fff; padding: 1px 4px; border-radius: 3px; }
+  .nick-note { font-size: 0.85rem; color: #666; margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
   .nick-save { padding: 8px 16px; background: #00A0A0; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; }
+  .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
      form empilhado, botão full-width, tap targets ~44px. */
-  @media (max-width: 480px) {
-    body { margin: 24px auto; padding: 0 16px; }
-    .msg { font-size: 1.15rem; }
-    /* Empilha A/B full-width: imagens GRANDES e legíveis (reclamação do editor
-       era "pequenas") em vez de 2-up minúsculo; também preenche o vazio vertical. */
+  /* #1779: tráfego majoritariamente mobile. Breakpoint 600px cobre celulares
+     grandes/landscape também. Aqui AMPLIAMOS texto/elementos (a queixa do editor
+     era "miúdo") — antes o #1675 encolhia .msg (1.3→1.15), contraproducente. */
+  @media (max-width: 600px) {
+    body { margin: 24px auto; padding: 0 16px; font-size: 18px; }
+    .msg { font-size: 1.5rem; }
+    /* Empilha A/B full-width: imagens GRANDES e legíveis em vez de 2-up minúsculo. */
     .result-image { flex-basis: 100%; max-width: 100%; }
+    .result-image .label { font-size: 1.05rem; }
+    .nick-box { max-width: 100%; padding: 20px 18px; }
+    .nick-title { font-size: 1.15rem; }
+    .nick-explain { font-size: 1rem; }
+    .nick-note { font-size: 0.9rem; }
     .nick-form { flex-direction: column; }
     /* flex:none reseta o flex:1 do base — em coluna, flex-grow agiria no eixo
        vertical (input esticaria). Cross-axis stretch mantém largura total. */
-    .nick-input { flex: none; padding: 12px; font-size: 1rem; }
-    .nick-save { width: 100%; padding: 12px 16px; font-size: 1rem; }
+    .nick-input { flex: none; padding: 14px; font-size: 1.1rem; }
+    .nick-save { width: 100%; padding: 14px 16px; font-size: 1.1rem; }
+    .footer-links { font-size: 1.05rem; }
     .footer-links a { padding: 12px 10px; }
   }
 </style>
