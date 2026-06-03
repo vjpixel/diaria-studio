@@ -7,7 +7,7 @@
  * por edição — Stage 4 newsletter playbook).
  *
  * Fluxo:
- *   1. Worker grava HTML em KV (key=html:{edition}, TTL 12h)
+ *   1. Worker grava HTML em KV (key=html:{edition}, TTL 90d — #1782)
  *   2. Stage 4 playbook usa `fetch('https://draft.diaria.workers.dev/{edition}')`
  *      direto do browser
  *   3. Insert via `editor.commands.insertContent({type:'text', text: html})`
@@ -30,7 +30,7 @@
  *     "edition": "260514",
  *     "url": "https://draft.diaria.workers.dev/260514",
  *     "bytes": 28341,
- *     "ttl_seconds": 43200
+ *     "ttl_seconds": 7776000
  *   }
  */
 

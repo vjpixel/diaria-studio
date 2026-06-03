@@ -11,7 +11,7 @@ Separação de responsabilidade — o Worker `poll` (`https://poll.diaria.worker
 ## Rotas
 
 - `GET /{key}` → retorna HTML armazenado no KV
-- `PUT /{key}` → grava HTML (auth via HMAC ADMIN_SECRET, TTL 12h)
+- `PUT /{key}` → grava HTML (auth via HMAC ADMIN_SECRET, TTL 90d — #1782)
 - `OPTIONS /{key}` → preflight CORS
 
 ## Deploy (one-time setup)
