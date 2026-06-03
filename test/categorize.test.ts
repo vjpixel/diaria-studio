@@ -465,6 +465,20 @@ describe("categorize() — relatório sinalizado no summary, NÃO lançamento (#
       "lancamento",
     );
   });
+
+  it("guard (review #1769): título com verbo de lançamento ('Introducing X') + summary que cita 'report' continua lançamento", () => {
+    // FP pego no review: o guard de launch-verb não listava "Introducing", então
+    // um lançamento real com summary mencionando relatório era demovido. O
+    // !hasLaunchVerb(title) protege.
+    assert.equal(
+      categorize({
+        url: "https://openai.com/index/gpt-6",
+        title: "Introducing GPT-6",
+        summary: "Our report shows GPT-6 is our fastest model yet.",
+      }),
+      "lancamento",
+    );
+  });
 });
 
 describe("categorize() — geographic program announcement override (#1442)", () => {

@@ -477,8 +477,12 @@ export function isReport(article: Article): boolean {
     return false;
   }
   if (REPORT_TITLE_PATTERNS.some((p) => p.test(title))) return true;
-  // #1765: relatório sinalizado no summary mesmo com título product-y.
-  return SUMMARY_REPORT_PATTERN.test(summary);
+  // #1765: relatório sinalizado no summary mesmo com título product-y. MAS não
+  // demove se o TÍTULO tem verbo de lançamento — "Introducing X" + summary que
+  // menciona "report shows" é lançamento, não relatório (o título é o sinal mais
+  // forte). Sem isso, o guard de launch-verb (acima) deixava passar verbos fora
+  // da sua lista (ex: "Introducing"), gerando falso-positivo (review #1769).
+  return !hasLaunchVerb(article) && SUMMARY_REPORT_PATTERN.test(summary);
 }
 
 /**
