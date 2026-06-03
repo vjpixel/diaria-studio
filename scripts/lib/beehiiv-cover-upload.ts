@@ -93,7 +93,10 @@ export function buildCoverUploadJs(imageUrl: string): string {
       steps.push('clicked: Upload N media');
       await sleep(6000);
 
-      // Step 8: click recently uploaded card
+      // Step 8 (#1705): confirmar que a imagem chegou no library. NÃO clicar no
+      // card aqui — APLICAR como thumbnail é clique REAL separado
+      // (buildCoverApplyLocateJs). O sucesso do *upload* = imagem no library;
+      // aplicar/confirmar é o passo seguinte (buildCoverVerifyJs).
       const targetImg = Array.from(document.querySelectorAll('img')).find(i =>
         i.offsetParent !== null &&
         /uploads.asset.file/i.test(i.src) &&
@@ -101,20 +104,12 @@ export function buildCoverUploadJs(imageUrl: string): string {
         !(/static_assets|publication.logo/i.test(i.src))
       );
       if (!targetImg) return { error: 'uploaded image card not found in library', steps };
-      let clickTarget = targetImg;
-      for (let i = 0; i < 4; i++) {
-        if (clickTarget.tagName === 'BUTTON' || clickTarget.onclick) break;
-        if (!clickTarget.parentElement) break;
-        clickTarget = clickTarget.parentElement;
-      }
-      clickTarget.click();
-      steps.push('clicked: uploaded image card');
-      await sleep(3000);
-
-      // Verify thumbnail was set
+      steps.push('found: uploaded card in library');
+      // thumbnailSrc só fica não-null se o Beehiiv auto-aplicar (raro) — informativo.
       const thumbnailImg = Array.from(document.querySelectorAll('img'))
         .find(i => /beehiiv-images-production.*uploads/i.test(i.src));
       return {
+        librarySrc: targetImg.src,
         thumbnailSrc: thumbnailImg?.src ?? null,
         steps,
       };
@@ -130,11 +125,11 @@ export function buildCoverUploadJs(imageUrl: string): string {
  */
 export function classifyUploadResult(
   result:
-    | { thumbnailSrc?: string | null; steps?: string[]; error?: string }
+    | { librarySrc?: string | null; thumbnailSrc?: string | null; steps?: string[]; error?: string }
     | null
     | undefined,
 ):
-  | { ok: true; thumbnailUrl: string }
+  | { ok: true; libraryUrl: string }
   | { ok: false; reason: string; lastStep?: string } {
   // #1640: o `javascript_tool` do claude-in-chrome às vezes retorna vazio/null
   // (sintoma de disconnect intermitente — "empty returns after cover upload" na
@@ -155,21 +150,19 @@ export function classifyUploadResult(
       lastStep: result.steps?.[result.steps.length - 1],
     };
   }
-  if (!result.thumbnailSrc) {
+  // #1705: sucesso do UPLOAD = imagem chegou no library (`librarySrc`). APLICAR
+  // como thumbnail é passo separado (clique real) — não gatear o upload nisso,
+  // senão o loop gastava os 3 retries toda vez antes do apply. `thumbnailSrc`
+  // (auto-apply do Beehiiv) é aceito como fallback de back-compat.
+  const inLibrary = result.librarySrc || result.thumbnailSrc;
+  if (!inLibrary) {
     return {
       ok: false,
-      reason: "thumbnail src ausente pós-upload — UI flow não populou",
+      reason: "imagem não apareceu no library pós-upload — UI flow não completou",
       lastStep: result.steps?.[result.steps.length - 1],
     };
   }
-  if (!/beehiiv-images-production/i.test(result.thumbnailSrc)) {
-    return {
-      ok: false,
-      reason: `thumbnail src "${result.thumbnailSrc.slice(0, 80)}" não bate com pattern beehiiv-images-production`,
-      lastStep: result.steps?.[result.steps.length - 1],
-    };
-  }
-  return { ok: true, thumbnailUrl: result.thumbnailSrc };
+  return { ok: true, libraryUrl: inLibrary };
 }
 
 /**
