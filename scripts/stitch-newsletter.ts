@@ -88,18 +88,39 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
  *
  * Singular vs plural conforme `count` (#1324).
  */
+export interface RenderSectionOpts {
+  /**
+   * #1632: descarta itens em inglês inteiramente (não só marca [TRADUZIR]).
+   * Usado na seção USE MELHOR, cuja regra editorial é "links só em português —
+   * nunca tutorial/link em inglês nesta seção". Detecção pelo summary (sinal
+   * primário, igual ao [TRADUZIR]); sem summary, cai no título.
+   */
+  dropEnglish?: boolean;
+}
+
+/** #1632: item considerado "em inglês" pro filtro da seção USE MELHOR. */
+export function isEnglishItem(a: ArticleLike): boolean {
+  if (a.summary_lang === "en") return true;
+  if (a.summary) return looksEnglish(a.summary);
+  return looksEnglish(a.title ?? "");
+}
+
 export function renderSection(
   emoji: string,
   nameSingular: string,
   namePlural: string,
   items: ArticleLike[],
+  opts: RenderSectionOpts = {},
 ): string {
-  if (items.length === 0) return "";
-  const header = items.length === 1
+  // #1632: na seção PT-only (USE MELHOR), filtrar itens EN antes de tudo —
+  // inclusive antes de decidir singular/plural e se a seção aparece.
+  const kept = opts.dropEnglish ? items.filter((a) => !isEnglishItem(a)) : items;
+  if (kept.length === 0) return "";
+  const header = kept.length === 1
     ? `**${emoji} ${nameSingular}**`
     : `**${emoji} ${namePlural}**`;
   const lines: string[] = [header, ""];
-  for (const a of items) {
+  for (const a of kept) {
     if (!a.url || !a.title) continue;
     // #1697/#1634: o TÍTULO de item de seção secundária sai SEMPRE no idioma
     // original — nunca prefixar [TRADUZIR] no título. O prefixo no título induzia
@@ -171,7 +192,11 @@ export function stitchNewsletter(input: StitchInput): string {
   // #1752: USE MELHOR (bucket use_melhor) era tipado mas NUNCA renderizado —
   // a seção sumia da newsletter mesmo com conteúdo selecionado pelo scorer.
   // Ordem: USE MELHOR vem ANTES de LANÇAMENTOS (decisão editorial 260603).
-  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? []);
+  // #1632: USE MELHOR é PT-only — tutoriais em inglês são descartados (não só
+  // marcados [TRADUZIR] como nas demais seções secundárias).
+  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? [], {
+    dropEnglish: true,
+  });
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
