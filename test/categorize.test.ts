@@ -170,7 +170,7 @@ describe("categorize() — explainer/análise em domínio oficial → noticias (
 describe("categorize() — tutorial domain poluído com notícia (#1712)", () => {
   it("comentário/notícia (type_hint) em domínio de tutorial NÃO vira use_melhor", () => {
     const art: Article = {
-      url: "https://simonwillison.net/2026/Jun/01/some-commentary/",
+      url: "https://hamel.dev/2026/Jun/01/some-commentary/",
       title: "Thoughts on the latest model release",
       type_hint: "opiniao",
     };
@@ -179,7 +179,7 @@ describe("categorize() — tutorial domain poluído com notícia (#1712)", () =>
 
   it("notícia (type_hint=noticia) em domínio de tutorial NÃO vira use_melhor", () => {
     const art: Article = {
-      url: "https://simonwillison.net/2026/Jun/01/news/",
+      url: "https://hamel.dev/2026/Jun/01/news/",
       title: "OpenAI ships new API",
       type_hint: "noticia",
     };
@@ -213,7 +213,7 @@ describe("categorize() — tutorial domain poluído com notícia (#1712)", () =>
 
   it("tutorial real (product-name-only) em domínio de tutorial CONTINUA tutorial", () => {
     const art: Article = {
-      url: "https://simonwillison.net/2026/Jun/01/embeddings/",
+      url: "https://hamel.dev/2026/Jun/01/embeddings/",
       title: "Embeddings: a deep technical reference",
     };
     assert.equal(categorize(art), "tutorial");
@@ -221,7 +221,7 @@ describe("categorize() — tutorial domain poluído com notícia (#1712)", () =>
 
   it("tutorial com how-to keyword vence sinal de notícia (mixed)", () => {
     const art: Article = {
-      url: "https://simonwillison.net/2026/Jun/01/walkthrough/",
+      url: "https://hamel.dev/2026/Jun/01/walkthrough/",
       title: "How to build your first agent — cookbook walkthrough",
       type_hint: "noticia",
     };
@@ -633,8 +633,17 @@ describe("categorize() — patterns específicos (#77)", () => {
 });
 
 describe("categorize() — bucket tutorial (#59 slice 2)", () => {
-  it("simonwillison.net → tutorial (dedicated domain)", () => {
+  it("hamel.dev → tutorial (dedicated domain)", () => {
     assert.equal(
+      categorize({ url: "https://hamel.dev/2026/Jan/15/llm-tools/" }),
+      "tutorial",
+    );
+  });
+
+  it("#1760: simonwillison.net NÃO é mais tutorial domain (blacklist editorial)", () => {
+    // Removido de TUTORIAL_DOMAINS — descartado no dedup (editorial-blocklist).
+    // Se chegasse ao categorize (não deveria), não cai em use_melhor por domínio.
+    assert.notEqual(
       categorize({ url: "https://simonwillison.net/2026/Jan/15/llm-tools/" }),
       "tutorial",
     );

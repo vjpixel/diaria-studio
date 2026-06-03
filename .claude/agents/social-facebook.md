@@ -30,6 +30,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 3. Para **cada destaque**, compor um post independente seguindo o template:
    - Hook direto na primeira linha (dado concreto ou fato surpreendente). **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 2–3 parágrafos curtos em linguagem acessível — menos jargão técnico que o LinkedIn.
+   - **#1762: o corpo não encerra com pergunta.** Feche o texto editorial com uma afirmação antes do CTA fixo — nada de "Comente: você faz X?" no fim do corpo. Perguntas retóricas no meio são OK.
    - CTA final: `"Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br."` — com `https://` e ponto final (Facebook precisa do prefixo pra auto-linkar).
    - Até 2 hashtags relevantes ao tema. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas); hashtags em português quando possível.
    - 800–1.200 caracteres.

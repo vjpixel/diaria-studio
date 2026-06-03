@@ -67,7 +67,8 @@ Recebido pelo coordenador (não vem como arquivo):
 
    - **"Por que isso importa:"** em linha separada, depois 1 parágrafo (~400 chars, **mínimo 2 frases**):
      - Frase 1: impacto direto (o que muda).
-     - Frase 2: implicação pra leitor BR (timing, custo, processo).
+     - Frase 2: implicação concreta (timing, custo, processo, decisão pra quem usa).
+     - **#1755: NÃO forçar ângulo Brasil.** Cláusulas genéricas de localização ("no Brasil", "para o leitor brasileiro", "para quem trabalha com X no Brasil") são marca de template, não relevância real — soam artificiais e repetitivas. Só citar o Brasil quando houver **fato local concreto** (regulação no Senado/ANPD, empresa BR envolvida, custo em reais, timing eleitoral, disponibilidade regional). Sem âncora factual local → escreva a implicação sem geografia.
      - Não começar com "Para [audiência],".
 
 3. **Validação interna pré-write**:

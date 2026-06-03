@@ -447,6 +447,69 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
 // CLI
 // ---------------------------------------------------------------------------
 
+// ── #1762: posts social NÃO devem encerrar com pergunta (CTA-pergunta) ──────
+
+export interface TrailingQuestionMatch {
+  platform: "linkedin" | "facebook";
+  destaque: string;
+  sentence: string;
+}
+export interface TrailingQuestionResult {
+  ok: boolean;
+  matches: TrailingQuestionMatch[];
+}
+
+/**
+ * #1762: a ÚLTIMA frase do post principal (corpo de `## d{N}`, antes dos comments
+ * do LinkedIn) não pode terminar em "?". Alvo: CTA-pergunta de encerramento
+ * ("Comente abaixo: ...? Como você faz X?"). Perguntas retóricas NO MEIO do corpo
+ * e perguntas entre aspas (`vale a pena?"`) são aceitáveis — só a de encerramento
+ * é flagada.
+ *
+ * Estratégia: pega a última linha de texto significativa (ignorando linhas só de
+ * hashtags / só de URL), remove hashtags inline no fim, e checa se termina em "?"
+ * literal (um "?" seguido de aspas de fechamento = pergunta citada → OK).
+ */
+export function lastMeaningfulSentence(body: string): string {
+  const cleaned = body.replace(/<!--[\s\S]*?-->/g, ""); // strip char_count comments
+  const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (/^(#[\p{L}\w]+(\s+#[\p{L}\w]+)*)$/u.test(l)) continue; // linha só de hashtags
+    if (/^https?:\/\/\S+$/.test(l)) continue; // linha só de URL
+    return l;
+  }
+  return "";
+}
+
+export function endsWithTrailingQuestion(sentence: string): boolean {
+  // Remove hashtags inline no fim ("...faz? #IA #Dev" → "...faz?").
+  const stripped = sentence.replace(/(\s+#[\p{L}\w]+)+\s*$/u, "").trimEnd();
+  // "?" literal no fim → pergunta de encerramento. "?\"" / "?'" / "?)" → citada → OK.
+  return /\?$/.test(stripped);
+}
+
+export function lintTrailingQuestion(md: string): TrailingQuestionResult {
+  const matches: TrailingQuestionMatch[] = [];
+  for (const platform of ["linkedin", "facebook"] as const) {
+    const section = extractPlatformSection(md, platform);
+    if (!section) continue;
+    const chunks = section.split(/\n## (d\d+)\n/);
+    for (let i = 1; i < chunks.length; i += 2) {
+      const destaque = chunks[i];
+      let body = chunks[i + 1] ?? "";
+      // Só o post PRINCIPAL — corta os comments do LinkedIn (### comment_*).
+      const commentIdx = body.search(/\n### comment_/);
+      if (commentIdx !== -1) body = body.slice(0, commentIdx);
+      const last = lastMeaningfulSentence(body);
+      if (last && endsWithTrailingQuestion(last)) {
+        matches.push({ platform, destaque, sentence: last.slice(-100) });
+      }
+    }
+  }
+  return { ok: matches.length === 0, matches };
+}
+
 function parseArgs(argv: string[]): Record<string, string> {
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -488,6 +551,22 @@ function main(): void {
         console.error(
           `  linha ${m.line}: relative_time: '${m.word}' encontrado — posts publicam D+1+, use data absoluta\n    contexto: "...${m.context}..."`,
         );
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-trailing-question (#1762) — posts não encerram com pergunta
+  if (args.check === "no-trailing-question") {
+    const result = lintTrailingQuestion(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} post(s) social encerrando com pergunta (#1762 — fechar com afirmação, não CTA-pergunta):`,
+      );
+      for (const m of result.matches) {
+        console.error(`  [${m.platform} ${m.destaque}] termina em pergunta: "...${m.sentence}"`);
       }
       process.exit(1);
     }
