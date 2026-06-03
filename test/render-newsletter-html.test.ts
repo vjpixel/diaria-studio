@@ -15,6 +15,7 @@ import {
   renderLeaderboardTop1Row,
   extractTemplateBlock,
   extractCoverageLine,
+  reconcileCoverageCount,
   renderCoverage,
   unescapeMd,
   processInlineItalics,
@@ -1138,6 +1139,42 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     // O kicker é renderizado como `<p ...>🔬 PESQUISA</p>` com border-bottom no
     // próprio <p>. #1328: emoji prefix obrigatório.
     assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>🔬 PESQUISA<\/p>/u, "kicker <p> deve ter border-bottom 1px + emoji 🔬");
+  });
+});
+
+describe("reconcileCoverageCount (#1761)", () => {
+  const base =
+    "Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 157 artigos. ";
+
+  it("corrige o N stale para o nº real de itens renderizados", () => {
+    // Caso 260603: linha dizia 15, mas após remover itens no gate o real era 12.
+    const stale = base + "Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.";
+    const out = reconcileCoverageCount(stale, 12);
+    assert.match(out, /Selecionamos os 12 mais relevantes/);
+    assert.doesNotMatch(out, /os 15 mais/);
+    // preserva X e Y
+    assert.match(out, /enviei 5 submissões e a Diar\.ia encontrou outros 157 artigos/);
+  });
+
+  it("concordância singular: 1 item → 'Selecionamos o artigo mais relevante'", () => {
+    const stale = base + "Selecionamos os 9 mais relevantes para as pessoas que assinam a newsletter.";
+    const out = reconcileCoverageCount(stale, 1);
+    assert.match(out, /Selecionamos o artigo mais relevante para as pessoas/);
+    assert.doesNotMatch(out, /os \d+ mais/);
+  });
+
+  it("idempotente quando já bate", () => {
+    const ok = base + "Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.";
+    assert.equal(reconcileCoverageCount(ok, 12), ok);
+  });
+
+  it("linha sem o padrão 'Selecionamos ...' fica inalterada", () => {
+    const weird = "Para esta edição, eu (o editor) enviei 0 submissões.";
+    assert.equal(reconcileCoverageCount(weird, 12), weird);
+  });
+
+  it("string vazia → retorna vazia (sem crash)", () => {
+    assert.equal(reconcileCoverageCount("", 12), "");
   });
 });
 

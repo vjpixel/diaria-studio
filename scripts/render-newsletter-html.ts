@@ -506,6 +506,29 @@ export function extractCoverageLine(text: string): string | null {
 }
 
 /**
+ * Pure (#1761): reconcilia o "Selecionamos os Z mais relevantes" da linha de
+ * cobertura com o número REAL de itens renderizados (3 destaques + itens das
+ * seções secundárias). O Z é setado por `sync-coverage-line.ts` num ponto do
+ * pipeline e fica STALE quando o editor adiciona/remove itens no gate. Fazendo
+ * isso no render, a fonte de verdade do Z passa a ser o que de fato vai pro HTML.
+ *
+ * Só substitui o trecho "Selecionamos ..."; preserva X (submissões) e Y
+ * (encontrados). Concordância numérica: 1 item → "Selecionamos o artigo mais
+ * relevante"; N>1 → "Selecionamos os N mais relevantes".
+ */
+export function reconcileCoverageCount(line: string, count: number): string {
+  if (!line) return line;
+  const replacement =
+    count === 1
+      ? "Selecionamos o artigo mais relevante"
+      : `Selecionamos os ${count} mais relevantes`;
+  return line.replace(
+    /Selecionamos (?:o artigo mais relevante|os \d+ mais relevantes)/i,
+    replacement,
+  );
+}
+
+/**
  * Pure (#1648): extrai um CTA de destaque (ex: convite pro sorteio ao vivo) da
  * região de intro — um parágrafo em negrito iniciado por 🎉 ou 📣, posicionado
  * antes do primeiro `**DESTAQUE`. Retorna o texto interno (markdown de links
@@ -583,7 +606,15 @@ export function extractContent(editionDir: string): NewsletterContent {
   const erroIntencional = extractTemplateBlock(reviewedText, "ERRO INTENCIONAL"); // #1279
 
   // #1093: linha de cobertura no topo da newsletter.
-  const coverageLine = extractCoverageLine(reviewedText);
+  // #1761: reconcilia o "Selecionamos os N" com o nº REAL de itens renderizados
+  // (3 destaques + itens das seções secundárias) — evita N stale após edições de
+  // seção no gate. Fonte de verdade do N = o que de fato vai pro HTML.
+  const rawCoverageLine = extractCoverageLine(reviewedText);
+  const renderedItemCount =
+    destaques.length + sections.reduce((sum, sec) => sum + sec.items.length, 0);
+  const coverageLine = rawCoverageLine
+    ? reconcileCoverageCount(rawCoverageLine, renderedItemCount)
+    : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
 
