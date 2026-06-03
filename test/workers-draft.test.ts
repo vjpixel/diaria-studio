@@ -160,8 +160,17 @@ describe("handlePut (#1239)", () => {
     assert.equal(stored!.ttl, TTL_SECONDS);
   });
 
-  it("TTL é 12h (43200s) — confirma constante exposta", () => {
-    assert.equal(TTL_SECONDS, 12 * 60 * 60);
+  it("#1782: TTL é 90d — preview linkado do relatório, lido dias/semanas depois", () => {
+    assert.equal(TTL_SECONDS, 90 * 24 * 60 * 60);
+  });
+
+  it("#1782 guard: TTL nunca abaixo da janela de leitura do relatório (>= 7d)", () => {
+    // Regressão: o TTL de 12h fazia o link 'Preview social' do relatório dar 404
+    // quando o editor abria > 12h depois. Não deixar cair abaixo de 1 semana.
+    assert.ok(
+      TTL_SECONDS >= 7 * 24 * 60 * 60,
+      `TTL_SECONDS=${TTL_SECONDS} < 7d reintroduz o 404 do relatório (#1782)`,
+    );
   });
 
   it("aceita Bearer case-insensitive", async () => {

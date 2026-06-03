@@ -14,7 +14,8 @@
  * Rotas:
  *   GET /{key}     → retorna HTML (text/html, CORS *, max-age curto)
  *   PUT /{key}     → grava HTML no KV. Auth via HMAC(ADMIN_SECRET, "html:{key}")
- *                    no header Authorization: "Bearer {sig}". TTL 12h.
+ *                    no header Authorization: "Bearer {sig}". TTL 90d (#1782 —
+ *                    o preview é linkado do relatório, lido dias/semanas depois).
  *   OPTIONS /{key} → preflight CORS
  *
  * Deploy: ver workers/draft/README.md (cria KV namespace + deploy).
@@ -56,7 +57,15 @@ async function hmacVerify(secret: string, message: string, sig: string): Promise
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
 const KV_PREFIX = "html:";
-export const TTL_SECONDS = 12 * 60 * 60; // 12h
+// #1782: o preview (newsletter E social) é linkado do relatório de edição, que
+// o editor lê com dias/semanas de atraso (Doc arquivado no Drive, revisão
+// retroativa). Com TTL de 12h o conteúdo no KV expirava antes da leitura → o
+// link do relatório dava 404 (o #1734 tornou durável a URL, mas não o conteúdo).
+// 90d cobre a janela de leitura do relatório. Não introduz stale: re-render do
+// mesmo edition sobrescreve a key; previews sociais são content-addressed (hash),
+// então versões antigas não colidem. Conteúdo é pequeno (cap 5MB) → custo de KV
+// irrelevante.
+export const TTL_SECONDS = 90 * 24 * 60 * 60; // 90d (#1782 — antes 12h)
 
 function extractKey(path: string): string {
   return decodeURIComponent(path.slice(1));
