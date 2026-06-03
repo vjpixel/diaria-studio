@@ -217,7 +217,7 @@ export function renderLivrosPage(books: Book[]): string {
   </div>
   <main id="grid">
 ${cards}
-    <p class="empty" id="empty" hidden>Nenhum livro com esses filtros.</p>
+    <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
   </main>
   <footer>Diar.ia · diar.ia.br — lista em curadoria (#1744)</footer>
 <script>
@@ -234,11 +234,14 @@ ${cards}
         var ok = (!lang || c.dataset.lang === lang)
           && (!level || c.dataset.level === level)
           && (!theme || (' ' + c.dataset.themes + ' ').indexOf(' ' + theme + ' ') !== -1);
-        c.hidden = !ok;
+        // #1744: usar style.display (nao o atributo hidden) — .card{display:flex}
+        // sobrepunha [hidden] (mesma especificidade, autor vence UA) e o filtro nao
+        // escondia nada. Inline style ganha de qualquer regra de classe.
+        c.style.display = ok ? '' : 'none';
         if (ok) visible++;
       });
       countEl.textContent = visible + (visible === 1 ? ' livro' : ' livros');
-      emptyEl.hidden = visible !== 0;
+      emptyEl.style.display = visible === 0 ? '' : 'none';
     }
     [fLang, fLevel, fTheme].forEach(function (el) { el.addEventListener('change', apply); });
     apply();

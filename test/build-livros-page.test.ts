@@ -174,6 +174,21 @@ describe("renderLivrosPage (#1744)", () => {
     assert.match(html, /<script>/);
   });
 
+  it("#1744: filtro esconde via style.display, não pelo atributo [hidden] (que .card{display:flex} sobrepõe)", () => {
+    // Regressão: c.hidden=true não escondia porque `.card{display:flex}` (classe)
+    // vence `[hidden]` (UA). O filtro precisa usar inline style.display.
+    assert.match(html, /\.style\.display\s*=/);
+    assert.doesNotMatch(html, /c\.hidden\s*=/);
+    assert.doesNotMatch(html, /emptyEl\.hidden\s*=/);
+  });
+
+  it("#1744: empty-state usa inline style:display:none, não o atributo [hidden]", () => {
+    // Regressão: com `hidden` no markup, `emptyEl.style.display=''` revertia pro
+    // cascade → `[hidden]` → none → a mensagem 'Nenhum livro' nunca aparecia.
+    assert.match(html, /id="empty"[^>]*style="display:none"/);
+    assert.doesNotMatch(html, /id="empty"[^>]*\shidden/);
+  });
+
   it("escapa conteúdo dos livros (sem injeção)", () => {
     const evil = renderLivrosPage([book({ title: '<script>alert(1)</script>', summary: "x & y" })]);
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
