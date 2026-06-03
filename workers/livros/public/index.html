@@ -4,155 +4,217 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Livros sobre IA · Diar.ia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap">
 <style>
-  :root { --teal: #00A0A0; }
+  :root { --teal: #00A0A0; --ink: #1A1A1A; --paper: #F5F1E8; --card: #FFFDF8; }
   * { box-sizing: border-box; }
-  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif; margin: 0; background: #FAFAFA; color: #1A1A1A; line-height: 1.5; }
-  header { padding: 32px 20px 8px; max-width: 1100px; margin: 0 auto; }
-  h1 { font-weight: 400; font-size: 28px; letter-spacing: -0.5px; margin: 0 0 6px; border-bottom: 2px solid var(--teal); padding-bottom: 12px; }
-  .sub { color: #666; font-size: 15px; margin: 8px 0 0; }
-  .filters { position: sticky; top: 0; background: #FAFAFA; z-index: 2; padding: 16px 20px; max-width: 1100px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid #E5E5E5; }
-  .filters label { font-size: 13px; color: #444; display: flex; flex-direction: column; gap: 4px; }
-  .filters select { font-family: 'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif; font-size: 14px; padding: 8px 10px; border: 1px solid #CCC; border-radius: 8px; background: #FFF; min-width: 150px; }
-  .count { align-self: flex-end; margin-left: auto; font-size: 13px; color: #666; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
-  .card { background: #FFF; border: 1px solid #E5E5E5; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
-  .cover { width: 100%; height: 180px; object-fit: cover; background: #F0FAFA; }
-  .cover--ph { display: flex; align-items: center; justify-content: center; font-size: 48px; }
-  .body { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
-  .body h2 { font-size: 18px; font-weight: 600; margin: 0; line-height: 1.25; }
-  .meta { font-size: 13px; color: #666; margin: 0; }
-  .summary { font-size: 14px; margin: 0; flex: 1; }
-  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
-  .tag { font-size: 11px; background: #F0FAFA; color: #0F766E; padding: 3px 8px; border-radius: 999px; }
-  .tag--level { background: var(--teal); color: #FFF; }
-  .cta { margin-top: 8px; font-size: 14px; font-weight: 600; color: var(--teal); text-decoration: none; }
-  .cta--off { color: #AAA; font-weight: 400; }
-  .empty { grid-column: 1 / -1; text-align: center; color: #666; padding: 40px; }
-  footer { max-width: 1100px; margin: 0 auto; padding: 20px; color: #999; font-size: 12px; }
+  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
+    -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+  /* Masthead editorial */
+  header { padding: 56px 0 0; }
+  .eyebrow { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin: 0 0 18px; }
+  .rule { height: 2px; background: var(--teal); border: 0; margin: 0 0 22px; }
+  h1 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-weight: 700; font-size: clamp(40px, 7vw, 72px); line-height: 0.98;
+    letter-spacing: -0.02em; margin: 0; }
+  h1 .dot { color: var(--teal); }
+  .tagline { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #6b6256; margin: 18px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 60ch; margin: 14px 0 0; }
+
+  /* Filtros */
+  .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
+    border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
+  .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
+  .filters label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+  .filters select { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
+    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 150px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 4px center; }
+  .filters select:focus { outline: none; border-bottom-color: var(--teal); }
+  .count { margin-left: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: #8a8170; align-self: flex-end; }
+
+  /* Grade de livros */
+  main { padding: 40px 0 64px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1px;
+    background: #e3ddcd; border: 1px solid #e3ddcd; }
+  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px; }
+  .cover-wrap { margin: 0 0 20px; }
+  .cover { width: 92px; height: 138px; object-fit: cover; box-shadow: 0 6px 18px rgba(20,16,8,0.16); background: #ece6d6; }
+  .cover--ph { width: 92px; height: 138px; display: flex; align-items: center; justify-content: center;
+    font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-weight: 700; font-size: 40px; color: var(--teal); background: #ece6d6;
+    box-shadow: 0 6px 18px rgba(20,16,8,0.16); }
+  .body { display: flex; flex-direction: column; gap: 0; flex: 1; }
+  .kicker { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin: 0 0 8px; }
+  .body h2 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 23px; font-weight: 600; line-height: 1.12;
+    letter-spacing: -0.01em; margin: 0 0 6px; }
+  .meta { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #8a8170; margin: 0 0 12px; }
+  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 0 0 16px; flex: 1; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
+  .tag { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+  .cta { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
+    border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  .cta:hover { border-bottom-color: var(--teal); }
+  .cta--off { color: #b3ab98; font-weight: 600; }
+  .empty { grid-column: 1 / -1; text-align: center; color: #8a8170; padding: 64px 20px;
+    font-size: 18px; background: var(--card); }
+  footer { border-top: 1px solid #ddd6c6; }
+  footer .wrap { padding: 24px 28px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #9a9180; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Livros sobre IA</h1>
-    <p class="sub">Curadoria da Diar.ia para profissionais brasileiros de tecnologia, finanças e consultoria.</p>
+    <div class="wrap">
+      <p class="eyebrow">Diar.ia · Curadoria</p>
+      <hr class="rule">
+      <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
+      <p class="tagline">Seu filtro no caos</p>
+      <p class="lede">Uma lista curada pra quem trabalha com tecnologia, finanças e consultoria no Brasil — dos fundamentos ao debate sobre o futuro.</p>
+    </div>
   </header>
   <div class="filters">
-    <label>Idioma
-      <select id="f-lang"><option value="">Todos</option><option value="pt-br">Português</option><option value="en">Inglês</option></select>
-    </label>
-    <label>Nível
-      <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
-    </label>
-    <label>Tema
-      <select id="f-theme"><option value="">Todos</option><option value="llms">LLMs / IA generativa</option><option value="ml-aplicado">ML aplicado</option><option value="fundamentos">Fundamentos</option><option value="etica-sociedade">Ética &amp; sociedade</option><option value="negocios-produto">Negócios &amp; produto</option><option value="historia">História</option></select>
-    </label>
-    <span class="count" id="count"></span>
+    <div class="wrap">
+      <label>Idioma
+        <select id="f-lang"><option value="">Todos</option><option value="pt-br">Português</option><option value="en">Inglês</option></select>
+      </label>
+      <label>Nível
+        <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
+      </label>
+      <label>Tema
+        <select id="f-theme"><option value="">Todos</option><option value="llms">LLMs / IA generativa</option><option value="ml-aplicado">ML aplicado</option><option value="fundamentos">Fundamentos</option><option value="etica-sociedade">Ética &amp; sociedade</option><option value="negocios-produto">Negócios &amp; produto</option><option value="historia">História</option></select>
+      </label>
+      <span class="count" id="count"></span>
+    </div>
   </div>
-  <main id="grid">
+  <main>
+    <div class="wrap">
+      <div class="grid" id="grid">
       <article class="card" data-lang="en" data-level="iniciante" data-themes="llms negocios-produto">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593716717-L.jpg" alt="Capa de Co-Intelligence: Living and Working with AI" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593716717-L.jpg" alt="Capa de Co-Intelligence: Living and Working with AI" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Iniciante · Inglês</p>
           <h2>Co-Intelligence: Living and Working with AI</h2>
-          <p class="meta">Ethan Mollick · 2024 · Inglês</p>
+          <p class="meta">Ethan Mollick · 2024</p>
           <p class="summary">Guia prático de como trabalhar lado a lado com IA generativa no dia a dia profissional — direto ao ponto pro público que usa LLMs no trabalho.</p>
-          <p class="tags"><span class="tag tag--level">Iniciante</span><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/741805/co-intelligence-by-ethan-mollick/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
+          <a class="cta" href="https://www.penguinrandomhouse.com/books/741805/co-intelligence-by-ethan-mollick/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="intermediario" data-themes="etica-sociedade negocios-produto">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593728178-L.jpg" alt="Capa de The Coming Wave" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593728178-L.jpg" alt="Capa de The Coming Wave" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Intermediário · Inglês</p>
           <h2>The Coming Wave</h2>
-          <p class="meta">Mustafa Suleyman · 2023 · Inglês</p>
+          <p class="meta">Mustafa Suleyman · 2023</p>
           <p class="summary">Do cofundador da DeepMind: o impacto da IA e da biotecnologia e o desafio de conter tecnologias que se espalham rápido.</p>
-          <p class="tags"><span class="tag tag--level">Intermediário</span><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/722674/the-coming-wave-by-mustafa-suleyman-with-michael-bhaskar/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
+          <a class="cta" href="https://www.penguinrandomhouse.com/books/722674/the-coming-wave-by-mustafa-suleyman-with-michael-bhaskar/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="avancado" data-themes="fundamentos etica-sociedade">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780525558613-L.jpg" alt="Capa de Human Compatible: Artificial Intelligence and the Problem of Control" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780525558613-L.jpg" alt="Capa de Human Compatible: Artificial Intelligence and the Problem of Control" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Avançado · Inglês</p>
           <h2>Human Compatible: Artificial Intelligence and the Problem of Control</h2>
-          <p class="meta">Stuart Russell · 2019 · Inglês</p>
+          <p class="meta">Stuart Russell · 2019</p>
           <p class="summary">Um dos autores do livro-texto canônico de IA discute alinhamento e controle — base pra quem quer entender o debate de segurança a fundo.</p>
-          <p class="tags"><span class="tag tag--level">Avançado</span><span class="tag">Fundamentos</span><span class="tag">Ética &amp; sociedade</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/566677/human-compatible-by-stuart-russell/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Fundamentos</span><span class="tag">Ética &amp; sociedade</span></p>
+          <a class="cta" href="https://www.penguinrandomhouse.com/books/566677/human-compatible-by-stuart-russell/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="iniciante" data-themes="etica-sociedade historia">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9781101946596-L.jpg" alt="Capa de Life 3.0: Being Human in the Age of Artificial Intelligence" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9781101946596-L.jpg" alt="Capa de Life 3.0: Being Human in the Age of Artificial Intelligence" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Iniciante · Inglês</p>
           <h2>Life 3.0: Being Human in the Age of Artificial Intelligence</h2>
-          <p class="meta">Max Tegmark · 2017 · Inglês</p>
+          <p class="meta">Max Tegmark · 2017</p>
           <p class="summary">Panorama acessível sobre futuros possíveis com IA avançada e o que está em jogo pra sociedade.</p>
-          <p class="tags"><span class="tag tag--level">Iniciante</span><span class="tag">Ética &amp; sociedade</span><span class="tag">História</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/530584/life-30-by-max-tegmark/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">História</span></p>
+          <a class="cta" href="https://www.penguinrandomhouse.com/books/530584/life-30-by-max-tegmark/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="intermediario" data-themes="etica-sociedade">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780300209570-L.jpg" alt="Capa de Atlas of AI" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780300209570-L.jpg" alt="Capa de Atlas of AI" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Intermediário · Inglês</p>
           <h2>Atlas of AI</h2>
-          <p class="meta">Kate Crawford · 2021 · Inglês</p>
+          <p class="meta">Kate Crawford · 2021</p>
           <p class="summary">Os custos materiais, trabalhistas e ambientais por trás dos sistemas de IA — contraponto crítico necessário ao hype.</p>
-          <p class="tags"><span class="tag tag--level">Intermediário</span><span class="tag">Ética &amp; sociedade</span></p>
-          <a class="cta" href="https://yalebooks.yale.edu/book/9780300264630/atlas-of-ai/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Ética &amp; sociedade</span></p>
+          <a class="cta" href="https://yalebooks.yale.edu/book/9780300264630/atlas-of-ai/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="intermediario" data-themes="ml-aplicado fundamentos">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9781098125974-L.jpg" alt="Capa de Hands-On Machine Learning with Scikit-Learn, Keras &amp; TensorFlow" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9781098125974-L.jpg" alt="Capa de Hands-On Machine Learning with Scikit-Learn, Keras &amp; TensorFlow" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Intermediário · Inglês</p>
           <h2>Hands-On Machine Learning with Scikit-Learn, Keras &amp; TensorFlow</h2>
-          <p class="meta">Aurélien Géron · 2022 · Inglês</p>
+          <p class="meta">Aurélien Géron · 2022</p>
           <p class="summary">Referência prática pra quem quer pôr a mão na massa em ML aplicado, com código e exemplos reais.</p>
-          <p class="tags"><span class="tag tag--level">Intermediário</span><span class="tag">ML aplicado</span><span class="tag">Fundamentos</span></p>
-          <a class="cta" href="https://www.amazon.com/Hands-Machine-Learning-Scikit-Learn-TensorFlow/dp/1098125975" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">ML aplicado</span><span class="tag">Fundamentos</span></p>
+          <a class="cta" href="https://www.amazon.com/Hands-Machine-Learning-Scikit-Learn-TensorFlow/dp/1098125975" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="avancado" data-themes="fundamentos ml-aplicado">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780262035613-L.jpg" alt="Capa de Deep Learning" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780262035613-L.jpg" alt="Capa de Deep Learning" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Avançado · Inglês</p>
           <h2>Deep Learning</h2>
-          <p class="meta">Ian Goodfellow, Yoshua Bengio, Aaron Courville · 2016 · Inglês</p>
+          <p class="meta">Ian Goodfellow, Yoshua Bengio, Aaron Courville · 2016</p>
           <p class="summary">O tratado de referência sobre aprendizado profundo — denso, mas a base teórica pra quem leva a sério. Versão online oficial gratuita.</p>
-          <p class="tags"><span class="tag tag--level">Avançado</span><span class="tag">Fundamentos</span><span class="tag">ML aplicado</span></p>
-          <a class="cta" href="https://www.deeplearningbook.org/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Fundamentos</span><span class="tag">ML aplicado</span></p>
+          <a class="cta" href="https://www.deeplearningbook.org/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="en" data-level="iniciante" data-themes="etica-sociedade negocios-produto">
-        <img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593238295-L.jpg" alt="Capa de AI 2041: Ten Visions for Our Future" loading="lazy">
+        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593238295-L.jpg" alt="Capa de AI 2041: Ten Visions for Our Future" loading="lazy"></div>
         <div class="body">
+          <p class="kicker">Iniciante · Inglês</p>
           <h2>AI 2041: Ten Visions for Our Future</h2>
-          <p class="meta">Kai-Fu Lee, Chen Qiufan · 2021 · Inglês</p>
+          <p class="meta">Kai-Fu Lee, Chen Qiufan · 2021</p>
           <p class="summary">Ficção + análise técnica: dez histórias que ilustram como a IA pode moldar a vida nas próximas duas décadas.</p>
-          <p class="tags"><span class="tag tag--level">Iniciante</span><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/653310/ai-2041-by-kai-fu-lee-and-chen-qiufan/" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
+          <a class="cta" href="https://www.penguinrandomhouse.com/books/653310/ai-2041-by-kai-fu-lee-and-chen-qiufan/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="pt-br" data-level="avancado" data-themes="fundamentos">
-        <div class="cover cover--ph" aria-hidden="true">📘</div>
+        <div class="cover-wrap"><div class="cover cover--ph" aria-hidden="true">d.</div></div>
         <div class="body">
+          <p class="kicker">Avançado · Português</p>
           <h2>Inteligência Artificial: Uma Abordagem Moderna</h2>
-          <p class="meta">Stuart Russell, Peter Norvig · 2022 · Português</p>
+          <p class="meta">Stuart Russell, Peter Norvig · 2022</p>
           <p class="summary">O livro-texto clássico de IA em português (4ª edição, tradução) — referência acadêmica completa do campo.</p>
-          <p class="tags"><span class="tag tag--level">Avançado</span><span class="tag">Fundamentos</span></p>
-          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-uma-abordagem-moderna-stuart-russell-e-peter-norvig-9788595158870" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">Fundamentos</span></p>
+          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-uma-abordagem-moderna-stuart-russell-e-peter-norvig-9788595158870" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
       <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="llms negocios-produto">
-        <div class="cover cover--ph" aria-hidden="true">📘</div>
+        <div class="cover-wrap"><div class="cover cover--ph" aria-hidden="true">d.</div></div>
         <div class="body">
+          <p class="kicker">Iniciante · Português</p>
           <h2>Inteligência Artificial: do Zero a Superpoderes</h2>
-          <p class="meta">Martha Gabriel · 2024 · Português</p>
+          <p class="meta">Martha Gabriel · 2024</p>
           <p class="summary">Panorama de IA generativa em português por uma autora reconhecida — acessível pro profissional brasileiro que quer começar.</p>
-          <p class="tags"><span class="tag tag--level">Iniciante</span><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-do-zero-a-superpoderes-martha-gabriel-editora-atlas-9786559776467" target="_blank" rel="noopener noreferrer">Ver livro →</a>
+          <p class="tags"><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
+          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-do-zero-a-superpoderes-martha-gabriel-editora-atlas-9786559776467" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
         </div>
       </article>
-    <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
+        <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
+      </div>
+    </div>
   </main>
-  <footer>Diar.ia · diar.ia.br — lista em curadoria (#1744)</footer>
+  <footer><div class="wrap">Diar.ia · diar.ia.br — lista em curadoria</div></footer>
 <script>
   (function () {
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));

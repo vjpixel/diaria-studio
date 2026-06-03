@@ -31,8 +31,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 
+// #1744: design editorial Diar.ia — masthead serifado Newsreader, accent teal,
+// fundo creme/jornal, kickers em maiúsculas espaçadas. Espelha as "Layout
+// Proposals" do projeto de design (claude.ai/design) e o logo (Newsreader 700).
 const TEAL = "#00A0A0";
-const FONT = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
+const INK = "#1A1A1A";
+const PAPER = "#F5F1E8"; // creme/jornal
+const CARD_BG = "#FFFDF8";
+const SERIF = "'Newsreader', Georgia, 'Times New Roman', serif";
+const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
 export type Language = "pt-br" | "en";
 export type Level = "iniciante" | "intermediario" | "avancado";
@@ -136,28 +143,28 @@ function renderCard(b: Book): string {
   const themes = b.themes.map((t) => THEME_LABEL[t] ?? t);
   const cover = isSafeUrl(b.cover_url)
     ? `<img class="cover" src="${esc(b.cover_url!)}" alt="Capa de ${esc(b.title)}" loading="lazy">`
-    : `<div class="cover cover--ph" aria-hidden="true">📘</div>`;
+    : `<div class="cover cover--ph" aria-hidden="true">d.</div>`;
   const cta = isSafeUrl(b.link)
-    ? `<a class="cta" href="${esc(b.link!)}" target="_blank" rel="noopener noreferrer">Ver livro →</a>`
+    ? `<a class="cta" href="${esc(b.link!)}" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
   // data-* alimentam os filtros client-side.
   return `      <article class="card" data-lang="${esc(b.language)}" data-level="${esc(b.level)}" data-themes="${esc(b.themes.join(" "))}">
-        ${cover}
+        <div class="cover-wrap">${cover}</div>
         <div class="body">
+          <p class="kicker">${esc(LEVEL_LABEL[b.level])} · ${esc(LANG_LABEL[b.language])}</p>
           <h2>${esc(b.title)}</h2>
-          <p class="meta">${esc(b.author)} · ${b.year} · ${esc(LANG_LABEL[b.language])}</p>
+          <p class="meta">${esc(b.author)} · ${b.year}</p>
           <p class="summary">${esc(b.summary)}</p>
-          <p class="tags"><span class="tag tag--level">${esc(LEVEL_LABEL[b.level])}</span>${themes
-            .map((t) => `<span class="tag">${esc(t)}</span>`)
-            .join("")}</p>
+          <p class="tags">${themes.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</p>
           ${cta}
         </div>
       </article>`;
 }
 
 /**
- * Renderiza a página completa. Pure — recebe os livros, devolve HTML
- * self-contained (sem fetch externo; dados e JS inline).
+ * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
+ * livros, devolve HTML self-contained (sem fetch de dados; só a fonte Newsreader
+ * vem do Google Fonts).
  */
 export function renderLivrosPage(books: Book[]): string {
   const cards = books.map(renderCard).join("\n");
@@ -170,56 +177,108 @@ export function renderLivrosPage(books: Book[]): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Livros sobre IA · Diar.ia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap">
 <style>
-  :root { --teal: ${TEAL}; }
+  :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; }
   * { box-sizing: border-box; }
-  body { font-family: ${FONT}; margin: 0; background: #FAFAFA; color: #1A1A1A; line-height: 1.5; }
-  header { padding: 32px 20px 8px; max-width: 1100px; margin: 0 auto; }
-  h1 { font-weight: 400; font-size: 28px; letter-spacing: -0.5px; margin: 0 0 6px; border-bottom: 2px solid var(--teal); padding-bottom: 12px; }
-  .sub { color: #666; font-size: 15px; margin: 8px 0 0; }
-  .filters { position: sticky; top: 0; background: #FAFAFA; z-index: 2; padding: 16px 20px; max-width: 1100px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid #E5E5E5; }
-  .filters label { font-size: 13px; color: #444; display: flex; flex-direction: column; gap: 4px; }
-  .filters select { font-family: ${FONT}; font-size: 14px; padding: 8px 10px; border: 1px solid #CCC; border-radius: 8px; background: #FFF; min-width: 150px; }
-  .count { align-self: flex-end; margin-left: auto; font-size: 13px; color: #666; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
-  .card { background: #FFF; border: 1px solid #E5E5E5; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
-  .cover { width: 100%; height: 180px; object-fit: cover; background: #F0FAFA; }
-  .cover--ph { display: flex; align-items: center; justify-content: center; font-size: 48px; }
-  .body { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
-  .body h2 { font-size: 18px; font-weight: 600; margin: 0; line-height: 1.25; }
-  .meta { font-size: 13px; color: #666; margin: 0; }
-  .summary { font-size: 14px; margin: 0; flex: 1; }
-  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
-  .tag { font-size: 11px; background: #F0FAFA; color: #0F766E; padding: 3px 8px; border-radius: 999px; }
-  .tag--level { background: var(--teal); color: #FFF; }
-  .cta { margin-top: 8px; font-size: 14px; font-weight: 600; color: var(--teal); text-decoration: none; }
-  .cta--off { color: #AAA; font-weight: 400; }
-  .empty { grid-column: 1 / -1; text-align: center; color: #666; padding: 40px; }
-  footer { max-width: 1100px; margin: 0 auto; padding: 20px; color: #999; font-size: 12px; }
+  body { font-family: ${SERIF}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
+    -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+  /* Masthead editorial */
+  header { padding: 56px 0 0; }
+  .eyebrow { font-family: ${SANS}; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin: 0 0 18px; }
+  .rule { height: 2px; background: var(--teal); border: 0; margin: 0 0 22px; }
+  h1 { font-family: ${SERIF}; font-weight: 700; font-size: clamp(40px, 7vw, 72px); line-height: 0.98;
+    letter-spacing: -0.02em; margin: 0; }
+  h1 .dot { color: var(--teal); }
+  .tagline { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #6b6256; margin: 18px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 60ch; margin: 14px 0 0; }
+
+  /* Filtros */
+  .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
+    border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
+  .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
+  .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+  .filters select { font-family: ${SERIF}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
+    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 150px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 4px center; }
+  .filters select:focus { outline: none; border-bottom-color: var(--teal); }
+  .count { margin-left: auto; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: #8a8170; align-self: flex-end; }
+
+  /* Grade de livros */
+  main { padding: 40px 0 64px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1px;
+    background: #e3ddcd; border: 1px solid #e3ddcd; }
+  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px; }
+  .cover-wrap { margin: 0 0 20px; }
+  .cover { width: 92px; height: 138px; object-fit: cover; box-shadow: 0 6px 18px rgba(20,16,8,0.16); background: #ece6d6; }
+  .cover--ph { width: 92px; height: 138px; display: flex; align-items: center; justify-content: center;
+    font-family: ${SERIF}; font-weight: 700; font-size: 40px; color: var(--teal); background: #ece6d6;
+    box-shadow: 0 6px 18px rgba(20,16,8,0.16); }
+  .body { display: flex; flex-direction: column; gap: 0; flex: 1; }
+  .kicker { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin: 0 0 8px; }
+  .body h2 { font-family: ${SERIF}; font-size: 23px; font-weight: 600; line-height: 1.12;
+    letter-spacing: -0.01em; margin: 0 0 6px; }
+  .meta { font-family: ${SANS}; font-size: 13px; color: #8a8170; margin: 0 0 12px; }
+  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 0 0 16px; flex: 1; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
+  .tag { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+  .cta { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
+    border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  .cta:hover { border-bottom-color: var(--teal); }
+  .cta--off { color: #b3ab98; font-weight: 600; }
+  .empty { grid-column: 1 / -1; text-align: center; color: #8a8170; padding: 64px 20px;
+    font-size: 18px; background: var(--card); }
+  footer { border-top: 1px solid #ddd6c6; }
+  footer .wrap { padding: 24px 28px; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #9a9180; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Livros sobre IA</h1>
-    <p class="sub">Curadoria da Diar.ia para profissionais brasileiros de tecnologia, finanças e consultoria.</p>
+    <div class="wrap">
+      <p class="eyebrow">Diar.ia · Curadoria</p>
+      <hr class="rule">
+      <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
+      <p class="tagline">Seu filtro no caos</p>
+      <p class="lede">Uma lista curada pra quem trabalha com tecnologia, finanças e consultoria no Brasil — dos fundamentos ao debate sobre o futuro.</p>
+    </div>
   </header>
   <div class="filters">
-    <label>Idioma
-      <select id="f-lang"><option value="">Todos</option><option value="pt-br">Português</option><option value="en">Inglês</option></select>
-    </label>
-    <label>Nível
-      <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
-    </label>
-    <label>Tema
-      <select id="f-theme"><option value="">Todos</option>${themeOptions}</select>
-    </label>
-    <span class="count" id="count"></span>
+    <div class="wrap">
+      <label>Idioma
+        <select id="f-lang"><option value="">Todos</option><option value="pt-br">Português</option><option value="en">Inglês</option></select>
+      </label>
+      <label>Nível
+        <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
+      </label>
+      <label>Tema
+        <select id="f-theme"><option value="">Todos</option>${themeOptions}</select>
+      </label>
+      <span class="count" id="count"></span>
+    </div>
   </div>
-  <main id="grid">
+  <main>
+    <div class="wrap">
+      <div class="grid" id="grid">
 ${cards}
-    <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
+        <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
+      </div>
+    </div>
   </main>
-  <footer>Diar.ia · diar.ia.br — lista em curadoria (#1744)</footer>
+  <footer><div class="wrap">Diar.ia · diar.ia.br — lista em curadoria</div></footer>
 <script>
   (function () {
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
