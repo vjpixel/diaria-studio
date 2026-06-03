@@ -1,24 +1,18 @@
 /**
  * build-livros-page.ts (#1744)
  *
- * Gera a página piloto "Livros sobre IA" da Diar.ia a partir de
- * `seed/books/livros-ia.json` (curadoria do editor, versionado). Emite um
- * único HTML self-contained (dados + filtros client-side inline) — abrível
- * direto no browser (file://) e arch-neutro: pode ser servido por qualquer
- * host estático ou embrulhado num Worker quando a arquitetura for decidida
- * (decisão 2026-06-03: piloto primeiro, arquitetura depois).
+ * Gera a página "Livros sobre IA" da Diar.ia a partir de
+ * `seed/books/livros-ia.json` (curadoria do editor, espelhada da página Beehiiv
+ * diaria.beehiiv.com/livros-sobre-ia). Emite um HTML self-contained (dados +
+ * filtros client-side inline) servido pelo Worker `livros`.
  *
- * Filtros client-side: idioma (PT/EN, confirmado), nível e tema. 10 itens
- * cabem inteiros no payload — sem backend de busca.
+ * Design editorial Diar.ia (Newsreader serif, accent teal, fundo creme),
+ * cards text-focused (sem capa): título com link de afiliado amzn.to, nota da
+ * Amazon, badges (idioma/nível/tema), selo de destaque e "para quem é".
  *
  * Uso:
- *   npx tsx scripts/build-livros-page.ts                 # → data/livros/index.html
- *   npx tsx scripts/build-livros-page.ts --out caminho.html
- *   npx tsx scripts/build-livros-page.ts --check         # só valida, não escreve
- *
- * Saída: warnings (stderr) listando livros sem `link`/`cover_url` (curadoria
- * pendente). Exit 0 sempre que o JSON é válido (warnings não bloqueiam o
- * piloto); exit 2 se o JSON é inválido/ausente.
+ *   npx tsx scripts/build-livros-page.ts --out workers/livros/public/index.html
+ *   npx tsx scripts/build-livros-page.ts --check       # só valida
  */
 
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
@@ -31,12 +25,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/books/livros-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 
-// #1744: design editorial Diar.ia — masthead serifado Newsreader, accent teal,
-// fundo creme/jornal, kickers em maiúsculas espaçadas. Espelha as "Layout
-// Proposals" do projeto de design (claude.ai/design) e o logo (Newsreader 700).
 const TEAL = "#00A0A0";
 const INK = "#1A1A1A";
-const PAPER = "#F5F1E8"; // creme/jornal
+const PAPER = "#F5F1E8";
 const CARD_BG = "#FFFDF8";
 const SERIF = "'Newsreader', Georgia, 'Times New Roman', serif";
 const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
@@ -47,14 +38,14 @@ export type Level = "iniciante" | "intermediario" | "avancado";
 export interface Book {
   id: string;
   title: string;
-  author: string;
-  year: number;
+  link: string;
   language: Language;
   level: Level;
   themes: string[];
-  cover_url?: string;
+  rating?: number;
+  highlight?: string;
   summary: string;
-  link?: string;
+  cover_url?: string;
 }
 
 const LEVEL_LABEL: Record<Level, string> = {
@@ -63,24 +54,7 @@ const LEVEL_LABEL: Record<Level, string> = {
   avancado: "Avançado",
 };
 
-const THEME_LABEL: Record<string, string> = {
-  llms: "LLMs / IA generativa",
-  "ml-aplicado": "ML aplicado",
-  fundamentos: "Fundamentos",
-  "etica-sociedade": "Ética & sociedade",
-  "negocios-produto": "Negócios & produto",
-  historia: "História",
-};
-
 const LANG_LABEL: Record<Language, string> = { "pt-br": "Português", en: "Inglês" };
-
-/**
- * URL só é aceita se http(s) — defense-in-depth contra `javascript:`/`data:`
- * num link curado errado. Pure. Vazio → false (curadoria pendente).
- */
-export function isSafeUrl(u: string | undefined): boolean {
-  return !!u && /^https?:\/\//i.test(u);
-}
 
 /** Escapa HTML em texto interpolado. */
 export function esc(s: string): string {
@@ -92,6 +66,17 @@ export function esc(s: string): string {
     .replaceAll("'", "&#39;");
 }
 
+/** URL aceita só se http(s) — defense-in-depth (amzn.to é https). Pure. */
+export function isSafeUrl(u: string | undefined): boolean {
+  return !!u && /^https?:\/\//i.test(u);
+}
+
+/** Nota Amazon → "4,7" (decimal com vírgula PT). Pure. */
+export function fmtRating(r: number | undefined): string | null {
+  if (r == null || !Number.isFinite(r)) return null;
+  return r.toFixed(1).replace(".", ",");
+}
+
 export interface ValidationResult {
   ok: boolean;
   errors: string[];
@@ -100,10 +85,8 @@ export interface ValidationResult {
 
 /**
  * Valida a lista de livros. Pure — testável sem IO.
- *
- * Erros (bloqueiam): campos obrigatórios ausentes, id duplicado, language/level
- * fora do enum. Warnings (não bloqueiam o piloto): `link` ou `cover_url` vazios
- * (curadoria pendente) e temas desconhecidos.
+ * Erros (bloqueiam): campos obrigatórios, id duplicado, language/level fora do
+ * enum. Warnings: link com esquema inválido, rating ausente/fora de 0-5.
  */
 export function validateBooks(books: Book[]): ValidationResult {
   const errors: string[] = [];
@@ -115,18 +98,22 @@ export function validateBooks(books: Book[]): ValidationResult {
     else if (seen.has(b.id)) errors.push(`id duplicado: ${b.id}`);
     else seen.add(b.id);
     if (!b.title) errors.push(`${where}: title ausente`);
-    if (!b.author) errors.push(`${where}: author ausente`);
     if (!b.summary) errors.push(`${where}: summary ausente`);
+    if (!b.link) errors.push(`${where}: link ausente`);
+    else if (!isSafeUrl(b.link)) warnings.push(`${where}: link com esquema inválido: ${b.link}`);
     if (b.language !== "pt-br" && b.language !== "en") errors.push(`${where}: language inválida (${b.language})`);
     if (!(b.level in LEVEL_LABEL)) errors.push(`${where}: level inválido (${b.level})`);
-    if (!Array.isArray(b.themes) || b.themes.length === 0) errors.push(`${where}: themes vazio`);
-    else for (const t of b.themes) if (!(t in THEME_LABEL)) warnings.push(`${where}: tema desconhecido "${t}"`);
-    if (!b.link) warnings.push(`${where}: link pendente (curadoria)`);
-    else if (!isSafeUrl(b.link)) warnings.push(`${where}: link com esquema inválido (só http/https): ${b.link}`);
-    if (!b.cover_url) warnings.push(`${where}: cover_url pendente (curadoria)`);
-    else if (!isSafeUrl(b.cover_url)) warnings.push(`${where}: cover_url com esquema inválido (só http/https): ${b.cover_url}`);
+    if (!Array.isArray(b.themes)) errors.push(`${where}: themes deve ser array`);
+    if (b.rating == null || b.rating < 0 || b.rating > 5) warnings.push(`${where}: rating ausente/inválido`);
   }
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/** Temas distintos (ordenados) presentes na lista — pra montar o filtro. Pure. */
+export function distinctThemes(books: Book[]): string[] {
+  const set = new Set<string>();
+  for (const b of books) for (const t of b.themes ?? []) if (t) set.add(t);
+  return [...set].sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
 /** Lê e valida o seed. Lança em JSON inválido / erros de schema. */
@@ -140,36 +127,41 @@ export function loadBooks(seedPath = SEED_PATH): Book[] {
 }
 
 function renderCard(b: Book): string {
-  const themes = b.themes.map((t) => THEME_LABEL[t] ?? t);
-  const cover = isSafeUrl(b.cover_url)
-    ? `<img class="cover" src="${esc(b.cover_url!)}" alt="Capa de ${esc(b.title)}" loading="lazy">`
-    : `<div class="cover cover--ph" aria-hidden="true">d.</div>`;
+  const rating = fmtRating(b.rating);
+  const note = rating ? `<span class="note">★ ${rating}</span>` : "";
   const cta = isSafeUrl(b.link)
-    ? `<a class="cta" href="${esc(b.link!)}" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>`
+    ? `<a class="cta" href="${esc(b.link)}" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
-  // data-* alimentam os filtros client-side.
+  const titleInner = isSafeUrl(b.link)
+    ? `<a href="${esc(b.link)}" target="_blank" rel="noopener noreferrer sponsored">${esc(b.title)}</a>`
+    : esc(b.title);
+  const badges = [
+    `<span class="badge badge--lang">${esc(LANG_LABEL[b.language])}</span>`,
+    `<span class="badge">${esc(LEVEL_LABEL[b.level])}</span>`,
+    ...b.themes.map((t) => `<span class="badge">${esc(t)}</span>`),
+  ].join("");
+  const highlight = b.highlight ? `<p class="highlight">${esc(b.highlight)}</p>` : "";
+  // data-* alimentam os filtros client-side (themes single-word → space-join).
   return `      <article class="card" data-lang="${esc(b.language)}" data-level="${esc(b.level)}" data-themes="${esc(b.themes.join(" "))}">
-        <div class="cover-wrap">${cover}</div>
-        <div class="body">
-          <p class="kicker">${esc(LEVEL_LABEL[b.level])} · ${esc(LANG_LABEL[b.language])}</p>
-          <h2>${esc(b.title)}</h2>
-          <p class="meta">${esc(b.author)} · ${b.year}</p>
-          <p class="summary">${esc(b.summary)}</p>
-          <p class="tags">${themes.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</p>
-          ${cta}
+        <div class="title-row">
+          <h2>${titleInner}</h2>
+          ${note}
         </div>
+        <p class="badges">${badges}</p>
+        ${highlight}
+        <p class="summary">${esc(b.summary)}</p>
+        ${cta}
       </article>`;
 }
 
 /**
  * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
- * livros, devolve HTML self-contained (sem fetch de dados; só a fonte Newsreader
- * vem do Google Fonts).
+ * livros, devolve HTML self-contained (só a fonte Newsreader vem externa).
  */
 export function renderLivrosPage(books: Book[]): string {
   const cards = books.map(renderCard).join("\n");
-  const themeOptions = Object.entries(THEME_LABEL)
-    .map(([v, l]) => `<option value="${v}">${esc(l)}</option>`)
+  const themeOptions = distinctThemes(books)
+    .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`)
     .join("");
   return `<!DOCTYPE html>
 <html lang="pt-br">
@@ -185,9 +177,9 @@ export function renderLivrosPage(books: Book[]): string {
   * { box-sizing: border-box; }
   body { font-family: ${SERIF}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
     -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
 
-  /* Masthead editorial */
   header { padding: 56px 0 0; }
   .eyebrow { font-family: ${SANS}; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
     color: var(--teal); font-weight: 600; margin: 0 0 18px; }
@@ -197,16 +189,16 @@ export function renderLivrosPage(books: Book[]): string {
   h1 .dot { color: var(--teal); }
   .tagline { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
     color: #6b6256; margin: 18px 0 0; }
-  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 60ch; margin: 14px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 64ch; margin: 16px 0 0; }
+  .lede + .lede { margin-top: 10px; font-size: 16px; color: #6b6256; }
 
-  /* Filtros */
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
     border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
   .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
     color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
   .filters select { font-family: ${SERIF}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
-    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 150px; cursor: pointer;
+    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 140px; cursor: pointer;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 4px center; }
@@ -214,26 +206,22 @@ export function renderLivrosPage(books: Book[]): string {
   .count { margin-left: auto; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.16em;
     text-transform: uppercase; color: #8a8170; align-self: flex-end; }
 
-  /* Grade de livros */
   main { padding: 40px 0 64px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1px;
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
     background: #e3ddcd; border: 1px solid #e3ddcd; }
-  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px; }
-  .cover-wrap { margin: 0 0 20px; }
-  .cover { width: 92px; height: 138px; object-fit: cover; box-shadow: 0 6px 18px rgba(20,16,8,0.16); background: #ece6d6; }
-  .cover--ph { width: 92px; height: 138px; display: flex; align-items: center; justify-content: center;
-    font-family: ${SERIF}; font-weight: 700; font-size: 40px; color: var(--teal); background: #ece6d6;
-    box-shadow: 0 6px 18px rgba(20,16,8,0.16); }
-  .body { display: flex; flex-direction: column; gap: 0; flex: 1; }
-  .kicker { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--teal); font-weight: 600; margin: 0 0 8px; }
-  .body h2 { font-family: ${SERIF}; font-size: 23px; font-weight: 600; line-height: 1.12;
-    letter-spacing: -0.01em; margin: 0 0 6px; }
-  .meta { font-family: ${SANS}; font-size: 13px; color: #8a8170; margin: 0 0 12px; }
-  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 0 0 16px; flex: 1; }
-  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
-  .tag { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px 28px; }
+  .title-row { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; }
+  .title-row h2 { font-family: ${SERIF}; font-size: 23px; font-weight: 600; line-height: 1.12;
+    letter-spacing: -0.01em; margin: 0; }
+  .title-row h2 a { text-decoration: none; }
+  .title-row h2 a:hover { color: var(--teal); }
+  .note { font-family: ${SANS}; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+  .badge { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
     color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+  .badge--lang { border-color: var(--teal); color: var(--teal); }
+  .highlight { font-size: 15px; font-style: italic; color: var(--ink); margin: 16px 0 0; }
+  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 12px 0 18px; flex: 1; }
   .cta { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
     font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
     border-bottom: 1px solid transparent; padding-bottom: 2px; }
@@ -253,7 +241,8 @@ export function renderLivrosPage(books: Book[]): string {
       <hr class="rule">
       <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">Seu filtro no caos</p>
-      <p class="lede">Uma lista curada pra quem trabalha com tecnologia, finanças e consultoria no Brasil — dos fundamentos ao debate sobre o futuro.</p>
+      <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
+      <p class="lede">Os links são de afiliado — comprando por eles, você apoia a Diar.ia sem pagar nada a mais.</p>
     </div>
   </header>
   <div class="filters">
@@ -278,7 +267,7 @@ ${cards}
       </div>
     </div>
   </main>
-  <footer><div class="wrap">Diar.ia · diar.ia.br — lista em curadoria</div></footer>
+  <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de livros sobre IA</div></footer>
 <script>
   (function () {
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
@@ -293,9 +282,7 @@ ${cards}
         var ok = (!lang || c.dataset.lang === lang)
           && (!level || c.dataset.level === level)
           && (!theme || (' ' + c.dataset.themes + ' ').indexOf(' ' + theme + ' ') !== -1);
-        // #1744: usar style.display (nao o atributo hidden) — .card{display:flex}
-        // sobrepunha [hidden] (mesma especificidade, autor vence UA) e o filtro nao
-        // escondia nada. Inline style ganha de qualquer regra de classe.
+        // #1744: style.display (nao [hidden], que .card{display:flex} sobrepoe).
         c.style.display = ok ? '' : 'none';
         if (ok) visible++;
       });
@@ -327,8 +314,7 @@ function main(): void {
 
   const v = validateBooks(books);
   for (const w of v.warnings) process.stderr.write(`[build-livros] ⚠ ${w}\n`);
-  const pending = v.warnings.filter((w) => w.includes("pendente")).length;
-  process.stderr.write(`[build-livros] ${books.length} livros; ${pending} campo(s) de curadoria pendentes.\n`);
+  process.stderr.write(`[build-livros] ${books.length} livros; ${distinctThemes(books).length} temas.\n`);
 
   if (check) {
     process.stderr.write("[build-livros] --check: não escreve.\n");
