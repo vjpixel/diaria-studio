@@ -1,8 +1,8 @@
 {
   "_meta": {
     "issue": "#1744",
-    "status": "piloto — em curadoria editorial",
-    "instrucoes": "Curadoria do editor. Preencher `link` (página oficial da editora/loja) e `cover_url` (capa) de cada livro antes de publicar. Os metadados (title/author/year/language/level/themes/summary) são pontos de partida factuais — revisar livremente. Rode `npx tsx scripts/build-livros-page.ts` pra regenerar a página e ver o que ainda falta preencher.",
+    "status": "piloto — curadoria inicial preenchida (links/ISBNs verificados HTTP 200; revisar livremente)",
+    "instrucoes": "Curadoria do editor. Links e capas preenchidos com fontes verificadas (página oficial da editora quando possível; capas via Open Library por ISBN). Os 2 títulos PT-BR não têm capa no Open Library — cover_url vazio cai no placeholder 📘 (substituir por uma capa estável se quiser). Rode `npx tsx scripts/build-livros-page.ts` pra regenerar a página.",
     "schema": {
       "id": "slug-kebab-case (estável; usado em âncoras)",
       "title": "string",
@@ -11,9 +11,9 @@
       "language": "pt-br | en",
       "level": "iniciante | intermediario | avancado",
       "themes": "array de: llms | ml-aplicado | fundamentos | etica-sociedade | negocios-produto | historia",
-      "cover_url": "string (URL da capa) — vazio = placeholder",
+      "cover_url": "string (URL https da capa) — vazio = placeholder",
       "summary": "string (1-2 frases: por que importa pro público da Diar.ia)",
-      "link": "string (URL oficial) — vazio = botão desabilitado na página"
+      "link": "string (URL https oficial) — vazio = botão desabilitado"
     }
   },
   "books": [
@@ -25,9 +25,9 @@
       "language": "en",
       "level": "iniciante",
       "themes": ["llms", "negocios-produto"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780593716717-L.jpg",
       "summary": "Guia prático de como trabalhar lado a lado com IA generativa no dia a dia profissional — direto ao ponto pro público que usa LLMs no trabalho.",
-      "link": ""
+      "link": "https://www.penguinrandomhouse.com/books/741805/co-intelligence-by-ethan-mollick/"
     },
     {
       "id": "the-coming-wave-suleyman",
@@ -37,9 +37,9 @@
       "language": "en",
       "level": "intermediario",
       "themes": ["etica-sociedade", "negocios-produto"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780593728178-L.jpg",
       "summary": "Do cofundador da DeepMind: o impacto da IA e da biotecnologia e o desafio de conter tecnologias que se espalham rápido.",
-      "link": ""
+      "link": "https://www.penguinrandomhouse.com/books/722674/the-coming-wave-by-mustafa-suleyman-with-michael-bhaskar/"
     },
     {
       "id": "human-compatible-russell",
@@ -49,9 +49,9 @@
       "language": "en",
       "level": "avancado",
       "themes": ["fundamentos", "etica-sociedade"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780525558613-L.jpg",
       "summary": "Um dos autores do livro-texto canônico de IA discute alinhamento e controle — base pra quem quer entender o debate de segurança a fundo.",
-      "link": ""
+      "link": "https://www.penguinrandomhouse.com/books/566677/human-compatible-by-stuart-russell/"
     },
     {
       "id": "life-3-0-tegmark",
@@ -61,9 +61,9 @@
       "language": "en",
       "level": "iniciante",
       "themes": ["etica-sociedade", "historia"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9781101946596-L.jpg",
       "summary": "Panorama acessível sobre futuros possíveis com IA avançada e o que está em jogo pra sociedade.",
-      "link": ""
+      "link": "https://www.penguinrandomhouse.com/books/530584/life-30-by-max-tegmark/"
     },
     {
       "id": "atlas-of-ai-crawford",
@@ -73,9 +73,9 @@
       "language": "en",
       "level": "intermediario",
       "themes": ["etica-sociedade"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780300209570-L.jpg",
       "summary": "Os custos materiais, trabalhistas e ambientais por trás dos sistemas de IA — contraponto crítico necessário ao hype.",
-      "link": ""
+      "link": "https://yalebooks.yale.edu/book/9780300264630/atlas-of-ai/"
     },
     {
       "id": "hands-on-ml-geron",
@@ -85,9 +85,9 @@
       "language": "en",
       "level": "intermediario",
       "themes": ["ml-aplicado", "fundamentos"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9781098125974-L.jpg",
       "summary": "Referência prática pra quem quer pôr a mão na massa em ML aplicado, com código e exemplos reais.",
-      "link": ""
+      "link": "https://www.amazon.com/Hands-Machine-Learning-Scikit-Learn-TensorFlow/dp/1098125975"
     },
     {
       "id": "deep-learning-goodfellow",
@@ -97,9 +97,9 @@
       "language": "en",
       "level": "avancado",
       "themes": ["fundamentos", "ml-aplicado"],
-      "cover_url": "",
-      "summary": "O tratado de referência sobre aprendizado profundo — denso, mas a base teórica pra quem leva a sério.",
-      "link": ""
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780262035613-L.jpg",
+      "summary": "O tratado de referência sobre aprendizado profundo — denso, mas a base teórica pra quem leva a sério. Versão online oficial gratuita.",
+      "link": "https://www.deeplearningbook.org/"
     },
     {
       "id": "ai-2041-lee-chen",
@@ -109,12 +109,12 @@
       "language": "en",
       "level": "iniciante",
       "themes": ["etica-sociedade", "negocios-produto"],
-      "cover_url": "",
+      "cover_url": "https://covers.openlibrary.org/b/isbn/9780593238295-L.jpg",
       "summary": "Ficção + análise técnica: dez histórias que ilustram como a IA pode moldar a vida nas próximas duas décadas.",
-      "link": ""
+      "link": "https://www.penguinrandomhouse.com/books/653310/ai-2041-by-kai-fu-lee-and-chen-qiufan/"
     },
     {
-      "id": "inteligencia-artificial-russell-norvig",
+      "id": "ia-abordagem-moderna-russell-norvig",
       "title": "Inteligência Artificial: Uma Abordagem Moderna",
       "author": "Stuart Russell, Peter Norvig",
       "year": 2022,
@@ -122,20 +122,20 @@
       "level": "avancado",
       "themes": ["fundamentos"],
       "cover_url": "",
-      "summary": "O livro-texto clássico de IA em português — referência acadêmica completa do campo.",
-      "link": ""
+      "summary": "O livro-texto clássico de IA em português (4ª edição, tradução) — referência acadêmica completa do campo.",
+      "link": "https://www.grupogen.com.br/livro-inteligencia-artificial-uma-abordagem-moderna-stuart-russell-e-peter-norvig-9788595158870"
     },
     {
-      "id": "novas-fronteiras-ia-generativa",
-      "title": "Inteligência Artificial Generativa (placeholder PT-BR)",
-      "author": "(editor: substituir por título PT-BR curado)",
+      "id": "ia-do-zero-a-superpoderes-gabriel",
+      "title": "Inteligência Artificial: do Zero a Superpoderes",
+      "author": "Martha Gabriel",
       "year": 2024,
       "language": "pt-br",
       "level": "iniciante",
       "themes": ["llms", "negocios-produto"],
       "cover_url": "",
-      "summary": "Slot reservado pra um título PT-BR de IA generativa — o editor escolhe o melhor pro público brasileiro.",
-      "link": ""
+      "summary": "Panorama de IA generativa em português por uma autora reconhecida — acessível pro profissional brasileiro que quer começar.",
+      "link": "https://www.grupogen.com.br/livro-inteligencia-artificial-do-zero-a-superpoderes-martha-gabriel-editora-atlas-9786559776467"
     }
   ]
 }
