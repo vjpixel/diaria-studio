@@ -10,6 +10,7 @@ Executa só a Etapa 1 da pipeline.
 ## Argumentos
 
 - `$1` = data da edição (`AAMMDD`, ex: `260423`). **Se não passar, perguntar explicitamente** ao usuário antes de prosseguir — nunca inferir a partir de `today()`. Sugerir hoje/ontem como atalhos mas exigir confirmação.
+- `--window N` / `--window-days N` (opcional, #1751) = janela em dias (inteiro ≥ 1). Presente → usa N direto, sem perguntar. Ausente → default 4 dias silenciosamente, sem gate.
 
 ## Passo 1 — Confirmar janela de publicação aceita (sempre, antes do orchestrator)
 
@@ -32,14 +33,17 @@ Armazenar como `$ISO`. Usar `$ISO` em todo Date math abaixo.
    node -e "const d=new Date('$WINDOW_END');d.setUTCDate(d.getUTCDate()-3);process.stdout.write(d.toISOString().slice(0,10))"
    ```
    Armazenar como `window_start` (ex: `2026-04-25`).
-2. Perguntar ao usuário e **aguardar resposta**:
+2. **Resolução de `window_days` (#1751 — sem gate obrigatório):**
+   - Arg `--window N` / `--window-days N` válido (inteiro ≥ 1) → `window_days = N`, recalcular `window_start` (`WINDOW_END − (N−1)`), seguir **sem perguntar**.
+   - Sem arg → assumir **default 4 dias silenciosamente**, sem gate.
+   - Só perguntar (fallback) quando `--window` veio inválido:
 
    ```
    Janela de publicacao aceita: {window_start} -> {WINDOW_END} (4 dias)
-   Digite ok para confirmar ou outro numero de dias:
+   --window invalido. Digite ok para o default (4) ou um numero de dias:
    ```
 
-3. Enter / "ok" / "sim" → manter default. Número N ≥ 1 → `window_days = N`, recalcular `window_start`.
+   Interpretar: Enter / "ok" / "sim" → default 4; número N ≥ 1 → `window_days = N`, recalcular; outra coisa → repetir.
 
 ## Passo 1b — Defensive cleanup de tasks órfãs (#904)
 
