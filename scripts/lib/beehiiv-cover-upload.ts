@@ -38,6 +38,8 @@
  * @param imageUrl URL pública da imagem (deve resolver fora do Beehiiv —
  *                 Cloudflare Worker /img/ por convenção)
  */
+import { buildLocateRectJs } from "./beehiiv-real-click.ts";
+
 export function buildCoverUploadJs(imageUrl: string): string {
   return `
     (async () => {
@@ -168,6 +170,77 @@ export function classifyUploadResult(
     };
   }
   return { ok: true, thumbnailUrl: result.thumbnailSrc };
+}
+
+/**
+ * #1705: localiza o card da imagem recém-uploadada no media library pra clique
+ * REAL (computer.left_click). O `.click()` sintético do step 8 do
+ * `buildCoverUploadJs` virou no-op na UI atual (abre preview, não aplica como
+ * thumbnail). O upload pro library funciona; aplicar precisa de clique real.
+ * Caller: dispatch este JS, `resolveClickPoint`, clicar de verdade, depois
+ * confirmar com `buildCoverVerifyJs` + `classifyCoverVerify`.
+ */
+export function buildCoverApplyLocateJs(): string {
+  return buildLocateRectJs(
+    "uploaded_cover_card",
+    `
+      const img = Array.from(document.querySelectorAll('img')).find(i =>
+        i.offsetParent !== null && /uploads.asset.file/i.test(i.src) &&
+        i.naturalWidth >= 400 && !(/static_assets|publication.logo/i.test(i.src)));
+      if (!img) return null;
+      let t = img;
+      for (let i = 0; i < 4 && t.parentElement; i++) {
+        if (t.tagName === 'BUTTON' || t.getAttribute('role') === 'button') break;
+        t = t.parentElement;
+      }
+      return t;
+    `,
+  );
+}
+
+/**
+ * #1705: verifica via DOM se a capa foi APLICADA — sinal confiável, já que o
+ * MCP `get_post` não expõe `web_thumbnail_url`. Sucesso = botão "Add thumbnail"
+ * sumiu E há img de thumbnail (beehiiv-images-production). Gera JS pra
+ * `javascript_tool`; classificar com `classifyCoverVerify`.
+ */
+export function buildCoverVerifyJs(): string {
+  return `
+    (() => {
+      const visible = (el) => el && el.offsetParent !== null;
+      const addThumb = Array.from(document.querySelectorAll('button'))
+        .find(b => visible(b) && /add thumbnail/i.test(b.textContent || ''));
+      const thumb = Array.from(document.querySelectorAll('img'))
+        .find(i => visible(i) && /beehiiv-images-production.*uploads/i.test(i.src));
+      return { addThumbnailPresent: !!addThumb, thumbnailSrc: thumb ? thumb.src : null };
+    })()
+  `;
+}
+
+export interface CoverVerifyRaw {
+  addThumbnailPresent?: boolean;
+  thumbnailSrc?: string | null;
+  error?: string;
+}
+
+/**
+ * Pure: capa aplicada = botão "Add thumbnail" AUSENTE E thumbnail presente.
+ * Resposta vazia/null do `javascript_tool` (#1640) → não-aplicada (não declarar
+ * sucesso silencioso, #1705). Caller emite "⚠️ cover NÃO confirmada" se false.
+ */
+export function classifyCoverVerify(
+  r: CoverVerifyRaw | null | undefined,
+): { applied: true; thumbnailUrl: string } | { applied: false; reason: string } {
+  if (!r || typeof r !== "object" || r.error) {
+    return { applied: false, reason: r?.error ?? "sem resposta do verify (javascript_tool vazio, #1640)" };
+  }
+  if (r.addThumbnailPresent) {
+    return { applied: false, reason: 'botão "Add thumbnail" ainda presente — capa NÃO aplicada' };
+  }
+  if (!r.thumbnailSrc) {
+    return { applied: false, reason: "sem imagem de thumbnail no editor" };
+  }
+  return { applied: true, thumbnailUrl: r.thumbnailSrc };
 }
 
 /**

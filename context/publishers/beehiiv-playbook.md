@@ -259,16 +259,33 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 }
 ```
 
-**⚠️ #1705 (2026-06-02): o auto-apply da capa NÃO é confirmável e provavelmente NÃO funciona na UI atual.** Dois fatos verificados ao vivo:
-1. **Sem via de confirmação:** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente na resposta) — então NÃO dá pra validar a capa via API. Também não há via de API/MCP pra **setar** a capa (thumbnail é UI-only no Beehiiv; o MCP só tem leitura de posts).
-2. **O "aplicar da library" quebrou:** o Beehiiv mudou o media-picker — clicar no card recém-uploadado abre **preview**, não aplica (não há mais botão Insert/Select pra imagens do workspace). O `buildCoverUploadJs` sobe a imagem pro library (isso funciona), mas o passo de selecioná-la como thumbnail virou no-op.
+**⚠️ #1705: o upload pro library funciona, mas APLICAR como thumbnail exige CLIQUE REAL + verificação por DOM (não via API).** Dois fatos verificados ao vivo:
+1. **Sem via de confirmação por API:** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente). NÃO validar a capa via API — usar o DOM do editor.
+2. **`.click()` sintético no card não aplica:** clicar o card recém-uploadado via JS abre **preview**, não aplica (mesma classe do #1764 — React gateia por user-activation). O step 8 do `buildCoverUploadJs` virou no-op; o aplicar precisa de **clique real de ponteiro**.
 
-**Regra (não declarar done silenciosamente):** como NÃO há sinal confiável de que a capa foi aplicada, **NUNCA** afirme "capa aplicada". Após a tentativa de upload, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
+**Aplicar + verificar (#1705):**
+```typescript
+import { buildCoverApplyLocateJs, buildCoverVerifyJs, classifyCoverVerify } from "scripts/lib/beehiiv-cover-upload.ts";
+import { resolveClickPoint } from "scripts/lib/beehiiv-real-click.ts";
+
+// 1) Após o upload (loop acima), localizar o card da imagem e clicar de VERDADE.
+const loc = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverApplyLocateJs() });
+if (loc.found) {
+  const pt = resolveClickPoint(loc, screenshotWidth); // converte viewport→screenshot (gotcha #1764)
+  await mcp__claude-in-chrome__computer({ action: "left_click", coordinate: [pt.x, pt.y] });
+  sleep(2500);
+}
+// 2) Verificar via DOM (sinal confiável): "Add thumbnail" sumiu + thumbnail presente.
+const verify = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverVerifyJs() });
+const cover = classifyCoverVerify(verify);
+```
+
+**Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem que `classifyCoverVerify` retorne `applied: true`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
 
 ```
-⚠️ Cover NÃO confirmada — suba manualmente no Beehiiv (Add thumbnail → Upload a new image).
-   A imagem da capa já está no media library (o upload funciona), mas o passo de aplicar
-   como thumbnail está quebrado na UI atual (#1705). Verifique no editor do post.
+⚠️ Cover NÃO confirmada (${cover.reason}) — suba manualmente no Beehiiv
+   (Add thumbnail → Upload a new image). A imagem já está no media library
+   (o upload funciona); o aplicar não foi confirmado (#1705).
 ```
 
 Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
@@ -301,25 +318,11 @@ Sinais de sucesso: botão "Add thumbnail" desaparece, imagem 640×320 aparece no
 Fluxo (TODOS via `javascript_tool`, não `find`/`read_page`):
 1. Navegar pra `https://app.beehiiv.com/posts/template-library?tab=my_templates`
 2. Aguardar load (~3s) via `wait` ou `setTimeout` no JS
-3. **Via `javascript_tool`**: localizar card "HTML" + clicar overlay. Usar o helper `buildHtmlTemplateClickJs()` exportado de `scripts/lib/beehiiv-template-click.ts` (#1587). Substitui o snippet ad-hoc anterior — heurística baseada em `text === 'HTML'` poderia matchar overlay "New template" e criar template vazio rogue (caso 260529, #1587).
-   ```js
-   // Equivalente ao retorno de buildHtmlTemplateClickJs() — copy/paste se
-   // não puder importar do TS no contexto do javascript_tool:
-   (() => {
-     const h3s = Array.from(document.querySelectorAll('h3'));
-     const htmlH3 = h3s.find((h) => (h.textContent || '').trim() === 'HTML');
-     if (!htmlH3) return { ok: false, error: "<h3>HTML</h3> não encontrado" };
-     let cur = htmlH3.parentElement;
-     let card = null;
-     for (let i = 0; i < 8 && cur; i++) {
-       if (cur.querySelector('button, [role="button"], a[href]')) { card = cur; break; }
-       cur = cur.parentElement;
-     }
-     if (!card) return { ok: false, error: "Sem ancestor clickable" };
-     card.querySelector('button, [role="button"], a[href]').click();
-     return { ok: true };
-   })()
-   ```
+3. **Criar o post via CLIQUE REAL (#1764)** — ⚠️ NÃO usar `.click()` sintético (`buildHtmlTemplateClickJs` está @deprecated): o React gateia a criação por user-activation, então `.click()` via JS **não cria o post** (abre o menu de contexto, fica em /template-library). O fluxo correto é ⋮ → "Use template" com `computer.left_click` real:
+   1. Dispatch `buildHtmlTemplateMenuLocateJs()` (de `scripts/lib/beehiiv-template-click.ts`) → localiza o botão **⋮** do card "HTML" e devolve `{ found, rect, innerWidth }`.
+   2. Converter o rect pro espaço do screenshot com `resolveClickPoint(locate, screenshotWidth)` (de `scripts/lib/beehiiv-real-click.ts`) — **gotcha #1764**: o screenshot pode vir em largura diferente do viewport (ex.: 1568px vs 1910px), e `computer` clica no espaço do screenshot; o helper faz `factor = screenshotWidth / innerWidth` e devolve `{x, y}` já convertidos.
+   3. `computer.left_click` no `{x, y}` → abre o dropdown (Use template ›, Edit, Preview…).
+   4. Dispatch `buildUseTemplateItemLocateJs()` → localiza o item **"Use template"**; `resolveClickPoint` + `computer.left_click` real nele → cria o post + navega pra `/posts/{novo-uuid}/edit` com htmlSnippet pronto.
 4. Aguardar editor carregar (~3-5s) — URL muda pra `/posts/{uuid}/edit`
 5. **Via `javascript_tool`**: validar URL + DOM. URL **deve** matchar `/posts/{uuid}/edit` (post real), NÃO `/templates/posts/{uuid}/edit` (template rogue). Helper `validateTemplateClickUrl()` em `scripts/lib/beehiiv-template-click.ts` faz essa distinção:
    ```js

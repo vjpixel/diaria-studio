@@ -8,7 +8,49 @@ import {
   buildCoverUploadJs,
   buildCoverReplaceJs,
   classifyUploadResult,
+  buildCoverApplyLocateJs,
+  buildCoverVerifyJs,
+  classifyCoverVerify,
 } from "../scripts/lib/beehiiv-cover-upload.ts";
+
+describe("aplicar/verificar capa por clique real (#1705)", () => {
+  it("buildCoverApplyLocateJs localiza o card uploadado (não clica)", () => {
+    const js = buildCoverApplyLocateJs();
+    assert.match(js, /uploads.asset.file/);
+    assert.match(js, /getBoundingClientRect/);
+    assert.doesNotMatch(js, /\.click\(\)/);
+  });
+
+  it("buildCoverVerifyJs checa 'Add thumbnail' ausente + thumbnail presente", () => {
+    const js = buildCoverVerifyJs();
+    assert.match(js, /add thumbnail/i);
+    assert.match(js, /beehiiv-images-production/);
+    assert.match(js, /addThumbnailPresent/);
+  });
+
+  it("classifyCoverVerify: aplicada = Add thumbnail ausente + thumbnail presente", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: false, thumbnailSrc: "https://beehiiv-images-production/uploads/x.jpg" });
+    assert.equal(r.applied, true);
+    assert.equal((r as { thumbnailUrl: string }).thumbnailUrl, "https://beehiiv-images-production/uploads/x.jpg");
+  });
+
+  it("classifyCoverVerify: 'Add thumbnail' ainda presente → NÃO aplicada", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: true, thumbnailSrc: null });
+    assert.equal(r.applied, false);
+    assert.match((r as { reason: string }).reason, /Add thumbnail.*presente/);
+  });
+
+  it("classifyCoverVerify: resposta vazia/null (#1640) → NÃO aplicada (sem declaração silenciosa)", () => {
+    assert.equal(classifyCoverVerify(null).applied, false);
+    assert.equal(classifyCoverVerify(undefined).applied, false);
+    assert.equal(classifyCoverVerify({ error: "boom" }).applied, false);
+  });
+
+  it("classifyCoverVerify: sem thumbnail src → NÃO aplicada", () => {
+    const r = classifyCoverVerify({ addThumbnailPresent: false, thumbnailSrc: null });
+    assert.equal(r.applied, false);
+  });
+});
 
 describe("buildCoverUploadJs (#1416)", () => {
   it("encoda URL como JSON string (escape seguro)", () => {

@@ -10,8 +10,26 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildHtmlTemplateClickJs,
+  buildHtmlTemplateMenuLocateJs,
+  buildUseTemplateItemLocateJs,
   validateTemplateClickUrl,
 } from "../scripts/lib/beehiiv-template-click.ts";
+
+describe("locate helpers de clique real (#1764)", () => {
+  it("buildHtmlTemplateMenuLocateJs localiza o ⋮ do card HTML (não clica)", () => {
+    const js = buildHtmlTemplateMenuLocateJs();
+    assert.match(js, /querySelectorAll\('h3'\)/);
+    assert.match(js, /=== 'HTML'/);
+    assert.match(js, /getBoundingClientRect/);
+    assert.doesNotMatch(js, /\.click\(\)/);
+  });
+  it("buildUseTemplateItemLocateJs localiza 'Use template' (não clica)", () => {
+    const js = buildUseTemplateItemLocateJs();
+    assert.match(js, /use template/i);
+    assert.match(js, /getBoundingClientRect/);
+    assert.doesNotMatch(js, /\.click\(\)/);
+  });
+});
 
 describe("buildHtmlTemplateClickJs (#1587)", () => {
   it("retorna string JS não-vazia", () => {
