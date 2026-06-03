@@ -12,9 +12,9 @@
   * { box-sizing: border-box; }
   body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
     -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
 
-  /* Masthead editorial */
   header { padding: 56px 0 0; }
   .eyebrow { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
     color: var(--teal); font-weight: 600; margin: 0 0 18px; }
@@ -24,16 +24,16 @@
   h1 .dot { color: var(--teal); }
   .tagline { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
     color: #6b6256; margin: 18px 0 0; }
-  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 60ch; margin: 14px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 64ch; margin: 16px 0 0; }
+  .lede + .lede { margin-top: 10px; font-size: 16px; color: #6b6256; }
 
-  /* Filtros */
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
     border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
   .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
     color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
   .filters select { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
-    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 150px; cursor: pointer;
+    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 140px; cursor: pointer;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 4px center; }
@@ -41,26 +41,22 @@
   .count { margin-left: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.16em;
     text-transform: uppercase; color: #8a8170; align-self: flex-end; }
 
-  /* Grade de livros */
   main { padding: 40px 0 64px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1px;
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
     background: #e3ddcd; border: 1px solid #e3ddcd; }
-  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px; }
-  .cover-wrap { margin: 0 0 20px; }
-  .cover { width: 92px; height: 138px; object-fit: cover; box-shadow: 0 6px 18px rgba(20,16,8,0.16); background: #ece6d6; }
-  .cover--ph { width: 92px; height: 138px; display: flex; align-items: center; justify-content: center;
-    font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-weight: 700; font-size: 40px; color: var(--teal); background: #ece6d6;
-    box-shadow: 0 6px 18px rgba(20,16,8,0.16); }
-  .body { display: flex; flex-direction: column; gap: 0; flex: 1; }
-  .kicker { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--teal); font-weight: 600; margin: 0 0 8px; }
-  .body h2 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 23px; font-weight: 600; line-height: 1.12;
-    letter-spacing: -0.01em; margin: 0 0 6px; }
-  .meta { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #8a8170; margin: 0 0 12px; }
-  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 0 0 16px; flex: 1; }
-  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
-  .tag { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px 28px; }
+  .title-row { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; }
+  .title-row h2 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 23px; font-weight: 600; line-height: 1.12;
+    letter-spacing: -0.01em; margin: 0; }
+  .title-row h2 a { text-decoration: none; }
+  .title-row h2 a:hover { color: var(--teal); }
+  .note { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+  .badge { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
     color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+  .badge--lang { border-color: var(--teal); color: var(--teal); }
+  .highlight { font-size: 15px; font-style: italic; color: var(--ink); margin: 16px 0 0; }
+  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 12px 0 18px; flex: 1; }
   .cta { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
     font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
     border-bottom: 1px solid transparent; padding-bottom: 2px; }
@@ -80,7 +76,8 @@
       <hr class="rule">
       <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">Seu filtro no caos</p>
-      <p class="lede">Uma lista curada pra quem trabalha com tecnologia, finanças e consultoria no Brasil — dos fundamentos ao debate sobre o futuro.</p>
+      <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
+      <p class="lede">Os links são de afiliado — comprando por eles, você apoia a Diar.ia sem pagar nada a mais.</p>
     </div>
   </header>
   <div class="filters">
@@ -92,7 +89,7 @@
         <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
       </label>
       <label>Tema
-        <select id="f-theme"><option value="">Todos</option><option value="llms">LLMs / IA generativa</option><option value="ml-aplicado">ML aplicado</option><option value="fundamentos">Fundamentos</option><option value="etica-sociedade">Ética &amp; sociedade</option><option value="negocios-produto">Negócios &amp; produto</option><option value="historia">História</option></select>
+        <select id="f-theme"><option value="">Todos</option><option value="Ciência">Ciência</option><option value="Design">Design</option><option value="Engenharia">Engenharia</option><option value="Estratégia">Estratégia</option><option value="Filosofia">Filosofia</option><option value="Fundamentos">Fundamentos</option><option value="História">História</option><option value="Liderança">Liderança</option><option value="Marketing">Marketing</option><option value="Mercado">Mercado</option><option value="Sociedade">Sociedade</option><option value="Teoria">Teoria</option></select>
       </label>
       <span class="count" id="count"></span>
     </div>
@@ -100,121 +97,241 @@
   <main>
     <div class="wrap">
       <div class="grid" id="grid">
-      <article class="card" data-lang="en" data-level="iniciante" data-themes="llms negocios-produto">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593716717-L.jpg" alt="Capa de Co-Intelligence: Living and Working with AI" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Iniciante · Inglês</p>
-          <h2>Co-Intelligence: Living and Working with AI</h2>
-          <p class="meta">Ethan Mollick · 2024</p>
-          <p class="summary">Guia prático de como trabalhar lado a lado com IA generativa no dia a dia profissional — direto ao ponto pro público que usa LLMs no trabalho.</p>
-          <p class="tags"><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/741805/co-intelligence-by-ethan-mollick/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="História">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4qDeYvz" target="_blank" rel="noopener noreferrer sponsored">A era da IA: e Nosso Futuro Como Humanos</a></h2>
+          <span class="note">★ 4,5</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">História</span></p>
+        <p class="highlight">Do ex-CEO do Google. Wall Street Journal bestseller.</p>
+        <p class="summary">Para quem quer entender como a inteligência artificial está transformando política, economia, cultura e o próprio sentido de ser humano.</p>
+        <a class="cta" href="https://amzn.to/4qDeYvz" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="intermediario" data-themes="etica-sociedade negocios-produto">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593728178-L.jpg" alt="Capa de The Coming Wave" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Intermediário · Inglês</p>
-          <h2>The Coming Wave</h2>
-          <p class="meta">Mustafa Suleyman · 2023</p>
-          <p class="summary">Do cofundador da DeepMind: o impacto da IA e da biotecnologia e o desafio de conter tecnologias que se espalham rápido.</p>
-          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/722674/the-coming-wave-by-mustafa-suleyman-with-michael-bhaskar/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="avancado" data-themes="Estratégia">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4jnzJsR" target="_blank" rel="noopener noreferrer sponsored">A era da inteligência artificial</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Avançado</span><span class="badge">Estratégia</span></p>
+        
+        <p class="summary">Para líderes, gestores e profissionais de negócios que querem redesenhar estratégias, operações e modelos de empresa na era da IA.</p>
+        <a class="cta" href="https://amzn.to/4jnzJsR" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="avancado" data-themes="fundamentos etica-sociedade">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780525558613-L.jpg" alt="Capa de Human Compatible: Artificial Intelligence and the Problem of Control" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Avançado · Inglês</p>
-          <h2>Human Compatible: Artificial Intelligence and the Problem of Control</h2>
-          <p class="meta">Stuart Russell · 2019</p>
-          <p class="summary">Um dos autores do livro-texto canônico de IA discute alinhamento e controle — base pra quem quer entender o debate de segurança a fundo.</p>
-          <p class="tags"><span class="tag">Fundamentos</span><span class="tag">Ética &amp; sociedade</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/566677/human-compatible-by-stuart-russell/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="História">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4qAwHDU" target="_blank" rel="noopener noreferrer sponsored">A História da Inteligência Artificial Para Quem Tem Pressa</a></h2>
+          <span class="note">★ 4,7</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">História</span></p>
+        
+        <p class="summary">Para quem quer uma visão rápida e didática da história da inteligência artificial, das origens aos avanços recentes.</p>
+        <a class="cta" href="https://amzn.to/4qAwHDU" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="iniciante" data-themes="etica-sociedade historia">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9781101946596-L.jpg" alt="Capa de Life 3.0: Being Human in the Age of Artificial Intelligence" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Iniciante · Inglês</p>
-          <h2>Life 3.0: Being Human in the Age of Artificial Intelligence</h2>
-          <p class="meta">Max Tegmark · 2017</p>
-          <p class="summary">Panorama acessível sobre futuros possíveis com IA avançada e o que está em jogo pra sociedade.</p>
-          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">História</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/530584/life-30-by-max-tegmark/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="en" data-level="avancado" data-themes="Engenharia">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4azs0ph" target="_blank" rel="noopener noreferrer sponsored">AI Engineering: Building Applications with Foundation Models</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Engenharia</span></p>
+        
+        <p class="summary">Para desenvolvedores, engenheiros de software e profissionais de produto que querem construir aplicações com modelos de fundação mesmo com pouca experiência prévia em IA.</p>
+        <a class="cta" href="https://amzn.to/4azs0ph" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="intermediario" data-themes="etica-sociedade">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780300209570-L.jpg" alt="Capa de Atlas of AI" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Intermediário · Inglês</p>
-          <h2>Atlas of AI</h2>
-          <p class="meta">Kate Crawford · 2021</p>
-          <p class="summary">Os custos materiais, trabalhistas e ambientais por trás dos sistemas de IA — contraponto crítico necessário ao hype.</p>
-          <p class="tags"><span class="tag">Ética &amp; sociedade</span></p>
-          <a class="cta" href="https://yalebooks.yale.edu/book/9780300264630/atlas-of-ai/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="en" data-level="intermediario" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3N0bLYx" target="_blank" rel="noopener noreferrer sponsored">Applied Artificial Intelligence: A Handbook For Business Leaders</a></h2>
+          <span class="note">★ 4,0</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span></p>
+        <p class="highlight">Ganhou o prêmio como um dos Top Technology Books do CES.</p>
+        <p class="summary">Para líderes de negócio, gestores e empreendedores que querem aplicar IA de forma prática em produtos, processos e estratégias, sem foco em código.</p>
+        <a class="cta" href="https://amzn.to/3N0bLYx" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="intermediario" data-themes="ml-aplicado fundamentos">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9781098125974-L.jpg" alt="Capa de Hands-On Machine Learning with Scikit-Learn, Keras &amp; TensorFlow" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Intermediário · Inglês</p>
-          <h2>Hands-On Machine Learning with Scikit-Learn, Keras &amp; TensorFlow</h2>
-          <p class="meta">Aurélien Géron · 2022</p>
-          <p class="summary">Referência prática pra quem quer pôr a mão na massa em ML aplicado, com código e exemplos reais.</p>
-          <p class="tags"><span class="tag">ML aplicado</span><span class="tag">Fundamentos</span></p>
-          <a class="cta" href="https://www.amazon.com/Hands-Machine-Learning-Scikit-Learn-TensorFlow/dp/1098125975" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="Sociedade">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/49BlOvP" target="_blank" rel="noopener noreferrer sponsored">Desmistificando a inteligência artificial</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Sociedade</span></p>
+        
+        <p class="summary">Para interessados em entender de forma crítica o que é IA e seus impactos sociais.</p>
+        <a class="cta" href="https://amzn.to/49BlOvP" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="avancado" data-themes="fundamentos ml-aplicado">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780262035613-L.jpg" alt="Capa de Deep Learning" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Avançado · Inglês</p>
-          <h2>Deep Learning</h2>
-          <p class="meta">Ian Goodfellow, Yoshua Bengio, Aaron Courville · 2016</p>
-          <p class="summary">O tratado de referência sobre aprendizado profundo — denso, mas a base teórica pra quem leva a sério. Versão online oficial gratuita.</p>
-          <p class="tags"><span class="tag">Fundamentos</span><span class="tag">ML aplicado</span></p>
-          <a class="cta" href="https://www.deeplearningbook.org/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/49BhJI1" target="_blank" rel="noopener noreferrer sponsored">Futuro Presente: O mundo movido à tecnologia</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span></p>
+        <p class="highlight">Prêmio Jabuti da Câmara Brasileira do Livro.</p>
+        <p class="summary">Para curiosos sobre tecnologia que querem entender como IA, robótica e biotecnologia impactam sociedade e negócios.</p>
+        <a class="cta" href="https://amzn.to/49BhJI1" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="en" data-level="iniciante" data-themes="etica-sociedade negocios-produto">
-        <div class="cover-wrap"><img class="cover" src="https://covers.openlibrary.org/b/isbn/9780593238295-L.jpg" alt="Capa de AI 2041: Ten Visions for Our Future" loading="lazy"></div>
-        <div class="body">
-          <p class="kicker">Iniciante · Inglês</p>
-          <h2>AI 2041: Ten Visions for Our Future</h2>
-          <p class="meta">Kai-Fu Lee, Chen Qiufan · 2021</p>
-          <p class="summary">Ficção + análise técnica: dez histórias que ilustram como a IA pode moldar a vida nas próximas duas décadas.</p>
-          <p class="tags"><span class="tag">Ética &amp; sociedade</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.penguinrandomhouse.com/books/653310/ai-2041-by-kai-fu-lee-and-chen-qiufan/" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="en" data-level="avancado" data-themes="Fundamentos">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4aAhePA" target="_blank" rel="noopener noreferrer sponsored">Hands-On Large Language Models</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Fundamentos</span></p>
+        
+        <p class="summary">Para desenvolvedores e cientistas de dados com experiência em Python que querem entender a fundo LLMs e aplicá-los em busca, classificação e geração de texto.</p>
+        <a class="cta" href="https://amzn.to/4aAhePA" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="pt-br" data-level="avancado" data-themes="fundamentos">
-        <div class="cover-wrap"><div class="cover cover--ph" aria-hidden="true">d.</div></div>
-        <div class="body">
-          <p class="kicker">Avançado · Português</p>
-          <h2>Inteligência Artificial: Uma Abordagem Moderna</h2>
-          <p class="meta">Stuart Russell, Peter Norvig · 2022</p>
-          <p class="summary">O livro-texto clássico de IA em português (4ª edição, tradução) — referência acadêmica completa do campo.</p>
-          <p class="tags"><span class="tag">Fundamentos</span></p>
-          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-uma-abordagem-moderna-stuart-russell-e-peter-norvig-9788595158870" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="Sociedade">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4pprH4b" target="_blank" rel="noopener noreferrer sponsored">Inteligência artificial</a></h2>
+          <span class="note">★ 4,6</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Sociedade</span></p>
+        <p class="highlight">Autor é considerado um dos maiores especialistas em inovação tecnológica no mundo.</p>
+        <p class="summary">Para leigos que querem entender como a IA está transformando trabalho, economia e vida em sociedade.</p>
+        <a class="cta" href="https://amzn.to/4pprH4b" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="llms negocios-produto">
-        <div class="cover-wrap"><div class="cover cover--ph" aria-hidden="true">d.</div></div>
-        <div class="body">
-          <p class="kicker">Iniciante · Português</p>
-          <h2>Inteligência Artificial: do Zero a Superpoderes</h2>
-          <p class="meta">Martha Gabriel · 2024</p>
-          <p class="summary">Panorama de IA generativa em português por uma autora reconhecida — acessível pro profissional brasileiro que quer começar.</p>
-          <p class="tags"><span class="tag">LLMs / IA generativa</span><span class="tag">Negócios &amp; produto</span></p>
-          <a class="cta" href="https://www.grupogen.com.br/livro-inteligencia-artificial-do-zero-a-superpoderes-martha-gabriel-editora-atlas-9786559776467" target="_blank" rel="noopener noreferrer">Ver livro <span aria-hidden="true">→</span></a>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3LhmEVa" target="_blank" rel="noopener noreferrer sponsored">Inteligência Artificial - do Zero a Superpoderes</a></h2>
+          <span class="note">★ 4,8</span>
         </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span></p>
+        
+        <p class="summary">Para quem quer entender IA de forma simples e não técnica, conhecendo riscos, oportunidades e impacto na vida e nos negócios.</p>
+        <a class="cta" href="https://amzn.to/3LhmEVa" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="avancado" data-themes="Teoria">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/44MKMpl" target="_blank" rel="noopener noreferrer sponsored">Inteligência Artificial - Uma Abordagem Moderna</a></h2>
+          <span class="note">★ 4,9</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Avançado</span><span class="badge">Teoria</span></p>
+        <p class="highlight">Traduzido para 14 idiomas e usado em 1.500 universidades de 135 países.</p>
+        <p class="summary">Para graduação, pós, pesquisadores e profissionais que querem base teórica completa em IA.</p>
+        <a class="cta" href="https://amzn.to/44MKMpl" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="intermediario" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/45uBfU3" target="_blank" rel="noopener noreferrer sponsored">Inteligência artificial – aplicações e desafios</a></h2>
+          <span class="note">★ 4,5</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span></p>
+        
+        <p class="summary">Para interessados em IA aplicada ao direito, políticas públicas e regulação no contexto brasileiro, incluindo ética e impacto social.</p>
+        <a class="cta" href="https://amzn.to/45uBfU3" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="intermediario" data-themes="Filosofia">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/49eqfLO" target="_blank" rel="noopener noreferrer sponsored">Inteligência artificial a nosso favor</a></h2>
+          <span class="note">★ 4,6</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span><span class="badge">Filosofia</span></p>
+        <p class="highlight">&quot;O livro mais importante que li em muito tempo.&quot; – Daniel Kahneman.</p>
+        <p class="summary">Para quem quer compreender como a IA funciona hoje e o que fazer para manter sistemas cada vez mais autônomos sob controle humano.</p>
+        <a class="cta" href="https://amzn.to/49eqfLO" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="Marketing">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4sLXIWX" target="_blank" rel="noopener noreferrer sponsored">Inteligência Artificial em Marketing e Vendas</a></h2>
+          <span class="note">★ 4,5</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Marketing</span></p>
+        <p class="highlight">Do ex-diretor de Estratégia Digital e Soluções de Martech na Adobe para a América Latina.</p>
+        <p class="summary">Para profissionais de marketing, produto e vendas que querem usar dados e IA para crescer negócios.</p>
+        <a class="cta" href="https://amzn.to/4sLXIWX" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3Lc1g3S" target="_blank" rel="noopener noreferrer sponsored">Introdução à Inteligência Artificial: Uma Abordagem não Técnica</a></h2>
+          <span class="note">★ 4,6</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span></p>
+        
+        <p class="summary">Para quem deseja entender o que é IA e como ela está sendo aplicada em negócios, finanças, marketing e outros setores.</p>
+        <a class="cta" href="https://amzn.to/3Lc1g3S" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="en" data-level="avancado" data-themes="Engenharia">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4q4xYn2" target="_blank" rel="noopener noreferrer sponsored">LLM Engineer&#39;s Handbook</a></h2>
+          <span class="note">★ 4,5</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Engenharia</span></p>
+        
+        <p class="summary">Para desenvolvedores e engenheiros de software que querem projetar, colocar em produção e manter sistemas baseados em LLMs de forma profissional.</p>
+        <a class="cta" href="https://amzn.to/4q4xYn2" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="História">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3MUUBM1" target="_blank" rel="noopener noreferrer sponsored">Nexus: Uma breve história das redes de informação</a></h2>
+          <span class="note">★ 4,7</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">História</span></p>
+        <p class="highlight">Do autor bestseller Sapiens.</p>
+        <p class="summary">Para quem quer entender, de forma histórica, como redes de informação moldaram a humanidade até a era da IA.</p>
+        <a class="cta" href="https://amzn.to/3MUUBM1" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="avancado" data-themes="Design">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3NihQ2q" target="_blank" rel="noopener noreferrer sponsored">Projetando Sistemas de Machine Learning</a></h2>
+          <span class="note">★ 4,8</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Avançado</span><span class="badge">Design</span></p>
+        
+        <p class="summary">Para quem já sabe machine learning e quer projetar, colocar em produção e manter sistemas de ML confiáveis e escaláveis.</p>
+        <a class="cta" href="https://amzn.to/3NihQ2q" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="intermediario" data-themes="Ciência">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3NrAoNN" target="_blank" rel="noopener noreferrer sponsored">Revolução quântica: Muito além da inteligência artificial</a></h2>
+          <span class="note">★ 4,8</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span><span class="badge">Ciência</span></p>
+        <p class="highlight">Do autor bestseller A equação de Deus.</p>
+        <p class="summary">Para interessados em computação quântica, seu funcionamento e impacto futuro em IA, energia e saúde.</p>
+        <a class="cta" href="https://amzn.to/3NrAoNN" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="intermediario" data-themes="">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4q40C7L" target="_blank" rel="noopener noreferrer sponsored">Superinteligência: Caminhos, perigos, estratégias</a></h2>
+          <span class="note">★ 4,6</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span></p>
+        <p class="highlight">New York Times bestseller.</p>
+        <p class="summary">Para quem busca análises filosóficas e técnicas sobre futuros caminhos, riscos e estratégias da IA.</p>
+        <a class="cta" href="https://amzn.to/4q40C7L" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="en" data-level="iniciante" data-themes="Mercado">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4shu8Ix" target="_blank" rel="noopener noreferrer sponsored">Supremacy: AI, ChatGPT, and the Race That Will Change the World</a></h2>
+          <span class="note">★ 4,4</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Mercado</span></p>
+        <p class="highlight">Financial Times &amp; Schroders Business Book of the Year.</p>
+        <p class="summary">Para interessados em bastidores jornalísticos da corrida global por IA generativa e empresas como OpenAI e Google.</p>
+        <a class="cta" href="https://amzn.to/4shu8Ix" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="en" data-level="iniciante" data-themes="Liderança">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/4pW3hA6" target="_blank" rel="noopener noreferrer sponsored">The AI-Driven Leader</a></h2>
+          <span class="note">★ 4,5</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Liderança</span></p>
+        
+        <p class="summary">Para líderes, gestores e empreendedores que querem usar IA como parceira de pensamento para decisões mais rápidas e estratégicas.</p>
+        <a class="cta" href="https://amzn.to/4pW3hA6" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card" data-lang="pt-br" data-level="iniciante" data-themes="Filosofia">
+        <div class="title-row">
+          <h2><a href="https://amzn.to/3LhfZu8" target="_blank" rel="noopener noreferrer sponsored">Vida 3.0: O ser humano na era da inteligência artificial</a></h2>
+          <span class="note">★ 4,6</span>
+        </div>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Filosofia</span></p>
+        
+        <p class="summary">Para quem quer entender como a IA pode transformar o futuro da humanidade em termos sociais, éticos e tecnológicos.</p>
+        <a class="cta" href="https://amzn.to/3LhfZu8" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>
       </article>
         <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
       </div>
     </div>
   </main>
-  <footer><div class="wrap">Diar.ia · diar.ia.br — lista em curadoria</div></footer>
+  <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de livros sobre IA</div></footer>
 <script>
   (function () {
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
@@ -229,9 +346,7 @@
         var ok = (!lang || c.dataset.lang === lang)
           && (!level || c.dataset.level === level)
           && (!theme || (' ' + c.dataset.themes + ' ').indexOf(' ' + theme + ' ') !== -1);
-        // #1744: usar style.display (nao o atributo hidden) — .card{display:flex}
-        // sobrepunha [hidden] (mesma especificidade, autor vence UA) e o filtro nao
-        // escondia nada. Inline style ganha de qualquer regra de classe.
+        // #1744: style.display (nao [hidden], que .card{display:flex} sobrepoe).
         c.style.display = ok ? '' : 'none';
         if (ok) visible++;
       });

@@ -1,24 +1,26 @@
 /**
  * build-livros-page.test.ts (#1744)
  *
- * Cobre os helpers puros da página piloto de livros: validação de schema
- * (erros vs warnings de curadoria), escaping e render (filtros presentes,
- * todos os cards, placeholders pra link/cover ausentes).
+ * Helpers puros da página de livros: validação de schema, escaping, formatação
+ * de nota, temas distintos e render (filtros, cards, badges, nota, highlight,
+ * CTA de afiliado, empty-state via style.display).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   validateBooks,
   renderLivrosPage,
   esc,
   isSafeUrl,
+  fmtRating,
+  distinctThemes,
   loadBooks,
   type Book,
 } from "../scripts/build-livros-page.ts";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 const SEED = resolve(dirname(fileURLToPath(import.meta.url)), "..", "seed/books/livros-ia.json");
 
@@ -26,14 +28,13 @@ function book(over: Partial<Book> = {}): Book {
   return {
     id: "b1",
     title: "Livro Teste",
-    author: "Autora X",
-    year: 2024,
+    link: "https://amzn.to/abc123",
     language: "pt-br",
     level: "iniciante",
-    themes: ["llms"],
-    summary: "Resumo.",
-    link: "https://ed.com/b1",
-    cover_url: "https://ed.com/b1.jpg",
+    themes: ["História"],
+    rating: 4.5,
+    highlight: "Bestseller.",
+    summary: "Para quem quer testar.",
     ...over,
   };
 }
@@ -43,14 +44,13 @@ describe("validateBooks (#1744)", () => {
     const v = validateBooks([book()]);
     assert.equal(v.ok, true);
     assert.equal(v.errors.length, 0);
-    assert.equal(v.warnings.length, 0);
   });
 
-  it("erro em campos obrigatórios ausentes", () => {
-    const v = validateBooks([book({ title: "", author: "", summary: "" })]);
+  it("erro em campos obrigatórios ausentes (title/link/summary)", () => {
+    const v = validateBooks([book({ title: "", link: "", summary: "" })]);
     assert.equal(v.ok, false);
     assert.ok(v.errors.some((e) => e.includes("title")));
-    assert.ok(v.errors.some((e) => e.includes("author")));
+    assert.ok(v.errors.some((e) => e.includes("link")));
     assert.ok(v.errors.some((e) => e.includes("summary")));
   });
 
@@ -67,131 +67,112 @@ describe("validateBooks (#1744)", () => {
     assert.ok(v.errors.some((e) => e.includes("level")));
   });
 
-  it("link/cover vazios são WARNING (curadoria), não erro", () => {
-    const v = validateBooks([book({ link: "", cover_url: "" })]);
-    assert.equal(v.ok, true, "piloto não bloqueia por curadoria pendente");
-    assert.ok(v.warnings.some((w) => w.includes("link pendente")));
-    assert.ok(v.warnings.some((w) => w.includes("cover_url pendente")));
+  it("themes vazio é permitido (alguns livros não têm tema)", () => {
+    const v = validateBooks([book({ themes: [] })]);
+    assert.equal(v.ok, true);
   });
 
-  it("tema desconhecido é warning, não erro", () => {
-    const v = validateBooks([book({ themes: ["llms", "inexistente"] })]);
+  it("link não-http e rating fora de 0-5 são warning, não erro", () => {
+    const v = validateBooks([book({ link: "javascript:alert(1)", rating: 9 })]);
     assert.equal(v.ok, true);
-    assert.ok(v.warnings.some((w) => w.includes("tema desconhecido")));
-  });
-
-  it("link/cover com esquema não-http é warning (defense-in-depth)", () => {
-    const v = validateBooks([book({ link: "javascript:alert(1)", cover_url: "data:text/html,x" })]);
-    assert.equal(v.ok, true);
-    assert.ok(v.warnings.some((w) => w.includes("link com esquema inválido")));
-    assert.ok(v.warnings.some((w) => w.includes("cover_url com esquema inválido")));
+    assert.ok(v.warnings.some((w) => w.includes("esquema inválido")));
+    assert.ok(v.warnings.some((w) => w.includes("rating")));
   });
 });
 
-describe("seed real seed/books/livros-ia.json (#1744)", () => {
-  const books = loadBooks(SEED); // lança se schema inválido
-
-  it("tem 10 livros e passa a validação (sem erros)", () => {
-    assert.equal(books.length, 10);
-    assert.equal(validateBooks(books).ok, true);
+describe("esc / isSafeUrl / fmtRating (#1744)", () => {
+  it("esc escapa metacaracteres HTML", () => {
+    assert.equal(esc(`<b>"x" & 'y'`), "&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;");
   });
-
-  it("todo link preenchido é https seguro (sem esquema perigoso)", () => {
-    for (const b of books) {
-      if (b.link) assert.ok(isSafeUrl(b.link), `${b.id}: link inseguro ${b.link}`);
-      if (b.cover_url) assert.ok(isSafeUrl(b.cover_url), `${b.id}: cover inseguro ${b.cover_url}`);
-    }
-  });
-
-  it("todos os 10 têm link de fato preenchido (curadoria de links completa)", () => {
-    const semLink = books.filter((b) => !b.link).map((b) => b.id);
-    assert.deepEqual(semLink, [], `livros sem link: ${semLink.join(", ")}`);
-  });
-
-  it("ids são únicos", () => {
-    assert.equal(new Set(books.map((b) => b.id)).size, books.length);
-  });
-});
-
-describe("isSafeUrl (#1744)", () => {
-  it("aceita http/https, rejeita o resto", () => {
-    assert.equal(isSafeUrl("https://ed.com/x"), true);
-    assert.equal(isSafeUrl("http://ed.com/x"), true);
-    assert.equal(isSafeUrl("HTTPS://ED.COM"), true);
+  it("isSafeUrl: http(s) sim, resto não", () => {
+    assert.equal(isSafeUrl("https://amzn.to/x"), true);
     assert.equal(isSafeUrl("javascript:alert(1)"), false);
-    assert.equal(isSafeUrl("data:text/html,x"), false);
-    assert.equal(isSafeUrl("/relativo"), false);
     assert.equal(isSafeUrl(""), false);
     assert.equal(isSafeUrl(undefined), false);
   });
+  it("fmtRating: número → vírgula PT; ausente → null", () => {
+    assert.equal(fmtRating(4.5), "4,5");
+    assert.equal(fmtRating(5), "5,0");
+    assert.equal(fmtRating(undefined), null);
+  });
 });
 
-describe("esc (#1744)", () => {
-  it("escapa metacaracteres HTML", () => {
-    assert.equal(esc(`<b>"x" & 'y'`), "&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;");
+describe("distinctThemes (#1744)", () => {
+  it("coleta temas distintos ordenados", () => {
+    const ts = distinctThemes([book({ themes: ["História", "Design"] }), book({ id: "b2", themes: ["Design", "Ciência"] })]);
+    assert.deepEqual(ts, ["Ciência", "Design", "História"]);
   });
 });
 
 describe("renderLivrosPage (#1744)", () => {
   const html = renderLivrosPage([
-    book({ id: "a", title: "Alpha", language: "pt-br", level: "iniciante", themes: ["llms"] }),
-    book({ id: "b", title: "Beta", language: "en", level: "avancado", themes: ["fundamentos"], link: "", cover_url: "" }),
+    book({ id: "a", title: "Alpha", language: "pt-br", level: "iniciante", themes: ["História"], rating: 4.7, link: "https://amzn.to/aaa" }),
+    book({ id: "b", title: "Beta", language: "en", level: "avancado", themes: ["Engenharia"], rating: 4.2, highlight: "", link: "https://amzn.to/bbb" }),
   ]);
 
-  it("renderiza todos os cards com data-* pros filtros", () => {
+  it("cards com data-* pros filtros + títulos linkados ao amzn.to", () => {
     assert.match(html, /data-lang="pt-br"/);
     assert.match(html, /data-lang="en"/);
-    assert.match(html, /data-level="avancado"/);
-    assert.match(html, /data-themes="fundamentos"/);
-    assert.ok(html.includes("Alpha") && html.includes("Beta"));
+    assert.match(html, /data-themes="Engenharia"/);
+    assert.match(html, /href="https:\/\/amzn\.to\/aaa"/);
   });
-
-  it("inclui os 3 filtros (idioma, nível, tema)", () => {
+  it("inclui os 3 filtros + tema derivado dos dados", () => {
     assert.match(html, /id="f-lang"/);
     assert.match(html, /id="f-level"/);
     assert.match(html, /id="f-theme"/);
+    assert.match(html, /<option value="Engenharia">Engenharia<\/option>/);
   });
-
-  it("livro com link renderiza CTA; sem link, placeholder desabilitado", () => {
-    assert.match(html, /href="https:\/\/ed\.com\/b1"/); // Alpha tem link
-    assert.match(html, /Link em breve/); // Beta não tem
+  it("mostra a nota da Amazon (★)", () => {
+    assert.match(html, /★ 4,7/);
+    assert.match(html, /★ 4,2/);
   });
-
-  it("link com esquema perigoso NÃO é emitido (cai no placeholder)", () => {
-    const evil = renderLivrosPage([book({ id: "x", link: "javascript:alert(1)", cover_url: "javascript:1" })]);
-    assert.doesNotMatch(evil, /javascript:/);
-    assert.match(evil, /Link em breve/);
-    assert.match(evil, /cover--ph/);
+  it("badges de idioma/nível/tema", () => {
+    assert.match(html, /badge--lang">Português/);
+    assert.match(html, /class="badge">Iniciante/);
   });
-
-  it("livro sem cover usa placeholder, com cover usa <img>", () => {
-    assert.match(html, /<img class="cover"/); // Alpha
-    assert.match(html, /cover--ph/); // Beta
+  it("highlight aparece quando presente, some quando vazio", () => {
+    assert.match(html, /class="highlight">Bestseller\./); // Alpha tem
+    // Beta com highlight "" não deve gerar <p class="highlight">
+    const betaBlock = html.slice(html.indexOf("Beta"));
+    assert.doesNotMatch(betaBlock.slice(0, 400), /class="highlight"/);
   });
-
-  it("é self-contained (sem fetch externo; dados e JS inline)", () => {
-    assert.doesNotMatch(html, /fetch\(/);
-    assert.match(html, /<script>/);
+  it("links de afiliado marcados rel=sponsored", () => {
+    assert.match(html, /rel="noopener noreferrer sponsored"/);
   });
-
-  it("#1744: filtro esconde via style.display, não pelo atributo [hidden] (que .card{display:flex} sobrepõe)", () => {
-    // Regressão: c.hidden=true não escondia porque `.card{display:flex}` (classe)
-    // vence `[hidden]` (UA). O filtro precisa usar inline style.display.
+  it("filtro via style.display; empty-state inline display:none", () => {
     assert.match(html, /\.style\.display\s*=/);
     assert.doesNotMatch(html, /c\.hidden\s*=/);
-    assert.doesNotMatch(html, /emptyEl\.hidden\s*=/);
-  });
-
-  it("#1744: empty-state usa inline style:display:none, não o atributo [hidden]", () => {
-    // Regressão: com `hidden` no markup, `emptyEl.style.display=''` revertia pro
-    // cascade → `[hidden]` → none → a mensagem 'Nenhum livro' nunca aparecia.
     assert.match(html, /id="empty"[^>]*style="display:none"/);
-    assert.doesNotMatch(html, /id="empty"[^>]*\shidden/);
   });
-
-  it("escapa conteúdo dos livros (sem injeção)", () => {
-    const evil = renderLivrosPage([book({ title: '<script>alert(1)</script>', summary: "x & y" })]);
+  it("self-contained (sem fetch de dados)", () => {
+    assert.doesNotMatch(html, /fetch\(/);
+  });
+  it("escapa conteúdo (sem injeção)", () => {
+    const evil = renderLivrosPage([book({ title: "<script>alert(1)</script>", summary: "x & y" })]);
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
     assert.match(evil, /&lt;script&gt;/);
+  });
+});
+
+describe("seed real seed/books/livros-ia.json (#1744)", () => {
+  const books = loadBooks(SEED);
+
+  it("tem 23 livros e passa a validação", () => {
+    assert.equal(books.length, 23);
+    assert.equal(validateBooks(books).ok, true);
+  });
+  it("todo link é amzn.to https (afiliado)", () => {
+    for (const b of books) {
+      assert.ok(isSafeUrl(b.link), `${b.id}: link inseguro ${b.link}`);
+      assert.match(b.link, /^https:\/\/amzn\.to\//, `${b.id}: link não-amzn.to ${b.link}`);
+    }
+  });
+  it("todo livro tem rating numérico 0-5", () => {
+    for (const b of books) {
+      assert.ok(typeof b.rating === "number" && b.rating >= 0 && b.rating <= 5, `${b.id}: rating ${b.rating}`);
+    }
+  });
+  it("ids únicos", () => {
+    assert.equal(new Set(books.map((b) => b.id)).size, books.length);
   });
 });
