@@ -432,8 +432,16 @@ export function resolvePrevResultLine(
   eiaPrevLine: string | undefined,
   editionDir: string,
 ): string | undefined {
-  if (eiaPrevLine) return eiaPrevLine;
-  return buildPrevResultLine(readPrevPollStats(editionDir)) ?? undefined;
+  // #1763: preferir o poll-stats JSON (`04-eia-poll-stats.json`, fresh e
+  // re-fetchável) sobre a linha embutida no `01-eia.md` — esta é baked UMA vez
+  // pelo eia-compose no Stage 1 e fica STALE se os stats forem corrigidos
+  // depois (ex: rebuild-stats #1757 após votos de teste deletados). Caso real
+  // 260603: 01-eia.md tinha "44%" (counter inflado), poll-stats corrigido pra
+  // "57%" — o render usava o 44% stale. Fallback pra linha do 01-eia.md quando
+  // não há poll-stats válido (anti-race #1707: eia-compose pode compor antes do
+  // fetch-poll-stats gravar o JSON; e skipped/below_threshold → undefined).
+  const fromStats = buildPrevResultLine(readPrevPollStats(editionDir)) ?? undefined;
+  return fromStats ?? eiaPrevLine;
 }
 
 export function fallbackEIA(editionDir: string): EIA {

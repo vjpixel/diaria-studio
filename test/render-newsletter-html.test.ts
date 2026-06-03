@@ -406,11 +406,37 @@ describe("resolvePrevResultLine (#1707 — fallback do % da edição anterior)",
     return dir;
   }
 
-  it("usa a linha do MD quando presente (sem fallback)", () => {
-    const dir = makeEdition({ pct_correct: 99, total_responses: 100 });
+  it("#1763: poll-stats (fresh) vence a linha do MD (que pode ficar stale)", () => {
+    // 01-eia.md é baked uma vez no Stage 1; se os stats forem corrigidos depois
+    // (rebuild-stats #1757), a linha do MD fica stale. Caso real 260603:
+    // MD="44%" (counter inflado), poll-stats corrigido pra "57%" → usa 57%.
+    const dir = makeEdition({ pct_correct: 57, total_responses: 7 });
     try {
-      const existing = "Resultado da última edição: 80% das pessoas acertaram.";
-      assert.equal(resolvePrevResultLine(existing, dir), existing);
+      const staleMdLine = "Resultado da última edição: 44% das pessoas acertaram.";
+      assert.equal(
+        resolvePrevResultLine(staleMdLine, dir),
+        "Resultado da última edição: 57% das pessoas acertaram.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1763 fallback: usa a linha do MD quando NÃO há poll-stats (anti-race #1707)", () => {
+    const dir = makeEdition(null); // sem 04-eia-poll-stats.json
+    try {
+      const mdLine = "Resultado da última edição: 80% das pessoas acertaram.";
+      assert.equal(resolvePrevResultLine(mdLine, dir), mdLine);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1763 fallback: usa a linha do MD quando poll-stats below_threshold", () => {
+    const dir = makeEdition({ pct_correct: null, total_responses: 3, below_threshold: true });
+    try {
+      const mdLine = "Resultado da última edição: 80% das pessoas acertaram.";
+      assert.equal(resolvePrevResultLine(mdLine, dir), mdLine);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
