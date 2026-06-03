@@ -454,6 +454,20 @@ const REPORT_TITLE_PATTERNS: RegExp[] = [
   /\brelat[óo]rio\s+(anual|trimestral|de\s+ano)/i,
 ];
 
+// #1765: relatório/pesquisa sinalizado no SUMMARY (não só no título). Caso real
+// 260603: openai.com/index/codex-for-knowledge-work tem título product-y
+// ("Codex is becoming a productivity tool for everyone") mas o summary diz
+// "The Next Era of Knowledge Work report explores how...". Alta confiança:
+// substantivo de relatório seguido de verbo de relatório. FP é improvável
+// (lançamento que diz "report explores" é raro), e o guard de launch-verb +
+// o short-circuit type_hint==='lancamento' no categorize protegem mais ainda.
+// O substantivo de relatório e o verbo podem ter um qualificador curto entre
+// eles ("relatório anual da OpenAI mostra", "report from X finds") — permite
+// até 30 chars SEM ponto/quebra (mesma frase), o que evita casar através de
+// fronteiras de sentença e mantém o sinal de alta confiança.
+const SUMMARY_REPORT_PATTERN =
+  /\b(report|study|índice|relat[óo]rio|pesquisa|survey|whitepaper)\b[^.\n]{0,30}\b(explores?|finds?|shows?|reveals?|examines?|details?|analyzes?|highlights?|explora|mostra|revela|aponta|detalha|analisa|conclui|indica)\b/i;
+
 export function isReport(article: Article): boolean {
   const title = article.title ?? "";
   const summary = article.summary ?? "";
@@ -462,7 +476,13 @@ export function isReport(article: Article): boolean {
   if (/\b(launching|launches?|announcing|unveils?|lan[çc]a)\b.{0,40}\breport\b/i.test(hay)) {
     return false;
   }
-  return REPORT_TITLE_PATTERNS.some((p) => p.test(title));
+  if (REPORT_TITLE_PATTERNS.some((p) => p.test(title))) return true;
+  // #1765: relatório sinalizado no summary mesmo com título product-y. MAS não
+  // demove se o TÍTULO tem verbo de lançamento — "Introducing X" + summary que
+  // menciona "report shows" é lançamento, não relatório (o título é o sinal mais
+  // forte). Sem isso, o guard de launch-verb (acima) deixava passar verbos fora
+  // da sua lista (ex: "Introducing"), gerando falso-positivo (review #1769).
+  return !hasLaunchVerb(article) && SUMMARY_REPORT_PATTERN.test(summary);
 }
 
 /**
