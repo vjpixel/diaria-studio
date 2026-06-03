@@ -438,7 +438,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 })()
 ```
 
-**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
+**Aguardar autosave**: após `insertContent`, esperar ~8s (via `computer.wait`, não dentro do `javascript_tool`) para Beehiiv autosave persistir. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
 
 ⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
 
