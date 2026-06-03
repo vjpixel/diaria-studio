@@ -18,6 +18,7 @@ import {
   isSafeUrl,
   fmtRating,
   distinctThemes,
+  availableThemes,
   loadBooks,
   type Book,
 } from "../scripts/build-livros-page.ts";
@@ -97,10 +98,27 @@ describe("esc / isSafeUrl / fmtRating (#1744)", () => {
   });
 });
 
-describe("distinctThemes (#1744)", () => {
-  it("coleta temas distintos ordenados", () => {
-    const ts = distinctThemes([book({ themes: ["História", "Design"] }), book({ id: "b2", themes: ["Design", "Ciência"] })]);
-    assert.deepEqual(ts, ["Ciência", "Design", "História"]);
+describe("distinctThemes / availableThemes (#1744)", () => {
+  const sample = [
+    book({ id: "a", language: "pt-br", level: "iniciante", themes: ["História"] }),
+    book({ id: "b", language: "en", level: "avancado", themes: ["Engenharia"] }),
+    book({ id: "c", language: "pt-br", level: "avancado", themes: ["Design", "Ciência"] }),
+  ];
+
+  it("distinctThemes coleta todos os temas ordenados", () => {
+    assert.deepEqual(distinctThemes(sample), ["Ciência", "Design", "Engenharia", "História"]);
+  });
+
+  it("availableThemes filtra por idioma — Engenharia (só EN) some do recorte PT", () => {
+    assert.deepEqual(availableThemes(sample, "pt-br"), ["Ciência", "Design", "História"]);
+  });
+
+  it("availableThemes filtra por nível", () => {
+    assert.deepEqual(availableThemes(sample, "", "avancado"), ["Ciência", "Design", "Engenharia"]);
+  });
+
+  it("availableThemes combina idioma+nível", () => {
+    assert.deepEqual(availableThemes(sample, "pt-br", "avancado"), ["Ciência", "Design"]);
   });
 });
 
@@ -174,5 +192,19 @@ describe("seed real seed/books/livros-ia.json (#1744)", () => {
   });
   it("ids únicos", () => {
     assert.equal(new Set(books.map((b) => b.id)).size, books.length);
+  });
+
+  it("todo livro tem ao menos 1 tema (nenhum box sem tema)", () => {
+    const semTema = books.filter((b) => !b.themes || b.themes.length === 0).map((b) => b.id);
+    assert.deepEqual(semTema, [], `livros sem tema: ${semTema.join(", ")}`);
+  });
+
+  it("nenhuma opção de tema zera a lista no recorte de cada idioma (dropdown dinâmico)", () => {
+    for (const lang of ["pt-br", "en"]) {
+      for (const t of availableThemes(books, lang)) {
+        const n = books.filter((b) => b.language === lang && b.themes.includes(t)).length;
+        assert.ok(n >= 1, `tema "${t}" zera no idioma ${lang}`);
+      }
+    }
   });
 });

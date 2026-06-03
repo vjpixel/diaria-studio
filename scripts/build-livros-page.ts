@@ -109,11 +109,24 @@ export function validateBooks(books: Book[]): ValidationResult {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-/** Temas distintos (ordenados) presentes na lista — pra montar o filtro. Pure. */
-export function distinctThemes(books: Book[]): string[] {
+/**
+ * Temas distintos (ordenados) entre os livros que casam com `lang`/`level`
+ * (vazios = sem restrição). Pure. Usado pra montar o dropdown de Tema dinâmico
+ * — só temas com ≥1 livro no recorte atual, pra nenhuma opção zerar a lista.
+ */
+export function availableThemes(books: Book[], lang = "", level = ""): string[] {
   const set = new Set<string>();
-  for (const b of books) for (const t of b.themes ?? []) if (t) set.add(t);
+  for (const b of books) {
+    if (lang && b.language !== lang) continue;
+    if (level && b.level !== level) continue;
+    for (const t of b.themes ?? []) if (t) set.add(t);
+  }
   return [...set].sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
+/** Todos os temas distintos da lista (sem recorte). Pure. */
+export function distinctThemes(books: Book[]): string[] {
+  return availableThemes(books);
 }
 
 /** Lê e valida o seed. Lança em JSON inválido / erros de schema. */
@@ -276,6 +289,22 @@ ${cards}
     var fTheme = document.getElementById('f-theme');
     var countEl = document.getElementById('count');
     var emptyEl = document.getElementById('empty');
+    function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+    // #1744: dropdown de Tema dinâmico — só temas com >=1 livro no Idioma/Nível
+    // atual, pra nenhuma opção zerar a lista. Preserva a seleção se ainda válida.
+    function rebuildThemes() {
+      var lang = fLang.value, level = fLevel.value, set = {};
+      cards.forEach(function (c) {
+        if ((!lang || c.dataset.lang === lang) && (!level || c.dataset.level === level)) {
+          (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
+        }
+      });
+      var themes = Object.keys(set).sort(function (a, b) { return a.localeCompare(b, 'pt-BR'); });
+      var cur = fTheme.value;
+      var keep = themes.indexOf(cur) >= 0 ? cur : '';
+      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('');
+      fTheme.value = keep;
+    }
     function apply() {
       var lang = fLang.value, level = fLevel.value, theme = fTheme.value, visible = 0;
       cards.forEach(function (c) {
@@ -289,7 +318,9 @@ ${cards}
       countEl.textContent = visible + (visible === 1 ? ' livro' : ' livros');
       emptyEl.style.display = visible === 0 ? '' : 'none';
     }
-    [fLang, fLevel, fTheme].forEach(function (el) { el.addEventListener('change', apply); });
+    fLang.addEventListener('change', function () { rebuildThemes(); apply(); });
+    fLevel.addEventListener('change', function () { rebuildThemes(); apply(); });
+    fTheme.addEventListener('change', apply);
     apply();
   })();
 </script>
