@@ -2252,27 +2252,31 @@ describe("categorize() — #1544 non-launch items on official blogs", () => {
 describe("#1759 — recência de lançamento (produto re-anunciado → noticias)", () => {
   describe("hasPreExistenceSignal — sinais textuais de pré-existência", () => {
     const yes: Array<[string, Article]> = [
-      ["available since", { title: "Foo", summary: "Available since March 2025, Foo now adds X" }],
-      ["disponível desde", { title: "Bar disponível desde 2024" }],
-      ["launched in {ano}", { title: "Baz, launched in 2024, gets a refresh" }],
-      ["lançado em {ano}", { title: "Qux lançado em 2023 ganha update" }],
+      ["available since {mês}", { title: "Foo", summary: "Available since March 2025, Foo now adds X" }],
+      ["disponível desde {ano}", { title: "Bar disponível desde 2024" }],
       ["originally released", { title: "X", summary: "Originally released last year" }],
-      ["first launched", { title: "Y was first launched in beta" }],
+      ["back in {ano}", { title: "Y", summary: "first introduced back in 2023" }],
+      ["{N} months ago", { title: "Launched 3 months ago, now improved" }],
       ["lançado há meses", { title: "Z lançado há meses chega a mais usuários" }],
       ["agora disponível no Brasil", { title: "Sora agora disponível no Brasil" }],
-      ["expands to Europe", { title: "Claude expands to Europe" }],
       ["chega ao Brasil", { title: "Gemini chega ao Brasil" }],
     ];
     for (const [label, art] of yes) {
       it(`detecta: ${label}`, () => assert.equal(hasPreExistenceSignal({ url: "https://x.com", ...art }), true));
     }
 
+    // FP guards do review #1773: sinais frágeis REMOVIDOS de propósito —
+    // ano-pelado e "first ..." casavam lançamentos do ano corrente / de estreia.
     const no: Array<[string, Article]> = [
       ["released today", { title: "GPT-5 released today" }],
       ["Gemini 2.0", { title: "Gemini 2.0" }],
       ["Introducing Claude 4", { title: "Introducing Claude 4 Sonnet" }],
       ["now available in the API", { title: "GPT-5 now available in the API" }],
       ["available in 100 languages", { title: "Now available in 100 languages" }],
+      ["launched in {ano-corrente} (#1773: ano-pelado removido)", { title: "GPT-5, launched in 2026, sets benchmark" }],
+      ["lançado em {ano} sem mais sinal (#1773)", { title: "Qux lançado em 2026 ganha update" }],
+      ["first unveiled today (#1773: 'first' removido)", { title: "Introducing GPT-5: first unveiled today" }],
+      ["available since this morning (#1773: exige data)", { title: "X", summary: "Available since this morning, our model..." }],
     ];
     for (const [label, art] of no) {
       it(`não detecta (lançamento real): ${label}`, () => assert.equal(hasPreExistenceSignal({ url: "https://x.com", ...art }), false));
@@ -2286,10 +2290,10 @@ describe("#1759 — recência de lançamento (produto re-anunciado → noticias)
         title: "Holo3.1: Fast & Local Computer Use Agents",
       }), true);
     });
-    it("versão .0 (major) em HF blog → false (mantém launch)", () => {
+    it("versão .0 (major) colada em HF blog → false (mantém launch)", () => {
       assert.equal(isIncrementalReleaseOnThirdPartyBlog({
         url: "https://huggingface.co/blog/Newco/foo20",
-        title: "Foo 2.0",
+        title: "Foo2.0",
       }), false);
     });
     it("versão-ponto em domínio oficial (NÃO terceiro) → false", () => {
@@ -2302,6 +2306,19 @@ describe("#1759 — recência de lançamento (produto re-anunciado → noticias)
       assert.equal(isIncrementalReleaseOnThirdPartyBlog({
         url: "https://huggingface.co/blog/Co/thing",
         title: "A new thing",
+      }), false);
+    });
+    // FP guards do review #1773 — HF hospeda lançamentos first-party de open-models.
+    it("#1773: versão espaçada (Llama 3.1) em HF blog → false", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://huggingface.co/blog/meta-llama/llama31",
+        title: "Introducing Llama 3.1",
+      }), false);
+    });
+    it("#1773: decimal-substantivo (rated 4.8) em HF blog → false", () => {
+      assert.equal(isIncrementalReleaseOnThirdPartyBlog({
+        url: "https://huggingface.co/blog/Someco/post",
+        title: "Our model rated 4.8 stars by users",
       }), false);
     });
   });
@@ -2324,7 +2341,8 @@ describe("#1759 — recência de lançamento (produto re-anunciado → noticias)
     it("pré-existência textual sobrepõe type_hint=lancamento", () => {
       assert.equal(categorize({
         url: "https://openai.com/index/foo",
-        title: "Foo, launched in 2024, expande recursos",
+        title: "Foo expande recursos",
+        summary: "Originally released last year, Foo now adds X",
         type_hint: "lancamento",
       }), "noticias");
     });

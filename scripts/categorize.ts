@@ -354,14 +354,16 @@ function isTutorialByTitleExtra(article: Article): boolean {
  * formação e rotula "noticia" (caso 260603: hub.asimov.academy/formacao/... caiu
  * em RADAR em vez de USE MELHOR). Sinais:
  *   - host termina em `.academy` (plataformas de curso, ex: hub.asimov.academy)
- *   - path com /formação|curso(s)|course(s)|bootcamp|trilha|learn/
+ *   - path com /formação|curso(s)|course(s)|bootcamp|trilha/
  * Conservador de propósito: notícia SOBRE curso ("Empresa X lança formação")
- * mora em domínio jornalístico SEM esses paths → não é capturada.
+ * mora em domínio jornalístico SEM esses paths → não é capturada. "learn" foi
+ * deixado de fora (review #1773): casava /research/learn, /docs/learn de vendors
+ * (huggingface.co/learn legítimo já é coberto por TUTORIAL_PATTERNS).
  */
 export function isCoursePage(url: string): boolean {
   const { host, full } = hostAndPath(url);
   if (host.endsWith(".academy")) return true;
-  return /\/(forma[çc][ãa]o|cursos?|courses?|bootcamp|trilha|learn)(\/|$)/i.test(full);
+  return /\/(forma[çc][ãa]o|cursos?|courses?|bootcamp|trilha)(\/|$)/i.test(full);
 }
 
 /**
@@ -768,15 +770,24 @@ export function isThirdPartyBlogAboutOtherCompany(url: string): boolean {
  * NÃO casa "released today", "now available in the API", "Gemini 2.0",
  * "Introducing Claude 4" — lançamentos reais.
  */
+const MONTH_TOKEN =
+  "(20\\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)";
 const PRE_EXISTENCE_PATTERNS: RegExp[] = [
-  /\b(available|dispon[íi]vel)\s+(since|desde)\b/i,
-  /\b(originally|inicialmente)\s+(launch|releas|lan[çc]ad)/i,
-  /\bfirst\s+(launched|released|introduced|unveiled)\b/i,
+  // "available since {data passada}" — disponibilidade iniciada no passado.
+  // Exige data/mês/ano após "since" pra não casar "available since this morning".
+  new RegExp(`\\b(available|dispon[íi]vel)\\s+(since|desde)\\s+${MONTH_TOKEN}\\b`, "i"),
+  // "originally/initially launched/released/introduced" — pré-existência inequívoca.
+  /\b(originally|initially|inicialmente)\s+(launch|releas|introduc|lan[çc]ad)/i,
   /\blan[çc]ad[oa]\s+originalmente\b/i,
-  /\b(launched|released|introduced|unveiled|lan[çc]ad[oa]|lan[çc]ou)\s+(in|back in|em)\s+20\d{2}\b/i,
-  /\blan[çc]ad[oa]\s+h[áa]\s+(meses|anos|\d+\s+(meses|anos|dias))\b/i,
+  // "back in {ano}" — retrospectivo; ninguém escreve "back in" pro ano corrente.
+  /\bback\s+in\s+20\d{2}\b/i,
+  // "{N} months/years ago" / "há {N} meses/anos" — passado explícito.
+  /\b\d*\s*(months?|years?)\s+ago\b/i,
+  /\bh[áa]\s+(\d+\s+)?(meses|anos)\b/i,
+  // Expansão regional de produto existente (#1759: editor incluiu "qualquer
+  // sinal de pré-existência", e.g. "agora no Brasil", "chega à América Latina").
   /\b(agora|now|finalmente)\s+(dispon[íi]vel|available)\b[^.\n]{0,30}\b(no\s+brasil|in\s+brazil|na\s+europa|in\s+europe|na\s+[ií]ndia|in\s+india|no\s+m[ée]xico|am[ée]rica\s+latina|latin\s+america)\b/i,
-  /\b(chega(ndo)?|expande|expand(s|ing)?|arrives?|llega)\b[^.\n]{0,25}\b(ao\s+brasil|to\s+brazil|[àa]\s+europa|to\s+europe|[àa]\s+am[ée]rica|to\s+latin\s+america|new\s+(markets|regions))\b/i,
+  /\b(chega(ndo)?|expande|expand(s|ing)?|llega)\b[^.\n]{0,25}\b(ao\s+brasil|to\s+brazil|[àa]\s+europa|to\s+europe|[àa]\s+am[ée]rica\s+latina|to\s+latin\s+america|new\s+(markets|regions))\b/i,
 ];
 
 export function hasPreExistenceSignal(article: Article): boolean {
@@ -785,19 +796,33 @@ export function hasPreExistenceSignal(article: Article): boolean {
 }
 
 /**
- * #1759: release incremental (versão-ponto X.Y com Y≥1) num blog de hospedagem
- * de TERCEIROS (huggingface.co/blog/...). Uma versão .1/.5 implica um predecessor
- * → o produto já existe (re-anúncio incremental, não lançamento da janela).
- * Escopado a THIRD_PARTY_BLOG_HOSTS de propósito: lançamentos canônicos com
- * versão-ponto (Llama 3.1, Claude 3.5) saem no site do vendor / model page, não
- * em /blog/ de plataforma terceira — então NÃO são afetados. Caso 260603: Holo3.1
- * (huggingface.co/blog/Hcompany/holo31), produto lançado meses antes.
+ * #1759: release incremental (versão-ponto X.Y com Y≥1, COLADA ao nome) num blog
+ * de hospedagem de TERCEIROS (huggingface.co/blog/{empresa-desconhecida}/...).
+ * Uma versão .1/.5 implica predecessor → produto já existe (re-anúncio incremental).
+ *
+ * Dois guards pra não rebaixar lançamento real (review #1773):
+ *   1. A empresa do path NÃO pode ser fonte oficial conhecida — HF hospeda blogs
+ *      first-party de open-models (huggingface.co/blog/meta-llama/llama-3-1). Só
+ *      rebaixa empresas fora de OFFICIAL_SOURCES (Holo3.1 = "Hcompany").
+ *   2. Versão COLADA ao nome (`/[A-Za-z]\d+\.[1-9]/`, ex "Holo3.1") — não casa
+ *      decimais soltos ("June 2.5", "rated 4.8 stars", "raised $3.5M") nem versões
+ *      espaçadas ("Llama 3.1", "GPT-4.5") que são tipicamente lançamentos canônicos.
+ * Caso 260603: Holo3.1 (huggingface.co/blog/Hcompany/holo31), lançado meses antes.
  */
 export function isIncrementalReleaseOnThirdPartyBlog(article: Article): boolean {
   const { host } = hostAndPath(article.url);
   if (!THIRD_PARTY_BLOG_HOSTS.has(host)) return false;
-  // versão-ponto Y≥1 ("Holo3.1", "Foo 2.5"); um ".0" é major/canônico → mantém.
-  return /\b[A-Za-z][\w-]*\s?\d+\.[1-9]\d*\b/.test(article.title ?? "");
+  try {
+    const segs = new URL(article.url).pathname.split("/").filter(Boolean);
+    const blogIdx = segs.indexOf("blog");
+    if (blogIdx < 0 || blogIdx + 1 >= segs.length) return false;
+    // Empresa oficial conhecida (meta-llama, qwen, …) → lançamento real, mantém.
+    if (KNOWN_COMPANY_SLUGS.has(segs[blogIdx + 1].toLowerCase())) return false;
+  } catch {
+    return false;
+  }
+  // versão-ponto Y≥1 COLADA ("Holo3.1"); ".0" é major/canônico → mantém.
+  return /[A-Za-z]\d+\.[1-9]\d*\b/.test(article.title ?? "");
 }
 
 // ---------------------------------------------------------------------------
