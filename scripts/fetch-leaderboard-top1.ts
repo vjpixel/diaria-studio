@@ -12,6 +12,11 @@
  * Tradeoff editorial: voto na edição 260531 conta em Maio 2026 mesmo se
  * leitor votar em 02/jun (#1345).
  *
+ * #1753: o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou
+ * de fechar (período ANTERIOR ao da edição — `previousMonthSlug`). Em qualquer
+ * outra edição grava vazio (renderer omite). "1ª do mês" = nenhuma edição
+ * publicada em `past-editions-raw.json` cai no mesmo ano-mês com data anterior.
+ *
  * Uso:
  *   npx tsx scripts/fetch-leaderboard-top1.ts --edition AAMMDD --out path.json
  *
@@ -27,7 +32,7 @@
  *   1  arg inválido
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 
@@ -68,17 +73,83 @@ export function editionToMonthSlug(edition: string): string | null {
   return `20${yy}-${mm}`;
 }
 
-function parseArgs(argv: string[]): { edition: string; out: string } | null {
+/**
+ * Pure (#1753): "YYYY-MM" → mês anterior "YYYY-MM". Janeiro vira dezembro do
+ * ano anterior. Input malformado retorna o próprio slug (fail-open).
+ *
+ * O bloco "Vencedores do mês" só aparece na 1ª edição do mês e anuncia o mês
+ * que acabou de fechar — então pedimos sempre o período ANTERIOR ao da edição.
+ */
+export function previousMonthSlug(slug: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(slug);
+  if (!m) return slug;
+  let year = parseInt(m[1], 10);
+  let month = parseInt(m[2], 10) - 1;
+  if (month < 1) { month = 12; year -= 1; }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/** Pure: edição AAMMDD → ISO date "20YY-MM-DD". null se malformada. */
+function editionToIsoDate(edition: string): string | null {
+  if (!/^\d{6}$/.test(edition)) return null;
+  return `20${edition.slice(0, 2)}-${edition.slice(2, 4)}-${edition.slice(4, 6)}`;
+}
+
+/**
+ * Pure (#1753): true se a edição é a 1ª do seu mês — i.e. nenhuma edição já
+ * publicada (`past-editions-raw.json`) cai no mesmo ano-mês com data
+ * ESTRITAMENTE anterior. `publishedAt` = lista de ISO timestamps de
+ * `published_at`. Edição malformada → true (fail-open, não suprime o bloco).
+ * A própria edição corrente (mesma data) não conta contra si — comparação `<`.
+ */
+export function isFirstEditionOfMonth(
+  edition: string,
+  publishedAt: string[],
+): boolean {
+  const iso = editionToIsoDate(edition);
+  if (!iso) return true;
+  const ym = iso.slice(0, 7); // "20YY-MM"
+  for (const ts of publishedAt) {
+    if (typeof ts !== "string" || ts.length < 10) continue;
+    const tsDate = ts.slice(0, 10); // "YYYY-MM-DD"
+    if (tsDate.slice(0, 7) === ym && tsDate < iso) return false;
+  }
+  return true;
+}
+
+/**
+ * Lê `published_at` de cada edição em `past-editions-raw.json`. Graceful:
+ * arquivo ausente/inválido → `[]` (→ `isFirstEditionOfMonth` retorna true,
+ * fail-open: mostra o bloco em vez de suprimir por engano).
+ */
+function readPublishedDates(path: string): string[] {
+  try {
+    if (!existsSync(path)) return [];
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((p) => (p && typeof p === "object" ? (p as Record<string, unknown>).published_at : null))
+      .filter((d): d is string => typeof d === "string");
+  } catch {
+    return [];
+  }
+}
+
+function parseArgs(
+  argv: string[],
+): { edition: string; out: string; pastEditions: string } | null {
   let edition = "";
   let out = "";
+  let pastEditions = "data/past-editions-raw.json";
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[i + 1];
     if (flag === "--edition" && value) { edition = value; i++; }
     else if (flag === "--out" && value) { out = value; i++; }
+    else if (flag === "--past-editions" && value) { pastEditions = value; i++; }
   }
   if (!edition || !out) return null;
-  return { edition, out };
+  return { edition, out, pastEditions };
 }
 
 // #1365: adapter pra manter compat com `fetchImpl: typeof fetch` injetado
@@ -125,20 +196,38 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #1753: o bloco "Vencedores do mês" só aparece na 1ª edição do mês e anuncia
+  // o mês que acabou de fechar (período ANTERIOR). Em qualquer outra edição,
+  // grava vazio — o renderer omite o bloco. Evita repetir os vencedores todo dia.
+  const targetSlug = previousMonthSlug(slug);
+  const publishedAt = readPublishedDates(
+    resolve(process.cwd(), args.pastEditions),
+  );
+  const isFirst = isFirstEditionOfMonth(args.edition, publishedAt);
+
   let payload: Top1Response;
-  try {
-    payload = await fetchTop1ForPeriod(slug);
-    const podiumCount = payload.podium?.length ?? 0;
+  if (!isFirst) {
     console.log(
-      `[fetch-leaderboard-top1] ${payload.top1.length} líder(es) em rank 1, ${podiumCount} no podium (1-3), período ${payload.period_slug}`,
+      `[fetch-leaderboard-top1] edição ${args.edition} não é a 1ª do mês — ` +
+        "leaderboard omitido (gravando vazio).",
     );
-  } catch (e) {
-    // Graceful: persist payload vazio. Renderer omite bloco.
-    console.error(
-      `[fetch-leaderboard-top1] WARN: fetch falhou (${(e as Error).message}); ` +
-        "gravando vazio — bloco será omitido da newsletter.",
-    );
-    payload = { top1: [], podium: [], period: "", period_slug: slug };
+    payload = { top1: [], podium: [], period: "", period_slug: targetSlug };
+  } else {
+    try {
+      payload = await fetchTop1ForPeriod(targetSlug);
+      const podiumCount = payload.podium?.length ?? 0;
+      console.log(
+        `[fetch-leaderboard-top1] 1ª edição do mês — anunciando ${payload.period_slug}: ` +
+          `${payload.top1.length} líder(es) em rank 1, ${podiumCount} no podium (1-3)`,
+      );
+    } catch (e) {
+      // Graceful: persist payload vazio. Renderer omite bloco.
+      console.error(
+        `[fetch-leaderboard-top1] WARN: fetch falhou (${(e as Error).message}); ` +
+          "gravando vazio — bloco será omitido da newsletter.",
+      );
+      payload = { top1: [], podium: [], period: "", period_slug: targetSlug };
+    }
   }
 
   const outPath = resolve(process.cwd(), args.out);

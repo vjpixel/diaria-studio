@@ -81,7 +81,7 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   ```
   Anotar em `sync_results[3]`; ignorar falhas.
-- **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json` com a liderança do mês corrente. Renderer lê automaticamente:
+- **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json`. **#1753:** o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou de fechar (período ANTERIOR ao da edição); em qualquer outra edição o script grava `top1: []` e o renderer omite. O gate é interno ao script (cruza com `data/past-editions-raw.json`) — o orchestrator só invoca normalmente. Renderer lê automaticamente:
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts \
     --edition {AAMMDD} \
