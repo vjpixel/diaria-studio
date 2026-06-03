@@ -344,6 +344,12 @@ npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AA
 ```
 Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comment_pixel) ou char count fora do range. Exit 1 = re-disparar `social-linkedin` agent.
 
+**Lint pergunta-de-encerramento pré-gate (#1762):** posts social não devem fechar com pergunta (CTA-pergunta). Rodar:
+```bash
+npx tsx scripts/lint-social-md.ts --check no-trailing-question --md data/editions/{AAMMDD}/03-social.md
+```
+Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos comments) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. Exit 1 = **incluir os matches no prompt do gate** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
+
 ### 2d. Sync push + gate unificado
 
 - **Sync push antes do gate:**

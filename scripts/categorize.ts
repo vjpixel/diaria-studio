@@ -571,7 +571,7 @@ export function isExplainerByTitle(article: Article): boolean {
 
 /**
  * #1712: artigo em domínio/pattern de TUTORIAL que NÃO é tutorial — é
- * notícia/comentário/análise. Os domínios de "Use Melhor" (simonwillison.net,
+ * notícia/comentário/análise. Os domínios de "Use Melhor" (cookbook.openai.com,
  * blogs de devrel) também postam comentário/cobertura, e a classificação por
  * domínio (sem checagem de intenção) os jogava em use_melhor indevidamente.
  *
@@ -866,7 +866,8 @@ function hostAndPath(url: string): { host: string; full: string } {
  * walkthroughs, how-tos). Seção "Aprenda hoje" em #59.
  */
 const TUTORIAL_DOMAINS = new Set([
-  "simonwillison.net",
+  // #1760: simonwillison.net removido — agora em blacklist editorial
+  // (scripts/lib/editorial-blocklist.ts), descartado no dedup antes de chegar aqui.
   // #1568 — novas fontes para seção "Use melhor"
   "cookbook.openai.com",
   "magazine.sebastianraschka.com",

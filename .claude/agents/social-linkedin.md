@@ -46,7 +46,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
    - **#595 (decisão 2026-05-08): SEM URL nem menção a Diar.ia/diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Branding e CTA pra newsletter vão exclusivamente no `### comment_diaria` (T+3min). Main post fica 100% editorial.
-   - CTA opcional no fim (sem URL, sem mencionar Diar.ia): `"Comente abaixo o que você acha"` ou similar (encorajar reply).
+   - **#1762: NUNCA encerrar o post com pergunta** ("Comente abaixo: você usa X? Como você faz Y?"). A última frase do post deve ser uma **afirmação** que fecha o raciocínio — não um CTA-pergunta. Perguntas retóricas no MEIO do corpo são OK; a de encerramento, não. Validado por `lint-social-md.ts --check no-trailing-question`. (CTA pra newsletter vai no `### comment_diaria`, não no main post.)
    - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.
 
