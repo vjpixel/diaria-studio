@@ -1093,10 +1093,15 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
     });
   }
 
+  // Form de re-tentativa: o sig recebido já passou no hmacVerify acima, então
+  // pode ser reusado pra re-renderizar o input e o leitor corrigir o apelido
+  // sem voltar pro email (#1758 review #1774 — senão rejeição vira beco sem saída).
+  const retryForm = { email, sig };
+
   // #1758: rejeita apelido vazio-de-conteúdo (emoji-only) ou na blacklist ("eu").
   const validationError = validateNickname(cleanName);
   if (validationError) {
-    return new Response(votePageHtml(validationError, false), {
+    return new Response(votePageHtml(validationError, false, retryForm), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1121,7 +1126,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
     try { other = JSON.parse(otherRaw); } catch { continue; }
     if (other.nickname && normalizeNickname(other.nickname) === targetNorm) {
       return new Response(
-        votePageHtml("Esse apelido já está em uso. Escolha outro.", false),
+        votePageHtml("Esse apelido já está em uso. Escolha outro.", false, retryForm),
         { status: 409, headers: { "Content-Type": "text/html;charset=utf-8" } },
       );
     }

@@ -247,6 +247,9 @@ export function validateNickname(cleanName: string): string | null {
   if (!nicknameHasContent(cleanName)) {
     return "Apelido precisa ter ao menos uma letra ou número.";
   }
+  if (cleanName.trim().length < 2) {
+    return "Apelido muito curto — use ao menos 2 caracteres.";
+  }
   if (isBlacklistedNickname(cleanName)) {
     return "Esse apelido não é permitido. Escolha outro.";
   }

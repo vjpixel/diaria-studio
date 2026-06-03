@@ -1003,6 +1003,9 @@ describe("validação de apelidos (#1758)", () => {
     it("OK → null", () => assert.equal(validateNickname("Bruna"), null));
     it("blacklist → mensagem", () => assert.match(validateNickname("Eu") ?? "", /não é permitido/i));
     it("emoji-only → mensagem", () => assert.match(validateNickname("🎉") ?? "", /letra ou número/i));
+    // #1774 review: piso de tamanho.
+    it("1 caractere → muito curto", () => assert.match(validateNickname("a") ?? "", /muito curto/i));
+    it("2 caracteres válidos → null", () => assert.equal(validateNickname("Jo"), null));
   });
 
   describe("handleSetName e2e (#1758)", () => {
@@ -1039,6 +1042,15 @@ describe("validação de apelidos (#1758)", () => {
       assert.equal(res.status, 400);
       const after = JSON.parse(await env.POLL.get("score:leo@x.com") as string);
       assert.equal(after.nickname, null);
+    });
+
+    it("#1774: rejeição re-renderiza o form pra re-tentativa", async () => {
+      const env = memEnv({ "score:leo@x.com": JSON.stringify({ total: 1, nickname: null }) });
+      const res = await handleSetName(await setNameUrl("leo@x.com", "Eu"), env);
+      const body = await res.text();
+      // O form de set-name volta (action + input name) — não é beco sem saída.
+      assert.match(body, /action="\/set-name"/);
+      assert.match(body, /name="name"/);
     });
 
     it("apelido já usado por outro email → 409, não persiste", async () => {
