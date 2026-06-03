@@ -174,6 +174,14 @@ describe("renderLivrosPage (#1744)", () => {
     assert.match(html, /<script>/);
   });
 
+  it("#1744: filtro esconde via style.display, não pelo atributo [hidden] (que .card{display:flex} sobrepõe)", () => {
+    // Regressão: c.hidden=true não escondia porque `.card{display:flex}` (classe)
+    // vence `[hidden]` (UA). O filtro precisa usar inline style.display.
+    assert.match(html, /\.style\.display\s*=/);
+    assert.doesNotMatch(html, /c\.hidden\s*=/);
+    assert.doesNotMatch(html, /emptyEl\.hidden\s*=/);
+  });
+
   it("escapa conteúdo dos livros (sem injeção)", () => {
     const evil = renderLivrosPage([book({ title: '<script>alert(1)</script>', summary: "x & y" })]);
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
