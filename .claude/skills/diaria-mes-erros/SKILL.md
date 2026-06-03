@@ -6,12 +6,12 @@ description: Lista todos os erros intencionais declarados pelo editor nas ediç�
 # /diaria-mes-erros [YYMM]
 
 Lista os erros intencionais declarados nas edições de um mês. Usado pelo editor pra:
-- Rodar o sorteio mensal sem garimpar manualmente cada `02-reviewed.md`
+- Conduzir o sorteio mensal (feito externamente pelo editor, #1741) sem garimpar manualmente cada `02-reviewed.md`
 - Identificar edições sem declaração (precisam ser corrigidas pra futuro)
 - Ver estatística por categoria (factual / numerico / attribution / etc.)
 
 **Quando usar:**
-- No final do mês, antes de rodar o sorteio (cross-reference com `/diaria-sorteio draw --month YYYY-MM`).
+- No final do mês, antes de rodar o sorteio externamente — esta lista é a referência dos gabaritos do mês.
 - A qualquer momento pra auditar declaração no mês corrente.
 
 ## Argumentos
