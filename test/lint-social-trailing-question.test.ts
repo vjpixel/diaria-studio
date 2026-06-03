@@ -29,6 +29,17 @@ describe("endsWithTrailingQuestion (#1762)", () => {
   it("afirmação com hashtags inline → false", () => {
     assert.equal(endsWithTrailingQuestion("Vale revisar o consumo. #IA #DevTools"), false);
   });
+  // review #1776: evasões que escapavam
+  it("#1776: hashtag colada sem espaço (faz?#IA) → true", () => {
+    assert.equal(endsWithTrailingQuestion("Como você faz?#IA"), true);
+  });
+  it("#1776: emoji após '?' (faz? 🚀) → true", () => {
+    assert.equal(endsWithTrailingQuestion("Como você usaria isso? 🚀"), true);
+    assert.equal(endsWithTrailingQuestion("Como você faz? 🤔 #IA"), true);
+  });
+  it("#1776: afirmação com emoji → false", () => {
+    assert.equal(endsWithTrailingQuestion("Isso muda o jogo. 🚀"), false);
+  });
 });
 
 describe("lastMeaningfulSentence (#1762)", () => {
@@ -120,5 +131,40 @@ Será que isso muda tudo?
 
   it("md sem seções social → ok (no-op)", () => {
     assert.equal(lintTrailingQuestion("# Outra coisa\n\ntexto").ok, true);
+  });
+
+  it("#1776: d1 sem linha em branco antes ainda é checado", () => {
+    const md = "# LinkedIn\n## d1\nIsso muda tudo. Como você usa IA no dia a dia?\n";
+    assert.equal(lintTrailingQuestion(md).ok, false);
+  });
+
+  it("#1776: Facebook — pergunta no corpo antes do CTA fixo é flagada", () => {
+    const md = `# Facebook
+
+## d1
+
+Os agentes mudam o trabalho. Você já usa algum no dia a dia?
+
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
+
+#IA
+`;
+    const r = lintTrailingQuestion(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches.some((m) => m.platform === "facebook"));
+  });
+
+  it("#1776: Facebook — corpo com afirmação antes do CTA → ok", () => {
+    const md = `# Facebook
+
+## d1
+
+Os agentes mudam o trabalho e o controle de custo vira prioridade.
+
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
+
+#IA
+`;
+    assert.equal(lintTrailingQuestion(md).ok, true);
   });
 });

@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 53 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 52 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -175,11 +175,6 @@
 - RSS: https://research.perplexity.ai/sitemap.xml
 
 ## Tutoriais
-
-### Simon Willison's Weblog
-- URL: https://simonwillison.net/
-- Site query: `site:simonwillison.net`
-- RSS: https://simonwillison.net/atom/everything/
 
 ### Anthropic Cookbook
 - URL: https://github.com/anthropics/anthropic-cookbook

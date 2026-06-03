@@ -470,22 +470,36 @@ export interface TrailingQuestionResult {
  * hashtags / só de URL), remove hashtags inline no fim, e checa se termina em "?"
  * literal (um "?" seguido de aspas de fechamento = pergunta citada → OK).
  */
+// Linha que é só hashtags (tags podem ter hífen, ex: #multi-agent).
+const HASHTAG_ONLY_LINE_RE = /^(#[\p{L}\w-]+(\s+#[\p{L}\w-]+)*)$/u;
+// CTA fixo de assinatura (Facebook fecha com isto após o corpo) — não é o
+// "fim editorial" que o #1762 mira; pulamos pra checar a última frase do corpo.
+const SUBSCRIBE_CTA_LINE_RE = /diar\.ia\.br|assine\s+gr[áa]tis|receba\s+not[íi]cias/i;
+
 export function lastMeaningfulSentence(body: string): string {
   const cleaned = body.replace(/<!--[\s\S]*?-->/g, ""); // strip char_count comments
   const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
-    if (/^(#[\p{L}\w]+(\s+#[\p{L}\w]+)*)$/u.test(l)) continue; // linha só de hashtags
+    if (HASHTAG_ONLY_LINE_RE.test(l)) continue; // linha só de hashtags
     if (/^https?:\/\/\S+$/.test(l)) continue; // linha só de URL
+    if (SUBSCRIBE_CTA_LINE_RE.test(l)) continue; // #1762: CTA de assinatura (Facebook)
     return l;
   }
   return "";
 }
 
 export function endsWithTrailingQuestion(sentence: string): boolean {
-  // Remove hashtags inline no fim ("...faz? #IA #Dev" → "...faz?").
-  const stripped = sentence.replace(/(\s+#[\p{L}\w]+)+\s*$/u, "").trimEnd();
-  // "?" literal no fim → pergunta de encerramento. "?\"" / "?'" / "?)" → citada → OK.
+  // Remove decorações de encerramento (hashtags coladas/espaçadas + emoji +
+  // espaço) iterativamente, em qualquer ordem ("...faz? 🚀 #IA" → "...faz?").
+  let stripped = sentence.trimEnd();
+  let prev = "";
+  while (stripped !== prev) {
+    prev = stripped;
+    stripped = stripped.replace(/\s*#[\p{L}\w-]+\s*$/u, "").trimEnd(); // hashtag final
+    stripped = stripped.replace(/[\p{Extended_Pictographic}️‍]\s*$/u, "").trimEnd(); // emoji final
+  }
+  // "?" literal no fim → pergunta de encerramento. "?\"" / "?'" / "?)" → citada/aparte → OK.
   return /\?$/.test(stripped);
 }
 
@@ -494,7 +508,9 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
   for (const platform of ["linkedin", "facebook"] as const) {
     const section = extractPlatformSection(md, platform);
     if (!section) continue;
-    const chunks = section.split(/\n## (d\d+)\n/);
+    // Prefixa "\n" pra garantir captura do 1º `## d1` mesmo sem linha em branco
+    // antes (o split exige `\n## d{N}\n`). Sem isso, d1 era pulado (review #1776).
+    const chunks = ("\n" + section).split(/\n## (d\d+)\n/);
     for (let i = 1; i < chunks.length; i += 2) {
       const destaque = chunks[i];
       let body = chunks[i + 1] ?? "";
