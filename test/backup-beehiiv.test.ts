@@ -15,6 +15,7 @@ import {
   summarizeManifest,
   backupDir,
   isoDate,
+  resolveTotalPages,
   MCP_ONLY_GAPS,
   type ManifestEntry,
 } from "../scripts/backup-beehiiv.ts";
@@ -89,6 +90,28 @@ describe("summarizeManifest (#1742)", () => {
   it("carimba api_base e generated_at", () => {
     assert.equal(m.api_base, "https://api.beehiiv.com/v2");
     assert.equal(m.generated_at, "2026-06-03T00:00:00.000Z");
+  });
+});
+
+describe("resolveTotalPages (#1742) — anti-truncamento silencioso", () => {
+  it("respeita total_pages quando presente e > 0", () => {
+    assert.equal(resolveTotalPages(100, 5, 1, 100), 5);
+    assert.equal(resolveTotalPages(0, 3, 2, 100), 3);
+  });
+
+  it("estende quando total_pages ausente mas a página veio cheia (mais dados)", () => {
+    // Bug original: `total_pages ?? 1` pastartia em 1 e gravava só 100 subscribers.
+    assert.equal(resolveTotalPages(100, undefined, 1, 100), 2);
+    assert.equal(resolveTotalPages(100, undefined, 7, 100), 8);
+  });
+
+  it("estende quando total_pages é 0 (envelope com bug) e página cheia", () => {
+    assert.equal(resolveTotalPages(100, 0, 1, 100), 2);
+  });
+
+  it("para na página atual quando veio incompleta (fim real)", () => {
+    assert.equal(resolveTotalPages(42, undefined, 3, 100), 3);
+    assert.equal(resolveTotalPages(0, undefined, 1, 100), 1);
   });
 });
 

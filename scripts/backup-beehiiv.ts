@@ -44,7 +44,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, appendFileSync, rmSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -159,6 +159,26 @@ export function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Decide o `totalPages` a usar após receber uma página, sem confiar cegamente
+ * no campo `total_pages` da resposta. Pure — testável sem rede.
+ *
+ * Regra: se a API informa `total_pages > 0`, respeita. Senão (campo ausente,
+ * 0, ou bug), infere: se a página veio cheia (`got >= perPage`) há mais dados,
+ * então estende pra `page + 1`; se veio incompleta, para na página atual.
+ * Evita o truncamento silencioso de coleções grandes (subscribers) quando o
+ * envelope omite a contagem de páginas.
+ */
+export function resolveTotalPages(
+  gotLength: number,
+  totalPagesField: number | null | undefined,
+  page: number,
+  perPage: number,
+): number {
+  if (totalPagesField && totalPagesField > 0) return totalPagesField;
+  return gotLength >= perPage ? page + 1 : page;
+}
+
 function loadConfig(): Config {
   const apiKey = process.env.BEEHIIV_API_KEY;
   if (!apiKey) {
@@ -248,8 +268,9 @@ async function fetchAllPages<T>(
       throw new Error(`Beehiiv API ${res.status} em ${basePath} (página ${page})`);
     }
     const body = res.body!;
-    items.push(...(body.data ?? []));
-    totalPages = body.total_pages ?? 1;
+    const got = body.data ?? [];
+    items.push(...got);
+    totalPages = resolveTotalPages(got.length, body.total_pages, page, PER_PAGE);
     page++;
   }
   return items;
@@ -366,8 +387,13 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
   // 3. Subscribers — JSONL, 1 linha por subscriber (pode ser grande)
   if (opts.subscribers) {
     const subsFile = resolve(dir, "subscribers.jsonl");
+    // Escreve num .partial e só renomeia no fim — assim uma falha no meio
+    // deixa um arquivo .partial (não um subscribers.jsonl parcial que pareça
+    // completo). O manifest também registra o erro.
+    const subsPartial = `${subsFile}.partial`;
     try {
-      rmSync(subsFile, { force: true }); // overwrite limpo (append abaixo)
+      rmSync(subsFile, { force: true });
+      rmSync(subsPartial, { force: true });
       let page = 1;
       let totalPages = 1;
       let count = 0;
@@ -378,13 +404,15 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
         );
         if (!res.ok) throw new Error(`Beehiiv API ${res.status} em subscriptions (página ${page})`);
         const body = res.body!;
-        const chunk = (body.data ?? []).map((sub) => JSON.stringify(sub)).join("\n");
-        if (chunk) appendFileSync(subsFile, chunk + "\n", "utf8");
-        count += body.data?.length ?? 0;
-        totalPages = body.total_pages ?? 1;
-        process.stderr.write(`[backup-beehiiv] subscribers: página ${page}/${totalPages} (${count} total)\n`);
+        const got = body.data ?? [];
+        const chunk = got.map((sub) => JSON.stringify(sub)).join("\n");
+        if (chunk) appendFileSync(subsPartial, chunk + "\n", "utf8");
+        count += got.length;
+        totalPages = resolveTotalPages(got.length, body.total_pages, page, PER_PAGE);
+        process.stderr.write(`[backup-beehiiv] subscribers: página ${page} (${count} total)\n`);
         page++;
       }
+      renameSync(subsPartial, subsFile);
       subscribers = { fetched: count };
       endpoints.push({ key: "subscribers", file: "subscribers.jsonl", status: "ok", count });
     } catch (e) {
@@ -413,12 +441,21 @@ function parseArgs(argv: string[]): BackupOpts {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const limitRaw = get("--posts-limit");
+  let postsLimit: number | null = null;
+  if (limitRaw !== undefined) {
+    const n = parseInt(limitRaw, 10);
+    if (!Number.isInteger(n) || n < 0) {
+      console.error(`--posts-limit inválido: "${limitRaw}" (esperado inteiro >= 0)`);
+      process.exit(2);
+    }
+    postsLimit = n;
+  }
   return {
     date: get("--date") ?? isoDate(new Date()),
     outDir: get("--out"),
     subscribers: !argv.includes("--no-subscribers"),
     content: !argv.includes("--no-content"),
-    postsLimit: limitRaw ? parseInt(limitRaw, 10) : null,
+    postsLimit,
     dryRun: argv.includes("--dry-run"),
   };
 }
