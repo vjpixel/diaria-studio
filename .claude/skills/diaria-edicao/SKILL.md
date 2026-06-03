@@ -11,6 +11,7 @@ Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — S
 
 - `$1` = data da edição no formato `AAMMDD` (ex: `260418`). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir amanhã como atalho principal (regra D+1 — edição é sempre o dia seguinte à pesquisa), com hoje como secundário, mas exigir confirmação:
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
+- `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
 - `--no-gates` (opcional) = pular TODOS os gates, inclusive o pre-gate do Stage 4. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
 
 ## Pré-requisitos
@@ -39,19 +40,22 @@ Armazenar o resultado como `$ISO` (ex: `260423` → `2026-04-23`). Usar `$ISO` e
    ```
    Armazenar como `window_start`.
 
-**Se `--no-gates`:** usar os valores calculados sem perguntar. Pular para o Passo 2.
+**Resolução de `window_days` (#1751 — sem gate obrigatório):**
 
-**Caso contrário:** exibir ao usuário e aguardar resposta:
+1. **Arg `--window N` / `--window-days N` presente:** validar N inteiro ≥ 1. Válido → `window_days = N`, recalcular `window_start` a partir de `WINDOW_END` (`WINDOW_END − (N−1)`). Seguir direto pro Passo 2, **sem perguntar**. Inválido (não-inteiro / < 1) → aí sim perguntar (fallback, ver abaixo).
+2. **Sem arg de janela (caso comum):** assumir o **default 4 dias silenciosamente** e seguir pro Passo 2 — **sem o gate de confirmação**. (Antes exigia `ok`; #1751 torna implícito.) Logar a janela efetiva (opcional) em `data/run-log.jsonl` com `source: "default"`.
+3. **`--no-gates`:** idêntico — usar os valores calculados sem perguntar.
+
+Logar `window_days` efetiva com `source: "arg" | "default"` pra rastreabilidade (análogo a `_internal/05-publish-consent.json`, #1326), quando viável.
+
+**Fallback (só quando `--window` veio inválido):** exibir e aguardar resposta:
 
    ```
    Janela de publicacao aceita: {window_start} -> {WINDOW_END} (4 dias)
-   Digite ok para confirmar ou outro numero de dias:
+   --window invalido. Digite ok para o default (4) ou um numero de dias:
    ```
 
-   Interpretar a resposta:
-   - Vazia / "Enter" / "ok" / "sim" / "confirmar" → manter o default.
-   - Número inteiro N ≥ 1 → `window_days = N`, recalcular `window_start` a partir de `WINDOW_END`.
-   - Qualquer outra coisa → repetir a pergunta.
+   Interpretar: vazia / "ok" / "sim" → default 4; inteiro N ≥ 1 → `window_days = N`; outra coisa → repetir.
 
 ## Passo 2 — Executar o playbook diretamente no top-level (#207)
 
