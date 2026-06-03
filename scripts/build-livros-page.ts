@@ -67,6 +67,14 @@ const THEME_LABEL: Record<string, string> = {
 
 const LANG_LABEL: Record<Language, string> = { "pt-br": "Português", en: "Inglês" };
 
+/**
+ * URL só é aceita se http(s) — defense-in-depth contra `javascript:`/`data:`
+ * num link curado errado. Pure. Vazio → false (curadoria pendente).
+ */
+export function isSafeUrl(u: string | undefined): boolean {
+  return !!u && /^https?:\/\//i.test(u);
+}
+
 /** Escapa HTML em texto interpolado. */
 export function esc(s: string): string {
   return s
@@ -107,7 +115,9 @@ export function validateBooks(books: Book[]): ValidationResult {
     if (!Array.isArray(b.themes) || b.themes.length === 0) errors.push(`${where}: themes vazio`);
     else for (const t of b.themes) if (!(t in THEME_LABEL)) warnings.push(`${where}: tema desconhecido "${t}"`);
     if (!b.link) warnings.push(`${where}: link pendente (curadoria)`);
+    else if (!isSafeUrl(b.link)) warnings.push(`${where}: link com esquema inválido (só http/https): ${b.link}`);
     if (!b.cover_url) warnings.push(`${where}: cover_url pendente (curadoria)`);
+    else if (!isSafeUrl(b.cover_url)) warnings.push(`${where}: cover_url com esquema inválido (só http/https): ${b.cover_url}`);
   }
   return { ok: errors.length === 0, errors, warnings };
 }
@@ -124,11 +134,11 @@ export function loadBooks(seedPath = SEED_PATH): Book[] {
 
 function renderCard(b: Book): string {
   const themes = b.themes.map((t) => THEME_LABEL[t] ?? t);
-  const cover = b.cover_url
-    ? `<img class="cover" src="${esc(b.cover_url)}" alt="Capa de ${esc(b.title)}" loading="lazy">`
+  const cover = isSafeUrl(b.cover_url)
+    ? `<img class="cover" src="${esc(b.cover_url!)}" alt="Capa de ${esc(b.title)}" loading="lazy">`
     : `<div class="cover cover--ph" aria-hidden="true">📘</div>`;
-  const cta = b.link
-    ? `<a class="cta" href="${esc(b.link)}" target="_blank" rel="noopener noreferrer">Ver livro →</a>`
+  const cta = isSafeUrl(b.link)
+    ? `<a class="cta" href="${esc(b.link!)}" target="_blank" rel="noopener noreferrer">Ver livro →</a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
   // data-* alimentam os filtros client-side.
   return `      <article class="card" data-lang="${esc(b.language)}" data-level="${esc(b.level)}" data-themes="${esc(b.themes.join(" "))}">

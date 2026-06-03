@@ -13,6 +13,7 @@ import {
   validateBooks,
   renderLivrosPage,
   esc,
+  isSafeUrl,
   type Book,
 } from "../scripts/build-livros-page.ts";
 
@@ -73,6 +74,26 @@ describe("validateBooks (#1744)", () => {
     assert.equal(v.ok, true);
     assert.ok(v.warnings.some((w) => w.includes("tema desconhecido")));
   });
+
+  it("link/cover com esquema não-http é warning (defense-in-depth)", () => {
+    const v = validateBooks([book({ link: "javascript:alert(1)", cover_url: "data:text/html,x" })]);
+    assert.equal(v.ok, true);
+    assert.ok(v.warnings.some((w) => w.includes("link com esquema inválido")));
+    assert.ok(v.warnings.some((w) => w.includes("cover_url com esquema inválido")));
+  });
+});
+
+describe("isSafeUrl (#1744)", () => {
+  it("aceita http/https, rejeita o resto", () => {
+    assert.equal(isSafeUrl("https://ed.com/x"), true);
+    assert.equal(isSafeUrl("http://ed.com/x"), true);
+    assert.equal(isSafeUrl("HTTPS://ED.COM"), true);
+    assert.equal(isSafeUrl("javascript:alert(1)"), false);
+    assert.equal(isSafeUrl("data:text/html,x"), false);
+    assert.equal(isSafeUrl("/relativo"), false);
+    assert.equal(isSafeUrl(""), false);
+    assert.equal(isSafeUrl(undefined), false);
+  });
 });
 
 describe("esc (#1744)", () => {
@@ -104,6 +125,13 @@ describe("renderLivrosPage (#1744)", () => {
   it("livro com link renderiza CTA; sem link, placeholder desabilitado", () => {
     assert.match(html, /href="https:\/\/ed\.com\/b1"/); // Alpha tem link
     assert.match(html, /Link em breve/); // Beta não tem
+  });
+
+  it("link com esquema perigoso NÃO é emitido (cai no placeholder)", () => {
+    const evil = renderLivrosPage([book({ id: "x", link: "javascript:alert(1)", cover_url: "javascript:1" })]);
+    assert.doesNotMatch(evil, /javascript:/);
+    assert.match(evil, /Link em breve/);
+    assert.match(evil, /cover--ph/);
   });
 
   it("livro sem cover usa placeholder, com cover usa <img>", () => {
