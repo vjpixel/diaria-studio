@@ -56,6 +56,11 @@ const REQUIRED_INVARIANTS = [
   "inbox-drain",
   "scorer",
   "render-categorized-md",
+  // #1783: marks de status que fecham a duração de S0/S4 no relatório
+  "--stage 0 --status running",
+  "--stage 0 --status done",
+  "--stage 4 --status running",
+  "mark-done canônico do Stage 4 é o §4i",
 ];
 
 function readOrchestratorFiles(): Record<string, string> {
@@ -121,11 +126,13 @@ describe("orchestrator-prompt (#634)", () => {
     // quando #1273 adicionou wrapper ensure-research-reviewer-output post-dispatch;
     // 580→620 quando stage-4 cresceu com publish paralelo + resume-aware + halt rules;
     // 620→640 quando #1545 adicionou 4f-ter social preview + #1548 report instruction;
-    // 640→700 quando #1571 documentou pre-gate mode + 4a-pre-gate explícito.
+    // 640→700 quando #1571 documentou pre-gate mode + 4a-pre-gate explícito;
+    // 700→715 quando #1783 adicionou marks de status S0 (running/done) + S4
+    // (mark-done canônico no §4i, fora do §4g que é pulado em pre-gate).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 700,
-        `${file} tem ${lines[file]} linhas (target ≤700)`,
+        lines[file] <= 715,
+        `${file} tem ${lines[file]} linhas (target ≤715)`,
       );
     }
   });

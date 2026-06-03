@@ -42,6 +42,11 @@ Exit code handling:
 
 ### 4a. Pré-requisitos + sync
 
+**Marcar Stage 4 `running` no início (#1783).** Garante o `start` pra que o `done` do §4i feche a duração no relatório (não depender só da convenção do `orchestrator.md`). Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status running
+```
+
 **⚠️ MCP fail-fast (#738):** Durante qualquer passo desta etapa, se um `<system-reminder>` do runtime indicar que claude-in-chrome, beehiiv ou gmail MCP ficou offline, **parar imediatamente**, logar via:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator \
@@ -506,7 +511,7 @@ Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente.
   - regenerar newsletter (re-dispatch `publish-newsletter`)
   - abortar
 
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 4 done via `update-stage-status.ts --stage 4 --status done --end ISO --duration-ms X [--cost-usd Y --models "sonnet-4-6"]`.
+- **Atualizar `stage-status.md` (#1217).** Opcional aqui — anexar custo/tokens/modelos do stage (`--cost-usd Y --tokens-in N --tokens-out N --models "sonnet-4-6"`). ⚠️ O **mark-done canônico do Stage 4 é o §4i** (#1783), que sempre roda nos dois modos e antes do relatório; este passo (§4g) é pulado quando `pre_gate=true`, então NÃO confiar nele pra marcar done.
 
 ### 4g-bis. Dispatch social (APÓS gate — #1501)
 
@@ -584,6 +589,12 @@ Sem close-poll, gabarito permanece `null` no Worker. Sem smoke test, edição po
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 4 \
   --outputs "_internal/05-published.json"
+```
+
+**Marcar Stage 4 `done` AQUI (#1783).** Este é o ponto que **sempre** roda nos dois modos (`pre_gate=true` e legacy) e acontece **antes** do auto-reporter/relatório (§4b). O mark-done que existia no §4g (linha ~509) NÃO é alcançado quando `pre_gate=true` (o §4g é pulado), então o relatório fotografava o Stage 4 eternamente `running` — esta é a correção. Auto-carimbo de `end` via #1789 (computa `end - start` do `running` marcado no início do stage):
+
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 4 --status done
 ```
 
 - Sentinel ausente faz Stage 0 da próxima edição re-investigar publicação via Beehiiv API (custo extra, ruído editorial).

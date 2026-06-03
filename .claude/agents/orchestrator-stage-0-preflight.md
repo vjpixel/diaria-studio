@@ -123,6 +123,10 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 0 --files stage-status.md
   ```
   Falha não bloqueia (`stage-status.md` é observabilidade, não estado canônico).
+  - **Marcar Stage 0 `running` logo após o init (#1783).** Sem isso o Stage 0 nunca passa por `running`, fica sem `start`, e o relatório mostra `-` na duração do preflight. **Não** passar `--start` — o auto-carimbo (#1789) põe `start = now` se ainda não há (e preserva o original em resume):
+    ```bash
+    npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 0 --status running
+    ```
 
   **Atualização incremental durante o pipeline:** ao **começar** cada stage (1-4), chamar:
   ```bash
@@ -425,6 +429,12 @@ npx tsx scripts/check-invariants.ts --stage 0
 ```
 
 Exit 1 = abort imediato com violations no stderr. Editor corrige (env, credentials) e re-roda. Esses checks são baratos (<1s) e evitam falhas tardias caras (Stage 4 sem `LINKEDIN_WORKER_URL`, etc — verificado novamente lá).
+
+**Marcar Stage 0 `done` ao fim do preflight (#1783).** Fecha a duração do preflight (auto-carimbo de `end` via #1789; computa `end - start` do `running` lá do init). Sem isso o S0 ficaria eternamente `running` e sem duração no relatório:
+
+```bash
+npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 0 --status done
+```
 
 ---
 
