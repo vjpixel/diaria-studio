@@ -590,6 +590,28 @@ describe("readSubmissionsCountFromMarker (#1368, refined #1414)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("#1756: newsletters SÃO submissões — captured_newsletter_count soma com editor_blocks (E+N)", () => {
+    // Trava o contrato editorial: o editor conta os e-mails de newsletter como
+    // submissões dele. X = editor_blocks + captured_newsletter_count, ambos > 0.
+    // (O bug 260603 foi 0b-bis pulado → captured_newsletter_count: 0 → X subcontou;
+    //  a fórmula em si — testada aqui — sempre soma os dois.)
+    const dir = makeFixtureEdition();
+    writeFileSync(
+      join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+      JSON.stringify({
+        name: "inject-inbox-urls",
+        details: {
+          editor_blocks: 3,
+          newsletter_blocks: 0,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 11,
+        },
+      }),
+    );
+    assert.equal(readSubmissionsCountFromMarker(dir), 14); // 3 + 11
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("#1541: captured-articles sem captured_newsletter_count faz fallback pra captured-newsletters.json", () => {
     const dir = makeFixtureEdition();
     writeFileSync(

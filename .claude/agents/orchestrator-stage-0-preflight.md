@@ -62,6 +62,15 @@ Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional 
 Captura newsletters de IA do inbox pessoal do editor antes do inbox drain.
 Substitui o forward manual que o editor fazia diariamente.
 
+> **NÃO PULAR (#1756).** Os e-mails de newsletter (Cyberman, TLDR, 7min.ai,
+> Superhuman, Lenny, Marktechpost) são o **canal primário de submissões do
+> editor** — a linha de cobertura ("você enviou X submissões") conta cada um
+> como X. Como roda em background (`run_in_background: true`, passo 6), o custo
+> de contexto no parent é desprezível: **não há justificativa de economia pra
+> pular**. Único skip legítimo é Gmail MCP indisponível (passo abaixo). Pular
+> por "economia de contexto" é erro de operação — aconteceu na 260603 (0b-bis
+> pulado, 11 newsletters na janela, linha saiu "0 submissões").
+
 **Por que após 0b (resume check):** se o pipeline está retomando uma edição que já passou do Stage 0, o resume (0b) pula direto para o stage pendente — evitando 30-40s de chamadas Gmail MCP desnecessárias. Mover este passo para antes do resume desperdiçaria esse tempo em todo resume.
 
 1. Ler `platform.config.json > newsletter_auto_capture`. Se `enabled !== true`, skip silencioso.
@@ -78,8 +87,9 @@ Substitui o forward manual que o editor fazia diariamente.
    ```
    Writes `SyntheticInboxArticle[]` JSON directly to `_internal/captured-newsletter-articles.json` — no inbox.md intermediary (#1520). URL filtering (tracking, affiliate, sender-domain) is applied during capture.
 7. Logar resultado quando o background completar (info). Falha não bloqueia (warn only).
+8. **Guard determinístico (#1756):** se o search (passo 3) retornou **N>0 threads** mas `captured-newsletters.json` ficou **ausente/vazio** (e Gmail MCP estava disponível), logar **WARN loud** — sinal de que 0b-bis foi pulado ou falhou silenciosamente. O Stage 1 (1h inject-inbox-urls) deve re-checar: se há newsletters na janela do Gmail mas `captured_newsletter_count: 0` no marker, repetir o WARN antes do gate (o editor decide re-capturar/re-rodar). A linha de cobertura sairia com X subcontado caso contrário.
 
-Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped: Gmail MCP unavailable"`). Newsletter capture é nice-to-have, não crítico.
+Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped: Gmail MCP unavailable"`). Esse é o **único** skip legítimo (#1756) — newsletter capture exige Gmail; sem ele não há como capturar.
 
 ### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
 

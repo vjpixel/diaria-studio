@@ -438,7 +438,7 @@ Browser baixa HTML direto do Worker e cola no editor TipTap. Single javascript_t
 })()
 ```
 
-**Aguardar autosave**: após `insertContent`, esperar ~8s para Beehiiv autosave persistir. Validação opcional via reload + getJSON: deve manter `docSize` constante.
+**Aguardar autosave**: após `insertContent`, esperar ~8s (via `computer.wait`, não dentro do `javascript_tool`) para Beehiiv autosave persistir. Validação opcional via reload + ler `editor.state.doc.content.size` (NÃO `getJSON()` — #1766): deve manter `docSize` constante.
 
 ⚠️ **Crítico (#1054 validação E2E, 2026-05-10)**: o ÚNICO método validado que persiste após autosave + reload é `editor.commands.insertContent({ type: 'text', text: html })`. Métodos descartados:
 
@@ -456,26 +456,37 @@ Detalhes do caminho chunked-base64 (fallback legacy) estão no apêndice no fim 
 
 #### 5.3 Pós-paste — verificação dos merge tags via ProseMirror state
 
+> **#1766 — NUNCA usar `editor.getJSON()` / `JSON.stringify(doc)` pra verificar.**
+> Serializar o doc ProseMirror inteiro (htmlSnippet ~30KB colado como text node)
+> estoura o limite de **45s do CDP `Runtime.evaluate`** → `CDP sendCommand timed
+> out, renderer may be frozen` (assusta e leva a re-paste desnecessário). Caso
+> real 260603: 2 verificações via getJSON deram timeout. Use **varredura
+> direcionada** com `doc.descendants` procurando só as strings-alvo nos text
+> nodes — retorna em <1s, não serializa nada.
+
 ```js
-// Verificar via getJSON (ProseMirror state, não DOM) — esse é o que persiste
+// Varredura direcionada (#1766) — NÃO serializa o doc inteiro.
 const editor = document.querySelector('.tiptap.ProseMirror')?.editor;
-const json = JSON.stringify(editor.getJSON());
-({
-  hasA: json.includes('{{poll_a_url}}'),
-  hasB: json.includes('{{poll_b_url}}'),
-  jsonLen: json.length,
-  docSize: editor.state.doc.content.size
+const found = { hasA: false, hasB: false };
+editor.state.doc.descendants((n) => {
+  if (n.isText && n.text) {
+    if (n.text.includes('{{poll_a_url}}')) found.hasA = true;
+    if (n.text.includes('{{poll_b_url}}')) found.hasB = true;
+  }
 });
+({ ...found, docSize: editor.state.doc.content.size });
 ```
 
 Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "merge_tag_stripped_{a|b}"`. Editor pode adicionar manualmente via UI.
 
-**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s antes de prosseguir pra próximos passos. Validação opcional: reload da page e re-checar `getJSON()` — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
+**#1766 — wait fora do `javascript_tool`.** NÃO colocar `await new Promise(r=>setTimeout(r,8000))` DENTRO de uma chamada `javascript_tool` — o wait conta pro orçamento dos 45s do CDP. Faça o wait via `computer.wait` (ou esperar entre chamadas MCP) e mantenha cada `javascript_tool` curto e numa chamada separada.
+
+**Salvar o bloco**: Beehiiv auto-saves após ~5s do último input. Aguardar 8s (via `computer.wait`, não dentro do `javascript_tool`) antes de prosseguir. Validação opcional: reload da page e re-checar via a varredura `descendants` acima — `docSize` e markers críticos devem permanecer iguais. Se docSize voltar pro valor pré-paste, autosave não capturou — investigar (timing, transação rolled back, schema rejection).
 
 #### 5.4 Verificação pós-paste — preview
 
 - Beehiiv não renderiza preview do htmlSnippet **dentro do editor** (htmlSnippet é raw HTML armazenado como texto, não preview visual). A verificação visual completa só acontece via "Email preview" / "Web preview" do Beehiiv ou via test email recebido (passo 7).
-- **Verificação programática suficiente**: o passo 5.3 já validou via `editor.getJSON()` que merge tags + image URLs estão preservados na ProseMirror state. Se passou, o conteúdo está correto e o preview do email vai renderizar.
+- **Verificação programática suficiente**: o passo 5.3 já validou via varredura `doc.descendants` (#1766) que merge tags + image URLs estão preservados na ProseMirror state. Se passou, o conteúdo está correto e o preview do email vai renderizar.
 - **Validação visual opcional**: editor pode clicar em "Preview" no Beehiiv após o agent completar; URLs de imagens vêm do Cloudflare Worker KV (#1119), disponibilidade quase imediata (KV é eventually consistent, ~1-2s). Se imagem aparecer quebrada no preview, verificar (a) que upload retornou 2xx, (b) que GET na URL retorna JPEG válido (`curl -so /tmp/test.jpg <url> && file /tmp/test.jpg`), (c) re-upload via `upload-images-public.ts --mode newsletter --no-cache` se necessário.
 - **Bugs do #39 tratados estruturalmente**:
   - ✅ Encoding Unicode: HTML gerado em build-time, caracteres preservados no arquivo.
@@ -662,13 +673,21 @@ Em vez do `fetch + insertContent` da Fase 3 (Worker), decodifica `window.__b64ch
   // Cleanup
   delete window.__b64chunks;
 
-  const newJSON = JSON.stringify(editor.getJSON());
+  // #1766: varredura direcionada — NÃO `JSON.stringify(editor.getJSON())`
+  // (serializar o doc ~30KB estoura o timeout de 45s do CDP).
+  let hasPollA = false, hasPollB = false;
+  editor.state.doc.descendants((n) => {
+    if (n.isText && n.text) {
+      if (n.text.includes('{{poll_a_url}}')) hasPollA = true;
+      if (n.text.includes('{{poll_b_url}}')) hasPollB = true;
+    }
+  });
   return {
     inserted: ok,
     htmlBytes: html.length,
     docSize: editor.state.doc.content.size,
-    hasPollA: newJSON.includes('{{poll_a_url}}'),
-    hasPollB: newJSON.includes('{{poll_b_url}}'),
+    hasPollA,
+    hasPollB,
   };
 })()
 ```
