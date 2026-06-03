@@ -14,8 +14,13 @@ import {
   renderLivrosPage,
   esc,
   isSafeUrl,
+  loadBooks,
   type Book,
 } from "../scripts/build-livros-page.ts";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SEED = resolve(dirname(fileURLToPath(import.meta.url)), "..", "seed/books/livros-ia.json");
 
 function book(over: Partial<Book> = {}): Book {
   return {
@@ -80,6 +85,31 @@ describe("validateBooks (#1744)", () => {
     assert.equal(v.ok, true);
     assert.ok(v.warnings.some((w) => w.includes("link com esquema inválido")));
     assert.ok(v.warnings.some((w) => w.includes("cover_url com esquema inválido")));
+  });
+});
+
+describe("seed real seed/books/livros-ia.json (#1744)", () => {
+  const books = loadBooks(SEED); // lança se schema inválido
+
+  it("tem 10 livros e passa a validação (sem erros)", () => {
+    assert.equal(books.length, 10);
+    assert.equal(validateBooks(books).ok, true);
+  });
+
+  it("todo link preenchido é https seguro (sem esquema perigoso)", () => {
+    for (const b of books) {
+      if (b.link) assert.ok(isSafeUrl(b.link), `${b.id}: link inseguro ${b.link}`);
+      if (b.cover_url) assert.ok(isSafeUrl(b.cover_url), `${b.id}: cover inseguro ${b.cover_url}`);
+    }
+  });
+
+  it("todos os 10 têm link de fato preenchido (curadoria de links completa)", () => {
+    const semLink = books.filter((b) => !b.link).map((b) => b.id);
+    assert.deepEqual(semLink, [], `livros sem link: ${semLink.join(", ")}`);
+  });
+
+  it("ids são únicos", () => {
+    assert.equal(new Set(books.map((b) => b.id)).size, books.length);
   });
 });
 
