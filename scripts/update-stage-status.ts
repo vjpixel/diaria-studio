@@ -246,18 +246,30 @@ export function computeDurationMs(opts: UpdateOpts, existing: StageRow): number 
  * Atualiza idempotentemente a linha de `stage` no `doc`. Campos undefined
  * em `opts` preservam valor existente. Retorna novo doc.
  */
-export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusDoc {
+export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string): StageStatusDoc {
   const newRows = doc.rows.map((r) => {
     if (r.stage !== opts.stage) return r;
+    // #1783: auto-carimbo de timestamps quando o caller (playbook) não passa
+    // --start/--end. Sem isso, todo stage que transita running→done sem timestamps
+    // explícitos ficava sem duração no relatório. start: ao ENTRAR em running, se
+    // ainda não há start. end: ao concluir (done/failed), se ainda não há end. Não
+    // sobrescreve um start já existente (preserva o original em resume). `now` é
+    // injetado (puro/testável); só auto-carimba quando fornecido.
+    let start = opts.start ?? r.start;
+    if (!start && opts.status === "running" && now) start = now;
+    let end = opts.end ?? r.end;
+    if (!end && (opts.status === "done" || opts.status === "failed") && now) end = now;
+    // Repassa os timestamps efetivos pro cálculo de duração/pipeline.
+    const effective: UpdateOpts = { ...opts, start, end };
     return {
       ...r,
       status: opts.status,
-      start: opts.start ?? r.start,
-      end: opts.end ?? r.end,
+      start,
+      end,
       gate_at: opts.gate_at ?? r.gate_at,
       // #1706: auto-computa de start/end quando não passado ou passado como 0.
-      duration_ms: computeDurationMs(opts, r),
-      pipeline_ms: opts.pipeline_ms ?? computePipelineMs(opts, r),
+      duration_ms: computeDurationMs(effective, r),
+      pipeline_ms: opts.pipeline_ms ?? computePipelineMs(effective, r),
       cost_usd: opts.cost_usd ?? r.cost_usd,
       tokens_in: opts.tokens_in ?? r.tokens_in,
       tokens_out: opts.tokens_out ?? r.tokens_out,
@@ -266,7 +278,7 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts): StageStatusD
   });
   // `...doc` já preserva `run_started_at` (#1304) — não precisa repetir
   // explicitamente. Mantido só o que muda neste update.
-  return { ...doc, rows: newRows, generated_at: new Date().toISOString() };
+  return { ...doc, rows: newRows, generated_at: now ?? new Date().toISOString() };
 }
 
 export function makeInitialDoc(edition: string, runStartedAt?: string): StageStatusDoc {
@@ -437,21 +449,26 @@ async function main(): Promise<void> {
       }
     }
 
-    doc = applyUpdate(doc, {
-      stage,
-      status: status as StageStatus,
-      start: args.start as string | undefined,
-      end: args.end as string | undefined,
-      gate_at: args["gate-at"] as string | undefined,
-      duration_ms: args["duration-ms"] ? parseInt(args["duration-ms"] as string, 10) : undefined,
-      pipeline_ms: args["pipeline-ms"] ? parseInt(args["pipeline-ms"] as string, 10) : undefined,
-      cost_usd: args["cost-usd"] ? parseFloat(args["cost-usd"] as string) : undefined,
-      tokens_in: args["tokens-in"] ? parseInt(args["tokens-in"] as string, 10) : undefined,
-      tokens_out: args["tokens-out"] ? parseInt(args["tokens-out"] as string, 10) : undefined,
-      models: args.models
-        ? (args.models as string).split(",").map((s) => s.trim()).filter(Boolean)
-        : undefined,
-    });
+    doc = applyUpdate(
+      doc,
+      {
+        stage,
+        status: status as StageStatus,
+        start: args.start as string | undefined,
+        end: args.end as string | undefined,
+        gate_at: args["gate-at"] as string | undefined,
+        duration_ms: args["duration-ms"] ? parseInt(args["duration-ms"] as string, 10) : undefined,
+        pipeline_ms: args["pipeline-ms"] ? parseInt(args["pipeline-ms"] as string, 10) : undefined,
+        cost_usd: args["cost-usd"] ? parseFloat(args["cost-usd"] as string) : undefined,
+        tokens_in: args["tokens-in"] ? parseInt(args["tokens-in"] as string, 10) : undefined,
+        tokens_out: args["tokens-out"] ? parseInt(args["tokens-out"] as string, 10) : undefined,
+        models: args.models
+          ? (args.models as string).split(",").map((s) => s.trim()).filter(Boolean)
+          : undefined,
+      },
+      // #1783: now real pro auto-carimbo de start/end quando o playbook não passa.
+      new Date().toISOString(),
+    );
   }
 
   try {
