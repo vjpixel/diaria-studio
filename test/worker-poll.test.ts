@@ -27,6 +27,10 @@ import {
   parseMonthSlug,
   currentMonthSlugBrt,
   monthSlugCompare,
+  normalizeNickname,
+  isBlacklistedNickname,
+  nicknameHasContent,
+  validateNickname,
 } from "../workers/poll/src/lib.ts";
 import {
   computeTop1,
@@ -39,6 +43,8 @@ import {
   votePageHtml,
   recordVoteLog,
   buildVoteLogEntry,
+  handleSetName,
+  hmacSign,
   type Env,
 } from "../workers/poll/src/index.ts";
 
@@ -959,3 +965,127 @@ describe("recordVoteLog (#1657)", () => {
   });
 });
 
+
+describe("validação de apelidos (#1758)", () => {
+  describe("normalizeNickname", () => {
+    it("lowercase + remove acentos + colapsa espaços", () => {
+      assert.equal(normalizeNickname("  Anônimo  "), "anonimo");
+      assert.equal(normalizeNickname("Ana   B"), "ana b");
+      assert.equal(normalizeNickname("EU"), "eu");
+    });
+    it("dois apelidos equivalentes colidem", () => {
+      assert.equal(normalizeNickname("Bruna Quevedo"), normalizeNickname("bruna  quevedo"));
+    });
+  });
+
+  describe("isBlacklistedNickname", () => {
+    for (const n of ["eu", "Eu", "EU", " eu ", "you", "admin", "diar.ia", "diar ia", "diaria", "teste", "Anônimo", "moderador"]) {
+      it(`bloqueia "${n}"`, () => assert.equal(isBlacklistedNickname(n), true));
+    }
+    for (const n of ["Bruna", "Joshu", "Ana Cândida", "euler", "euzinho"]) {
+      it(`permite "${n}"`, () => assert.equal(isBlacklistedNickname(n), false));
+    }
+  });
+
+  describe("nicknameHasContent", () => {
+    it("aceita letras/números", () => {
+      assert.equal(nicknameHasContent("Ana"), true);
+      assert.equal(nicknameHasContent("R2D2"), true);
+    });
+    it("rejeita emoji-only / pontuação-only", () => {
+      assert.equal(nicknameHasContent("🎉🎉"), false);
+      assert.equal(nicknameHasContent("!!!"), false);
+      assert.equal(nicknameHasContent("   "), false);
+    });
+  });
+
+  describe("validateNickname", () => {
+    it("OK → null", () => assert.equal(validateNickname("Bruna"), null));
+    it("blacklist → mensagem", () => assert.match(validateNickname("Eu") ?? "", /não é permitido/i));
+    it("emoji-only → mensagem", () => assert.match(validateNickname("🎉") ?? "", /letra ou número/i));
+    // #1774 review: piso de tamanho.
+    it("1 caractere → muito curto", () => assert.match(validateNickname("a") ?? "", /muito curto/i));
+    it("2 caracteres válidos → null", () => assert.equal(validateNickname("Jo"), null));
+  });
+
+  describe("handleSetName e2e (#1758)", () => {
+    const SECRET = "test-secret";
+
+    // KV em memória — get/put/list (paginação trivial: tudo de uma vez).
+    function memEnv(seed: Record<string, string>): Env {
+      const store = new Map<string, string>(Object.entries(seed));
+      return {
+        POLL_SECRET: SECRET,
+        POLL: {
+          get: async (k: string) => store.get(k) ?? null,
+          put: async (k: string, v: string) => { store.set(k, v); },
+          list: async ({ prefix }: { prefix: string }) => ({
+            keys: [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })),
+            list_complete: true,
+          }),
+        },
+      } as unknown as Env;
+    }
+
+    async function setNameUrl(email: string, name: string): Promise<URL> {
+      const sig = await hmacSign(SECRET, `setname:${email}`);
+      const u = new URL("https://poll.diaria.workers.dev/set-name");
+      u.searchParams.set("email", email);
+      u.searchParams.set("name", name);
+      u.searchParams.set("sig", sig);
+      return u;
+    }
+
+    it("apelido na blacklist ('Eu') → 400, não persiste", async () => {
+      const env = memEnv({ "score:leo@x.com": JSON.stringify({ total: 1, nickname: null }) });
+      const res = await handleSetName(await setNameUrl("leo@x.com", "Eu"), env);
+      assert.equal(res.status, 400);
+      const after = JSON.parse(await env.POLL.get("score:leo@x.com") as string);
+      assert.equal(after.nickname, null);
+    });
+
+    it("#1774: rejeição re-renderiza o form pra re-tentativa", async () => {
+      const env = memEnv({ "score:leo@x.com": JSON.stringify({ total: 1, nickname: null }) });
+      const res = await handleSetName(await setNameUrl("leo@x.com", "Eu"), env);
+      const body = await res.text();
+      // O form de set-name volta (action + input name) — não é beco sem saída.
+      assert.match(body, /action="\/set-name"/);
+      assert.match(body, /name="name"/);
+    });
+
+    it("apelido já usado por outro email → 409, não persiste", async () => {
+      const env = memEnv({
+        "score:bruna@x.com": JSON.stringify({ total: 5, nickname: "Bruna Quevedo" }),
+        "score:novo@x.com": JSON.stringify({ total: 1, nickname: null }),
+      });
+      const res = await handleSetName(await setNameUrl("novo@x.com", "bruna  quevedo"), env);
+      assert.equal(res.status, 409);
+      const after = JSON.parse(await env.POLL.get("score:novo@x.com") as string);
+      assert.equal(after.nickname, null);
+    });
+
+    it("apelido único e válido → 200, persiste", async () => {
+      const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: null }) });
+      const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Cândida"), env);
+      assert.equal(res.status, 200);
+      const after = JSON.parse(await env.POLL.get("score:ana@x.com") as string);
+      assert.equal(after.nickname, "Ana Cândida");
+    });
+
+    it("re-setar o PRÓPRIO apelido (mesmo email) não colide consigo → 200", async () => {
+      const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }) });
+      const res = await handleSetName(await setNameUrl("ana@x.com", "Ana"), env);
+      assert.equal(res.status, 200);
+    });
+
+    it("sig inválido → 403", async () => {
+      const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: null }) });
+      const u = new URL("https://poll.diaria.workers.dev/set-name");
+      u.searchParams.set("email", "ana@x.com");
+      u.searchParams.set("name", "Ana");
+      u.searchParams.set("sig", "deadbeef");
+      const res = await handleSetName(u, env);
+      assert.equal(res.status, 403);
+    });
+  });
+});

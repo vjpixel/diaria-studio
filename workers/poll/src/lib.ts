@@ -192,3 +192,66 @@ export type Vote403Reason = "sig_empty" | "sig_invalid";
 export function classify403Reason(sig: string): Vote403Reason {
   return sig === "" ? "sig_empty" : "sig_invalid";
 }
+
+// ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
+
+/**
+ * Normaliza apelido pra COMPARAÇÃO (dedup): lowercase, remove acentos, colapsa
+ * espaços. "Ana B" e "ana  b" colidem; "Ana" e "Ana B" não. Não altera o
+ * apelido salvo — só a chave de comparação.
+ */
+export function normalizeNickname(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Apelidos proibidos (#1758). Comparados após normalizar e remover tudo que não
+ * é alfanumérico — então "Eu", "eu", "diar.ia", "diar ia", "anônimo" caem todos
+ * nas entradas "eu" / "diaria" / "anonimo". Caso real jun/2026: leitor setou "Eu".
+ */
+export const NICKNAME_BLACKLIST = new Set([
+  "eu", "you", "voce", "vc", "admin", "administrador", "moderador", "mod",
+  "diaria", "diariabr", "bot", "editor", "teste", "test", "anonimo",
+  "anonima", "none", "null", "undefined",
+]);
+
+/** Chave de blacklist: normaliza + remove não-alfanuméricos. */
+function blacklistKey(name: string): string {
+  return normalizeNickname(name).replace(/[^a-z0-9]/g, "");
+}
+
+/** #1758: true se o apelido está na blacklist (case/acento-insensitive). */
+export function isBlacklistedNickname(name: string): boolean {
+  return NICKNAME_BLACKLIST.has(blacklistKey(name));
+}
+
+/**
+ * #1758: true se o apelido tem ao menos 1 caractere alfanumérico (letra/número
+ * de qualquer alfabeto). Rejeita emoji-only e pontuação-only.
+ */
+export function nicknameHasContent(name: string): boolean {
+  return /[\p{L}\p{N}]/u.test(name);
+}
+
+/**
+ * #1758: valida um apelido candidato. Retorna mensagem de erro pt-BR se inválido,
+ * ou null se OK (deixando a checagem de DUPLICIDADE — que precisa do KV — pro
+ * caller). `cleanName` já deve vir sanitizado (slice 40 + strip de `<>`).
+ */
+export function validateNickname(cleanName: string): string | null {
+  if (!nicknameHasContent(cleanName)) {
+    return "Apelido precisa ter ao menos uma letra ou número.";
+  }
+  if (cleanName.trim().length < 2) {
+    return "Apelido muito curto — use ao menos 2 caracteres.";
+  }
+  if (isBlacklistedNickname(cleanName)) {
+    return "Esse apelido não é permitido. Escolha outro.";
+  }
+  return null;
+}
