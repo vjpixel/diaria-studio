@@ -812,11 +812,29 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
 
   it("inclui media query mobile que reduz margem topo e ajusta layout", () => {
     // O bug #1675: 60px de margem topo + form lado-a-lado deixavam o conteúdo
-    // espremido no topo no celular. A media query <=480px é o fix.
+    // espremido no topo no celular. #1779: breakpoint subiu pra 600px (cobre
+    // celulares grandes/landscape).
     const html = votePageHtml("Acertou!", true);
-    assert.match(html, /@media \(max-width: 480px\)/);
+    assert.match(html, /@media \(max-width: 600px\)/);
     // body margin reduzida dentro da media query (24px no mobile)
     assert.match(html, /@media[^}]*body\s*{\s*margin:\s*24px auto/);
+  });
+
+  it("#1779: media query AMPLIA o texto no mobile (não encolhe — queixa 'miúdo')", () => {
+    const html = votePageHtml("Acertou!", true);
+    // .msg no mobile fica >= base (1.5rem), não 1.15rem como o #1675 fazia.
+    assert.match(html, /@media[^@]*\.msg\s*{\s*font-size:\s*1\.5rem/);
+    // body ganha font-size base maior no mobile.
+    assert.match(html, /@media[^@]*body\s*{[^}]*font-size:\s*18px/);
+  });
+
+  it("#1779: textos do nick-box usam classes (não inline font-size — antes media query não ampliava)", () => {
+    const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
+    assert.match(html, /<p class="nick-title">/);
+    assert.match(html, /<p class="nick-explain">/);
+    assert.match(html, /<p class="nick-note">/);
+    // Nenhum dos <p> do nick-box carrega style="font-size:..." inline.
+    assert.doesNotMatch(html, /<p style="font-size:0\.(85|95|75)rem/);
   });
 
   it("form de nickname usa classes (não inline flex) pra media query empilhar", () => {
@@ -851,7 +869,7 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
     // Inverter a ordem quebraria silenciosamente o layout responsivo.
     const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
     const baseIdx = html.indexOf(".nick-form { display: flex");
-    const mediaIdx = html.indexOf("@media (max-width: 480px)");
+    const mediaIdx = html.indexOf("@media (max-width: 600px)");
     assert.ok(baseIdx >= 0, "regra base .nick-form deve existir");
     assert.ok(mediaIdx >= 0, "bloco @media deve existir");
     assert.ok(baseIdx < mediaIdx, "base .nick-form deve preceder @media pro override empilhar vencer");
@@ -869,7 +887,7 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
     assert.doesNotMatch(html, /<form action="\/set-name"/);
     assert.doesNotMatch(html, /<div class="nick-box">/);
     // Mas a media query e o body responsivo continuam presentes.
-    assert.match(html, /@media \(max-width: 480px\)/);
+    assert.match(html, /@media \(max-width: 600px\)/);
   });
 });
 
