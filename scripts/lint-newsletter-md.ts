@@ -25,14 +25,13 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   checkStage2Caps,
   type ApprovedJson as CapsApprovedJson,
 } from "./lib/apply-stage2-caps.ts"; // #907
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
-import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
 import { lintIntroCount as sharedLintIntroCount, type IntroCountResult } from "./lib/newsletter-count.ts"; // #1455
 import {
   SECTIONS as SECTION_DEFS,
@@ -54,6 +53,8 @@ import {
   checkTitleLengths,
   MAX_TITLE_LENGTH,
 } from "./lib/lint-checks/title-length.ts";
+import { checkEiaAnswer } from "./lib/lint-checks/eia-answer-check.ts";
+import { checkIntentionalError } from "./lib/lint-checks/intentional-error.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -96,6 +97,15 @@ export {
   type TitleLengthError,
   type TitleLengthReport,
 } from "./lib/lint-checks/title-length.ts";
+export {
+  checkEiaAnswer,
+  type EiaAnswerCheckResult,
+} from "./lib/lint-checks/eia-answer-check.ts";
+export {
+  checkIntentionalError,
+  extractFrontmatter,
+  type IntentionalErrorCheckResult,
+} from "./lib/lint-checks/intentional-error.ts";
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -568,197 +578,9 @@ export function checkSectionItemFormat(md: string): SectionItemFormatReport {
   return { ok: errors.length === 0, errors };
 }
 
-/**
- * Verifica que `02-reviewed.md` tem `eia_answer` no frontmatter quando
- * `01-eia.md` existe na mesma edition_dir (#744).
- *
- * @param mdPath  Path absoluto para o `02-reviewed.md` (ou equivalente).
- * @param editionDir  Path do diretório da edição (ex: `data/editions/260506`).
- *                    Se omitido, inferido a partir de mdPath.
- */
-export interface EiaAnswerCheckResult {
-  ok: boolean;
-  label?: string;
-}
-
-export function checkEiaAnswer(
-  mdPath: string,
-  editionDir?: string,
-): EiaAnswerCheckResult {
-  const dir = editionDir ?? dirname(mdPath);
-  const eiaPath = join(dir, "01-eia.md");
-  if (!existsSync(eiaPath)) {
-    // 01-eia.md não existe — check não aplicável
-    return { ok: true };
-  }
-  // #927: gabarito também pode estar no sidecar JSON. Sidecar sobrevive
-  // Drive round-trip (frontmatter não), então sidecar válido = ok mesmo
-  // que frontmatter tenha sido strippado.
-  if (readEiaAnswerSidecar(dir)) {
-    return { ok: true };
-  }
-  // 01-eia.md existe: verificar que o md tem eia_answer no frontmatter
-  if (!existsSync(mdPath)) {
-    return {
-      ok: false,
-      label: "eia_answer_missing: 01-eia.md exists but 02-reviewed.md not found",
-    };
-  }
-  const md = readFileSync(mdPath, "utf8");
-  const hasFm = /^---[\s\S]*?eia_answer[\s\S]*?---/.test(md);
-  if (!hasFm) {
-    return {
-      ok: false,
-      label:
-        "eia_answer_missing: 01-eia.md exists but neither 01-eia-answer.json sidecar nor 02-reviewed.md frontmatter has eia_answer",
-    };
-  }
-  return { ok: true };
-}
-
-/**
- * Verifica que `02-reviewed.md` tem `intentional_error` declarado no
- * frontmatter (#754). Editor adiciona manualmente após revisar a edição.
- *
- * Convenção editorial Diar.ia: cada edição inclui 1 erro proposital pros
- * assinantes acharem (concurso mensal). Sem declaração, `review-test-email`
- * não consegue distinguir erro intencional de erro real, e o concurso
- * mensal precisa lembrar manualmente o que era cada erro.
- *
- * Frontmatter esperado:
- * ```yaml
- * intentional_error:
- *   description: "..."
- *   location: "..."
- *   category: "factual|attribution|numeric|ortografico|data"
- *   correct_value: "..."
- * ```
- *
- * Roda no Stage 4 (publish-newsletter) ANTES de criar o draft no Beehiiv.
- * Falha bloqueia publicação.
- */
-export interface IntentionalErrorCheckResult {
-  ok: boolean;
-  label?: string;
-  parsed?: {
-    description?: string;
-    location?: string;
-    category?: string;
-    correct_value?: string;
-  };
-}
-
-const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
-  "description",
-  "location",
-  "category",
-  "correct_value",
-] as const;
-
-/**
- * #1378: extrai conteúdo de bloco frontmatter YAML, aceitando posição
- * line-1 (canonical) ou inside first ~30 lines (caso editor adicione
- * manual após insert-titulo-subtitulo já ter colocado TÍTULO no topo).
- *
- * Retorna o body do frontmatter (entre os `---`) ou null se não houver.
- *
- * Pure helper — exportado pra teste.
- *
- * Implementação: itera todos os pares de `---` no topo do MD e retorna o
- * primeiro que tenha conteúdo não-vazio (line com `key:` ou similar).
- * Evita falso positivo com `---` separadores (ex: o `---` que fecha o
- * bloco TÍTULO/SUBTÍTULO).
- */
-export function extractFrontmatter(md: string, scanLines = 30): string | null {
-  // Tentar canonical primeiro (line 1) — fast path para o caso normal
-  const canonical = md.match(/^---\n([\s\S]*?)\n---/);
-  if (canonical && canonical[1].trim().length > 0) return canonical[1];
-
-  // Fallback (#1378): iterar pares de `---` dentro das primeiras N linhas
-  // e retornar o primeiro com body não-vazio (qualquer linha com texto).
-  const lines = md.split("\n");
-  const fenceIndices: number[] = [];
-  const scanLimit = Math.min(lines.length, scanLines + 10);
-  for (let i = 0; i < scanLimit; i++) {
-    if (lines[i].trim() === "---") fenceIndices.push(i);
-  }
-  for (let k = 0; k < fenceIndices.length - 1; k++) {
-    const open = fenceIndices[k];
-    const close = fenceIndices[k + 1];
-    if (open >= scanLines) break;
-    const body = lines.slice(open + 1, close).join("\n");
-    if (body.trim().length > 0) return body;
-  }
-  return null;
-}
-
-export function checkIntentionalError(
-  mdPath: string,
-): IntentionalErrorCheckResult {
-  if (!existsSync(mdPath)) {
-    return {
-      ok: false,
-      label: `intentional_error_missing: ${mdPath} not found`,
-    };
-  }
-  const md = readFileSync(mdPath, "utf8");
-
-  // #1378: aceitar frontmatter em linha 1 OU dentro das primeiras 30 linhas.
-  // Razão: insert-titulo-subtitulo.ts roda em Stage 2 e coloca bloco TÍTULO no
-  // topo. Editor adiciona intentional_error via Drive em Stage 4 — sem reordenar
-  // o MD, frontmatter cai DEPOIS do TÍTULO. Antes do #1378 isso quebrava o lint
-  // silenciosamente; agora aceitamos qualquer posição razoável no topo.
-  const fmMatch = extractFrontmatter(md);
-  if (!fmMatch) {
-    return {
-      ok: false,
-      label:
-        "intentional_error_missing: 02-reviewed.md sem frontmatter — adicione bloco YAML com intentional_error",
-    };
-  }
-
-  const fmBody = fmMatch;
-  if (!/intentional_error\s*:/i.test(fmBody)) {
-    return {
-      ok: false,
-      label:
-        "intentional_error_missing: frontmatter sem chave intentional_error — adicione description/location/category/correct_value",
-    };
-  }
-
-  // Parse simple YAML — intentional_error is a mapping with 4 string fields.
-  const parsed: IntentionalErrorCheckResult["parsed"] = {};
-  const ieBlockMatch = fmBody.match(
-    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
-  );
-  if (!ieBlockMatch) {
-    return {
-      ok: false,
-      label:
-        "intentional_error_missing: chave intentional_error não está no formato mapping (4 campos indentados)",
-    };
-  }
-  for (const line of ieBlockMatch[1].split("\n")) {
-    const m = line.match(/^[ \t]+(\w+)\s*:\s*"?(.*?)"?\s*$/);
-    if (!m) continue;
-    const key = m[1] as keyof typeof parsed;
-    const value = m[2].trim();
-    if (value.length > 0) parsed[key] = value;
-  }
-
-  const missing = REQUIRED_INTENTIONAL_ERROR_FIELDS.filter(
-    (f) => !parsed[f as keyof typeof parsed],
-  );
-  if (missing.length > 0) {
-    return {
-      ok: false,
-      label: `intentional_error_incomplete: campos faltando — ${missing.join(", ")}`,
-      parsed,
-    };
-  }
-
-  return { ok: true, parsed };
-}
+// #1737 item 2: checkEiaAnswer (#744/#927) → lint-checks/eia-answer-check.ts;
+// checkIntentionalError (#754) + extractFrontmatter → lint-checks/intentional-error.ts.
+// Re-export no topo do arquivo pra back-compat.
 
 /**
  * Verifica que o número declarado na intro ("Selecionamos os N mais relevantes")

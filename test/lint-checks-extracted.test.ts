@@ -36,6 +36,13 @@ import {
   checkTitleLengths as tlenDirect,
 } from "../scripts/lib/lint-checks/title-length.ts";
 import {
+  checkEiaAnswer as eiaAnsDirect,
+} from "../scripts/lib/lint-checks/eia-answer-check.ts";
+import {
+  checkIntentionalError as ieDirect,
+  extractFrontmatter as efDirect,
+} from "../scripts/lib/lint-checks/intentional-error.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
   checkWhyMattersFormat as wmReexport,
@@ -45,6 +52,9 @@ import {
   checkDestaqueMaxChars as maxReexport,
   countTitlesPerHighlight as titlesReexport,
   checkTitleLengths as tlenReexport,
+  checkEiaAnswer as eiaAnsReexport,
+  checkIntentionalError as ieReexport,
+  extractFrontmatter as efReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
@@ -58,6 +68,9 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(maxReexport, maxDirect);
     assert.strictEqual(titlesReexport, titlesDirect);
     assert.strictEqual(tlenReexport, tlenDirect);
+    assert.strictEqual(eiaAnsReexport, eiaAnsDirect);
+    assert.strictEqual(ieReexport, ieDirect);
+    assert.strictEqual(efReexport, efDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -142,5 +155,21 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(tlenDirect(longTitle).ok, false);
     assert.ok(tlenDirect(longTitle).errors[0].length > 52);
     assert.equal(tlenDirect(oneTitle).ok, true);
+  });
+
+  it("intentional-error: extractFrontmatter + checkIntentionalError standalone", () => {
+    // extractFrontmatter: canonical line-1
+    assert.equal(efDirect("---\nfoo: bar\n---\n\nbody"), "foo: bar");
+    assert.equal(efDirect("# sem frontmatter"), null);
+    // checkIntentionalError exige arquivo no disco → não-existente falha
+    const r = ieDirect("/tmp/__nonexistent-edition__/02-reviewed.md");
+    assert.equal(r.ok, false);
+    assert.match(r.label ?? "", /not found/);
+  });
+
+  it("eia-answer: check é no-op (ok) quando 01-eia.md não existe", () => {
+    // sem 01-eia.md no dir → check não aplicável → ok
+    const r = eiaAnsDirect("/tmp/__nonexistent-edition__/02-reviewed.md");
+    assert.equal(r.ok, true);
   });
 });
