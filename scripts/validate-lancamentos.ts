@@ -58,8 +58,13 @@ const URL_RE = /https?:\/\/\S+/g;
  * de governança/política. Slug é mais confiável que o título (que pode estar
  * traduzido). Caso 260604: openai.com/index/public-policy-agenda.
  */
+// Só termos de ALTA precisão de governança — `framework`/`agenda`/`blueprint`/
+// `guidelines` foram removidos (review #1817): são comuns em produto real
+// (LangGraph framework, app de agenda, ...). Single-words porque o slug é
+// normalizado (`[-_/]→ espaço`): "public-policy-agenda" → "public policy
+// agenda" casa via `policy`. O título (testado as-is) casa via `política`.
 const NON_PRODUCT_RE =
-  /\b(policy|policies|public-policy|on-the-issues|agenda|governance|framework|blueprint|manifesto|principles|guidelines|white-?paper|position|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes|manifesto)\b/i;
+  /\b(policy|policies|governance|manifesto|principles|white\s?paper|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes)\b/i;
 
 export function isNonProductLancamento(url: string, title?: string): boolean {
   let slug = "";
@@ -100,12 +105,18 @@ export function extractLancamentoUrls(
       const isPlainCaps = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]+$/.test(trimmed) && trimmed.length > 5;
       const isMdHeader = /^##\s+\S/.test(trimmed);
       // #1799: header bold do reviewed.md (ex `**📡 RADAR**`) também encerra —
-      // senão a seção bold de LANÇAMENTOS vazaria pros próximos blocos. Exige
-      // header SEM url/link, pra não confundir com item bold `**[Título](url)**`.
+      // senão a seção bold de LANÇAMENTOS vazaria pros próximos blocos. Exige:
+      // (a) bold sem url/link (não confundir com item `**[Título](url)**`), e
+      // (b) conteúdo UPPERCASE — section headers são caixa-alta (`RADAR`,
+      // `USE MELHOR`), itens não (`**Produto v2**` tem minúscula → não encerra,
+      // não trunca a seção). Review #1817.
+      const boldInner = trimmed.replace(/^\*\*|\*\*$/g, "").trim();
       const isBoldHeader =
         /^\*\*[^*]+\*\*$/.test(trimmed) &&
         !/https?:\/\//.test(trimmed) &&
-        !trimmed.includes("[");
+        !trimmed.includes("[") &&
+        /\p{L}/u.test(boldInner) &&
+        !/[a-zà-ÿ]/.test(boldInner);
       if (isPlainCaps || isMdHeader || isBoldHeader) {
         inSection = false;
         continue;

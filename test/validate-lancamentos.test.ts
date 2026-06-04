@@ -324,6 +324,31 @@ describe("não-produto (governança/política) — #1799", () => {
     assert.ok(!isNonProductLancamento("https://www.nvidia.com/rtx-spark", "RTX Spark"));
   });
 
+  it("NÃO flaga 'framework'/'agenda'/'blueprint' (produto real — review #1817)", () => {
+    // framework/agenda/blueprint são comuns em produto; removidos do regex.
+    assert.ok(!isNonProductLancamento("https://x.com/langgraph-framework", "LangGraph framework"));
+    assert.ok(!isNonProductLancamento("https://x.com/agenda-ai-app", "Agenda AI — calendário inteligente"));
+    assert.ok(!isNonProductLancamento("https://x.com/blueprint-builder", "Blueprint Builder"));
+  });
+
+  it("MD: item bold mixed-case NÃO trunca a seção (review #1817)", () => {
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "",
+      "**Produto v2 anunciado**",
+      "[GPT-5](https://openai.com/index/gpt-5) — modelo.",
+      "",
+      "**📡 RADAR**",
+      "",
+      "[radar](https://exemplo.com/y)",
+    ].join("\n");
+    const urls = extractLancamentoUrls(md);
+    // o item bold mixed-case 'Produto v2 anunciado' NÃO encerra a seção → o
+    // GPT-5 (linha seguinte) ainda é extraído; RADAR (uppercase) encerra.
+    assert.equal(urls.length, 1);
+    assert.match(urls[0].url, /openai\.com\/index\/gpt-5/);
+  });
+
   it("flaga não-produto MESMO em domínio oficial (independente do #160)", () => {
     // openai.com é oficial → NÃO entra em removed, mas É governança → flagged.
     const approved = {
