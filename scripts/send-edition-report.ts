@@ -239,20 +239,36 @@ function loadRunLogEntries(
 // HTML render
 // ---------------------------------------------------------------------------
 
+// #1823: stages com gate humano (a espera não conta como trabalho do pipeline).
+// Stage 0 (preflight) não tem gate → seu duration_ms já é gate-excluded.
+const GATE_STAGES = new Set([1, 2, 3, 4]);
+
+/**
+ * #1823: duração SEMPRE gate-excluded (só o trabalho do pipeline, sem a espera
+ * humana). Fonte primária: `pipeline_ms` (= gate_at - start). Sem ele:
+ *  - stage SEM gate (0) → `duration_ms` já é gate-excluded;
+ *  - stage COM gate sem gate_at carimbado → `duration_ms` inclui a espera; não
+ *    dá pra excluir com certeza, então mostra com label honesto "(inclui gate)"
+ *    em vez de fingir que é tempo de trabalho.
+ * "(não medido)" só quando não há NENHUM timestamp.
+ */
+export function renderDurationCell(row: StageRow): string {
+  if ((row.pipeline_ms ?? 0) > 0) {
+    return escapeHtml(fmtDuration(row.pipeline_ms));
+  }
+  if ((row.duration_ms ?? 0) > 0) {
+    const total = escapeHtml(fmtDuration(row.duration_ms));
+    return GATE_STAGES.has(row.stage)
+      ? `${total} <span style="color:#999;">(inclui gate)</span>`
+      : total;
+  }
+  return `<span style="color:#999;">(não medido)</span>`;
+}
+
 function renderStageRow(row: StageRow): string {
   const label = STAGE_LABELS[row.stage] ?? `Stage ${row.stage}`;
   const models = row.models?.join(", ") ?? "-";
-  const pipeline = fmtDuration(row.pipeline_ms);
-  const total = fmtDuration(row.duration_ms);
-  // #1706: nunca renderizar "-" silencioso. Preferir pipeline (gate-excluído);
-  // cair em total (start→end); se nenhum medido, dizer "(não medido)" explícito.
-  const hasPipeline = (row.pipeline_ms ?? 0) > 0;
-  const hasTotal = (row.duration_ms ?? 0) > 0;
-  const durationCell = hasPipeline
-    ? `${escapeHtml(pipeline)} <span style="color:#999;">(+gate: ${escapeHtml(total)})</span>`
-    : hasTotal
-      ? escapeHtml(total)
-      : `<span style="color:#999;">(não medido)</span>`;
+  const durationCell = renderDurationCell(row);
   const statusEmoji =
     row.status === "done"
       ? "&#9989;"
@@ -325,13 +341,16 @@ export function renderHtmlReport(
     )
     .join("\n");
 
-  // Preview link. #1739/#1612: preferir o `draft_preview_url` persistido (com
-  // hash de conteúdo) — montar `${BASE}/${edition}` sem hash dá 404.
+  // Preview link. #1739/#1612: usar SÓ o `draft_preview_url` persistido (com
+  // hash de conteúdo). #1824: montar `${BASE}/${edition}` sem hash dá 404, então
+  // em vez de servir um link quebrado, deixar null → o render mostra
+  // "(preview indisponível)" e você sabe que faltou persistir a URL.
+  const persistedPreview = (published as { draft_preview_url?: unknown } | null)
+    ?.draft_preview_url;
   const previewUrl =
-    (published as { draft_preview_url?: unknown } | null)?.draft_preview_url
-    && typeof (published as { draft_preview_url?: unknown }).draft_preview_url === "string"
-      ? (published as { draft_preview_url: string }).draft_preview_url
-      : `${DRAFT_WORKER_BASE}/${encodeURIComponent(edition)}`;
+    typeof persistedPreview === "string" && persistedPreview.length > 0
+      ? persistedPreview
+      : null;
 
   // Warnings/errors summary
   const warningsHtml = warnings.length > 0
@@ -395,9 +414,17 @@ export function renderHtmlReport(
   <h2>Publicacao</h2>
   <h3 style="font-size:14px;">Newsletter</h3>
   <p>${nlStatus}</p>
-  <p>Rascunho: ${draftUrl}</p>
-  <p>Preview: <a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a></p>
-  ${socialPreviewUrl ? `<p>Preview social (3 posts): <a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a></p>` : ""}
+  <p>Rascunho (Beehiiv): ${draftUrl}</p>
+  <p>Preview newsletter (Cloudflare): ${
+    previewUrl
+      ? `<a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a>`
+      : `<span style="color:#999;">(preview indisponível — draft_preview_url não persistido)</span>`
+  }</p>
+  <p>Preview social (Cloudflare): ${
+    socialPreviewUrl
+      ? `<a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a>`
+      : `<span style="color:#999;">(social preview não gerado)</span>`
+  }</p>
 
   ${(social?.posts ?? []).length > 0 ? `
   <h3 style="font-size:14px;">Social</h3>
