@@ -41,6 +41,7 @@ import {
   requiredSecretsForRoute,
   missingSecretsForRoute,
   votePageHtml,
+  voteHtmlResponse,
   recordVoteLog,
   buildVoteLogEntry,
   handleSetName,
@@ -801,6 +802,26 @@ describe("missingSecretsForRoute (#1420)", () => {
     assert.deepEqual(missingSecretsForRoute(env, "/img/foo.jpg", "GET"), []);
     assert.deepEqual(missingSecretsForRoute(env, "/stats", "GET"), []);
     assert.deepEqual(missingSecretsForRoute(env, "/leaderboard", "GET"), []);
+  });
+});
+
+describe("voteHtmlResponse — Cache-Control no-store (#1805)", () => {
+  // Regressão: 410/403 são cacheáveis por padrão (RFC 7231 §6.5.9); sem no-store
+  // o navegador serve o erro stale ao re-clicar o mesmo link de voto (260604).
+  // TODA resposta do /vote passa por este helper.
+  for (const status of [200, 400, 403, 410]) {
+    it(`status ${status} sai com Cache-Control: no-store`, () => {
+      const res = voteHtmlResponse(votePageHtml("msg", true), status);
+      assert.equal(res.status, status);
+      const cc = res.headers.get("Cache-Control") ?? "";
+      assert.match(cc, /no-store/, `${status} deve ter no-store`);
+      assert.equal(res.headers.get("Pragma"), "no-cache");
+    });
+  }
+
+  it("preserva Content-Type text/html", () => {
+    const res = voteHtmlResponse(votePageHtml("msg", true), 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/html/);
   });
 });
 

@@ -126,6 +126,25 @@ export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, redi
 
 // ── /vote ─────────────────────────────────────────────────────────────────────
 
+/**
+ * #1805: TODA resposta do /vote sai com `Cache-Control: no-store` (+ Pragma).
+ * Voto é estado mutável por-usuário e os erros transitórios são cacheáveis por
+ * padrão (HTTP 410/403 — RFC 7231 §6.5.9). Sem o header, o navegador do leitor
+ * cacheia o 410/403 pra URL exata do voto e re-clicar o MESMO link serve a
+ * resposta stale — sem nem bater no worker (incident 260604). Centralizar aqui
+ * garante que nenhum dos ramos (400/403/410/200) escape do no-store.
+ */
+export function voteHtmlResponse(html: string, status: number): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      "Pragma": "no-cache",
+    },
+  });
+}
+
 async function handleVote(url: URL, env: Env): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
@@ -140,15 +159,11 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const testMode = url.searchParams.get("test") === "1";
 
   if (!email || !edition || !choice) {
-    return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false), {
-      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false), 400);
   }
 
   if (!["A", "B"].includes(choice)) {
-    return new Response(votePageHtml("Escolha inválida.", false), {
-      status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+    return voteHtmlResponse(votePageHtml("Escolha inválida.", false), 400);
   }
 
   // #1083 / #1086: gate de edições válidas. Se key `valid_editions` setada e
@@ -156,9 +171,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // qualquer (compat + fail-open). Corrupted loga console.error.
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition)) {
-    return new Response(votePageHtml("Essa edição não aceita mais votos.", false), {
-      status: 410, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false), 410);
   }
 
   // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
@@ -180,9 +193,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
         edition,
         email_domain: email.split("@")[1] ?? "unknown",
       }));
-      return new Response(votePageHtml("Link inválido ou expirado.", false), {
-        status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
-      });
+      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false), 403);
     }
   }
 
@@ -191,9 +202,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return new Response(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition)), {
-      status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+    return voteHtmlResponse(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition)), 200);
   }
 
   // Gravar voto
@@ -209,9 +218,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       : correct === false
       ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
       : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
-    return new Response(votePageHtml(testMsg, true), {
-      status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
-    });
+    return voteHtmlResponse(votePageHtml(testMsg, true), 200);
   }
 
   // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
@@ -275,9 +282,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       }
     : null;
 
-  return new Response(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition)), {
-    status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
-  });
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition)), 200);
 }
 
 /** Mantém counter agregado stats:{edition} — evita N+1 reads no /stats. */
