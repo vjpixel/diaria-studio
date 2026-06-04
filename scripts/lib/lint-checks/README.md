@@ -15,10 +15,12 @@ deliberada de escopo descrita abaixo.
 | `eai-section.ts` | `eai-section` | #588 |
 | `coverage-line-format.ts` | `coverage-line-format` | #592/#609/#1207 |
 | `destaque-chars.ts` | `destaque-min-chars` + `destaque-max-chars` | #914/#964 |
+| `titles-per-highlight.ts` | `titles-per-highlight` | #178/#245 |
+| `title-length.ts` | `title-length` | #701/#801 |
+| `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
 
-Os demais (`titles-per-highlight`, `title-length`, `eia-answer`,
-`intentional-error-flagged`, `section-item-format`, `section-counts`,
-`intro-count`) ainda vivem no `lint-newsletter-md.ts`.
+Os demais (`eia-answer`, `intentional-error-flagged`, `section-item-format`,
+`section-counts`, `intro-count`) ainda vivem no `lint-newsletter-md.ts`.
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 

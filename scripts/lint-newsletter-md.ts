@@ -27,8 +27,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { looksLikeTitleOption } from "./lib/title-heuristic.ts";
-import { parseInlineLink } from "./lib/inline-link.ts"; // #599
 import {
   checkStage2Caps,
   type ApprovedJson as CapsApprovedJson,
@@ -51,6 +49,11 @@ import {
   checkDestaqueMinChars,
   checkDestaqueMaxChars,
 } from "./lib/lint-checks/destaque-chars.ts";
+import { countTitlesPerHighlight } from "./lib/lint-checks/titles-per-highlight.ts";
+import {
+  checkTitleLengths,
+  MAX_TITLE_LENGTH,
+} from "./lib/lint-checks/title-length.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -82,6 +85,17 @@ export {
   type DestaqueMaxCharsError,
   type DestaqueMaxCharsReport,
 } from "./lib/lint-checks/destaque-chars.ts";
+export {
+  countTitlesPerHighlight,
+  type TitleCheckResult,
+  type TitleCheckReport,
+} from "./lib/lint-checks/titles-per-highlight.ts";
+export {
+  checkTitleLengths,
+  MAX_TITLE_LENGTH,
+  type TitleLengthError,
+  type TitleLengthReport,
+} from "./lib/lint-checks/title-length.ts";
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -784,243 +798,9 @@ export function lintIntroCount(md: string): IntroCountResult {
 
 // #926: parseArgs local removido — usar parseCliArgs (scripts/lib/cli-args.ts).
 
-/**
- * Conta linhas de título por bloco DESTAQUE (#178, atualizado em #245).
- *
- * Espera que cada bloco DESTAQUE tenha exatamente 1 título antes do gate
- * de Stage 2 ser aprovado. Writer produz 3 opções; editor deve podar
- * pra 1 antes de prosseguir pro Stage 3.
- *
- * **Formato pós-#245** (double newlines entre cada elemento):
- *
- *   DESTAQUE N | CATEGORIA
- *
- *   <opção 1>
- *
- *   <opção 2>      ← removidas pelo editor pré-Stage 3
- *
- *   <opção 3>
- *
- *   <URL>
- *
- *   <parágrafo 1>
- *
- * Algoritmo: após o header, pula linhas em branco e coleta linhas
- * não-vazias e não-URL como títulos. Para no primeiro de:
- *   - Linha de URL (terminator canônico — URL vem logo após títulos por #172)
- *   - Próximo header DESTAQUE
- *   - Header de seção secundária (LANÇAMENTOS/etc.)
- *   - Section break `---`
- *
- * Compatível com formato pré-#245 (single newline) — a ausência de blank
- * line entre título e URL ainda funciona porque a URL termina o bloco.
- */
-
-// Header de destaque — plain ou em **negrito** (#590). O `**` final é
-// stripado da capture group 2 abaixo se presente.
-const HIGHLIGHT_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+(\d+)\s*\|\s*(.+?)(?:\*\*)?$/;
-const URL_LINE_RE = /^https?:\/\//;
-const SECTION_BREAK_LINE_RE = /^---\s*$/;
-const SECTION_HEADER_LINE_RE = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]{5,}$/;
-const WHY_MATTERS_LINE_RE = /^Por que isso importa:/i;
-
-export interface TitleCheckResult {
-  destaque: number;
-  category: string;
-  title_count: number;
-  titles: string[];
-  status: "ok" | "needs_pruning";
-}
-
-export interface TitleCheckReport {
-  ok: boolean;
-  destaques: TitleCheckResult[];
-  errors: string[];
-}
-
-export function countTitlesPerHighlight(md: string): TitleCheckReport {
-  const lines = md.split("\n");
-  const destaques: TitleCheckResult[] = [];
-  const errors: string[] = [];
-
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const m = line.match(HIGHLIGHT_HEADER_RE);
-    if (!m) {
-      i++;
-      continue;
-    }
-    const destaqueNum = parseInt(m[1], 10);
-    const category = m[2].trim();
-    // Coletar títulos: pula blanks, para em URL/header/section break/marker.
-    // Heurística adicional (#245): linha que parece body (longa OU termina
-    // com ponto) também encerra — protege legacy onde URL fica no fim do
-    // bloco e o título não tem URL imediatamente abaixo.
-    const titles: string[] = [];
-    let j = i + 1;
-    while (j < lines.length) {
-      const t = lines[j].trim();
-      // Pula linhas em branco (blank line entre elementos no formato #245)
-      if (t === "") {
-        j++;
-        continue;
-      }
-      // #599 — formato inline `[título](URL)`: extrai título do link.
-      // No formato inline, o título inteiro pode passar de 60 chars (limite
-      // do looksLikeTitleOption); precisa tratar antes do filtro legacy.
-      const inline = parseInlineLink(t);
-      if (inline) {
-        titles.push(inline.title);
-        j++;
-        continue;
-      }
-      // URL é o terminator canônico (URL imediatamente após títulos por #172)
-      if (URL_LINE_RE.test(t)) break;
-      // "Por que isso importa:" termina o título block (legacy URL-no-fim)
-      if (WHY_MATTERS_LINE_RE.test(t)) break;
-      // Outro DESTAQUE (raro — destaque sem URL/body)
-      if (HIGHLIGHT_HEADER_RE.test(t)) break;
-      // Section break ou cabeçalho de seção secundária
-      if (SECTION_BREAK_LINE_RE.test(t)) break;
-      if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
-      // Heurística #259: aceita título curto terminando em `?`, `!`, `...`
-      // ou palavras; rejeita ponto único final (= body). Mesmo critério do
-      // parseDestaques (extract-destaques.ts).
-      if (!looksLikeTitleOption(t)) break;
-      titles.push(t);
-      j++;
-    }
-    destaques.push({
-      destaque: destaqueNum,
-      category,
-      title_count: titles.length,
-      titles,
-      status: titles.length === 1 ? "ok" : "needs_pruning",
-    });
-    if (titles.length !== 1) {
-      errors.push(
-        `DESTAQUE ${destaqueNum} (${category}): ${titles.length} título(s) — esperado 1. ${
-          titles.length > 1
-            ? "Delete os excedentes antes de prosseguir."
-            : "Adicione 1 título."
-        }`,
-      );
-    }
-    i = j;
-  }
-
-  // Garantir que houve 3 destaques
-  if (destaques.length !== 3) {
-    errors.push(
-      `Esperado 3 destaques (DESTAQUE 1/2/3); encontrei ${destaques.length}.`,
-    );
-  }
-
-  return { ok: errors.length === 0, destaques, errors };
-}
-
-/**
- * Verifica que cada título de destaque cabe em ≤52 caracteres (#701).
- *
- * `editorial-rules.md` exige "Título: máximo 52 caracteres" — antes desse
- * check só self-validation do writer LLM pegava. `--check titles-per-highlight`
- * conta quantos, este conta a largura.
- *
- * Não reusa `countTitlesPerHighlight` porque essa função usa `looksLikeTitleOption`
- * que rejeita linhas >60 chars (= body) — exatamente os candidatos que
- * precisamos pegar aqui (título mal-formado pelo writer LLM com 60+ chars).
- *
- * Parser próprio mais permissivo: após cada DESTAQUE header, coleta toda
- * linha não-vazia, não-URL, que não termine com ponto único (= body óbvio),
- * até a primeira URL ou próximo header. Não impõe limite superior — quanto
- * maior o título errado, mais importante é pegar.
- */
-export interface TitleLengthError {
-  destaque: number;
-  category: string;
-  title: string;
-  length: number;
-  max: number;
-}
-
-export interface TitleLengthReport {
-  ok: boolean;
-  errors: TitleLengthError[];
-}
-
-const MAX_TITLE_LENGTH = 52;
-
-/**
- * Conta grafemas (caracteres visíveis) em vez de code units UTF-16.
- * Evita falsos positivos em títulos com emojis de bandeira (ex: 🇧🇷 = 1
- * grafema mas 4 code units). Usa Intl.Segmenter (Node 16+). (#801)
- */
-function graphemeLength(str: string): number {
-  return [...new Intl.Segmenter().segment(str)].length;
-}
-
-export function checkTitleLengths(md: string): TitleLengthReport {
-  const lines = md.split("\n");
-  const errors: TitleLengthError[] = [];
-
-  let i = 0;
-  while (i < lines.length) {
-    const m = lines[i].match(HIGHLIGHT_HEADER_RE);
-    if (!m) {
-      i++;
-      continue;
-    }
-    const destaqueNum = parseInt(m[1], 10);
-    const category = m[2].trim();
-    let j = i + 1;
-    while (j < lines.length) {
-      const t = lines[j].trim();
-      if (t === "") { j++; continue; }
-      // #599 — formato inline: extrai título do link e mede só o texto.
-      const inline = parseInlineLink(t);
-      if (inline) {
-        const gLen = graphemeLength(inline.title);
-        if (gLen > MAX_TITLE_LENGTH) {
-          errors.push({
-            destaque: destaqueNum,
-            category,
-            title: inline.title,
-            length: gLen,
-            max: MAX_TITLE_LENGTH,
-          });
-        }
-        j++;
-        continue;
-      }
-      if (URL_LINE_RE.test(t)) break;
-      if (HIGHLIGHT_HEADER_RE.test(t)) break;
-      if (SECTION_BREAK_LINE_RE.test(t)) break;
-      if (SECTION_HEADER_LINE_RE.test(t) && t !== category) break;
-      if (WHY_MATTERS_LINE_RE.test(t)) break;
-      // Body óbvio: termina em ponto único (não ellipsis). Pula sem flag.
-      if (/\.\s*$/.test(t) && !/\.{3,}\s*$/.test(t)) {
-        j++;
-        continue;
-      }
-      // Candidato a título legacy (sem inline link) — valida linha inteira
-      const gLen = graphemeLength(t);
-      if (gLen > MAX_TITLE_LENGTH) {
-        errors.push({
-          destaque: destaqueNum,
-          category,
-          title: t,
-          length: gLen,
-          max: MAX_TITLE_LENGTH,
-        });
-      }
-      j++;
-    }
-    i = j;
-  }
-
-  return { ok: errors.length === 0, errors };
-}
+// #1737 item 2: countTitlesPerHighlight (#178) + checkTitleLengths (#701) +
+// as regexes de header compartilhadas movidos pra scripts/lib/lint-checks/
+// (titles-per-highlight.ts, title-length.ts, highlight-parsing.ts). Re-export no topo.
 
 // #1737 item 2: checkWhyMattersFormat (#701) e checkEaiSection (#588) movidos
 // pra scripts/lib/lint-checks/. Re-exportados no topo do arquivo pra back-compat.

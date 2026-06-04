@@ -30,6 +30,12 @@ import {
   checkDestaqueMaxChars as maxDirect,
 } from "../scripts/lib/lint-checks/destaque-chars.ts";
 import {
+  countTitlesPerHighlight as titlesDirect,
+} from "../scripts/lib/lint-checks/titles-per-highlight.ts";
+import {
+  checkTitleLengths as tlenDirect,
+} from "../scripts/lib/lint-checks/title-length.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
   checkWhyMattersFormat as wmReexport,
@@ -37,6 +43,8 @@ import {
   checkCoverageLine as covReexport,
   checkDestaqueMinChars as minReexport,
   checkDestaqueMaxChars as maxReexport,
+  countTitlesPerHighlight as titlesReexport,
+  checkTitleLengths as tlenReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
@@ -48,6 +56,8 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(covReexport, covDirect);
     assert.strictEqual(minReexport, minDirect);
     assert.strictEqual(maxReexport, maxDirect);
+    assert.strictEqual(titlesReexport, titlesDirect);
+    assert.strictEqual(tlenReexport, tlenDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -108,5 +118,29 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     // dentro da faixa → ambos ok
     assert.equal(minDirect(destaque(1, 1100)).ok, true);
     assert.equal(maxDirect(destaque(1, 1100)).ok, true);
+  });
+
+  it("titles-per-highlight + title-length: módulos auto-contidos (shared highlight-parsing)", () => {
+    const oneTitle = [
+      "**DESTAQUE 1 | PRODUTO**",
+      "",
+      "[Título curto](https://x.com/1)",
+      "",
+      "https://x.com/1",
+      "",
+      "Corpo.",
+    ].join("\n");
+    // 1 destaque só → countTitles falha (espera 3) mas o destaque tem 1 título
+    const tc = titlesDirect(oneTitle);
+    assert.equal(tc.destaques[0].title_count, 1);
+    assert.equal(tc.destaques[0].status, "ok");
+    // título > 52 chars → title-length falha
+    const longTitle =
+      "**DESTAQUE 1 | PRODUTO**\n\n[" +
+      "T".repeat(60) +
+      "](https://x.com/1)\n\nhttps://x.com/1\n\nCorpo.";
+    assert.equal(tlenDirect(longTitle).ok, false);
+    assert.ok(tlenDirect(longTitle).errors[0].length > 52);
+    assert.equal(tlenDirect(oneTitle).ok, true);
   });
 });
