@@ -36,7 +36,7 @@
  *   waves-summary.json
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -172,18 +172,48 @@ export function representativeSplit(
 // Brevo — engajamento per-contato (opens + blacklist)
 // ---------------------------------------------------------------------------
 
-async function brevoGet(apiKey: string, path: string): Promise<{ status: number; body: any }> {
-  const r = await fetch(`https://api.brevo.com/v3${path}`, {
-    headers: { "api-key": apiKey, Accept: "application/json" },
-  });
-  const t = await r.text();
-  let body: any = {};
-  try {
-    body = t.length ? JSON.parse(t) : {};
-  } catch {
-    body = {};
+const RETRY_MS = [1000, 3000, 9000];
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * GET na Brevo v3 que FALHA ALTO em vez de silenciar.
+ *
+ * Crítico: a versão anterior engolia qualquer status e devolvia body={}, então
+ * um 429/5xx (a) truncava a paginação de contatos (unsub vazava pro T2) e
+ * (b) marcava um opener real como `opened:false` (ia pro W2). Aqui:
+ *   - 429/5xx → retry com backoff, depois throw (aborta o run, não corrompe);
+ *   - 404 → {status:404, body:{}} (contato sumiu entre listar e buscar — não-fatal);
+ *   - outro 4xx (401/403) → throw (auth/config — re-tentar não ajuda);
+ *   - corpo não-JSON → throw.
+ */
+export async function brevoGet(
+  apiKey: string,
+  path: string,
+): Promise<{ status: number; body: any }> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RETRY_MS[attempt - 1]);
+    const r = await fetch(`https://api.brevo.com/v3${path}`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (r.status === 429 || r.status >= 500) {
+      await r.body?.cancel().catch(() => {});
+      lastErr = new Error(`Brevo GET ${path} HTTP ${r.status}`);
+      continue;
+    }
+    if (r.status === 404) return { status: 404, body: {} };
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`Brevo GET ${path} falhou (${r.status}): ${t.slice(0, 200)}`);
+    }
+    const t = await r.text();
+    try {
+      return { status: r.status, body: t.length ? JSON.parse(t) : {} };
+    } catch {
+      throw new Error(`Brevo GET ${path}: resposta não-JSON`);
+    }
   }
-  return { status: r.status, body };
+  throw new Error(`Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`);
 }
 
 /** Pool de concorrência limitada (idêntico em forma a runBounded — #636: extrair pra lib é refactor à parte). */
@@ -226,9 +256,16 @@ export async function fetchBrevoEngagement(
   const map = new Map<string, Engagement>();
   let done = 0;
   await pool(base, concurrency, async (c) => {
+    if (!c.email) return; // contato sem email → ignora (evita colisão na key "")
     const { body } = await brevoGet(apiKey, `/contacts/${c.id}`);
     const opened = (body?.statistics?.opened ?? []).length > 0;
-    map.set(c.email, { opened, blacklisted: c.blacklisted });
+    // OR-merge: 2 registros do mesmo email (re-add após unsub) não podem deixar
+    // um vazar — se QUALQUER registro é blacklisted/opened, vale o conservador.
+    const prev = map.get(c.email);
+    map.set(c.email, {
+      opened: opened || !!prev?.opened,
+      blacklisted: c.blacklisted || !!prev?.blacklisted,
+    });
     if (++done % 200 === 0) console.error(`  …${done}/${base.length}`);
   });
   return map;
@@ -253,7 +290,9 @@ function emailKeyOf(fields: string[]): string {
 }
 
 function writeCsv(name: string, fields: string[], rows: Row[]): void {
-  writeFileSync(resolve(WAVES_DIR, name), Papa.unparse({ fields, data: rows }), "utf-8");
+  // Atômico: os CSVs de wave são o deliverável de fato (vão pro import Brevo).
+  // Um write truncado por crash/SIGINT seria importado como wave parcial.
+  writeFileAtomic(resolve(WAVES_DIR, name), Papa.unparse({ fields, data: rows }));
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +346,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t2Key = emailKeyOf(t2.fields);
   const { kept, dropped } = suppressBlacklisted(t2.rows, t2Key, blacklist);
   const tagged = assignQuartiles(kept);
-  const t2Fields = [...t2.fields, "RECENCY_QUARTIL", "RECENCY_RANK"];
+  // Não propaga as colunas MV_* (internas da verificação) pro import Brevo —
+  // virariam atributos de contato espúrios na lista de produção. Papa.unparse
+  // emite só os fields listados, então os MV_* nas rows são ignorados.
+  const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
   const { w3, w4 } = representativeSplit(tagged, w3Size);
   writeCsv("t2-w3.csv", t2Fields, w3);
   writeCsv("t2-w4.csv", t2Fields, w4);

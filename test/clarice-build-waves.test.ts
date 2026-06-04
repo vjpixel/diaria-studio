@@ -1,12 +1,32 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyT1,
   suppressBlacklisted,
   assignQuartiles,
   representativeSplit,
+  brevoGet,
+  fetchBrevoEngagement,
   type Engagement,
 } from "../scripts/clarice-build-waves.ts";
+
+// --- fetch mock ---------------------------------------------------------
+const realFetch = globalThis.fetch;
+function mockFetch(handler: (url: string) => { status: number; text?: string }) {
+  globalThis.fetch = (async (input: any) => {
+    const url = String(input);
+    const { status, text } = handler(url);
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      body: { cancel: async () => {} },
+      text: async () => text ?? "",
+    } as any;
+  }) as any;
+}
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
 
 function rows(emails: string[]): Record<string, string>[] {
   return emails.map((e, i) => ({ email: e, NOME: `N${i}`, OPEN_PROBABILITY: "24" }));
@@ -100,5 +120,55 @@ describe("representativeSplit", () => {
     const r = rows(["a@x.com", "b@x.com"]);
     assert.equal(representativeSplit(r, 0).w4.length, 2);
     assert.equal(representativeSplit(r, 5).w3.length, 2);
+  });
+});
+
+describe("brevoGet (falha alto, não silencia — regressão)", () => {
+  it("200 JSON → retorna body", async () => {
+    mockFetch(() => ({ status: 200, text: JSON.stringify({ x: 1 }) }));
+    const r = await brevoGet("K", "/account");
+    assert.deepEqual(r.body, { x: 1 });
+  });
+
+  it("401 (auth) → LANÇA (antes engolia e retornava body vazio)", async () => {
+    mockFetch(() => ({ status: 401, text: '{"message":"bad key"}' }));
+    await assert.rejects(() => brevoGet("K", "/contacts"), /401/);
+  });
+
+  it("404 → não-fatal, retorna body vazio (contato sumido)", async () => {
+    mockFetch(() => ({ status: 404, text: "" }));
+    const r = await brevoGet("K", "/contacts/999");
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.body, {});
+  });
+
+  it("200 com corpo não-JSON → LANÇA", async () => {
+    mockFetch(() => ({ status: 200, text: "<<html>>" }));
+    await assert.rejects(() => brevoGet("K", "/account"), /não-JSON/);
+  });
+});
+
+describe("fetchBrevoEngagement OR-merge", () => {
+  it("dois registros do mesmo email: blacklist/opened de qualquer um prevalece", async () => {
+    mockFetch((url) => {
+      if (url.includes("/contacts?")) {
+        return {
+          status: 200,
+          text: JSON.stringify({
+            contacts: [
+              { id: 1, email: "a@x.com", emailBlacklisted: false },
+              { id: 2, email: "a@x.com", emailBlacklisted: true }, // unsub no 2º registro
+              { id: 3, email: "b@x.com", emailBlacklisted: false },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith("/contacts/1")) return { status: 200, text: JSON.stringify({ statistics: { opened: [{ campaignId: 1 }] } }) };
+      return { status: 200, text: JSON.stringify({ statistics: {} }) };
+    });
+    const m = await fetchBrevoEngagement("K", 3);
+    // a@x.com: abriu (id1) E blacklisted (id2) → ambos true (conservador)
+    assert.deepEqual(m.get("a@x.com"), { opened: true, blacklisted: true });
+    assert.deepEqual(m.get("b@x.com"), { opened: false, blacklisted: false });
   });
 });
