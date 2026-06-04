@@ -118,6 +118,14 @@ interface NewsletterContent {
    * com borda teal — diferente da coverage line (cinza itálico), pra não passar
    * despercebido. */
   introCallout?: string | null;
+  /** Box (estilo teal) posicionado ENTRE o 1º e o 2º destaque — ex: promo
+   * da nova página de livros. Parágrafo bold-wrapped `**📚 ...**` (ou 📣/🎉)
+   * colocado entre `**DESTAQUE 1` e `**DESTAQUE 2` no reviewed.md. */
+  midCallout?: string | null;
+  /** URL pública de uma imagem (ex: screenshot da página de livros) pra
+   * tornar o box do meio mais proeminente: imagem + texto + botão CTA.
+   * Lida de `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
+  midCalloutImage?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -543,6 +551,37 @@ export function extractIntroCallout(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+/**
+ * Callout box posicionado ENTRE o 1º e o 2º destaque (ex: promo da página de
+ * livros). Mesmo estilo teal do introCallout. Procura um parágrafo
+ * bold-wrapped iniciado por 📚/📣/🎉 na região do 1º destaque (tudo após
+ * `**DESTAQUE 1` e antes de `**DESTAQUE 2`). Não casa títulos de destaque
+ * (começam com `[`) nem headers de seção (vêm após o 3º destaque).
+ */
+export function extractMidCallout(text: string): string | null {
+  const afterD1 = text.split(/^\*\*DESTAQUE/m)[1];
+  if (!afterD1) return null;
+  const m = afterD1.match(/^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m);
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * URL pública da imagem do box do meio (entry `livros_promo` de
+ * `06-public-images.json`), se presente. Lida no momento do render (o cache já
+ * existe — upload-images-public roda antes). Graceful: ausente → null.
+ */
+export function readMidCalloutImage(editionDir: string): string | null {
+  const p = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, "utf8"));
+    const e = (j.images ?? j)?.livros_promo;
+    return e?.cloudflare_url ?? e?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -617,6 +656,9 @@ export function extractContent(editionDir: string): NewsletterContent {
     : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
+  // Box entre D1 e D2 (ex: promo da página de livros).
+  const midCallout = extractMidCallout(reviewedText);
+  const midCalloutImage = readMidCalloutImage(editionDir);
 
   return {
     title: destaques[0].title,
@@ -630,6 +672,8 @@ export function extractContent(editionDir: string): NewsletterContent {
     erroIntencional,
     coverageLine,
     introCallout,
+    midCallout,
+    midCalloutImage,
   };
 }
 
@@ -909,6 +953,33 @@ export function renderIntroCallout(text: string): string {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border-left:4px solid ${TEAL};border-radius:4px;">
     <tr><td style="padding:12px 16px;">
       <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
+    </td></tr>
+  </table>
+</td></tr>`;
+}
+
+/**
+ * Box do meio (entre D1 e D2) com imagem proeminente + texto + botão CTA.
+ * Sem imagem → cai no box só-texto (renderIntroCallout). Extrai o link
+ * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
+ */
+export function renderMidCallout(text: string, imageUrl: string | null): string {
+  if (!imageUrl) return renderIntroCallout(text);
+  const linkMatch = text.match(/\[([^\]]+)\]\(([^)]+)\)/);
+  const link = linkMatch ? linkMatch[2].trim() : null;
+  const body = text.replace(/\s*\[[^\]]+\]\([^)]+\)\.?/, "").trim();
+  const imgTag = `<img src="${imageUrl}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  const imgBlock = link ? `<a href="${link}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
+  const cta = link
+    ? `<a href="${link}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
+    : "";
+  return `<!-- mid callout com imagem (promo página de livros) -->
+<tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border:1px solid ${TEAL};border-radius:6px;">
+    <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
+    <tr><td style="padding:14px 16px 16px;">
+      <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0 0 12px;padding:0;">${processInlineLinks(body)}</p>
+      ${cta}
     </td></tr>
   </table>
 </td></tr>`;
@@ -1267,6 +1338,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
+    // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
+    // do introCallout. Posicionado após o 1º destaque.
+    if (i === 0 && content.midCallout) {
+      parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
+    }
     if (includeEia && !eiaInserted && i === 1) {
       parts.push(renderEIA(content.eia));
       eiaInserted = true;
