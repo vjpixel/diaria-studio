@@ -42,6 +42,20 @@ import {
   ALL_SECTION_NAMES_PATTERN,
   sectionHeaderRegex,
 } from "./lib/section-naming.ts"; // #1737 fonte única de seções
+// #1737 item 2: checks extraídos pra módulos por-check (espelha invariant-checks/).
+import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
+import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
+// Re-export pra back-compat (testes + outros módulos importam daqui).
+export {
+  lintMultilineLinks,
+  type MultilineLinkMatch,
+  type MultilineLinkResult,
+} from "./lib/lint-checks/multiline-links.ts";
+export {
+  lintRelativeTime,
+  type RelativeTimeMatch,
+  type RelativeTimeResult,
+} from "./lib/lint-checks/relative-time.ts";
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -911,102 +925,9 @@ export function lintIntroCount(md: string): IntroCountResult {
   return sharedLintIntroCount(md);
 }
 
-/**
- * Detecta links markdown quebrados em múltiplas linhas (#1213).
- *
- * Writer agent às vezes emite:
- *
- *   - [Label](
- *   https://example.com
- *   )
- *
- * O renderer não parseia esses links (regex linha-a-linha), produzindo
- * texto bruto `[Label](` + URL + `)` órfão no HTML final. Caso real
- * 260517: Pixel viu no test email.
- *
- * Lint detecta `\\](` no fim de linha (com whitespace). Re-disparar o
- * writer ou auto-fix via `joinMultilineLinks` no renderer.
- *
- * Retorna `{ ok, matches }` onde `matches[]` traz linha + contexto.
- */
-export interface MultilineLinkMatch {
-  line: number;
-  context: string;
-}
-export interface MultilineLinkResult {
-  ok: boolean;
-  matches: MultilineLinkMatch[];
-}
-
-export function lintMultilineLinks(md: string): MultilineLinkResult {
-  const normalized = md.replace(/\r\n/g, "\n");
-  const lines = normalized.split("\n");
-  const matches: MultilineLinkMatch[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    // Linha termina com `](` (com whitespace antes do final) e a próxima
-    // linha não-vazia começa com `http(s)://` — assinatura inequívoca.
-    if (/\]\(\s*$/.test(lines[i])) {
-      // Lookahead: próxima linha não-vazia começa com URL?
-      let j = i + 1;
-      while (j < lines.length && lines[j].trim() === "") j++;
-      if (j < lines.length && /^\s*https?:\/\//.test(lines[j])) {
-        matches.push({
-          line: i + 1,
-          context: `${lines[i].slice(-40)} ↵ ${lines[j].slice(0, 40)}`,
-        });
-      }
-    }
-  }
-  return { ok: matches.length === 0, matches };
-}
-
-/**
- * Detecta referências temporais relativas banidas no MD da newsletter (#747).
- *
- * Edições publicam D+1: "hoje" / "ontem" / "esta semana" são ambíguos no
- * momento da leitura.
- *
- * Retorna array de matches com contexto (trecho da linha).
- */
-export interface RelativeTimeMatch {
-  word: string;
-  context: string;
-  line: number;
-}
-
-export interface RelativeTimeResult {
-  ok: boolean;
-  matches: RelativeTimeMatch[];
-}
-
-// Nota: \b não funciona com caracteres Unicode (ã, ê, etc.) — usamos
-// lookahead/lookbehind em vez de \b para cobrir amanhã, mês, etc.
-const RELATIVE_TIME_RE =
-  /(?<!\w)(hoje|ontem|amanhã|agora mesmo|esta semana|na semana passada|na próxima semana|este mês|mês passado|recentemente|há pouco|acabou de|nesta (?:segunda|terça|quarta|quinta|sexta|sábado|domingo))(?!\w)/gi;
-
-export function lintRelativeTime(md: string): RelativeTimeResult {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
-  const matches: RelativeTimeMatch[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    let m: RegExpExecArray | null;
-    // Reset lastIndex (g flag) between lines
-    RELATIVE_TIME_RE.lastIndex = 0;
-    while ((m = RELATIVE_TIME_RE.exec(line)) !== null) {
-      matches.push({
-        word: m[1],
-        context: line.slice(Math.max(0, m.index - 20), m.index + m[1].length + 20).trim(),
-        line: i + 1,
-      });
-    }
-  }
-
-  return {
-    ok: matches.length === 0,
-    matches,
-  };
-}
+// #1737 item 2: lintMultilineLinks (#1213) e lintRelativeTime (#747) movidos
+// pra scripts/lib/lint-checks/. Re-exportados abaixo pra back-compat (vários
+// testes importam daqui). main() usa as funções importadas no topo do arquivo.
 
 // #926: parseArgs local removido — usar parseCliArgs (scripts/lib/cli-args.ts).
 
