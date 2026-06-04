@@ -116,7 +116,8 @@ Exit code handling:
 2. Pre-render do newsletter HTML — seguir steps 1-5 do `context/publishers/beehiiv-playbook.md` (extract-destaques + render-newsletter-html + substitute-image-urls + upload-html-public) **sem** o Chrome MCP / Beehiiv interaction. Output: `_internal/newsletter-final.html` + URL no draft worker. **Capturar a `url` do JSON stdout de `upload-html-public.ts`** — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML), então a URL inclui sufixo de hash. Sem o hash, fetch retorna 404 (review #1612 regression).
 3. Pre-render do social preview HTML:
    ```bash
-   npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html
+   # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens (o editor revisa o gate achando que o social está sem imagem). O JSON tem images_expected/images_rendered + warnings; checar que batem.
+   npx tsx scripts/render-social-html.ts --md data/editions/{AAMMDD}/03-social.md --out data/editions/{AAMMDD}/_internal/social-preview.html --images data/editions/{AAMMDD}/06-public-images.json
    # #1734: --persist-to grava a URL (com hash, ex: 260529-social-a1b2c3) em
    # 05-social-preview.json — fonte durável (stdout sozinho morria no TTL 12h do KV).
    npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html data/editions/{AAMMDD}/_internal/social-preview.html --persist-to data/editions/{AAMMDD}/_internal/05-social-preview.json --field social_preview_url
