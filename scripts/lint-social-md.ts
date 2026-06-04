@@ -328,7 +328,10 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     }
     if (commentPixelStart !== -1) {
       const start = body.indexOf("\n", commentPixelStart + 1) + 1;
-      commentPixelText = body.slice(start);
+      // #1690: terminar no próximo sibling `## ` (ex: post_pixel) — senão o
+      // último bloco (d3) absorve a seção post_pixel e infla comment_pixel_chars.
+      const nextSibling = body.indexOf("\n## ", start);
+      commentPixelText = nextSibling !== -1 ? body.slice(start, nextSibling) : body.slice(start);
     }
 
     // Strip char_count comments + leading whitespace

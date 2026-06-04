@@ -338,6 +338,17 @@ export function reconcileLinkedin(
     subtype, // #595 — sempre exposto pra desambiguar 9 entries por edição
   };
 
+  // #1690: post_pixel é post MANUAL no feed pessoal (Claude in Chrome), NUNCA
+  // enfileirado no Worker. Reconciliar contra a queue daria FAIL espúrio (não
+  // existe item) — tratar como verificado-manual (status vem do próprio entry).
+  if (subtype === "post_pixel") {
+    return {
+      ...base,
+      verified: true,
+      reason: "post_pixel: publicação manual no feed pessoal (Chrome), fora do Worker queue (#1690)",
+    };
+  }
+
   /** #1180/#1183: detect past-schedule. Worker cron dispara no próximo tick
    * (~1min) → publica imediato. Se queue item omitir scheduled_at (#1183 —
    * silent-fail observado em FB equivalente), cai pra entry.scheduled_at como

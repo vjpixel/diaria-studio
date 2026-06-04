@@ -124,8 +124,10 @@ function extractDestaqueBlock(socialMd: string, destaque: string): string {
 
   // Extrair subseção ## dN
   // #725 bug #3: `\d+\b` em vez de `\d` — evita `## d10` bater como `## d1`+`0`
+  // #1690: termina em QUALQUER sibling `## ` (não só `## dN`) — senão o último
+  // bloco (d3) absorve a seção `## post_pixel`. `\n## ` não casa `\n### comment_*`.
   const dRe = new RegExp(
-    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
+    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## |\\n# |$)`,
     "i",
   );
   const dMatch = platMatch[1].match(dRe);

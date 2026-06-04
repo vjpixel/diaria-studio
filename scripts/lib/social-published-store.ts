@@ -44,7 +44,7 @@ function releaseLock(lockPath: string): void {
  * conta Diar.ia) e `comment_pixel` (T+8min, opinião pessoal, conta vjpixel).
  * Facebook usa só `main`.
  */
-export type PostSubtype = "main" | "comment_diaria" | "comment_pixel";
+export type PostSubtype = "main" | "comment_diaria" | "comment_pixel" | "post_pixel";
 
 export interface PostEntry {
   platform: string;

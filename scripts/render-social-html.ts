@@ -141,17 +141,24 @@ export function parsePlatforms(text: string): Platform[] {
   return platforms;
 }
 
+/** #1690: o post_pixel é o post standalone de D1 no perfil pessoal (vjpixel). */
+export function isPostPixel(destaque: string): boolean {
+  return /^post.?pixel/i.test(destaque.trim());
+}
+
 function getImageUrl(destaque: string, imageUrls: ImageMap): string {
-  const dNum = destaque.replace(/\D/g, "");
+  // #1690: post_pixel reusa a imagem do D1 (é o post standalone de D1).
+  const dNum = isPostPixel(destaque) ? "1" : destaque.replace(/\D/g, "");
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
 }
 
-/** #1800: quantos posts esperam uma imagem (destaque com número d1/d2/d3). */
+/** #1800: quantos posts esperam uma imagem (d1/d2/d3 + post_pixel que reusa d1, #1690). */
 export function expectedImageCount(platforms: Platform[]): number {
   return platforms.reduce(
-    (sum, p) => sum + p.posts.filter((post) => /\d/.test(post.destaque)).length,
+    (sum, p) =>
+      sum + p.posts.filter((post) => /\d/.test(post.destaque) || isPostPixel(post.destaque)).length,
     0,
   );
 }
@@ -187,9 +194,14 @@ function renderPost(post: Post, color: string, imageUrls: ImageMap): string {
     comments += `<details class="comment"><summary>💬 Comentário Pixel (pessoal)</summary><p>${cp}</p></details>`;
   }
 
+  // #1690: label claro pro post pessoal (vjpixel) no preview.
+  const headerLabel = isPostPixel(post.destaque)
+    ? "📣 POST PESSOAL — vjpixel (D1)"
+    : post.destaque;
+
   return `
     <div class="post">
-      <div class="post-header" style="border-left: 3px solid ${color}">${post.destaque}</div>
+      <div class="post-header" style="border-left: 3px solid ${color}">${headerLabel}</div>
       ${imgHtml}
       <div class="post-body">
         ${mainParas}
