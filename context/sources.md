@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 48 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 47 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -17,8 +17,8 @@
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### G1 Tecnologia (IA)
-- URL: https://g1.globo.com/tecnologia/inteligencia-artificial/
-- Site query: `site:g1.globo.com/tecnologia/inteligencia-artificial`
+- URL: https://g1.globo.com/tecnologia/
+- Site query: `site:g1.globo.com/tecnologia`
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### MIT Technology Review Brasil (IA)
@@ -176,11 +176,6 @@
 - URL: https://www.latent.space/
 - Site query: `site:latent.space`
 - RSS: https://www.latent.space/feed
-
-### Every Inc (Chain of Thought)
-- URL: https://every.to/chain-of-thought
-- Site query: `site:every.to/chain-of-thought`
-- RSS: https://every.to/chain-of-thought/feed
 
 ### Google AI for Developers Blog
 - URL: https://developers.googleblog.com/en/ai/
