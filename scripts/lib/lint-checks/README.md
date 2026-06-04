@@ -18,9 +18,12 @@ deliberada de escopo descrita abaixo.
 | `titles-per-highlight.ts` | `titles-per-highlight` | #178/#245 |
 | `title-length.ts` | `title-length` | #701/#801 |
 | `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
+| `eia-answer-check.ts` | `eia-answer` | #744/#927 |
+| `intentional-error.ts` | `intentional-error-flagged` | #754/#1378 |
 
-Os demais (`eia-answer`, `intentional-error-flagged`, `section-item-format`,
-`section-counts`, `intro-count`) ainda vivem no `lint-newsletter-md.ts`.
+Os demais (`section-item-format`, `section-counts`, `intro-count`) ainda vivem
+no `lint-newsletter-md.ts` — dependem do registry de seções (`SECTIONS`) e de
+helpers do próprio arquivo (`extractUrlsBySection` etc.).
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 

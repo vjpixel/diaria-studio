@@ -1,0 +1,148 @@
+/**
+ * lint-checks/intentional-error.ts (#1737 item 2 — extraído de lint-newsletter-md.ts)
+ *
+ * Verifica que `02-reviewed.md` tem `intentional_error` declarado no
+ * frontmatter (#754). Editor adiciona manualmente após revisar a edição.
+ *
+ * Convenção editorial Diar.ia: cada edição inclui 1 erro proposital pros
+ * assinantes acharem (concurso mensal). Sem declaração, `review-test-email`
+ * não consegue distinguir erro intencional de erro real, e o concurso
+ * mensal precisa lembrar manualmente o que era cada erro.
+ *
+ * Frontmatter esperado:
+ * ```yaml
+ * intentional_error:
+ *   description: "..."
+ *   location: "..."
+ *   category: "factual|attribution|numeric|ortografico|data"
+ *   correct_value: "..."
+ * ```
+ *
+ * Roda no Stage 4 (publish-newsletter) ANTES de criar o draft no Beehiiv.
+ * Falha bloqueia publicação.
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+
+export interface IntentionalErrorCheckResult {
+  ok: boolean;
+  label?: string;
+  parsed?: {
+    description?: string;
+    location?: string;
+    category?: string;
+    correct_value?: string;
+  };
+}
+
+const REQUIRED_INTENTIONAL_ERROR_FIELDS = [
+  "description",
+  "location",
+  "category",
+  "correct_value",
+] as const;
+
+/**
+ * #1378: extrai conteúdo de bloco frontmatter YAML, aceitando posição
+ * line-1 (canonical) ou inside first ~30 lines (caso editor adicione
+ * manual após insert-titulo-subtitulo já ter colocado TÍTULO no topo).
+ *
+ * Retorna o body do frontmatter (entre os `---`) ou null se não houver.
+ *
+ * Pure helper — exportado pra teste.
+ *
+ * Implementação: itera todos os pares de `---` no topo do MD e retorna o
+ * primeiro que tenha conteúdo não-vazio (line com `key:` ou similar).
+ * Evita falso positivo com `---` separadores (ex: o `---` que fecha o
+ * bloco TÍTULO/SUBTÍTULO).
+ */
+export function extractFrontmatter(md: string, scanLines = 30): string | null {
+  // Tentar canonical primeiro (line 1) — fast path para o caso normal
+  const canonical = md.match(/^---\n([\s\S]*?)\n---/);
+  if (canonical && canonical[1].trim().length > 0) return canonical[1];
+
+  // Fallback (#1378): iterar pares de `---` dentro das primeiras N linhas
+  // e retornar o primeiro com body não-vazio (qualquer linha com texto).
+  const lines = md.split("\n");
+  const fenceIndices: number[] = [];
+  const scanLimit = Math.min(lines.length, scanLines + 10);
+  for (let i = 0; i < scanLimit; i++) {
+    if (lines[i].trim() === "---") fenceIndices.push(i);
+  }
+  for (let k = 0; k < fenceIndices.length - 1; k++) {
+    const open = fenceIndices[k];
+    const close = fenceIndices[k + 1];
+    if (open >= scanLines) break;
+    const body = lines.slice(open + 1, close).join("\n");
+    if (body.trim().length > 0) return body;
+  }
+  return null;
+}
+
+export function checkIntentionalError(
+  mdPath: string,
+): IntentionalErrorCheckResult {
+  if (!existsSync(mdPath)) {
+    return {
+      ok: false,
+      label: `intentional_error_missing: ${mdPath} not found`,
+    };
+  }
+  const md = readFileSync(mdPath, "utf8");
+
+  // #1378: aceitar frontmatter em linha 1 OU dentro das primeiras 30 linhas.
+  // Razão: insert-titulo-subtitulo.ts roda em Stage 2 e coloca bloco TÍTULO no
+  // topo. Editor adiciona intentional_error via Drive em Stage 4 — sem reordenar
+  // o MD, frontmatter cai DEPOIS do TÍTULO. Antes do #1378 isso quebrava o lint
+  // silenciosamente; agora aceitamos qualquer posição razoável no topo.
+  const fmMatch = extractFrontmatter(md);
+  if (!fmMatch) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: 02-reviewed.md sem frontmatter — adicione bloco YAML com intentional_error",
+    };
+  }
+
+  const fmBody = fmMatch;
+  if (!/intentional_error\s*:/i.test(fmBody)) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: frontmatter sem chave intentional_error — adicione description/location/category/correct_value",
+    };
+  }
+
+  // Parse simple YAML — intentional_error is a mapping with 4 string fields.
+  const parsed: IntentionalErrorCheckResult["parsed"] = {};
+  const ieBlockMatch = fmBody.match(
+    /intentional_error\s*:\s*\n((?:[ \t]+[\w-]+\s*:\s*.+\n?)+)/,
+  );
+  if (!ieBlockMatch) {
+    return {
+      ok: false,
+      label:
+        "intentional_error_missing: chave intentional_error não está no formato mapping (4 campos indentados)",
+    };
+  }
+  for (const line of ieBlockMatch[1].split("\n")) {
+    const m = line.match(/^[ \t]+(\w+)\s*:\s*"?(.*?)"?\s*$/);
+    if (!m) continue;
+    const key = m[1] as keyof typeof parsed;
+    const value = m[2].trim();
+    if (value.length > 0) parsed[key] = value;
+  }
+
+  const missing = REQUIRED_INTENTIONAL_ERROR_FIELDS.filter(
+    (f) => !parsed[f as keyof typeof parsed],
+  );
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      label: `intentional_error_incomplete: campos faltando — ${missing.join(", ")}`,
+      parsed,
+    };
+  }
+
+  return { ok: true, parsed };
+}
