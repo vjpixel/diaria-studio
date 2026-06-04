@@ -17,11 +17,12 @@
  *     --edition AAMMDD \
  *     [--log data/type-hint-divergence.jsonl]
  *
- * Output: summary JSON no stdout; records append-only no log (1 por linha).
- * Exit: sempre 0 (instrumentação, nunca bloqueia).
+ * Output: summary JSON no stdout; records no log (1 por linha), idempotente por
+ * edição (re-run/resume não duplica). Exit: 0 no fluxo normal (incl. input
+ * ausente/inválido → no-op); 2 só em erro de USO (--in não passado).
  */
 
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
@@ -116,6 +117,30 @@ export function measureDivergence(
   };
 }
 
+/**
+ * #1830 review: merge idempotente por edição. Remove do log existente os records
+ * desta edição (re-run/resume não duplica → não viesa a agregação do #1718) e
+ * anexa os novos. Linhas não-parseáveis (não nossas) são preservadas.
+ */
+export function mergeLogLines(
+  existingContent: string,
+  newRecords: DivergenceRecord[],
+  edition: string,
+): string {
+  const kept = existingContent
+    .split("\n")
+    .filter((line) => {
+      if (!line.trim()) return false;
+      try {
+        return (JSON.parse(line) as { edition?: string }).edition !== edition;
+      } catch {
+        return true; // preserva linhas não-parseáveis
+      }
+    });
+  const all = [...kept, ...newRecords.map((r) => JSON.stringify(r))];
+  return all.join("\n") + "\n";
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseCliArgs(process.argv.slice(2));
@@ -141,10 +166,11 @@ function main(): void {
   }
 
   const { records, summary } = measureDivergence(cat, edition);
-  // Append-only: 1 record JSON por linha (acumula entre edições pro #1718).
+  // Acumula entre edições (pro #1718), idempotente por edição (#1830 review).
   if (records.length > 0) {
     const logPath = resolve(ROOT, logArg);
-    appendFileSync(logPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    const existing = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+    writeFileSync(logPath, mergeLogLines(existing, records, edition), "utf8");
   }
   console.log(JSON.stringify(summary, null, 2));
   if (summary.launch_disagreements > 0) {

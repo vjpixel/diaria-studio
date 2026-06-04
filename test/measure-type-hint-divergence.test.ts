@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { measureDivergence } from "../scripts/measure-type-hint-divergence.ts";
+import { measureDivergence, mergeLogLines } from "../scripts/measure-type-hint-divergence.ts";
 
 describe("measureDivergence — type_hint vs bucket (#1718)", () => {
   it("type_hint=lancamento E bucket=lancamento → concorda", () => {
@@ -62,5 +62,36 @@ describe("measureDivergence — type_hint vs bucket (#1718)", () => {
     assert.equal(records.length, 0);
     assert.equal(summary.total_articles, 0);
     assert.equal(summary.with_type_hint, 0);
+  });
+});
+
+describe("mergeLogLines — idempotente por edição (#1830 review)", () => {
+  const rec = (edition: string, url: string) => ({
+    edition, url, type_hint: "lancamento", bucket: "lancamento",
+    type_hint_launch: true, bucket_launch: true, launch_agree: true,
+  });
+
+  it("log vazio → só os novos records", () => {
+    const out = mergeLogLines("", [rec("260604", "a")], "260604");
+    assert.equal(out.trim().split("\n").length, 1);
+  });
+
+  it("re-run da MESMA edição NÃO duplica (remove os antigos dela, anexa os novos)", () => {
+    const first = mergeLogLines("", [rec("260604", "a"), rec("260604", "b")], "260604");
+    const second = mergeLogLines(first, [rec("260604", "a"), rec("260604", "b")], "260604");
+    const lines = second.trim().split("\n");
+    assert.equal(lines.length, 2, "ainda 2 records, não 4");
+  });
+
+  it("preserva records de OUTRAS edições", () => {
+    const existing = mergeLogLines("", [rec("260603", "x")], "260603");
+    const out = mergeLogLines(existing, [rec("260604", "a")], "260604");
+    const editions = out.trim().split("\n").map((l) => JSON.parse(l).edition).sort();
+    assert.deepEqual(editions, ["260603", "260604"]);
+  });
+
+  it("preserva linhas não-parseáveis (não-nossas)", () => {
+    const out = mergeLogLines("lixo não-json\n", [rec("260604", "a")], "260604");
+    assert.ok(out.includes("lixo não-json"));
   });
 });
