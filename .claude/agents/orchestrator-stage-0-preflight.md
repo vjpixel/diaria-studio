@@ -416,6 +416,22 @@ Se encontrar threads:
 
 Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (não bloqueia — CI check é informativo). Logar `info "0n skipped: Gmail MCP unavailable"`.
 
+### 0-replies. Rascunhar respostas a assinantes (#1797) — SÓ com gate
+
+**Roda SOMENTE quando `auto_approve === false`** (ou seja, **pulado com `--no-gates`**) — rascunhar respostas pessoais sem revisão não faz sentido em modo automático. Análogo ao §0b-bis / §0n (Gmail MCP é top-level; orquestrar daqui).
+
+1. Buscar via `mcp__claude_ai_Gmail__search_threads` na caixa do editor (reply-to da newsletter): query `to:vjpixel@gmail.com subject:Re newer_than:7d` (7d cobre o intervalo entre edições + fim de semana). Limit 20.
+2. Para cada thread, `mcp__claude_ai_Gmail__get_thread` (`FULL_CONTENT`). Montar JSON array `[{ thread_id, from, subject, date, body }]` em `data/editions/{AAMMDD}/_internal/captured-replies.json`.
+3. Filtrar quais são respostas de assinante (determinístico):
+   ```bash
+   npx tsx scripts/filter-subscriber-replies.ts --in data/editions/{AAMMDD}/_internal/captured-replies.json
+   ```
+   (assunto `Re:` + remetente humano — exclui automáticos `no-reply`/`beehiiv`/`mailer-daemon` e os próprios endereços do editor.)
+4. Para **cada** resposta filtrada (`replies[]`), rascunhar uma resposta **pessoal** (voz do Pixel/Diar.ia: agradecer + responder ao conteúdo da mensagem, curto, assinatura simples) via `mcp__claude_ai_Gmail__create_draft` — **NUNCA `send`** (princípio de segurança CLAUDE.md: só rascunhar; o envio é ação do editor).
+5. **Apresentar no gate** a lista de rascunhos criados (remetente + assunto + 1ª linha do rascunho) pra o editor revisar/editar/descartar no Gmail antes de enviar.
+
+Se Gmail MCP indisponível: pular silenciosamente (logar `info "0-replies skipped: Gmail MCP unavailable"`). Nunca bloqueia a edição.
+
 ### 0m. Auto-reporter — preparado pra rodar no final
 
 Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `collect-edition-signals.ts` + `auto-reporter` agent pra transformar sinais da edição em issues GitHub acionáveis. Detalhes completos no arquivo `orchestrator-stage-4.md` (seção "Etapa 4b — Auto-reporter").
