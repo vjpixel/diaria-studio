@@ -52,6 +52,51 @@ Corpo.
     assert.equal(urls.length, 3);
     assert.ok(!urls.some((u) => u.includes("blog.google")));
   });
+
+  // #1730 review: o formato REAL de produção (desde ~260520) usa header em
+  // bold markdown + link markdown. Antes do fix, o `^DESTAQUE` strict retornava
+  // [] em todo arquivo real — match-prompts (Stage 3) e image-content-fresh
+  // (Stage 4) viravam no-op silencioso.
+  it("parseia o formato real bold `**DESTAQUE N | ...**` com frontmatter eia", () => {
+    const md = `---
+eia:
+  location: "DESTAQUE 1, parágrafo 1, primeira frase"
+---
+
+**DESTAQUE 1 | 🛠️ FERRAMENTAS**
+
+**[GitHub Copilot muda cobrança](https://canaltech.com.br/ia/github-copilot-creditos/)**
+
+Corpo do destaque.
+
+Por que isso importa:
+
+Impacto.
+
+---
+
+**DESTAQUE 2 | 🔬 PESQUISA**
+
+**[Novo paper](https://arxiv.org/abs/2506.001)**
+
+Corpo.
+
+---
+
+**DESTAQUE 3 | ⚖️ REGULAÇÃO**
+
+**[UE aprova lei](https://exame.com/ue-lei-ia/)**
+
+Corpo.
+`;
+    const urls = extractDestaqueUrls(md);
+    assert.equal(urls.length, 3, JSON.stringify(urls));
+    assert.ok(urls[0].includes("canaltech"), urls[0]);
+    assert.ok(urls[1].includes("arxiv"), urls[1]);
+    assert.ok(urls[2].includes("exame"), urls[2]);
+    // não captura a menção "DESTAQUE 1" dentro do frontmatter eia.location
+    assert.ok(!urls.some((u) => u.includes("location")));
+  });
 });
 
 describe("extractPromptUrl", () => {
@@ -131,6 +176,31 @@ describe("computeSwaps (#606)", () => {
     );
     assert.equal(r.ok, false);
     assert.match(r.ok ? "" : r.reason, /02-d3-prompt\.md/);
+  });
+
+  // review #1832: alinhar com o critério do image-content-fresh (Stage 4) —
+  // canonicalize compartilhado. Diferença benigna (trailing slash, case de host,
+  // tracking param) entre frontmatter e reviewed NÃO deve mais fail-close.
+  it("#1832: trailing-slash / host-case / utm benignos → alinhado, NÃO fail-closed", () => {
+    const r = computeSwaps(
+      {
+        d1: "https://Exame.com/ia/artigo/",
+        d2: "https://b.com/y?utm_source=x",
+        d3: "https://c.com/z",
+      },
+      ["https://exame.com/ia/artigo", "https://b.com/y", "https://c.com/z"],
+    );
+    assert.equal(r.ok, true, r.ok ? "" : r.reason);
+    assert.ok(r.ok && r.swaps.length === 0);
+  });
+
+  it("#1832: reorder ainda detectado mesmo com diferença benigna de slug", () => {
+    const r = computeSwaps(
+      { d1: "https://a.com/x/", d2: "https://b.com/y", d3: "https://c.com/z" },
+      ["https://c.com/z", "https://b.com/y", "https://a.com/x"],
+    );
+    assert.equal(r.ok, true);
+    assert.ok(r.ok && r.swaps.length === 6); // d1↔d3 via tmp
   });
 
   it("3-cycle (rotação) gera swaps via tmp corretamente", () => {

@@ -26,6 +26,7 @@
 
 import { readFileSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
+import { canonicalize } from "./lib/url-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra tests
@@ -35,14 +36,34 @@ import { resolve } from "node:path";
  * Extrai a URL principal de cada DESTAQUE em ordem do `02-reviewed.md`.
  * URL principal = primeira `https://...` que aparece após o header
  * `DESTAQUE N | CATEGORIA`, antes do próximo header.
+ *
+ * O header real é renderizado em bold markdown desde ~260520
+ * (`**DESTAQUE 1 | 🚀 LANÇAMENTO**`); edições antigas e fixtures usam o
+ * formato chapado (`DESTAQUE 1 | ...`). A regex tolera só o `**` de abertura
+ * opcional pra não retornar `[]` em dado real — sem isso o reorder-detection
+ * (Stage 3) e o image-content-fresh (Stage 4) viram no-op. (Não toleramos `#`
+ * heading: o output final proíbe markdown `#`, e `#+\s*` deixava o `\s*` cruzar
+ * newline e mis-split uma linha de prose começando com "DESTAQUE N |" — review #1832.)
+ *
+ * Grupo do dígito é NÃO-capturante de propósito: `DESTAQUE_HEADER.source` é
+ * embutido no separador do `split()`, e `String.split` com grupo capturante
+ * faz splice do captura no array de blocos (`["...", "1", "**DESTAQUE 1...", "2", ...]`).
+ * Os blocos espúrios seriam inertes (falham o `headerMatch`), mas um grupo
+ * capturante aqui é footgun — o dígito nunca é lido.
  */
+const DESTAQUE_HEADER = /(?:\*\*)?DESTAQUE \d+\s*\|/;
+
 export function extractDestaqueUrls(reviewedMd: string): string[] {
   const normalized = reviewedMd.replace(/\r\n/g, "\n");
-  const blocks = normalized.split(/\n(?=DESTAQUE \d+\s*\|)/);
+  const blocks = normalized.split(
+    new RegExp(`\\n(?=${DESTAQUE_HEADER.source})`),
+  );
   const urls: string[] = [];
 
   for (const block of blocks) {
-    const headerMatch = block.match(/^DESTAQUE (\d+)\s*\|/);
+    const headerMatch = block.match(
+      new RegExp(`^${DESTAQUE_HEADER.source}`),
+    );
     if (!headerMatch) continue;
     // Primeira URL do block (após header, antes de próximo block ou ---)
     const urlMatch = block.match(/https?:\/\/[^\s)\]]+/);
@@ -111,14 +132,19 @@ export function computeSwaps(
     }
   }
 
-  // Mapping: posição atual no prompt (1/2/3) → posição desejada no reviewed
-  const desiredFor = new Map<string, number>(); // url → position (1-indexed)
-  reviewedUrls.forEach((url, idx) => desiredFor.set(url, idx + 1));
+  // Mapping: posição atual no prompt (1/2/3) → posição desejada no reviewed.
+  // Chaves canonicalizadas (#523/#626, review #1832) pra não fail-close em
+  // diferença benigna de trailing-slash / case-de-host / tracking param entre
+  // a URL do frontmatter e a do reviewed — o mesmo critério que o
+  // image-content-fresh (Stage 4) usa via urlsMatch, evitando que os dois
+  // checks discordem na mesma edição.
+  const desiredFor = new Map<string, number>(); // canonical url → position (1-indexed)
+  reviewedUrls.forEach((url, idx) => desiredFor.set(canonicalize(url), idx + 1));
 
   const currentByPrompt: Record<string, number | null> = {
-    d1: desiredFor.get(promptUrls.d1!) ?? null,
-    d2: desiredFor.get(promptUrls.d2!) ?? null,
-    d3: desiredFor.get(promptUrls.d3!) ?? null,
+    d1: desiredFor.get(canonicalize(promptUrls.d1!)) ?? null,
+    d2: desiredFor.get(canonicalize(promptUrls.d2!)) ?? null,
+    d3: desiredFor.get(canonicalize(promptUrls.d3!)) ?? null,
   };
 
   // URL do prompt ausente do reviewed → fail-closed também

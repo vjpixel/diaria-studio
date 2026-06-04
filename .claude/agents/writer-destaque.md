@@ -83,6 +83,19 @@ Recebido pelo coordenador (não vem como arquivo):
    - `out_path`: o destaque renderizado em markdown.
    - `image_prompt_out_path`: prompt da imagem 2:1 do destaque (Van Gogh impasto, sem pixels, sem Noite Estrelada — ver `context/editorial-rules.md`).
 
+   **Frontmatter obrigatório no prompt (#606 / #1730):** o `image_prompt_out_path` **deve** começar com frontmatter YAML identificando o destaque pela URL — assim Stage 3 detecta reorder pós-gate (`match-prompts-to-destaques.ts`) e Stage 4 detecta article-swap manual (invariant `image-content-fresh`). Sem isso, o prompt vira órfão: nenhuma das duas proteções consegue saber pra qual artigo a cena foi gerada.
+
+   ```yaml
+   ---
+   destaque_url: https://exame.com/...
+   position_at_write: 1
+   ---
+
+   Cena Van Gogh impasto, [...]
+   ```
+
+   `destaque_url` = `destaque.url` recebido do coordenador (mesma URL que sai em `02-reviewed.md` e `01-approved.json`). `position_at_write` = `destaque_n` (1/2/3) no momento que você rodou.
+
 ## Output
 
 Retorne JSON:

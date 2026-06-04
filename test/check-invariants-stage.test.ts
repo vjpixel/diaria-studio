@@ -34,6 +34,8 @@ import {
 import {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
+  checkImageContentFresh,
+  findImageContentMismatches,
   checkLinkedinWorkerUrlSet,
   checkFbPageIdSet,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
@@ -585,6 +587,199 @@ describe("Stage 4 invariants", () => {
       const v = checkSocialHashFresh(fixture);
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "social-hash-fresh-parseable");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
+  describe("image-content-fresh (#1730)", () => {
+    let fixture: string;
+
+    beforeEach(() => {
+      fixture = makeFixtureEdition();
+    });
+
+    function writeReviewed(urls: [string, string, string]): void {
+      // Formato real (#1730 review): header em bold markdown + link markdown,
+      // como o 02-reviewed.md de produção desde ~260520. Exercita o fix do
+      // extractDestaqueUrls que tolera `**DESTAQUE N |**`.
+      const md =
+        `---\neia:\n  location: "DESTAQUE 1, parágrafo 1"\n---\n\n` +
+        urls
+          .map(
+            (u, i) =>
+              `**DESTAQUE ${i + 1} | 🔬 NOTÍCIAS**\n\n` +
+              `**[Título do destaque ${i + 1}](${u})**\n\n` +
+              `Corpo do destaque ${i + 1}.\n`,
+          )
+          .join("\n---\n\n");
+      writeFileSync(join(fixture, "02-reviewed.md"), md);
+    }
+
+    function writePrompt(slot: "d1" | "d2" | "d3", url: string | null): void {
+      const fm = url == null ? "" : `destaque_url: ${url}\n`;
+      writeFileSync(
+        join(fixture, "_internal", `02-${slot}-prompt.md`),
+        `---\n${fm}---\n\nVan Gogh impasto scene for ${slot}.\n`,
+      );
+    }
+
+    it("findImageContentMismatches: pure — detecta D1 trocado, ignora wording-same-URL", () => {
+      const { mismatches, missingFrontmatter, haveFrontmatter } =
+        findImageContentMismatches(
+          { d1: "https://old.example/a", d2: "https://b", d3: "https://c" },
+          ["https://new.example/x", "https://b", "https://c"],
+        );
+      assert.equal(missingFrontmatter.length, 0);
+      assert.equal(haveFrontmatter, 3);
+      assert.equal(mismatches.length, 1);
+      assert.equal(mismatches[0].slot, "d1");
+      assert.equal(mismatches[0].reviewedUrl, "https://new.example/x");
+    });
+
+    it("findImageContentMismatches: trailing slash + host case + utm são benignos (urlsMatch)", () => {
+      const { mismatches } = findImageContentMismatches(
+        {
+          d1: "https://A.Example.com/path/",
+          d2: "https://b.com/y?utm_source=news",
+          d3: "https://c.com/z",
+        },
+        ["https://a.example.com/path", "https://b.com/y", "https://c.com/z"],
+      );
+      assert.equal(mismatches.length, 0, JSON.stringify(mismatches));
+    });
+
+    it("findImageContentMismatches: case DO PATH diverge → mismatch (artigos diferentes, F3)", () => {
+      // canonicalize lowercaseia só host; path é case-sensitive (RFC 3986).
+      const { mismatches } = findImageContentMismatches(
+        { d1: "https://x.com/Build2026", d2: "https://b", d3: "https://c" },
+        ["https://x.com/build2026", "https://b", "https://c"],
+      );
+      assert.equal(mismatches.length, 1);
+      assert.equal(mismatches[0].slot, "d1");
+    });
+
+    it("findImageContentMismatches: prompt file existe sem frontmatter (null) → missingFrontmatter", () => {
+      const { mismatches, missingFrontmatter, haveFrontmatter } =
+        findImageContentMismatches(
+          { d1: null, d2: "https://b", d3: "https://c" },
+          ["https://a", "https://b", "https://c"],
+        );
+      assert.equal(mismatches.length, 0);
+      assert.deepEqual(missingFrontmatter, ["d1"]);
+      assert.equal(haveFrontmatter, 2);
+    });
+
+    it("findImageContentMismatches: prompt file ausente (undefined) NÃO vira missingFrontmatter (#1832)", () => {
+      // d1 omitido = file não existe → fora de escopo, all-images-exist cobre.
+      const { mismatches, missingFrontmatter } = findImageContentMismatches(
+        { d2: "https://b", d3: "https://c" },
+        ["https://a", "https://b", "https://c"],
+      );
+      assert.equal(mismatches.length, 0);
+      assert.deepEqual(missingFrontmatter, []);
+    });
+
+    it("findImageContentMismatches: reviewed mais curto que 3 → slots extras ignorados", () => {
+      const { mismatches, missingFrontmatter } = findImageContentMismatches(
+        { d1: "https://a", d2: "https://b", d3: "https://stale" },
+        ["https://a", "https://b"], // só 2 destaques
+      );
+      assert.equal(mismatches.length, 0);
+      assert.deepEqual(missingFrontmatter, []);
+    });
+
+    it("passa silenciosamente quando 02-reviewed.md ausente", () => {
+      writePrompt("d1", "https://a");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa silenciosamente quando nenhum prompt existe (Stage 3 não rodou)", () => {
+      writeReviewed(["https://a", "https://b", "https://c"]);
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("passa quando prompts batem com destaques atuais", () => {
+      writeReviewed([
+        "https://a.example/x",
+        "https://b.example/y",
+        "https://c.example/z",
+      ]);
+      writePrompt("d1", "https://a.example/x");
+      writePrompt("d2", "https://b.example/y");
+      writePrompt("d3", "https://c.example/z");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#1730: warning quando editor troca artigo do D1 sem regenerar imagem", () => {
+      // Prompt do D1 aponta pro artigo antigo (Karpathy); reviewed atual é Google I/O
+      writeReviewed([
+        "https://google-io.example/keynote",
+        "https://b.example/y",
+        "https://c.example/z",
+      ]);
+      writePrompt("d1", "https://karpathy.example/talk");
+      writePrompt("d2", "https://b.example/y");
+      writePrompt("d3", "https://c.example/z");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "image-content-fresh");
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /D1/);
+      assert.match(v[0].message, /karpathy/);
+      assert.match(v[0].message, /google-io/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("warning quando 1 prompt sem destaque_url mas OUTROS têm (formato atual, anomalia)", () => {
+      writeReviewed([
+        "https://a.example/x",
+        "https://b.example/y",
+        "https://c.example/z",
+      ]);
+      writePrompt("d1", null);
+      writePrompt("d2", "https://b.example/y");
+      writePrompt("d3", "https://c.example/z");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /destaque_url ausente/);
+      assert.match(v[0].message, /02-d1-prompt\.md/);
+      // file aponta pro prompt que EXISTE (não pro _internal dir)
+      assert.match(v[0].file ?? "", /02-d1-prompt\.md$/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#1832: edição legada (NENHUM prompt tem frontmatter) → silêncio, sem spam", () => {
+      writeReviewed([
+        "https://a.example/x",
+        "https://b.example/y",
+        "https://c.example/z",
+      ]);
+      writePrompt("d1", null);
+      writePrompt("d2", null);
+      writePrompt("d3", null);
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("#1832: prompt file ausente (Stage 3 parcial) NÃO vira warning de frontmatter", () => {
+      writeReviewed([
+        "https://a.example/x",
+        "https://b.example/y",
+        "https://c.example/z",
+      ]);
+      // só d1 e d3 gerados; d2 ausente → não deve avisar nada (matches batem)
+      writePrompt("d1", "https://a.example/x");
+      writePrompt("d3", "https://c.example/z");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
       rmSync(fixture, { recursive: true, force: true });
     });
   });

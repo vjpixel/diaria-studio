@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 34 invariants.
+**Total**: 35 invariants.
 
 ## Static (estrutura do repo)
 
@@ -58,6 +58,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 |---|---|---|
 | `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente | #facebook |
 | `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente | #facebook |
+| `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971) | #971 |
