@@ -216,11 +216,12 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
     { key: "d3", filename: "04-d3-1x1.jpg", optional: true },
     // #1808: box promo de livros (entre D1 e D2 no email, renderMidCallout).
-    // optional — nem toda edição tem o box; noCacheBust — a imagem é estável
-    // (não muda toda edição), então URL fica reaproveitável. readMidCalloutImage
-    // lê a entry `livros_promo` daqui; sem este produtor o box degradava pra
-    // só-texto silenciosamente (achado #1 da review do #1807).
-    { key: "livros_promo", filename: "04-livros-promo.jpg", optional: true, noCacheBust: true },
+    // optional — nem toda edição tem o box. Mantém o md5 cache-bust (#1584): a
+    // URL é per-edição (`img-{AAMMDD}-04-livros-promo.jpg`) e o sufixo md5 evita
+    // que o proxy de imagem do Gmail sirva uma promo stale se o arquivo for
+    // regerado. readMidCalloutImage lê a entry `livros_promo`; sem este produtor
+    // o box degradava pra só-texto silenciosamente (achado #1 da review do #1807).
+    { key: "livros_promo", filename: "04-livros-promo.jpg", optional: true },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;

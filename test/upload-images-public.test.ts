@@ -145,15 +145,16 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(!specs.find((s) => s.key === "d1")!.optional);
   });
 
-  it("#1808: newsletter mode inclui o slot livros_promo (optional + noCacheBust)", () => {
+  it("#1808: newsletter mode inclui o slot livros_promo (optional, com md5 cache-bust)", () => {
     const specs = imageSpecsFor("newsletter");
     const lp = specs.find((s) => s.key === "livros_promo");
     assert.ok(lp, "livros_promo deve estar em newsletter mode (produtor do box)");
     assert.equal(lp!.filename, "04-livros-promo.jpg");
     // optional: nem toda edição tem o box → não bloqueia o upload se ausente.
     assert.equal(lp!.optional, true);
-    // noCacheBust: a imagem promo é estável → URL reaproveitável entre edições.
-    assert.equal(lp!.noCacheBust, true);
+    // mantém md5 cache-bust (#1584) — não opta por noCacheBust (review #1815):
+    // a chave é per-edição e o md5 evita promo stale no proxy do Gmail ao regerar.
+    assert.ok(!lp!.noCacheBust, "livros_promo NÃO deve ter noCacheBust (mantém md5)");
   });
 
   it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {
