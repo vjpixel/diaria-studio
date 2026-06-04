@@ -592,6 +592,52 @@ describe("pullFile — cache merge e atualizacao apos download", () => {
     assert.equal(cache.editions[YYMMDD].files["02-reviewed.md"].last_pushed_mtime, 12345);
   });
 
+  it("#1828: local com mudanças não-sincronizadas → guard NÃO sobrescreve, warn, não baixa", async () => {
+    const localOriginal = "# Local regenerado (não enviado ainda)";
+    writeFileSync(join(tmpDir, "02-reviewed.md"), localOriginal, "utf8");
+    // last_pushed_mtime: 0 → o mtime real do arquivo recém-escrito é >> 0 + tolerância.
+    const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
+      drive_file_id: FILE_ID, drive_modifiedTime: CACHED_TIME,
+      last_pushed_mtime: 0, push_count: 1, drive_mimeType: "text/markdown" } });
+    const result = makeSyncResult({ mode: "pull" });
+    let dlCalled = false;
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const s = String(url);
+      if (s.includes("/files/" + FILE_ID) && s.includes("alt=media")) { dlCalled = true; return makeDriveResponse({}); }
+      if (s.includes("/files/" + FILE_ID)) return makeDriveResponse({ id: FILE_ID, name: "f", modifiedTime: NEWER_TIME });
+      return makeDriveResponse({ files: [] });
+    };
+    await pullFile(tmpDir, "02-reviewed.md", YYMMDD, cache, result);
+    assert.equal(result.pulled.length, 0, "não sobrescreveu o local");
+    assert.equal(dlCalled, false, "nem baixou (guard antes do download)");
+    assert.equal(result.warnings.length, 1, "emite 1 warning de frescor");
+    assert.match(result.warnings[0].error_message, /não-enviadas|#1828/);
+    assert.equal(readFileSync(join(tmpDir, "02-reviewed.md"), "utf8"), localOriginal, "local intacto");
+  });
+
+  it("#1828: --force-overwrite-local ignora o guard e sobrescreve com o Drive", async () => {
+    writeFileSync(join(tmpDir, "02-reviewed.md"), "# Local antigo", "utf8");
+    const driveContent = "# Conteúdo do Drive";
+    const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
+      drive_file_id: FILE_ID, drive_modifiedTime: CACHED_TIME,
+      last_pushed_mtime: 0, push_count: 1, drive_mimeType: "text/markdown" } });
+    const result = makeSyncResult({ mode: "pull" });
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const s = String(url);
+      if (s.includes("/files/" + FILE_ID) && s.includes("alt=media")) {
+        const buf = Buffer.from(driveContent, "utf8");
+        return { ok: true, status: 200,
+          arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+          text: async () => driveContent, json: async () => ({}), headers: { get: () => null } } as unknown as Response;
+      }
+      if (s.includes("/files/" + FILE_ID)) return makeDriveResponse({ id: FILE_ID, name: "f", modifiedTime: NEWER_TIME });
+      return makeDriveResponse({ files: [] });
+    };
+    await pullFile(tmpDir, "02-reviewed.md", YYMMDD, cache, result, { forceOverwriteLocal: true });
+    assert.equal(result.pulled.length, 1, "force → sobrescreveu");
+    assert.equal(readFileSync(join(tmpDir, "02-reviewed.md"), "utf8"), driveContent);
+  });
+
   it("Drive com modifiedTime anterior ao cache — no-op", async () => {
     const cache = makeDriveCache(YYMMDD, { "02-reviewed.md": {
       drive_file_id: FILE_ID, drive_modifiedTime: CACHED_TIME,
