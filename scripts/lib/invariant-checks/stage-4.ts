@@ -173,7 +173,8 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
         message:
           `Highlights mudaram após social.md ser gerado (hash: ${cachedHash} → ${currentHash}). ` +
           `Editor reestruturou destaques pós-Stage 2. Re-dispatch agents ` +
-          `social-linkedin + social-facebook + re-run merge-social-md.ts antes de publicar.`,
+          `social-linkedin + social-facebook + re-run merge-social-md.ts E re-push pro Drive ` +
+          `(drive-sync --mode push --files 03-social.md) antes de publicar — senão o Drive fica stale (#1828).`,
         source_issue: "#1413",
         severity: "error",
         file: socialPath,
