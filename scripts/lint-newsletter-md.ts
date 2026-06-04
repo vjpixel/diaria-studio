@@ -45,6 +45,8 @@ import {
 // #1737 item 2: checks extraídos pra módulos por-check (espelha invariant-checks/).
 import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
+import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
+import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -56,6 +58,12 @@ export {
   type RelativeTimeMatch,
   type RelativeTimeResult,
 } from "./lib/lint-checks/relative-time.ts";
+export {
+  checkWhyMattersFormat,
+  type WhyMattersError,
+  type WhyMattersReport,
+} from "./lib/lint-checks/why-matters-format.ts";
+export { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -1169,120 +1177,8 @@ export function checkTitleLengths(md: string): TitleLengthReport {
   return { ok: errors.length === 0, errors };
 }
 
-/**
- * Verifica formato do parágrafo "Por que isso importa:" (#701, editorial-rules:35).
- *
- * Regra: "O parágrafo de 'Por que isso importa' vai direto ao impacto —
- * nunca começa com 'Para [audiência],' ou endereça o leitor explicitamente."
- *
- * Detecta tanto formato inline ("Por que isso importa: Para X,...") quanto
- * em linha separada (próxima linha não-vazia começando com "Para X,").
- */
-export interface WhyMattersError {
-  line: number;
-  text: string;
-}
-
-export interface WhyMattersReport {
-  ok: boolean;
-  errors: WhyMattersError[];
-}
-
-const WHY_MATTERS_BAD_START_RE = /^Para\s+[a-záéíóúâêôãõç]/i;
-
-export function checkWhyMattersFormat(md: string): WhyMattersReport {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
-  const errors: WhyMattersError[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^Por que isso importa:\s*(.*)$/i);
-    if (!m) continue;
-    const inlineRest = m[1].trim();
-    if (inlineRest) {
-      // Forma inline: "Por que isso importa: Para X,..."
-      if (WHY_MATTERS_BAD_START_RE.test(inlineRest)) {
-        errors.push({ line: i + 1, text: inlineRest.slice(0, 80) });
-      }
-      continue;
-    }
-    // Forma multi-linha: próxima linha não-vazia
-    for (let j = i + 1; j < lines.length; j++) {
-      const t = lines[j].trim();
-      if (t === "") continue;
-      if (WHY_MATTERS_BAD_START_RE.test(t)) {
-        errors.push({ line: j + 1, text: t.slice(0, 80) });
-      }
-      break;
-    }
-  }
-
-  return { ok: errors.length === 0, errors };
-}
-
-/**
- * Verifica que a seção É IA? está presente no MD da newsletter (#588).
- *
- * Writer agent (Sonnet) tem instrução explícita pra emitir bloco É IA? entre
- * D2 e D3 (ver writer.md step 2b). Mas tem ignorado silenciosamente.
- * Este check determinístico bloqueia o gate quando a seção falta.
- *
- * Aceita as 3 formas de marcação:
- *   - "**É IA?**" como linha solo (formato preferido #1100, em negrito como
- *     os outros headers de seção)
- *   - "É IA?" como linha solo (formato legacy, pré-#1100)
- *   - "## É IA?" (formato categorized embedded #371)
- *
- * #908: quando o frontmatter contém `eia_answer` (gabarito A/B), a seção
- * deve incluir uma linha "Gabarito: **A = ..., B = ..." pro editor revisar
- * o draft no Drive sem ter que abrir frontmatter ou 01-eia.md em paralelo.
- * Stage 4 (publish-newsletter) lê 01-eia.md direto pro HTML — gabarito
- * fica em 02-reviewed.md, não bleeds pra newsletter publicada.
- */
-export function checkEaiSection(md: string): { ok: boolean; error?: string } {
-  // Normalizar CRLF
-  const normalized = md.replace(/\r\n/g, "\n");
-  const hasEia =
-    /^\*\*É IA\?\*\*\s*$/m.test(normalized) ||
-    /^É IA\?\s*$/m.test(normalized) ||
-    /^##\s+É IA\?\s*$/m.test(normalized);
-  if (!hasEia) {
-    return {
-      ok: false,
-      error:
-        "Seção É IA? ausente. Writer deveria inserir entre DESTAQUE 2 e DESTAQUE 3 (writer.md step 2b). " +
-        "Inserir bloco lendo de 01-eia.md ou 01-categorized.md.",
-    };
-  }
-
-  // #908: se frontmatter tem eia_answer, body deve ter linha de gabarito.
-  const fmMatch = normalized.match(/^---\n([\s\S]*?)\n---\n/);
-  if (fmMatch) {
-    const fm = fmMatch[1];
-    const hasEiaAnswer = /eia_answer\s*:/.test(fm);
-    if (hasEiaAnswer) {
-      // Aceitar formato novo (#957): "Gabarito: **A é a IA**" (1 lado só).
-      // Aceitar formato legacy: "Gabarito: A = ia, B = real" (ambos os lados).
-      // Ambos com ou sem negrito, com ou sem prefixo `>` (blockquote).
-      const hasGabaritoNew = /Gabarito\s*:\s*\*{0,2}[AB]\s+é\s+a\s+IA\*{0,2}/i.test(
-        normalized,
-      );
-      const hasGabaritoLegacy = /Gabarito\s*:\s*\*{0,2}A\s*=\s*(ia|real)\*{0,2}\s*,\s*\*{0,2}B\s*=\s*(ia|real)\*{0,2}/i.test(
-        normalized,
-      );
-      if (!hasGabaritoNew && !hasGabaritoLegacy) {
-        return {
-          ok: false,
-          error:
-            "Seção É IA? sem linha de gabarito no body (#908/#957). Frontmatter tem `eia_answer` mas falta " +
-            "linha `> Gabarito: **{A|B} é a IA**` no body — editor não consegue ver " +
-            "qual imagem é a IA no Drive review sem abrir frontmatter ou 01-eia.md em paralelo.",
-        };
-      }
-    }
-  }
-
-  return { ok: true };
-}
+// #1737 item 2: checkWhyMattersFormat (#701) e checkEaiSection (#588) movidos
+// pra scripts/lib/lint-checks/. Re-exportados no topo do arquivo pra back-compat.
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

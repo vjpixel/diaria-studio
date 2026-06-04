@@ -11,11 +11,13 @@ deliberada de escopo descrita abaixo.
 |---|---|---|
 | `multiline-links.ts` | `multiline-links` | #1213 |
 | `relative-time.ts` | `relative-time` | #747 |
+| `why-matters-format.ts` | `why-matters-format` | #701 |
+| `eai-section.ts` | `eai-section` | #588 |
 
-Os demais (`titles-per-highlight`, `title-length`, `why-matters-format`,
-`eai-section`, `eia-answer`, `intentional-error-flagged`, `destaque-min-chars`,
-`destaque-max-chars`, `section-item-format`, `section-counts`, `intro-count`,
-`coverage-line-format`) ainda vivem no `lint-newsletter-md.ts`.
+Os demais (`titles-per-highlight`, `title-length`, `eia-answer`,
+`intentional-error-flagged`, `destaque-min-chars`, `destaque-max-chars`,
+`section-item-format`, `section-counts`, `intro-count`, `coverage-line-format`)
+ainda vivem no `lint-newsletter-md.ts`.
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 
