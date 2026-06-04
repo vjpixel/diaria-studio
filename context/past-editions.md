@@ -1,9 +1,305 @@
 # Últimas edições publicadas — para dedup
 
-**atualizado em:** 2026-05-24
+**atualizado em:** 2026-06-04
 **edições carregadas:** 14
 
 Usado por `scripts/dedup.ts` para evitar repetir links ou temas das últimas edições.
+
+---
+
+## 2026-06-03 — "GitHub Copilot: créditos "mensais" acabam em horas"
+URL: https://diaria.beehiiv.com/p/github-copilot-cre-ditos-mensais-acabam-em-horas
+
+Links usados:
+- https://openai.com/index/codex-for-knowledge-work
+- https://openai.com/index/codex-for-every-role-tool-workflow
+- https://huggingface.co/blog/Hcompany/holo31
+- https://blogs.nvidia.com/blog/jetson-agentic-ai-physical-world/
+- https://blogs.nvidia.com/blog/factory-operations-fox-blueprint-ai-brain/
+- https://canaltech.com.br/inteligencia-artificial/github-copilot-muda-cobranca-e-creditos-acabam-em-poucas-horas-relatam-usuarios/
+- https://exame.com/inteligencia-artificial/so-um-terco-do-trabalho-sera-humano-em-2030-diz-fabio-coelho-presidente-do-google-brasil/
+- https://hub.asimov.academy/formacao/engenheiro-de-agentes-de-ia/
+- https://openai.com/index/openai-frontier-models-and-codex-are-now-available-on-aws
+- https://exame.com/inteligencia-artificial/ia-no-setor-financeiro-como-bancos-fintechs-e-cfos/
+- https://www.theguardian.com/us-news/2026/jun/02/trump-executive-order-ai-voluntary-review
+- https://canaltech.com.br/mercado/dona-do-claude-esta-pronta-para-abrir-capital-o-que-muda-na-pratica/
+- https://www.theguardian.com/business/live/2026/jun/02/alphabet-80bn-share-sales-ai-spending-berkshire-hathaway-stock-markets-oil-interest-rates-inflation-latest-news-updates
+- https://www.theguardian.com/technology/2026/jun/02/google-alphabet-sell-stock-ai-share-sale-berkshire-hathaway
+- https://research.perplexity.ai/articles/rethinking-search-as-code-generation
+- https://www.theguardian.com/technology/2026/jun/01/florida-lawsuit-openai-sam-altman
+- https://www.bensbites.com/p/opus-48
+- https://canaltech.com.br/inteligencia-artificial/app-do-chatgpt-esconde-truque-para-controlar-o-esforco-da-ia/
+- https://simonwillison.net/2026/May/29/anthropic/
+- https://www.cnnbrasil.com.br/tecnologia/microsoft-deve-lancar-ferramentas-de-ia-para-pc-e-nuvem-nesta-terca/
+- https://alphasignalai.substack.com/p/stop-looping-tool-calls-search-as
+- https://www.theguardian.com/technology/2026/jun/01/anthropic-openai-techscape
+- https://canaltech.com.br/colunas/de-humanos-no-loop-para-humanos-na-lideranca-da-ia/
+- https://openai.com/index/travelers
+- https://mittechreview.com.br/nova-ordem-ia-dinheiro/
+- https://blogs.nvidia.com/blog/financial-institutions-transaction-foundation-models/
+- https://alphasignalai.substack.com/p/as-ai-agents-evolve-we-need-to-look
+- https://openai.com/index/our-views-on-ai-policy-and-political-advocacy
+- https://arxiv.org/abs/2606.00476
+- https://canaltech.com.br/inteligencia-artificial/melhores-ias-para-gerar-imagens-alem-chatgpt-gemini/
+- https://www.latent.space/p/github
+- https://simonwillison.net/2026/Jun/2/pasted-file-editor/#atom-everything
+- https://aws.amazon.com/blogs/machine-learning/building-a-secure-auth-code-flow-setup-using-agentcore-gateway-with-mcp-clients/
+- https://aws.amazon.com/blogs/machine-learning/object-detection-with-amazon-nova-2-lite/
+- https://aws.amazon.com/blogs/machine-learning/openai-models-and-codex-on-amazon-bedrock-are-now-generally-available/
+- https://simonwillison.net/2026/May/30/pyodide-asgi-browser/#atom-everything
+
+Temas cobertos:
+- GitHub
+- Copilot
+
+---
+
+## 2026-06-02 — "Meta AI deu acesso a contas do Instagram a hackers"
+URL: https://diaria.beehiiv.com/p/meta-ai-deu-acesso-a-contas-do-instagram-a-hackers
+
+Links usados:
+- https://blogs.nvidia.com/blog/cosmos-3-physical-ai-open-world-foundation-model/
+- https://huggingface.co/blog/JetBrains/mellum2-launch
+- https://blogs.nvidia.com/blog/rtx-ai-garage-computex-spark-local-agents/
+- https://mistral.ai/news/introducing-physics-ai-at-mistral/
+- https://huggingface.co/blog/ibm-research/agent-logic-and-scalable-ai-adoption
+- https://openai.com/index/stargate-michigan-data-center
+- https://openai.com/index/trustworthy-third-party-evaluations-foundations
+- https://blogs.nvidia.com/blog/ai-cloud-ecosystem/
+- https://mistral.ai/news/physics-ai-research/
+- https://www.theguardian.com/technology/2026/jun/01/anthropic-ai-ipo
+- https://exame.com/inteligencia-artificial/startup-de-ia-para-seguranca-publica-capta-us-40-milhoes-na-maior-rodada-seed-do-brasil/
+- https://canaltech.com.br/hardware/rtx-spark-e-a-cpu-com-graficos-integrados-blackwell-da-nvidia-e-chega-em-breve/
+- https://canaltech.com.br/apps/busca-do-google-fotos-esta-quebrada-e-a-culpa-e-da-ia/
+- https://huggingface.co/blog/nvidia/cosmos-3-for-physical-ai
+- https://exame.com/inteligencia-artificial/ia-no-marketing-como-inteligencia-artificial-esta-mudando-estrategia-criativos-e-mensuracao/
+- https://tecnoblog.net/noticias/faxina-gratis-vira-moeda-de-troca-para-empresa-de-ia/
+- https://canaltech.com.br/apps/com-visual-de-chatgpt-nova-siri-vai-sincronizar-chats-entre-iphone-ipad-e-mac/
+- https://exame.com/inteligencia-artificial/a-batalha-pelas-cpus-o-plano-da-nvidia-para-dominar-o-mercado-de-pcs/
+- https://exame.com/inteligencia-artificial/melhores-ferramentas-de-ia-em-2026-as-20-plataformas-que-estao-transformando-o-mercado-brasileiro/
+- https://openai.com/index/braintrust
+- https://alphasignalai.substack.com/p/turn-a-departing-engineers-judgment
+- https://importai.substack.com/p/import-ai-459-ai-oversight-is-difficult
+- https://www.theguardian.com/film/2026/may/29/star-wars-rogue-one-director-gareth-edwards-praises-ai-film-making
+- https://arxiv.org/abs/2605.30898
+- https://simonwillison.net/2026/Jun/1/hackers-simply-asked-meta-ai/#atom-everything
+- https://canaltech.com.br/software/canva-resolve-um-grande-problema-de-quem-edita-imagens-sem-o-arquivo-original/
+- https://simonwillison.net/2026/May/30/how-we-contain-claude/#atom-everything
+- https://www.latent.space/p/video-agents
+- https://aws.amazon.com/blogs/machine-learning/enable-safe-agentic-payments-with-built-in-guardrails-using-amazon-bedrock-agentcore-payments/
+- https://www.latent.space/p/ainews-anthropic-raises-965b-series
+- https://simonwillison.net/2026/May/28/claude-opus-4-8/#atom-everything
+- https://aws.amazon.com/blogs/machine-learning/agentops-operationalize-agentic-ai-at-scale-with-amazon-bedrock-agentcore/
+- https://aws.amazon.com/blogs/machine-learning/extending-mcp-support-for-amazon-bedrock-agentcore-gateway-2/
+- https://simonwillison.net/2026/May/31/the-solution-might-be-cancelling-my-ai-subscription/#atom-everything
+- https://blog.google/innovation-and-ai/technology/ai/io-2026-google-ai/
+
+Temas cobertos:
+- Meta
+- Instagram
+
+---
+
+## 2026-06-01 — "35 mil bolsas pra virar creator com IA"
+URL: https://diaria.beehiiv.com/p/35-mil-bolsas-pra-virar-creator-com-ia
+
+Links usados:
+- https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni-3-5-videos/
+- https://www.anthropic.com/news/series-h?c=ordem
+- https://www.cnnbrasil.com.br/politica/hugo-quer-votar-ia-em-junho-e-relator-busca-avanco-do-redata-no-senado/
+- https://www.theguardian.com/technology/2026/may/28/anthropic-ai-valuation
+- https://exame.com/inteligencia-artificial/o-eleitor-e-a-ia-pesquisa-mostra-como-videos-e-textos-feitos-por-ia-podem-pesar-no-voto/
+- https://mittechreview.com.br/claude-code-automacao-desenvolvimento-software/
+- https://venturebeat.com/infrastructure/how-deepseeks-radical-architecture-is-shattering-silicon-valleys-token-moat
+- https://tecnoblog.net/noticias/chatgpt-perde-espaco-nos-escritorios-com-avanco-do-gemini-e-claude/
+- https://exame.com/inteligencia-artificial/openai-oferece-ferramentas-de-ciberseguranca-eleitoral-e-apoia-leis-contra-deepfakes/
+- https://exame.com/inteligencia-artificial/ia-para-pequenas-empresas-12-formas-de-usar-inteligencia-artificial-sem-orcamento-de-gigante/
+- https://www.lennysnewsletter.com/p/a-rational-conversation-on-where
+- https://exame.com/invest/mercados/de-mineradora-cripto-a-empresa-de-ia-nscale-ja-vale-us-14-bi-e-prepara-ipo/
+- https://openai.com/index/endava
+- https://canaltech.com.br/inteligencia-artificial/gemini-sai-das-sombras-e-assume-protagonismo-em-chamadas-longas-do-meet/
+- https://openai.com/index/boston-childrens-hospital
+- https://canaltech.com.br/inteligencia-artificial/google-vai-priorizar-suas-fontes-favoritas-no-modo-ia-veja-funcionamento/
+- https://openai.com/index/mufg
+- https://www.theguardian.com/technology/2026/may/29/give-staff-more-say-over-ai-to-ensure-they-share-benefits-uk-thinktank-urges
+- https://canaltech.com.br/apps/google-facilita-compartilhamento-de-chats-do-gemini-sem-envio-de-links/
+- https://alphasignalai.substack.com/p/how-claude-code-harness-turns-agent
+- https://www.theguardian.com/technology/2026/may/30/pope-leo-anthropic-ai
+- https://blog.google/innovation-and-ai/products/notebooklm/notebooklm-google-io-2026/
+- https://tecnoblog.net/noticias/falha-faz-ias-do-google-e-x-confundirem-pesquisas-com-comandos/
+- https://tecnoblog.net/noticias/vazamento-mostra-ios-27-com-mais-ia-e-novidades-na-camera/
+- https://canaltech.com.br/mercado/santander-abre-curso-com-35-mil-vagas-gratis-para-creators-com-ia/
+
+---
+
+## 2026-05-29 — "Opus 4.8: mais raciocínio, mesmo preço"
+URL: https://diaria.beehiiv.com/p/opus-4-8-mais-racioc-nio-mesmo-pre-o
+
+Links usados:
+- https://blogs.nvidia.com/blog/icra-research-robotics-simulation-to-real-world/
+- https://openai.com/index/openai-frontier-governance-framework
+- https://machinelearning.apple.com/updates/apple-at-cvpr-2026
+- https://blog.google/products/ads-commerce/ads-decoded-finale/
+- https://arxiv.org/abs/2605.27605
+- https://arxiv.org/abs/2605.27593
+- https://arxiv.org/abs/2605.27567
+- https://arxiv.org/abs/2605.27681
+- https://canaltech.com.br/mercado/99-dos-lideres-esperam-demitir-por-causa-da-ia-aponta-pesquisa/
+- https://exame.com/inteligencia-artificial/claude-opus-4-8-e-lancado-o-que-muda-no-novo-modelo-de-ia-da-anthropic/
+- https://canaltech.com.br/apps/c6-bank-permite-conversar-com-a-fatura-do-cartao-via-ia-entenda-como-funciona/
+- https://canaltech.com.br/mercado/por-que-grandes-empresas-estao-revendo-seus-gastos-com-ia/
+- https://canaltech.com.br/apps/youtube-vai-usar-selo-para-classificar-videos-feitos-por-ia-automaticamente/
+- https://canaltech.com.br/inteligencia-artificial/adeus-advogados-estudo-revela-crescimento-de-acoes-judiciais-feitas-com-ia/
+- https://www.cnnbrasil.com.br/economia/negocios/como-o-inter-alcancou-44-milhoes-de-clientes-com-ia-e-hiperpersonalizacao/
+- https://www.cnnbrasil.com.br/tecnologia/youtube-amplia-deteccao-de-videos-com-ia-as-vesperas-de-eleicao-no-brasil/
+- https://exame.com/bussola/como-o-protocolo-mcp-transforma-a-ia-em-um-executor-de-tarefas/
+- https://canaltech.com.br/inteligencia-artificial/google-atocha-busca-com-ia-e-ve-usuarios-irem-para-grande-rival/
+- https://canaltech.com.br/hardware/esquema-usava-o-japao-para-burlar-sancoes-e-enviar-chips-da-nvidia-a-china/
+- https://blog.google/products-and-platforms/products/search/original-high-quality-content-search/
+- https://exame.com/inteligencia-artificial/ia-e-o-maior-tsunami-da-historia-diz-john-doerr-investidor-de-google-e-amazon/
+- https://canaltech.com.br/apps/teclado-do-android-pode-mudar-completamente-como-voce-digita-com-novo-update/
+- https://openai.com/index/cisco
+- https://alphasignalai.substack.com/p/the-model-isnt-the-agent-anymore
+- https://tecnoblog.net/noticias/mediatek-revela-chip-dimensity-8550-para-levar-ia-local-a-celulares-mais-baratos/
+- https://fedi.simonwillison.net/@simon/116647525692207751
+- https://openai.com/index/building-self-improving-tax-agents-with-codex
+- https://blog.google/innovation-and-ai/technology/ai/io-2026-keynote-moment-videos/
+- https://mittechreview.com.br/inteligencia-artificial-redefine-futuro-ciencia-google/
+- https://www.theguardian.com/science/audio/2026/may/28/are-robots-nearing-their-chatgpt-moment-podcast
+- https://www.bensbites.com/p/i-signed-up-for-another-saas
+- https://www.theguardian.com/technology/2026/may/28/ai-is-changing-how-we-think-not-replacing-it
+- https://www.theguardian.com/technology/2026/may/27/pope-leo-ai-comments-tell-us
+
+Temas cobertos:
+- Opus
+
+---
+
+## 2026-05-28 — "RH usa automação para contratar e demitir"
+URL: https://diaria.beehiiv.com/p/rh-usa-automa-o-para-contratar-e-demitir
+
+Links usados:
+- https://blogs.nvidia.com/blog/ai-factories-the-new-infrastructure-of-intelligence/
+- https://huggingface.co/blog/local-reachy-mini-conversation
+- https://openai.com/index/election-safeguards-2026
+- https://huggingface.co/blog/delta-weight-sync
+- https://arxiv.org/abs/2605.26494
+- https://arxiv.org/abs/2605.27355
+- https://arxiv.org/abs/2605.26252
+- https://arxiv.org/abs/2605.26242
+- https://arxiv.org/abs/2605.26302
+- https://swen.ia.br/benchmark/open-source
+- https://exame.com/tecnologia/examelab/como-os-rhs-estao-usando-ia-para-contratar-monitorar-e-ate-demitir/
+- https://exame.com/inteligencia-artificial/cognition-levanta-us-1-bilhao-e-chega-a-valor-de-us-26-bilhoes-com-ia-para-programacao/
+- https://www.cnnbrasil.com.br/economia/negocios/nvidia-gastara-us-150-bilhoes-por-ano-em-taiwan-diz-ceo/
+- https://exame.com/tecnologia/examelab/ia-para-pequenas-empresas-como-empreendedores-estao-usando-inteligencia-artificial-no-dia-a-dia/
+- https://www.cnnbrasil.com.br/blogs/thiago-godoy/economia/mercado/a-ia-ja-esta-dentro-do-sistema-financeiro-mas-quem-ira-vigia-la/
+- https://mittechreview.com.br/ia-no-mercado-de-trabalho/
+- https://www.cnnbrasil.com.br/economia/negocios/sk-hynix-entra-para-clube-do-us-1-trilhao-com-auge-dos-chips-de-ia/
+- https://tecnoblog.net/noticias/youtube-vai-deixar-mais-visivel-o-aviso-de-videos-feitos-por-ia/
+- https://huggingface.co/blog/ibm-research/itbench-aa
+- https://exame.com/tecnologia/samsung-ira-investir-us-15-bilhao-em-fabrica-de-semicondutores-no-vietna/
+- https://www.theguardian.com/technology/2026/may/26/spotify-ai-remix-tool-protects-artists-slop
+- https://alphasignalai.substack.com/p/perplexitys-bumblebee-a-read-only
+- https://canaltech.com.br/hardware/teamgroup-pinta-cenario-apocaliptico-para-rams-e-ssds-vai-ficar-mais-caro/
+- https://www.theguardian.com/technology/2026/may/27/samsung-memory-chip-staff-bonuses-ai-profit-sharing-deal
+- https://canaltech.com.br/hardware/quando-sera-a-computex-2026-veja-como-assistir-anuncios-online/
+
+---
+
+## 2026-05-27 — "OpenAI fecha parceria com Folha e UOL"
+URL: https://diaria.beehiiv.com/p/openai-fecha-parceria-com-folha-e-uol-c576
+
+Links usados:
+- https://openai.com/index/grupo-folha-grupo-uol-partnership
+- https://www.theguardian.com/technology/2026/may/26/students-boo-pro-ai-graduation-speakers
+- https://mittechreview.com.br/lei-de-moore-ia-direito/
+- https://www.theguardian.com/technology/2026/may/23/rise-in-plastic-surgeons-asked-to-create-ai-face-cosmetic-surgery
+- https://www.theguardian.com/technology/2026/may/26/we-can-stitch-together-our-past-the-ai-generated-time-travellers-vlogging-from-history
+- https://www.theguardian.com/politics/2026/may/25/rachel-reeves-tells-ministers-to-buy-british-in-four-key-industries
+- https://blogs.nvidia.com/blog/vera-cpu-phoronix/
+- https://blog.google/products/ads-commerce/google-display-ads-demand-gen/
+
+Temas cobertos:
+- OpenAI
+- Folha
+
+---
+
+## 2026-05-26 — "Vaticano pede 'desarmamento' de sistemas de IA"
+URL: https://diaria.beehiiv.com/p/vaticano-pede-desarmamento-de-sistemas-de-ia
+
+Links usados:
+- https://huggingface.co/blog/agent-glossary
+- https://arxiv.org/abs/2605.23772
+- https://arxiv.org/abs/2605.23296
+- https://arxiv.org/abs/2605.23723
+- https://arxiv.org/abs/2605.23238
+- https://www.theguardian.com/world/2026/may/25/pope-leo-encyclical-ai-artificial-intelligence-slavery
+- https://mistral.ai/news/accelerate-ai-native-industry
+- https://mittechreview.com.br/chatbots-de-ia-expoem-telefones-e-desafiam-privacidade/
+- https://natlawreview.com/article/privacy-tip-492-ftc-enforcing-take-it-down-act
+- https://startupfortune.com/anthropic-is-moving-mythos-1-closer-to-claude-code/
+- https://sindpd.org.br/2026/05/22/california-plano-proteger-empregos-contra-ia/
+- https://canaltech.com.br/apps/ia-concorrente-do-gemini-derruba-preco-dos-planos-de-assinatura-em-75/
+- https://sourcegraph.com/blog/agentic-coding
+- https://exame.com/inteligencia-artificial/xiaomi-aposta-em-ia-propria-para-ganhar-espaco-onde-apple-patina/
+- https://www.theguardian.com/commentisfree/2026/may/25/the-guardian-view-on-the-pope-and-claude-encyclical-on-ai-is-right-to-put-humanity-first
+- https://canaltech.com.br/inteligencia-artificial/gemini-live-expande-conectividade-com-ainda-mais-apps-no-android-veja-quais/
+- https://exame.com/inteligencia-artificial/papa-leao-14-aborda-inteligencia-artificial-e-recebe-representantes-do-vale-do-silicio/
+- https://medicinasa.com.br/formacao-medica-ia/
+- https://blog.google/innovation-and-ai/technology/ai/io-2026-dialogues-recap/
+- https://exame.com/negocios/eles-criaram-app-nas-horas-vagas-faturavam-us-232-mil-por-mes-e-venderam-negocio-por-us-4-mi/
+- https://alphasignalai.substack.com/p/the-5-principles-every-ai-research
+- https://www.cnnbrasil.com.br/economia/macroeconomia/inteligencia-artificial-transforma-interacao-online-dizem-especialistas/
+- https://canaltech.com.br/apps/microsoft-nao-desiste-do-copilot-e-assistente-esta-de-volta-como-penduricalho/
+- https://digicad.com.br/2026/05/21/profissoes-que-vao-crescer-com-a-ia/
+- https://www.theguardian.com/uk-news/2026/may/25/scotland-policy-green-datacentres-emissions-impact-ai-analysis
+
+Temas cobertos:
+- Vaticano
+
+---
+
+## 2026-05-25 — "DeepSeek corta 75% do preço da API"
+URL: https://diaria.beehiiv.com/p/deepseek-corta-75-do-pre-o-da-api
+
+Links usados:
+- https://huggingface.co/blog/nvidia/nemotron-labs-diffusion
+- https://cohere.com/blog/command-a-plus
+- https://blogs.nvidia.com/blog/nvidia-gtc-taipei-computex-2026-news/
+- https://openai.com/index/gartner-2026-agentic-coding-leader
+- https://cloud.google.com/blog/products/ai-machine-learning/innovations-from-google-io-26-on-google-cloud
+- https://openai.com/index/virgin-atlantic
+- https://huggingface.co/blog/Dharma-AI/specialization-beats-scale
+- https://openai.com/index/openai-launches-the-deployment-company/
+- https://cohere.com/blog/cohere-announces-strategic-mous-with-indragroup-and-multiverse-computing
+- https://machinelearning.apple.com/research/vsas-bench-streaming-assistant
+- https://www.infomoney.com.br/business/guerra-de-precos-na-ia-chinesa-deepseek-corta-tarifas-em-75/#amp_tf=From%20%251%24s&aoh=17795786487483&csi=0&referrer=https%3A%2F%2Fwww.google.com&ampshare=https%3A%2F%2Fwww.infomoney.com.br%2Fbusiness%2Fguerra-de-precos-na-ia-chinesa-deepseek-corta-tarifas-em-75%2F
+- https://exame.com/internacional/regulacao-da-ia-no-brasil-o-que-a-nova-lei-muda-para-sua-empresa/
+- https://sindpd.org.br/2026/05/20/plataforma-brasileira-ia-generativa-em-operacao/
+- https://www.theguardian.com/technology/2026/may/23/trump-ai-order-big-tech
+- https://alphasignalai.substack.com/p/spec-driven-development-is-the-new
+- https://www.mobiletime.com.br/noticias/21/05/2026/sensedia-anuncia-api-de/
+- https://www.theguardian.com/business/2026/may/22/standard-chartered-boss-apologises-for-lower-value-human-capital-comments-amid-job-cuts
+- https://mittechreview.com.br/daron-acemoglu-3-alertas-sobre-ia-e-empregos/
+- https://www.theguardian.com/technology/2026/may/24/ai-washing-pr-firms-scrambling-rebrand
+- https://www.marktechpost.com/2026/05/23/perplexity-open-sources-bumblebee-a-read-only-supply-chain-scanner-for-developer-endpoints/
+- https://www.cnnbrasil.com.br/politica/joaquim-barbosa-nao-deu-aval-para-video-feito-com-ia-sobre-campanha/
+- https://hrportugal.sapo.pt/google-lanca-modelos-de-ia-mais-rapidos-e-agente-disponivel-24-horas/
+- https://benchlm.ai/reasoning
+- https://www.theguardian.com/commentisfree/2026/may/24/ai-tools-thinking-human-hard-coding-writing-technology
+- https://www.theguardian.com/technology/2026/may/24/cinematic-toolbox-ai-fault-lines-cannes
+- https://www.bensbites.com/p/googles-take-on-openclaw
+- https://www.androidpolice.com/started-using-gemini-with-whatsapp-and-its-game-changer/
+- https://br.wordpress.org/2026/05/21/o-que-ha-de-novo-no-ai-1-0-0-19-de-maio-de-2026/
+- https://www.simonsfoundation.org/2026/05/21/quantum-dynamics-breakthrough-overturns-claim-of-quantum-supremacy-opens-new-research-directions/
+- https://canaltech.com.br/inteligencia-artificial/chatgpt-ou-gemini-veja-qual-ia-usar-nas-tarefas-do-dia-a-dia/
+- https://canaltech.com.br/inteligencia-artificial/formas-de-usar-ia-no-trabalho-ganhar-tempo/
+- https://blog.google/products-and-platforms/devices/chromebooks/face-control/
+
+Temas cobertos:
+- DeepSeek
 
 ---
 
@@ -43,6 +339,9 @@ Links usados:
 - https://exame.com/bussola/o-que-e-o-modelo-de-capital-hibrido-que-surgiu-junto-a-gestao-com-ia/
 - https://aithority.com/machine-learning/evomap-introduces-genome-evolution-protocol-for-ai-agent-capability-inheritance-across-models-and-frameworks/
 - https://www.marktechpost.com/2026/05/20/meet-turbovec-a-rust-vector-index-with-python-bindings-and-built-on-googles-turboquant-algorithm/
+
+Temas cobertos:
+- SoberanIA
 
 ---
 
@@ -89,6 +388,11 @@ Links usados:
 - https://www.businessinsider.com/pizza-hut-ai-system-dragontail-lawsuit-franchisee-2026-5
 - https://9to5google.com/2026/05/12/gemini-chrome-android/
 
+Temas cobertos:
+- Google
+- Gemini
+- Omni
+
 ---
 
 ## 2026-05-20 — "Google I/O: Gemini 3.5, Omni e agentes no Search"
@@ -134,6 +438,12 @@ Links usados:
 - https://www.businessinsider.com/ex-google-executive-wants-to-get-people-off-their-screens-2026-5
 - https://deadline.com/2026/05/the-mandalorian-and-grogu-review-pedro-pascal-jon-favreau-1236915463/
 
+Temas cobertos:
+- Google
+- Gemini
+- Omni
+- Search
+
 ---
 
 ## 2026-05-19 — "Dell e OpenAI levam Codex a ambientes locais"
@@ -154,6 +464,11 @@ Links usados:
 - https://exame.com/inteligencia-artificial/microsoft-aprofunda-integracao-do-copilot-no-edge-com-memoria-longa-podcasts-de-ia-e-mais/
 - https://www.theguardian.com/technology/2026/may/18/tech-firms-uk-rules-intimate-image-abuse
 - https://ref.getviktor.com/vik-bh-founders-general1?utm_campaign=EVGAOFI0TJ&_bhiiv=opp_f21abd2f-47b1-4097-bbbc-945659ed3bc0_58600c56&bhcl_id=376de365-a63c-4c2e-a0b4-ebfb92d5a190_f5e52be6-2c5b-4d30-a1e1-28c131b5ce11_bedb0d70-3136-4388-81e3-12649914435e
+
+Temas cobertos:
+- Dell
+- OpenAI
+- Codex
 
 ---
 
@@ -202,6 +517,9 @@ Links usados:
 - https://telaviva.com.br/15/05/2026/frente-com-mais-de-50-entidades-reage-a-possivel-corte-de-direitos-autorais-no-pl-da-ia/
 - https://www.acessa.com/noticias/2026/05/324703-ensino-superior-nao-acompanha-demanda-por-habilidades-em-ia-aponta-pesquisa.html
 
+Temas cobertos:
+- ChatGPT
+
 ---
 
 ## 2026-05-15 — "Anthropic e Gates: $200 mi em saúde e educação"
@@ -247,278 +565,8 @@ Links usados:
 - https://canaltech.com.br/podcast/podcast-canaltech/openai-no-banco-dos-reus-o-que-motiva-a-acao-de-elon-musk-6505/
 - https://exame.com/tecnologia/examelab/como-usar-o-perplexity-ai-o-buscador-que-esta-substituindo-o-google/
 
----
-
-## 2026-05-14 — "Advogadas paraenses multadas por burlar IA"
-URL: https://diaria.beehiiv.com/p/advogadas-paraenses-multadas-por-burlar-ia
-
-Links usados:
-- https://www.anthropic.com/news/claude-for-small-business
-- https://blog.google/innovation-and-ai/technology/safety-security/scams-fraud-protection/
-- https://arxiv.org/abs/2605.11496
-- https://arxiv.org/abs/2605.11418
-- https://arxiv.org/abs/2605.11232
-- https://arxiv.org/abs/2605.11136
-- https://www.theguardian.com/world/2026/may/13/china-court-awards-compensation-sacked-worker-replaced-by-ai
-- https://www.cnnbrasil.com.br/nacional/norte/pa/advogadas-sao-multadas-por-tentarem-enganar-ia-em-processo-judicial-no-para/
-- https://agenciabrasil.ebc.com.br/economia/noticia/2026-05/regulacao-para-ia-sera-flexivel-e-tera-niveis-de-risco-diz-durigan
-- https://www.theguardian.com/technology/2026/may/13/datacentres-electricity-consumption-uk-us-ai
-- https://www.cnnbrasil.com.br/educacao/unicamp-cria-graduacao-em-ia-e-relacoes-internacionais-a-partir-de-2027/
-- https://mittechreview.com.br/onde-o-brasil-esta-na-sua-jornada-de-ia/
-- https://www.theguardian.com/us-news/2026/may/13/utah-approves-datacenter-backlash
-- https://canaltech.com.br/hardware/google-negocia-com-spacex-lancamento-de-data-center-orbital/
-- https://openai.com/index/building-codex-windows-sandbox
-- https://builtin.com/articles/claude-code-codex-cursor-github-copilot-comparison
-- https://www.cnnbrasil.com.br/economia/macroeconomia/bce-pede-que-bancos-se-preparem-para-ataques-ciberneticos-assistidos-por-ia/
-- https://canaltech.com.br/apps/whatsapp-ganha-recurso-importante-de-privacidade-para-conversar-com-o-meta-ai/
-- https://www.cnnbrasil.com.br/economia/negocios/meta-lancara-chat-anonimo-para-conversas-privadas-com-ia-no-whatsapp/
-- https://news.sap.com/2026/05/sap-anthropic-to-bring-claude-sap-business-ai-platform/
-- https://www.theguardian.com/us-news/2026/may/11/musk-v-openai-altman-trial
-- https://canaltech.com.br/inteligencia-artificial/chatgpt-encorajou-adolescente-morto-por-overdose-aponta-processo/
-- https://www.theguardian.com/society/2026/may/13/one-in-seven-prefer-ai-chatbots-to-seeing-doctor-uk-study
-- https://coloradosun.com/2026/05/12/colorado-ai-law-rewrite-passes/
-- https://techcrunch.com/2026/05/13/anthropics-cat-wu-says-that-in-the-future-ai-will-anticipate-your-needs-before-you-know-what-they-are/
-- https://www.androidauthority.com/what-to-expect-from-google-io-2026-3664979/
-- https://www.androidauthority.com/android-xr-glasses-preview-google-io-2026-3665773/
-- https://revistaforum.com.br/tecnologia/consleho-de-educacao/
-- https://www.cnnbrasil.com.br/economia/negocios/e-possivel-ver-impacto-da-ia-no-dia-a-dia-diz-benchimol-a-cnn/
-- https://www.devsustainability.com/p/ai-data-center-energy-in-2026
-- https://blog.google/products-and-platforms/products/youtube/youtube-brandcast-2026-advertiser-updates/
-- https://mittechreview.com.br/estetica-infantil-e-conteudo-apelativo/
-- https://exame.com/carreira/a-ia-nao-substitui-pessoas-como-essa-executiva-leva-tecnologia-para-decisoes-em-saude/
-- https://www.businessinsider.com/thinking-machines-lab-key-talent-meta-openai-xai-2026-5
-
----
-
-## 2026-05-13 — "Enter vira o 1o unicórnio de IA da América Latina"
-URL: https://diaria.beehiiv.com/p/enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina
-
-Links usados:
-- https://openai.com/index/openai-launches-the-deployment-company/
-- https://blog.google/innovation-and-ai/models-and-research/quantum-computing/repliqa-quantum-computing-life-sciences/
-- https://openai.com/index/what-parameter-golf-taught-us
-- https://arxiv.org/abs/2605.08614
-- https://arxiv.org/abs/2605.10310
-- https://arxiv.org/abs/2605.08670
-- https://www.bloomberglinea.com.br/startups/rodadas-da-semana-enter-se-torna-a-1-startup-unicornio-de-ia-da-america-latina/
-- https://blog.google/products-and-platforms/platforms/android/gemini-intelligence/
-- https://www.resultsense.com/news/2026-05-12-bank-of-england-ai-disruption-warning/
-- https://www.correiobraziliense.com.br/economia/2026/05/7416909-bndes-finep-e-embrapii-somam-rs105-bilhoes-em-projetos-para-ia.html
-- https://www.theguardian.com/technology/2026/may/12/sam-altman-openai-trial-elon-musk
-- https://conectaprofessores.com/2026/05/10/comissao-aprova-inclusao-da-inteligencia-artificial-nas-escolas-e-formacao-de-professores/
-- https://canaltech.com.br/seguranca/pela-1a-vez-google-detecta-e-bloqueia-ataque-de-dia-zero-feito-com-ia/
-- https://mittechreview.com.br/ia-futuro-trabalho-lucro/
-- https://openai.com/signals/research/2026q1-update
-- https://mittechreview.com.br/tia-governanca-risco-processos-pessoas/
-- https://www.theguardian.com/technology/2026/may/12/end-of-typing-workers-ditching-keyboards-voicepilling-ai-dictation
-- https://www.theguardian.com/us-news/2026/may/12/workers-ai-policy-unions
-- https://www.theguardian.com/books/2026/may/12/ai-has-cut-my-pay-as-a-memoir-writer-in-half
-- https://canaltech.com.br/apps/android-esta-mais-integrado-do-que-nunca-com-o-gemini-veja-o-que-muda-para-voce/
-- https://blog.google/products-and-platforms/products/chrome/bringing-chrome-ai-to-android/
-- https://www.cnnbrasil.com.br/economia/macroeconomia/bndes-destaca-potencial-de-parceria-em-ia-e-minerais-criticos-com-eua/
-- https://exame.com/negocios/cartao-corporativo-que-recusa-compras-fora-das-regras-vai-fazer-fintech-movimentar-r-500-milhoes/
-- https://alphasignalai.substack.com/p/when-ai-agents-learn-to-engineer
-- https://www.cnnbrasil.com.br/economia/negocios/invest-rio-aposta-em-ia-e-energia-para-atrair-capital-externo-no-web-summit/
-- https://alphasignalai.substack.com/p/how-ai-agents-follow-senior-engineer
-- https://thinkingmachines.ai/blog/interaction-models/
-- https://blog.google/products-and-platforms/platforms/android/meet-googlebook/
-- https://canaltech.com.br/software/google-anuncia-versao-especial-do-android-para-notebooks-premium/
-- https://canaltech.com.br/mercado/tiktok-e-instagram-sao-alvos-de-ofensiva-para-proteger-criancas-do-vicio/
-- https://alphasignalai.substack.com/p/you-should-install-hermes-agent-this
-- https://www.marktechpost.com/2026/05/10/openclaw-vs-hermes-agent-why-nous-researchs-self-improving-agent-now-leads-openrouters-global-rankings/
-
----
-
-## 2026-05-12 — "Brasil: 70% da Geração Z usa ChatGPT todo mês"
-URL: https://diaria.beehiiv.com/p/brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s
-
-Links usados:
-- https://www.anthropic.com/research/teaching-claude-why
-- https://blogs.microsoft.com/on-the-issues/2026/05/07/the-state-of-global-ai-diffusion-in-2026/
-- https://arxiv.org/abs/2605.06890
-- https://arxiv.org/abs/2605.06713
-- https://arxiv.org/abs/2605.06696
-- https://arxiv.org/abs/2605.07324
-- https://research.perplexity.ai/articles/designing-refining-and-maintaining-agent-skills-at-perplexity
-- https://blog.google/innovation-and-ai/infrastructure-and-cloud/google-cloud/google-threat-intelligence-group-report/
-- https://cloud.google.com/blog/topics/threat-intelligence/ai-vulnerability-exploitation-initial-access
-- https://techcrunch.com/2026/05/10/anthropic-says-evil-portrayals-of-ai-were-responsible-for-claudes-blackmail-attempts/
-- https://www.rnz.co.nz/news/top/594881/can-chatgpt-be-charged-in-a-murder-florida-wants-to-find-out
-- https://www.fius.com.br/regulacao-da-ia-no-brasil-o-que-as-empresas-precisam-fazer-antes-da-nova-lei-entrar-em-vigor/
-- https://www.theguardian.com/technology/2026/may/11/ai-worker-control-surveillance
-- https://openai.com/index/openai-launches-the-deployment-company
-- https://claude.com/blog/claude-platform-on-aws
-- https://www.techpolicy.press/what-the-eu-ai-omnibus-deal-changes-for-the-ai-act-and-what-lies-ahead/
-- https://tiinside.com.br/08/05/2026/empresas-dobram-investimento-em-ia-e-ampliam-uso-de-ferramentas-pagas-com-foco-em-produtividade-e-seguranca/
-- https://www.poder360.com.br/poder-congresso/camara-deve-votar-pls-de-ia-e-de-terras-raras-em-maio-diz-motta/
-- https://blog.google/products-and-platforms/products/search/ai-powered-google-finance-in-europe/
-- https://theaiinsider.tech/2026/05/06/ai2-releases-molmoact-2-open-source-foundation-model-for-robots/
-- https://fullsalessystem.com/blog/compliance-comercial-2026-lgpd-ia-vendas/
-- https://www.theguardian.com/society/2026/may/11/palantir-access-nhs-england-patient-data
-- https://northflank.com/blog/enterprise-ai-coding-agent-deployment
-- https://jornalempresasenegocios.com.br/espaco-empresarial/produtividade-sob-pressao-acelera-uso-de-inteligencia-artificial-nas-empresas-em-2026/
-- https://openai.com/business/guides-and-resources/how-enterprises-are-scaling-ai
-- https://fia.com.br/blog/tendencias-de-ia-para-empresas-em-2026/
-- https://www.cnnbrasil.com.br/internacional/trump-e-xi-devem-conversar-sobre-ira-armas-nucleares-comercio-e-ia/
-- https://newsroom.accenture.com/news/2026/servicenow-and-accenture-launch-forward-deployed-engineering-program-to-scale-agentic-ai-across-the-enterprise
-- https://www.bacancytechnology.com/blog/enterprise-mcp-use-cases
-- https://importai.substack.com/p/import-ai-456-rsi-and-economic-growth
-- https://www.marketingdive.com/news/ai-remains-a-top-priority-for-cmos-but-spending-lags-gartner/819806/
-- https://www.makeuseof.com/notebooklm-organize-project-notes/
-- https://ohoje.com/2026/05/07/brasileiros-da-geracao-z-estao-entre-os-que-mais-usam-ia-no-mundo-aponta-estudo/
-- https://www.theguardian.com/technology/2026/may/11/ai-powered-hacking-industrial-scale-threat-three-months-google
-- https://www.ey.com/pt_br/newsroom/2026/05/gerir-milhares-agentes-ia-empresas-adotam-novo-modelo-governanca
-
----
-
-## 2026-05-11 — "OpenAI lança modelos de voz em tempo real"
-URL: https://diaria.beehiiv.com/p/openai-lan-a-modelos-de-voz-em-tempo-real
-
-Links usados:
-- https://openai.com/index/advancing-voice-intelligence-with-new-models-in-the-api
-- https://machinelearning.apple.com/updates/ppml-2026
-- https://exame.com/negocios/reforma-tributaria-muda-logica-financeira-das-empresas-e-amplia-papel-da-ia-na-gestao/
-- https://exame.com/negocios/a-empresa-de-niteroi-que-usa-ia-para-cobrar-dividas-e-cresceu-69-em-um-ano/
-- https://www.theguardian.com/us-news/ng-interactive/2026/may/10/fiction-writing-professor-ai
-- https://nvidianews.nvidia.com/news/nvidia-and-iren-announce-strategic-partnership-to-accelerate-deployment-of-up-to-5-gigawatts-of-ai-infrastructure
-- https://gd.eurisko.com.br/2026/05/09/tudo-o-que-sabemos-sobre-o-google-i-o-2026/
-- https://exame.com/carreira/ia-pode-aumentar-solidao-no-trabalho-alerta-chro-da-alice-no-rh-summit/
-- https://press.airstreet.com/p/state-of-ai-may-2026
-- https://openai.com/index/simplex
-- https://www.channelnewsasia.com/world/frontier-ai-anthropic-mythos-cybersecurity-risks-cna-explains-6103406
-- https://sdtimes.com/ai/may-8-2026-ai-updates-from-the-past-week-coder-agents-launch-snyk-claude-partnership-opsera-cursor-partnership-and-more/
-- https://www.danielnunes.net.br/2026/05/gigante-da-tecnologia-lanca-iniciativa.html
-- https://www.sciencedaily.com/releases/2026/05/260504023844.htm
-- https://newsroom.ibm.com/2026-05-05-think-2026-ibm-delivers-the-blueprint-for-the-ai-operating-model-as-the-ai-divide-widens
-- https://brasil.newsroom.ibm.com/Orquestracao-e-desenvolvimento-de-agentes-de-ultima-geracao-oferecem-as-empresas-uma-forma-unificada-de-planejar,-construir,-implementar-e-governar-agentes-de-IA-em-larga-escala
-- https://huggingface.co/blog/ServiceNow-AI/correctness-before-corrections
-- https://www.theguardian.com/technology/2026/may/10/mistaking-ai-behaviour-for-conscious-being
-- https://www.aisi.gov.uk/blog/our-evaluation-of-claude-mythos-previews-cyber-capabilities
-- https://canaltech.com.br/inteligencia-artificial/como-usar-o-chatgpt-para-ajudar-a-organizar-sua-semana/
-- https://www.theguardian.com/technology/2026/may/06/shivon-zilis-testimony-elon-musk-openai-lawsuit
-- https://blog.greeden.me/en/2026/05/07/generative-ai-news-weekly-summary-april-30-may-7-2026-gpt-5-5-instant-claude-financial-agents-and-geminis-multimodal-rag-accelerate-practical-ai/
-- https://www.xda-developers.com/ubuntu-showed-microsoft-add-ai/
-
----
-
-## 2026-05-09 — "New post"
-URL: https://diaria.beehiiv.com/p/new-post
-
-Links usados:
-- https://www.abcdacomunicacao.com.br/pesquisa-revela-brasil-escala-agentes-de-ia-e-empresas-apontam-responsabilidade-e-seguranca-como-fatores-mais-importantes/
-- https://arxiv.org/abs/2604.22266
-- https://logweb.com.br/ia-em-supply-chain-empresas-brasil-nao-estao-prontas-pesquisa-procurement-club/
-- https://benchlm.ai/agentic
-- https://codersera.com/blog/best-open-source-llm-2026-llama-4-qwen-3-5-deepseek-v4-gemma-4-mistral/
-- https://www.alobrasilia.com.br/2026/05/camara-agenda-votacao-do-marco-legal-da.html
-- https://mittechreview.com.br/deepseek-v4-modelo-ia/
-- https://exame.com/carreira/eles-criaram-um-chatbot-de-ia-para-se-candidatar-a-vagas-no-lugar-deles-concorrencia-esta-insana/
-- https://importai.substack.com/p/import-ai-455-automating-ai-research
-- https://agenciabrasil.ebc.com.br/economia/noticia/2026-04/finep-e-bndes-lancam-edital-para-selecionar-gestor-de-fundo-de-ia
-- https://alphasignalai.substack.com/p/how-to-choose-between-single-and
-- https://www.acessa.com/politica/2026/05/322918-inteligencia-artificial-provoca-terremoto-em-campanhas-eleitorais-de-2026.html
-- https://mittechreview.com.br/boom-robos-humanoides-ia/
-- https://www.acessa.com/economia/2026/04/321051-agentes-de-ia-ja-fazem-compras-no-brasil-e-aceleram-corrida-tecnologica-das-bandeiras.html
-- https://www.danielnunes.net.br/2026/04/inteligencia-artificial-nas-empresas.html
-- https://exame.com/negocios/ela-trabalha-em-harvard-e-criou-um-negocio-para-tratar-quem-se-apaixonou-por-uma-ia/
-- https://api-docs.deepseek.com/news/news260424
-- https://debatejuridico.com.br/ia-no-brasil-entra-na-reta-decisiva-camara-deve-votar-marco-regulatorio-em-maio/
-- https://canaltech.com.br/inteligencia-artificial/como-usar-o-chatgpt-images-20-para-criar-posts-banners-infograficos/
-- https://blog.google/company-news/outreach-and-initiatives/entrepreneurs/google-for-startups-accelerator/
-- https://canaltech.com.br/apps/novo-selo-do-instagram-vai-marcar-perfis-que-usam-ia/
-- https://mtagora.com.br/noticia/180172/startup-brasileira-lanca-ia-para-campanhas-eleitorais/
-- https://blog.mean.ceo/ai-advancements-news-may-2026/
-- https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/
-- https://canaltech.com.br/apps/blablacar-leva-reservas-de-caronas-e-onibus-para-o-chatgpt/
-- https://mittechreview.com.br/ia-e-dados-azul-genesys/
-- https://canaltech.com.br/inteligencia-artificial/o-que-mudou-de-verdade-no-chatgpt-images-20/
-- https://www.cartacapital.com.br/opiniao/ia-riscos-e-potenciais/
-- https://grafana.com/blog/o11y-bench-open-benchmark-for-observability-agents/
-- https://ndmais.com.br/tecnologia/alem-da-ia-e-dos-algoritmos-gramado-summit-2026-valoriza-as-pessoas-no-centro-da-inovacao/
-- https://canaltech.com.br/colunas/a-ia-que-esta-transformando-o-brasil-comeca-no-seu-dispositivo/
-- https://correiopaulista.com/barueri-recebe-innovation-summit-2026-com-foco-em-tecnologia-startups-e-inteligencia-artificial/
-- https://developers.cloudflare.com/changelog/post/2026-04-20-kimi-k2-6-workers-ai/
-- https://iimainfo.com.br/ai-innovation/
-- https://canaltech.com.br/seguranca/30-mil-contas-no-facebook-sao-hackeadas-e-a-sua-pode-ser-uma-delas/
-- https://mittechreview.com.br/mercado-remocao-carbono-risco-microsoft/
-- https://canaltech.com.br/colunas/invasores-de-corpos-como-hackers-tomam-o-controle-de-programas-em-execucao/
-- https://www.cooley.com/news/insight/2026/2026-04-24-state-ai-laws-where-are-they-now
-- https://www.morganlewis.com/pubs/2026/03/white-house-ai-framework-puts-federal-preemption-at-the-center-of-the-debate
-- https://canaltech.com.br/inteligencia-artificial/gemini-prompts-para-achar-legendar-e-organizar-google-fotos/
-- https://canaltech.com.br/apps/gemini-ganha-novo-visual-com-fundo-animado-veja-como-ficou/
-
----
-
-## 2026-05-08 — "Modelos se replicam sozinhos, diz estudo inédito"
-URL: https://diaria.beehiiv.com/p/modelos-se-replicam-sozinhos-diz-estudo-in-dito
-
-Links usados:
-- https://openai.com/index/advancing-voice-intelligence-with-new-models-in-the-api
-- https://openai.com/index/mrc-supercomputer-networking
-- https://arxiv.org/abs/2605.04454
-- https://arxiv.org/abs/2605.04488
-- https://arxiv.org/abs/2605.05138
-- https://arxiv.org/abs/2605.04572
-- https://sitepd.org.br/2026/05/06/startup-brasileira-ia-juridica-novo-unicornio/
-- https://exame.com/tecnologia/fundo-estatal-chines-negocia-liderar-primeira-rodada-de-investimento-na-deepseek/
-- https://www.infomoney.com.br/carreira/ia-avanca-sem-estrategia-e-presencial-vira-imposicao-nas-empresas-diz-pesquisa/
-- https://www.theguardian.com/technology/2026/may/05/commerce-department-ai-agreements-google-microsoft-xai
-- https://openai.com/index/introducing-trusted-contact-in-chatgpt
-- https://www.theregister.com/ai-and-ml/2026/05/07/ai-vision-agents-use-45x-more-tokens-than-apis-in-benchmark/5231346
-- https://www.theguardian.com/technology/2026/may/07/your-craft-is-obsolete-wisetech-staff-in-limbo-as-ai-touted-as-better-than-humans
-- https://canaltech.com.br/inteligencia-artificial/em-breve-a-forma-que-voce-usa-o-chatgpt-e-gemini-pode-mudar-drasticamente/
-- https://www.theguardian.com/technology/2026/may/05/publishers-sue-meta-copyright-ai
-- https://openai.com/index/introducing-b2b-signals
-- https://www.anthropic.com/responsible-scaling-policy/roadmap
-- https://blog.google/products-and-platforms/products/search/explore-web-generative-ai-search/
-- https://mittechreview.com.br/influenciadores-virtuais-credibilidade/
-- https://www.oexplorador.com.br/se-tornou-o-primeiro-unicornio-de-inteligencia-artificial-ia-da-america-latina/
-- https://gd.eurisko.com.br/2026/05/04/ia-nao-e-bolha-e-deve-redefinir-produtividade-e-acesso-no-brasil-afirma-presidente-do-google
-- https://www.theguardian.com/technology/2026/may/07/no-one-has-done-this-in-the-wild-study-observes-ai-replicate-itself
-- https://openai.com/index/testing-ads-in-chatgpt
-- https://agenciasebrae.com.br/inovacao-e-tecnologia/sebrae-anuncia-30-startups-selecionadas-para-levar-ia-ao-mercado-de-pmes/
-- https://www.theguardian.com/business/2026/may/06/ramageddon-cheap-phones-laptops-macbooks-ps5s-ai-chips
-
----
-
-## 2026-05-07 — "Anthropic eleva limites e fecha parceria com SpaceX"
-URL: https://diaria.beehiiv.com/p/anthropic-eleva-limites-e-fecha-parceria-com-spacex
-
-Links usados:
-- https://www.linkedin.com/feed/update/urn:li:activity:7455623992494743553
-- https://www.anthropic.com/news/higher-limits-spacex
-- https://mittechreview.com.br/treinamento-duplos-ia-trabalhadores-china
-- https://en.wikipedia.org/wiki/Gunung%20Lambak
-- https://www.theguardian.com/technology/2026/may/05/richard-dawkins-ai-consciousness-anthropic-claude-openai-chatgpt
-- https://www.anthropic.com/news/finance-agents
-- https://deepmind.google/blog/gemini-robotics-er-1-6
-- https://arxiv.org/abs/2605.05191
-- https://arxiv.org/abs/2605.04785
-- https://arxiv.org/abs/2604.27891
-- https://www.cnnbrasil.com.br/economia/negocios/spacex-apresenta-plano-de-us-55-bi-para-fabrica-de-chips-de-ia
-- https://openai.com/index/singular-bank
-- https://siliconangle.com/2026/05/04/ai-agent-startup-sierra-valued-15b-new-950m-funding-round
-- https://canaltech.com.br/smartphone/apple-vai-devolver-r-466-para-donos-dos-iphones-15-e-16-apos-ser-processada
-
----
-
-## 2026-05-06 — "GPT-5.5 Instant chega como padrão do ChatGPT"
-URL: https://diaria.beehiiv.com/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt
-
-Links usados:
-- https://blog.google/innovation-and-ai/technology/developers-tools/expanded-gemini-api-file-search-multimodal-rag/
-- https://blog.google/innovation-and-ai/technology/developers-tools/multi-token-prediction-gemma-4/
-- https://blog.google/products/ads-commerce/google-marketing-live-2026-turn-your-data-into-decisions/
-- https://blog.google/innovation-and-ai/technology/ai/future-vision-film-competition-xprize/
-- https://alignment.anthropic.com/2026/automated-w2s-researcher/
-- https://exame.com/brasil/juiz-do-trt-do-rio-publica-decisao-com-prompt-de-ia/
-- https://exame.com/negocios/eles-tem-22-anos-e-fundaram-uma-startup-de-ia-avaliada-em-us-10-bilhoes/
-- https://alphasignalai.substack.com/p/four-agent-orchestration-patterns
-- https://www.danielnunes.net.br/2026/05/brasil-lidera-uso-de-ia-entre.html
-- https://canaltech.com.br/colunas/a-ia-que-esta-transformando-o-brasil-comeca-no-seu-dispositivo/
-- https://mittechreview.com.br/como-a-maturidade-em-inteligencia-artificial-realmente-se-constroi-dentro-das-empresas/
-- https://openai.com/index/gpt-5-5-instant
-- https://www.alobrasilia.com.br/2026/05/camara-agenda-votacao-do-marco-legal-da.html
-- https://openai.com/index/new-ways-to-buy-chatgpt-ads
+Temas cobertos:
+- Anthropic
+- Gates
 
 ---
