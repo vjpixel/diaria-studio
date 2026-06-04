@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
-import { canonicalize } from "./lib/url-utils.ts";
+import { canonicalize, stripUrlTrailingPunct } from "./lib/url-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportados pra tests
@@ -65,10 +65,25 @@ export function extractDestaqueUrls(reviewedMd: string): string[] {
       new RegExp(`^${DESTAQUE_HEADER.source}`),
     );
     if (!headerMatch) continue;
-    // Primeira URL do block (após header, antes de próximo block ou ---)
-    const urlMatch = block.match(/https?:\/\/[^\s)\]]+/);
+    // Primeira URL do block. Heurística calibrada pro formato real do título do
+    // destaque: `**[Título](URL)**` em linha própria, terminado por `**` + EOL.
+    //
+    // #1833: incluir `()` no match (não parar no primeiro `)`) pra não truncar
+    // URL com parêntese interno balanceado — ex. Wikipedia/gov
+    // `.../AI_(disambiguation)`. Char-class igual ao URL_REGEX_RAW do url-utils
+    // (termina em whitespace / `]` do link / `<>"`), que permite `*` no path.
+    // Pós-processo: `replace(/\*+$/)` tira o `**` de fecho do bold (preserva `*`
+    // interno do path; lossy só pra URL que TERMINA em `*` sem markdown — não
+    // ocorre em link de notícia), e `stripUrlTrailingPunct` tira o `)` do link
+    // markdown + pontuação de prose (balanced-aware: só `)` desbalanceado).
+    //
+    // Limitação conhecida (fora de formato, não dispara no título real): um link
+    // inline seguido SEM espaço de `(prose)` ou de outro `[link]` faz over-capture
+    // (`](url)(ver)` → `url)(ver`). O título sempre é bold-wrapped + EOL, então o
+    // primeiro `https://` do block é o link do título e termina em `**`.
+    const urlMatch = block.match(/https?:\/\/[^\s\]<>"]+/);
     if (urlMatch) {
-      urls.push(urlMatch[0].replace(/[).,;]+$/, ""));
+      urls.push(stripUrlTrailingPunct(urlMatch[0].replace(/\*+$/, "")));
     }
   }
 
