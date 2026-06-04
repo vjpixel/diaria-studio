@@ -511,7 +511,7 @@ Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use
 npx tsx scripts/review-use-melhor.ts --approved data/editions/{AAMMDD}/_internal/01-approved.json
 ```
 
-Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (`domínio newsletter/agregador` e/ou `sem sinal de tutorial`), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
+Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (domínio newsletter/agregador **E** sem sinal de tutorial no título/slug — o vetor real de mis-bucket), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
 
 ### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
 

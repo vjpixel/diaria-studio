@@ -40,7 +40,7 @@ describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
     assert.equal(suspicious.length, 0, "título com 'guia'/'como usar' = tutorial");
   });
 
-  it("flaga substack/beehiiv via sufixo de host", () => {
+  it("flaga substack/beehiiv (newsletter) sem sinal de tutorial", () => {
     const items = [
       { url: "https://alguem.substack.com/p/analise", title: "Análise da semana em IA" },
       { url: "https://x.beehiiv.com/p/roundup", title: "Weekly roundup" },
@@ -49,11 +49,24 @@ describe("reviewUseMelhor — flag de não-tutorial (#1798)", () => {
     assert.equal(suspicious.length, 2);
   });
 
-  it("flaga item sem sinal de tutorial mesmo em domínio neutro", () => {
-    const items = [{ url: "https://techblog.com/openai-announces-thing", title: "OpenAI anuncia novidade" }];
+  it("NÃO flaga newsletter COM sinal de tutorial (tutorial real de newsletter)", () => {
+    // AND-logic: latent.space pode ter tutorial de verdade — não flagar nesse caso.
+    const items = [
+      { url: "https://www.latent.space/p/how-to-build-rag", title: "How to build a RAG pipeline" },
+    ];
     const { suspicious } = reviewUseMelhor(items);
-    assert.equal(suspicious.length, 1);
-    assert.match(suspicious[0].reasons.join(" "), /sem sinal de tutorial/);
+    assert.equal(suspicious.length, 0);
+  });
+
+  it("NÃO flaga tutorial de blog pessoal (não-newsletter) com título não-imperativo", () => {
+    // Regressão do ruído da lógica OR (review do PR #1816): OR flagava todo
+    // tutorial legítimo de domínio neutro sem verbo no título.
+    const items = [
+      { url: "https://eugeneyan.com/writing/llm-patterns", title: "LLM Patterns" },
+      { url: "https://hamel.dev/blog/posts/evals", title: "Your AI Product Needs Evals" },
+    ];
+    const { suspicious } = reviewUseMelhor(items);
+    assert.equal(suspicious.length, 0, "AND-logic: domínio neutro não é flagado");
   });
 
   it("ignora itens sem url; conta total corretamente", () => {

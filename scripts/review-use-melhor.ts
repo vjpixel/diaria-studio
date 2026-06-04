@@ -106,8 +106,17 @@ export interface ReviewResult {
 }
 
 /**
- * Flag suspeito = domínio newsletter/agregador OU sem sinal de tutorial
- * (issue #1798). Pura e testável.
+ * Flag suspeito = domínio newsletter/agregador **E** sem sinal de tutorial
+ * (#1798). O vetor real de mis-bucket é exatamente esse: domínios que o
+ * categorize trata como tutorial-pattern mas são primariamente newsletter
+ * (latent.space, *.substack), com título de cobertura/análise.
+ *
+ * AND (não OR como a proposta inicial sugeria — review do PR #1816): OR flagava
+ * 6/7 itens legítimos (todo tutorial de blog pessoal com título não-imperativo
+ * caía), treinando o editor a ignorar o aviso. AND é preciso:
+ *  - latent.space "State of AI Engineering" → newsletter + sem-sinal → FLAGA ✓
+ *  - latent.space "How to build an agent"   → newsletter + sinal    → não flaga ✓
+ *  - eugeneyan.com "LLM Patterns"           → não-newsletter        → não flaga ✓
  */
 export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
   const suspicious: SuspiciousItem[] = [];
@@ -115,15 +124,14 @@ export function reviewUseMelhor(items: UseMelhorItem[]): ReviewResult {
     const url = typeof item.url === "string" ? item.url : "";
     if (!url) continue;
     const title = typeof item.title === "string" ? item.title : "";
-    const reasons: string[] = [];
-    if (isNewsletterLike(url)) {
-      reasons.push("domínio newsletter/agregador (cobertura/análise, não tutorial)");
-    }
-    if (!hasTutorialSignal(url, title)) {
-      reasons.push("sem sinal de tutorial no título/slug (como/guia/how-to/cookbook/...)");
-    }
-    if (reasons.length > 0) {
-      suspicious.push({ url, title: title || undefined, reasons });
+    if (isNewsletterLike(url) && !hasTutorialSignal(url, title)) {
+      suspicious.push({
+        url,
+        title: title || undefined,
+        reasons: [
+          "domínio newsletter/agregador SEM sinal de tutorial no título/slug — provável cobertura/análise, não tutorial",
+        ],
+      });
     }
   }
   return { total: items.length, suspicious };
