@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderHtmlReport,
+  renderDurationCell,
   buildSummary,
   type HighlightSummary,
 } from "../scripts/send-edition-report.ts";
@@ -41,9 +42,11 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes(url), "deve conter a URL versionada (com hash)");
   });
 
-  it("#1739: sem URL de social preview → sem bloco (não crasha)", () => {
+  it("#1824: sem URL de social preview → linha visível com '(social preview não gerado)'", () => {
+    // #1824: ausência agora é VISÍVEL (antes a linha sumia silenciosamente).
     const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null);
-    assert.ok(!html.includes("Preview social"), "sem URL → sem linha de preview social");
+    assert.ok(html.includes("Preview social"), "a linha aparece sempre");
+    assert.ok(html.includes("social preview não gerado"), "a ausência é sinalizada");
     assert.ok(html.includes("<!DOCTYPE html>"), "render normal");
   });
 
@@ -67,10 +70,11 @@ describe("renderHtmlReport", () => {
     assert.ok(!html.includes("<h2>Destaques</h2>"), "Destaques header should be gone");
   });
 
-  it("shows pipeline_ms when available", () => {
+  it("#1823: mostra pipeline_ms (gate-excluded) sem o sufixo '+gate'", () => {
     const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
-    assert.ok(html.includes("+gate:"), "should show gate annotation for stages with pipeline_ms");
-    assert.ok(html.includes("5m"), "pipeline_ms of 300000 should render as 5m");
+    // #1823: a duração é gate-excluded; o sufixo "(+gate: total)" foi removido.
+    assert.ok(html.includes("5m"), "pipeline_ms de 300000 renderiza como 5m");
+    assert.ok(!html.includes("+gate:"), "#1823: sem o sufixo +gate (gate excluído, não anexado)");
   });
 
   it("#1706: stage sem duração medida → '(não medido)', não '-'", () => {
@@ -148,6 +152,60 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes("facebook"));
     assert.ok(html.includes("linkedin"));
     assert.ok(html.includes("BRT"));
+  });
+});
+
+describe("renderDurationCell — sempre gate-excluded (#1823)", () => {
+  it("pipeline_ms presente → mostra ele (gate-excluded), sem +gate", () => {
+    const cell = renderDurationCell({ stage: 1, status: "done", pipeline_ms: 300_000, duration_ms: 540_000 });
+    assert.ok(cell.includes("5m"), "mostra pipeline (5m), não o total (9m)");
+    assert.ok(!cell.includes("9m"), "não mostra o total (inclui gate)");
+    assert.ok(!cell.includes("gate"), "sem anotação de gate");
+  });
+
+  it("stage SEM gate (0) sem pipeline → duration_ms é gate-excluded, limpo", () => {
+    const cell = renderDurationCell({ stage: 0, status: "done", duration_ms: 60_000 });
+    assert.ok(cell.includes("1m"));
+    assert.ok(!cell.includes("inclui gate"), "stage 0 não tem gate a excluir");
+  });
+
+  it("stage COM gate (2) sem pipeline → total com label honesto '(inclui gate)'", () => {
+    const cell = renderDurationCell({ stage: 2, status: "done", duration_ms: 900_000 });
+    assert.ok(cell.includes("15m"));
+    assert.match(cell, /inclui gate/, "sinaliza que o total inclui a espera do gate");
+  });
+
+  it("stage 4 (sempre tem gate, pre_gate ou legacy) sem pipeline → '(inclui gate)'", () => {
+    // review #1826: stage 4 tem gate nos dois modos → o fallback duration-only
+    // deve ser rotulado honestamente, nunca como tempo de trabalho puro.
+    const cell = renderDurationCell({ stage: 4, status: "done", duration_ms: 300_000 });
+    assert.ok(cell.includes("5m"));
+    assert.match(cell, /inclui gate/);
+  });
+
+  it("sem nenhum timestamp → '(não medido)', nunca '-' mudo", () => {
+    const cell = renderDurationCell({ stage: 3, status: "done" });
+    assert.match(cell, /não medido/);
+  });
+});
+
+describe("links do relatório (#1824)", () => {
+  it("sem draft_preview_url → '(preview indisponível)', não link 404 hashless", () => {
+    const published = {
+      draft_url: "https://app.beehiiv.com/posts/abc/edit",
+      title: "Edição",
+      status: "draft",
+    } as unknown as Parameters<typeof renderHtmlReport>[2];
+    const html = renderHtmlReport("260525", MINIMAL_DOC, published, null, [], []);
+    assert.ok(html.includes("preview indisponível"), "ausência sinalizada");
+    assert.ok(!html.includes("draft.diaria.workers.dev/260525\""), "sem o fallback hashless (404)");
+  });
+
+  it("rótulos Cloudflare/Beehiiv claros nos links", () => {
+    const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+    assert.ok(html.includes("Rascunho (Beehiiv)"));
+    assert.ok(html.includes("Preview newsletter (Cloudflare)"));
+    assert.ok(html.includes("Preview social (Cloudflare)"));
   });
 });
 
