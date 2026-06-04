@@ -7,6 +7,7 @@ import {
   extractLancamentoUrls,
   validateLancamentos,
   validateLancamentosFromApproved,
+  isNonProductLancamento,
 } from "../scripts/validate-lancamentos.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
@@ -304,5 +305,63 @@ describe("CLI args (#902, #926)", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("não-produto (governança/política) — #1799", () => {
+  it("isNonProductLancamento flaga o item OpenAI policy de 260604", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://openai.com/index/public-policy-agenda",
+        "OpenAI apresenta sua agenda de política pública",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento NÃO flaga lançamento de produto real", () => {
+    assert.ok(!isNonProductLancamento("https://openai.com/index/gpt-5", "GPT-5"));
+    assert.ok(!isNonProductLancamento("https://blog.google/technology/gemini-2", "Gemini 2"));
+    assert.ok(!isNonProductLancamento("https://www.nvidia.com/rtx-spark", "RTX Spark"));
+  });
+
+  it("flaga não-produto MESMO em domínio oficial (independente do #160)", () => {
+    // openai.com é oficial → NÃO entra em removed, mas É governança → flagged.
+    const approved = {
+      lancamento: [
+        { url: "https://openai.com/index/public-policy-agenda", title: "Agenda de política pública" },
+        { url: "https://openai.com/index/gpt-5", title: "GPT-5" },
+      ],
+    };
+    const r = validateLancamentosFromApproved(approved);
+    assert.equal(r.removed.length, 0, "ambos oficiais → nenhum removido");
+    assert.equal(r.flagged_non_product.length, 1, "só o policy é flagado");
+    assert.match(r.flagged_non_product[0].url, /public-policy-agenda/);
+  });
+
+  it("MD: regex casa header bold+emoji **🚀 LANÇAMENTOS** (antes era no-op)", () => {
+    const md = [
+      "**🚀 LANÇAMENTOS**",
+      "",
+      "[GPT-5](https://openai.com/index/gpt-5) — modelo novo.",
+      "",
+      "**📡 RADAR**",
+      "",
+      "[outra coisa](https://exemplo.com/x)",
+    ].join("\n");
+    const urls = extractLancamentoUrls(md);
+    assert.equal(urls.length, 1, "deve extrair só o item de LANÇAMENTOS (RADAR encerra)");
+    assert.match(urls[0].url, /openai\.com\/index\/gpt-5/);
+  });
+
+  it("MD: non_product populado para item de governança", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "",
+      "https://openai.com/index/public-policy-agenda",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.non_product.length, 1);
   });
 });

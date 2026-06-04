@@ -501,6 +501,8 @@ Opções:
   - Forçar aceitação no gate (override editorial pontual)
 ```
 
+**#1799 — não-produto (warn):** o mesmo comando emite `non_product[]` (exit 0, não bloqueia) pra itens que parecem governança/política/análise — não software/hardware (ex: `openai.com/index/public-policy-agenda` é oficial mas NÃO é lançamento de produto). Se não-vazio, **surfar no gate** pra o editor mover pra NOTÍCIAS. LANÇAMENTOS só lista produto (modelo/app/API/ferramenta/chip/dispositivo).
+
 Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga warn no run-log.
 
 ### 1v-ter. Guard USE MELHOR — flagar não-tutorial antes do gate (#1798)

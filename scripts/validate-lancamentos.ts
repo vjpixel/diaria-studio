@@ -38,13 +38,38 @@ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 export interface ValidationResult {
   lancamento_count: number;
   invalid_urls: Array<{ url: string; line: number }>;
+  /** #1799: itens que não são software/hardware (governança/política/análise). */
+  non_product: Array<{ url: string; line: number }>;
   status: "ok" | "error";
 }
 
-// Match tanto formato Stage 2 (LANÇAMENTOS solo) quanto Stage 1 (## Lançamentos com markdown header) — #587.
-const SECTION_LANCAMENTOS_RE = /^(?:##\s+)?lan[çc]amentos\s*$/im;
+// #1799: casa os 3 formatos de header: `LANÇAMENTOS` solo (Stage 2 antigo),
+// `## Lançamentos` (Stage 1 categorized), e `**🚀 LANÇAMENTOS**` (Stage 2
+// reviewed.md — antes não casava, então o validador era no-op ali).
+const SECTION_LANCAMENTOS_RE =
+  /^(?:\*\*)?\s*(?:##\s+)?(?:🚀\s*)?lan[çc]amentos\s*(?:\*\*)?\s*$/im;
 const SECTION_BREAK_RE = /^---\s*$/m;
 const URL_RE = /https?:\/\/\S+/g;
+
+/**
+ * #1799: LANÇAMENTOS só lista software/hardware (modelo, app, API, ferramenta,
+ * chip, dispositivo). Documento de governança/política/manifesto/essay/relatório
+ * de segurança NÃO é lançamento de produto. Sinais (no slug ou título): termos
+ * de governança/política. Slug é mais confiável que o título (que pode estar
+ * traduzido). Caso 260604: openai.com/index/public-policy-agenda.
+ */
+const NON_PRODUCT_RE =
+  /\b(policy|policies|public-policy|on-the-issues|agenda|governance|framework|blueprint|manifesto|principles|guidelines|white-?paper|position|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes|manifesto)\b/i;
+
+export function isNonProductLancamento(url: string, title?: string): boolean {
+  let slug = "";
+  try {
+    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    slug = url;
+  }
+  return NON_PRODUCT_RE.test(slug) || (!!title && NON_PRODUCT_RE.test(title));
+}
 
 /**
  * Extrai todas as URLs da seção LANÇAMENTOS do MD. Retorna array
@@ -74,7 +99,14 @@ export function extractLancamentoUrls(
       const trimmed = line.trim();
       const isPlainCaps = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]+$/.test(trimmed) && trimmed.length > 5;
       const isMdHeader = /^##\s+\S/.test(trimmed);
-      if (isPlainCaps || isMdHeader) {
+      // #1799: header bold do reviewed.md (ex `**📡 RADAR**`) também encerra —
+      // senão a seção bold de LANÇAMENTOS vazaria pros próximos blocos. Exige
+      // header SEM url/link, pra não confundir com item bold `**[Título](url)**`.
+      const isBoldHeader =
+        /^\*\*[^*]+\*\*$/.test(trimmed) &&
+        !/https?:\/\//.test(trimmed) &&
+        !trimmed.includes("[");
+      if (isPlainCaps || isMdHeader || isBoldHeader) {
         inSection = false;
         continue;
       }
@@ -101,9 +133,13 @@ export function validateLancamentos(text: string): ValidationResult {
   });
 
   const invalid = unique.filter((u) => !isOfficialLancamentoUrl(u.url));
+  // #1799: itens de governança/política/análise — warn (não muda o status, que
+  // segue regido pela regra de domínio oficial #160).
+  const non_product = unique.filter((u) => isNonProductLancamento(u.url));
   return {
     lancamento_count: unique.length,
     invalid_urls: invalid,
+    non_product,
     status: invalid.length === 0 ? "ok" : "error",
   };
 }
@@ -122,6 +158,9 @@ export interface LancamentoRemoved {
 
 export interface LancamentosRemovedSummary {
   removed: LancamentoRemoved[];
+  /** #1799: itens que parecem governança/política/análise (warn, não removidos
+   * automaticamente — decisão editorial no gate). */
+  flagged_non_product: Array<{ url: string; title?: string }>;
   original_count: number;
   final_count: number;
 }
@@ -141,24 +180,27 @@ export function validateLancamentosFromApproved(
 ): LancamentosRemovedSummary {
   const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
   const removed: LancamentoRemoved[] = [];
+  const flagged_non_product: Array<{ url: string; title?: string }> = [];
   let kept = 0;
 
   for (const item of list) {
     const url = typeof item.url === "string" ? item.url : "";
     if (!url) continue;
+    const title = typeof item.title === "string" ? item.title : undefined;
     if (isOfficialLancamentoUrl(url)) {
       kept++;
     } else {
-      removed.push({
-        url,
-        title: typeof item.title === "string" ? item.title : undefined,
-        reason: "non_official_domain",
-      });
+      removed.push({ url, title, reason: "non_official_domain" });
+    }
+    // #1799: classificação produto-vs-governança é independente do domínio —
+    // openai.com/index/public-policy-agenda é oficial mas NÃO é produto.
+    if (isNonProductLancamento(url, title)) {
+      flagged_non_product.push({ url, title });
     }
   }
 
   const original_count = kept + removed.length;
-  return { removed, original_count, final_count: kept };
+  return { removed, flagged_non_product, original_count, final_count: kept };
 }
 
 function mainApproved(args: Record<string, string>, ROOT: string): void {
@@ -180,6 +222,21 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
   if (args["write-removed"]) {
     const outPath = resolve(ROOT, args["write-removed"]);
     writeFileSync(outPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
+  }
+
+  // #1799: warn de não-produto (governança/política) — surfaça no gate, não
+  // bloqueia (decisão editorial; pode ser oficial mas não-produto).
+  if (summary.flagged_non_product.length > 0) {
+    console.error(
+      `\n⚠️ ${summary.flagged_non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/análise, não software/hardware (#1799):`,
+    );
+    for (const f of summary.flagged_non_product) {
+      const titleHint = f.title ? ` ("${f.title.slice(0, 60)}")` : "";
+      console.error(`  ${f.url}${titleHint}`);
+    }
+    console.error(
+      "Revise no gate: LANÇAMENTOS só lista produto (modelo/app/API/ferramenta/chip/dispositivo).",
+    );
   }
 
   if (summary.removed.length > 0) {
@@ -226,6 +283,15 @@ function main(): void {
   const text = readFileSync(path, "utf8");
   const result = validateLancamentos(text);
   console.log(JSON.stringify(result, null, 2));
+  // #1799: warn de não-produto (governança/política) — não muda o status.
+  if (result.non_product.length > 0) {
+    console.error(
+      `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/análise, não software/hardware (#1799):`,
+    );
+    for (const u of result.non_product) {
+      console.error(`  linha ${u.line}: ${u.url}`);
+    }
+  }
   if (result.status === "error") {
     console.error(
       `\n❌ ${result.invalid_urls.length} URL(s) em LANÇAMENTOS não bate(m) com whitelist oficial:`,
