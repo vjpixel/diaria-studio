@@ -306,6 +306,12 @@ npx tsx scripts/enrich-primary-source.ts \
 ```
 In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, radar, use_melhor, video }` (#1629) para usar daqui em diante.
 
+**Instrumentação type_hint vs categorize (#1718 fase 1) — silenciosa, append-only:** mede a divergência entre o `type_hint` do source-researcher e a decisão de lançamento do categorize, sem mudar nada. Acumula o dado pra decidir (em ~2 semanas) se vale inverter o ônus (type_hint primário). Nunca bloqueia:
+```bash
+npx tsx scripts/measure-type-hint-divergence.ts --in data/editions/{AAMMDD}/_internal/tmp-categorized.json --edition {AAMMDD}
+```
+Append em `data/type-hint-divergence.jsonl`. Se `launch_disagreements > 0`, loga warn informativo (não-bloqueante).
+
 ### 1n. Topic clustering (#237)
 
 Rodar `topic-cluster.ts` pra consolidar artigos do mesmo evento dentro do mesmo bucket:
