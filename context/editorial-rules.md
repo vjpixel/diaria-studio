@@ -133,14 +133,17 @@ Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, d
 
 - **Acionável**: leitor termina o tutorial (leitura + execução) em **≤ 30 min**.
 - **Prático**: ensina a fazer algo concreto, não apenas teoria.
+- **Tutorial de verdade, não cobertura (#1798).** O item tem que *ensinar um procedimento* (passo a passo, "como usar", cookbook). Newsletter, post de análise, episódio de podcast, release ou notícia sobre uma ferramenta **não são tutoriais**, mesmo que o tema seja prático — esses vão pra RADAR/LANÇAMENTOS, nunca pra USE MELHOR. Sinal de alerta: domínio de agregador/newsletter (ex: `latent.space`, `*.substack.com`) ou slug sem verbo imperativo ("como", "guia", "passo a passo", "how-to", "tutorial").
+- **Ferramenta de utilidade ampla (#1798).** Priorizar guia de ferramenta que o público (tech/finanças/consultoria) abre e usa no mesmo dia — planilha (ChatGPT no Excel), pesquisa/estudo (NotebookLM), automação de trabalho. Acima de recurso de nicho.
+- **Diversidade de ângulo (#1798).** Com mais de 1 item, variar ferramenta ou formato (ex: NotebookLM texto + NotebookLM vídeo + Excel), nunca 3 guias quase idênticos do mesmo recurso.
 - **Atual**: referencia ferramentas/APIs/modelos vigentes (≤ 12 meses de shelf life).
 - **Independente de plano pago**: se requer subscription paga, alertar no blurb.
-- **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior.
+- **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior. (Não confundir com o relax de mínimo abaixo: o teste de "tutorial de verdade" é inegociável mesmo no relax.)
 - **Título no idioma original, nunca traduzir (#1634).** O título/link do item preserva o nome original do recurso (PT ou EN) — `Claude 101`, `The Founders Playbook`, não `Claude 101: curso gratuito da Anthropic`. Não adaptar nem traduzir. A *descrição* abaixo do título pode ser em PT (descritiva). Mesma regra do RADAR.
 
 ### Garantia de mínimo no pipeline
 
-Stage 1 deve garantir **mínimo 3 candidatos** no bucket `use_melhor` (#1629, ex-`tutorial`) de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
+Stage 1 deve garantir **mínimo 3 candidatos** no bucket `use_melhor` (#1629, ex-`tutorial`) de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). **O relax amplia a busca, não rebaixa o tipo:** nunca completar a cota com newsletter/análise/notícia só pra bater 3 (foi o que poluiu o USE MELHOR em 260604 com 2 posts da latent.space). Preferível surfaçar "< 3 tutoriais reais" no gate a embarcar item mal-bucketado. Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
 
 Editor escolhe 0-1 pra publicar no gate da Etapa 1. Se nenhum candidato bom, seção é omitida da edição.
 

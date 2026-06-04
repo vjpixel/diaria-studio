@@ -175,14 +175,23 @@ describe("renderLivrosPage (#1744)", () => {
 describe("seed real seed/books/livros-ia.json (#1744)", () => {
   const books = loadBooks(SEED);
 
-  it("tem 23 livros e passa a validação", () => {
-    assert.equal(books.length, 23);
+  it("tem 29 livros e passa a validação", () => {
+    assert.equal(books.length, 29);
     assert.equal(validateBooks(books).ok, true);
   });
-  it("todo link é amzn.to https (afiliado)", () => {
+  it("todo link é afiliado (amzn.to OU amazon.com.br?tag=vjpixel-20)", () => {
+    // 23 da planilha master usam amzn.to (links curtos); os 6 canônicos
+    // adicionados depois usam amazon.com.br/dp/{ASIN}?tag=vjpixel-20 (formato
+    // afiliado aprovado quando a geração de amzn.to via SiteStripe ficou
+    // bloqueada). Ambos rendem comissão.
+    const AMZN_SHORT = /^https:\/\/amzn\.to\//;
+    const AMZN_BR_TAGGED = /^https:\/\/www\.amazon\.com\.br\/.*[?&]tag=vjpixel-20(\b|&|$)/;
     for (const b of books) {
       assert.ok(isSafeUrl(b.link), `${b.id}: link inseguro ${b.link}`);
-      assert.match(b.link, /^https:\/\/amzn\.to\//, `${b.id}: link não-amzn.to ${b.link}`);
+      assert.ok(
+        AMZN_SHORT.test(b.link) || AMZN_BR_TAGGED.test(b.link),
+        `${b.id}: link não é afiliado (nem amzn.to nem amazon.com.br?tag=vjpixel-20): ${b.link}`,
+      );
     }
   });
   it("todo livro tem rating numérico 0-5", () => {
