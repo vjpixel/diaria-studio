@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
+  extractEmail,
 } from "../scripts/filter-subscriber-replies.ts";
 
 describe("looksLikeSubscriberReply (#1797)", () => {
@@ -40,6 +41,40 @@ describe("looksLikeSubscriberReply (#1797)", () => {
 
   it("'RE:' / 're:' case-insensitive", () => {
     assert.ok(looksLikeSubscriberReply({ subject: "RE: edição", from: "a@b.com" }));
+  });
+
+  // ── review #1827: variantes de prefixo + header From com display-name ──
+
+  it("variantes de prefixo: 'Res:', 'RE :', 'Re[2]:'", () => {
+    assert.ok(looksLikeSubscriberReply({ subject: "Res: edição", from: "a@b.com" }), "Res: (Outlook PT)");
+    assert.ok(looksLikeSubscriberReply({ subject: "RE : edição", from: "a@b.com" }), "espaço antes do :");
+    assert.ok(looksLikeSubscriberReply({ subject: "Re[2]: edição", from: "a@b.com" }), "Re[N]:");
+  });
+
+  it("forward (Fwd:/Enc:) NÃO é resposta", () => {
+    assert.ok(!looksLikeSubscriberReply({ subject: "Fwd: edição", from: "a@b.com" }));
+    assert.ok(!looksLikeSubscriberReply({ subject: "Enc: edição", from: "a@b.com" }));
+  });
+
+  it("From com display-name: matcha o EMAIL, não o nome (review #1827)", () => {
+    // nome 'Bounceiro' contém 'bounce' mas o EMAIL é humano → não excluir.
+    assert.ok(
+      looksLikeSubscriberReply({ subject: "Re: x", from: '"João Bounceiro" <joao@empresa.com>' }),
+    );
+    // automático identificado pelo EMAIL no header, mesmo com display-name.
+    assert.ok(
+      !looksLikeSubscriberReply({ subject: "Re: x", from: '"Diar.ia" <no-reply@beehiiv.com>' }),
+    );
+    // editor com display-name → excluído.
+    assert.ok(
+      !looksLikeSubscriberReply({ subject: "Re: x", from: '"Pixel" <vjpixel@gmail.com>' }),
+    );
+  });
+
+  it("extractEmail extrai de '\"Nome\" <email>' e tolera email cru", () => {
+    assert.equal(extractEmail('"João" <joao@x.com>'), "joao@x.com");
+    assert.equal(extractEmail("joao@x.com"), "joao@x.com");
+    assert.equal(extractEmail("  JOAO@X.COM  "), "joao@x.com");
   });
 });
 

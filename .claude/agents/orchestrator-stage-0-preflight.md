@@ -420,7 +420,7 @@ Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (nã
 
 **Roda SOMENTE quando `auto_approve === false`** (ou seja, **pulado com `--no-gates`**) — rascunhar respostas pessoais sem revisão não faz sentido em modo automático. Análogo ao §0b-bis / §0n (Gmail MCP é top-level; orquestrar daqui).
 
-1. Buscar via `mcp__claude_ai_Gmail__search_threads` na caixa do editor (reply-to da newsletter): query `to:vjpixel@gmail.com subject:Re newer_than:7d` (7d cobre o intervalo entre edições + fim de semana). Limit 20.
+1. Buscar via `mcp__claude_ai_Gmail__search_threads` na caixa do editor (reply-to da newsletter): query `to:vjpixel@gmail.com subject:(Re OR Res) newer_than:7d` (`Re`+`Res` cobre prefixos EN e PT-BR/Outlook; 7d cobre o intervalo entre edições + fim de semana). Limit 20. *Limitação conhecida (#1827): replies sem prefixo no assunto (só com header In-Reply-To) não são capturados nesta v1.*
 2. Para cada thread, `mcp__claude_ai_Gmail__get_thread` (`FULL_CONTENT`). Montar JSON array `[{ thread_id, from, subject, date, body }]` em `data/editions/{AAMMDD}/_internal/captured-replies.json`.
 3. Filtrar quais são respostas de assinante (determinístico):
    ```bash

@@ -35,7 +35,12 @@ export interface CapturedReply {
   [k: string]: unknown;
 }
 
-/** Remetentes automáticos / não-humanos que não merecem rascunho de resposta. */
+/**
+ * Remetentes automáticos / não-humanos que não merecem rascunho de resposta.
+ * Testado contra o EMAIL (não o header com display-name) — review #1827: senão
+ * um assinante chamado "João Bounceiro" ou hospedado em beehiiv/substack seria
+ * excluído pelo nome de exibição.
+ */
 const AUTOMATED_FROM_RE =
   /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce|beehiiv|mailchimp|substack\.com|sendgrid|unsubscribe@)/i;
 
@@ -44,19 +49,33 @@ const EDITOR_FROM_RE =
   /(vjpixel@gmail\.com|pixel@memelab\.com\.br|diariaeditor@gmail\.com)/i;
 
 /**
- * `true` se a thread parece uma resposta de ASSINANTE à newsletter: assunto
- * "Re: ..." + remetente humano (não automático, não o editor). Pura e testável.
+ * Prefixo de resposta — cobre `Re:`, `RE :`, `Res:` (Outlook PT-BR) e `Re[2]:`
+ * (review #1827). NÃO cobre forward (`Enc:`/`Fwd:`) nem replies sem prefixo onde
+ * só o header In-Reply-To marca — limitação conhecida (v1 cobre o caso comum).
+ */
+const REPLY_PREFIX_RE = /^\s*re(s)?\s*(\[\d+\])?\s*:/i;
+
+/** Extrai só o email do header From (`"Nome" <email>` → `email`). */
+export function extractEmail(from: string): string {
+  const m = from.match(/<([^>]+)>/);
+  return (m ? m[1] : from).trim().toLowerCase();
+}
+
+/**
+ * `true` se a thread parece uma resposta de ASSINANTE à newsletter: assunto com
+ * prefixo de resposta + remetente humano (não automático, não o editor). Pura e
+ * testável. O match de automático/editor é contra o EMAIL, não o header inteiro.
  */
 export function looksLikeSubscriberReply(msg: {
   subject?: string;
   from?: string;
 }): boolean {
   const subject = (msg.subject ?? "").trim();
-  if (!/^re:/i.test(subject)) return false;
-  const from = (msg.from ?? "").toLowerCase();
-  if (!from) return false;
-  if (AUTOMATED_FROM_RE.test(from)) return false;
-  if (EDITOR_FROM_RE.test(from)) return false;
+  if (!REPLY_PREFIX_RE.test(subject)) return false;
+  const email = extractEmail(msg.from ?? "");
+  if (!email) return false;
+  if (AUTOMATED_FROM_RE.test(email)) return false;
+  if (EDITOR_FROM_RE.test(email)) return false;
   return true;
 }
 
