@@ -46,6 +46,11 @@ import {
   checkSectionItemFormat as sifDirect,
 } from "../scripts/lib/lint-checks/section-item-format.ts";
 import {
+  lintNewsletter as lnDirect,
+  extractUrlsBySection as eubDirect,
+  checkSectionCounts as scDirect,
+} from "../scripts/lib/lint-checks/url-bucket.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
   checkWhyMattersFormat as wmReexport,
@@ -59,6 +64,9 @@ import {
   checkIntentionalError as ieReexport,
   extractFrontmatter as efReexport,
   checkSectionItemFormat as sifReexport,
+  lintNewsletter as lnReexport,
+  extractUrlsBySection as eubReexport,
+  checkSectionCounts as scReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
@@ -76,6 +84,9 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(ieReexport, ieDirect);
     assert.strictEqual(efReexport, efDirect);
     assert.strictEqual(sifReexport, sifDirect);
+    assert.strictEqual(lnReexport, lnDirect);
+    assert.strictEqual(eubReexport, eubDirect);
+    assert.strictEqual(scReexport, scDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -192,5 +203,23 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     // bem-formado → ok
     const good = "**🛠️ USE MELHOR**\n\n**[Guia](https://u.com/1)**\nDescrição.\n";
     assert.equal(sifDirect(good).ok, true);
+  });
+
+  it("url-bucket: extractUrlsBySection + lintNewsletter + checkSectionCounts standalone", () => {
+    const md =
+      "**📡 RADAR**\n\n" +
+      "**[Notícia](https://r.com/1)**\nResumo.\n\n" +
+      "https://r.com/1\n";
+    const bySection = eubDirect(md);
+    assert.ok(bySection["RADAR"].some((e) => e.url === "https://r.com/1"));
+    // URL aprovada no bucket radar → lint ok (sem mismatch)
+    const approved = { highlights: [], pesquisa: [{ url: "https://r.com/1" }] };
+    assert.equal(lnDirect(md, approved).ok, true);
+    // URL não-aprovada → erro "missing"
+    assert.equal(lnDirect(md, { highlights: [] }).ok, false);
+    // section-counts roda
+    const sc = scDirect(md, { highlights: [{}, {}, {}] });
+    assert.equal(typeof sc.ok, "boolean");
+    assert.ok(sc.counts.radar >= 1);
   });
 });

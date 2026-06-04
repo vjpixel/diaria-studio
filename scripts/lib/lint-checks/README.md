@@ -21,11 +21,12 @@ deliberada de escopo descrita abaixo.
 | `eia-answer-check.ts` | `eia-answer` | #744/#927 |
 | `intentional-error.ts` | `intentional-error-flagged` | #754/#1378 |
 | `section-item-format.ts` | `section-item-format` | #909/#1693 |
+| `url-bucket.ts` | `section-counts` + lint default (`lintNewsletter`) | #907/#1629/#1691 |
 
-Os demais (`section-counts`, `intro-count`) ainda vivem no `lint-newsletter-md.ts`:
-`section-counts` é coeso com o cluster core de URL×bucket (`extractUrlsBySection`,
-`buildUrlBucketMap`, `lintNewsletter`) — extrair junto; `intro-count` é um wrapper
-fino que já delega pra `lib/newsletter-count.ts`.
+Todos os 14 `--check` saíram. O que resta no `lint-newsletter-md.ts` é o `main()`
+(dispatcher CLI: parse de args, IO, formatação de output, exit) + o wrapper fino
+`lintIntroCount` (já delega pra `lib/newsletter-count.ts`). A lógica de lint mora
+toda aqui em `lint-checks/`.
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 
