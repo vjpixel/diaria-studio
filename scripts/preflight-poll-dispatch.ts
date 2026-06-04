@@ -17,8 +17,15 @@
  *   3. smoke-test-vote --edition {ed}                 (HARD GATE — bloqueia envio)
  *
  * Os dois primeiros são best-effort: se falharem (KV transiente, Beehiiv 5xx),
- * loga warn e segue — o smoke-test é a fonte de verdade. Se o smoke-test
- * falhar (410/403/network), exit 1 + halt banner → o orchestrator NÃO envia.
+ * loga warn e segue — o smoke-test é a fonte de verdade pro caso 410.
+ *
+ * Cobertura do 403 (poll_sig): o smoke-test vota como o EDITOR, cujo poll_sig é
+ * permanente — então ele NÃO detecta novos subscribers sem poll_sig (causa do
+ * 403). Por isso o output do inject-poll-sig é parseado: se `failed > 0` na
+ * janela, emitimos um warning explícito de risco-403 (sem bloquear — §0d.ter
+ * aceita que uma minoria de subs muito novos fique sem sig; bloquear 482 envios
+ * por isso seria pior). Bloquear o 403 inteiro exigiria verificar o custom field
+ * de um subscriber real — deferido pra #1803-followup.
  *
  * Uso:
  *   npx tsx scripts/preflight-poll-dispatch.ts --edition 260604
@@ -28,15 +35,17 @@
  *   1 — args inválidos OU gate duro falhou (NÃO enviar a newsletter)
  */
 
-import "dotenv/config";
-
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env + .env.local (precedência)
+import { renderHaltBanner } from "./lib/gate-banner.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+loadProjectEnv(); // carrega .env/.env.local antes de qualquer leitura de process.env
 
 export type StepName =
   | "maintain-valid-editions"
@@ -81,6 +90,12 @@ export function planSteps(
       blocking: true,
     },
   ];
+}
+
+export interface StepResult {
+  exitCode: number;
+  /** stdout capturado do child (pra parsear o JSON do inject-poll-sig). */
+  stdout: string;
 }
 
 export interface StepOutcome {
@@ -143,13 +158,32 @@ function haltFor(edition: string, exitCode: number): { reason: string; action: s
       action: `verifique conectividade com o Worker de poll (poll.diaria.workers.dev) e retente`,
     };
   }
+  // exit 1 = args/env do smoke-test; null/sinal (child morto) também cai aqui.
   return {
-    reason: `smoke-test-vote: erro de configuração (args/env — POLL_SECRET ausente?)`,
-    action: `confira POLL_SECRET no .env e retente`,
+    reason: `smoke-test-vote: erro inesperado (config/env ausente — POLL_SECRET? — ou child interrompido). Ver stderr acima.`,
+    action: `confira POLL_SECRET no .env e o log do smoke-test acima, depois retente`,
   };
 }
 
-export type StepRunner = (spec: StepSpec) => number;
+/**
+ * Detecta risco de 403 pra novos subscribers a partir do JSON do inject-poll-sig.
+ * O inject sai com exit 0 mesmo com `failed > 0` (patch parcial) — então o sinal
+ * só aparece no output. Retorna a contagem de patches que falharam, ou null.
+ */
+export function parseInjectFailed(stdout: string): { failed: number; inWindow: number } | null {
+  try {
+    const j = JSON.parse(stdout);
+    const failed = typeof j.failed === "number" ? j.failed : 0;
+    if (failed > 0) {
+      return { failed, inWindow: typeof j.in_window === "number" ? j.in_window : 0 };
+    }
+  } catch {
+    // output não-JSON (ex: child morreu antes de imprimir) → sem sinal confiável.
+  }
+  return null;
+}
+
+export type StepRunner = (spec: StepSpec) => StepResult;
 
 /**
  * Resolve BEEHIIV_PUBLICATION_ID do platform.config.json se ausente no env —
@@ -172,20 +206,41 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/** Runner real: roda cada script .ts via Node + tsx loader (cross-platform). */
+/**
+ * Runner real: roda cada script .ts via Node + tsx loader (cross-platform,
+ * mesmo padrão de eia-compose.ts). stdout PIPED (capturado p/ parse + ecoado
+ * pro stderr, mantendo o stdout do preflight limpo/parseável); stderr herdado
+ * (logs do child aparecem ao vivo).
+ */
 const defaultRunner: StepRunner = (spec) => {
   try {
-    execFileSync(process.execPath, ["--import", "tsx", spec.script, ...spec.args], {
-      cwd: ROOT,
-      stdio: "inherit",
-      env: childEnv(),
-    });
-    return 0;
+    const stdout = execFileSync(
+      process.execPath,
+      ["--import", "tsx", spec.script, ...spec.args],
+      { cwd: ROOT, stdio: ["inherit", "pipe", "inherit"], env: childEnv(), encoding: "utf8" },
+    );
+    if (stdout) process.stderr.write(stdout);
+    return { exitCode: 0, stdout: stdout ?? "" };
   } catch (e) {
-    const status = (e as { status?: number | null }).status;
-    return typeof status === "number" ? status : 1;
+    const err = e as { status?: number | null; stdout?: string | Buffer };
+    const stdout =
+      typeof err.stdout === "string"
+        ? err.stdout
+        : err.stdout
+          ? err.stdout.toString("utf8")
+          : "";
+    if (stdout) process.stderr.write(stdout);
+    // status null (child morto por sinal) → trata como falha (1), conservador.
+    return { exitCode: typeof err.status === "number" ? err.status : 1, stdout };
   }
 };
+
+export interface PreflightRun {
+  decision: PreflightDecision;
+  outcomes: StepOutcome[];
+  /** risco de 403 detectado no inject (patch parcial) — null se ok. */
+  pollSigRisk: { failed: number; inWindow: number } | null;
+}
 
 /**
  * Roda os 3 passos em ordem (sem short-circuit nos best-effort — queremos que
@@ -195,14 +250,18 @@ export function runPreflight(
   edition: string,
   opts: { windowDays?: number; sinceHours?: number } = {},
   run: StepRunner = defaultRunner,
-): { decision: PreflightDecision; outcomes: StepOutcome[] } {
+): PreflightRun {
   const specs = planSteps(edition, opts);
   const outcomes: StepOutcome[] = [];
+  let pollSigRisk: { failed: number; inWindow: number } | null = null;
   for (const spec of specs) {
-    const exitCode = run(spec);
+    const { exitCode, stdout } = run(spec);
     outcomes.push({ name: spec.name, exitCode, blocking: spec.blocking });
+    if (spec.name === "inject-poll-sig") {
+      pollSigRisk = parseInjectFailed(stdout);
+    }
   }
-  return { decision: decide(edition, outcomes), outcomes };
+  return { decision: decide(edition, outcomes), outcomes, pollSigRisk };
 }
 
 function main(): void {
@@ -216,36 +275,32 @@ function main(): void {
   console.error(
     `[preflight-poll-dispatch] ${edition}: maintain-valid-editions → inject-poll-sig → smoke-test-vote (gate duro)`,
   );
-  const { decision, outcomes } = runPreflight(edition);
-  console.log(JSON.stringify({ edition, outcomes, decision }, null, 2));
+  const { decision, outcomes, pollSigRisk } = runPreflight(edition);
+  console.log(JSON.stringify({ edition, outcomes, decision, pollSigRisk }, null, 2));
 
   if (decision.warnings.length) {
     console.error(
       `[preflight-poll-dispatch] WARN: passos best-effort falharam (${decision.warnings.join(", ")}) — ` +
-        `smoke-test-vote é autoritativo e passou.`,
+        `smoke-test-vote é autoritativo pro caso 410 e passou.`,
+    );
+  }
+  if (pollSigRisk) {
+    console.error(
+      `[preflight-poll-dispatch] ⚠️ RISCO 403: inject-poll-sig falhou em ${pollSigRisk.failed} de ${pollSigRisk.inWindow} subscribers da janela — ` +
+        `eles podem receber a newsletter com poll_sig vazio e levar 403 ao votar. ` +
+        `Considere re-rodar 'npx tsx scripts/inject-poll-sig.ts --since-hours 96' antes de enviar.`,
     );
   }
 
   if (decision.block) {
-    try {
-      execFileSync(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          "scripts/render-halt-banner.ts",
-          "--stage",
-          "4 — Publicação (pré-dispatch poll)",
-          "--reason",
-          decision.haltReason ?? "poll preflight falhou",
-          "--action",
-          decision.haltAction ?? "corrija e retente",
-        ],
-        { cwd: ROOT, stdio: "inherit" },
-      );
-    } catch {
-      // banner é informativo; nunca mascarar o exit 1 do gate.
-    }
+    console.error(
+      "\n" +
+        renderHaltBanner({
+          stage: "4 — Publicação (pré-dispatch poll)",
+          reason: decision.haltReason ?? "poll preflight falhou",
+          action: decision.haltAction ?? "corrija e retente",
+        }),
+    );
     process.exit(1);
   }
 

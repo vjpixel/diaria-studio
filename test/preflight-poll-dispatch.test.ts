@@ -12,21 +12,25 @@ import {
   planSteps,
   decide,
   runPreflight,
+  parseInjectFailed,
   type StepName,
   type StepSpec,
   type StepRunner,
   type StepOutcome,
 } from "../scripts/preflight-poll-dispatch.ts";
 
-/** Runner fake: registra a ordem dos passos e devolve exit codes scriptados. */
-function fakeRunner(codes: Partial<Record<StepName, number>>): {
-  run: StepRunner;
-  calls: StepName[];
-} {
+/**
+ * Runner fake: registra a ordem dos passos e devolve exit codes + stdout
+ * scriptados. `codes` mapeia step→exitCode; `stdouts` mapeia step→stdout JSON.
+ */
+function fakeRunner(
+  codes: Partial<Record<StepName, number>>,
+  stdouts: Partial<Record<StepName, string>> = {},
+): { run: StepRunner; calls: StepName[] } {
   const calls: StepName[] = [];
   const run: StepRunner = (spec: StepSpec) => {
     calls.push(spec.name);
-    return codes[spec.name] ?? 0;
+    return { exitCode: codes[spec.name] ?? 0, stdout: stdouts[spec.name] ?? "" };
   };
   return { run, calls };
 }
@@ -104,6 +108,38 @@ describe("preflight-poll-dispatch — resume direto pro Stage 4 (#1803)", () => 
     );
     // smoke-test rodou mesmo após os fixes falharem (sem short-circuit)
     assert.ok(calls.includes("smoke-test-vote"));
+  });
+});
+
+describe("preflight-poll-dispatch — cobertura do 403 / poll_sig (#1803 review)", () => {
+  it("inject com failed>0 (mas exit 0) surfa pollSigRisk — smoke-test só vê o editor", () => {
+    // inject-poll-sig sai 0 mesmo com patches falhados → o sinal só vem no stdout.
+    const { run } = fakeRunner(
+      { "inject-poll-sig": 0, "smoke-test-vote": 0 },
+      { "inject-poll-sig": JSON.stringify({ failed: 3, in_window: 12, patched: 9 }) },
+    );
+    const { pollSigRisk, decision } = runPreflight("260604", {}, run);
+    assert.deepEqual(pollSigRisk, { failed: 3, inWindow: 12 });
+    // não bloqueia (§0d.ter: minoria sem sig é tradeoff aceito), mas fica visível
+    assert.equal(decision.block, false);
+  });
+
+  it("inject sem failed → pollSigRisk null", () => {
+    const { run } = fakeRunner(
+      { "inject-poll-sig": 0 },
+      { "inject-poll-sig": JSON.stringify({ failed: 0, in_window: 5 }) },
+    );
+    const { pollSigRisk } = runPreflight("260604", {}, run);
+    assert.equal(pollSigRisk, null);
+  });
+
+  it("parseInjectFailed ignora stdout não-JSON", () => {
+    assert.equal(parseInjectFailed("não é json"), null);
+    assert.equal(parseInjectFailed(""), null);
+    assert.deepEqual(parseInjectFailed(JSON.stringify({ failed: 2, in_window: 4 })), {
+      failed: 2,
+      inWindow: 4,
+    });
   });
 });
 
