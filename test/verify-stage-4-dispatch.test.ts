@@ -159,6 +159,16 @@ describe("#917 reconcileLinkedin", () => {
     assert.equal(r.verified, true);
   });
 
+  it("#1690: post_pixel é verificado-manual (não reconcilia contra a queue vazia)", () => {
+    // post_pixel é post manual no feed pessoal — NUNCA enfileirado. Com a queue
+    // vazia, sem a branch, daria FAIL espúrio; deve retornar verified=true.
+    const entry = liEntry({ subtype: "post_pixel" });
+    const r = reconcileLinkedin(entry, [], NOW);
+    assert.equal(r.verified, true);
+    assert.equal(r.subtype, "post_pixel");
+    assert.match(r.reason ?? "", /manual|Chrome|#1690/);
+  });
+
   it("verified=false quando destaque ausente no KV (silent fail)", () => {
     const queue = [mkQueueItem("d2", "2026-05-08T09:00:00Z")];
     const r = reconcileLinkedin(liEntry(), queue, NOW);

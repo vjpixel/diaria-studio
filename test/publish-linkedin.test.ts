@@ -556,6 +556,22 @@ describe("#595 extractCommentPixel", () => {
   it("d3 (sem comment_pixel): retorna null", () => {
     assert.equal(extractCommentPixel(SOCIAL_595, "d3"), null);
   });
+
+  it("#1690: d3 comment_pixel NÃO vaza a seção sibling ## post_pixel", () => {
+    const md = [
+      "# LinkedIn", "",
+      "## d1", "Main d1.", "",
+      "### comment_pixel", "CP d1.", "",
+      "## d3", "Main d3.", "",
+      "### comment_pixel", "CP d3 pessoal.", "",
+      "## post_pixel", "",
+      "Post standalone pessoal de D1 — NÃO deve vazar pro comment_pixel do d3.",
+    ].join("\n");
+    const t = extractCommentPixel(md, "d3");
+    assert.equal(t, "CP d3 pessoal.");
+    assert.ok(!t!.includes("post_pixel"), "sem o heading post_pixel");
+    assert.ok(!t!.includes("Post standalone"), "sem o corpo do post_pixel");
+  });
 });
 
 describe("#595 computeCommentScheduledAt", () => {

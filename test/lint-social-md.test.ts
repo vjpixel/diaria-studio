@@ -311,6 +311,21 @@ describe("lintLinkedinSchema (#595)", () => {
     }
   });
 
+  it("#1690: seção sibling ## post_pixel não infla comment_pixel_chars de d3", () => {
+    const base = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: fullDestaque() });
+    // post_pixel longo (>600) — se vazasse pro comment_pixel do d3, dispararia
+    // comment_pixel_chars_out_of_range (false positive).
+    const md = base + `\n\n## post_pixel\n\n${"Y".repeat(1000)}\n`;
+    const r = lintLinkedinSchema(md);
+    assert.equal(r.ok, true, "post_pixel não deve quebrar o lint: " + JSON.stringify(r.errors));
+    const d3 = r.destaques.find((d) => d.destaque === "d3");
+    assert.ok(d3, "d3 presente");
+    assert.ok(
+      (d3!.comment_pixel_chars ?? 0) < 700,
+      "comment_pixel de d3 não absorveu o post_pixel: " + d3!.comment_pixel_chars,
+    );
+  });
+
   it("ok=false quando comment_diaria ausente em d2", () => {
     const dWithoutComments = `\n${"X".repeat(1300)}\n`;
     const md = buildMd({
