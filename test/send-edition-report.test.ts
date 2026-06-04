@@ -175,6 +175,14 @@ describe("renderDurationCell — sempre gate-excluded (#1823)", () => {
     assert.match(cell, /inclui gate/, "sinaliza que o total inclui a espera do gate");
   });
 
+  it("stage 4 (sempre tem gate, pre_gate ou legacy) sem pipeline → '(inclui gate)'", () => {
+    // review #1826: stage 4 tem gate nos dois modos → o fallback duration-only
+    // deve ser rotulado honestamente, nunca como tempo de trabalho puro.
+    const cell = renderDurationCell({ stage: 4, status: "done", duration_ms: 300_000 });
+    assert.ok(cell.includes("5m"));
+    assert.match(cell, /inclui gate/);
+  });
+
   it("sem nenhum timestamp → '(não medido)', nunca '-' mudo", () => {
     const cell = renderDurationCell({ stage: 3, status: "done" });
     assert.match(cell, /não medido/);

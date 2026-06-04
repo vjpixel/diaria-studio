@@ -38,7 +38,6 @@ import {
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const DRAFT_WORKER_BASE = "https://draft.diaria.workers.dev";
 
 // ---------------------------------------------------------------------------
 // Types
