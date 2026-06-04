@@ -17,14 +17,24 @@ import {
   lintRelativeTime as rtDirect,
 } from "../scripts/lib/lint-checks/relative-time.ts";
 import {
+  checkWhyMattersFormat as wmDirect,
+} from "../scripts/lib/lint-checks/why-matters-format.ts";
+import {
+  checkEaiSection as eaiDirect,
+} from "../scripts/lib/lint-checks/eai-section.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
+  checkWhyMattersFormat as wmReexport,
+  checkEaiSection as eaiReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
   it("re-export de lint-newsletter-md é a MESMA função do módulo", () => {
     assert.strictEqual(mlReexport, mlDirect);
     assert.strictEqual(rtReexport, rtDirect);
+    assert.strictEqual(wmReexport, wmDirect);
+    assert.strictEqual(eaiReexport, eaiDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -38,5 +48,17 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.matches[0].word.toLowerCase(), "ontem");
     assert.equal(rtDirect("A OpenAI lançou em 1º de junho.").ok, true);
+  });
+
+  it("why-matters-format: módulo auto-contido funciona standalone", () => {
+    const bad = "Por que isso importa:\n\nPara desenvolvedores, o impacto é grande.";
+    assert.equal(wmDirect(bad).ok, false);
+    const good = "Por que isso importa:\n\nO custo por token muda o orçamento dos times.";
+    assert.equal(wmDirect(good).ok, true);
+  });
+
+  it("eai-section: módulo auto-contido funciona standalone", () => {
+    assert.equal(eaiDirect("**É IA?**\n\nFoto X.").ok, true);
+    assert.equal(eaiDirect("# Newsletter\n\nSem seção.").ok, false);
   });
 });
