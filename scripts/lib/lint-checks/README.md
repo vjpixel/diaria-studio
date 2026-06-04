@@ -20,10 +20,12 @@ deliberada de escopo descrita abaixo.
 | `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
 | `eia-answer-check.ts` | `eia-answer` | #744/#927 |
 | `intentional-error.ts` | `intentional-error-flagged` | #754/#1378 |
+| `section-item-format.ts` | `section-item-format` | #909/#1693 |
 
-Os demais (`section-item-format`, `section-counts`, `intro-count`) ainda vivem
-no `lint-newsletter-md.ts` — dependem do registry de seções (`SECTIONS`) e de
-helpers do próprio arquivo (`extractUrlsBySection` etc.).
+Os demais (`section-counts`, `intro-count`) ainda vivem no `lint-newsletter-md.ts`:
+`section-counts` é coeso com o cluster core de URL×bucket (`extractUrlsBySection`,
+`buildUrlBucketMap`, `lintNewsletter`) — extrair junto; `intro-count` é um wrapper
+fino que já delega pra `lib/newsletter-count.ts`.
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 

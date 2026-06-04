@@ -43,6 +43,9 @@ import {
   extractFrontmatter as efDirect,
 } from "../scripts/lib/lint-checks/intentional-error.ts";
 import {
+  checkSectionItemFormat as sifDirect,
+} from "../scripts/lib/lint-checks/section-item-format.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
   checkWhyMattersFormat as wmReexport,
@@ -55,6 +58,7 @@ import {
   checkEiaAnswer as eiaAnsReexport,
   checkIntentionalError as ieReexport,
   extractFrontmatter as efReexport,
+  checkSectionItemFormat as sifReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
@@ -71,6 +75,7 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(eiaAnsReexport, eiaAnsDirect);
     assert.strictEqual(ieReexport, ieDirect);
     assert.strictEqual(efReexport, efDirect);
+    assert.strictEqual(sifReexport, sifDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -171,5 +176,21 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     // sem 01-eia.md no dir → check não aplicável → ok
     const r = eiaAnsDirect("/tmp/__nonexistent-edition__/02-reviewed.md");
     assert.equal(r.ok, true);
+  });
+
+  it("section-item-format: standalone detecta título+descrição na mesma linha", () => {
+    const bad = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Guia](https://u.com/1)** descrição colada na mesma linha.",
+      "",
+    ].join("\n");
+    const r = sifDirect(bad);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors[0].type, "title_and_description_same_line");
+    assert.equal(r.errors[0].section, "USE MELHOR");
+    // bem-formado → ok
+    const good = "**🛠️ USE MELHOR**\n\n**[Guia](https://u.com/1)**\nDescrição.\n";
+    assert.equal(sifDirect(good).ok, true);
   });
 });
