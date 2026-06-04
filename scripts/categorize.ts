@@ -31,6 +31,7 @@ import { lancamentoDomains, lancamentoPatterns, OFFICIAL_SOURCES } from "./lib/o
 import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/ai-relevance.ts"; // #642
 import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
+import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -693,26 +694,8 @@ export function isCustomerSlug(url: string): boolean {
   }
 }
 
-/**
- * #1473: detecta se um texto está em inglês (vs português) usando
- * contagem de stop words. Threshold: se >15% das palavras são stop words
- * inglesas e <8% são portuguesas, classifica como inglês.
- * Conservador — textos mistos ou curtos (<10 palavras) retornam false.
- */
-const EN_STOP = new Set(["the","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","must","can","could","a","an","and","but","or","nor","for","yet","so","in","on","at","to","of","by","with","from","as","into","through","during","before","after","above","below","between","out","off","over","under","again","further","then","once","here","there","when","where","why","how","all","each","every","both","few","more","most","other","some","such","no","not","only","same","than","too","very","that","this","these","those","it","its","which","who","whom","what"]);
-const PT_STOP = new Set(["o","a","os","as","um","uma","uns","umas","de","do","da","dos","das","em","no","na","nos","nas","por","para","com","sem","sob","sobre","entre","até","após","ante","e","ou","mas","nem","que","se","como","quando","onde","porque","pois","já","não","mais","muito","também","ainda","só","foi","são","ser","ter","está","há","seu","sua","seus","suas","este","esta","esse","essa","isso","isto","aqui","ali","lá","ela","ele","eles","elas","nos","me","te","lhe","nós","vós"]);
-function looksEnglish(text: string): boolean {
-  if (!text) return false;
-  const words = text.toLowerCase().replace(/[^\p{L}\s]/gu, "").split(/\s+/).filter(w => w.length > 1);
-  if (words.length < 10) return false;
-  let en = 0, pt = 0;
-  for (const w of words) {
-    if (EN_STOP.has(w)) en++;
-    if (PT_STOP.has(w)) pt++;
-  }
-  const total = words.length;
-  return (en / total > 0.15) && (pt / total < 0.08);
-}
+// #1473/#1790: looksEnglish movido pro lib canônico (./lib/lang-detect.ts,
+// importado no topo) — era duplicado aqui e em stitch-newsletter.ts.
 
 /**
  * #1472: detecta artigo hospedado em blog de terceiro sobre produto de outra empresa.

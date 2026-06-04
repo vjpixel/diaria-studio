@@ -25,6 +25,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
+import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
 
 interface ArticleLike {
   url?: string;
@@ -33,19 +34,9 @@ interface ArticleLike {
   summary_lang?: string;
 }
 
-const EN_STOPWORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "have", "has", "had",
-  "do", "does", "did", "will", "would", "could", "should", "can",
-  "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-  "and", "but", "or", "not", "that", "this", "it", "they", "we", "you",
-]);
-
-function looksEnglish(text: string): boolean {
-  if (!text || text.length < 20) return false;
-  const words = text.toLowerCase().replace(/[^a-z\s]/g, "").split(/\s+/).filter(w => w.length > 1);
-  if (words.length < 4) return false;
-  return words.filter(w => EN_STOPWORDS.has(w)).length / words.length > 0.25;
-}
+// #1790: looksEnglish unificado no lib canônico (./lib/lang-detect.ts, importado
+// no topo) — era divergente do categorize. isEnglishItem passa minWords:4 pra
+// cobrir TÍTULOS curtos; o lib adiciona o guard de PT (não flaga texto PT-pesado).
 
 interface ApprovedJsonShape {
   coverage?: { line?: string };
@@ -101,8 +92,10 @@ export interface RenderSectionOpts {
 /** #1632: item considerado "em inglês" pro filtro da seção USE MELHOR. */
 export function isEnglishItem(a: ArticleLike): boolean {
   if (a.summary_lang === "en") return true;
-  if (a.summary) return looksEnglish(a.summary);
-  return looksEnglish(a.title ?? "");
+  // minWords:4 — summaries de USE MELHOR e títulos podem ser curtos; preserva o
+  // bar baixo da impl antiga do stitch (#1790).
+  if (a.summary) return looksEnglish(a.summary, { minWords: 4 });
+  return looksEnglish(a.title ?? "", { minWords: 4 });
 }
 
 export function renderSection(
@@ -132,7 +125,9 @@ export function renderSection(
       // [TRADUZIR] só na descrição — o writer/editor traduz a descrição e remove
       // o prefixo, mantendo o título original. Detecção pelo summary (não pelo
       // título): um recurso de título EN com descrição PT não deve ser marcado.
-      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary);
+      // #1790: minWords:4 preserva o bar baixo da impl antiga do stitch — sem
+      // isso, summary EN curto (4-9 palavras) deixava de ganhar [TRADUZIR].
+      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary, { minWords: 4 });
       const descPrefix = summaryIsEn ? "[TRADUZIR] " : "";
       lines.push(descPrefix + cleanSummary(a.summary, a.title));
     }
