@@ -515,6 +515,16 @@ npx tsx scripts/review-use-melhor.ts --approved data/editions/{AAMMDD}/_internal
 
 Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (domínio newsletter/agregador **E** sem sinal de tutorial no título/slug — o vetor real de mis-bucket), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
 
+### 1v-quater. Guard fonte-primária em DESTAQUES (#1699)
+
+Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — caso 260602: RTX Spark com link Canaltech). **Warn-only**:
+
+```bash
+npx tsx scripts/review-highlight-source.ts --approved data/editions/{AAMMDD}/_internal/01-approved.json
+```
+
+Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
+
 ### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
 
 **Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
