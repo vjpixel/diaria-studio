@@ -74,4 +74,38 @@ describe("midCallout — box entre D1 e D2", () => {
     // o texto do body não deve mais conter o markdown-link cru
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
   });
+
+  // ── Regressão dos achados de code-review do PR #1807 ──────────────────
+
+  it("link com parênteses na URL não trunca (#1634-safe, #3I)", () => {
+    const html = renderMidCallout(
+      "📚 Promo. [Baixe o guia](https://ex.com/Founders-Playbook%20(1).pdf).",
+      "https://img.example/p.jpg",
+    );
+    assert.ok(
+      html.includes("https://ex.com/Founders-Playbook%20(1).pdf"),
+      "URL completa (com parênteses) deve sobreviver no href",
+    );
+    assert.ok(!html.includes(">.pdf"), "não deve vazar resto da URL como texto");
+  });
+
+  it("escapa aspas/< no src e href (#3G)", () => {
+    const html = renderMidCallout(
+      `📚 Promo. [Confira](https://ex.com/a"onmouseover=x).`,
+      `https://img.example/p.jpg"><script>`,
+    );
+    assert.ok(!html.includes(`p.jpg"><script>`), "src cru não deve aparecer");
+    assert.ok(html.includes("&quot;"), "aspas devem ser escapadas no atributo");
+  });
+
+  it("remove TODOS os links do corpo, não só o primeiro (#3J)", () => {
+    const html = renderMidCallout(
+      "📚 Veja [aqui](https://a.com) e também [ali](https://b.com).",
+      "https://img.example/p.jpg",
+    );
+    assert.ok(!html.includes("[aqui]"), "1º markdown-link removido do corpo");
+    assert.ok(!html.includes("[ali]"), "2º markdown-link também removido do corpo");
+    // o destino da imagem/CTA é o primeiro link
+    assert.ok(html.includes("https://a.com"), "CTA usa o primeiro link");
+  });
 });

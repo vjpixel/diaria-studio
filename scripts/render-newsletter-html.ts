@@ -576,7 +576,9 @@ export function readMidCalloutImage(editionDir: string): string | null {
   try {
     const j = JSON.parse(readFileSync(p, "utf8"));
     const e = (j.images ?? j)?.livros_promo;
-    return e?.cloudflare_url ?? e?.url ?? null;
+    // `||` (não `??`): string vazia no cache deve cair pro próximo campo / null,
+    // senão um `cloudflare_url: ""` viraria `<img src="">` (box quebrado).
+    return e?.cloudflare_url || e?.url || null;
   } catch {
     return null;
   }
@@ -959,19 +961,63 @@ export function renderIntroCallout(text: string): string {
 }
 
 /**
+ * Acha os links markdown `[texto](url)` de `s` com parsing de parênteses
+ * balanceados (#1634 — a regex ingênua `\(([^)]+)\)` trunca URLs que contêm
+ * parênteses, ex: `...(1).pdf`). Retorna {url, start, end} na ordem de aparição;
+ * `end` é exclusivo (índice logo após o `)` de fechamento).
+ */
+function findMarkdownLinks(
+  s: string,
+): { url: string; start: number; end: number }[] {
+  const out: { url: string; start: number; end: number }[] = [];
+  const linkStart = /\[[^\]]+\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(s)) !== null) {
+    const destStart = m.index + m[0].length;
+    let depth = 0;
+    let j = destStart;
+    for (; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
+    out.push({ url: s.slice(destStart, j).trim(), start: m.index, end: j + 1 });
+    linkStart.lastIndex = j + 1;
+  }
+  return out;
+}
+
+/**
  * Box do meio (entre D1 e D2) com imagem proeminente + texto + botão CTA.
  * Sem imagem → cai no box só-texto (renderIntroCallout). Extrai o link
  * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
 export function renderMidCallout(text: string, imageUrl: string | null): string {
   if (!imageUrl) return renderIntroCallout(text);
-  const linkMatch = text.match(/\[([^\]]+)\]\(([^)]+)\)/);
-  const link = linkMatch ? linkMatch[2].trim() : null;
-  const body = text.replace(/\s*\[[^\]]+\]\([^)]+\)\.?/, "").trim();
-  const imgTag = `<img src="${imageUrl}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
-  const imgBlock = link ? `<a href="${link}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
-  const cta = link
-    ? `<a href="${link}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
+  // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
+  // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
+  const links = findMarkdownLinks(text);
+  const link = links.length ? links[0].url : null;
+  let body = text;
+  for (let i = links.length - 1; i >= 0; i--) {
+    let { start, end } = links[i];
+    while (start > 0 && /\s/.test(body[start - 1])) start--; // engole espaço antes
+    if (body[end] === ".") end++; // e o ponto final do markdown-link
+    body = body.slice(0, start) + body.slice(end);
+  }
+  body = body.trim();
+  // esc() nos atributos: imageUrl vem do cache e link do reviewed.md — escapar
+  // `"`/`<`/`>`/`&` evita quebrar o atributo HTML (#code-review 1807).
+  const safeImg = esc(imageUrl);
+  const safeLink = link ? esc(link) : null;
+  const imgTag = `<img src="${safeImg}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
+  const cta = safeLink
+    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
     : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
