@@ -131,8 +131,8 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(keys.includes("d3"), "d3 em newsletter mode (#1701)");
     assert.deepEqual(
       keys.sort(),
-      ["cover", "d1", "d2", "d3", "eia_a", "eia_b"].sort(),
-      "newsletter = cover + d1 + d2 + d3 + eia_a + eia_b",
+      ["cover", "d1", "d2", "d3", "eia_a", "eia_b", "livros_promo"].sort(),
+      "newsletter = cover + d1 + d2 + d3 + eia_a + eia_b + livros_promo",
     );
     // filenames 1x1 (square) — não o 2x1 do cover.
     assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
@@ -143,6 +143,18 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.equal(specs.find((s) => s.key === "d3")!.optional, true);
     assert.ok(!specs.find((s) => s.key === "cover")!.optional);
     assert.ok(!specs.find((s) => s.key === "d1")!.optional);
+  });
+
+  it("#1808: newsletter mode inclui o slot livros_promo (optional, com md5 cache-bust)", () => {
+    const specs = imageSpecsFor("newsletter");
+    const lp = specs.find((s) => s.key === "livros_promo");
+    assert.ok(lp, "livros_promo deve estar em newsletter mode (produtor do box)");
+    assert.equal(lp!.filename, "04-livros-promo.jpg");
+    // optional: nem toda edição tem o box → não bloqueia o upload se ausente.
+    assert.equal(lp!.optional, true);
+    // mantém md5 cache-bust (#1584) — não opta por noCacheBust (review #1815):
+    // a chave é per-edição e o md5 evita promo stale no proxy do Gmail ao regerar.
+    assert.ok(!lp!.noCacheBust, "livros_promo NÃO deve ter noCacheBust (mantém md5)");
   });
 
   it("#1583: newsletter mode inclui d1-1x1 → social preview funciona", () => {

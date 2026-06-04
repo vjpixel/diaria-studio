@@ -7,7 +7,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractMidCallout, renderMidCallout } from "../scripts/render-newsletter-html.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  extractMidCallout,
+  renderMidCallout,
+  readMidCalloutImage,
+} from "../scripts/render-newsletter-html.ts";
 
 const MD = `Para esta edição, selecionamos 15 itens.
 
@@ -96,6 +103,42 @@ describe("midCallout — box entre D1 e D2", () => {
     );
     assert.ok(!html.includes(`p.jpg"><script>`), "src cru não deve aparecer");
     assert.ok(html.includes("&quot;"), "aspas devem ser escapadas no atributo");
+  });
+
+  // ── #1808: produtor (06-public-images.json) → consumidor (render) ──────
+
+  it("e2e: entry livros_promo no JSON → readMidCalloutImage → renderMidCallout emite <img> + botão", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
+    try {
+      // como o produtor (upload-images-public.ts --mode newsletter) grava:
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl, url: cfUrl } } }),
+      );
+      const url = readMidCalloutImage(dir);
+      assert.equal(url, cfUrl, "readMidCalloutImage deve ler a cloudflare_url do produtor");
+      const html = renderMidCallout(
+        "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).",
+        url,
+      );
+      assert.match(html, /<img[^>]+src="[^"]*livros-promo/, "box deve emitir <img> da promo");
+      assert.ok(html.includes("Ver os livros"), "box deve ter o botão CTA");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("e2e: sem entry livros_promo → readMidCalloutImage null → box só-texto (degradação graciosa)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
+    try {
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "x" } } }));
+      assert.equal(readMidCalloutImage(dir), null);
+      const html = renderMidCallout("📚 Promo. [Ver](https://livros.diaria.workers.dev).", null);
+      assert.ok(!html.includes("<img"), "sem produtor → box degrada pra só-texto");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("remove TODOS os links do corpo, não só o primeiro (#3J)", () => {
