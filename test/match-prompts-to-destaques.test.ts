@@ -97,6 +97,58 @@ Corpo.
     // não captura a menção "DESTAQUE 1" dentro do frontmatter eia.location
     assert.ok(!urls.some((u) => u.includes("location")));
   });
+
+  // #1833: URL com parêntese interno balanceado (Wikipedia/gov) não pode ser
+  // truncada no primeiro `)`. O `)` que fecha o link markdown e a pontuação de
+  // prose são removidos; os parênteses balanceados internos são preservados.
+  it("#1833: preserva parêntese interno balanceado, strippa o `)` do link markdown", () => {
+    const md =
+      `**DESTAQUE 1 | A**\n\n` +
+      `**[Verbete](https://en.wikipedia.org/wiki/AI_(disambiguation))**\n\n` +
+      `Corpo.\n\n---\n\n` +
+      `**DESTAQUE 2 | B**\n\n` +
+      `**[Lei](https://www.gov.br/lei/art_5_(2026)/texto)**\n\n` +
+      `Corpo.\n\n---\n\n` +
+      `**DESTAQUE 3 | C**\n\n` +
+      `**[Limpa](https://exame.com/ia/x/)**\n\n` +
+      `Corpo.\n`;
+    const urls = extractDestaqueUrls(md);
+    assert.equal(urls.length, 3, JSON.stringify(urls));
+    assert.equal(urls[0], "https://en.wikipedia.org/wiki/AI_(disambiguation)");
+    assert.equal(urls[1], "https://www.gov.br/lei/art_5_(2026)/texto");
+    assert.equal(urls[2], "https://exame.com/ia/x/"); // sem `)**`, sem truncar
+  });
+
+  it("#1833: parêntese desbalanceado de prose `(url)` é removido", () => {
+    const md = `DESTAQUE 1 | A\n\nveja (https://a.com/x) aqui\n\nCorpo.`;
+    const urls = extractDestaqueUrls(md);
+    assert.deepEqual(urls, ["https://a.com/x"]);
+  });
+
+  it("#1833: `*` interno no path é preservado (só o `**` de fecho do bold é removido)", () => {
+    const md = `**DESTAQUE 1 | A**\n\n**[Glob](https://a.com/v1/*/items)**\n\nCorpo.`;
+    const urls = extractDestaqueUrls(md);
+    assert.deepEqual(urls, ["https://a.com/v1/*/items"]);
+  });
+
+  // review #1834: `*` no FIM do path, imediatamente antes do `**` de fecho do
+  // bold — discrimina o `replace(/\*+$/)` (tira só o bold) do `)` do link.
+  it("#1833: `*` no fim do path antes do `**` de fecho é preservado", () => {
+    const md = `**DESTAQUE 1 | A**\n\n**[Glob](https://a.com/p*)**\n\nCorpo.`;
+    const urls = extractDestaqueUrls(md);
+    assert.deepEqual(urls, ["https://a.com/p*"]);
+  });
+
+  // review #1834: contrato "primeira URL do block" — título bold-wrapped vence
+  // um segundo link no corpo (formato real: título em linha própria + EOL).
+  it("retorna só a 1ª URL quando há 2 links no block (título vence)", () => {
+    const md =
+      `**DESTAQUE 1 | A**\n\n` +
+      `**[Manchete](https://a.com/1)**\n\n` +
+      `corpo citando [outro](https://b.com/2) no meio.\n`;
+    const urls = extractDestaqueUrls(md);
+    assert.deepEqual(urls, ["https://a.com/1"]);
+  });
 });
 
 describe("extractPromptUrl", () => {

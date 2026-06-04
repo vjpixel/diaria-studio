@@ -769,6 +769,19 @@ describe("Stage 4 invariants", () => {
       rmSync(fixture, { recursive: true, force: true });
     });
 
+    it("#1833: URL com parêntese interno (Wikipedia) não dispara mismatch falso", () => {
+      // reviewed e prompt apontam pro MESMO artigo; antes do #1833 o reviewed
+      // era truncado no `)` interno → urlsMatch falhava → warning falso.
+      const wiki = "https://en.wikipedia.org/wiki/AI_(disambiguation)";
+      writeReviewed([wiki, "https://b.example/y", "https://c.example/z"]);
+      writePrompt("d1", wiki);
+      writePrompt("d2", "https://b.example/y");
+      writePrompt("d3", "https://c.example/z");
+      const v = checkImageContentFresh(fixture);
+      assert.equal(v.length, 0, JSON.stringify(v));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
     it("#1832: prompt file ausente (Stage 3 parcial) NÃO vira warning de frontmatter", () => {
       writeReviewed([
         "https://a.example/x",
