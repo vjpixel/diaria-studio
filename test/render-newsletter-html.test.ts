@@ -395,6 +395,19 @@ describe("parseSections (#172)", () => {
     assert.equal(sections.length, 1, JSON.stringify(sections)); // NÃO dropada
     assert.equal(sections[0].emoji, "📰"); // fallback graceful (sem acento → sem 📺)
   });
+
+  // #1737: tightening INTENCIONAL do prefixo de emoji (era o loose
+  // `[^\sA-Za-zÁ-ú]+` que casava dígitos/pontuação). Agora alinhado ao lint
+  // (#1691). Headers com prefixo NÃO-emoji deixam de casar. Headers canônicos
+  // (emoji no range) seguem casando — coberto pelos testes acima.
+  it("parseSections NÃO trata prefixo de dígito/pontuação como header (#1737/#1691)", () => {
+    const mk = (header: string) =>
+      parseSections([header, "**[T](https://x.com)**", "Resumo."].join("\n"));
+    assert.equal(mk("**123 RADAR**").length, 0); // dígito-prefixo não é header
+    assert.equal(mk("**### RADAR**").length, 0); // pontuação não é header
+    // sanity: o canônico ainda casa
+    assert.equal(mk("**📡 RADAR**").length, 1);
+  });
 });
 
 describe("resolvePrevResultLine (#1707 — fallback do % da edição anterior)", () => {

@@ -324,4 +324,21 @@ describe("checkSectionItemFormat — headers de produção emoji + USE MELHOR/V�
     const r = checkSectionItemFormat(md);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
+
+  // #1737: o item-header passou a aceitar nomes SINGULARES (`S?` opcional) —
+  // antes era plural-only e ignorava `**🚀 LANÇAMENTO**` (justo o que
+  // singularize-md-sections emite pra seção de 1 item) → itens nessas seções
+  // nunca eram validados (sub-enforcement). Agora dispara.
+  it("dispara em header SINGULAR `**🚀 LANÇAMENTO**` (antes plural-only) — #1737", () => {
+    const md = [
+      "**🚀 LANÇAMENTO**",
+      "",
+      "**[Único](https://x.com)** descrição colada na mesma linha.",
+      "",
+    ].join("\n");
+    const r = checkSectionItemFormat(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors[0].type, "title_and_description_same_line");
+    assert.equal(r.errors[0].section, "LANÇAMENTO");
+  });
 });

@@ -52,6 +52,8 @@ const CATEGORY_EMOJI: Record<string, string> = {
 import {
   sectionEmojiPrefix,
   displaySectionName,
+  sectionHeaderRegex,
+  ALL_SECTION_NAMES_PATTERN,
 } from "./lib/section-naming.ts";
 
 // ── Interfaces ────────────────────────────────────────────────────────
@@ -206,7 +208,16 @@ export function truncateAtSectionTerminator(text: string): string {
 // Sem essa flexibilidade, headers com emoji prefix matam silenciosamente as
 // seções inteiras na renderização. Caso real 260519: LANÇAMENTOS + OUTRAS
 // NOTÍCIAS perdidas no primeiro paste no Beehiiv (18.5KB vs 28.9KB esperado).
-const SECTION_HEADER_RE = /^(?:\*\*)?(?:[^\sA-Za-zÁ-ú]+\s+)?(RADAR|PESQUISAS?|LAN[ÇC]AMENTOS?|OUTRAS NOTÍCIAS?|USE MELHOR|V[ÍI]DEOS?)(?:\*\*)?\s*$/m;
+// #1737: pattern + emoji prefix vêm de section-naming.ts (fonte única). Forma
+// preservada: bold opcional, grupo 1 = nome sem emoji, `\s*$` tolera trailing
+// whitespace. MUDANÇA INTENCIONAL: o prefixo de emoji antes era o loose
+// `[^\sA-Za-zÁ-ú]+` (casava dígitos/pontuação como "123 RADAR"); agora é o range
+// Unicode tight compartilhado (flag "u"). Validado byte-a-byte contra todas as
+// edições reais (#1737).
+const SECTION_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
+  capture: "name",
+  flags: "mu",
+});
 
 export function parseSections(text: string): Section[] {
   const blocks = text.split(/^---$/m).map((s) => s.trim()).filter(Boolean);

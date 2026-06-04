@@ -99,3 +99,103 @@ export function displaySectionName(name: string, count: number): string {
   const adjusted = singularizeSectionName(bare, count);
   return sectionEmojiPrefix(adjusted) + adjusted;
 }
+
+// ---------------------------------------------------------------------------
+// Fonte de verdade única das seções secundárias (#1737)
+// ---------------------------------------------------------------------------
+//
+// Antes a lista nome → bucket → label e o regex de header estavam DUPLICADOS em
+// 3 arquivos (lint-newsletter-md `SECTIONS` + `SECTION_ITEM_HEADER_RE`,
+// singularize-md-sections `SECTION_HEADER_REGEX`, render-newsletter-html
+// `SECTION_HEADER_RE`), com drift real entre eles:
+//   - prefixo de emoji: lint/singularize usavam o range Unicode tight; render
+//     usava o loose `[^\sA-Za-zÁ-ú]+` (casava dígitos/pontuação).
+//   - `USE\s+MELHOR` (lint) vs `USE MELHOR` literal (singularize/render).
+//   - `LAN[ÇC]AMENTOS?` (lint/render) vs `LANÇAMENTOS?` literal-Ç (singularize).
+//   - item-header só plural vs section-header com `S?` opcional.
+//
+// Agora os 3 consumers importam daqui. Os patterns usam as formas mais
+// LENIENTES (superset) — `[ÇC]`, `\s+`, `[ÍI]`, `S?` — pra casar tudo que
+// qualquer consumer casava antes, nunca menos.
+
+/** Bucket canônico de cada seção secundária (espelha o `Bucket` do lint). */
+export type SectionBucket = "lancamento" | "radar" | "use_melhor" | "video";
+
+export interface SectionDef {
+  /**
+   * Fragmento de regex (NÃO escapado de propósito — usa classes como `[ÇC]`)
+   * que casa o nome da seção. Singular e plural via `S?`.
+   */
+  pattern: string;
+  bucket: SectionBucket;
+  /** Label canônico emitido em edições novas. */
+  label: string;
+  /**
+   * true = alias legacy (PESQUISAS/OUTRAS NOTÍCIAS, substituídos por RADAR no
+   * #1569) — mantido só pra re-lint / re-render de edições antigas.
+   */
+  legacy?: boolean;
+}
+
+export const SECTIONS: SectionDef[] = [
+  { pattern: String.raw`LAN[ÇC]AMENTOS?`, bucket: "lancamento", label: "LANÇAMENTOS" },
+  { pattern: String.raw`RADAR`, bucket: "radar", label: "RADAR" },
+  { pattern: String.raw`USE\s+MELHOR`, bucket: "use_melhor", label: "USE MELHOR" },
+  { pattern: String.raw`V[ÍI]DEOS?`, bucket: "video", label: "VÍDEOS" },
+  { pattern: String.raw`PESQUISAS?`, bucket: "radar", label: "PESQUISAS", legacy: true },
+  { pattern: String.raw`OUTRAS?\s+NOT[ÍI]CIAS?`, bucket: "radar", label: "OUTRAS NOTÍCIAS", legacy: true },
+];
+
+/**
+ * Fragmento canônico do prefixo de emoji opcional: range Unicode high tight +
+ * variation selector U+FE0F (ex: 🛠️) + whitespace. Único — antes as 3 cópias
+ * divergiam. Cobre todos os emojis de seção (🚀 📡 🛠️ 📺 🔬 📰).
+ *
+ * Requer flag `u` no RegExp final (code points `\u{...}`).
+ */
+export const SECTION_EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?`;
+
+/** Alternação de TODOS os patterns (incl. legacy) — pra item-header / boundary. */
+export const ALL_SECTION_NAMES_PATTERN = SECTIONS.map((s) => s.pattern).join("|");
+
+export interface SectionHeaderRegexOpts {
+  /**
+   * `**` ao redor do header: "optional" (`(?:\*\*)?` — lint/render aceitam
+   * plain legacy + bold) | "required" (`\*\*` — singularize só mexe em bold).
+   * Default "optional".
+   */
+  bold?: "optional" | "required";
+  /**
+   * Grupo de captura 1:
+   *   "none"       → sem captura (lint URL×bucket só faz `.test()`).
+   *   "name"       → grupo 1 = nome SEM emoji (render parseSections, item-header).
+   *   "with-emoji" → grupo 1 = emoji prefix + nome (singularize → displaySectionName).
+   * Default "none".
+   */
+  capture?: "none" | "name" | "with-emoji";
+  /** Flags. Default "mu" (m: ^/$ multiline; u: obrigatório pros `\u{...}`). */
+  flags?: string;
+}
+
+/**
+ * Builder canônico do regex de header de seção (#1737): junta um pattern de
+ * nome (um `SectionDef.pattern` ou `ALL_SECTION_NAMES_PATTERN`) com o
+ * `SECTION_EMOJI_PREFIX`, com bold/captura/flags configuráveis pra cada
+ * consumer manter sua semântica exata.
+ *
+ * Forma: `^{bold}{emoji+nome}{bold}\s*$`.
+ */
+export function sectionHeaderRegex(
+  namePattern: string,
+  opts: SectionHeaderRegexOpts = {},
+): RegExp {
+  const bold = opts.bold === "required" ? String.raw`\*\*` : String.raw`(?:\*\*)?`;
+  const name = `(?:${namePattern})`;
+  const inner =
+    opts.capture === "with-emoji"
+      ? `(${SECTION_EMOJI_PREFIX}${name})`
+      : opts.capture === "name"
+        ? `${SECTION_EMOJI_PREFIX}(${name})`
+        : `${SECTION_EMOJI_PREFIX}${name}`;
+  return new RegExp(String.raw`^${bold}${inner}${bold}\s*$`, opts.flags ?? "mu");
+}
