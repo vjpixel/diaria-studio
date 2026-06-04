@@ -125,7 +125,9 @@ export function renderSection(
       // [TRADUZIR] só na descrição — o writer/editor traduz a descrição e remove
       // o prefixo, mantendo o título original. Detecção pelo summary (não pelo
       // título): um recurso de título EN com descrição PT não deve ser marcado.
-      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary);
+      // #1790: minWords:4 preserva o bar baixo da impl antiga do stitch — sem
+      // isso, summary EN curto (4-9 palavras) deixava de ganhar [TRADUZIR].
+      const summaryIsEn = a.summary_lang === "en" || looksEnglish(a.summary, { minWords: 4 });
       const descPrefix = summaryIsEn ? "[TRADUZIR] " : "";
       lines.push(descPrefix + cleanSummary(a.summary, a.title));
     }

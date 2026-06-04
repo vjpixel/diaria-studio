@@ -37,6 +37,18 @@ describe("looksEnglish — canônico (#1790)", () => {
     assert.ok(!looksEnglish("", { minWords: 4 }));
   });
 
+  it("boundary minWords: exatamente no limite avalia; abaixo retorna false", () => {
+    // 4 palavras (>1 char): 'these are the tools' → en: these,are,the=3/4=0.75.
+    const fourEn = "these are the tools";
+    assert.ok(looksEnglish(fourEn, { minWords: 4 }), "4 palavras com minWords:4 avalia");
+    assert.ok(!looksEnglish(fourEn, { minWords: 5 }), "abaixo do minWords → false");
+    // default minWords:10 rejeita texto de 4 palavras mesmo sendo inglês.
+    assert.ok(!looksEnglish(fourEn), "default 10 rejeita texto curto");
+    // exatamente 10 palavras com default avalia.
+    const tenEn = "these are the new tools that we have for the agents";
+    assert.ok(looksEnglish(tenEn), "10 palavras com default avalia");
+  });
+
   it("Unicode-aware: acentos não quebram a tokenização", () => {
     // texto PT com acentos não deve ser flagado como inglês.
     assert.ok(!looksEnglish("A inteligência artificial está transformando a economia e a sociedade brasileira hoje."));

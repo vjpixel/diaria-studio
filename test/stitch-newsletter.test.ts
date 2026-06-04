@@ -68,6 +68,15 @@ describe("renderSection (#1463)", () => {
     assert.match(out, /\*\*\[Short EN title\]\(https:\/\/x\.com\/en\)\*\*/); // título limpo
   });
 
+  it("#1790: summary EN CURTO (4-9 palavras, sem summary_lang) ainda recebe [TRADUZIR]", () => {
+    // Regressão da unificação do looksEnglish (review #1818): o call-site do
+    // [TRADUZIR] precisa de minWords:4 — senão summary EN curto escapa.
+    const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
+      { title: "Título PT", url: "https://x.com/en", summary: "Use the new API to ship faster." },
+    ]);
+    assert.match(out, /\[TRADUZIR\] Use the new API/);
+  });
+
   it("#1697: título EN com descrição PT NÃO recebe [TRADUZIR] (detecção por summary)", () => {
     const out = renderSection("📰", "OUTRA NOTÍCIA", "OUTRAS NOTÍCIAS", [
       { title: "GPT-5 Turbo", url: "https://x.com/en", summary: "Modelo lançado pela OpenAI nesta terça." },
