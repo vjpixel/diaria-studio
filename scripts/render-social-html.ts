@@ -5,27 +5,24 @@
  * Output: HTML standalone com cards por plataforma e posts visualmente separados.
  *
  * Uso:
- *   npx tsx scripts/render-social-html.ts --md data/editions/260526/03-social.md --out data/editions/260526/_internal/social-preview.html
+ *   npx tsx scripts/render-social-html.ts --md data/editions/260526/03-social.md --out data/editions/260526/_internal/social-preview.html --images data/editions/260526/06-public-images.json
+ *
+ * Flags:
+ *   --md <path>       (obrigatório) markdown 03-social.md
+ *   --out <path>      (obrigatório) HTML de saída
+ *   --images <path>   06-public-images.json (na RAIZ da edição, não em _internal/)
+ *   --require-images  exit≠0 se imagens não resolverem (default: warn-only)
+ *
+ * #1800: sem --images (ou path inválido), o preview saía SEM imagens
+ * silenciosamente — o editor revisava o gate achando que o social estava sem
+ * imagem. Agora: catch não é mais silencioso (warn loud no stderr) + check de
+ * contagem de <img> vs posts de destaque pós-render.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 
-const args = process.argv.slice(2);
-const mdIdx = args.indexOf("--md");
-const outIdx = args.indexOf("--out");
-const imagesIdx = args.indexOf("--images");
-if (mdIdx < 0 || outIdx < 0) {
-  console.error("Usage: --md <path> --out <path> [--images <06-public-images.json>]");
-  process.exit(2);
-}
-const mdPath = args[mdIdx + 1];
-const outPath = args[outIdx + 1];
-const imagesPath = imagesIdx >= 0 ? args[imagesIdx + 1] : null;
-
-const md = readFileSync(mdPath, "utf8");
-
-interface ImageMap {
+export interface ImageMap {
   [key: string]: {
     url: string;
     filename?: string;
@@ -35,19 +32,50 @@ interface ImageMap {
     cloudflare_url?: string;
   };
 }
-let imageUrls: ImageMap = {};
-if (imagesPath) {
+
+export interface ImageLoadResult {
+  map: ImageMap;
+  warnings: string[];
+}
+
+/**
+ * Carrega o mapa de imagens. #1800: nunca falha em silêncio — cada cenário de
+ * "sem imagens" vira um warning explícito (não um catch vazio).
+ */
+export function loadImageMap(imagesPath: string | null): ImageLoadResult {
+  const warnings: string[] = [];
+  if (!imagesPath) {
+    warnings.push(
+      "--images ausente: preview renderizado SEM imagens dos destaques. " +
+        "Passe --images data/editions/{AAMMDD}/06-public-images.json (na RAIZ da edição).",
+    );
+    return { map: {}, warnings };
+  }
+  if (!existsSync(imagesPath)) {
+    warnings.push(`--images path não existe: ${imagesPath} — preview SEM imagens.`);
+    return { map: {}, warnings };
+  }
   try {
     const raw = JSON.parse(readFileSync(imagesPath, "utf8"));
-    imageUrls = raw.images ?? raw;
-  } catch { /* no images, render without */ }
+    const map: ImageMap = raw.images ?? raw;
+    if (!map || typeof map !== "object" || Object.keys(map).length === 0) {
+      warnings.push(`--images vazio (${imagesPath}) — preview SEM imagens.`);
+      return { map: {}, warnings };
+    }
+    return { map, warnings };
+  } catch (e) {
+    warnings.push(
+      `--images inválido/não-JSON (${imagesPath}): ${(e as Error).message} — preview SEM imagens.`,
+    );
+    return { map: {}, warnings };
+  }
 }
 
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-interface Post {
+export interface Post {
   destaque: string;
   main: string;
   commentDiaria?: string;
@@ -55,13 +83,13 @@ interface Post {
   hashtags: string;
 }
 
-interface Platform {
+export interface Platform {
   name: string;
   posts: Post[];
   note?: string;
 }
 
-function parsePlatforms(text: string): Platform[] {
+export function parsePlatforms(text: string): Platform[] {
   const platforms: Platform[] = [];
   const platformBlocks = text.split(/^# /m).filter(Boolean);
 
@@ -113,15 +141,28 @@ function parsePlatforms(text: string): Platform[] {
   return platforms;
 }
 
-function getImageUrl(destaque: string): string {
+function getImageUrl(destaque: string, imageUrls: ImageMap): string {
   const dNum = destaque.replace(/\D/g, "");
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
 }
 
-function renderPost(post: Post, color: string): string {
-  const imgUrl = getImageUrl(post.destaque);
+/** #1800: quantos posts esperam uma imagem (destaque com número d1/d2/d3). */
+export function expectedImageCount(platforms: Platform[]): number {
+  return platforms.reduce(
+    (sum, p) => sum + p.posts.filter((post) => /\d/.test(post.destaque)).length,
+    0,
+  );
+}
+
+/** #1800: conta `<img` no HTML renderizado (validação pós-render). */
+export function countImgTags(html: string): number {
+  return (html.match(/<img\b/g) ?? []).length;
+}
+
+function renderPost(post: Post, color: string, imageUrls: ImageMap): string {
+  const imgUrl = getImageUrl(post.destaque, imageUrls);
   const imgHtml = imgUrl
     ? `<div class="post-image"><img src="${escHtml(imgUrl)}" alt="${escHtml(post.destaque)}" /></div>`
     : "";
@@ -158,9 +199,8 @@ function renderPost(post: Post, color: string): string {
     </div>`;
 }
 
-const platforms = parsePlatforms(md);
-
-const html = `<!DOCTYPE html>
+export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap): string {
+  return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -271,12 +311,72 @@ ${platforms.map(p => {
   <div class="platform">
     <div class="platform-header ${cls}">${icon} ${escHtml(p.name)}</div>
     ${p.note ? `<div class="platform-note">${escHtml(p.note)}</div>` : ""}
-    ${p.posts.map(post => renderPost(post, color)).join("\n")}
+    ${p.posts.map(post => renderPost(post, color, imageUrls)).join("\n")}
   </div>`;
 }).join("\n")}
 </body>
 </html>`;
+}
 
-writeFileSync(outPath, html);
-const postCount = platforms.reduce((s, p) => s + p.posts.length, 0);
-console.log(JSON.stringify({ out: outPath, platforms: platforms.length, posts: postCount, bytes: Buffer.byteLength(html) }));
+function main(): void {
+  const args = process.argv.slice(2);
+  const mdIdx = args.indexOf("--md");
+  const outIdx = args.indexOf("--out");
+  const imagesIdx = args.indexOf("--images");
+  const requireImages = args.includes("--require-images");
+  if (mdIdx < 0 || outIdx < 0) {
+    console.error("Usage: --md <path> --out <path> [--images <06-public-images.json>] [--require-images]");
+    process.exit(2);
+  }
+  const mdPath = args[mdIdx + 1];
+  const outPath = args[outIdx + 1];
+  const imagesPath = imagesIdx >= 0 ? args[imagesIdx + 1] : null;
+
+  const md = readFileSync(mdPath, "utf8");
+  const { map: imageUrls, warnings } = loadImageMap(imagesPath);
+
+  const platforms = parsePlatforms(md);
+  const html = buildSocialHtml(platforms, imageUrls);
+  writeFileSync(outPath, html);
+
+  // #1800: validação pós-render — preview com menos <img> que posts de destaque
+  // significa imagem faltando. Surfaçar loud em vez de enganar o editor no gate.
+  const expected = expectedImageCount(platforms);
+  const actual = countImgTags(html);
+  if (expected > 0 && actual < expected) {
+    warnings.push(
+      `preview com ${actual}/${expected} imagens de destaque — ${expected - actual} faltando. ` +
+        `Confira o --images e os 06-public-images.json (chaves d1/d2/d3).`,
+    );
+  }
+
+  for (const w of warnings) console.error(`[render-social-html] ⚠️ ${w}`);
+
+  const postCount = platforms.reduce((s, p) => s + p.posts.length, 0);
+  console.log(
+    JSON.stringify({
+      out: outPath,
+      platforms: platforms.length,
+      posts: postCount,
+      images_expected: expected,
+      images_rendered: actual,
+      warnings,
+      bytes: Buffer.byteLength(html),
+    }),
+  );
+
+  // #1800: com --require-images, qualquer imagem faltando falha o pipeline.
+  if (requireImages && warnings.length > 0) {
+    console.error("[render-social-html] --require-images: imagens faltando, exit 1.");
+    process.exit(1);
+  }
+}
+
+// CLI guard portável (Windows + Unix) — só roda main() em execução direta.
+const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
+if (
+  import.meta.url === `file://${_argv1}` ||
+  import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
+) {
+  main();
+}
