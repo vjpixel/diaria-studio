@@ -37,6 +37,11 @@ import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
 import { lintIntroCount as sharedLintIntroCount, type IntroCountResult } from "./lib/newsletter-count.ts"; // #1455
+import {
+  SECTIONS as SECTION_DEFS,
+  ALL_SECTION_NAMES_PATTERN,
+  sectionHeaderRegex,
+} from "./lib/section-naming.ts"; // #1737 fonte única de seções
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -80,30 +85,16 @@ interface SectionMapping {
 // #1569 / #1629: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS. Aliases legacy
 // mantidos pra re-lint de edições antigas; novos lints emitem RADAR.
 //
-// #1691: prefixo de emoji opcional `(?:[^\sA-Za-zÁ-ú]+\s+)?` — sem isso os
-// headers REAIS (`**📡 RADAR**`, `**🛠️ USE MELHOR**`) não casavam e
-// extractUrlsBySection devolvia [] → o lint de URL×bucket era NO-OP em toda
-// edição de produção (sempre ok:true validando 0 URLs). + USE MELHOR (#1568) e
-// VÍDEOS (#1674) que faltavam. Espelha o SECTION_HEADER_RE do render (#1363).
-// #1691 review: prefixo restrito ao range Unicode de emoji (espelha
-// singularize-md-sections + stripEmojiPrefix). O pattern antigo
-// `[^\sA-Za-zÁ-ú]+` casava dígitos/pontuação ("123 RADAR", "*** RADAR") como
-// header válido. `️?` cobre o variation selector U+FE0F (ex: 🛠️).
-const EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?`;
-// `name` é um FRAGMENTO de regex (não escapado de propósito) — todos os callers
-// passam String.raw literais (ex: LAN[ÇC]AMENTOS?). flags "mu": m pro ^/$
-// multiline, u pros code points \u{...} do EMOJI_PREFIX.
-const sectionHeaderRe = (name: string) =>
-  new RegExp(String.raw`^(?:\*\*)?${EMOJI_PREFIX}(?:${name})(?:\*\*)?\s*$`, "mu");
-const SECTIONS: SectionMapping[] = [
-  { header: sectionHeaderRe(String.raw`LAN[ÇC]AMENTOS?`), bucket: "lancamento", label: "LANÇAMENTOS" },
-  { header: sectionHeaderRe(String.raw`RADAR`), bucket: "radar", label: "RADAR" },
-  { header: sectionHeaderRe(String.raw`USE\s+MELHOR`), bucket: "use_melhor", label: "USE MELHOR" },
-  { header: sectionHeaderRe(String.raw`V[ÍI]DEOS?`), bucket: "video", label: "VÍDEOS" },
-  // Legacy aliases — qualquer edição antiga ainda lint normalmente.
-  { header: sectionHeaderRe(String.raw`PESQUISAS?`), bucket: "radar", label: "PESQUISAS" },
-  { header: sectionHeaderRe(String.raw`OUTRAS?\s+NOT[ÍI]CIAS?`), bucket: "radar", label: "OUTRAS NOTÍCIAS" },
-];
+// #1737: a lista nome → bucket → label e o regex de header vêm de
+// section-naming.ts (fonte única — antes esta era uma das 3 cópias). Forma
+// exata preservada: bold opcional, sem captura, flags "mu", emoji prefix
+// tight (range Unicode). `sectionHeaderRegex(pattern, {flags:"mu"})` produz
+// o mesmo `^(?:\*\*)?<emoji>(?:<pattern>)(?:\*\*)?\s*$` de antes.
+const SECTIONS: SectionMapping[] = SECTION_DEFS.map((s) => ({
+  header: sectionHeaderRegex(s.pattern, { flags: "mu" }),
+  bucket: s.bucket,
+  label: s.label,
+}));
 
 const SECTION_BREAK_RE = /^---\s*$/;
 // Match URL up to whitespace OR markdown delimiter (`)`, `]`, `>`)
@@ -591,16 +582,16 @@ export interface SectionItemFormatReport {
   errors: SectionItemFormatError[];
 }
 
-// #1693 parte 2 (enforce): emoji-tolerante (reusa EMOJI_PREFIX) + USE MELHOR/VÍDEOS.
-// Antes era bare → `checkSectionItemFormat` era no-op em toda edição de produção
-// (headers reais carregam emoji, ex: `**🛠️ USE MELHOR**`). Grupo 1 captura o nome
-// da seção (usado em currentSection). Flag "u" pros code points do EMOJI_PREFIX.
-// NOTA (dívida #1691/#1692): esta lista de seções ainda é a 3ª cópia (lint +
-// singularize + render) — consolidar em section-naming.ts é a issue de refactor.
-const SECTION_ITEM_HEADER_RE = new RegExp(
-  String.raw`^(?:\*\*)?${EMOJI_PREFIX}(LAN[ÇC]AMENTOS|RADAR|PESQUISAS|OUTRAS\s+NOT[ÍI]CIAS|USE\s+MELHOR|V[ÍI]DEOS?)(?:\*\*)?\s*$`,
-  "u",
-);
+// #1693 parte 2 (enforce): emoji-tolerante + USE MELHOR/VÍDEOS. Antes era bare →
+// `checkSectionItemFormat` era no-op em toda edição de produção (headers reais
+// carregam emoji, ex: `**🛠️ USE MELHOR**`). Grupo 1 captura o nome da seção
+// (usado em currentSection). #1737: pattern de nomes consolidado em
+// section-naming.ts (ALL_SECTION_NAMES_PATTERN inclui os legacy + `S?` opcional).
+// Aplicado linha-a-linha (trim) → flags "u" (^/$ = início/fim da linha única).
+const SECTION_ITEM_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
+  capture: "name",
+  flags: "u",
+});
 
 // Linha contendo APENAS um inline link bem-formado (com **bold** opcional
 // e trailing spaces opcionais). Segura pra detectar item title-line.

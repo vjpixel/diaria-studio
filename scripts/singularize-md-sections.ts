@@ -20,7 +20,13 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { displaySectionName, stripEmojiPrefix } from "./lib/section-naming.ts";
+import {
+  displaySectionName,
+  stripEmojiPrefix,
+  sectionHeaderRegex,
+  ALL_SECTION_NAMES_PATTERN,
+  SECTION_EMOJI_PREFIX,
+} from "./lib/section-naming.ts";
 
 interface SectionMutation {
   name: string;
@@ -48,7 +54,22 @@ interface SingularizeResult {
  * Capture group 1 = full header text (entre os `**`), inclui emoji se
  * presente.
  */
-const SECTION_HEADER_REGEX = /^\*\*((?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?(?:LANÇAMENTOS?|RADAR|USE MELHOR|V[ÍI]DEOS?|PESQUISAS?|OUTRAS? NOTÍCIAS?|OUTRA NOTÍCIA))\*\*$/u;
+// #1737: pattern de nomes + emoji prefix vêm de section-naming.ts (fonte única).
+// `bold:"required"` + `capture:"with-emoji"` preservam a forma de antes (`**...**`
+// obrigatório, grupo 1 = emoji+nome pra displaySectionName). ALL_SECTION_NAMES_PATTERN
+// é superset do anterior (cobre `OUTRA NOTÍCIA` via `OUTRAS?\s+NOT[ÍI]CIAS?`).
+const SECTION_HEADER_REGEX = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, {
+  bold: "required",
+  capture: "with-emoji",
+  flags: "u",
+});
+
+// Boundary genérico "próximo header em UPPERCASE" (não só seções conhecidas) —
+// usa o emoji prefix canônico (#1737), nome em maiúsculas acentuadas.
+const NEXT_UPPERCASE_HEADER_RE = new RegExp(
+  String.raw`^\*\*${SECTION_EMOJI_PREFIX}[A-ZÀ-Ú][A-ZÀ-Ú ]*\*\*$`,
+  "u",
+);
 
 /**
  * Conta itens da seção lendo linhas até o próximo header de seção (---,
@@ -65,7 +86,7 @@ function countItemsAfter(lines: string[], startIdx: number): number {
     // LANÇAMENTOS, Í em VÍDEOS) — usar emoji prefix opcional (range Unicode) +
     // uppercase acentuado cobre todos sem listar emoji a emoji.
     if (line.trim() === "---") break;
-    if (/^\*\*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?[A-ZÀ-Ú][A-ZÀ-Ú ]*\*\*$/u.test(line.trim()) && i > startIdx) break;
+    if (NEXT_UPPERCASE_HEADER_RE.test(line.trim()) && i > startIdx) break;
     // Item começa com `**[`
     if (/^\*\*\[/.test(line.trim())) count++;
   }
