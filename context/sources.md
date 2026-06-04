@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 52 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 48 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -136,26 +136,10 @@
 - RSS: https://www.theguardian.com/technology/artificialintelligenceai/rss
 - Topic filter: AI,IA,artificial intelligence,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
-### Superhuman AI
-- URL: https://www.superhuman.ai/
-- Site query: `site:superhuman.ai`
-
-### The Neuron
-- URL: https://www.theneurondaily.com/
-- Site query: `site:theneurondaily.com`
-
 ### The Rundown AI
 - URL: https://www.therundown.ai/archive
 - Site query: `site:therundown.ai/archive`
 - RSS: https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml
-
-### Recaply
-- URL: https://www.recaply.co/
-- Site query: `site:recaply.co`
-
-### 7min.ai
-- URL: https://7min.ai/?lang=pt-br
-- Site query: `site:7min.ai`
 
 ### Evolving AI
 - URL: https://evolvingai.io/
