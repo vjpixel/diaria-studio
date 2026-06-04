@@ -1,11 +1,18 @@
 /**
- * beehiiv-cover-upload.ts (#1416)
+ * beehiiv-cover-upload.ts (#1416, #1801)
  *
- * Helper pra setar a cover image (thumbnail) do post no Beehiiv via UI
- * nativa "Upload from URL". Bypassa o erro "Not allowed" que `file_upload`
- * gera em inputs hidden do Beehiiv.
+ * Helper pra setar a cover image (thumbnail) do post no Beehiiv.
  *
- * Caminho descoberto em 260520 (issue #1416):
+ * ✅ MÉTODO PRIMÁRIO (#1801 / #1500): `buildCoverDataTransferJs` — DataTransfer
+ *    no `input[type=file]` do editor + `.click()` na img subida (aplica auto).
+ *    Validado ao vivo em 260602/260604. É o que se deve usar.
+ *
+ * ⚠️ DEPRECATED (#1705): o fluxo "Upload from URL" abaixo (`buildCoverUploadJs`
+ *    + `buildCoverApplyLocateJs`) sobe pro media library mas NÃO aplica como
+ *    thumbnail na UI atual (clicar o card abre preview). Mantido só como
+ *    fallback histórico — não usar como primário. Ver beehiiv-playbook §4b.
+ *
+ * Caminho legado "Upload from URL", descoberto em 260520 (issue #1416):
  *   1. Click button "Add thumbnail" (top do post editor)
  *   2. Click "Use from library" (segundo botão no overlay)
  *   3. Click tab "Upload" (top toolbar do media library)
@@ -234,6 +241,81 @@ export function classifyCoverVerify(
     return { applied: false, reason: "sem imagem de thumbnail no editor" };
   }
   return { applied: true, thumbnailUrl: r.thumbnailSrc };
+}
+
+/**
+ * #1801 / #1500: método PRIMÁRIO de cover — DataTransfer no `input[type=file]`.
+ *
+ * Substitui o fluxo "Upload from URL" (#1416/#1705), que sobe pro library mas
+ * NÃO aplica como thumbnail na UI atual (clicar o card abre preview). Validado
+ * ao vivo em 260602/260604: o `.click()` na img recém-subida aqui APLICA
+ * automático (sem botão Insert), porque o upload veio do próprio input do
+ * editor (user-activation context), não do media-picker do workspace.
+ *
+ * Fluxo:
+ *   1. garantir `input[type=file]` (se ausente, abrir 'Add thumbnail')
+ *   2. fetch(imageUrl) → Blob → File → DataTransfer → `input.files` + change
+ *   3. aguardar ~5s, clicar na img recém-subida (aplica automático)
+ *   4. verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente
+ *
+ * Retorna o shape `CoverVerifyRaw` → classificar direto com `classifyCoverVerify`.
+ * (`get_post` do MCP não expõe `web_thumbnail_url`, então verificação é DOM-only.)
+ *
+ * @param imageUrl URL pública da cover (Cloudflare Worker /img/ — precisa CORS *)
+ * @param filename nome do File (informativo pro Beehiiv; default 04-d1-2x1.jpg)
+ */
+export function buildCoverDataTransferJs(
+  imageUrl: string,
+  filename = "04-d1-2x1.jpg",
+): string {
+  return `
+    (async () => {
+      const steps = [];
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const visible = (el) => el && el.offsetParent !== null;
+      const buttons = () =>
+        Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(visible);
+
+      // 1) garantir input[type=file] — se ausente, abrir 'Add thumbnail'
+      let fileInput = document.querySelector('input[type="file"]');
+      if (!fileInput) {
+        const addThumb = buttons().find(b => /add thumbnail/i.test(b.textContent || ''));
+        if (addThumb) { addThumb.click(); steps.push('clicked: Add thumbnail'); await sleep(1500); }
+        fileInput = document.querySelector('input[type="file"]');
+      }
+      if (!fileInput) return { error: 'input[type=file] não encontrado (nem após Add thumbnail)', steps };
+
+      // 2) fetch da imagem → File → DataTransfer (método #1500)
+      let blob;
+      try {
+        const res = await fetch(${JSON.stringify(imageUrl)});
+        if (!res.ok) return { error: 'fetch da cover falhou: HTTP ' + res.status, steps };
+        blob = await res.blob();
+      } catch (e) {
+        return { error: 'fetch da cover lançou (CORS no /img?): ' + (e && e.message), steps };
+      }
+      const file = new File([blob], ${JSON.stringify(filename)}, { type: blob.type || 'image/jpeg' });
+      const dt = new DataTransfer(); dt.items.add(file);
+      fileInput.files = dt.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      steps.push('dispatched: change via DataTransfer');
+      await sleep(5000);
+
+      // 3) clicar na img recém-subida → aplica automático (sem botão Insert)
+      const uploaded = Array.from(document.querySelectorAll('img')).find(i =>
+        visible(i) &&
+        /(media\\.beehiiv|beehiiv-images-production.*uploads)/i.test(i.src) &&
+        !(/static_assets|publication.logo/i.test(i.src)));
+      if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(3000); }
+      else steps.push('uploaded img não localizada (pode ter auto-aplicado)');
+
+      // 4) verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente
+      const addThumbAfter = buttons().find(b => /add thumbnail/i.test(b.textContent || ''));
+      const thumb = Array.from(document.querySelectorAll('img'))
+        .find(i => visible(i) && /beehiiv-images-production.*uploads/i.test(i.src));
+      return { addThumbnailPresent: !!addThumbAfter, thumbnailSrc: thumb ? thumb.src : null, steps };
+    })()
+  `;
 }
 
 /**
