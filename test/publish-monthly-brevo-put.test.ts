@@ -18,8 +18,18 @@ import { resolve } from "node:path";
  *   - Mock de fetch globalmente neste arquivo seria invasivo só pra isso
  */
 
-const SCRIPT_PATH = resolve(import.meta.dirname, "..", "scripts", "publish-monthly.ts");
-const SRC = readFileSync(SCRIPT_PATH, "utf8");
+// #1844: o cliente Brevo (def de brevoPut + os `method:` strings) migrou pra
+// scripts/lib/brevo-client.ts. Os CALLSITES (--schedule-at/--update-existing)
+// continuam no main() de publish-monthly.ts. Dois sources:
+const HELPER_SRC = readFileSync(
+  resolve(import.meta.dirname, "..", "scripts", "lib", "brevo-client.ts"),
+  "utf8",
+);
+const CALLSITE_SRC = readFileSync(
+  resolve(import.meta.dirname, "..", "scripts", "publish-monthly.ts"),
+  "utf8",
+);
+const SRC = HELPER_SRC; // tests 1-3 checam a definição do helper
 
 describe("publish-monthly: Brevo /emailCampaigns/{id} method (#1025)", () => {
   it("não usa method: \"PATCH\" em chamadas fetch", () => {
@@ -59,14 +69,15 @@ describe("publish-monthly: Brevo /emailCampaigns/{id} method (#1025)", () => {
   });
 
   it("--schedule-at e --update-existing usam brevoPut (não brevoPatch)", () => {
-    // Esses 2 callsites são onde o bug se manifestava. Lock-in do callsite.
-    const patchCallsites = SRC.match(/brevoPatch\s*\(/g);
+    // Esses 2 callsites são onde o bug se manifestava. Lock-in do callsite
+    // no main() de publish-monthly.ts (não no helper).
+    const patchCallsites = CALLSITE_SRC.match(/brevoPatch\s*\(/g);
     assert.equal(
       patchCallsites,
       null,
       "Não deve ter callsites de brevoPatch em publish-monthly.ts.",
     );
-    const putCallsites = SRC.match(/brevoPut\s*\(/g);
+    const putCallsites = CALLSITE_SRC.match(/brevoPut\s*\(/g);
     assert.ok(
       putCallsites !== null && putCallsites.length >= 2,
       `Esperava ≥2 callsites de brevoPut (--schedule-at e --update-existing); achou ${putCallsites?.length ?? 0}.`,
