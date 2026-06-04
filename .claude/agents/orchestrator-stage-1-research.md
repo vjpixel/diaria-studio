@@ -503,6 +503,16 @@ Opções:
 
 Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga warn no run-log.
 
+### 1v-ter. Guard USE MELHOR — flagar não-tutorial antes do gate (#1798)
+
+Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — em 260604 dois posts da `latent.space` entraram). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
+
+```bash
+npx tsx scripts/review-use-melhor.ts --approved data/editions/{AAMMDD}/_internal/01-approved.json
+```
+
+Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (`domínio newsletter/agregador` e/ou `sem sinal de tutorial`), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
+
 ### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
 
 **Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
