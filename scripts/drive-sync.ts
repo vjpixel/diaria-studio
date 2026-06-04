@@ -881,12 +881,30 @@ export async function pushFile(
 // Pull
 // ---------------------------------------------------------------------------
 
+/**
+ * #1828: o local tem mudanças NÃO-sincronizadas (foi modificado após o último
+ * push/pull registrado no cache)? Usado pra impedir que um pull sobrescreva
+ * trabalho local fresco com a versão do Drive — footgun real em 260604: um pull
+ * de comparação clobberou o `03-social.md` regenerado local (destaques novos)
+ * com a versão velha do Drive. Sem baseline (`lastPushedMtimeMs` ausente) →
+ * false (não dá pra afirmar; deixa o pull normal seguir, default seguro).
+ */
+export function localHasUnsyncedChanges(
+  localMtimeMs: number,
+  lastPushedMtimeMs: number | undefined,
+  toleranceMs = 2000,
+): boolean {
+  if (lastPushedMtimeMs == null) return false;
+  return localMtimeMs > lastPushedMtimeMs + toleranceMs;
+}
+
 export async function pullFile(
   editionDir: string,
   filename: string,
   yymmdd: string,
   cache: DriveCache,
-  result: SyncResult
+  result: SyncResult,
+  opts: { forceOverwriteLocal?: boolean } = {},
 ): Promise<void> {
   const fileCache = cache.editions[yymmdd]?.files?.[filename];
   if (!fileCache?.drive_file_id) return; // nunca foi subido → pular sem erro
@@ -897,6 +915,25 @@ export async function pullFile(
   // No-op se não mudou no Drive
   if (driveModified <= fileCache.drive_modifiedTime) return;
 
+  // #1828: guard de frescor — NÃO sobrescrever um local que tem mudanças não
+  // sincronizadas (modificado após o último sync). Senão um pull rotineiro/de
+  // comparação clobbera trabalho fresco (ex: social regenerado pós-troca de
+  // destaques). `--force-overwrite-local` ignora o guard quando o editor quer
+  // mesmo a versão do Drive.
+  const localPath = resolve(ROOT, editionDir, filename);
+  if (!opts.forceOverwriteLocal && existsSync(localPath)) {
+    const localMtime = statSync(localPath).mtimeMs;
+    if (localHasUnsyncedChanges(localMtime, fileCache.last_pushed_mtime)) {
+      result.warnings.push({
+        file: filename,
+        error_message:
+          `local modificado após o último sync (mudanças NÃO-enviadas) — pull NÃO sobrescreveu pra não clobberar trabalho fresco (#1828). ` +
+          `Rode 'push' se o local for o correto, ou 'pull --force-overwrite-local' pra trazer o Drive mesmo assim.`,
+      });
+      return;
+    }
+  }
+
   // #89: se arquivo foi convertido pra Doc nativo no push, pull faz export
   // pra text/markdown em vez de download binário (alt=media retorna 403 pra Docs).
   const isGoogleDoc = fileCache.drive_mimeType === GOOGLE_DOC_MIME;
@@ -904,7 +941,6 @@ export async function pullFile(
     ? await driveExportFile(fileCache.drive_file_id, "text/markdown")
     : await driveDownloadFile(fileCache.drive_file_id);
 
-  const localPath = resolve(ROOT, editionDir, filename);
   const dir = resolve(ROOT, editionDir);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
@@ -988,6 +1024,10 @@ async function main(): Promise<void> {
   const onConflict: ConflictMode = (
     ["warn", "pull-merge", "force"].includes(onConflictRaw) ? onConflictRaw : "warn"
   ) as ConflictMode;
+  // #1828: ignora o guard de frescor do pull (sobrescreve local com Drive).
+  const forceOverwriteLocal =
+    values["force-overwrite-local"] !== undefined ||
+    process.argv.includes("--force-overwrite-local");
 
   if (!mode || !editionDir) {
     console.error(
@@ -1035,7 +1075,7 @@ async function main(): Promise<void> {
         if (mode === "push") {
           await pushFile(editionDir, filename, yymmdd, dayFolderId, cache, result, { onConflict });
         } else {
-          await pullFile(editionDir, filename, yymmdd, cache, result);
+          await pullFile(editionDir, filename, yymmdd, cache, result, { forceOverwriteLocal });
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

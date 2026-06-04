@@ -10,6 +10,7 @@ import {
   GOOGLE_DOC_MIME,
   pushFile,
   pullFile,
+  localHasUnsyncedChanges,
   loadConflictToleranceSeconds,
   attemptThreeWayMerge,
   savePrePushSnapshot,
@@ -49,6 +50,32 @@ function makeDriveResponse(body: unknown, status = 200): Response {
     headers: { get: () => null },
   } as unknown as Response;
 }
+
+describe("localHasUnsyncedChanges — guard de frescor do pull (#1828)", () => {
+  it("local mais novo que o último sync (além da tolerância) → true (não clobberar)", () => {
+    // mtime do último push: 1000; local agora: 5000 → tem mudanças não-enviadas.
+    assert.equal(localHasUnsyncedChanges(5000, 1000), true);
+  });
+
+  it("local igual/anterior ao último sync → false (pull normal sobrescreve)", () => {
+    assert.equal(localHasUnsyncedChanges(1000, 1000), false);
+    assert.equal(localHasUnsyncedChanges(900, 1000), false);
+  });
+
+  it("dentro da tolerância (2s) → false (evita falso-positivo de touch)", () => {
+    // local 1500ms após o push: dentro da tolerância de 2000ms → não conta.
+    assert.equal(localHasUnsyncedChanges(2500, 1000), false);
+    assert.equal(localHasUnsyncedChanges(3001, 1000), true, "além da tolerância → true");
+  });
+
+  it("sem baseline (last_pushed_mtime ausente) → false (default seguro p/ pull normal)", () => {
+    assert.equal(localHasUnsyncedChanges(99999, undefined), false);
+  });
+
+  it("tolerância customizável", () => {
+    assert.equal(localHasUnsyncedChanges(6000, 1000, 10_000), false, "tolerância maior → não conta");
+  });
+});
 
 describe("isRetryableStatus (#121)", () => {
   it("aceita transient HTTP errors comuns do Drive API", () => {

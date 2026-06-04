@@ -425,7 +425,7 @@ Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente.
 
 
 - **Sync push antes do gate (#507):**
-  1. Lista base: `_internal/05-published.json,06-social-published.json`
+  1. Lista base: `03-social.md,_internal/05-published.json,06-social-published.json`. **#1828: `03-social.md` é re-pushado aqui** — sem isso o Drive fica congelado na versão do Stage 2 quando os destaques mudam depois (o editor revisa/posta o social a partir do Drive). O `--on-conflict force` não é usado aqui (push normal); se houver edição no Drive, o drive-sync resolve por conflito.
   2. Se `data/editions/{AAMMDD}/error.md` existir, append `,error.md` à lista.
   3. Rodar:
      ```bash
