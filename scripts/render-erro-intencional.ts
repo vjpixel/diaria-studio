@@ -35,6 +35,7 @@ import {
   loadIntentionalErrors,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
+import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -446,8 +447,7 @@ export function insertOrUpdateSection(
     // 🎁 SORTEIO, 🙋🏼‍♀️ PARA ENCERRAR) — sem isso, strip cai pra EOF e
     // engole tudo até o fim do MD em edições sem `---` separator entre
     // ERRO INTENCIONAL e a próxima seção.
-    const emojiOpt =
-      "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
+    const emojiOpt = SECTION_EMOJI_PREFIX; // #1836: cópia local idêntica → registry
     const stripRe = new RegExp(
       `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?${emojiOpt}(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
       "mu",

@@ -76,10 +76,18 @@ export function sectionEmojiPrefix(name: string): string {
  *
  * Regex cobre todos os emojis canônicos das seções (🚀 📡 🛠️ 📺 🔬 📰) via
  * range Unicode high — defensivo, casa qualquer emoji novo sem precisar atualizar
- * esta regex. Aceita variation selector U+FE0F opcional após o emoji.
+ * esta regex.
+ *
+ * #1836: mesma forma do SECTION_EMOJI_PREFIX (1º char emoji + 0+ modificadores
+ * FE0F/ZWJ/skin-tone/range). Mantém consistência: o que o header regex casa como
+ * prefixo, este strip remove — antes o strip era tight (só 1 FE0F) e um header
+ * com emoji composto (👨‍💻) casava no header mas não singularizava.
  */
 export function stripEmojiPrefix(name: string): string {
-  return name.replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+/u, "");
+  return name.replace(
+    /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+/u,
+    "",
+  );
 }
 
 /**
@@ -147,13 +155,21 @@ export const SECTIONS: SectionDef[] = [
 ];
 
 /**
- * Fragmento canônico do prefixo de emoji opcional: range Unicode high tight +
- * variation selector U+FE0F (ex: 🛠️) + whitespace. Único — antes as 3 cópias
- * divergiam. Cobre todos os emojis de seção (🚀 📡 🛠️ 📺 🔬 📰).
+ * Fragmento canônico do prefixo de emoji opcional. Primeiro char é um emoji do
+ * range Unicode high (rejeita dígito/pontuação tipo "123 RADAR"), seguido de 0+
+ * modificadores: variation selector U+FE0F (🛠️), ZWJ U+200D + skin-tone
+ * U+1F3FB-1F3FF + mais emojis do range (sequências tipo 👨‍💻 / 🙋🏼‍♀️). Cobre os
+ * emojis de seção (🚀 📡 🛠️ 📺 🔬 📰).
+ *
+ * #1836: enriquecido pro SUPERSET que newsletter-count / validate-section-structure
+ * / render-erro-intencional já usavam — antes a versão da registry era tight
+ * (só 1 FE0F), e os validadores aceitavam ZWJ/skin-tone, criando divergência
+ * validador↔renderer. Agora todos importam daqui. Superset = byte-idêntico em
+ * dado real (edições usam emoji single-codepoint, que casa ambos).
  *
  * Requer flag `u` no RegExp final (code points `\u{...}`).
  */
-export const SECTION_EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]️?\s+)?`;
+export const SECTION_EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+)?`;
 
 /** Alternação de TODOS os patterns (incl. legacy) — pra item-header / boundary. */
 export const ALL_SECTION_NAMES_PATTERN = SECTIONS.map((s) => s.pattern).join("|");

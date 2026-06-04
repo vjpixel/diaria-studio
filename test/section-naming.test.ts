@@ -92,6 +92,15 @@ describe("stripEmojiPrefix", () => {
   it("não remove emoji do meio do nome", () => {
     assert.equal(stripEmojiPrefix("LANÇAMENTOS 🚀"), "LANÇAMENTOS 🚀");
   });
+
+  // #1836 review: strip enriquecido pro superset do SECTION_EMOJI_PREFIX —
+  // remove prefixo de emoji composto (ZWJ/skin-tone), consistente com o que o
+  // header regex casa. Mantém aceitar FE0F (🛠️).
+  it("remove prefixo de emoji composto (ZWJ / skin-tone) — #1836", () => {
+    assert.equal(stripEmojiPrefix("🛠️ USE MELHOR"), "USE MELHOR"); // FE0F
+    assert.equal(stripEmojiPrefix("👨‍💻 USE MELHOR"), "USE MELHOR"); // ZWJ
+    assert.equal(stripEmojiPrefix("🙋🏼‍♀️ LANÇAMENTOS"), "LANÇAMENTOS"); // skin-tone+ZWJ
+  });
 });
 
 describe("displaySectionName — orquestrador (#1324, #1328)", () => {
