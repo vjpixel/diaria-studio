@@ -6,12 +6,41 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCoverUploadJs,
+  buildCoverDataTransferJs,
   buildCoverReplaceJs,
   classifyUploadResult,
   buildCoverApplyLocateJs,
   buildCoverVerifyJs,
   classifyCoverVerify,
 } from "../scripts/lib/beehiiv-cover-upload.ts";
+
+describe("buildCoverDataTransferJs — método primário (#1801 / #1500)", () => {
+  it("gera JS com DataTransfer no input[type=file] + a URL da imagem", () => {
+    const url = "https://poll.diaria.workers.dev/img/img-260604-04-d1-2x1.jpg";
+    const js = buildCoverDataTransferJs(url);
+    assert.match(js, /new DataTransfer\(\)/, "deve usar DataTransfer");
+    assert.match(js, /input\[type="file"\]/, "deve setar o input[type=file]");
+    assert.match(js, /\.click\(\)/, "deve clicar na img subida pra aplicar");
+    assert.ok(js.includes(JSON.stringify(url)), "deve embutir a URL da imagem");
+  });
+
+  it("escapa a URL com segurança (JSON.stringify, não concatenação crua)", () => {
+    const js = buildCoverDataTransferJs('https://x/y".jpg');
+    assert.ok(js.includes(JSON.stringify('https://x/y".jpg')));
+  });
+
+  it("usa o filename default 04-d1-2x1.jpg (e aceita override)", () => {
+    assert.match(buildCoverDataTransferJs("https://x/y.jpg"), /04-d1-2x1\.jpg/);
+    assert.match(buildCoverDataTransferJs("https://x/y.jpg", "capa.jpg"), /capa\.jpg/);
+  });
+
+  it("retorna o shape de classifyCoverVerify (verificação DOM-only #1705)", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    // o JS resolve com { addThumbnailPresent, thumbnailSrc, steps } → classificável
+    assert.match(js, /addThumbnailPresent/);
+    assert.match(js, /thumbnailSrc/);
+  });
+});
 
 describe("aplicar/verificar capa por clique real (#1705)", () => {
   it("buildCoverApplyLocateJs localiza o card uploadado (não clica)", () => {

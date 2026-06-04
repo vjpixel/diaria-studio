@@ -227,9 +227,9 @@ if (!isFieldVerified(post.title, newTitle)) {
 
 **⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. O `isFieldVerified` cobre isso. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
 
-#### 4b. Upload da cover image via URL (#1416)
+#### 4b. Aplicar a cover image — DataTransfer (#1801 / #1500)
 
-Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do post editor. Caminho que funciona: UI nativa "Upload from URL" (descoberto em 260520).
+Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Método primário (validado ao vivo 260602/260604):** `DataTransfer` no `input[type=file]` do editor + `.click()` na img recém-subida, que aplica **automático** (sem botão Insert) — porque o upload veio do próprio input do editor (user-activation context).
 
 URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-public.ts --mode newsletter`):
 
@@ -237,73 +237,35 @@ URL canônica da cover (publicada via Cloudflare Worker KV pelo `upload-images-p
 https://poll.diaria.workers.dev/img/img-{AAMMDD}-04-d1-2x1.jpg
 ```
 
-Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache. Dispatch + validate:
+Se houver sufixo de versão em `06-public-images.json` (md5 diff #1418), use a URL exata do cache. Dispatch + verify (o helper já faz fetch → DataTransfer → apply → verificação DOM e retorna o shape de `classifyCoverVerify`):
 
 ```typescript
-import { buildCoverUploadJs, classifyUploadResult } from "scripts/lib/beehiiv-cover-upload.ts";
+import { buildCoverDataTransferJs, classifyCoverVerify } from "scripts/lib/beehiiv-cover-upload.ts";
 
-// #1474: retry loop (até 2x) com delay crescente. CDP timeout em 45s
-// é insuficiente quando Beehiiv demora no upload — retry resolve.
+let cover = { applied: false, reason: "não tentado" };
 for (let attempt = 1; attempt <= 3; attempt++) {
-  const result = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverUploadJs(imageUrl) });
-  const decision = classifyUploadResult(result);
-  if (decision.ok) break;
+  const r = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverDataTransferJs(imageUrl) });
+  cover = classifyCoverVerify(r);
+  if (cover.applied) break;
   if (attempt < 3) {
-    log_warn(`Cover upload tentativa ${attempt}/3 falhou: ${decision.reason}. Retry em ${attempt * 5}s...`);
+    log_warn(`Cover (DataTransfer) tentativa ${attempt}/3 falhou: ${cover.reason}. Retry em ${attempt * 5}s...`);
     sleep(attempt * 5_000);
-    continue;
   }
-  // 3 falhas: logar warn mas NÃO bloquear — cover é cosmético, não bloqueia publicação.
-  // Editor pode subir manualmente via dashboard (visível no gate).
-  log_warn(`Cover upload falhou após 3 tentativas: ${decision.reason}. Editor pode subir manualmente.`);
 }
 ```
 
-**⚠️ #1705: o upload pro library funciona, mas APLICAR como thumbnail exige CLIQUE REAL + verificação por DOM (não via API).** Dois fatos verificados ao vivo:
-1. **Sem via de confirmação por API:** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente). NÃO validar a capa via API — usar o DOM do editor.
-2. **`.click()` sintético no card não aplica:** clicar o card recém-uploadado via JS abre **preview**, não aplica (mesma classe do #1764 — React gateia por user-activation). O step 8 do `buildCoverUploadJs` virou no-op; o aplicar precisa de **clique real de ponteiro**.
-
-**Aplicar + verificar (#1705):**
-```typescript
-import { buildCoverApplyLocateJs, buildCoverVerifyJs, classifyCoverVerify } from "scripts/lib/beehiiv-cover-upload.ts";
-import { resolveClickPoint } from "scripts/lib/beehiiv-real-click.ts";
-
-// 1) Após o upload (loop acima), localizar o card da imagem e clicar de VERDADE.
-const loc = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverApplyLocateJs() });
-if (loc.found) {
-  const pt = resolveClickPoint(loc, screenshotWidth); // converte viewport→screenshot (gotcha #1764)
-  await mcp__claude-in-chrome__computer({ action: "left_click", coordinate: [pt.x, pt.y] });
-  sleep(2500);
-}
-// 2) Verificar via DOM (sinal confiável): "Add thumbnail" sumiu + thumbnail presente.
-const verify = await mcp__claude-in-chrome__javascript_tool({ code: buildCoverVerifyJs() });
-const cover = classifyCoverVerify(verify);
-```
+**⚠️ Verificação é DOM-only (#1705):** `get_post` do MCP **não expõe** `web_thumbnail_url` (campo ausente) — NÃO validar a capa via API. `buildCoverDataTransferJs` já checa via DOM ("Add thumbnail" sumiu + thumbnail `beehiiv-images-production` presente) e `classifyCoverVerify` decide.
 
 **Regra (não declarar done silenciosamente):** **NUNCA** declare "capa aplicada" sem que `classifyCoverVerify` retorne `applied: true`. Se `applied: false`, **SEMPRE** emita no gate e no resumo final, separadamente do status das imagens inline:
 
 ```
 ⚠️ Cover NÃO confirmada (${cover.reason}) — suba manualmente no Beehiiv
-   (Add thumbnail → Upload a new image). A imagem já está no media library
-   (o upload funciona); o aplicar não foi confirmado (#1705).
+   (Add thumbnail → arrastar/escolher 04-d1-2x1.jpg).
 ```
 
 Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa fallback da publication. Mas thumb correto melhora OG previews em LinkedIn/Twitter shares.
 
-**Método alternativo que funciona (#1500, testado 260526):** Se `buildCoverUploadJs` falhar, usar DataTransfer no file input:
-
-```javascript
-const resp = await fetch(imageUrl);
-const blob = await resp.blob();
-const file = new File([blob], 'cover.jpg', { type: 'image/jpeg' });
-const dt = new DataTransfer();
-dt.items.add(file);
-document.querySelectorAll('input[type="file"]')[0].files = dt.files;
-document.querySelectorAll('input[type="file"]')[0].dispatchEvent(new Event('change', { bubbles: true }));
-// Aguardar ~5s, depois clicar na imagem no media library grid
-```
-
-Sinais de sucesso: botão "Add thumbnail" desaparece, imagem 640×320 aparece no topo do editor. API `get_post` NÃO retorna `thumbnail_url` (campo não exposto pelo MCP).
+**⚠️ DEPRECATED (#1705) — NÃO usar como primário:** o fluxo legado "Use from library → **Upload from URL**" (`buildCoverUploadJs` + `buildCoverApplyLocateJs`) sobe a imagem pro media library mas **não aplica** como thumbnail na UI atual (clicar o card abre preview, não aplica). Em 260604 falhou em 4 tentativas; o DataTransfer aplicou de primeira. Mantido no helper só como fallback histórico.
 
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 

@@ -35,9 +35,9 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
     );
   });
 
-  it("#1416: §4b referencia buildCoverUploadJs + classifyUploadResult", () => {
-    assert.match(playbook, /buildCoverUploadJs/);
-    assert.match(playbook, /classifyUploadResult/);
+  it("#1801: §4b usa buildCoverDataTransferJs (DataTransfer) como primário + classifyCoverVerify", () => {
+    assert.match(playbook, /buildCoverDataTransferJs/);
+    assert.match(playbook, /classifyCoverVerify/);
     assert.match(playbook, /beehiiv-cover-upload/);
   });
 
@@ -69,10 +69,24 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
     );
   });
 
-  it("#1705: §4b referencia os helpers de aplicar/verificar capa por clique real", () => {
-    assert.match(playbook, /buildCoverApplyLocateJs/);
-    assert.match(playbook, /buildCoverVerifyJs/);
-    assert.match(playbook, /classifyCoverVerify/);
+  it("#1801: §4b apresenta DataTransfer como PRIMÁRIO e 'Upload from URL' só como DEPRECATED", () => {
+    // Regressão: o playbook documentava "Upload from URL" (#1416/#1705) como
+    // método primário de cover, mas ele NÃO aplica como thumbnail na UI atual
+    // (260604: falhou 4×). O DataTransfer (#1500) aplica. Este guard falha se
+    // o §4b voltar a apresentar "Upload from URL" como primário.
+    const m = playbook.match(/#### 4b\.[\s\S]*?(?=\n#### |\n### |$)/);
+    assert.ok(m, "§4b deve existir no playbook");
+    const s4b = m![0];
+    assert.match(s4b, /DataTransfer/, "§4b deve documentar o método DataTransfer");
+    const dtIdx = s4b.indexOf("DataTransfer");
+    const ufuIdx = s4b.indexOf("Upload from URL");
+    if (ufuIdx >= 0) {
+      assert.ok(
+        dtIdx < ufuIdx,
+        "DataTransfer deve vir ANTES de 'Upload from URL' (primário primeiro)",
+      );
+      assert.match(s4b, /DEPRECATED/, "'Upload from URL' só pode aparecer marcado DEPRECATED");
+    }
   });
 
   it("#1764: §5.1 usa clique REAL (⋮ → Use template), não .click() sintético", () => {
