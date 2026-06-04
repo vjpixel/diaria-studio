@@ -33,10 +33,15 @@
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
 
-import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import Papa from "papaparse";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+
+// .env.local (precedência) + .env — loader canônico do projeto (#923).
+// Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
+loadProjectEnv();
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DATA_DIR = resolve(ROOT, "data/clarice-subscribers");
@@ -112,9 +117,10 @@ class FatalApiError extends Error {}
 // CSV helpers
 // ---------------------------------------------------------------------------
 
-/** Lê o input preservando TODAS as colunas. Retorna linhas + nome da coluna de email. */
+/** Lê o input preservando TODAS as colunas. Retorna linhas + colunas + nome da coluna de email. */
 export function readInput(path: string): {
   rows: Record<string, string>[];
+  fields: string[];
   emailKey: string;
 } {
   const text = readFileSync(path, "utf-8");
@@ -123,13 +129,16 @@ export function readInput(path: string): {
     skipEmptyLines: true,
   });
   const fields = parsed.meta.fields ?? [];
-  // Coluna de email: "email" (case-insensitive) ou a 1ª coluna como fallback.
-  const emailKey =
-    fields.find((f) => f.trim().toLowerCase() === "email") ?? fields[0];
+  // Coluna de email: nome contendo "email"/"e-mail" (case-insensitive).
+  // Sem fallback pra fields[0]: mandar a coluna errada (ex: NOME) pro MV
+  // queimaria 1 crédito por linha em lixo. Melhor falhar alto.
+  const emailKey = fields.find((f) => /e-?mail/i.test(f.trim()));
   if (!emailKey) {
-    throw new Error(`CSV sem colunas detectáveis: ${path}`);
+    throw new Error(
+      `CSV sem coluna de email (colunas: ${fields.join(", ") || "nenhuma"}): ${path}`,
+    );
   }
-  return { rows: parsed.data, emailKey };
+  return { rows: parsed.data, fields, emailKey };
 }
 
 /**
@@ -186,12 +195,26 @@ async function verifyOne(
     const t = setTimeout(() => ctrl.abort(), (timeoutSec + 10) * 1000);
     try {
       const resp = await fetch(url, { signal: ctrl.signal });
-      // 4xx (exceto 429) é provavelmente config — não adianta retry.
+      // 429 / 5xx = transitório → retry (libera o socket antes de continuar).
       if (resp.status === 429 || resp.status >= 500) {
+        await resp.body?.cancel().catch(() => {});
         lastErr = new Error(`HTTP ${resp.status}`);
         continue;
       }
-      const json = (await resp.json()) as MvResponse;
+      // Outro 4xx (401/403/400) = auth/config — não adianta retry. Corpo pode
+      // ser HTML (não-JSON), então NÃO chamar resp.json() aqui: trata como fatal
+      // pra parar o run em vez de jogar a lista inteira em `unknown`.
+      if (resp.status >= 400) {
+        const body = await resp.text().catch(() => "");
+        throw new FatalApiError(`HTTP ${resp.status}: ${body.slice(0, 200)}`);
+      }
+      let json: MvResponse;
+      try {
+        json = (await resp.json()) as MvResponse;
+      } catch {
+        lastErr = new Error("resposta não-JSON da API");
+        continue;
+      }
       const err = (json.error ?? "").trim();
       if (err) {
         // Erros fatais conhecidos: key inválida / sem crédito → parar tudo.
@@ -235,7 +258,10 @@ function loadCheckpoint(path: string): Checkpoint {
 }
 
 function saveCheckpoint(path: string, cp: Checkpoint): void {
-  writeFileSync(path, JSON.stringify(cp, null, 0), "utf-8");
+  // Atômico (tmp+fsync+rename): SIGINT/SIGKILL no meio de um writeFileSync
+  // normal deixaria o checkpoint truncado → loadCheckpoint descarta tudo →
+  // todos os créditos já gastos são perdidos no re-run.
+  writeFileAtomic(path, JSON.stringify(cp, null, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -270,16 +296,27 @@ interface Args {
   single: string | null;
 }
 
+/** parseInt com fallback: rejeita NaN e ≤0 (senão `--concurrency abc` → NaN
+ *  → 0 workers → pool não faz nada e tudo vira `unknown` silenciosamente). */
+function posInt(v: string | undefined, fallback: number): number {
+  if (v == null) return fallback;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export function parseArgs(argv: string[]): Args {
   const get = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
+  const rawLimit = get("--limit");
+  const parsedLimit = rawLimit != null ? parseInt(rawLimit, 10) : NaN;
   return {
     input: get("--input") ?? "brevo-import-t02.csv",
-    concurrency: parseInt(get("--concurrency") ?? "12", 10),
-    timeout: parseInt(get("--timeout") ?? "20", 10),
-    limit: get("--limit") ? parseInt(get("--limit")!, 10) : null,
+    concurrency: posInt(get("--concurrency"), 12),
+    timeout: posInt(get("--timeout"), 20),
+    // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.
+    limit: Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : null,
     single: get("--single") ?? null,
   };
 }
@@ -327,7 +364,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const base = basename(args.input).replace(/\.csv$/i, "");
   const cpPath = resolve(DATA_DIR, `.mv-cache-${base}.json`);
 
-  const { rows, emailKey } = readInput(inputPath);
+  const { rows, fields, emailKey } = readInput(inputPath);
   console.error(`📂 ${args.input}: ${rows.length} linhas (coluna email="${emailKey}")`);
 
   // Emails únicos, normalizados.
@@ -383,10 +420,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             resultcode: res.resultcode ?? -1,
             quality: res.quality ?? "",
           };
-          if (typeof res.credits === "number") lastCredits = res.credits;
+          // Mínimo visto (não o último): sob concorrência as respostas chegam
+          // fora de ordem, então `último` poderia "subir" e superestimar o saldo.
+          if (typeof res.credits === "number") {
+            lastCredits = lastCredits == null ? res.credits : Math.min(lastCredits, res.credits);
+          }
           dirty++;
         } catch (e) {
-          if (e instanceof FatalApiError) throw e;
+          if (e instanceof FatalApiError) {
+            aborting = true; // sinaliza os workers irmãos a pararem de queimar crédito
+            throw e;
+          }
           failures.push(email);
         }
         done++;
@@ -415,9 +459,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // --- Split + write outputs ---
   const split = splitRows(rows, emailKey, checkpoint);
+  // Colunas fixas (originais + MV_*) pra header SEMPRE sair, mesmo em bucket
+  // vazio — Papa.unparse([]) gera string vazia (CSV sem header) que quebra import.
+  const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE"];
   const writeBucket = (bucket: Bucket): number => {
     const path = resolve(DATA_DIR, `${base}-${bucket}.csv`);
-    writeFileSync(path, Papa.unparse(split[bucket]), "utf-8");
+    writeFileSync(path, Papa.unparse({ fields: outFields, data: split[bucket] }), "utf-8");
     return split[bucket].length;
   };
   const counts = {
@@ -436,8 +483,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     input: args.input,
     total_rows: rows.length,
     unique_emails: allEmails.length,
-    verified_now: done - failures.length,
-    failed_now: failures.length,
+    // Quantos emails foram efetivamente verificados via API NESTE run (≠ bucket
+    // verified, que reflete o checkpoint inteiro incluindo runs anteriores).
+    processed_this_run: done - failures.length,
+    failed_this_run: failures.length,
     credits_remaining: lastCredits,
     buckets: counts,
     outputs: {

@@ -75,13 +75,25 @@ describe("readInput", () => {
     }
   });
 
-  it("usa a 1ª coluna como fallback quando não há 'email'", () => {
+  it("detecta variação 'E-mail' (case/hífen-insensitive)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mv-"));
+    try {
+      const p = join(dir, "t.csv");
+      writeFileSync(p, "Nome,E-mail\nX,x@y.com\n");
+      const { emailKey, fields } = readInput(p);
+      assert.equal(emailKey, "E-mail");
+      assert.deepEqual(fields, ["Nome", "E-mail"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lança erro quando não há coluna de email (não manda nomes pro MV)", () => {
     const dir = mkdtempSync(join(tmpdir(), "mv-"));
     try {
       const p = join(dir, "t.csv");
       writeFileSync(p, "endereco,nome\nx@y.com,X\n");
-      const { emailKey } = readInput(p);
-      assert.equal(emailKey, "endereco");
+      assert.throws(() => readInput(p), /sem coluna de email/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -167,5 +179,17 @@ describe("parseArgs", () => {
 
   it("--single", () => {
     assert.equal(parseArgs(["--single", "x@y.com"]).single, "x@y.com");
+  });
+
+  it("concurrency/timeout inválidos caem no default (nunca 0/NaN)", () => {
+    const a = parseArgs(["--concurrency", "abc", "--timeout", "0"]);
+    assert.equal(a.concurrency, 12); // NaN → default
+    assert.equal(a.timeout, 20); // 0 não é >0 → default
+  });
+
+  it("--limit 0 é preservado (no-op proposital); inválido vira null", () => {
+    assert.equal(parseArgs(["--limit", "0"]).limit, 0);
+    assert.equal(parseArgs(["--limit", "xyz"]).limit, null);
+    assert.equal(parseArgs(["--limit", "-5"]).limit, null);
   });
 });
