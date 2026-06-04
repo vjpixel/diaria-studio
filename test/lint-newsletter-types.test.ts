@@ -13,8 +13,10 @@ import { resolve } from "node:path";
  * Inspeção estática: garante que o type stays loose, evitando regressão.
  */
 
+// #1737 item 2: o tipo ApprovedArticle migrou de lint-newsletter-md.ts pro
+// cluster URL×bucket em lib/lint-checks/url-bucket.ts (mesmo tipo, mesma regra).
 const SRC = readFileSync(
-  resolve(import.meta.dirname, "..", "scripts", "lint-newsletter-md.ts"),
+  resolve(import.meta.dirname, "..", "scripts", "lib", "lint-checks", "url-bucket.ts"),
   "utf8",
 );
 
