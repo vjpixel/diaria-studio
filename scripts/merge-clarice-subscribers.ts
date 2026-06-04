@@ -293,10 +293,15 @@ export function hasClariceAudienceTag(
 
 // ---------------------------------------------------------------------------
 // verify_risk: escala 1–10 de necessidade de verificar o email antes de enviar
-//   1–3 = baixo (enviar sem verificar)
-//   4–6 = médio (verificar se possível)
-//   7–8 = alto  (verificar antes de enviar)
-//   9–10 = crítico (verificar prioritariamente ou descartar)
+//   1–2 = baixo (enviar sem verificar)
+//   3–10 = verificar no MillionVerifier antes de enviar (#1297)
+//
+// Convenção revisada em #1297: antes era T6+ → MV, mas o T02 (ex-assinantes)
+// cai em verify_risk 4–5 e mostrou bounce esperado de 5–10% — alto o bastante
+// pra contaminar a reputação do IP/domínio Brevo (afeta o T01 no mesmo IP).
+// Agora qualquer verify_risk ≥ 3 passa pelo MillionVerifier via
+// `scripts/verify-emails-mv.ts` antes do envio. Só T1 ativo (risk 1) e
+// pagantes muito engajados recentes (risk 2) pulam a verificação.
 //
 // Não usa tag clrc-pt como sinal: tagging só começou em 2024 e foi populado
 // inconsistentemente até 2025; usar tag enviesava contatos antigos legítimos
@@ -517,8 +522,9 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
   // Tier é implícito no filename (brevo-import-t{NN}.csv).
   // Ordem das linhas implica ordenação por score (não precisa coluna).
   //
-  // verify_risk não vai no output: decisão de MillionVerifier é tomada
-  // por tier (heurística atual: T6+ → MV, T1–T5 → skip).
+  // verify_risk não vai no output: a verificação MillionVerifier é um passo
+  // separado (`scripts/verify-emails-mv.ts`) rodado sobre o CSV do tier antes
+  // do envio. Convenção #1297: verify_risk ≥ 3 → MV (cobre T02+); 1–2 → skip.
   return {
     email: r.email,
     NOME: r.name?.split(" ")[0] || "",
