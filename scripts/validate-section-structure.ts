@@ -26,6 +26,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #1836 fonte única do prefixo de emoji
 
 export interface StructureToken {
   kind: "header" | "separator";
@@ -46,7 +47,8 @@ export interface StructureToken {
 // Review #1612: aceitar emoji prefix opcional em todas as seções top-level
 // (era gap pré-existente — só SORTEIO/PARA ENCERRAR tinham emoji explícito).
 // Sem isso, fingerprint não detecta `**📡 RADAR**`, `**🚀 LANÇAMENTOS**`, etc.
-const EMOJI_OPT = "(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
+// #1836: era cópia local idêntica do prefixo richer — agora importa da registry.
+const EMOJI_OPT = SECTION_EMOJI_PREFIX;
 const HEADER_PATTERNS: Array<{ re: RegExp; canonical: string }> = [
   { re: /^\*{0,2}DESTAQUE\s+(\d+)\s*\|/i, canonical: "destaque-$1" },
   { re: /^\*{0,2}(?:## )?É IA\?\*{0,2}\s*$/i, canonical: "é-ia" },

@@ -22,6 +22,8 @@
  *     beehiiv.com?via, linkedin/facebook/wikipedia/creativecommons)
  */
 
+import { SECTION_EMOJI_PREFIX } from "./section-naming.ts"; // #1836 fonte única do prefixo de emoji
+
 export interface SelectedCounts {
   destaques: number;
   lancamentos: number;
@@ -63,8 +65,10 @@ const SKIP_HEADER_NAMES = [
 //   - emoji + supplementary symbols U+2600-U+27BF (♀, ♂, ✨)
 // Extraído pra um lugar só pra evitar drift entre os 6+ sites que usam o
 // mesmo padrão (review #1591).
-const EMOJI_PREFIX_FRAGMENT =
-  "(?:\\*\\*)?(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][️‍\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+)?";
+// #1836: bold opcional + o prefixo de emoji richer (agora da registry, antes
+// cópia local). Comportamento idêntico — o char-class era escrito com chars
+// literais ️‍ em vez de \u{FE0F}\u{200D}, mas casa exatamente o mesmo.
+const EMOJI_PREFIX_FRAGMENT = `(?:\\*\\*)?${SECTION_EMOJI_PREFIX}`;
 
 // Nomes válidos das seções secundárias (não-destaque, não-eia).
 const SECTION_NAME_FRAGMENT =
