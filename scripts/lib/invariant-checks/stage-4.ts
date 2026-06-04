@@ -10,6 +10,11 @@ import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
+import {
+  extractDestaqueUrls,
+  extractPromptUrl,
+} from "../../match-prompts-to-destaques.ts";
+import { urlsMatch } from "../url-utils.ts";
 
 interface PublicImageEntry {
   url?: string;
@@ -183,6 +188,138 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
   }
 
   return [];
+}
+
+/**
+ * #1730 (follow-up do #1710): content-check da imagem de destaque vs highlight
+ * atual. O #1710 trocou o upstream de staleness das imagens de `02-reviewed.md`
+ * → `_internal/02-d{N}-prompt.md` (correto pro mtime), mas isso narrow-ou um
+ * gap: se o editor **troca o artigo do D{N}** editando headline+URL direto no
+ * `02-reviewed.md` (sem rodar reorder-destaques.ts nem regenerar a imagem), o
+ * prompt fica descrevendo a cena antiga, o mtime do prompt não muda → nenhum
+ * flag, e a imagem publicada é de outra história.
+ *
+ * Esta é a versão content-aware (análoga ao social-hash-fresh #1413 que cobre
+ * o 03-social.md): pra cada D{N}, compara o `destaque_url:` do frontmatter do
+ * prompt (#606) com a URL principal do D{N} atual no `02-reviewed.md`. Se
+ * divergem, a imagem foi gerada pra outro artigo.
+ *
+ * Single-sided: o prompt já carrega `destaque_url` (escrito no Stage 2/3), então
+ * não precisa write-side novo. Warning, não error — gap narrowed (só dispara em
+ * article-swap manual via edição crua). Edições de wording da MESMA URL são
+ * corretamente ignoradas; troca de URL (mesmo da mesma história) gera warning
+ * benigno — editor confirma e segue.
+ */
+export interface ImageContentMismatch {
+  slot: "d1" | "d2" | "d3";
+  promptUrl: string;
+  reviewedUrl: string;
+}
+
+/**
+ * Pure: compara URLs dos prompts (por slot) com as URLs em ordem do reviewed.
+ * `reviewedUrls[0]` = D1, `[1]` = D2, `[2]` = D3. Slot sem URL no reviewed é
+ * ignorado (outros checks cobrem reviewed incompleto).
+ *
+ * Distinção de 3 estados no `promptUrls[slot]` (review #1832):
+ *   - `string`    → prompt existe e tem `destaque_url` → compara.
+ *   - `null`      → prompt **existe mas sem** `destaque_url` → `missingFrontmatter`.
+ *   - `undefined` → prompt file **não existe** → fora de escopo (all-images-exist
+ *     cobre); NÃO reportar como frontmatter ausente (era a conflação do #1832).
+ *
+ * Comparação via `urlsMatch` (canonicalize compartilhado, #523/#626): host
+ * case-insensitive + strip de tracking params + trailing slash, mas **path
+ * case-sensitive** (RFC 3986) — dois slugs que diferem só no case do path são
+ * artigos diferentes e disparam mismatch corretamente.
+ *
+ * `haveFrontmatter` = quantos slots têm `destaque_url` — o caller usa pra
+ * decidir se a edição é de formato atual (≥1) e só então avisar sobre os
+ * faltantes (edição legada pré-#606 não spamma warning).
+ */
+export function findImageContentMismatches(
+  promptUrls: { d1?: string | null; d2?: string | null; d3?: string | null },
+  reviewedUrls: string[],
+): {
+  mismatches: ImageContentMismatch[];
+  missingFrontmatter: Array<"d1" | "d2" | "d3">;
+  haveFrontmatter: number;
+} {
+  const mismatches: ImageContentMismatch[] = [];
+  const missingFrontmatter: Array<"d1" | "d2" | "d3"> = [];
+  let haveFrontmatter = 0;
+  const slots = ["d1", "d2", "d3"] as const;
+  slots.forEach((slot, i) => {
+    const reviewedUrl = reviewedUrls[i];
+    if (reviewedUrl == null) return; // reviewed não tem esse slot — fora de escopo
+    const promptUrl = promptUrls[slot];
+    if (promptUrl === undefined) return; // prompt file ausente — all-images-exist cobre
+    if (promptUrl === null) {
+      missingFrontmatter.push(slot);
+      return;
+    }
+    haveFrontmatter++;
+    if (!urlsMatch(promptUrl, reviewedUrl)) {
+      mismatches.push({ slot, promptUrl, reviewedUrl });
+    }
+  });
+  return { mismatches, missingFrontmatter, haveFrontmatter };
+}
+
+function checkImageContentFresh(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  const reviewedUrls = extractDestaqueUrls(readFileSync(reviewedPath, "utf8"));
+  if (reviewedUrls.length === 0) return [];
+
+  const internalDir = resolve(editionDir, "_internal");
+  // undefined = file ausente; null = file existe sem frontmatter; string = url.
+  const promptUrls: { d1?: string | null; d2?: string | null; d3?: string | null } = {};
+  let anyPrompt = false;
+  for (const slot of ["d1", "d2", "d3"] as const) {
+    const p = resolve(internalDir, `02-${slot}-prompt.md`);
+    if (existsSync(p)) {
+      anyPrompt = true;
+      promptUrls[slot] = extractPromptUrl(readFileSync(p, "utf8"));
+    }
+  }
+  // Nenhum prompt = imagens ainda não geradas (Stage 3 não rodou) — nada a checar.
+  if (!anyPrompt) return [];
+
+  const { mismatches, missingFrontmatter, haveFrontmatter } =
+    findImageContentMismatches(promptUrls, reviewedUrls);
+
+  const violations: InvariantViolation[] = [];
+  for (const m of mismatches) {
+    violations.push({
+      rule: "image-content-fresh",
+      message:
+        `Imagem do ${m.slot.toUpperCase()} foi gerada pra outro artigo: prompt ` +
+        `destaque_url=${m.promptUrl} ≠ destaque atual ${m.reviewedUrl}. Editor trocou ` +
+        `o artigo direto no 02-reviewed.md sem regenerar a imagem. Re-rodar Stage 3 ` +
+        `(image-generate) pra esse destaque, ou rodar reorder-destaques.ts se foi reorder.`,
+      source_issue: "#1730",
+      severity: "warning",
+      file: resolve(internalDir, `02-${m.slot}-prompt.md`),
+    });
+  }
+  // Só avisa frontmatter-ausente em edição de formato atual (≥1 prompt JÁ tem
+  // destaque_url) — assim os faltantes são anomalia real, não edição legada
+  // pré-#606 (que spammaria warning não-acionável em todo reprocessamento).
+  if (missingFrontmatter.length > 0 && haveFrontmatter > 0) {
+    violations.push({
+      rule: "image-content-fresh",
+      message:
+        `frontmatter destaque_url ausente em ${missingFrontmatter
+          .map((s) => `02-${s}-prompt.md`)
+          .join(", ")} (outros prompts da edição já têm) — content-check da imagem ` +
+        `desabilitado pra esse(s) destaque(s). writer-destaque deveria ter escrito ` +
+        `o frontmatter #606; adicionar manualmente ou regenerar Stage 2.`,
+      source_issue: "#1730",
+      severity: "warning",
+      file: resolve(internalDir, `02-${missingFrontmatter[0]}-prompt.md`),
+    });
+  }
+  return violations;
 }
 
 /**
@@ -490,6 +627,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkSocialHashFresh,
   },
   {
+    id: "image-content-fresh",
+    description: "imagem de destaque bate com highlight D{N} atual (#1730)",
+    source_issue: "#1730",
+    stage: 4,
+    run: checkImageContentFresh,
+  },
+  {
     id: "intro-count-consistent",
     description: "intro line Z = contagem real de items visíveis (#1578)",
     source_issue: "#1578",
@@ -532,6 +676,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
 export {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
+  checkImageContentFresh,
   checkIntroCountConsistent,
   checkConsentBinding,
   checkFbPageIdSet,
