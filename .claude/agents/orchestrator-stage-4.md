@@ -90,6 +90,18 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter,
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
+### 4a-poll-preflight. Gate de poll ANTES do envio — SEMPRE (#1803)
+
+**Roda em TODO entry path, nos dois modos (`pre_gate` true/false), antes de qualquer pré-render/dispatch.** Resolve o P1 #1803: num resume direto pro Stage 4, os passos de poll do Stage 0 (§0d.bis `maintain-valid-editions`, §0d.ter `inject-poll-sig`) não rodam e o "É IA?" quebra ao vivo (410/403) pra todos os subscribers — silenciosamente. Como está no início do Stage 4, **um resume sempre o atravessa**. O script faz FIX idempotente (maintain + inject, warn-only) → VERIFY (smoke-test, **gate duro**), bloqueando o envio antes da newsletter sair — não depois (o antigo §4h-bis rodava tarde demais).
+
+```bash
+npx tsx scripts/preflight-poll-dispatch.ts --edition {AAMMDD}
+```
+
+Exit code handling:
+- `0` → poll pronto. Prosseguir pro dispatch.
+- `1` → **FATAL:** o próprio script já renderizou o halt banner (motivo + ação). **NÃO enviar a newsletter.** Editor corrige (tipicamente `add-valid-edition.ts --edition {AAMMDD}` ou conferir `POLL_SECRET`) e re-roda Etapa 4.
+
 ### 4a-pre-gate. Pré-render + apresentar preview ao editor (#1523 / #1571)
 
 **Executar SOMENTE quando `pre_gate = true`.** Roda APÓS 4a (sentinel-3, sync pull, invariants) — review #1600 corrigiu posição que estava antes do sync. Faz tudo que o dispatch precisa exceto enviar pros canais finais:
@@ -554,32 +566,23 @@ O script `close-poll.ts` agora (#1367) faz **sanity check automático** após o 
 
 Se sanity check falhar, exit 1 — Worker pode ter rejeitado silenciosamente.
 
-### 4h-bis. Smoke test do voto (#1366 Stage 4 part)
+### 4h-bis. Smoke test do voto — belt-and-suspenders (#1366, #1803)
 
-**Imediatamente após close-poll**, validar que `valid_editions` inclui a edição corrente. Caso real 260519: maintain-valid-editions-window read_failed=true em Stage 0; sem smoke test, 482 subscribers receberiam email com botões A/B retornando 410.
+> O gate autoritativo de poll é o **§4a-poll-preflight** (smoke-test ANTES do envio, bloqueia se falhar). Este passo pós-close-poll é redundante no caminho feliz — só reconfirma `valid_editions` depois do close-poll setar o gabarito. Mesmo halt do §4a se quiser cobertura extra (caso real 260519: `read_failed=true` em Stage 0 → 482 subscribers com botões A/B retornando 410):
 
 ```bash
-if ! npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}; then
-  npx tsx scripts/render-halt-banner.ts --stage "4 — Publicação" \
-    --reason "smoke-test-vote falhou — edição não está em valid_editions OU Worker offline" \
-    --action "rode \`npx tsx scripts/add-valid-edition.ts --edition {AAMMDD}\` e retentar"
-  exit 1
-fi
+npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}  # exit 2 (410/403) ou 3 (net) = halt obrigatório
 ```
 
-Smoke test exit codes:
-- `0` → vote aceito (Worker incluiu edição em valid_editions)
-- `2` → 410/403 (edição fora do set ou sig inválida) — halt obrigatório
-- `3` → network timeout — halt (Stage 5 vai falhar de qualquer jeito)
-
-**Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, ambos close-poll **e smoke-test-vote** devem ser invocados manualmente:
+**Publicação manual (sem `/diaria-4-publicar`):** se publicar direto pelo Beehiiv UI sem rodar este stage, rodar o **preflight de poll ANTES do envio** (faz maintain + inject + smoke-test num passo, #1803) e close-poll **depois**:
 
 ```bash
+npx tsx scripts/preflight-poll-dispatch.ts --edition {AAMMDD}  # ANTES de colar o HTML — bloqueia se votos não forem aceitos
+# ... publicar ... e DEPOIS de publicar, setar o gabarito:
 npx tsx scripts/close-poll.ts --edition {AAMMDD}
-npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}
 ```
 
-Sem close-poll, gabarito permanece `null` no Worker. Sem smoke test, edição pode estar fora de valid_editions silenciosamente.
+Sem o preflight, a edição pode estar fora de `valid_editions` (410) ou subscribers sem `poll_sig` (403) silenciosamente. Sem close-poll, gabarito permanece `null` no Worker.
 
 ### 4i. Escrever sentinel de conclusão (#978)
 
