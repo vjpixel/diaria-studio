@@ -33,7 +33,6 @@ import {
   checkStage2Caps,
   type ApprovedJson as CapsApprovedJson,
 } from "./lib/apply-stage2-caps.ts"; // #907
-import { parseHighlights } from "./lib/measure-highlights.ts"; // #914
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #926
 import { readEiaAnswerSidecar } from "./lib/eia-answer.ts"; // #927
 import { lintIntroCount as sharedLintIntroCount, type IntroCountResult } from "./lib/newsletter-count.ts"; // #1455
@@ -47,6 +46,11 @@ import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
 import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
 import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
+import { checkCoverageLine } from "./lib/lint-checks/coverage-line-format.ts";
+import {
+  checkDestaqueMinChars,
+  checkDestaqueMaxChars,
+} from "./lib/lint-checks/destaque-chars.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -64,6 +68,20 @@ export {
   type WhyMattersReport,
 } from "./lib/lint-checks/why-matters-format.ts";
 export { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
+export {
+  checkCoverageLine,
+  COVERAGE_LINE_RE,
+} from "./lib/lint-checks/coverage-line-format.ts";
+export {
+  checkDestaqueMinChars,
+  checkDestaqueMaxChars,
+  DESTAQUE_MIN_CHARS,
+  DESTAQUE_MAX_CHARS,
+  type DestaqueMinCharsError,
+  type DestaqueMinCharsReport,
+  type DestaqueMaxCharsError,
+  type DestaqueMaxCharsReport,
+} from "./lib/lint-checks/destaque-chars.ts";
 
 // #1031: tipos locais reconciliados com central ApprovedJsonSchema
 // (scripts/lib/schemas/edition-state.ts). url é optional pra suportar
@@ -260,70 +278,8 @@ export function buildUrlBucketMap(
   return { byUrl };
 }
 
-/**
- * #592, #609: linha de cobertura é a primeira linha não-vazia do reviewed.md.
- * Formato canônico:
- *   "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia
- *    encontrou outros Y artigos. Selecionamos os Z mais relevantes para as
- *    pessoas que assinam a newsletter."
- *
- * Aceita variação com `???` no Y (fallback quando totalConsidered ausente).
- *
- * #701: aceita também forma singular ("1 submissão", "1 artigo",
- * "Selecionamos o artigo mais relevante") — concordância numérica.
- */
-export const COVERAGE_LINE_RE =
-  /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss(?:ão|ões) e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos?\. (?:Selecionamos o artigo mais relevante|Selecionamos os \d+ mais relevantes)/i;
-
-/**
- * #925: pula YAML frontmatter (`---\n...\n---\n`) antes de procurar a
- * primeira linha do body. Writer agent emite `eia_answer` no frontmatter
- * (output canônico, não anomalia), e o lint não pode tratar `---` (delim
- * do frontmatter) como primeira linha de cobertura.
- *
- * Frontmatter malformado (sem fechamento) é tratado como body — não pula
- * nada, deixa o regex falhar com mensagem clara.
- */
-function stripFrontmatter(md: string): string {
-  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return md;
-  // Procurar fechamento — `\n---` no início de linha após o delim de abertura.
-  // Buscamos a partir do índice 4 pra não pegar o `---` da abertura.
-  const closeMatch = md.slice(4).match(/^---\r?\n/m);
-  if (!closeMatch || closeMatch.index === undefined) return md;
-  const endOfClose = 4 + closeMatch.index + closeMatch[0].length;
-  return md.slice(endOfClose);
-}
-
-/**
- * Skip `TÍTULO` / `SUBTÍTULO` header block (#916) — inserido por
- * `insert-titulo-subtitulo.ts` no topo do `02-reviewed.md` pra alimentar
- * subject + preview text do Beehiiv. O bloco termina em `---`. Coverage
- * line vem depois.
- *
- * Sem este skip, `checkCoverageLine` em 02-reviewed.md falsamente reporta
- * "TÍTULO" como primeira linha e marca formato inválido (#1207).
- */
-function stripTituloSubtituloBlock(md: string): string {
-  const firstLine = md.split(/\r?\n/).find((l) => l.trim().length > 0);
-  if (!firstLine || !/^T[ÍI]TULO$/i.test(firstLine.trim())) return md;
-  // Procurar primeiro `---` em linha própria — fim do bloco TÍTULO/SUBTÍTULO.
-  const dashMatch = md.match(/^---\s*$/m);
-  if (!dashMatch || dashMatch.index === undefined) return md;
-  const afterDash = md.slice(dashMatch.index + dashMatch[0].length);
-  // Pular newline depois do ---
-  return afterDash.replace(/^\r?\n+/, "");
-}
-
-export function checkCoverageLine(md: string): { ok: boolean; firstLine: string } {
-  let body = stripFrontmatter(md);
-  body = stripTituloSubtituloBlock(body);
-  const lines = body.split("\n");
-  const firstNonEmpty = lines.find((l) => l.trim().length > 0) ?? "";
-  return {
-    ok: COVERAGE_LINE_RE.test(firstNonEmpty.trim()),
-    firstLine: firstNonEmpty.trim(),
-  };
-}
+// #1737 item 2: COVERAGE_LINE_RE + checkCoverageLine (#592/#609/#1207) movidos
+// pra scripts/lib/lint-checks/coverage-line-format.ts. Re-exportados no topo.
 
 export function lintNewsletter(
   md: string,
@@ -456,120 +412,9 @@ export function checkSectionCounts(
   };
 }
 
-/**
- * Verifica que cada destaque atinge o mínimo de chars (#914).
- *
- * Mínimos editoriais (complementam os máximos do writer.md):
- *   D1 ≥ 1000 chars  (máx 1200)
- *   D2 ≥ 900 chars   (máx 1000)
- *   D3 ≥ 900 chars   (máx 1000)
- *
- * Char count exclui URLs (mesma estratégia do `parseHighlights` em
- * measure-highlights.ts) — mede só o body do destaque (parágrafos +
- * "Por que isso importa" + parágrafo de impacto).
- *
- * Em 260507 D1=999, D2=708, D3=679 — D1 quase no piso, D2/D3 bem abaixo
- * (variação D1↔D3 = +47% no peso editorial).
- */
-export const DESTAQUE_MIN_CHARS = {
-  1: 1000,
-  2: 900,
-  3: 900,
-} as const;
-
-/**
- * Limites máximos por destaque (#964). D1 maior que D2/D3 reflete hierarquia
- * editorial (manchete > segundas histórias) — manter D2/D3 mais curtos
- * preserva ritmo de leitura, newsletter densa cai CTR.
- *
- * Em 260508 D2=1409 passou despercebido até a métrica do gate; com max
- * bloqueante o writer teria sido re-disparado automaticamente.
- */
-export const DESTAQUE_MAX_CHARS = {
-  1: 1200,
-  2: 1000,
-  3: 1000,
-} as const;
-
-export interface DestaqueMinCharsError {
-  destaque: number;
-  category: string;
-  chars: number;
-  min: number;
-}
-
-export interface DestaqueMinCharsReport {
-  ok: boolean;
-  errors: DestaqueMinCharsError[];
-  highlights: Array<{ destaque: number; category: string; chars: number; min: number }>;
-}
-
-export function checkDestaqueMinChars(md: string): DestaqueMinCharsReport {
-  const measured = parseHighlights(md);
-  const errors: DestaqueMinCharsError[] = [];
-  const summary: DestaqueMinCharsReport["highlights"] = [];
-
-  for (const h of measured.highlights) {
-    const min =
-      DESTAQUE_MIN_CHARS[h.number as 1 | 2 | 3] ?? DESTAQUE_MIN_CHARS[3];
-    summary.push({
-      destaque: h.number,
-      category: h.category,
-      chars: h.chars,
-      min,
-    });
-    if (h.chars < min) {
-      errors.push({
-        destaque: h.number,
-        category: h.category,
-        chars: h.chars,
-        min,
-      });
-    }
-  }
-
-  return { ok: errors.length === 0, errors, highlights: summary };
-}
-
-export interface DestaqueMaxCharsError {
-  destaque: number;
-  category: string;
-  chars: number;
-  max: number;
-}
-
-export interface DestaqueMaxCharsReport {
-  ok: boolean;
-  errors: DestaqueMaxCharsError[];
-  highlights: Array<{ destaque: number; category: string; chars: number; max: number }>;
-}
-
-export function checkDestaqueMaxChars(md: string): DestaqueMaxCharsReport {
-  const measured = parseHighlights(md);
-  const errors: DestaqueMaxCharsError[] = [];
-  const summary: DestaqueMaxCharsReport["highlights"] = [];
-
-  for (const h of measured.highlights) {
-    const max =
-      DESTAQUE_MAX_CHARS[h.number as 1 | 2 | 3] ?? DESTAQUE_MAX_CHARS[3];
-    summary.push({
-      destaque: h.number,
-      category: h.category,
-      chars: h.chars,
-      max,
-    });
-    if (h.chars > max) {
-      errors.push({
-        destaque: h.number,
-        category: h.category,
-        chars: h.chars,
-        max,
-      });
-    }
-  }
-
-  return { ok: errors.length === 0, errors, highlights: summary };
-}
+// #1737 item 2: checkDestaqueMinChars (#914) + checkDestaqueMaxChars (#964) +
+// constantes DESTAQUE_MIN/MAX_CHARS movidos pra
+// scripts/lib/lint-checks/destaque-chars.ts. Re-exportados no topo.
 
 /**
  * Verifica formato de itens nas seções secundárias (#909).
