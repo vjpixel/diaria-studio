@@ -78,6 +78,21 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
     assert.ok(m, "§4b deve existir no playbook");
     const s4b = m![0];
     assert.match(s4b, /DataTransfer/, "§4b deve documentar o método DataTransfer");
+
+    // Guard robusto a rephrasing (review #1814): o PRIMEIRO helper de cover
+    // referenciado no §4b deve ser o DataTransfer — não o legado buildCoverUploadJs.
+    // Pega revert mesmo que a frase 'Upload from URL' seja renomeada.
+    const dtHelperIdx = s4b.indexOf("buildCoverDataTransferJs");
+    const legacyHelperIdx = s4b.indexOf("buildCoverUploadJs");
+    assert.ok(dtHelperIdx >= 0, "§4b deve referenciar buildCoverDataTransferJs");
+    if (legacyHelperIdx >= 0) {
+      assert.ok(
+        dtHelperIdx < legacyHelperIdx,
+        "buildCoverDataTransferJs deve vir ANTES de buildCoverUploadJs (primário primeiro)",
+      );
+    }
+
+    // Guard adicional pela frase literal, quando presente.
     const dtIdx = s4b.indexOf("DataTransfer");
     const ufuIdx = s4b.indexOf("Upload from URL");
     if (ufuIdx >= 0) {
