@@ -17,6 +17,7 @@ import {
   buildSocialHtml,
   expectedImageCount,
   countImgTags,
+  isPostPixel,
 } from "../scripts/render-social-html.ts";
 
 const MD = `# LinkedIn
@@ -131,5 +132,43 @@ describe("render-social-html — check de contagem de imagens (#1800)", () => {
     assert.equal(actual, 0);
     assert.ok(actual < expectedImageCount(platforms), "menos imgs que posts → mismatch");
     assert.ok(warnings.length > 0, "e o warning de --images ausente está presente");
+  });
+});
+
+describe("post_pixel — post standalone de D1 no perfil pessoal (#1690)", () => {
+  const IMAGES = { images: { d1: { url: "https://img.example/d1.jpg" } } };
+  const MD_PIXEL = `# LinkedIn
+
+## d1
+
+Post da página D1.
+
+## post_pixel
+
+Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
+
+#IA
+`;
+
+  it("isPostPixel reconhece a seção", () => {
+    assert.ok(isPostPixel("post_pixel"));
+    assert.ok(isPostPixel("POST_PIXEL"));
+    assert.ok(isPostPixel("post-pixel"));
+    assert.ok(!isPostPixel("d1"));
+    assert.ok(!isPostPixel("comment_pixel"));
+  });
+
+  it("render mostra o label 'POST PESSOAL — vjpixel' e reusa a imagem do D1", () => {
+    const platforms = parsePlatforms(MD_PIXEL);
+    const html = buildSocialHtml(platforms, IMAGES.images);
+    assert.match(html, /POST PESSOAL — vjpixel \(D1\)/, "label do post pessoal");
+    // post_pixel reusa a imagem do d1 → o src do d1 aparece 2× (d1 + post_pixel)
+    assert.ok((html.match(/img\.example\/d1\.jpg/g) ?? []).length >= 2, "post_pixel reusa imagem do d1");
+  });
+
+  it("expectedImageCount conta o post_pixel (espera imagem)", () => {
+    const platforms = parsePlatforms(MD_PIXEL);
+    // d1 + post_pixel = 2 posts esperando imagem
+    assert.equal(expectedImageCount(platforms), 2);
   });
 });

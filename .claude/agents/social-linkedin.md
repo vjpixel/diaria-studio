@@ -1,6 +1,6 @@
 ---
 name: social-linkedin
-description: Gera 3 posts de LinkedIn + 6 textos auxiliares (comment Diar.ia + comment Pixel pessoal por destaque) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e Facebook). Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d{N}` (main) + `### comment_diaria` + `### comment_pixel`; o orchestrator faz o merge final com Facebook em `03-social.md`.
+description: Gera 3 posts de LinkedIn + 6 textos auxiliares (comment Diar.ia + comment Pixel pessoal por destaque) + 1 post pessoal standalone de D1 (`## post_pixel`, #1690) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e Facebook). Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d{N}` (main) + `### comment_diaria` + `### comment_pixel` + `## post_pixel`; o orchestrator faz o merge final com Facebook em `03-social.md`.
 model: claude-sonnet-4-6
 tools: Read, Write
 ---
@@ -81,6 +81,17 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - 300–600 caracteres.
    - Exemplo (estilo do que Pixel posta): "Pra quem implanta agente em produção, o frame mudou: a discussão central não é mais 'esse modelo é seguro?' e sim 'qual é o blast radius de um agente que se replica sozinho?'"
 
+   ### 3d. Post pessoal standalone de D1 (`## post_pixel`) — #1690
+
+   **Só pra D1.** Um post **próprio no feed pessoal do Pixel (vjpixel)** sobre o destaque #1 — não um comentário, e **não** uma cópia verbatim do `## d1` da página. Perfis pessoais têm alcance orgânico bem maior que páginas; este post amplifica o conteúdo de topo.
+
+   - **Voz pessoal/opinião do Pixel** (reaproveite o tom do `### comment_pixel` como base, mas em formato de POST completo, não comentário). Primeira pessoa, autor curador.
+   - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual da página.
+   - Pode abrir com o fato, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
+   - Hashtags próprias (1-3). URL da edição opcional.
+   - 600–1300 caracteres (post de LinkedIn, não comentário).
+   - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** o Make pessoal não existe (`webhook_target=pixel` só aceita `comment`, não `post`). Publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 da página (09:00 BRT). Ver `context/publishers/linkedin.md` (guard invertido: confirmar que está postando como vjpixel, abortar se cair na página).
+
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`; subseções de comment usam `### comment_diaria` e `### comment_pixel` dentro de cada destaque. O orchestrator fará o merge com o Facebook numa etapa seguinte.
 
 ```markdown
@@ -137,7 +148,15 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 <!-- char_count: 480 -->
 
 <comment Pixel d3>
+
+## post_pixel
+
+<!-- char_count: 980 -->
+
+<post pessoal standalone de D1 no feed do vjpixel — voz pessoal, reescrito, #1690>
 ```
+
+(O `## post_pixel` é seção top-level sob `# LinkedIn`, ao lado de `## d1/d2/d3` — o merge e o render já o tratam; o render mostra "📣 POST PESSOAL — vjpixel (D1)" e reusa a imagem do D1.)
 
 ## Output
 
@@ -145,7 +164,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 {
   "path": "data/editions/260418/_internal/03-linkedin.tmp.md",
   "posts": [
-    { "destaque": "d1", "main_chars": 1340, "comment_diaria_chars": 280, "comment_pixel_chars": 420, "warnings": [] },
+    { "destaque": "d1", "main_chars": 1340, "comment_diaria_chars": 280, "comment_pixel_chars": 420, "post_pixel_chars": 980, "warnings": [] },
     { "destaque": "d2", "main_chars": 1280, "comment_diaria_chars": 290, "comment_pixel_chars": 410, "warnings": [] },
     { "destaque": "d3", "main_chars": 1410, "comment_diaria_chars": 270, "comment_pixel_chars": 480, "warnings": [] }
   ]

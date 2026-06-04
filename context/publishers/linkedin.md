@@ -185,3 +185,25 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 - **Login expirou** → abortar.
 - **Upload falha** → tentar 2x.
 - **Nem draft nem schedule funcionam** → abortar este post, registrar em `06-social-published.json` com `status: "failed"` e prosseguir para o próximo.
+
+## Post pessoal standalone de D1 (`## post_pixel`) — #1690
+
+Além dos 3 posts da página, o `03-social.md` traz um `## post_pixel`: um **post próprio no feed pessoal do vjpixel** sobre o D1 (gerado pelo `social-linkedin`, voz pessoal). Amplifica o destaque de topo via alcance orgânico do perfil pessoal.
+
+**Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
+
+- Agendar/postar no **MESMO horário do D1 da página** (09:00 BRT) — os dois saem juntos.
+- **⚠️ GUARD INVERTIDO (espelho do Passo 3):** o post da página exige `has_company_name===true` e aborta se cair no perfil pessoal. O `post_pixel` exige o **inverso** — confirmar que o composer está no **perfil pessoal (vjpixel)**, e abortar se cair na página Diar.ia:
+  ```javascript
+  const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();
+  return {
+    is_personal: !authorText.includes('Diar.ia'),   // perfil pessoal = NÃO é a página
+    author_text: authorText.slice(0, 100),
+    selector_found: !!authorBtn,
+  };
+  ```
+  - `is_personal: true` → ok, postar como vjpixel.
+  - `is_personal: false` (caiu na página Diar.ia) → trocar pro perfil pessoal e re-verificar; se não conseguir em 3×, **ABORTAR** com `reason: "linkedin_published_to_wrong_context"` — **NUNCA** postar o conteúdo pessoal na página.
+- **Validação de sucesso:** o post aparece no feed/drafts do **perfil pessoal** (oposto do post da página). Registrar em `06-social-published.json` com `subtype: "post_pixel"`, `platform: "linkedin"`, `destaque: "d1"`, `status` resolvido via `resolveLinkedInState`.
+
+Falha do `post_pixel` **não bloqueia** os posts da página — é amplificação opcional. Logar warn e seguir.
