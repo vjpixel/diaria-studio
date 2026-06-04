@@ -13,11 +13,12 @@ deliberada de escopo descrita abaixo.
 | `relative-time.ts` | `relative-time` | #747 |
 | `why-matters-format.ts` | `why-matters-format` | #701 |
 | `eai-section.ts` | `eai-section` | #588 |
+| `coverage-line-format.ts` | `coverage-line-format` | #592/#609/#1207 |
+| `destaque-chars.ts` | `destaque-min-chars` + `destaque-max-chars` | #914/#964 |
 
 Os demais (`titles-per-highlight`, `title-length`, `eia-answer`,
-`intentional-error-flagged`, `destaque-min-chars`, `destaque-max-chars`,
-`section-item-format`, `section-counts`, `intro-count`, `coverage-line-format`)
-ainda vivem no `lint-newsletter-md.ts`.
+`intentional-error-flagged`, `section-item-format`, `section-counts`,
+`intro-count`) ainda vivem no `lint-newsletter-md.ts`.
 
 ## Plano em fases (por que NÃO há registry/`types.ts` ainda)
 

@@ -23,10 +23,20 @@ import {
   checkEaiSection as eaiDirect,
 } from "../scripts/lib/lint-checks/eai-section.ts";
 import {
+  checkCoverageLine as covDirect,
+} from "../scripts/lib/lint-checks/coverage-line-format.ts";
+import {
+  checkDestaqueMinChars as minDirect,
+  checkDestaqueMaxChars as maxDirect,
+} from "../scripts/lib/lint-checks/destaque-chars.ts";
+import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
   checkWhyMattersFormat as wmReexport,
   checkEaiSection as eaiReexport,
+  checkCoverageLine as covReexport,
+  checkDestaqueMinChars as minReexport,
+  checkDestaqueMaxChars as maxReexport,
 } from "../scripts/lint-newsletter-md.ts";
 
 describe("lint-checks extraídos (#1737 item 2)", () => {
@@ -35,6 +45,9 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.strictEqual(rtReexport, rtDirect);
     assert.strictEqual(wmReexport, wmDirect);
     assert.strictEqual(eaiReexport, eaiDirect);
+    assert.strictEqual(covReexport, covDirect);
+    assert.strictEqual(minReexport, minDirect);
+    assert.strictEqual(maxReexport, maxDirect);
   });
 
   it("multiline-links: módulo auto-contido funciona standalone", () => {
@@ -60,5 +73,40 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
   it("eai-section: módulo auto-contido funciona standalone", () => {
     assert.equal(eaiDirect("**É IA?**\n\nFoto X.").ok, true);
     assert.equal(eaiDirect("# Newsletter\n\nSem seção.").ok, false);
+  });
+
+  it("coverage-line-format: módulo auto-contido funciona standalone", () => {
+    const ok =
+      "Para esta edição, eu (o editor) enviei 3 submissões e a Diar.ia encontrou outros 90 artigos. Selecionamos os 6 mais relevantes para as pessoas que assinam a newsletter.";
+    assert.equal(covDirect(ok).ok, true);
+    assert.equal(covDirect("Linha qualquer fora do formato.").ok, false);
+  });
+
+  it("destaque-chars: min/max exercitam a comparação (não só early-return)", () => {
+    const destaque = (num: number, chars: number) =>
+      [
+        `**DESTAQUE ${num} | PRODUTO**`,
+        "",
+        `[Título](https://example.com/${num})`,
+        "",
+        `https://example.com/${num}`,
+        "",
+        "X".repeat(chars),
+        "",
+        "Por que isso importa: impacto.",
+        "",
+      ].join("\n");
+    // D1 com body curtíssimo → abaixo do mínimo (1000) → min falha
+    const tiny = minDirect(destaque(1, 50));
+    assert.equal(tiny.ok, false);
+    assert.equal(tiny.errors[0].destaque, 1);
+    assert.ok(tiny.errors[0].chars < tiny.errors[0].min);
+    // D1 com body enorme → acima do máximo (1200) → max falha
+    const huge = maxDirect(destaque(1, 2000));
+    assert.equal(huge.ok, false);
+    assert.ok(huge.errors[0].chars > huge.errors[0].max);
+    // dentro da faixa → ambos ok
+    assert.equal(minDirect(destaque(1, 1100)).ok, true);
+    assert.equal(maxDirect(destaque(1, 1100)).ok, true);
   });
 });
