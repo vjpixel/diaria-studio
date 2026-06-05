@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { canonicalize as canonicalize_ } from "./lib/url-utils.ts";
+import { canonicalize as canonicalize_, sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { computeTotalConsidered } from "./lib/categorized-stats.ts";
 import {
   countEditorSubmissions,
@@ -333,6 +333,13 @@ function main() {
       }),
     };
   }
+
+  // #1863: limpa sufixo de markdown (`)=`, `]=`, `)` solto) de TODO campo `url`
+  // do 01-approved.json — highlights + runners_up (copiados verbatim de
+  // data.runners_up) + buckets — DEPOIS de toda a resolução por URL (canonicalize
+  // match acima). Garante que o link público no gate/publicação é válido. Caso
+  // 260605: URL Meta `…/meta-business-agent/)=` (artefato de parse do agent).
+  sanitizeUrlsDeep(approved);
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 

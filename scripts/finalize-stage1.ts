@@ -30,6 +30,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
 import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
+import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -753,6 +754,13 @@ function main(): void {
       `[finalize-stage1] inbox bypass strict-mode failed: title too short or placeholder | url: ${bp.url} | title: ${bp.title?.slice(0, 80) ?? ""}`,
     );
   }
+
+  // #1863: strip determinístico de sufixo de markdown (`)=`, `]=`, `)` solto)
+  // dos campos `url` dos BUCKETS (lancamento/radar/use_melhor/video) — DEPOIS do
+  // join por URL exata (#720), pra a URL limpa chegar ao 01-categorized.md/gate.
+  // A limpeza autoritativa do 01-approved.json (que tem highlights + runners_up)
+  // mora no apply-gate-edits. Caso 260605: `…/meta-business-agent/)=`.
+  sanitizeUrlsDeep(buckets);
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(buckets, null, 2), "utf8");
   process.stdout.write(

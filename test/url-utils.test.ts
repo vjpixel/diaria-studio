@@ -138,7 +138,45 @@ describe("urlsMatch", () => {
   });
 });
 
-import { stripUrlTrailingPunct, extractUrls as extractUrlsFromText, URL_REGEX_RAW } from "../scripts/lib/url-utils.ts";
+import { stripUrlTrailingPunct, extractUrls as extractUrlsFromText, URL_REGEX_RAW, sanitizeUrlsDeep } from "../scripts/lib/url-utils.ts";
+
+describe("sanitizeUrlsDeep (#1863)", () => {
+  it("limpa sufixo ')=' em highlights + runners_up + buckets consistentemente", () => {
+    const approved = {
+      highlights: [
+        { rank: 1, bucket: "lancamento", article: { url: "https://x.com/meta-business-agent/)=", title: "Meta" } },
+        { rank: 2, bucket: "radar", url: "https://x.com/top-level)=" },
+      ],
+      runners_up: [{ article: { url: "https://x.com/runner)=", title: "R" } }],
+      lancamento: [{ url: "https://x.com/lanc)=", title: "L" }],
+      radar: [{ url: "https://x.com/ok", title: "OK" }],
+    };
+    sanitizeUrlsDeep(approved);
+    assert.equal(approved.highlights[0].article!.url, "https://x.com/meta-business-agent/");
+    assert.equal(approved.highlights[1].url, "https://x.com/top-level");
+    assert.equal(approved.runners_up[0].article!.url, "https://x.com/runner");
+    assert.equal(approved.lancamento[0].url, "https://x.com/lanc");
+    assert.equal(approved.radar[0].url, "https://x.com/ok"); // já limpa
+  });
+
+  it("não toca campos que não são 'url' (ex: title com ')=')", () => {
+    const node = { url: "https://x.com/a)=", title: "Foo )= bar" };
+    sanitizeUrlsDeep(node);
+    assert.equal(node.url, "https://x.com/a");
+    assert.equal(node.title, "Foo )= bar");
+  });
+
+  it("idempotente + tolera null/undefined/array/não-string", () => {
+    sanitizeUrlsDeep(null);
+    sanitizeUrlsDeep(undefined);
+    sanitizeUrlsDeep([]);
+    sanitizeUrlsDeep({ url: 42 }); // url não-string ignorada (guard)
+    const n = { url: "https://x.com/clean" };
+    sanitizeUrlsDeep(n);
+    sanitizeUrlsDeep(n);
+    assert.equal(n.url, "https://x.com/clean");
+  });
+});
 
 describe("stripUrlTrailingPunct (#626)", () => {
   it("preserva ')' em URL Wikipedia balanceada", () => {
@@ -160,6 +198,67 @@ describe("stripUrlTrailingPunct (#626)", () => {
       stripUrlTrailingPunct("https://x.com/y)"),
       "https://x.com/y",
     );
+  });
+
+  it("#1863: strip sufixo ')=' (artefato de markdown — caso Meta 260605)", () => {
+    // O `/)=` é `/` (path real, fim do link markdown) + `)` (fecha o `](…)`) +
+    // `=` (artefato). Strip do `)=` e do `)` desbalanceado deixa a barra real;
+    // canonicalize remove a trailing slash depois.
+    assert.equal(
+      stripUrlTrailingPunct("https://developers.facebook.com/products/meta-business-agent/)="),
+      "https://developers.facebook.com/products/meta-business-agent/",
+    );
+  });
+
+  it("#1863: strip ')=' sem barra → URL limpa", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/meta-business-agent)="),
+      "https://x.com/meta-business-agent",
+    );
+  });
+
+  it("#1863: idempotente também via canonicalize (slug final sem '/')", () => {
+    const cleaned = stripUrlTrailingPunct("https://x.com/agent/)=");
+    assert.equal(cleaned, "https://x.com/agent/");
+  });
+
+  it("#1863: strip sufixo ']=' (markdown link malformado)", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/path]="), "https://x.com/path");
+  });
+
+  it("#1863: NÃO toca query string válida terminando em '=' (?q=)", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/search?q="), "https://x.com/search?q=");
+    assert.equal(stripUrlTrailingPunct("https://x.com/a?b=c&d="), "https://x.com/a?b=c&d=");
+  });
+
+  it("#1863 review: NÃO corrompe query params PHP-style terminando em ']=' / ')='", () => {
+    // FP que o code-review pegou: gate em '?' ausente preserva esses.
+    assert.equal(
+      stripUrlTrailingPunct("https://api.example.com/data?filter[status]="),
+      "https://api.example.com/data?filter[status]=",
+    );
+    assert.equal(stripUrlTrailingPunct("https://api.x.com/q?arr[]="), "https://api.x.com/q?arr[]=");
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/oauth/cb?redirect=(step1)="),
+      "https://x.com/oauth/cb?redirect=(step1)=",
+    );
+  });
+
+  it("#1863 review: NÃO mexe em ']' de query param (gate em '?')", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/q?ids[]=1&ids["), "https://x.com/q?ids[]=1&ids[");
+  });
+
+  it("#1863: preserva ')' balanceado mesmo com '=' que não é artefato", () => {
+    // `(bar)` balanceado seguido de `?x=` — não strippar.
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/Foo_(bar)?x="),
+      "https://x.com/Foo_(bar)?x=",
+    );
+  });
+
+  it("#1863: idempotente em URL já limpa", () => {
+    const u = "https://developers.facebook.com/products/meta-business-agent";
+    assert.equal(stripUrlTrailingPunct(stripUrlTrailingPunct(u)), u);
   });
 
   it("strip ponto final sentence", () => {

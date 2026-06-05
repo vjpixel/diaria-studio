@@ -86,17 +86,66 @@ export function urlsMatch(a: string, b: string): boolean {
  *   - Caminhos com parênteses balanceados em geral
  */
 export function stripUrlTrailingPunct(url: string): string {
-  let cleaned = url.replace(/[.,;:!?]+$/, "");
-  while (cleaned.endsWith(")")) {
-    const opens = (cleaned.match(/\(/g) || []).length;
-    const closes = (cleaned.match(/\)/g) || []).length;
-    if (closes > opens) {
-      cleaned = cleaned.slice(0, -1);
-    } else {
-      break;
+  let cleaned = url;
+  let prev: string;
+  do {
+    prev = cleaned;
+    // #1863: artefatos de markdown (`)=` / `]=` no fim; `]` desbalanceado) só são
+    // limpos no PATH — quando NÃO há query string. Gate em `?` ausente evita
+    // corromper query params válidos que terminam em `]=`/`)=`/`]`: PHP-style
+    // `?filter[status]=`, `?arr[]=`, `?x=(y)=`. O artefato reportado
+    // (`…/meta-business-agent/)=`, caso 260605) é path-only.
+    const isPathOnly = !cleaned.includes("?");
+    if (isPathOnly) {
+      // `)=` / `]=` no fim = fechamento de link markdown `](…)` + `=` colado.
+      // Remove o(s) `=` pra o fechamento desbalanceado cair no trim abaixo.
+      cleaned = cleaned.replace(/([)\]])=+$/, "$1");
+    }
+    // pontuação de sentença no fim
+    cleaned = cleaned.replace(/[.,;:!?]+$/, "");
+    // `)` desbalanceado no fim (preserva Wikipedia `Foo_(bar)`) — comportamento
+    // pré-existente (#626), aplicado sempre.
+    while (cleaned.endsWith(")")) {
+      const opens = (cleaned.match(/\(/g) || []).length;
+      const closes = (cleaned.match(/\)/g) || []).length;
+      if (closes > opens) cleaned = cleaned.slice(0, -1);
+      else break;
+    }
+    // #1863: `]` desbalanceado no fim (artefato de markdown link) — só no path.
+    if (isPathOnly) {
+      while (cleaned.endsWith("]")) {
+        const opens = (cleaned.match(/\[/g) || []).length;
+        const closes = (cleaned.match(/\]/g) || []).length;
+        if (closes > opens) cleaned = cleaned.slice(0, -1);
+        else break;
+      }
+    }
+  } while (cleaned !== prev);
+  return cleaned;
+}
+
+/**
+ * #1863: percorre recursivamente um objeto/array e aplica `stripUrlTrailingPunct`
+ * a TODO campo `url` string (in-place). Limpa sufixos de markdown (`)=`, `]=`,
+ * `)` desbalanceado) que o agent às vezes anexa à URL. Idempotente — URL já
+ * limpa fica inalterada. Aplica consistentemente em highlights/runners_up/buckets
+ * pra não quebrar dedup-por-URL downstream. Guard `typeof v === "string"`.
+ */
+export function sanitizeUrlsDeep(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) sanitizeUrlsDeep(item);
+    return;
+  }
+  if (node && typeof node === "object") {
+    const obj = node as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "url" && typeof v === "string") {
+        obj[k] = stripUrlTrailingPunct(v);
+      } else {
+        sanitizeUrlsDeep(v);
+      }
     }
   }
-  return cleaned;
 }
 
 /**
