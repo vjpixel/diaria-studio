@@ -20,6 +20,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyStage2Caps,
+  STAGE_2_MIN_USE_MELHOR,
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
 import { formatCoverageLine } from "./lib/inbox-stats.ts";
@@ -93,8 +94,19 @@ function main(): void {
   console.error(
     `[apply-stage2-caps] dest=${approved.highlights?.length ?? 0}, ` +
       `lanç=${report.before.lancamento}→${report.after.lancamento} (cap ${report.caps.lancamento}), ` +
-      `radar=${report.before.radar}→${report.after.radar} (cap ${report.caps.radar})`,
+      `radar=${report.before.radar}→${report.after.radar} (cap ${report.caps.radar}), ` +
+      `use_melhor=${report.use_melhor.before}→${report.use_melhor.after}` +
+      (report.use_melhor.promoted > 0 ? ` (+${report.use_melhor.promoted} promovidos)` : ""),
   );
+  // #1855: warn loud quando nem com runners-up dá pra bater o mínimo de USE
+  // MELHOR — o orchestrator surfa no gate. NUNCA preencher com não-tutorial.
+  if (report.use_melhor.shortfall > 0) {
+    console.error(
+      `[apply-stage2-caps] ⚠️ USE MELHOR abaixo do mínimo: ${report.use_melhor.after}/${STAGE_2_MIN_USE_MELHOR} ` +
+        `tutoriais (faltam ${report.use_melhor.shortfall}). Pool sem candidatos use_melhor suficientes — ` +
+        `surfar no gate; NÃO completar com notícia/análise (editorial-rules.md:146).`,
+    );
+  }
   process.stdout.write(
     JSON.stringify({ out: outPath, report }, null, 2) + "\n",
   );

@@ -127,7 +127,7 @@ VÍDEOS
 
 ## Seção "Use melhor" (#1568, renomeada de "Aprenda hoje" #59)
 
-Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, dicas práticas, treinamentos). Toda edição pode (mas não precisa) incluir 1 item curado. Motivação: CTR de Treinamento é 2.42% (5× a média) — audiência engaja fortemente com conteúdo educacional.
+Seção pra conteúdo acionável (tutoriais, cookbooks, dicas práticas, treinamentos). **Mínimo 2 itens por edição** (#1855) — só omitida quando o pool genuinamente não tem 2 tutoriais reais (aí o pipeline warna no gate, nunca completa com não-tutorial). Motivação: CTR de Treinamento é 2.42% (5× a média) — audiência engaja fortemente com conteúdo educacional.
 
 ### Critérios de seleção
 
@@ -138,14 +138,14 @@ Seção editorial **opcional** pra conteúdo acionável (tutoriais, cookbooks, d
 - **Diversidade de ângulo (#1798).** Com mais de 1 item, variar ferramenta ou formato (ex: NotebookLM texto + NotebookLM vídeo + Excel), nunca 3 guias quase idênticos do mesmo recurso.
 - **Atual**: referencia ferramentas/APIs/modelos vigentes (≤ 12 meses de shelf life).
 - **Independente de plano pago**: se requer subscription paga, alertar no blurb.
-- **Preferir PT-BR** quando disponível; EN aceitável se conteúdo for superior. (Não confundir com o relax de mínimo abaixo: o teste de "tutorial de verdade" é inegociável mesmo no relax.)
+- **Preferir PT-BR** quando disponível; **EN é aceitável e renderiza normalmente** (revert do PT-only #1632 → #1855): título verbatim + `[TRADUZIR]` na descrição EN, igual às demais seções secundárias. A maioria dos cookbooks de qualidade é em inglês; descartá-los esvaziava a seção (#1851). (Não confundir com o relax de mínimo abaixo: o teste de "tutorial de verdade" é inegociável mesmo no relax.)
 - **Título no idioma original, nunca traduzir (#1634).** O título/link do item preserva o nome original do recurso (PT ou EN) — `Claude 101`, `The Founders Playbook`, não `Claude 101: curso gratuito da Anthropic`. Não adaptar nem traduzir. A *descrição* abaixo do título pode ser em PT (descritiva). Mesma regra do RADAR.
 
 ### Garantia de mínimo no pipeline
 
 Stage 1 deve garantir **mínimo 3 candidatos** no bucket `use_melhor` (#1629, ex-`tutorial`) de `_internal/01-approved.json`. Se o categorizer encontrar < 3, scorer deve relaxar critérios (ampliar janela de data, aceitar EN sem PT-BR equivalente, considerar artigos de fontes Primárias com pattern "how to/cookbook/guide/passo a passo"). **O relax amplia a busca, não rebaixa o tipo:** nunca completar a cota com newsletter/análise/notícia só pra bater 3 (foi o que poluiu o USE MELHOR em 260604 com 2 posts da latent.space). Preferível surfaçar "< 3 tutoriais reais" no gate a embarcar item mal-bucketado. Nunca pular silenciosamente — sem 3 candidatos, alertar no gate.
 
-Editor escolhe 0-1 pra publicar no gate da Etapa 1. Se nenhum candidato bom, seção é omitida da edição.
+**Mínimo 2 renderizados, enforçado em Stage 2 (#1855).** `apply-stage2-caps` (`promoteUseMelhorToMinimum`) garante que a seção sai com **≥ 2 itens**: se após a seleção o bucket tiver < 2, promove runners-up **já categorizados como `use_melhor`** (tutoriais de verdade, por score desc — nunca outro bucket). Se nem com runners-up dá 2, emite warn loud (`shortfall > 0`) que o orchestrator surfa no gate. Editor pode reordenar/cortar no gate da Etapa 2.
 
 ### Fontes primárias (veja `context/sources.md` → seção "Tutoriais")
 
@@ -175,7 +175,7 @@ Técnica de encadear chamadas de LLM com exemplo em Python (15 min).
 
 ### Posição na newsletter
 
-**Antes de LANÇAMENTOS (#1633).** É a primeira seção secundária após os destaques + É IA?. Nova ordem: (destaques + É IA?) → **USE MELHOR** → LANÇAMENTOS → RADAR → VÍDEOS → SORTEIO → PARA ENCERRAR. Seção opcional — omitir bloco inteiro se editor não selecionou candidato. (A seção ainda é montada manualmente pelo editor no `02-reviewed.md`; a automação do stitch nessa posição é o #1632.)
+**Antes de LANÇAMENTOS (#1633).** É a primeira seção secundária após os destaques + É IA?. Nova ordem: (destaques + É IA?) → **USE MELHOR** → LANÇAMENTOS → RADAR → VÍDEOS → SORTEIO → PARA ENCERRAR. Montada automaticamente pelo `stitch-newsletter.ts` a partir do bucket `use_melhor` (#1752); só some quando o pool não tem 2 tutoriais (#1855).
 
 **Links com parênteses (#1634):** se a URL do item contém `(` ou `)` (ex: PDF com `(1)` no nome), o render já tolera parênteses balanceados (`processInlineLinks`). Mesmo assim, prefira URL-encode (`%28`/`%29`) na fonte quando houver parênteses desbalanceados.
 

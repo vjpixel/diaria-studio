@@ -117,6 +117,16 @@ export const STAGE_2_MIN_RADAR = 5;
 export const STAGE_2_CAP_VIDEO = 2;
 
 /**
+ * USE MELHOR: mínimo 2 itens RENDERIZADOS por edição (#1855). Decisão editorial
+ * 260605 — a seção é recorrente e some quando o bucket fica curto. Se após a
+ * seleção o `use_melhor` tiver < 2, promovemos runners-up JÁ categorizados como
+ * `use_melhor` (tutoriais de verdade — nunca padding com notícia/análise, ver
+ * editorial-rules.md:146). Se o pool genuinamente não tiver 2, `shortfall > 0`
+ * sinaliza warn loud no gate (não inventar item).
+ */
+export const STAGE_2_MIN_USE_MELHOR = 2;
+
+/**
  * Cap pra Radar dado contagem dos outros buckets já capados (#1629).
  *
  *   max(5, 12 - destaques - lançamentos)
@@ -146,6 +156,64 @@ export interface CapReport {
   truncated: { lancamento: number; radar: number };
   /** #1240: artigos removidos de cada bucket por já estarem em highlights[]. */
   removed_overlap: { lancamento: number; radar: number };
+  /**
+   * #1855: enforcement do mínimo de USE MELHOR.
+   *   before    — quantos itens o bucket tinha antes da promoção
+   *   promoted  — quantos runners-up `use_melhor` foram promovidos pra bater o mínimo
+   *   after     — total final
+   *   shortfall — quantos AINDA faltam pro mínimo (pool insuficiente) → warn loud no gate
+   */
+  use_melhor: { before: number; promoted: number; after: number; shortfall: number };
+}
+
+/**
+ * Pure (#1855): garante o mínimo de itens em USE MELHOR promovendo runners-up
+ * já categorizados como `use_melhor`. Não muta os inputs.
+ *
+ * Só promove items cujo `bucket === "use_melhor"` (tutoriais de verdade, já
+ * validados pelo categorizer) — nunca completa a cota com item de outro bucket
+ * (editorial-rules.md:146: "nunca completar a cota com newsletter/análise/
+ * notícia só pra bater"). Dedup por URL canônica contra os itens já presentes
+ * E contra highlights[] (evita render duplicado de um tutorial promovido a
+ * destaque). Promove por score desc.
+ *
+ * Retorna `shortfall > 0` quando nem com os runners-up dá pra bater o mínimo —
+ * o caller surfa warn no gate em vez de inventar item.
+ */
+export function promoteUseMelhorToMinimum(
+  current: StageArticle[] | undefined,
+  runnersUp: ScoredRunnerUp[] | undefined,
+  highlightUrlsCanon: Set<string>,
+  min: number,
+): { kept: StageArticle[]; promoted: number; shortfall: number } {
+  const kept: StageArticle[] = [...(current ?? [])];
+  const seen = new Set<string>();
+  for (const a of kept) {
+    const u = typeof a.url === "string" ? a.url : "";
+    if (u) seen.add(canonicalize(u));
+  }
+
+  let promoted = 0;
+  if (kept.length < min && runnersUp) {
+    const candidates = runnersUp
+      .filter((r) => r.bucket === "use_melhor")
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    for (const r of candidates) {
+      if (kept.length >= min) break;
+      const url = highlightUrl(r);
+      if (!url) continue;
+      const canon = canonicalize(url);
+      if (seen.has(canon) || highlightUrlsCanon.has(canon)) continue;
+      // Materializa o runner-up como StageArticle (nested article preferido,
+      // fallback pro shape flat).
+      const art: StageArticle = r.article ?? { url: r.url, title: r.title, score: r.score };
+      kept.push(art);
+      seen.add(canon);
+      promoted++;
+    }
+  }
+
+  return { kept, promoted, shortfall: Math.max(0, min - kept.length) };
 }
 
 /**
@@ -209,10 +277,21 @@ export function applyStage2Caps(
   const rCap = capRadar(dest, lFinal);
   const rFinal = Math.min(rDeduped.kept.length, rCap);
 
+  // #1855: USE MELHOR não tem cap máximo, mas tem mínimo (2). Promove runners-up
+  // `use_melhor` quando o bucket fica curto.
+  const umBefore = approved.use_melhor?.length ?? 0;
+  const um = promoteUseMelhorToMinimum(
+    approved.use_melhor,
+    approved.runners_up,
+    highlightUrlsCanon,
+    STAGE_2_MIN_USE_MELHOR,
+  );
+
   const out: ApprovedJson = {
     ...approved,
     lancamento: lDeduped.kept.slice(0, lFinal),
     radar: rDeduped.kept.slice(0, rFinal),
+    use_melhor: um.kept,
   };
 
   return {
@@ -234,6 +313,12 @@ export function applyStage2Caps(
       removed_overlap: {
         lancamento: lDeduped.removed,
         radar: rDeduped.removed,
+      },
+      use_melhor: {
+        before: umBefore,
+        promoted: um.promoted,
+        after: um.kept.length,
+        shortfall: um.shortfall,
       },
     },
   };

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, stitchNewsletter, isEnglishItem } from "../scripts/stitch-newsletter.ts";
+import { renderSection, stitchNewsletter } from "../scripts/stitch-newsletter.ts";
 
 describe("renderSection (#1463)", () => {
   it("retorna vazio quando não há items", () => {
@@ -85,49 +85,30 @@ describe("renderSection (#1463)", () => {
     assert.match(out, /\*\*\[GPT-5 Turbo\]/);
   });
 
-  it("#1632: USE MELHOR (dropEnglish) descarta tutorial EN inteiramente — não [TRADUZIR]", () => {
-    const out = renderSection(
-      "🛠️",
-      "USE MELHOR",
-      "USE MELHOR",
-      [
-        { title: "Como usar o Claude para planilhas", url: "https://pt.com/1", summary: "Tutorial em português sobre como automatizar planilhas." },
-        { title: "How to fine-tune your first model", url: "https://en.com/2", summary: "A step-by-step guide to training and deploying a model with the new API." },
-      ],
-      { dropEnglish: true },
-    );
-    // PT permanece, EN some por completo (sem [TRADUZIR], sem link).
+  it("#1855: USE MELHOR renderiza tutorial EN (revert do PT-only #1632) com [TRADUZIR] na descrição", () => {
+    const out = renderSection("🛠️", "USE MELHOR", "USE MELHOR", [
+      { title: "Como usar o Claude para planilhas", url: "https://pt.com/1", summary: "Tutorial em português sobre como automatizar planilhas." },
+      { title: "How to fine-tune your first model", url: "https://en.com/2", summary: "A step-by-step guide to training and deploying a model with the new API." },
+    ]);
+    // Ambos os tutoriais aparecem — EN não é mais descartado.
     assert.match(out, /https:\/\/pt\.com\/1/);
-    assert.doesNotMatch(out, /https:\/\/en\.com\/2/);
-    assert.doesNotMatch(out, /\[TRADUZIR\]/);
-    // Singular porque sobrou 1 item após o filtro.
+    assert.match(out, /https:\/\/en\.com\/2/);
+    // Título EN verbatim (sem [TRADUZIR]), descrição EN marcada [TRADUZIR].
+    assert.match(out, /\*\*\[How to fine-tune your first model\]/);
+    assert.match(out, /\[TRADUZIR\] A step-by-step guide/);
+    // Plural porque há 2 itens.
     assert.match(out, /\*\*🛠️ USE MELHOR\*\*/);
   });
 
-  it("#1632: USE MELHOR vira vazio se todos os tutoriais forem EN", () => {
-    const out = renderSection(
-      "🛠️",
-      "USE MELHOR",
-      "USE MELHOR",
-      [{ title: "Prompt engineering basics", url: "https://en.com/x", summary: "Guia.", summary_lang: "en" }],
-      { dropEnglish: true },
-    );
-    assert.equal(out, "");
-  });
-
-  it("#1632: sem dropEnglish, item EN permanece (comportamento das demais seções)", () => {
-    const out = renderSection("📡", "RADAR", "RADAR", [
-      { title: "Prompt engineering basics", url: "https://en.com/x", summary: "Guia de prompts.", summary_lang: "en" },
+  it("#1855: USE MELHOR 100% EN renderiza (não some — era o bug #1851)", () => {
+    const out = renderSection("🛠️", "USE MELHOR", "USE MELHOR", [
+      { title: "Prompt engineering basics", url: "https://en.com/x", summary: "A short guide.", summary_lang: "en" },
+      { title: "Build an agent with the new SDK", url: "https://en.com/y", summary: "Step by step how to wire the tools.", summary_lang: "en" },
     ]);
+    assert.notEqual(out, "");
+    assert.match(out, /\*\*🛠️ USE MELHOR\*\*/);
     assert.match(out, /https:\/\/en\.com\/x/);
-    assert.match(out, /\[TRADUZIR\]/);
-  });
-
-  it("#1632: isEnglishItem usa summary_lang, depois summary, depois título", () => {
-    assert.equal(isEnglishItem({ title: "Como usar X", url: "u", summary: "tutorial em português", summary_lang: "en" }), true);
-    assert.equal(isEnglishItem({ title: "Título PT", url: "u", summary: "A long english description with many of the the common stopwords is are have." }), true);
-    assert.equal(isEnglishItem({ title: "Como criar um agente em PT", url: "u" }), false);
-    assert.equal(isEnglishItem({ title: "How to build an english agent with the new tools", url: "u" }), true);
+    assert.match(out, /https:\/\/en\.com\/y/);
   });
 });
 
