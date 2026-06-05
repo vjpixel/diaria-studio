@@ -1794,4 +1794,93 @@ describe("lintRelativeTime (#747)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.matches[0].line, 2);
   });
+
+  it("#1866: ignora 'ontem' dentro do bloco ERRO INTENCIONAL", () => {
+    // O reveal de um erro de DATA legitimamente cita 'ontem'/'amanhã' como
+    // conteúdo. Bloco bracketado por --- não pode disparar o check.
+    const md = [
+      "Texto normal sem data relativa.",
+      "",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, dissemos 'ontem, 1º de junho', mas o correto era 'anteontem'.",
+      "",
+      "Nessa edição, tem outro erro pra você achar.",
+      "",
+      "---",
+      "",
+      "🎁 SORTEIO",
+      "",
+      "Concorra a uma caneca.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, `esperava 0 matches, veio: ${JSON.stringify(r.matches)}`);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("#1866: ainda detecta 'hoje' FORA do bloco ERRO INTENCIONAL", () => {
+    // O bloco fecha no --- — conteúdo depois dele volta a ser varrido.
+    const md = [
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, escrevi 'ontem' onde deveria ser uma data absoluta.",
+      "",
+      "---",
+      "",
+      "O ChatGPT anunciou hoje uma nova versão.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
+
+  it("#1866: bloco SEM `---` de fechamento fecha na próxima seção (não engole o resto)", () => {
+    // Hand-edit removeu o `---` entre ERRO INTENCIONAL e SORTEIO. O skip não
+    // pode ir até o EOF — 'ontem' na linha do SORTEIO tem que ser detectado.
+    const md = [
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, dissemos 'ontem' onde era uma data fixa.",
+      "",
+      "🎁 SORTEIO",
+      "",
+      "O sorteio de ontem premiou a leitora certa.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false, `esperava detectar 'ontem' no SORTEIO`);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "ontem");
+    assert.match(r.matches[0].context, /sorteio/i);
+  });
+
+  it("#1866: linha de PROSA que começa com 'Erro intencional' NÃO entra no bloco", () => {
+    // Header ancorado: só a linha que é SÓ o header `**ERRO INTENCIONAL**`
+    // ativa o skip. Prosa solta não pode mascarar violações seguintes.
+    const md = [
+      "Erro intencional não é o foco deste destaque.",
+      "A votação acontece amanhã no Senado.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false, `'amanhã' não pode ser mascarado por prosa`);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "amanhã");
+  });
+
+  it("#1866: header com emoji + bold ainda é reconhecido", () => {
+    const md = [
+      "**🔍 ERRO INTENCIONAL**",
+      "",
+      "Na última edição, trocamos 'ontem' por uma data errada.",
+      "",
+      "---",
+      "",
+      "Texto final sem data relativa.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, `header com emoji deve ativar o skip`);
+    assert.equal(r.matches.length, 0);
+  });
 });
