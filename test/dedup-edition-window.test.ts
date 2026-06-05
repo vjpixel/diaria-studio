@@ -16,8 +16,69 @@ import {
   isValidEditionDir,
   recentEditionDirs,
   extractPastDestaqueUrls,
+  extractPastEditionArticleTitles,
+  deriveCurrentEdition,
 } from "../scripts/dedup.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
+
+describe("deriveCurrentEdition (#1856)", () => {
+  it("deriva AAMMDD do path de --out", () => {
+    assert.equal(
+      deriveCurrentEdition("data/editions/260605/_internal/01-approved.json"),
+      "260605",
+    );
+  });
+  it("deriva do --articles quando --out ausente", () => {
+    assert.equal(
+      deriveCurrentEdition(undefined, "data/editions/260530/_internal/02-articles.json"),
+      "260530",
+    );
+  });
+  it("aceita separador Windows", () => {
+    assert.equal(
+      deriveCurrentEdition("data\\editions\\260605\\_internal\\out.json"),
+      "260605",
+    );
+  });
+  it("retorna undefined quando nenhum path tem editions/{AAMMDD}", () => {
+    assert.equal(deriveCurrentEdition("/tmp/foo.json", undefined), undefined);
+    // não casa dir base sem AAMMDD
+    assert.equal(deriveCurrentEdition("data/editions/"), undefined);
+  });
+  it("não casa segmento de 6 dígitos fora de editions/", () => {
+    assert.equal(deriveCurrentEdition("data/cache/260605/x.json"), undefined);
+  });
+});
+
+describe("extractPastEditionArticleTitles — self-exclusion (#1856)", () => {
+  it("exclui a edição corrente → não retorna os próprios títulos (evita self-match)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ed-self-"));
+    try {
+      // edição passada + edição corrente, ambas com approved.json (highlights+titulos)
+      mkdirSync(join(dir, "260604", "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "260604", "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ article: { url: "https://x/past", title: "Past Edition Title" } }] }),
+      );
+      mkdirSync(join(dir, "260605", "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "260605", "_internal", "01-approved.json"),
+        JSON.stringify({ highlights: [{ article: { url: "https://x/cur", title: "GPT-Rosalind Launch" } }] }),
+      );
+
+      // SEM exclusão: título da própria edição aparece (self-match).
+      const withSelf = extractPastEditionArticleTitles(dir, 3);
+      assert.ok(withSelf.includes("GPT-Rosalind Launch"), "sanity: sem exclusão inclui o próprio título");
+
+      // COM exclusão da edição corrente: o título da 260605 NÃO aparece.
+      const excluded = extractPastEditionArticleTitles(dir, 3, "260605");
+      assert.ok(!excluded.includes("GPT-Rosalind Launch"), "título da edição corrente deve sair");
+      assert.ok(excluded.includes("Past Edition Title"), "título da edição passada permanece");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("isValidEditionDir", () => {
   it("aceita AAMMDD válido", () => {
