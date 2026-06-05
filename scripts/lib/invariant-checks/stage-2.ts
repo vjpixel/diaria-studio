@@ -117,6 +117,17 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       file,
     ),
   );
+  // #1861: post_pixel (post pessoal do Pixel) deve ser sobre o D1 atual — pega
+  // stale após reorder dos destaques pós-geração do social.
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "post_pixel-matches-d1", "--md", file],
+      "social-post-pixel-matches-d1",
+      "#1861",
+      file,
+    ),
+  );
   return violations;
 }
 
@@ -180,7 +191,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "social-passes-lints",
-    description: "03-social.md passa linkedin-schema + relative-time (#595)",
+    description: "03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 (#595, #1861)",
     source_issue: "#595",
     stage: 2,
     run: checkSocialPassesLints,
