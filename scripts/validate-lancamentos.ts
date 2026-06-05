@@ -66,6 +66,23 @@ const URL_RE = /https?:\/\/\S+/g;
 const NON_PRODUCT_RE =
   /\b(policy|policies|governance|manifesto|principles|white\s?paper|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes)\b/i;
 
+/**
+ * #1852: defesa-em-profundidade pra LANÇAMENTOS que escaparam o categorize via
+ * `type_hint=lancamento` (agent vence as heurísticas). Sinais no SLUG de que a
+ * URL é pesquisa/case-study, não a página oficial do produto:
+ *   - conferência/pesquisa (cvpr/neurips/.../arxiv/preprint)
+ *   - case study / customer story
+ * Match SÓ no slug (não no título): o título de um lançamento real pode citar
+ * "research" sem que a URL seja um paper. Warn-only no gate, não bloqueia.
+ *
+ * `cli`/`sdk` ficaram de FORA (review #1875): um CLI/SDK É software/produto, e
+ * flagá-los com a mensagem "não software/hardware" seria errado + ruidoso (todo
+ * lançamento de CLI/SDK cairia). O caso HF CLI já é tratado no categorize
+ * (`isFirstPartyToolingBlog`, host-scoped a huggingface.co/blog/).
+ */
+const NON_PRODUCT_SLUG_RE =
+  /\b(cvpr|neurips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|arxiv|preprint|case stud(y|ies)|customer stor(y|ies))\b/i;
+
 export function isNonProductLancamento(url: string, title?: string): boolean {
   let slug = "";
   try {
@@ -73,7 +90,11 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
   } catch {
     slug = url;
   }
-  return NON_PRODUCT_RE.test(slug) || (!!title && NON_PRODUCT_RE.test(title));
+  return (
+    NON_PRODUCT_RE.test(slug) ||
+    NON_PRODUCT_SLUG_RE.test(slug) ||
+    (!!title && NON_PRODUCT_RE.test(title))
+  );
 }
 
 /**
@@ -239,7 +260,7 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
   // bloqueia (decisão editorial; pode ser oficial mas não-produto).
   if (summary.flagged_non_product.length > 0) {
     console.error(
-      `\n⚠️ ${summary.flagged_non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/análise, não software/hardware (#1799):`,
+      `\n⚠️ ${summary.flagged_non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/case-study, não página oficial de produto (#1799/#1852):`,
     );
     for (const f of summary.flagged_non_product) {
       const titleHint = f.title ? ` ("${f.title.slice(0, 60)}")` : "";
@@ -297,7 +318,7 @@ function main(): void {
   // #1799: warn de não-produto (governança/política) — não muda o status.
   if (result.non_product.length > 0) {
     console.error(
-      `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/análise, não software/hardware (#1799):`,
+      `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/case-study, não página oficial de produto (#1799/#1852):`,
     );
     for (const u of result.non_product) {
       console.error(`  linha ${u.line}: ${u.url}`);
