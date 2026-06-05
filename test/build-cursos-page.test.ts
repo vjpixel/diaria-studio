@@ -167,4 +167,13 @@ describe("renderCursosPage (#1745)", () => {
   it("badge de certificado grátis só no curso que tem", () => {
     assert.equal((html.match(/Certificado grátis/g) ?? []).length, 1);
   });
+
+  it("review #1891: embute THEME_LABELS completo (slug→label) pra rebuild não perder o label", () => {
+    // Bug: rebuildThemes lia o label das <option> atuais (que encolhem) → um
+    // narrow-then-widen mostrava o slug cru. Fix: mapa completo embutido.
+    assert.match(html, /var THEME_LABELS = \{/);
+    // Ambos os temas do recorte (pt-br + en) presentes no mapa, com label acentuado.
+    assert.ok(html.includes('"fundamentos":"Fundamentos"'), "tema pt-br no mapa");
+    assert.ok(html.includes('"deep-learning":"Deep Learning"'), "tema en no mapa");
+  });
 });

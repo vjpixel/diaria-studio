@@ -257,6 +257,13 @@ export function renderCursosPage(courses: Course[]): string {
     { value: "nao", label: "Sem certificado" },
   ].filter((o) => courses.some((c) => (c.certificate ? "sim" : "nao") === o.value));
   const themeOpts = distinctThemes(courses).map((t) => ({ value: slugify(t), label: t }));
+  // review #1891: mapa COMPLETO slug→label (todos os temas) embutido no script.
+  // Sem ele, rebuildThemes lia o label das <option> ATUAIS — que encolhem a cada
+  // rebuild — e um narrow-then-widen (ex: idioma EN→PT) mostrava o slug cru.
+  const themeLabelJson = JSON.stringify(Object.fromEntries(themeOpts.map((o) => [o.value, o.label]))).replaceAll(
+    "<",
+    "\\u003c",
+  ); // </script>-safe embed
 
   const filters = [
     renderFilter("f-lang", "Idioma", langOpts),
@@ -371,6 +378,7 @@ ${cards}
   <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
 <script>
   (function () {
+    var THEME_LABELS = ${themeLabelJson};
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
     var countEl = document.getElementById('count');
     var emptyEl = document.getElementById('empty');
@@ -394,13 +402,12 @@ ${cards}
       cards.forEach(function (c) {
         if (matchesExceptTheme(c)) (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
       });
-      // value→label: lê o label do <option> original (preserva acento/maiúsculas).
-      var labels = {};
-      Array.prototype.forEach.call(fTheme.options, function (o) { if (o.value) labels[o.value] = o.textContent; });
-      var themes = Object.keys(set).sort(function (a, b) { return (labels[a] || a).localeCompare(labels[b] || b, 'pt-BR'); });
+      // value→label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
+      // atuais — senão um rebuild anterior que encolheu as options apagaria o label.
+      var themes = Object.keys(set).sort(function (a, b) { return (THEME_LABELS[a] || a).localeCompare(THEME_LABELS[b] || b, 'pt-BR'); });
       var cur = fTheme.value;
       var keep = themes.indexOf(cur) >= 0 ? cur : '';
-      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(labels[t] || t) + '</option>'; }).join('');
+      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(THEME_LABELS[t] || t) + '</option>'; }).join('');
       fTheme.value = keep;
     }
     function apply() {

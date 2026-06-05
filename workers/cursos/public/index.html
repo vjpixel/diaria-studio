@@ -477,6 +477,7 @@
   <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
 <script>
   (function () {
+    var THEME_LABELS = {"carreira":"Carreira","cloud":"Cloud","deep-learning":"Deep Learning","direito":"Direito","estrategia":"Estratégia","etica":"Ética","fundamentos":"Fundamentos","ia-aplicada":"IA Aplicada","ia-generativa":"IA Generativa","machine-learning":"Machine Learning","negocios":"Negócios","nlp":"NLP","produtividade":"Produtividade","prompt-engineering":"Prompt Engineering","redes-neurais":"Redes Neurais","reinforcement-learning":"Reinforcement Learning","setor-social":"Setor Social","visao-computacional":"Visão Computacional"};
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
     var countEl = document.getElementById('count');
     var emptyEl = document.getElementById('empty');
@@ -500,13 +501,12 @@
       cards.forEach(function (c) {
         if (matchesExceptTheme(c)) (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
       });
-      // value→label: lê o label do <option> original (preserva acento/maiúsculas).
-      var labels = {};
-      Array.prototype.forEach.call(fTheme.options, function (o) { if (o.value) labels[o.value] = o.textContent; });
-      var themes = Object.keys(set).sort(function (a, b) { return (labels[a] || a).localeCompare(labels[b] || b, 'pt-BR'); });
+      // value→label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
+      // atuais — senão um rebuild anterior que encolheu as options apagaria o label.
+      var themes = Object.keys(set).sort(function (a, b) { return (THEME_LABELS[a] || a).localeCompare(THEME_LABELS[b] || b, 'pt-BR'); });
       var cur = fTheme.value;
       var keep = themes.indexOf(cur) >= 0 ? cur : '';
-      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(labels[t] || t) + '</option>'; }).join('');
+      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(THEME_LABELS[t] || t) + '</option>'; }).join('');
       fTheme.value = keep;
     }
     function apply() {
