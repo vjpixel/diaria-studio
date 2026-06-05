@@ -88,6 +88,65 @@ describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido",
     assert.equal(doc.rows.find((r) => r.stage === 1)!.start, undefined);
   });
 
+  /** Captura console.error durante `fn`. */
+  function captureStderr(fn: () => void): string[] {
+    const orig = console.error;
+    const lines: string[] = [];
+    console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
+    try { fn(); } finally { console.error = orig; }
+    return lines;
+  }
+
+  it("#1853: done com --end SEM start prévio → backfill start do end do stage anterior + warn", () => {
+    // Caso 260604: stage 2 marcado done com --end mas mark-running pulado.
+    let doc = makeInitialDoc("260604");
+    doc = applyUpdate(doc, { stage: 1, status: "running" }, "2026-06-03T18:00:00.000Z");
+    doc = applyUpdate(doc, { stage: 1, status: "done" }, "2026-06-03T18:10:00.000Z");
+    let r2!: ReturnType<typeof doc.rows.find>;
+    const warns = captureStderr(() => {
+      doc = applyUpdate(doc, { stage: 2, status: "done", end: "2026-06-03T18:22:00.000Z" });
+      r2 = doc.rows.find((r) => r.stage === 2);
+    });
+    // start backfillado do end do stage 1 (18:10) → duração = 12 min, não vazia.
+    assert.equal(r2!.start, "2026-06-03T18:10:00.000Z");
+    assert.equal(r2!.duration_ms, 12 * 60 * 1000);
+    // #1853 (issue): warn `stage_start_backfilled` emitido.
+    assert.ok(warns.some((l) => l.includes("stage_start_backfilled")), "warn de backfill deve ser emitido");
+  });
+
+  it("#1853: sem end de stage anterior VÁLIDO (< end) → NÃO inventa start, warn unbackfillable", () => {
+    let doc = makeInitialDoc("260604");
+    // Stage 1 direto pra done com --end, sem stage anterior com end.
+    let r1!: ReturnType<typeof doc.rows.find>;
+    const warns = captureStderr(() => {
+      doc = applyUpdate(doc, { stage: 1, status: "done", end: "2026-06-03T18:00:00.000Z" });
+      r1 = doc.rows.find((r) => r.stage === 1);
+    });
+    assert.equal(r1!.start, undefined); // não inventa start=end (daria dur 0, inútil)
+    assert.equal(r1!.duration_ms, undefined);
+    assert.ok(warns.some((l) => l.includes("stage_start_unbackfillable")), "warn honesto deve ser emitido");
+  });
+
+  it("#1853: end do stage anterior DEPOIS do end deste (skew/out-of-order) → não backfila (sem start>end)", () => {
+    let doc = makeInitialDoc("260604");
+    // Stage 1 termina 18:30 (tarde); stage 2 done com end 18:22 (antes).
+    doc = applyUpdate(doc, { stage: 1, status: "done", end: "2026-06-03T18:30:00.000Z", start: "2026-06-03T18:00:00.000Z" });
+    doc = applyUpdate(doc, { stage: 2, status: "done", end: "2026-06-03T18:22:00.000Z" });
+    const r2 = doc.rows.find((r) => r.stage === 2)!;
+    // prevEnd (18:30) > end (18:22) → não usa → start fica undefined (não start>end).
+    assert.equal(r2.start, undefined);
+    assert.equal(r2.duration_ms, undefined);
+  });
+
+  it("#1853: NÃO backfila quando já há start (preserva duração real)", () => {
+    let doc = makeInitialDoc("260604");
+    doc = applyUpdate(doc, { stage: 2, status: "running" }, "2026-06-03T10:00:00.000Z");
+    doc = applyUpdate(doc, { stage: 2, status: "done", end: "2026-06-03T10:30:00.000Z" });
+    const r2 = doc.rows.find((r) => r.stage === 2)!;
+    assert.equal(r2.start, "2026-06-03T10:00:00.000Z"); // start original, não backfillado
+    assert.equal(r2.duration_ms, 30 * 60 * 1000);
+  });
+
   it("#1783: --start/--end explícitos têm precedência sobre o auto-carimbo", () => {
     let doc = makeInitialDoc("260603");
     doc = applyUpdate(doc, { stage: 1, status: "running", start: "2026-06-03T09:00:00.000Z" }, "2026-06-03T10:00:00.000Z");
