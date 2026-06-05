@@ -190,7 +190,8 @@ export function clariceLinkMissingVia(url: string): boolean {
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (!/(^|\.)clarice\.ai$/.test(host)) return false;
   if (host === "cortex.clarice.ai") return false; // API, não afiliado
-  return u.searchParams.get("via") !== "diaria";
+  // case-insensitive + tolera múltiplos `via` (ex: `?via=x&via=diaria`).
+  return !u.searchParams.getAll("via").some((v) => v.toLowerCase() === "diaria");
 }
 
 /**
@@ -199,12 +200,15 @@ export function clariceLinkMissingVia(url: string): boolean {
  */
 export function findClariceLinksMissingVia(text: string): string[] {
   const out: string[] = [];
-  // URLs em qualquer forma (markdown `](url)` ou plano), parando em delimitadores.
-  const re = /https?:\/\/[^\s)"'<>]+/g;
+  // URLs em qualquer forma (markdown `](url)`, `[ref][url]`, autolink ou plano).
+  // Char class exclui delimitadores de wrapping (`) ] } " ' < >`); o strip
+  // remove pontuação de fim de frase. Sem isso, `...via=diaria]` ou `...;`
+  // entrava no value e dava falso-positivo (#1911 review).
+  const re = /https?:\/\/[^\s)\]}"'<>]+/g;
   let m: RegExpExecArray | null;
   const seen = new Set<string>();
   while ((m = re.exec(text)) !== null) {
-    const url = m[0].replace(/[.,]+$/, "");
+    const url = m[0].replace(/[.,;:!?]+$/, "");
     if (seen.has(url)) continue;
     seen.add(url);
     if (clariceLinkMissingVia(url)) out.push(url);
