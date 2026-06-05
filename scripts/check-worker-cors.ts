@@ -64,8 +64,8 @@ export function evaluateCorsResponse(
 }
 
 async function checkCors(workerUrl: string): Promise<CheckResult> {
-  // Usar uma key que muito provavelmente exista (img-monthly-* do digest)
-  // OU uma key impossível (vai retornar 404 mas com CORS header)
+  // Usar uma key impossível (vai retornar 404 mas com CORS header). As imagens
+  // reais usam a convenção `img-{edition}-*` (#1908); aqui só checamos o header.
   const probeUrl = `${workerUrl.replace(/\/+$/, "")}/img/cors-precheck-probe`;
   try {
     const res = await fetch(probeUrl, {
