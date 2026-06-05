@@ -198,7 +198,12 @@ export function buildUrlBucketMap(
     radar: "radar",
     pesquisa: "radar",
     noticias: "radar",
-    tutorial: "use_melhor",
+    // #1857: o pipeline (finalize-stage1 / 01-approved.json) grava a chave de
+    // bucket `use_melhor`, não a chave de categoria `tutorial`. Sem este
+    // mapeamento, URLs da seção USE MELHOR caíam em "missing" sempre que a
+    // seção tinha conteúdo (mascarado enquanto a seção vinha vazia pelo #1632).
+    use_melhor: "use_melhor",
+    tutorial: "use_melhor", // back-compat: approveds antigos usavam a chave de categoria
     video: "video",
   };
   // Só seta se URL ainda não está como highlight (#1629)

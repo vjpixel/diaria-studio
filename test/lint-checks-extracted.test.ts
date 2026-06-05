@@ -222,4 +222,18 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(typeof sc.ok, "boolean");
     assert.ok(sc.counts.radar >= 1);
   });
+
+  it("url-bucket #1857: USE MELHOR via chave use_melhor não vira 'missing'", () => {
+    const md =
+      "**🛠️ USE MELHOR**\n\n" +
+      "**[Tutorial](https://t.com/1)**\nDescrição.\n";
+    // pipeline real grava a chave de bucket `use_melhor` (não `tutorial`)
+    const approvedUseMelhor = { highlights: [], use_melhor: [{ url: "https://t.com/1" }] };
+    assert.equal(lnDirect(md, approvedUseMelhor).ok, true);
+    // back-compat: approveds antigos com a chave de categoria `tutorial` seguem ok
+    const approvedTutorial = { highlights: [], tutorial: [{ url: "https://t.com/1" }] };
+    assert.equal(lnDirect(md, approvedTutorial).ok, true);
+    // URL não-aprovada em nenhuma chave → "missing"
+    assert.equal(lnDirect(md, { highlights: [] }).ok, false);
+  });
 });
