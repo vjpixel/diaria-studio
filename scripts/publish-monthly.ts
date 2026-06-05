@@ -61,6 +61,7 @@ export {
   renderIntro,
   renderLaboratorio,
   renderClarice,
+  renderLinkListSection,
   renderOutrasNoticias,
   eiaEditionFromYymm,
   renderEia,
