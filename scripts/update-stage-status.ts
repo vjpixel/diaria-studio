@@ -259,18 +259,29 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
     if (!start && opts.status === "running" && now) start = now;
     let end = opts.end ?? r.end;
     if (!end && (opts.status === "done" || opts.status === "failed") && now) end = now;
-    // #1853: transição pra done/failed SEM start (o mark-running `--start` foi
-    // pulado — regressão do #1783) deixava o stage sem duração silenciosamente
-    // no relatório. Backfill: `start` = `end` do stage ANTERIOR (stages são
-    // sequenciais → duração aproximada porém não-vazia). Sem stage anterior /
-    // sem end dele → `start = end` (duração ~0). Warn `stage_start_backfilled`.
+    // #1853: transição pra done/failed SEM start (o mark-running foi pulado —
+    // regressão do #1783) deixava o stage sem duração silenciosamente no
+    // relatório. Backfill: `start` = `end` do stage ANTERIOR (stages são
+    // sequenciais → start ≈ quando o anterior terminou → duração aproximada
+    // porém não-vazia). SÓ quando esse end é ANTERIOR ao end deste stage (senão
+    // start>end daria duração negativa, que computeDurationMs rejeita → voltaria
+    // ao `-` silencioso com um Início depois do Fim no relatório). Quando não há
+    // um end-anterior válido, NÃO inventa start=end (daria duração 0, também
+    // rejeitada) — warn honesto de que a duração fica vazia.
     if (!start && (opts.status === "done" || opts.status === "failed") && end) {
       const prevEnd = doc.rows.find((x) => x.stage === opts.stage - 1)?.end;
-      start = prevEnd ?? end;
-      console.error(
-        `[update-stage-status] stage_start_backfilled: stage ${opts.stage} marcado ${opts.status} sem --start; ` +
-          `start backfillado de ${prevEnd ? `end do stage ${opts.stage - 1}` : "end do próprio stage (dur≈0)"} (${start}).`,
-      );
+      if (prevEnd && new Date(prevEnd).getTime() < new Date(end).getTime()) {
+        start = prevEnd;
+        console.error(
+          `[update-stage-status] stage_start_backfilled: stage ${opts.stage} marcado ${opts.status} sem start — ` +
+            `usando o end do stage ${opts.stage - 1} (${prevEnd}) como start aproximado.`,
+        );
+      } else {
+        console.error(
+          `[update-stage-status] stage_start_unbackfillable: stage ${opts.stage} marcado ${opts.status} sem start e ` +
+            `sem end de stage anterior anterior a ${end} — duração ficará vazia no relatório. Rode o mark-running (--start).`,
+        );
+      }
     }
     // Repassa os timestamps efetivos pro cálculo de duração/pipeline.
     const effective: UpdateOpts = { ...opts, start, end };
