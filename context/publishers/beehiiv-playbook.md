@@ -189,8 +189,6 @@ Ler `platform.config.json` → bloco `publishing.newsletter`:
 - `template` (ex: `"Default"`)
 - `test_email` (ex: `"vjpixel@gmail.com"`)
 
-Ler `context/publishers/beehiiv.md` (playbook semântico).
-
 ### 3. Abrir Beehiiv e criar post
 
 1. **Navegar** para `https://app.beehiiv.com/`.
