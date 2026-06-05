@@ -74,11 +74,17 @@ const FIXED_SECTION_HEADER_RE =
 // "header de seção" (i-flag + `V[ÍI]DEOS?`) → violação espúria no gate do
 // humanizador. Delta vs. a forma antiga: registry usa `OUTRAS?` (aceita singular
 // "OUTRA NOTÍCIA") — superset benigno, simétrico no pre/post.
-const MAIN_SECTION_NAMES_PATTERN = SECTIONS.filter((s) =>
-  ["LANÇAMENTOS", "PESQUISAS", "OUTRAS NOTÍCIAS"].includes(s.label),
-)
-  .map((s) => s.pattern)
-  .join("|");
+const MAIN_SECTION_LABELS = ["LANÇAMENTOS", "PESQUISAS", "OUTRAS NOTÍCIAS"];
+const MAIN_SECTION_DEFS = SECTIONS.filter((s) => MAIN_SECTION_LABELS.includes(s.label));
+// #1836 tripwire: se o registry renomear/remover esses labels, o filtro encolhe
+// silenciosamente — e `[].join("|")` viraria `""`, fazendo `(?:)` casar QUALQUER
+// linha em negrito (detector arruinado). Falhar alto em vez de degradar o gate.
+if (MAIN_SECTION_DEFS.length !== MAIN_SECTION_LABELS.length) {
+  throw new Error(
+    `lint-humanized-output: esperava ${MAIN_SECTION_LABELS.length} seções principais no registry section-naming.ts, achei ${MAIN_SECTION_DEFS.length} — labels mudaram? (#1836)`,
+  );
+}
+const MAIN_SECTION_NAMES_PATTERN = MAIN_SECTION_DEFS.map((s) => s.pattern).join("|");
 const MAIN_SECTION_HEADER_RE = new RegExp(
   String.raw`^\*\*[^\n\[]*?(?:${MAIN_SECTION_NAMES_PATTERN})[^\n]*\*\*\s*$`,
   "gim",
