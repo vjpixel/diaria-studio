@@ -122,6 +122,36 @@ describe("uploadHtml — real PUT", () => {
     assert.equal(r.ttl_seconds, 43200);
   });
 
+  it("wrap:false sobe o HTML cru, sem o preview-wrapper (#1914)", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "uphtml-nowrap-"));
+    const htmlPath = resolve(dir, "doc.html");
+    const fullDoc = "<!DOCTYPE html><html><body><p>mensal</p></body></html>";
+    writeFileSync(htmlPath, fullDoc, "utf8");
+
+    let capturedBody: string | null = null;
+    const fetchStub = (_url: string | URL, init?: RequestInit): Promise<Response> => {
+      capturedBody = init?.body as string;
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true, bytes: fullDoc.length, ttl_seconds: 43200 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    };
+
+    await uploadHtml({
+      edition: "m2605",
+      htmlPath,
+      secret: SECRET,
+      workerUrl: "https://test.workers.dev",
+      wrap: false,
+      fetchImpl: fetchStub as unknown as typeof fetch,
+    });
+
+    assert.equal(capturedBody, fullDoc, "body deve ser o HTML cru, sem modificação");
+    assert.ok(!capturedBody!.includes("preview-wrapper"), "não deve aplicar o wrapper");
+  });
+
   it("propaga erro quando Worker retorna não-2xx", async () => {
     const dir = mkdtempSync(resolve(tmpdir(), "upload-html-"));
     const htmlPath = resolve(dir, "newsletter-final.html");
