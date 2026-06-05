@@ -295,6 +295,20 @@ function loadCache(cachePath: string): Record<string, PublicImage> {
   }
 }
 
+/**
+ * #1865: base do merge cross-mode do `06-public-images.json` — SEMPRE o arquivo
+ * existente, independente de `--no-cache`. Os modos `newsletter` (cover/eia_*) e
+ * `social` (d1/d2/d3) gravam no MESMO arquivo; o modo que roda por último faz
+ * spread por cima desta base, preservando as chaves do outro modo.
+ *
+ * `--no-cache` (skipExisting=false) afeta SÓ a decisão de re-upload (reuse), NÃO
+ * a base do merge. Antes, `--no-cache` zerava a base (`{}`) e o social mode
+ * apagava cover/eia do newsletter (260605, quase publicou sem capa).
+ */
+export function mergeBaseFromCache(cachePath: string): Record<string, PublicImage> {
+  return { ...loadCache(cachePath) };
+}
+
 /** #1418: md5 hex de um arquivo, pra detectar drift entre local e cache. */
 export function md5OfFile(path: string): string {
   const bytes = readFileSync(path);
@@ -346,6 +360,22 @@ export interface UploadOptions {
   target?: UploadTarget;
   /** #1418: ignora cache md5/target e força re-upload. Útil pra recovery. */
   forceReupload?: boolean;
+  /**
+   * #1865: seam de injeção pros uploads de rede (Cloudflare KV / Drive). Default
+   * usa as implementações reais; testes injetam stubs pra exercitar o merge
+   * cross-mode sem rede (gFetch faz OAuth do Google, inviável em teste).
+   */
+  uploaders?: UploadDeps;
+}
+
+export interface UploadDeps {
+  uploadToCloudflare?: (
+    imagePath: string,
+    key: string,
+    cfg: { kvNamespaceId: string; workerUrl: string },
+  ) => Promise<string>;
+  uploadToDrive?: (name: string, content: Buffer, mime: string) => Promise<{ id: string }>;
+  makeDrivePublic?: (fileId: string) => Promise<void>;
 }
 
 /**
@@ -393,8 +423,22 @@ export async function uploadPublicImages(
   }
 
   const cachePath = resolve(editionDir, "06-public-images.json");
-  const cache = skipExisting ? loadCache(cachePath) : {};
-  const images: Record<string, PublicImage> = { ...cache };
+  // #1865: SEMPRE carregar o `06-public-images.json` existente como base do
+  // merge — preserva entries de OUTROS modos (cover/eia_a/eia_b do newsletter
+  // quando o social roda, e d1/d2/d3 do social quando o newsletter roda). Os
+  // dois modos gravam no mesmo arquivo. `--no-cache` (skipExisting=false) deve
+  // forçar só RE-UPLOAD (decisão de reuse abaixo, que já gateia em skipExisting),
+  // NÃO apagar o merge cross-mode. Antes, `--no-cache` zerava a base (`{}`) e o
+  // modo que rodava por último sobrescrevia as chaves do outro → cover/É IA?
+  // sumiam e a newsletter quase saiu sem capa (260605).
+  const existing = mergeBaseFromCache(cachePath); // snapshot imutável (reuse + cloudflare_url lookup)
+  const images: Record<string, PublicImage> = { ...existing }; // base mutável do merge
+
+  // #1865: uploaders injetáveis (default = reais). Testes stubbam pra exercitar
+  // o merge sem rede.
+  const uploadToCloudflare = opts.uploaders?.uploadToCloudflare ?? uploadImageToWorkerKV;
+  const uploadToDrive = opts.uploaders?.uploadToDrive ?? driveUploadFile;
+  const makeDrivePublic = opts.uploaders?.makeDrivePublic ?? makeFilePublic;
 
   // Cloudflare config (lazy — só carrega se target=cloudflare).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
@@ -422,7 +466,10 @@ export async function uploadPublicImages(
 
     // #1418: cache hit + md5 match → reuse. md5 ausente (entries pre-#1418)
     // OU mudou drive↔cloudflare OU bytes locais diferem → re-uploadar.
-    const cached = cache[spec.key];
+    // #1865: a decisão de REUSE ainda gateia em `skipExisting` (--no-cache →
+    // false → reuse=false → re-upload). `existing[spec.key]` só alimenta o
+    // shouldReuse e a preservação de cloudflare_url; não força reuse sozinho.
+    const cached = existing[spec.key];
     let reuse =
       skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, target, localMd5);
     // #1704 self-heal: pra cloudflare, a key cacheada precisa bater com a que
@@ -439,7 +486,7 @@ export async function uploadPublicImages(
       // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
       // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
       const key = kvKeyForSpec(editionDir, spec, localMd5);
-      const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
+      const url = await uploadToCloudflare(imagePath, key, cfConfig!);
       images[spec.key] = {
         file_id: key,
         url,
@@ -452,8 +499,8 @@ export async function uploadPublicImages(
     } else {
       const content = readFileSync(imagePath);
       const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
-      const { id: fileId } = await driveUploadFile(driveName, content, mime);
-      await makeFilePublic(fileId);
+      const { id: fileId } = await uploadToDrive(driveName, content, mime);
+      await makeDrivePublic(fileId);
       // #1584: preserva cloudflare_url se já estava no cache (mode=newsletter
       // rodou primeiro e fez upload pra Cloudflare). Sem isso, social mode
       // sobrescrevia o entry e o renderer social perdia a URL Cloudflare.

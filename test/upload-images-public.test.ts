@@ -12,10 +12,110 @@ import {
   imageSpecsFor,
   md5OfFile,
   shouldReuseCachedUpload,
+  mergeBaseFromCache,
+  uploadPublicImages,
   type PublicImage,
 } from "../scripts/upload-images-public.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#1865)", () => {
+  function setup(images: Record<string, unknown>) {
+    const dir = mkdtempSync(join(tmpdir(), "merge-base-"));
+    const p = join(dir, "06-public-images.json");
+    writeFileSync(p, JSON.stringify({ images }), "utf8");
+    return { dir, p, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("base = SEMPRE o arquivo existente (não {}), independente de --no-cache", () => {
+    // newsletter mode gravou cover/eia_a/eia_b/d1.
+    const { p, cleanup } = setup({
+      cover: { file_id: "c", url: "u-cover", target: "cloudflare", cloudflare_url: "u-cover" },
+      eia_a: { file_id: "a", url: "u-a", target: "cloudflare" },
+      eia_b: { file_id: "b", url: "u-b", target: "cloudflare" },
+      d1: { file_id: "d1c", url: "u-d1", target: "cloudflare", cloudflare_url: "u-d1" },
+    });
+    try {
+      const base = mergeBaseFromCache(p);
+      // Todas as chaves do newsletter mode presentes na base.
+      assert.deepEqual(Object.keys(base).sort(), ["cover", "d1", "eia_a", "eia_b"]);
+
+      // Simula o social mode (--no-cache) escrevendo por cima: spread sobre a base.
+      const socialResult: Record<string, PublicImage> = {
+        d1: { file_id: "d1d", url: "u-d1-drive", target: "drive", cloudflare_url: "u-d1" } as PublicImage,
+        d2: { file_id: "d2d", url: "u-d2-drive", target: "drive" } as PublicImage,
+        d3: { file_id: "d3d", url: "u-d3-drive", target: "drive" } as PublicImage,
+      };
+      const merged = { ...base, ...socialResult };
+      // cover/eia_a/eia_b do newsletter NÃO somem (era o bug #1865).
+      assert.ok(merged.cover, "cover preservada");
+      assert.ok(merged.eia_a && merged.eia_b, "eia_a/eia_b preservadas");
+      // d1/d2/d3 do social presentes.
+      assert.ok(merged.d1 && merged.d2 && merged.d3, "d1/d2/d3 presentes");
+      // cloudflare_url da cover/d1 preservada (não perdida pelo overwrite).
+      assert.equal(merged.cover.cloudflare_url, "u-cover");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("arquivo ausente → base vazia (sem crash)", () => {
+    assert.deepEqual(mergeBaseFromCache(join(tmpdir(), "nao-existe-06.json")), {});
+  });
+
+  it("e2e: run() social --no-cache preserva cover/eia do newsletter + cloudflare_url do d1 (#1865)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260605"));
+    try {
+      // newsletter mode já gravou cover/eia_a/eia_b + d1 (com cloudflare_url).
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({
+          images: {
+            cover: { file_id: "c", url: "u-cover", target: "cloudflare", cloudflare_url: "u-cover", md5: "m1" },
+            eia_a: { file_id: "a", url: "u-a", target: "cloudflare", md5: "m2" },
+            eia_b: { file_id: "b", url: "u-b", target: "cloudflare", md5: "m3" },
+            d1: { file_id: "d1cf", url: "u-d1-cf", target: "cloudflare", cloudflare_url: "u-d1-cf", md5: "m4" },
+          },
+        }),
+        "utf8",
+      );
+      // imagens do social mode presentes no disco (forçam re-upload sob --no-cache).
+      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+        writeFileSync(join(dir, f), `fake-jpg-bytes-${f}`, "utf8");
+      }
+
+      const driveUploads: string[] = [];
+      await uploadPublicImages({
+        editionDir: dir,
+        mode: "social",
+        skipExisting: false, // --no-cache
+        target: "drive",
+        uploaders: {
+          uploadToDrive: async (name: string) => {
+            driveUploads.push(name);
+            return { id: `drive-${name}` };
+          },
+          makeDrivePublic: async () => {},
+        },
+      });
+
+      const out = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")).images;
+      // Cross-mode keys do newsletter PRESERVADAS (era o bug #1865).
+      assert.ok(out.cover, "cover preservada");
+      assert.ok(out.eia_a && out.eia_b, "eia_a/eia_b preservados");
+      assert.equal(out.cover.cloudflare_url, "u-cover");
+      // Social keys re-uploadadas (target drive).
+      assert.ok(out.d1 && out.d2 && out.d3, "d1/d2/d3 presentes");
+      assert.equal(out.d1.target, "drive");
+      // d1 preservou o cloudflare_url do entry newsletter (#1584, agora sob --no-cache).
+      assert.equal(out.d1.cloudflare_url, "u-d1-cf");
+      // --no-cache forçou re-upload dos 3 (não reusou).
+      assert.equal(driveUploads.length, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("upload-images-public env auto-load (regression #1157)", () => {
   it("chama loadProjectEnv() em scope top-level antes de outros imports", () => {
