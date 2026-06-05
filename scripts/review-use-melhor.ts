@@ -45,6 +45,7 @@ export const NEWSLETTER_LIKE_HOSTS = new Set<string>([
  */
 export const TUTORIAL_HOSTS = new Set<string>([
   "cookbook.openai.com",
+  "developers.openai.com", // #1862 — OpenAI Cookbook migrou pra cá
   "fast.ai",
   "huggingface.co",
   "kaggle.com",
@@ -53,6 +54,8 @@ export const TUTORIAL_HOSTS = new Set<string>([
   "deeplearning.ai",
   "learn.microsoft.com",
   "developers.googleblog.com",
+  "langchain.com", // #1862 — só /blog chega em use_melhor (categorize path-scoped)
+  "wandb.ai", // #1862 — só /fully-connected chega em use_melhor
 ]);
 
 function hostOf(url: string): string | null {
