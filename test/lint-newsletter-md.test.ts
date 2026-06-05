@@ -1794,4 +1794,46 @@ describe("lintRelativeTime (#747)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.matches[0].line, 2);
   });
+
+  it("#1866: ignora 'ontem' dentro do bloco ERRO INTENCIONAL", () => {
+    // O reveal de um erro de DATA legitimamente cita 'ontem'/'amanhã' como
+    // conteúdo. Bloco bracketado por --- não pode disparar o check.
+    const md = [
+      "Texto normal sem data relativa.",
+      "",
+      "---",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, dissemos 'ontem, 1º de junho', mas o correto era 'anteontem'.",
+      "",
+      "Nessa edição, tem outro erro pra você achar.",
+      "",
+      "---",
+      "",
+      "🎁 SORTEIO",
+      "",
+      "Concorra a uma caneca.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, true, `esperava 0 matches, veio: ${JSON.stringify(r.matches)}`);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("#1866: ainda detecta 'hoje' FORA do bloco ERRO INTENCIONAL", () => {
+    // O bloco fecha no --- — conteúdo depois dele volta a ser varrido.
+    const md = [
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, escrevi 'ontem' onde deveria ser uma data absoluta.",
+      "",
+      "---",
+      "",
+      "O ChatGPT anunciou hoje uma nova versão.",
+    ].join("\n");
+    const r = lintRelativeTime(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].word.toLowerCase(), "hoje");
+  });
 });
