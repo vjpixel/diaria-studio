@@ -21,6 +21,8 @@ export interface RelativeTimeMatch {
   line: number;
 }
 
+import { SECTION_EMOJI, sectionHeaderRegex } from "../section-naming.ts";
+
 export interface RelativeTimeResult {
   ok: boolean;
   matches: RelativeTimeMatch[];
@@ -33,12 +35,25 @@ const RELATIVE_TIME_RE =
 
 // #1866: o bloco ERRO INTENCIONAL legitimamente cita datas relativas como
 // CONTEÚDO (o erro revelado pode ser justamente sobre uma data: "…dizia
-// 'ontem, 1º de junho', o certo seria 'anteontem'"). Excluir o bloco do
-// escopo do check (do header até o próximo `---`). Header tolera emoji opcional
-// + bold opcional. Sem `\b` por causa do acento.
-const ERRO_INTENCIONAL_HEADER_RE =
-  /^\s*(?:\*\*)?\s*(?:\p{Emoji_Presentation}|\p{Extended_Pictographic})?\s*ERRO\s+INTENCIONAL\b/iu;
+// 'ontem, 1º de junho', o certo seria 'anteontem'"). Excluir o bloco do escopo
+// do check.
+//
+// Header ANCORADO via builder canônico (#1737) — linha inteira `(**)?ERRO
+// INTENCIONAL(**)?`. Ancorar evita casar prosa que só COMEÇA com "Erro
+// intencional…" (over-match que faria o skip engolir violações reais até o
+// próximo separador). Reusa SECTION_EMOJI_PREFIX/bold do registry em vez de
+// re-derivar emoji/bold à mão.
+const ERRO_INTENCIONAL_HEADER_RE = sectionHeaderRegex(String.raw`ERRO\s+INTENCIONAL`, {
+  bold: "optional",
+  flags: "imu",
+});
 const SEPARATOR_RE = /^\s*---\s*$/;
+// #1866: o bloco fecha no `---` OU na próxima seção (header com emoji). Sem o
+// segundo caso, uma edição cujo `---` entre ERRO INTENCIONAL e a próxima seção
+// foi removido (hand-edit no Drive) faria o skip ir até o EOF, engolindo
+// violações reais em SORTEIO / PARA ENCERRAR (falso-negativo num lint que o
+// gate confia). Espelha o `nextSepRe` do extractIntentionalErrorFromMd.
+const NEXT_SECTION_HEADER_RE = new RegExp(String.raw`^\s*(?:\*\*)?${SECTION_EMOJI}`, "u");
 
 export function lintRelativeTime(md: string): RelativeTimeResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -47,16 +62,25 @@ export function lintRelativeTime(md: string): RelativeTimeResult {
   let inErroIntencional = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // #1866: ao entrar no bloco ERRO INTENCIONAL, pular tudo até o `---` que o
-    // fecha (inclusive header e separador). Renderer sempre emite o bloco
-    // bracketado por `---` (insertOrUpdateSection).
+    // #1866: ao entrar no bloco ERRO INTENCIONAL, pular tudo até o `---` ou a
+    // próxima seção. Renderer emite o bloco bracketado por `---`; o fallback de
+    // header-de-seção cobre edições onde o `---` de fechamento sumiu.
     if (!inErroIntencional && ERRO_INTENCIONAL_HEADER_RE.test(line)) {
       inErroIntencional = true;
       continue;
     }
     if (inErroIntencional) {
-      if (SEPARATOR_RE.test(line)) inErroIntencional = false;
-      continue;
+      if (SEPARATOR_RE.test(line)) {
+        inErroIntencional = false;
+        continue; // o `---` em si não tem conteúdo pra varrer.
+      }
+      if (NEXT_SECTION_HEADER_RE.test(line)) {
+        inErroIntencional = false;
+        // NÃO `continue`: a linha do próximo header (e tudo depois) volta a ser
+        // varrida normalmente — cai no scan abaixo.
+      } else {
+        continue;
+      }
     }
     let m: RegExpExecArray | null;
     // Reset lastIndex (g flag) between lines
