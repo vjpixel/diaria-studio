@@ -1,0 +1,18 @@
+# workers/cursos — hosting da página "Cursos sobre IA" (#1745).
+#
+# Worker de static assets (sem script): serve workers/cursos/public/index.html
+# em https://cursos.diaria.workers.dev/. O HTML é gerado por
+# `scripts/build-cursos-page.ts` a partir de `seed/courses/cursos-ia.json`
+# (fonte de verdade, versionada). REGENERAR antes do deploy quando o seed mudar:
+#
+#   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html
+#   cd workers/cursos && npx wrangler deploy
+#
+# O teste `test/cursos-asset-drift.test.ts` garante que o HTML committed reflete
+# o seed (CI falha se alguém editar o seed sem regenerar).
+name = "cursos"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+[assets]
+directory = "./public"

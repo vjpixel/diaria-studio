@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cursos sobre IA · Diar.ia</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap">
+<style>
+  :root { --teal: #00A0A0; --ink: #1A1A1A; --paper: #F5F1E8; --card: #FFFDF8; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
+    -webkit-font-smoothing: antialiased; }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+  header { padding: 56px 0 0; }
+  .eyebrow { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin: 0 0 18px; }
+  .rule { height: 2px; background: var(--teal); border: 0; margin: 0 0 22px; }
+  h1 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-weight: 700; font-size: clamp(40px, 7vw, 72px); line-height: 0.98;
+    letter-spacing: -0.02em; margin: 0; }
+  h1 .dot { color: var(--teal); }
+  .tagline { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #6b6256; margin: 18px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 64ch; margin: 16px 0 0; }
+  .lede + .lede { margin-top: 10px; font-size: 16px; color: #6b6256; }
+
+  .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
+    border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
+  .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
+  .filters label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+  .filters select { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
+    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 130px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 4px center; }
+  .filters select:focus { outline: none; border-bottom-color: var(--teal); }
+  .count { margin-left: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: #8a8170; align-self: flex-end; }
+
+  main { padding: 40px 0 64px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
+    background: #e3ddcd; border: 1px solid #e3ddcd; }
+  .card { background: var(--card); display: flex; flex-direction: column; padding: 26px 28px; }
+  .title-row { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; }
+  .title-row h2 { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 22px; font-weight: 600; line-height: 1.14;
+    letter-spacing: -0.01em; margin: 0; }
+  .title-row h2 a { text-decoration: none; }
+  .title-row h2 a:hover { color: var(--teal); }
+  .note { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
+  .platform { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.04em; color: #8a8170; margin: 6px 0 0; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+  .badge { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+  .badge--lang { border-color: var(--teal); color: var(--teal); }
+  .badge--cert { border-color: #b08900; color: #8a6d00; }
+  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 14px 0 18px; flex: 1; }
+  .cta { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
+    border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  .cta:hover { border-bottom-color: var(--teal); }
+  .cta--off { color: #b3ab98; font-weight: 600; }
+  .empty { grid-column: 1 / -1; text-align: center; color: #8a8170; padding: 64px 20px;
+    font-size: 18px; background: var(--card); }
+  footer { border-top: 1px solid #ddd6c6; }
+  footer .wrap { padding: 24px 28px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #9a9180; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Diar.ia · Curadoria</p>
+      <hr class="rule">
+      <h1>Cursos sobre IA<span class="dot" aria-hidden="true">.</span></h1>
+      <p class="tagline">Seu filtro no caos</p>
+      <p class="lede">Uma seleção de cursos sobre inteligência artificial com acesso gratuito ou auditoria livre — de fundamentos a especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma.</p>
+      <p class="lede">Todos os links levam direto à plataforma. Auditoria gratuita dá acesso ao conteúdo; o certificado, quando pago, está marcado.</p>
+    </div>
+  </header>
+  <div class="filters">
+    <div class="wrap">
+      <label>Idioma
+        <select id="f-lang"><option value="">Todos</option><option value="pt-br">Português</option><option value="en">Inglês</option></select>
+      </label>
+      <label>Nível
+        <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
+      </label>
+      <label>Formato
+        <select id="f-format"><option value="">Todos</option><option value="video">Vídeo</option><option value="texto">Texto</option><option value="hands-on">Hands-on</option></select>
+      </label>
+      <label>Duração
+        <select id="f-duration"><option value="">Todos</option><option value="curto">Curto (&lt;5h)</option><option value="medio">Médio (5–20h)</option><option value="longo">Longo (&gt;20h)</option></select>
+      </label>
+      <label>Plataforma
+        <select id="f-platform"><option value="">Todos</option><option value="deeplearning-ai-coursera">DeepLearning.AI / Coursera</option><option value="fgv">FGV</option><option value="fundacao-bradesco-escola-virtual">Fundação Bradesco (Escola Virtual)</option><option value="google-skills">Google Skills</option><option value="ibm-skillsbuild">IBM SkillsBuild</option><option value="microsoft-learn">Microsoft Learn</option><option value="mit-opencourseware">MIT OpenCourseWare</option><option value="usp-coursera">USP / Coursera</option></select>
+      </label>
+      <label>Certificado
+        <select id="f-cert"><option value="">Todos</option><option value="sim">Com certificado</option><option value="nao">Sem certificado</option></select>
+      </label>
+      <label>Tema
+        <select id="f-theme"><option value="">Todos</option><option value="carreira">Carreira</option><option value="cloud">Cloud</option><option value="deep-learning">Deep Learning</option><option value="direito">Direito</option><option value="estrategia">Estratégia</option><option value="etica">Ética</option><option value="fundamentos">Fundamentos</option><option value="ia-aplicada">IA Aplicada</option><option value="ia-generativa">IA Generativa</option><option value="machine-learning">Machine Learning</option><option value="negocios">Negócios</option><option value="nlp">NLP</option><option value="produtividade">Produtividade</option><option value="prompt-engineering">Prompt Engineering</option><option value="redes-neurais">Redes Neurais</option><option value="reinforcement-learning">Reinforcement Learning</option><option value="setor-social">Setor Social</option><option value="visao-computacional">Visão Computacional</option></select>
+      </label>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+  <main>
+    <div class="wrap">
+      <div class="grid" id="grid">
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="fundamentos">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Introdução à Inteligência Artificial</a></h2>
+          <span class="note">1h 15m</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Fundamentos</span></p>
+        <p class="summary">Bases conceituais de IA pra quem está começando, com credencial digital gratuita da IBM ao concluir.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="ia-generativa">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Introdução à IA generativa</a></h2>
+          <span class="note">1h 30m</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">IA Generativa</span></p>
+        <p class="summary">Panorama da IA generativa e suas aplicações — ponto de partida rápido pra entender o momento atual.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="etica">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ética em IA</a></h2>
+          <span class="note">1h 45m</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Ética</span></p>
+        <p class="summary">Os cinco pilares da ética da IA — base pra governança e desenvolvimento responsável de sistemas.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="machine-learning deep-learning">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Aprendizado de Máquina e Aprendizado Profundo</a></h2>
+          <span class="note">2h</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Machine Learning</span><span class="badge">Deep Learning</span></p>
+        <p class="summary">Visão técnica introdutória dos subcampos centrais da IA: aprendizado de máquina e profundo.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="nlp visao-computacional">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Processamento de Linguagem Natural e Visão Computacional</a></h2>
+          <span class="note">1h 30m</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">NLP</span><span class="badge">Visão Computacional</span></p>
+        <p class="summary">Introdução aos subcampos da IA pra interações textuais e análise de imagens.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="prompt-engineering">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Dominando a Arte da Redação de Prompts</a></h2>
+          <span class="note">1h</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Prompt Engineering</span></p>
+        <p class="summary">Prompt engineering — como otimizar a eficiência e a qualidade das interações com modelos generativos.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="curto"
+        data-platform="ibm-skillsbuild"
+        data-cert="sim"
+        data-themes="carreira ia-generativa">
+        <div class="title-row">
+          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Melhoria de Currículo com IA Generativa</a></h2>
+          <span class="note">0h 40m</span>
+        </div>
+        <p class="platform">IBM SkillsBuild</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Carreira</span><span class="badge">IA Generativa</span></p>
+        <p class="summary">Aplicação prática: usar IA generativa pra otimizar currículo e busca de emprego.</p>
+        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="fundacao-bradesco-escola-virtual"
+        data-cert="sim"
+        data-themes="direito ia-aplicada">
+        <div class="title-row">
+          <h2><a href="https://www.ev.org.br/areas-de-interesse/inteligencia-artificial" target="_blank" rel="noopener noreferrer">IA para Profissionais do Direito</a></h2>
+          <span class="note">2h</span>
+        </div>
+        <p class="platform">Fundação Bradesco (Escola Virtual)</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Direito</span><span class="badge">IA Aplicada</span></p>
+        <p class="summary">Aplicação da IA no contexto jurídico, unindo inovação e responsabilidade ética. Certificado gratuito após 70% de aproveitamento.</p>
+        <a class="cta" href="https://www.ev.org.br/areas-de-interesse/inteligencia-artificial" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="fundacao-bradesco-escola-virtual"
+        data-cert="sim"
+        data-themes="setor-social ia-aplicada">
+        <div class="title-row">
+          <h2><a href="https://www.ev.org.br/areas-de-interesse/inteligencia-artificial" target="_blank" rel="noopener noreferrer">Inteligência Artificial para ONGs</a></h2>
+          <span class="note">4h</span>
+        </div>
+        <p class="platform">Fundação Bradesco (Escola Virtual)</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Setor Social</span><span class="badge">IA Aplicada</span></p>
+        <p class="summary">IA aplicada ao terceiro setor e organizações não governamentais. Certificado gratuito mediante aprovação.</p>
+        <a class="cta" href="https://www.ev.org.br/areas-de-interesse/inteligencia-artificial" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="intermediario"
+        data-cost="free"
+        data-format="video"
+        data-duration="longo"
+        data-platform="usp-coursera"
+        data-cert="nao"
+        data-themes="nlp deep-learning">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/learn/processamento-neural-linguagem-natural-em-portugues-i" target="_blank" rel="noopener noreferrer">Processamento Neural de Linguagem Natural em Português I</a></h2>
+          <span class="note">~30h</span>
+        </div>
+        <p class="platform">USP / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge">NLP</span><span class="badge">Deep Learning</span></p>
+        <p class="summary">PNL aplicada à língua portuguesa, nível acadêmico (USP). Auditoria gratuita; certificado é pago.</p>
+        <a class="cta" href="https://www.coursera.org/learn/processamento-neural-linguagem-natural-em-portugues-i" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="sim"
+        data-themes="ia-generativa">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/learn/introduction-to-generative-ai---portugus-brasileiro" target="_blank" rel="noopener noreferrer">Introdução à IA generativa (PT-BR)</a></h2>
+          <span class="note">1h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">IA Generativa</span></p>
+        <p class="summary">Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP.</p>
+        <a class="cta" href="https://www.coursera.org/learn/introduction-to-generative-ai---portugus-brasileiro" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="texto"
+        data-duration="medio"
+        data-platform="microsoft-learn"
+        data-cert="nao"
+        data-themes="cloud fundamentos">
+        <div class="title-row">
+          <h2><a href="https://learn.microsoft.com/pt-br/training/courses/ai-900t00" target="_blank" rel="noopener noreferrer">Fundamentos de IA no Azure (AI-900)</a></h2>
+          <span class="note">~10h</span>
+        </div>
+        <p class="platform">Microsoft Learn</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Texto</span><span class="badge">Cloud</span><span class="badge">Fundamentos</span></p>
+        <p class="summary">Material de estudo (gratuito) pra certificação Azure AI Fundamentals. O exame de certificação é pago.</p>
+        <a class="cta" href="https://learn.microsoft.com/pt-br/training/courses/ai-900t00" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="pt-br"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="medio"
+        data-platform="fgv"
+        data-cert="sim"
+        data-themes="negocios estrategia">
+        <div class="title-row">
+          <h2><a href="https://educacao-executiva.fgv.br/cursos/gratuitos" target="_blank" rel="noopener noreferrer">Inteligência Artificial e o futuro das relações nos negócios</a></h2>
+          <span class="note">~5h</span>
+        </div>
+        <p class="platform">FGV</p>
+        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Negócios</span><span class="badge">Estratégia</span></p>
+        <p class="summary">Curso gratuito da FGV sobre IA com foco em gestão e estratégia de negócios.</p>
+        <a class="cta" href="https://educacao-executiva.fgv.br/cursos/gratuitos" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="medio"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="nao"
+        data-themes="machine-learning">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Supervised Machine Learning: Regression and Classification</a></h2>
+          <span class="note">~18h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span></p>
+        <p class="summary">Curso 1 da ML Specialization de Andrew Ng — regressão e classificação em Python (NumPy, scikit-learn). Auditoria gratuita.</p>
+        <a class="cta" href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="intermediario"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="medio"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="nao"
+        data-themes="machine-learning redes-neurais">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Advanced Learning Algorithms</a></h2>
+          <span class="note">~20h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span><span class="badge">Redes Neurais</span></p>
+        <p class="summary">Curso 2 da ML Specialization — redes neurais e algoritmos de aprendizado avançados. Auditoria gratuita.</p>
+        <a class="cta" href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="intermediario"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="medio"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="nao"
+        data-themes="machine-learning reinforcement-learning">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Unsupervised Learning, Recommenders, Reinforcement Learning</a></h2>
+          <span class="note">~20h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span><span class="badge">Reinforcement Learning</span></p>
+        <p class="summary">Curso 3 da ML Specialization — aprendizado não supervisionado, sistemas de recomendação e RL. Auditoria gratuita.</p>
+        <a class="cta" href="https://www.coursera.org/specializations/machine-learning-introduction" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="medio"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="nao"
+        data-themes="estrategia negocios">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/learn/ai-for-everyone" target="_blank" rel="noopener noreferrer">AI For Everyone</a></h2>
+          <span class="note">~6h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge">Estratégia</span><span class="badge">Negócios</span></p>
+        <p class="summary">Não-técnico: estabelece linguagem comum sobre IA em equipes multidisciplinares (estratégia, ética, data science). Auditoria gratuita.</p>
+        <a class="cta" href="https://www.coursera.org/learn/ai-for-everyone" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="avancado"
+        data-cost="free"
+        data-format="hands-on"
+        data-duration="longo"
+        data-platform="deeplearning-ai-coursera"
+        data-cert="nao"
+        data-themes="deep-learning redes-neurais">
+        <div class="title-row">
+          <h2><a href="https://www.coursera.org/specializations/deep-learning" target="_blank" rel="noopener noreferrer">Deep Learning Specialization</a></h2>
+          <span class="note">~120h</span>
+        </div>
+        <p class="platform">DeepLearning.AI / Coursera</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Deep Learning</span><span class="badge">Redes Neurais</span></p>
+        <p class="summary">Série de 5 cursos: redes neurais, CNNs, RNNs. Conteúdo dos cursos individuais auditável gratuitamente.</p>
+        <a class="cta" href="https://www.coursera.org/specializations/deep-learning" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="iniciante"
+        data-cost="free"
+        data-format="video"
+        data-duration="curto"
+        data-platform="google-skills"
+        data-cert="sim"
+        data-themes="produtividade prompt-engineering">
+        <div class="title-row">
+          <h2><a href="https://www.skills.google/paths/2336" target="_blank" rel="noopener noreferrer">Google AI Essentials</a></h2>
+          <span class="note">4h 45m</span>
+        </div>
+        <p class="platform">Google Skills</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Produtividade</span><span class="badge">Prompt Engineering</span></p>
+        <p class="summary">GenAI, prompt engineering e produtividade — como usar IA pra gerar ideias, pesquisar e acelerar tarefas diárias.</p>
+        <a class="cta" href="https://www.skills.google/paths/2336" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+      <article class="card"
+        data-lang="en"
+        data-level="avancado"
+        data-cost="free"
+        data-format="texto"
+        data-duration="longo"
+        data-platform="mit-opencourseware"
+        data-cert="nao"
+        data-themes="fundamentos machine-learning">
+        <div class="title-row">
+          <h2><a href="https://ocw.mit.edu/" target="_blank" rel="noopener noreferrer">Machine Learning (MIT OpenCourseWare)</a></h2>
+          <span class="note">~40h</span>
+        </div>
+        <p class="platform">MIT OpenCourseWare</p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Gratuito</span><span class="badge">Texto</span><span class="badge">Fundamentos</span><span class="badge">Machine Learning</span></p>
+        <p class="summary">Padrão ouro de acesso aberto: material de referência de alto rigor teórico do MIT. Exige autodisciplina e base em matemática/programação.</p>
+        <a class="cta" href="https://ocw.mit.edu/" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+      </article>
+        <p class="empty" id="empty" style="display:none">Nenhum curso com esses filtros.</p>
+      </div>
+    </div>
+  </main>
+  <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
+<script>
+  (function () {
+    var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+    var countEl = document.getElementById('count');
+    var emptyEl = document.getElementById('empty');
+    // Filtros simples (1 valor por card): id do select → dataset key.
+    var SIMPLE = { 'f-lang': 'lang', 'f-level': 'level', 'f-cost': 'cost', 'f-format': 'format', 'f-duration': 'duration', 'f-platform': 'platform', 'f-cert': 'cert' };
+    function el(id) { return document.getElementById(id); }
+    function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+    var fTheme = el('f-theme');
+    // #1745: dropdown de Tema dinâmico — só temas com >=1 curso no recorte dos
+    // outros filtros ativos, pra nenhuma opção zerar a lista. Preserva seleção.
+    function matchesExceptTheme(c) {
+      for (var id in SIMPLE) {
+        var sel = el(id);
+        if (sel && sel.value && c.dataset[SIMPLE[id]] !== sel.value) return false;
+      }
+      return true;
+    }
+    function rebuildThemes() {
+      if (!fTheme) return;
+      var set = {};
+      cards.forEach(function (c) {
+        if (matchesExceptTheme(c)) (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
+      });
+      // value→label: lê o label do <option> original (preserva acento/maiúsculas).
+      var labels = {};
+      Array.prototype.forEach.call(fTheme.options, function (o) { if (o.value) labels[o.value] = o.textContent; });
+      var themes = Object.keys(set).sort(function (a, b) { return (labels[a] || a).localeCompare(labels[b] || b, 'pt-BR'); });
+      var cur = fTheme.value;
+      var keep = themes.indexOf(cur) >= 0 ? cur : '';
+      fTheme.innerHTML = '<option value="">Todos</option>' + themes.map(function (t) { return '<option value="' + esc(t) + '">' + esc(labels[t] || t) + '</option>'; }).join('');
+      fTheme.value = keep;
+    }
+    function apply() {
+      var theme = fTheme ? fTheme.value : '', visible = 0;
+      cards.forEach(function (c) {
+        var ok = matchesExceptTheme(c)
+          && (!theme || (' ' + (c.dataset.themes || '') + ' ').indexOf(' ' + theme + ' ') !== -1);
+        c.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      countEl.textContent = visible + (visible === 1 ? ' curso' : ' cursos');
+      emptyEl.style.display = visible === 0 ? '' : 'none';
+    }
+    Object.keys(SIMPLE).forEach(function (id) {
+      var sel = el(id);
+      if (sel) sel.addEventListener('change', function () { rebuildThemes(); apply(); });
+    });
+    if (fTheme) fTheme.addEventListener('change', apply);
+    apply();
+  })();
+</script>
+</body>
+</html>
