@@ -690,7 +690,7 @@ Pré-#1579 o orchestrator às vezes reescrevia htmlBody manualmente, droppando t
 
 ## Resumo final (após auto-reporter + relatório)
 
-Após auto-reporter, apresentar resumo consolidado da edição. Se alguma parte foi pulada (ex: `CHROME_MCP = false` levou newsletter e LinkedIn a serem pulados), incluir bloco de retomada explícito:
+Após auto-reporter, apresentar resumo consolidado da edição. **Não enumerar as issues criadas pelo auto-reporter (#1825)** — reportar só a contagem (ver §4b-5); a lista individual fica em `_internal/issues-reported.json`. Se alguma parte foi pulada (ex: `CHROME_MCP = false` levou newsletter e LinkedIn a serem pulados), incluir bloco de retomada explícito:
 
 ```
 🔁 Retomada manual pendente
