@@ -33,7 +33,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 - `context/editorial-rules.md` — regras absolutas.
 - `context/templates/newsletter.md` — formato.
 - `context/audience-profile.md` — perfil de tom.
-- `context/past-editions.md` — evitar repetir abertura/voz.
+- `data/past-editions.md` — evitar repetir abertura/voz.
 
 ## Processo
 

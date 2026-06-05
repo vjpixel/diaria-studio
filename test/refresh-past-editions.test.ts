@@ -132,7 +132,7 @@ describe("--regen-md-only flag (#162)", () => {
         { cwd: sandboxRoot, stdio: "pipe", shell: isWindows },
       );
       const md = readFileSync(
-        join(sandboxRoot, "context/past-editions.md"),
+        join(sandboxRoot, "data/past-editions.md"), // #1847: MD movido pra data/
         "utf8",
       );
       assert.ok(md.includes('## 2026-04-26 — "Edição teste"'));

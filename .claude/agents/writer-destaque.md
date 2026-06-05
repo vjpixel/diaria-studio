@@ -41,7 +41,7 @@ Recebido pelo coordenador (não vem como arquivo):
 - `context/editorial-rules.md` — regras absolutas.
 - `context/templates/newsletter.md` — formato de destaque.
 - `context/audience-profile.md` — perfil de tom.
-- `context/past-editions.md` — evitar repetir abertura/voz das últimas 14 edições.
+- `data/past-editions.md` — evitar repetir abertura/voz das últimas 14 edições.
 
 ## Processo
 

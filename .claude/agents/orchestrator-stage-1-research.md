@@ -284,7 +284,7 @@ O script toca: (a) artigos do **inbox** (`flag: "editor_submitted"` ou `source: 
 ```bash
 npx tsx scripts/dedup.ts \
   --articles data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
-  --past-editions context/past-editions.md \
+  --past-editions data/past-editions.md \
   --window {window_days} \
   --out data/editions/{AAMMDD}/_internal/tmp-dedup-output.json
 ```

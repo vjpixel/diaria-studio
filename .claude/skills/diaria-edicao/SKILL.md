@@ -19,7 +19,7 @@ Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — S
 Antes de iniciar, verifique:
 1. `context/audience-profile.md` existe e não é placeholder. Se for, avise: rode `/diaria-atualiza-audiencia` primeiro (muda lento, rodar semanalmente/mensalmente).
 2. `context/sources.md` existe. Se não, rode `npm run sync-sources`.
-3. `context/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente via Beehiiv MCP no Stage 0.
+3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente via Beehiiv MCP no Stage 0.
 
 ## Passo 1 — Confirmar janela de publicação aceita
 

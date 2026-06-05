@@ -34,7 +34,7 @@ O fluxo editorial é modelado como 4 etapas com gate humano em cada uma. A execu
 7. Rodar `/diaria-atualiza-audiencia` para importar respostas de survey do Beehiiv em `data/audience-raw.json` (re-rodar semanalmente ou quando quiser recalibrar). O `context/audience-profile.md` é regenerado automaticamente no Stage 0, combinando CTR comportamental (primário) e survey (secundário).
 
 **Para cada nova edição:**
-1. `/diaria-edicao AAMMDD [--no-gates]` — roda todos os stages em sequência. O próprio orchestrator regenera `context/past-editions.md` (Stage 0) e drena o inbox editorial (`diariaeditor@gmail.com`, Stage 1) automaticamente. Com `--no-gates`, auto-aprova todos os gates humanos mas mantém Drive sync e social scheduling normais.
+1. `/diaria-edicao AAMMDD [--no-gates]` — roda todos os stages em sequência. O próprio orchestrator regenera `data/past-editions.md` (Stage 0) e drena o inbox editorial (`diariaeditor@gmail.com`, Stage 1) automaticamente. Com `--no-gates`, auto-aprova todos os gates humanos mas mantém Drive sync e social scheduling normais.
 2. Alternativamente, rodar etapas isoladas:
    - **Etapa 1** (pesquisa): `/diaria-1-pesquisa` (também refresca dedup + drena inbox).
    - **Etapa 2** (escrita): `/diaria-2-escrita [newsletter|social]` (newsletter + social em paralelo a partir de `01-approved.json`).
@@ -73,7 +73,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - Sem links de agregadores.
 - Sem links de paywall marcados como acessíveis.
-- Sem links repetidos das últimas 3 edições (verificado contra `context/past-editions.md`).
+- Sem links repetidos das últimas 3 edições (verificado contra `data/past-editions.md`).
 - Destaques com título ≤52 caracteres, 3 opções por destaque.
 - "Por que isso importa:" em linha separada.
 - Prompt de imagem: Van Gogh impasto, 2:1, SEM resolução em pixels, SEM Noite Estrelada.
@@ -104,7 +104,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Edições em arquivos Drive são sempre cirúrgicas (#495).** Ao modificar um arquivo que o editor pode ter editado, usar substituições linha a linha (`Edit` com `old_string` mínimo) em vez de substituir blocos grandes. Nunca incluir no `old_string` linhas que o editor pode ter alterado além das linhas que precisam mudar.
 
-- **Publicação manual requer refresh-dedup.** Sempre que uma edição for publicada manualmente no Beehiiv (sem `/diaria-4-publicar`), rodar `/diaria-refresh-dedup` imediatamente após para manter `context/past-editions.md` atualizado. Sem isso, a próxima edição pode repetir URLs já publicadas.
+- **Publicação manual requer refresh-dedup.** Sempre que uma edição for publicada manualmente no Beehiiv (sem `/diaria-4-publicar`), rodar `/diaria-refresh-dedup` imediatamente após para manter `data/past-editions.md` atualizado. Sem isso, a próxima edição pode repetir URLs já publicadas.
 
 - **Publicação manual requer prep-manual-publish.ts antes (#1044, #1047, refatorado #1185).** Sempre que for publicar manualmente no Beehiiv, **antes** do paste no template, rodar `npx tsx scripts/prep-manual-publish.ts --edition AAMMDD`. O script valida pré-condições (newsletter-final.html tem merge tags inline `{{email}}` + `{{poll_sig}}`, custom field `poll_sig` existe na publicação, Worker disponível) e imprime instruções step-by-step (URL do template, file path do HTML, comando close-poll após publicar). Inject per-edição não é mais necessário — `inject-poll-sig.ts` (idempotente) roda no Stage 0 § 0d.ter com janela 96h e popula `poll_sig` (HMAC permanente do email) em novos subscribers. Após publicar, rodar `npx tsx scripts/close-poll.ts --edition AAMMDD`.
 
@@ -148,12 +148,12 @@ Model mix (definido no frontmatter de cada agente):
 context/          # carregado no system prompt → cacheado
   editorial-rules.md
   audience-profile.md   # gerado
-  past-editions.md       # gerado
   sources.md             # gerado de seed/sources.csv
   templates/
   publishers/            # roteiros Claude in Chrome por plataforma (Beehiiv, LinkedIn, Facebook)
 seed/sources.csv  # 35 fontes iniciais
 scripts/          # utilitários TypeScript (Node)
+data/past-editions.md    # gerado (#1847: movido de context/ — regenera todo Stage 0, não cacheado)
 data/editions/{AAMMDD}/  # outputs por edição (gate-facing no root, pipeline internals em _internal/)
 platform.config.json     # { newsletter: "beehiiv", socials: [...] }
 ```

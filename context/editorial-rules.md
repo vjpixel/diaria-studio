@@ -10,7 +10,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 - **Sem paywall.** Nunca incluir link atrás de paywall. Paywalls comuns: Fortune, Bloomberg, Financial Times, Wall Street Journal, NYT, The Information, Business Insider. Se a história só tiver paywall, substituir por fonte gratuita equivalente. Validação: `npx tsx scripts/validate-domains.ts <md>` (exit ≠0 se houver paywall ou agregador).
 - **Sem agregadores.** Nunca usar links de agregadores: `crescendo.ai`, `techstartups.com`, `perplexity.ai/search`, `news.google.com`, `flipboard.com`. Sempre usar URLs diretas de artigos originais.
-- **Sem repetição.** Antes de incluir qualquer link, verificar `context/past-editions.md` (últimas 5 edições) — se o link ou **tema** já foi coberto, não incluir.
+- **Sem repetição.** Antes de incluir qualquer link, verificar `data/past-editions.md` (últimas 5 edições) — se o link ou **tema** já foi coberto, não incluir.
 - **URL limpa.** Nas seções LANÇAMENTOS / RADAR, usar apenas a URL — sem título, sem texto adicional antes/depois.
 - **Lançamentos só com link oficial (#160).** Cada item da seção LANÇAMENTOS deve linkar para o domínio oficial da empresa que está lançando o produto/atualização (lista em `scripts/categorize.ts > LANCAMENTO_DOMAINS`/`LANCAMENTO_PATTERNS`). Cobertura de imprensa, blogs pessoais, agregadores e análise de terceiros vão para NOTÍCIAS, mesmo quando o tema é o lançamento. Se não houver link oficial disponível na janela de pesquisa, **o item não entra em LANÇAMENTOS** (a seção pode ficar vazia — preferível a fingir que análise de terceiro é lançamento). Validação: `npx tsx scripts/validate-lancamentos.ts <md>` (exit ≠0 se houver URL não-oficial).
 - **Dentro da janela de publicação.** Apenas artigos publicados dentro da janela corrida anterior à data da edição: **4 dias para edições de segunda e terça-feira** (segunda: quinta→segunda; terça: sexta→terça — ambas capturam o fim de semana), **3 dias para demais edições** (quarta a sexta).
@@ -86,7 +86,7 @@ Antes de aprovar o texto final da edição, validar:
 
 - [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada.
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
-- [ ] Todos os links ausentes em `context/past-editions.md`.
+- [ ] Todos os links ausentes em `data/past-editions.md`.
 - [ ] Todos os links dentro da janela de datas da edição.
 - [ ] "Por que isso importa:" em linha separada em cada destaque, sem "Para [audiência]," no início.
 - [ ] Títulos dos destaques com ≤52 caracteres.

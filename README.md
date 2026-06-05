@@ -37,7 +37,7 @@ Slash commands disponíveis (pipeline completa ou etapas isoladas):
 | `/diaria-mensal YYMM [--no-gate]` | Digest mensal (coleta → análise → escrita → imagens). |
 | `/diaria-test [AAMMDD]` | Edição de teste (sem Drive sync, social agendado 10 dias à frente). |
 | `/diaria-atualiza-audiencia` | Recarrega perfil de audiência via Beehiiv survey. |
-| `/diaria-refresh-dedup` | Regenera `context/past-editions.md` (usado pra evitar links repetidos). |
+| `/diaria-refresh-dedup` | Regenera `data/past-editions.md` (usado pra evitar links repetidos). |
 | `/diaria-inbox` | Drena submissões editoriais de `diariaeditor@gmail.com`. |
 | `/diaria-log [edition] [level]` | Lê `data/run-log.jsonl` (debug). |
 | `/diaria-source-health [fonte]` | Saúde agregada das fontes cadastradas. |
@@ -99,7 +99,6 @@ CI automática em push/PR — ver [`.github/workflows/ci.yml`](./.github/workflo
 context/                     # system prompt (cacheado)
   editorial-rules.md
   audience-profile.md        # gerado
-  past-editions.md           # gerado
   sources.md                 # gerado de seed/sources.csv
   templates/
   publishers/                # roteiros Claude in Chrome
@@ -109,6 +108,7 @@ test/                        # unit tests + fixtures
   fixtures/edition-sample/   # fixture pro smoke test
 seed/sources.csv             # ~38 fontes cadastradas
 data/                        # outputs e caches (gitignored)
+  past-editions.md           # gerado (#1847: movido de context/ — regenera todo Stage 0)
   editions/{AAMMDD}/         # outputs por edição
   run-log.jsonl              # log estruturado
   sources/{slug}.jsonl       # saúde por fonte
