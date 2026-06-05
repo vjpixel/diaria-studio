@@ -24,6 +24,7 @@ import {
   extractCorrectValueFromFrontmatter,
   findPreviousIntentionalErrorFromMd,
   narrativeHasCorrection,
+  resolvePreviousError,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 
@@ -948,6 +949,100 @@ describe("findPreviousIntentionalErrorFromMd (#961)", () => {
     } finally {
       rmSync(root, { recursive: true });
     }
+  });
+});
+
+describe("resolvePreviousError (#1854/#1860)", () => {
+  const jsonl = (edition: string, extra: Partial<IntentionalError> = {}): IntentionalError => ({
+    edition,
+    error_type: "factual",
+    is_feature: true,
+    detail: `detail-${edition}`,
+    ...extra,
+  });
+  const md = (edition: string, extra: Partial<Record<string, string>> = {}) => ({
+    edition,
+    detail: `md-detail-${edition}`,
+    gabarito: `md-gabarito-${edition}`,
+    narrative: `md-narrativa-${edition}`,
+    ...extra,
+  });
+
+  it("mesma edição → enriquece JSONL com campos do MD (source jsonl+md)", () => {
+    const r = resolvePreviousError(jsonl("260603"), md("260603"));
+    assert.equal(r.source, "jsonl+md");
+    assert.equal(r.gap, false);
+    assert.equal(r.prev?.edition, "260603");
+    // JSONL não tinha narrativa → puxa do MD
+    assert.equal(r.prev?.narrative, "md-narrativa-260603");
+  });
+
+  it("#1589: mesma edição com drift → MD frontmatter vence (correct_value)", () => {
+    // JSONL tem correct_value stale (publish-time); editor corrigiu o MD
+    // depois. MD é autoritativo — evita o "reveal Frankenstein" do 260528→260529.
+    const r = resolvePreviousError(
+      jsonl("260603", { correct_value: "valor-stale-do-jsonl" }),
+      md("260603", { correct_value: "Satya Nadella" }),
+    );
+    assert.equal(r.prev?.correct_value, "Satya Nadella");
+  });
+
+  it("#1589: mesma edição com drift → MD frontmatter vence (detail)", () => {
+    const r = resolvePreviousError(
+      jsonl("260603", { detail: "detail-stale-do-jsonl" }),
+      md("260603", { detail: "detail-corrigido-no-md" }),
+    );
+    assert.equal(r.prev?.detail, "detail-corrigido-no-md");
+    // narrative/gabarito sempre vêm do MD (JSONL nunca os carrega).
+    assert.equal(r.prev?.narrative, "md-narrativa-260603");
+    assert.equal(r.prev?.gabarito, "md-gabarito-260603");
+  });
+
+  it("#1589: MD sem correct_value → preserva o do JSONL (não apaga)", () => {
+    // Old behavior: `...(fromMd.correct_value ? {…} : {})` — MD só sobrescreve
+    // quando tem valor. Sem valor no MD, mantém o do JSONL.
+    const r = resolvePreviousError(
+      jsonl("260603", { correct_value: "do-jsonl" }),
+      md("260603"), // md() não inclui correct_value
+    );
+    assert.equal(r.prev?.correct_value, "do-jsonl");
+  });
+
+  it("MD mais recente que JSONL → gap-fill do MD (source md, gap true)", () => {
+    // JSONL parou em 260603; 260604 declarou erro só na prosa.
+    const r = resolvePreviousError(jsonl("260603"), md("260604"));
+    assert.equal(r.source, "md");
+    assert.equal(r.gap, true);
+    assert.equal(r.prev?.edition, "260604");
+    assert.equal(r.prev?.narrative, "md-narrativa-260604");
+  });
+
+  it("MD mais antigo que JSONL → usa JSONL (source jsonl, sem gap)", () => {
+    const r = resolvePreviousError(jsonl("260604"), md("260602"));
+    assert.equal(r.source, "jsonl");
+    assert.equal(r.gap, false);
+    assert.equal(r.prev?.edition, "260604");
+  });
+
+  it("só JSONL → source jsonl", () => {
+    const r = resolvePreviousError(jsonl("260604"), null);
+    assert.equal(r.source, "jsonl");
+    assert.equal(r.gap, false);
+    assert.equal(r.prev?.edition, "260604");
+  });
+
+  it("só MD → source md (sem gap, JSONL nunca existiu)", () => {
+    const r = resolvePreviousError(null, md("260604"));
+    assert.equal(r.source, "md");
+    assert.equal(r.gap, false);
+    assert.equal(r.prev?.edition, "260604");
+  });
+
+  it("nenhum → null", () => {
+    const r = resolvePreviousError(null, null);
+    assert.equal(r.prev, null);
+    assert.equal(r.source, null);
+    assert.equal(r.gap, false);
   });
 });
 

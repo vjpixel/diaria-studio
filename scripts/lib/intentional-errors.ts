@@ -37,6 +37,11 @@ export interface IntentionalError {
   destaque?: number | string;
   is_feature: boolean;
   detail?: string;
+  /** Narrativa livre "Nessa edição, …" (#1860) — gravada por entries source=
+   * "prose_block" (publicação manual / declaração só na prosa). Preserva o
+   * texto que o editor escreveu pra `composeRevealText` aplicar a lógica de
+   * correção do #1443 ("o correto é Y") em vez de cair no `detail` cru. */
+  narrative?: string;
   /** Valor correto (#1443) — vem do frontmatter `intentional_error.correct_value`
    * e é usado pelo render-erro-intencional pra garantir que o reveal da edição
    * seguinte inclui "o correto é Y". */

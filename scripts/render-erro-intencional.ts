@@ -520,6 +520,79 @@ function formatEditionLabel(edition: string): string {
   return edition.replace(/[^0-9]/g, "");
 }
 
+/** Shape devolvido por findPreviousIntentionalErrorFromMd. */
+type MdPrevError = {
+  edition: string;
+  detail: string;
+  gabarito: string;
+  narrative: string;
+  correct_value?: string;
+};
+
+/** Entry enriquecida que composeRevealText consome (IntentionalError + narrativa/gabarito). */
+type RevealEntry = IntentionalError & { narrative?: string; gabarito?: string };
+
+/**
+ * Pure (#1854/#1860): reconcilia a edição-fonte do reveal entre o JSONL
+ * (fonte primária estruturada) e o MD (fallback que pega declarações em prosa
+ * / publicações manuais que nunca chegaram ao JSONL).
+ *
+ * Casos:
+ *   1. Ambos apontam pra MESMA edição → enriquece a entry do JSONL com os
+ *      campos de narrativa/correção do MD quando faltarem (source "jsonl+md").
+ *   2. MD aponta pra edição MAIS RECENTE que o JSONL → há um buraco no JSONL
+ *      (uma edição declarou erro só na prosa). Revela a do MD e sinaliza
+ *      `gap: true` pro caller logar o aviso de sync (source "md").
+ *   3. Só JSONL → usa JSONL (source "jsonl").
+ *   4. Só MD → usa MD (source "md").
+ *   5. Nenhum → null.
+ *
+ * Ordem lexicográfica de AAMMDD decide "mais recente" (igual aos finders).
+ */
+export function resolvePreviousError(
+  fromJsonl: IntentionalError | null,
+  fromMd: MdPrevError | null,
+): { prev: RevealEntry | null; source: "md" | "jsonl" | "jsonl+md" | null; gap: boolean } {
+  const mdToEntry = (md: MdPrevError): RevealEntry => ({
+    edition: md.edition,
+    error_type: "editor_declared",
+    is_feature: true,
+    detail: md.detail,
+    gabarito: md.gabarito,
+    narrative: md.narrative,
+    ...(md.correct_value ? { correct_value: md.correct_value } : {}),
+  });
+
+  if (fromJsonl && fromMd) {
+    if (fromMd.edition === fromJsonl.edition) {
+      // Caso 1: mesma edição — #1589: MD frontmatter é a fonte AUTORITATIVA.
+      // Quando há drift entre JSONL e MD (incidente 260528→260529:
+      // detail/correct_value divergiam), MD vence — incluindo correct_value.
+      // Evita "reveal Frankenstein". Entre publicar N-1 e renderizar N nada
+      // re-sincroniza o JSONL, então o MD ao vivo é a verdade mais recente.
+      // narrative/gabarito não existem no JSONL (frontmatterToEntry só grava
+      // detail+correct_value), então sempre vêm do MD.
+      const enriched: RevealEntry = {
+        ...fromJsonl,
+        narrative: fromMd.narrative,
+        gabarito: fromMd.gabarito,
+        ...(fromMd.detail ? { detail: fromMd.detail } : {}),
+        ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
+      };
+      return { prev: enriched, source: "jsonl+md", gap: false };
+    }
+    if (fromMd.edition > fromJsonl.edition) {
+      // Caso 2: MD tem edição mais recente que o JSONL — buraco no JSONL.
+      return { prev: mdToEntry(fromMd), source: "md", gap: true };
+    }
+    // fromMd mais antigo que o JSONL → JSONL é o reveal correto (caso normal).
+    return { prev: fromJsonl, source: "jsonl", gap: false };
+  }
+  if (fromJsonl) return { prev: fromJsonl, source: "jsonl", gap: false };
+  if (fromMd) return { prev: mdToEntry(fromMd), source: "md", gap: false };
+  return { prev: null, source: null, gap: false };
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
@@ -557,41 +630,21 @@ function main(): void {
 
   const errors = loadIntentionalErrors(errorsPath);
   const fromJsonl = findPreviousIntentionalError(errors, args.edition);
-  if (fromJsonl) {
-    source = "jsonl";
-    prev = fromJsonl;
-    // Enriquecer com narrativa do MD se disponível (pra reveal mais natural)
-    const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
-    if (fromMd && fromMd.edition === fromJsonl.edition) {
-      // #1589: MD frontmatter é fonte autoritativa. Quando há drift entre
-      // JSONL e MD (caso 260528 → 260529: detail/correct_value divergiam),
-      // MD vence — incluindo correct_value. Evita reveal Frankenstein.
-      prev = {
-        ...fromJsonl,
-        narrative: fromMd.narrative,
-        gabarito: fromMd.gabarito,
-        ...(fromMd.detail ? { detail: fromMd.detail } : {}),
-        ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
-      } as IntentionalError & { narrative?: string; gabarito?: string };
-      source = "jsonl+md";
-    }
+  const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
+  const resolved = resolvePreviousError(fromJsonl, fromMd);
+  prev = resolved.prev;
+  source = resolved.source;
+  if (resolved.gap && fromJsonl && fromMd) {
+    // #1854/#1860: JSONL tem buraco — uma edição mais recente declarou erro só
+    // no MD (prosa / publicação manual). Revelando a do MD; warn pra fechar o gap.
+    console.error(
+      `[render-erro] GAP: edição ${fromMd.edition} tem erro intencional no MD mas não no JSONL ` +
+        `(provável declaração só na prosa / publicação manual). Revelando ${fromMd.edition} ` +
+        `em vez de ${fromJsonl.edition}. Rode sync-intentional-error.ts pra fechar o gap.`,
+    );
+  }
+  if (prev) {
     reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
-  } else {
-    const fromMd = findPreviousIntentionalErrorFromMd(editionsRoot, args.edition);
-    if (fromMd) {
-      source = "md";
-      prev = {
-        edition: fromMd.edition,
-        detail: fromMd.detail,
-        gabarito: fromMd.gabarito,
-        narrative: fromMd.narrative,
-        correct_value: fromMd.correct_value,
-        is_feature: true,
-        error_type: "editor_declared",
-        source: "md_extract",
-      } as IntentionalError & { narrative?: string; gabarito?: string };
-      reveal = composeRevealText(prev);
-    }
   }
 
   const md = readFileSync(mdPath, "utf8");

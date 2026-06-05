@@ -1257,9 +1257,45 @@ function mdInlineToHtml(s: string): string {
  * edições publicadas no Beehiiv. Posicionado entre SORTEIO e PARA ENCERRAR.
  * Filtra: pega só parágrafo que começa com "Na última edição".
  */
-function renderErroIntencionalReveal(text: string): string {
+export function pickErroIntencionalReveal(text: string): string | null {
   const paragraphs = text.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
-  const reveal = paragraphs.find((p) => /^Na última edição/i.test(p));
+  // #1859: o reveal é o parágrafo que descreve o erro da edição anterior.
+  // Antes exigia prefixo literal "Na última edição" — qualquer reescrita
+  // (editor no Drive, ou o fix #1854 ajustando a edição/data revelada)
+  // derrubava o bloco ERRO INTENCIONAL INTEIRO do HTML, silenciosamente.
+  // Agora: prefixo explícito é o caminho feliz; senão, cai no 1º parágrafo
+  // que REFERENCIA a edição anterior (temporal) e não é teaser/boilerplate.
+  const isTeaserOrBoilerplate = (p: string): boolean =>
+    /^Nessa\s+edi[çc][ãa]o/i.test(p) ||
+    /^Esta\s+edi[çc][ãa]o\s+tem\s+um\s+erro/i.test(p) ||
+    /\{PREENCHER/i.test(p);
+  const explicit = paragraphs.find((p) => /^Na última edição/i.test(p));
+  if (explicit) return explicit;
+  // Fallback só dispara pra parágrafo que referencia a edição ANTERIOR
+  // (temporal). Assim um reveal reescrito pelo editor ("Na edição de ontem…",
+  // "Há duas edições atrás…", "Na edição anterior…", "Na última edição…")
+  // ainda renderiza, mas texto solto/placeholder ("Apenas placeholder do
+  // editor.") não vira um callout fantasma com o reveal errado.
+  // Sem `\b`: o JS `\b` é ASCII-only e NÃO cria boundary antes do "ú" acentuado
+  // (U+00FA), então `\b[úu]ltim` jamais casava "última" — a palavra mais comum
+  // num reveal. Estas palavras são distintivas o bastante pra dispensar boundary.
+  const REVEAL_HINT_RE = /[úu]ltim[ao]|anterior|passad[ao]|ontem|edi[çc][õo]es/i;
+  const fallback = paragraphs.find(
+    (p) => !isTeaserOrBoilerplate(p) && REVEAL_HINT_RE.test(p),
+  );
+  if (fallback) {
+    console.error(
+      `[render-newsletter-html] #1859: reveal do ERRO INTENCIONAL não começa com ` +
+        `"Na última edição" — usando parágrafo que referencia a edição anterior: ` +
+        `"${fallback.slice(0, 60)}…". Confira se é o reveal correto.`,
+    );
+    return fallback;
+  }
+  return null;
+}
+
+function renderErroIntencionalReveal(text: string): string {
+  const reveal = pickErroIntencionalReveal(text);
   if (!reveal) return "";
   return `<!-- ERRO INTENCIONAL — reveal -->
 <tr><td style="padding:24px 2px 0 2px;">

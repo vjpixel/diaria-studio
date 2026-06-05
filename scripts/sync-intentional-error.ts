@@ -30,6 +30,8 @@ import {
   syncFrontmatterToEntries,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
+// #1860: fallback de prosa quando o frontmatter falta.
+import { extractIntentionalErrorFromMd } from "./render-erro-intencional.ts";
 
 interface Flags {
   md: string;
@@ -93,8 +95,48 @@ function main(): number {
 
   const lintResult = checkIntentionalError(mdPath);
   if (!lintResult.ok || !lintResult.parsed) {
+    // #1860: frontmatter ausente/incompleto (publicação manual, ou erro
+    // declarado só na prosa "Nessa edição, …"). Em vez de falhar — o que
+    // deixa um buraco no JSONL e faz o reveal da próxima edição pular a
+    // edição certa (#1854) — extrair da prosa e gravar com source="prose_block".
+    const md = readFileSync(mdPath, "utf8");
+    const prose = extractIntentionalErrorFromMd(md);
+    if (prose) {
+      const existing = loadIntentionalErrors(jsonlPath);
+      if (existing.some((e) => e.edition === flags.edition)) {
+        process.stderr.write(
+          `[sync-intentional-error] edição ${flags.edition} já tem entry — no-op (fallback prosa)\n`,
+        );
+        process.stdout.write(
+          JSON.stringify({ added: false, updated: false, edition: flags.edition, source: "prose_block" }, null, 2) + "\n",
+        );
+        return 0;
+      }
+      const entry: IntentionalError = {
+        edition: flags.edition,
+        error_type: "editor_declared",
+        is_feature: true,
+        detail: prose.detail ?? prose.narrative,
+        // #1860: preserva a narrativa pra composeRevealText aplicar a correção
+        // do #1443 ("o correto é Y") no reveal seguinte, em vez do detail cru.
+        narrative: prose.narrative,
+        ...(prose.correct_value ? { correct_value: prose.correct_value } : {}),
+        source: "prose_block",
+        detected_by: "sync-intentional-error.ts fallback de prosa (#1860)",
+        resolution: "published_intentionally",
+      };
+      appendJsonl(jsonlPath, entry);
+      process.stderr.write(
+        `[sync-intentional-error] #1860: frontmatter ausente — entry extraída da PROSA "Nessa edição, …" pra ${flags.edition}. ` +
+          `Declare intentional_error no frontmatter pra silenciar este fallback.\n`,
+      );
+      process.stdout.write(
+        JSON.stringify({ added: true, updated: false, edition: flags.edition, source: "prose_block" }, null, 2) + "\n",
+      );
+      return 0;
+    }
     process.stderr.write(
-      `Frontmatter intentional_error ausente ou incompleto em ${flags.md}: ${lintResult.label}\n`,
+      `Frontmatter intentional_error ausente E sem prosa "Nessa edição, …" em ${flags.md}: ${lintResult.label}\n`,
     );
     return 1;
   }
