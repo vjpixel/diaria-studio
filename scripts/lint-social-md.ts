@@ -489,21 +489,38 @@ const SUBSCRIBE_CTA_LINE_RE = /diar\.ia\.br|assine\s+gr[áa]tis|receba\s+not[íi
  *
  * Heurística de ALTA precisão (evita FP num post reescrito): compara a
  * sobreposição de tokens (Jaccard, reusa o de dedup.ts) do post_pixel com o
- * main de cada destaque. Só falha quando o post_pixel é claramente MAIS parecido
- * com OUTRO destaque (d2/d3) que com o d1 — `bestOther > simD1` E
- * `bestOther ≥ MIN_SIGNAL`. Um post_pixel reescrito mas ainda sobre o D1
- * compartilha as entidades-núcleo do D1 → passa.
+ * main de cada destaque. O sinal real é RELATIVO — só falha quando o post_pixel
+ * é claramente MAIS parecido com OUTRO destaque que com o d1, por uma margem:
+ *   `bestOther ≥ simD1 + MARGIN` E `bestOther ≥ FLOOR`.
+ *
+ * Por que margem RELATIVA, não threshold absoluto (review #1877): o post_pixel
+ * é voz PESSOAL reescrita, então o overlap literal com o main EDITORIAL do
+ * destaque é naturalmente baixo (na 260605 real, o post_pixel correto batia o
+ * d1 em ~0.14, os outros em ~0.05). Um floor absoluto de 0.15 deixaria passar o
+ * caso stale (post sobre d2 com Jaccard ~0.12-0.14). O que discrimina é
+ * bestOther superar simD1 com folga; o FLOOR baixo só evita disparar em ruído
+ * (1-2 tokens coincidentes quando o post quase não casa com nada).
+ *
+ * Hashtags são stripadas dos DOIS lados (simetria) — senão as tags do main
+ * inflam o union e derrubam todas as sims.
  */
 export interface PostPixelMatchResult {
   ok: boolean;
-  /** false = no-op (sem seção LinkedIn / sem post_pixel / sem d1). */
+  /** false = no-op (sem seção LinkedIn / sem post_pixel / sem d1 / post vazio). */
   checked: boolean;
   best_match?: string;
   sims?: Record<string, number>;
   detail?: string;
 }
 
-const POST_PIXEL_MIN_SIGNAL = 0.15;
+const POST_PIXEL_MARGIN = 0.05; // bestOther tem que bater simD1 por ≥ 5 pontos
+const POST_PIXEL_FLOOR = 0.08; // e ser um match topical real, não 1-2 tokens de ruído
+
+/** Tokeniza prosa social: strip comments + hashtags, depois tokenizeForJaccard. */
+function socialProseTokens(s: string): Set<string> {
+  const clean = s.replace(/<!--[\s\S]*?-->/g, "").replace(/#[\p{L}\w-]+/gu, " ");
+  return tokenizeForJaccard(clean);
+}
 
 export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
   const section = extractPlatformSection(md, "linkedin");
@@ -512,7 +529,7 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
   // Mapa de blocos `## <name>` → conteúdo até o próximo `## <name>` (mesmo nível).
   const text = "\n" + section.replace(/\r\n/g, "\n");
   const blocks: Record<string, string> = {};
-  const re = /\n## ([a-z0-9_]+)\n([\s\S]*?)(?=\n## [a-z0-9_]+\n|$)/gi;
+  const re = /\n## ([a-z0-9_]+)\s*\n([\s\S]*?)(?=\n## [a-z0-9_]+\s*\n|$)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     blocks[m[1].toLowerCase()] = m[2];
@@ -523,28 +540,26 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
     return { ok: true, checked: false };
   }
 
-  // Main text de um destaque = conteúdo antes do 1º `### ` (subseções comment),
-  // sem char-count comments.
+  // Main text de um destaque = conteúdo antes do 1º `### ` (subseções comment).
   const destaqueMain = (name: string): string | null => {
     const raw = blocks[name];
     if (raw === undefined) return null;
     const idx = raw.search(/\n### /);
-    const main = idx === -1 ? raw : raw.slice(0, idx);
-    return main.replace(/<!--[\s\S]*?-->/g, "").trim();
+    return idx === -1 ? raw : raw.slice(0, idx);
   };
 
   const d1 = destaqueMain("d1");
   if (d1 === null) return { ok: true, checked: false }; // sem d1 não há baseline
 
-  // Strip hashtags + comments do post_pixel pra não poluir tokens.
-  const ppClean = postPixelRaw.replace(/<!--[\s\S]*?-->/g, "").replace(/#[\p{L}\w-]+/gu, " ");
-  const ppTokens = tokenizeForJaccard(ppClean);
+  const ppTokens = socialProseTokens(postPixelRaw);
+  // post_pixel só com hashtags/comment (sem prosa real) → não dá pra comparar.
+  if (ppTokens.size === 0) return { ok: true, checked: false };
 
   const sims: Record<string, number> = {};
   for (const name of ["d1", "d2", "d3"]) {
     const main = destaqueMain(name);
     if (main === null) continue;
-    sims[name] = jaccardSimilarity(ppTokens, tokenizeForJaccard(main));
+    sims[name] = jaccardSimilarity(ppTokens, socialProseTokens(main));
   }
 
   const simD1 = sims["d1"] ?? 0;
@@ -558,7 +573,7 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
     }
   }
 
-  if (bestOther > simD1 && bestOther >= POST_PIXEL_MIN_SIGNAL) {
+  if (bestOther >= simD1 + POST_PIXEL_MARGIN && bestOther >= POST_PIXEL_FLOOR) {
     return {
       ok: false,
       checked: true,
@@ -570,7 +585,7 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
         `o post_pixel pro D1 atual (#1861).`,
     };
   }
-  return { ok: true, checked: true, best_match: "d1", sims };
+  return { ok: true, checked: true, best_match: simD1 > 0 ? "d1" : undefined, sims };
 }
 
 export function lastMeaningfulSentence(body: string): string {

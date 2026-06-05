@@ -97,6 +97,74 @@ diar.ia.br
     assert.equal(r.ok, true);
     assert.equal(r.checked, false);
   });
+
+  it("post_pixel só com hashtags/comment (sem prosa) → no-op (checked:false)", () => {
+    const md = mk(
+      "Pesquisa do MIT mostra que automação não destruiu empregos.",
+      "Memória do ChatGPT consolida tudo em background.",
+      "Build 2026 da Microsoft.",
+      "<!-- char_count: 0 -->\n#IA #Brasil",
+    );
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.checked, false);
+  });
+
+  it("header com espaço à direita (## d1 ) ainda é parseado", () => {
+    // Trailing space explícito após os headers (editor pode deixar no Drive).
+    const md = [
+      "# LinkedIn",
+      "",
+      "## d1 ", // <- trailing space
+      "",
+      "Pesquisa do MIT sobre automação e empregos: o pânico não bate com os dados de trabalho.",
+      "",
+      "## d2 ", // <- trailing space
+      "",
+      "Memória do ChatGPT em background, lembrando de você entre conversas.",
+      "",
+      "## post_pixel ", // <- trailing space
+      "",
+      "A memória do ChatGPT em background me intriga: o assistente agora lembra de você entre conversas.",
+      "",
+    ].join("\n");
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.checked, true, "d1 com trailing space deve ser parseado (não no-op)");
+    assert.equal(r.ok, false); // post fala do ChatGPT (d2), não do MIT (d1)
+    assert.equal(r.best_match, "d2");
+  });
+
+  it("CLI: exit 1 quando post_pixel desalinhado, exit 0 quando alinhado", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "pp-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(process.execPath, ["--import", "tsx", scriptPath, "--check", "post_pixel-matches-d1", "--md", p], { encoding: "utf8" });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const stale = mk(
+      "Pesquisa do MIT mostra que automação não destruiu empregos como o pânico previa; os dados de trabalho contam outra história.",
+      "A memória do ChatGPT agora consolida tudo em background, lembrando de você entre conversas — um salto na personalização.",
+      "Build 2026 da Microsoft decretou o fim da era do aplicativo.",
+      "Fico pensando na memória do ChatGPT que agora lembra de você entre conversas em background. A personalização do assistente muda tudo.",
+    );
+    assert.equal(run(stale).status, 1, "post_pixel stale → exit 1");
+
+    const aligned = mk(
+      "Pesquisa do MIT mostra que automação não destruiu empregos como o pânico previa; os dados de trabalho contam outra história.",
+      "A memória do ChatGPT consolida tudo em background.",
+      "Build 2026 da Microsoft.",
+      "O estudo do MIT sobre automação e empregos me fez repensar o pânico: os dados de trabalho mostram um cenário menos apocalíptico.",
+    );
+    assert.equal(run(aligned).status, 0, "post_pixel alinhado → exit 0");
+  });
 });
 
 const validMd = `# LinkedIn
