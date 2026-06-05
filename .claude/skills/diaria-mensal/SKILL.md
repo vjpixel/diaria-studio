@@ -353,9 +353,10 @@ Teste enviado para: {test_email}
 
 Próximos passos manuais (Etapa Clarice):
   1. Abrir o dashboard Brevo acima
-  2. Preencher as seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL (marcadas com borda tracejada)
-  3. Adicionar imagem D1 (data/monthly/$1/04-d1-2x1.jpg) no topo da campanha
-  4. Revisar e enviar para a lista de contatos da Clarice
+  2. Conferir que renderizaram automaticamente (#1916/#1918): imagens 2x1 de
+     D1/D2/D3, imagens do É IA?, e os boxes "Desconto exclusivo" + "Laboratório
+     Clarice" (vêm do draft, não precisam mais ser preenchidos/adicionados à mão)
+  3. Revisar e enviar para a lista de contatos da Clarice
 
 Aprovado? sim / retry (regenerar campanha)
 ```

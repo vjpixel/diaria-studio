@@ -146,8 +146,9 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
     : "";
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
+  // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
   const imageHtml = imageUrl
-    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(tema || title)}" style="display:block;width:100%;height:auto;border-radius:8px;margin:0 0 20px 0;" />`
+    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:8px;margin:0 0 20px 0;" />`
     : "";
 
   return imageHtml + label + titleHtml + mainHtml + conductorHtml;

@@ -68,12 +68,18 @@ export async function uploadDestaqueImages(
   eiaEdition: string,
   root: string = DEFAULT_ROOT,
 ): Promise<Record<number, string>> {
+  // Uploads independentes → paralelos (#1922 review, consistente com uploadEiaImages).
+  const present = [1, 2, 3].filter((n) =>
+    existsSync(resolve(monthlyDir, `04-d${n}-2x1.jpg`)),
+  );
+  const urls = await Promise.all(
+    present.map((n) =>
+      uploadMonthlyImage(resolve(monthlyDir, `04-d${n}-2x1.jpg`), eiaEdition, root),
+    ),
+  );
   const out: Record<number, string> = {};
-  for (const n of [1, 2, 3]) {
-    const p = resolve(monthlyDir, `04-d${n}-2x1.jpg`);
-    if (existsSync(p)) {
-      out[n] = await uploadMonthlyImage(p, eiaEdition, root);
-    }
-  }
+  present.forEach((n, i) => {
+    out[n] = urls[i];
+  });
   return out;
 }

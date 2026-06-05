@@ -110,12 +110,12 @@ function main() {
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
   const sdPromptPath = `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
   const outJpgPath = wide
-    ? `${normalizedOutDir}04-${destaque}.jpg`  // D1 usa nomes próprios (2x1, 1x1) gerados abaixo
+    ? `${normalizedOutDir}04-${destaque}.jpg`  // Wide usa nomes próprios (2x1, 1x1) gerados abaixo
     : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
   // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar).
-  // D1: exige AMBOS 2x1 e 1x1 — se só 2x1 existe (crash antes do crop), não pula.
+  // Wide: exige AMBOS 2x1 e 1x1 — se só 2x1 existe (crash antes do crop), não pula.
   const d1Path2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
   const d1Path1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const checkExistPath = wide
