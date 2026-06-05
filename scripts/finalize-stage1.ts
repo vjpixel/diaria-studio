@@ -30,7 +30,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
 import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
-import { stripUrlTrailingPunct } from "./lib/url-utils.ts"; // #1863
+import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -79,30 +79,6 @@ export interface JoinResult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * #1863: percorre recursivamente um objeto/array e aplica `stripUrlTrailingPunct`
- * a TODO campo `url` string (in-place). Limpa sufixos de markdown (`)=`, `]=`,
- * `)` desbalanceado) que o agent às vezes anexa à URL. Idempotente — URL já
- * limpa fica inalterada. Aplica consistentemente em highlights/runners_up/buckets
- * pra não quebrar dedup-por-URL downstream.
- */
-export function sanitizeUrlsDeep(node: unknown): void {
-  if (Array.isArray(node)) {
-    for (const item of node) sanitizeUrlsDeep(item);
-    return;
-  }
-  if (node && typeof node === "object") {
-    const obj = node as Record<string, unknown>;
-    for (const [k, v] of Object.entries(obj)) {
-      if (k === "url" && typeof v === "string") {
-        obj[k] = stripUrlTrailingPunct(v);
-      } else {
-        sanitizeUrlsDeep(v);
-      }
-    }
-  }
-}
 
 /**
  * Normaliza título para comparação: lowercase, sem pontuação, sem espaços extras.
@@ -780,10 +756,10 @@ function main(): void {
   }
 
   // #1863: strip determinístico de sufixo de markdown (`)=`, `]=`, `)` solto)
-  // de TODOS os campos `url` do approved.json — consistente entre highlights,
-  // runners_up e buckets, DEPOIS do join por URL exata (#720). Antes, uma URL
-  // de lançamento corrompida (`…/meta-business-agent/)=`, artefato de parse do
-  // agent) chegava ao gate e quase publicava link quebrado (260605, runtime-fix).
+  // dos campos `url` dos BUCKETS (lancamento/radar/use_melhor/video) — DEPOIS do
+  // join por URL exata (#720), pra a URL limpa chegar ao 01-categorized.md/gate.
+  // A limpeza autoritativa do 01-approved.json (que tem highlights + runners_up)
+  // mora no apply-gate-edits. Caso 260605: `…/meta-business-agent/)=`.
   sanitizeUrlsDeep(buckets);
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(buckets, null, 2), "utf8");
