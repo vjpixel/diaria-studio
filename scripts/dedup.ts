@@ -389,7 +389,10 @@ export function deriveCurrentEdition(...paths: Array<string | undefined>): strin
   for (const p of paths) {
     if (!p) continue;
     const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(\d{6})(?:\/|$)/);
-    if (m) return m[1];
+    // #1875 review: valida o AAMMDD (rejeita 260999/261301 de dirs sintéticos/
+    // markers) pra ficar consistente com recentEditionDirs e surfaçar paths
+    // malformados em vez de mascará-los.
+    if (m && isValidEditionDir(m[1])) return m[1];
   }
   return undefined;
 }
