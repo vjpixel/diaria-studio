@@ -82,6 +82,42 @@ export function normalizeImportCsv(csv: string): string {
   return newHeader + rest;
 }
 
+/**
+ * Idempotência: nomes planejados que JÁ existem no Brevo. Re-rodar --execute
+ * sem isso criaria listas duplicadas (Brevo permite nomes iguais), e o editor
+ * poderia mandar pra lista errada / em dobro.
+ */
+export function findExistingConflicts(
+  plannedNames: string[],
+  existing: { id: number; name: string }[],
+): { name: string; id: number }[] {
+  const byName = new Map(existing.map((l) => [l.name, l.id]));
+  const out: { name: string; id: number }[] = [];
+  for (const n of plannedNames) {
+    const id = byName.get(n);
+    if (id !== undefined) out.push({ name: n, id });
+  }
+  return out;
+}
+
+/** Lista todas as listas Brevo (paginado) — só id + nome, pro check de duplicata. */
+async function fetchExistingLists(apiKey: string): Promise<{ id: number; name: string }[]> {
+  const out: { id: number; name: string }[] = [];
+  let offset = 0;
+  for (;;) {
+    const res = await fetch(`https://api.brevo.com/v3/contacts/lists?limit=50&offset=${offset}`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`Brevo GET /contacts/lists falhou (${res.status})`);
+    const body = (await res.json()) as { lists?: { id: number; name: string }[] };
+    const lists = body.lists ?? [];
+    out.push(...lists.map((l) => ({ id: l.id, name: l.name })));
+    if (lists.length < 50) break;
+    offset += 50;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -95,7 +131,11 @@ interface Args {
 export function parseArgs(argv: string[]): Args {
   const get = (f: string): string | undefined => {
     const i = argv.indexOf(f);
-    return i >= 0 ? argv[i + 1] : undefined;
+    if (i < 0) return undefined;
+    const v = argv[i + 1];
+    // Não engole a flag seguinte: `--label --execute` não pode virar label="--execute"
+    // (criaria listas "Clarice --execute …" em produção e ainda executaria).
+    return v && !v.startsWith("--") ? v : undefined;
   };
   const folder = parseInt(get("--folder-id") ?? "1", 10);
   return {
@@ -159,22 +199,50 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  // Pré-flight de idempotência: recusa se alguma lista planejada já existe.
+  const conflicts = findExistingConflicts(
+    plans.map((p) => p.listName),
+    await fetchExistingLists(apiKey),
+  );
+  if (conflicts.length) {
+    console.error(`\n❌ ${conflicts.length} lista(s) com esses nomes JÁ existem no Brevo:`);
+    for (const c of conflicts) console.error(`   #${c.id} "${c.name}"`);
+    console.error(
+      `Re-importar criaria duplicatas (Brevo permite nomes iguais). Delete-as no Brevo, ` +
+        `ou use --label diferente.`,
+    );
+    process.exit(1);
+  }
+
   const results: { wave: string; listId: number; processId: unknown; count: number }[] = [];
-  for (const p of plans) {
-    console.error(`\n→ ${p.wave.key}: criando lista "${p.listName}"…`);
-    const list = (await brevoPost(apiKey, "/contacts/lists", {
-      name: p.listName,
-      folderId: args.folderId,
-    })) as { id: number };
-    console.error(`   list #${list.id} criada · importando ${p.count} contatos…`);
-    const imp = (await brevoPost(apiKey, "/contacts/import", {
-      fileBody: p.csv,
-      listIds: [list.id],
-      updateExistingContacts: true,
-      emptyContactsAttributes: false,
-    })) as { processId?: unknown };
-    console.error(`   import disparado (processId=${imp.processId ?? "?"})`);
-    results.push({ wave: p.wave.key, listId: list.id, processId: imp.processId, count: p.count });
+  try {
+    for (const p of plans) {
+      console.error(`\n→ ${p.wave.key}: criando lista "${p.listName}"…`);
+      const list = (await brevoPost(apiKey, "/contacts/lists", {
+        name: p.listName,
+        folderId: args.folderId,
+      })) as { id?: number };
+      if (typeof list?.id !== "number") {
+        throw new Error(`Brevo /contacts/lists retornou shape inesperado: ${JSON.stringify(list)}`);
+      }
+      console.error(`   list #${list.id} criada · importando ${p.count} contatos…`);
+      const imp = (await brevoPost(apiKey, "/contacts/import", {
+        fileBody: p.csv,
+        listIds: [list.id],
+        updateExistingContacts: true,
+        emptyContactsAttributes: false,
+      })) as { processId?: unknown };
+      console.error(`   import disparado (processId=${imp.processId ?? "?"})`);
+      results.push({ wave: p.wave.key, listId: list.id, processId: imp.processId, count: p.count });
+    }
+  } catch (e) {
+    // Falha parcial: reporta as listas JÁ criadas pro editor limpar antes de re-rodar
+    // (senão o pré-flight de idempotência barra o retry).
+    if (results.length) {
+      console.error(`\n⚠️  erro no meio — ${results.length} lista(s) JÁ criada(s), limpe antes de re-rodar:`);
+      for (const r of results) console.error(`   #${r.listId} (${r.wave})`);
+    }
+    throw e;
   }
 
   console.error(`\n✅ ${results.length} listas criadas + imports disparados (assíncronos na Brevo).`);

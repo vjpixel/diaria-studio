@@ -5,6 +5,7 @@ import {
   countRows,
   normalizeImportCsv,
   parseArgs,
+  findExistingConflicts,
   WAVES,
 } from "../scripts/clarice-import-waves.ts";
 
@@ -71,5 +72,33 @@ describe("parseArgs", () => {
   it("--folder-id inválido cai no default 1", () => {
     assert.equal(parseArgs(["--folder-id", "abc"]).folderId, 1);
     assert.equal(parseArgs(["--folder-id", "0"]).folderId, 1);
+  });
+
+  it("--label NÃO engole a flag seguinte (cai no default)", () => {
+    // `--label --execute`: label não pode virar "--execute" (criaria listas
+    // "Clarice --execute …" em produção). Cai no default genérico.
+    const a = parseArgs(["--label", "--execute"]);
+    assert.equal(a.label, "edição atual");
+    assert.equal(a.execute, true);
+  });
+});
+
+describe("findExistingConflicts (idempotência)", () => {
+  const existing = [
+    { id: 9, name: "Clarice Jun/2026 W1 — T1 abriu" },
+    { id: 10, name: "Clarice Jun/2026 W2 — T1 nao-abriu" },
+  ];
+
+  it("detecta nomes planejados que já existem", () => {
+    const c = findExistingConflicts(
+      ["Clarice Jun/2026 W1 — T1 abriu", "Clarice Jun/2026 W3 — T2 parte1"],
+      existing,
+    );
+    assert.deepEqual(c, [{ name: "Clarice Jun/2026 W1 — T1 abriu", id: 9 }]);
+  });
+
+  it("nenhum conflito → array vazio (label novo é seguro)", () => {
+    const c = findExistingConflicts(["Clarice Jul/2026 W1 — T1 abriu"], existing);
+    assert.deepEqual(c, []);
   });
 });
