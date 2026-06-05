@@ -55,10 +55,16 @@ const ENCERRAMENTO_RE = /^(?:Encerrando|Até amanhã|Até a próxima)/m;
 // #1588: posição canônica é ANTES de SORTEIO. Fallback pra PARA ENCERRAR /
 // ASSINE / ENCERRAMENTO quando SORTEIO ausente (edição legacy ou template
 // custom). Match aceita emoji opcional (🎁) + bold opcional + whitespace.
-const SORTEIO_HEADER_RE =
-  /^\s*(?:\*\*)?[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+SORTEIO(?:\*\*)?\s*$|^\s*(?:\*\*)?SORTEIO(?:\*\*)?\s*$/imu;
-const PARA_ENCERRAR_HEADER_RE =
-  /^\s*(?:\*\*)?[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][️‍\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+PARA\s+ENCERRAR(?:\*\*)?\s*$|^\s*(?:\*\*)?PARA\s+ENCERRAR(?:\*\*)?\s*$/imu;
+// #1836: emoji-prefix do registry (opcional → cobre header com e sem emoji,
+// colapsando a alternação bare que existia aqui).
+const SORTEIO_HEADER_RE = new RegExp(
+  `^\\s*(?:\\*\\*)?${SECTION_EMOJI_PREFIX}SORTEIO(?:\\*\\*)?\\s*$`,
+  "imu",
+);
+const PARA_ENCERRAR_HEADER_RE = new RegExp(
+  `^\\s*(?:\\*\\*)?${SECTION_EMOJI_PREFIX}PARA\\s+ENCERRAR(?:\\*\\*)?\\s*$`,
+  "imu",
+);
 
 /**
  * Pure: dado o conjunto de erros e a edição corrente (`AAMMDD`), retorna
