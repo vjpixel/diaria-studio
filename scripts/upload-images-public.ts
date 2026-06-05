@@ -360,6 +360,22 @@ export interface UploadOptions {
   target?: UploadTarget;
   /** #1418: ignora cache md5/target e força re-upload. Útil pra recovery. */
   forceReupload?: boolean;
+  /**
+   * #1865: seam de injeção pros uploads de rede (Cloudflare KV / Drive). Default
+   * usa as implementações reais; testes injetam stubs pra exercitar o merge
+   * cross-mode sem rede (gFetch faz OAuth do Google, inviável em teste).
+   */
+  uploaders?: UploadDeps;
+}
+
+export interface UploadDeps {
+  uploadToCloudflare?: (
+    imagePath: string,
+    key: string,
+    cfg: { kvNamespaceId: string; workerUrl: string },
+  ) => Promise<string>;
+  uploadToDrive?: (name: string, content: Buffer, mime: string) => Promise<{ id: string }>;
+  makeDrivePublic?: (fileId: string) => Promise<void>;
 }
 
 /**
@@ -418,6 +434,12 @@ export async function uploadPublicImages(
   const existing = mergeBaseFromCache(cachePath); // snapshot imutável (reuse + cloudflare_url lookup)
   const images: Record<string, PublicImage> = { ...existing }; // base mutável do merge
 
+  // #1865: uploaders injetáveis (default = reais). Testes stubbam pra exercitar
+  // o merge sem rede.
+  const uploadToCloudflare = opts.uploaders?.uploadToCloudflare ?? uploadImageToWorkerKV;
+  const uploadToDrive = opts.uploaders?.uploadToDrive ?? driveUploadFile;
+  const makeDrivePublic = opts.uploaders?.makeDrivePublic ?? makeFilePublic;
+
   // Cloudflare config (lazy — só carrega se target=cloudflare).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
   if (target === "cloudflare") {
@@ -464,7 +486,7 @@ export async function uploadPublicImages(
       // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
       // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
       const key = kvKeyForSpec(editionDir, spec, localMd5);
-      const url = await uploadImageToWorkerKV(imagePath, key, cfConfig!);
+      const url = await uploadToCloudflare(imagePath, key, cfConfig!);
       images[spec.key] = {
         file_id: key,
         url,
@@ -477,8 +499,8 @@ export async function uploadPublicImages(
     } else {
       const content = readFileSync(imagePath);
       const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
-      const { id: fileId } = await driveUploadFile(driveName, content, mime);
-      await makeFilePublic(fileId);
+      const { id: fileId } = await uploadToDrive(driveName, content, mime);
+      await makeDrivePublic(fileId);
       // #1584: preserva cloudflare_url se já estava no cache (mode=newsletter
       // rodou primeiro e fez upload pra Cloudflare). Sem isso, social mode
       // sobrescrevia o entry e o renderer social perdia a URL Cloudflare.
