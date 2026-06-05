@@ -279,22 +279,33 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
 }
 
 /**
+ * Pure (#1908): key da imagem É IA? mensal no KV. Convenção
+ * `img-{edition}-{basename}` — IDÊNTICA à do diário (upload-images-public.ts)
+ * e ao que a result page do voto monta em `renderResultImagesHtml`
+ * (`/img/img-{edition}-01-eia-{A|B}.jpg`). Antes era `img-monthly-*`, key que a
+ * result page nunca encontrava → imagens quebradas pós-voto no mensal.
+ */
+export function monthlyEiaImageKey(edition: string, filePath: string): string {
+  const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
+  return `img-${edition}-${filename}`;
+}
+
+/**
  * Faz upload de uma imagem do digest mensal pro KV do Worker.
  * Wrapper sobre `uploadImageToWorkerKV` (lib/cloudflare-kv-upload.ts) que
- * resolve o `kvNamespaceId` de `platform.config.json` e usa key prefix
- * `img-monthly-`.
+ * resolve o `kvNamespaceId` de `platform.config.json` e usa a key
+ * `img-{edition}-{basename}` (ver `monthlyEiaImageKey`).
  *
  * Extraído em #1119 — a função genérica agora vive em lib pra ser reutilizada
  * pelo upload de imagens da newsletter daily (#1119).
  */
-async function uploadMonthlyImage(filePath: string): Promise<string> {
+async function uploadMonthlyImage(filePath: string, edition: string): Promise<string> {
   const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
 
   const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
-  const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
-  const key = `img-monthly-${filename}`;
+  const key = monthlyEiaImageKey(edition, filePath);
 
   return uploadImageToWorkerKV(filePath, key, {
     kvNamespaceId,
@@ -407,6 +418,9 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   // Upload É IA? images to Cloudflare KV (Brevo não expõe API de upload de arquivos)
   let eiaImageUrlA: string | undefined;
   let eiaImageUrlB: string | undefined;
+  // #1908: a key da imagem usa a edição (último dia do mês) — mesma que a
+  // result page do voto monta. Computar antes do upload.
+  const eiaEdition = eiaEditionFromYymm(yymm);
   if (!dryRun) {
     const eiaNames = [
       ["01-eia-A.jpg", "01-eia-B.jpg"],
@@ -418,8 +432,8 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
       if (existsSync(pathA) && existsSync(pathB)) {
         try {
           process.stdout.write(`Uploading É IA? images to Cloudflare KV...\n`);
-          eiaImageUrlA = await uploadMonthlyImage(pathA);
-          eiaImageUrlB = await uploadMonthlyImage(pathB);
+          eiaImageUrlA = await uploadMonthlyImage(pathA, eiaEdition);
+          eiaImageUrlB = await uploadMonthlyImage(pathB, eiaEdition);
           process.stdout.write(`Imagens enviadas:\n  A: ${eiaImageUrlA}\n  B: ${eiaImageUrlB}\n`);
         } catch (e) {
           process.stderr.write(`warn: upload de imagens É IA? falhou — ${(e as Error).message}\n`);
@@ -430,7 +444,6 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     if (!eiaImageUrlA) process.stderr.write("warn: imagens É IA? não encontradas — seção sem imagens\n");
 
     // Pré-registrar gabarito no Worker para resultado imediato ao votar
-    const eiaEdition = eiaEditionFromYymm(yymm);
     await registerEiaAnswer(monthlyDir, eiaEdition);
   }
 
