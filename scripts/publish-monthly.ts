@@ -37,12 +37,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
-import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
+import { uploadMonthlyImage as uploadMonthlyImageLib } from "./lib/monthly-image-upload.ts"; // #1914
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
-// main() usa só eiaEditionFromYymm + draftToEmail; o resto vai no re-export.
+// main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
   eiaEditionFromYymm,
   draftToEmail,
+  parseEiaLegend,
 } from "./lib/monthly-render.ts";
 // #1844: cliente HTTP Brevo (transporte) — wrappers que main() usa pra campanha.
 import {
@@ -278,39 +279,14 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
   }
 }
 
-/**
- * Pure (#1908): key da imagem É IA? mensal no KV. Convenção
- * `img-{edition}-{basename}` — IDÊNTICA à do diário (upload-images-public.ts)
- * e ao que a result page do voto monta em `renderResultImagesHtml`
- * (`/img/img-{edition}-01-eia-{A|B}.jpg`). Antes era `img-monthly-*`, key que a
- * result page nunca encontrava → imagens quebradas pós-voto no mensal.
- */
-export function monthlyEiaImageKey(edition: string, filePath: string): string {
-  const filename = filePath.split(/[\\/]/).pop() ?? "image.jpg";
-  return `img-${edition}-${filename}`;
-}
+// #1914: monthlyEiaImageKey + uploadMonthlyImage extraídos pra
+// lib/monthly-image-upload.ts (compartilhados com monthly-preview-cloudflare.ts).
+// Re-export de monthlyEiaImageKey mantém back-compat (test/monthly-eia-image-key
+// importa daqui). uploadMonthlyImage local delega pra lib passando ROOT.
+export { monthlyEiaImageKey } from "./lib/monthly-image-upload.ts";
 
-/**
- * Faz upload de uma imagem do digest mensal pro KV do Worker.
- * Wrapper sobre `uploadImageToWorkerKV` (lib/cloudflare-kv-upload.ts) que
- * resolve o `kvNamespaceId` de `platform.config.json` e usa a key
- * `img-{edition}-{basename}` (ver `monthlyEiaImageKey`).
- *
- * Extraído em #1119 — a função genérica agora vive em lib pra ser reutilizada
- * pelo upload de imagens da newsletter daily (#1119).
- */
-async function uploadMonthlyImage(filePath: string, edition: string): Promise<string> {
-  const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-  const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
-  if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
-
-  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
-  const key = monthlyEiaImageKey(edition, filePath);
-
-  return uploadImageToWorkerKV(filePath, key, {
-    kvNamespaceId,
-    workerUrl,
-  });
+function uploadMonthlyImage(filePath: string, edition: string): Promise<string> {
+  return uploadMonthlyImageLib(filePath, edition, ROOT);
 }
 
 // #1844: cliente Brevo (brevoPost/GetCampaign/GetList/Put) → scripts/lib/brevo-client.ts. main() importa.
@@ -447,8 +423,14 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     await registerEiaAnswer(monthlyDir, eiaEdition);
   }
 
+  // #1914: legenda do É IA? vem do 01-eia.md (o draft só tem placeholder).
+  const eiaMdPath = resolve(monthlyDir, "01-eia.md");
+  const eiaCredit = existsSync(eiaMdPath)
+    ? parseEiaLegend(readFileSync(eiaMdPath, "utf8"))
+    : undefined;
+
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit);
 
   if (!subject) {
     process.stderr.write(

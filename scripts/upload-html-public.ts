@@ -199,10 +199,17 @@ export async function uploadHtml(args: {
   workerUrl?: string;
   dryRun?: boolean;
   fetchImpl?: typeof fetch;
+  /**
+   * #1914: por padrão envolve o HTML em `wrapForPreview` (a daily sobe um
+   * FRAGMENTO de body). A mensal já gera um documento HTML completo
+   * (`<!DOCTYPE html>...`), então passa `wrap: false` pra evitar aninhar um doc
+   * dentro de outro.
+   */
+  wrap?: boolean;
 }): Promise<UploadHtmlResult> {
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
   const rawHtml = readFileSync(args.htmlPath, "utf8");
-  const html = wrapForPreview(rawHtml);
+  const html = args.wrap === false ? rawHtml : wrapForPreview(rawHtml);
 
   // #1494: content-hash versioning — each different content gets a unique URL.
   // Eliminates browser/edge cache issues when re-uploading updated HTML.
@@ -258,6 +265,7 @@ async function main(): Promise<void> {
   const { values, flags } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
   const dryRun = flags.has("dry-run");
+  const noWrap = flags.has("no-wrap"); // #1914: HTML já é doc completo
   const htmlPathOverride = values["html"];
   // #1734: --persist-to grava a URL resultante num JSON dedicado (merge).
   // --field nomeia a chave (default "url"). Usado pelo Stage 4 pro preview
@@ -267,7 +275,7 @@ async function main(): Promise<void> {
 
   if (!edition) {
     console.error(
-      "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--html <path>] " +
+      "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--no-wrap] [--html <path>] " +
         "[--persist-to <json> --field <nome>]",
     );
     process.exit(2);
@@ -294,6 +302,7 @@ async function main(): Promise<void> {
     htmlPath,
     secret,
     dryRun,
+    wrap: !noWrap,
   });
 
   // #1734: persiste a URL só após upload REAL — dry-run não sobe nada, então

@@ -218,6 +218,18 @@ npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
 ```
 Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
 
+### 3c. Preview Cloudflare (#1914)
+
+Com as imagens prontas, publicar o preview público no worker `draft` (como a
+diária) — o editor revisa o render real no celular antes do Brevo. Usa o design
+da mensal (`draftToEmail`), sobe as imagens do É IA? pro KV e mescla a legenda
+do `01-eia.md`:
+```bash
+npx tsx scripts/monthly-preview-cloudflare.ts --yymm $1
+```
+Imprime a URL `https://draft.diaria.workers.dev/m{YYMM}-{hash}`. Falha = warning,
+não bloqueia. Requer `ADMIN_SECRET` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`.
+
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
 Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
@@ -227,6 +239,7 @@ Apresentar:
 📸 D1: data/monthly/$1/04-d1-2x1.jpg
 🤔 É IA? A: data/monthly/$1/01-eia-A.jpg
 🤔 É IA? B: data/monthly/$1/01-eia-B.jpg
+🌐 Preview: https://draft.diaria.workers.dev/m{YYMM}-{hash}
 
 Aprovar? sim / regenerar-d1 / regenerar-eia
 ```

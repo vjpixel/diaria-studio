@@ -312,10 +312,35 @@ export function eiaEditionFromYymm(yymm: string): string {
   return `${String(yr).slice(2)}${String(mo).padStart(2, "0")}${String(lastDay).padStart(2, "0")}`;
 }
 
-/** Renders the É IA? section with images and voting buttons (#465). */
-export function renderEia(chunk: string, yymm: string, imageUrlA?: string, imageUrlB?: string): string {
+/**
+ * Pure (#1914): extrai a legenda/crédito do `01-eia.md` (o corpo após o header
+ * `**É IA?**`, sem o frontmatter `eia_answer`). É essa legenda que vira o crédito
+ * da imagem no card do É IA? mensal. Retorna "" se não achar corpo.
+ */
+export function parseEiaLegend(eiaMd: string): string {
+  const noFront = eiaMd.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n/, "");
+  // Remove a linha de header (`**É IA?**` ou `É IA?`), pega o resto. Sem `\b`:
+  // o boundary ASCII não casa antes de `É` nem depois de `*` (#1914 review).
+  const lines = noFront.split(/\r?\n/);
+  const startIdx = lines.findIndex((l) => /É\s?IA\?/.test(l));
+  const body = (startIdx >= 0 ? lines.slice(startIdx + 1) : lines).join("\n").trim();
+  return body;
+}
+
+/**
+ * Renders the É IA? section with images and voting buttons (#465).
+ * `creditOverride` (#1914): legenda vinda do `01-eia.md` — quando presente,
+ * substitui o corpo do chunk (que na mensal é só um placeholder `[...]`).
+ */
+export function renderEia(
+  chunk: string,
+  yymm: string,
+  imageUrlA?: string,
+  imageUrlB?: string,
+  creditOverride?: string,
+): string {
   const lines = chunk.split("\n");
-  const content = lines.slice(1).join("\n").trim();
+  const content = creditOverride?.trim() || lines.slice(1).join("\n").trim();
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
   const edition = eiaEditionFromYymm(yymm);
   const TEAL = "#00A0A0";
@@ -528,6 +553,7 @@ export function draftToEmail(
   yymm: string,
   eiaImageUrlA?: string,
   eiaImageUrlB?: string,
+  eiaCredit?: string,
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -618,8 +644,11 @@ export function draftToEmail(
       continue;
     }
 
-    if (label === "É IA?") {
-      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB));
+    // #1914: tolera o rótulo longo do template ("É IA? — DESTAQUE DO MÊS") além
+    // do curto. Sem isso a seção caía no fallback e o placeholder `[...]`
+    // aparecia literal no email.
+    if (label === "É IA?" || label === "É IA? — DESTAQUE DO MÊS") {
+      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit));
       continue;
     }
 
