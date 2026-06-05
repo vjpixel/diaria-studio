@@ -248,12 +248,15 @@ export function renderClarice(chunk: string): string {
   ].join("");
 }
 
-/** Renders the OUTRAS NOTÍCIAS DO MÊS section. */
-export function renderOutrasNoticias(chunk: string): string {
+/**
+ * Renderiza uma seção de lista de links (título inline + descrição). Usada por
+ * USE MELHOR DO MÊS, RADAR DO MÊS (#1901/#1902) e a legada OUTRAS NOTÍCIAS DO MÊS.
+ */
+export function renderLinkListSection(chunk: string, displayTitle: string): string {
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#00A0A0;font-family:Arial,Helvetica,sans-serif;">Outras Notícias do Mês</p>`;
+  const header = `<p style="margin:0 0 24px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#00A0A0;font-family:Arial,Helvetica,sans-serif;">${escHtml(displayTitle)}</p>`;
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -291,6 +294,11 @@ export function renderOutrasNoticias(chunk: string): string {
     .join("\n");
 
   return header + itemsHtml;
+}
+
+/** @deprecated back-compat: use renderLinkListSection. */
+export function renderOutrasNoticias(chunk: string): string {
+  return renderLinkListSection(chunk, "Outras Notícias do Mês");
 }
 
 /**
@@ -471,7 +479,7 @@ export function isSectionLabel(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.startsWith("**") || !trimmed.endsWith("**")) return false;
   const normalized = normalizeLabel(trimmed);
-  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR\s+DO\s+M[ÊE]S|RADAR\s+DO\s+M[ÊE]S|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
     normalized
   );
 }
@@ -584,6 +592,16 @@ export function draftToEmail(
     // LABORATÓRIO CLARICE: caixa dedicada (h3 + parágrafos + lista numerada).
     if (label === "LABORATÓRIO CLARICE") {
       bodyParts.push(renderLaboratorio(chunk));
+      continue;
+    }
+
+    if (label === "USE MELHOR DO MÊS") {
+      bodyParts.push(renderLinkListSection(chunk, "Use Melhor do Mês"));
+      continue;
+    }
+
+    if (label === "RADAR DO MÊS") {
+      bodyParts.push(renderLinkListSection(chunk, "Radar do Mês"));
       continue;
     }
 
