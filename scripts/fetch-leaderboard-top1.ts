@@ -137,19 +137,21 @@ function readPublishedDates(path: string): string[] {
 
 function parseArgs(
   argv: string[],
-): { edition: string; out: string; pastEditions: string } | null {
+): { edition: string; out: string; pastEditions: string; brand: "diaria" | "clarice" } | null {
   let edition = "";
   let out = "";
   let pastEditions = "data/past-editions-raw.json";
+  let brand: "diaria" | "clarice" = "diaria";
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[i + 1];
     if (flag === "--edition" && value) { edition = value; i++; }
     else if (flag === "--out" && value) { out = value; i++; }
     else if (flag === "--past-editions" && value) { pastEditions = value; i++; }
+    else if (flag === "--brand" && value) { brand = value === "clarice" ? "clarice" : "diaria"; i++; }
   }
   if (!edition || !out) return null;
-  return { edition, out, pastEditions };
+  return { edition, out, pastEditions, brand };
 }
 
 // #1365: adapter pra manter compat com `fetchImpl: typeof fetch` injetado
@@ -167,12 +169,16 @@ const defaultFetchImpl: FetchLike = async (url, init) => {
 export async function fetchTop1ForPeriod(
   slug: string,
   fetchImpl: FetchLike = defaultFetchImpl,
+  brand: "diaria" | "clarice" = "diaria",
 ): Promise<Top1Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
+    // #1905: brand=clarice puxa o leaderboard da Clarice News; default diaria
+    // omite o param (back-compat com a URL legada).
+    const brandParam = brand === "diaria" ? "" : `&brand=${brand}`;
     const res = await fetchImpl(
-      `${WORKER_URL}/leaderboard/top1?period=${slug}`,
+      `${WORKER_URL}/leaderboard/top1?period=${slug}${brandParam}`,
       { signal: controller.signal },
     );
     if (!res.ok) {
@@ -219,7 +225,7 @@ async function main(): Promise<void> {
     payload = { top1: [], podium: [], period: "", period_slug: "" };
   } else {
     try {
-      payload = await fetchTop1ForPeriod(targetSlug);
+      payload = await fetchTop1ForPeriod(targetSlug, defaultFetchImpl, args.brand);
       const podiumCount = payload.podium?.length ?? 0;
       console.log(
         `[fetch-leaderboard-top1] 1ª edição do mês — anunciando ${payload.period_slug}: ` +

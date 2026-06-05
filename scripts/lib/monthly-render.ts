@@ -319,8 +319,10 @@ export function renderEia(chunk: string, yymm: string, imageUrlA?: string, image
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
   const edition = eiaEditionFromYymm(yymm);
   const TEAL = "#00A0A0";
-  const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A`;
-  const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B`;
+  // #1905: brand=clarice — votos do É IA? mensal vão pro leaderboard da Clarice
+  // News, isolado do diário (Diar.ia).
+  const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A&amp;brand=clarice`;
+  const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B&amp;brand=clarice`;
 
   // Renderiza um bloco imagem + botão de votação (sem label separado — botão já identifica A/B)
   function imageBlock(label: string, imgUrl: string | undefined, voteUrl: string): string {
@@ -367,7 +369,7 @@ export function renderEia(chunk: string, yymm: string, imageUrlA?: string, image
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;">
-      <a href="${workerUrl}/leaderboard" style="color:${TEAL};text-decoration:underline;">Ver ranking</a>
+      <a href="${workerUrl}/leaderboard?brand=clarice" style="color:${TEAL};text-decoration:underline;">Ver ranking</a>
     </p>
 
   </td></tr>

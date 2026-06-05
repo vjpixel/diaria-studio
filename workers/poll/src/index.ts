@@ -28,6 +28,11 @@ import {
   MONTH_NAMES_PT,
   validateNickname,
   normalizeNickname,
+  type Brand,
+  BRAND_INFO,
+  parseBrandParam,
+  brandKvPrefix,
+  leaderboardHref,
 } from "./lib";
 
 export interface Env {
@@ -35,6 +40,42 @@ export interface Env {
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
+}
+
+// ── Brand namespacing (#1905) ─────────────────────────────────────────────────
+
+/**
+ * #1905: embrulha `env.POLL` prefixando TODA chave com `prefix` (ex: `clarice:`).
+ * Prefix vazio (diaria) retorna o KV original — chaves legadas 100% intactas.
+ *
+ * `list()` injeta o prefixo na query E o stripa dos `name`s retornados — assim
+ * a lógica dos handlers (que faz `key.replace(localPrefix, "")` e
+ * `env.POLL.get(key)` com o name listado) continua byte-idêntica, sem precisar
+ * conhecer o brand. Threading do brand fica isolado à camada de acesso ao KV.
+ */
+export function brandedNamespace(kv: KVNamespace, prefix: string): KVNamespace {
+  if (!prefix) return kv;
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const wrapped = {
+    get: (key: string, opts?: any) => kv.get(prefix + key, opts),
+    getWithMetadata: (key: string, opts?: any) => kv.getWithMetadata(prefix + key, opts),
+    put: (key: string, value: any, opts?: any) => kv.put(prefix + key, value, opts),
+    delete: (key: string) => kv.delete(prefix + key),
+    list: async (opts?: any) => {
+      const res = await kv.list({ ...opts, prefix: prefix + (opts?.prefix ?? "") });
+      return {
+        ...res,
+        keys: res.keys.map((k: any) => ({ ...k, name: k.name.slice(prefix.length) })),
+      };
+    },
+  };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  return wrapped as unknown as KVNamespace;
+}
+
+/** #1905: env com `POLL` embrulhado no namespace do brand. */
+function brandedEnv(env: Env, brand: Brand): Env {
+  return { ...env, POLL: brandedNamespace(env.POLL, brandKvPrefix(brand)) };
 }
 
 // ── HMAC helpers ─────────────────────────────────────────────────────────────
@@ -145,7 +186,7 @@ export function voteHtmlResponse(html: string, status: number): Response {
   });
 }
 
-async function handleVote(url: URL, env: Env): Promise<Response> {
+async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
   const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
@@ -159,11 +200,11 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const testMode = url.searchParams.get("test") === "1";
 
   if (!email || !edition || !choice) {
-    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false), 400);
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
   }
 
   if (!["A", "B"].includes(choice)) {
-    return voteHtmlResponse(votePageHtml("Escolha inválida.", false), 400);
+    return voteHtmlResponse(votePageHtml("Escolha inválida.", false, null, null, null, brand), 400);
   }
 
   // #1083 / #1086: gate de edições válidas. Se key `valid_editions` setada e
@@ -171,7 +212,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   // qualquer (compat + fail-open). Corrupted loga console.error.
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition)) {
-    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false), 410);
+    return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
   // #1083: sig agora pode ser email-only (permanente) OU email:edition (legacy).
@@ -193,7 +234,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
         edition,
         email_domain: email.split("@")[1] ?? "unknown",
       }));
-      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false), 403);
+      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 403);
     }
   }
 
@@ -202,7 +243,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return voteHtmlResponse(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition)), 200);
+    return voteHtmlResponse(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition), brand), 200);
   }
 
   // Gravar voto
@@ -218,7 +259,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       : correct === false
       ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
       : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
-    return voteHtmlResponse(votePageHtml(testMsg, true), 200);
+    return voteHtmlResponse(votePageHtml(testMsg, true, null, null, null, brand), 200);
   }
 
   // #1657: timestamp único reusado no voteKey + no vote-log (mesma fonte).
@@ -282,7 +323,7 @@ async function handleVote(url: URL, env: Env): Promise<Response> {
       }
     : null;
 
-  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition)), 200);
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand), 200);
 }
 
 /** Mantém counter agregado stats:{edition} — evita N+1 reads no /stats. */
@@ -790,10 +831,11 @@ export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): 
 async function handleLeaderboardByMonth(
   monthSlug: string,
   env: Env,
+  brand: Brand = "diaria",
 ): Promise<Response> {
   const parsed = parseMonthSlug(monthSlug);
   if (!parsed) {
-    return new Response(votePageHtml("Mês inválido. Use formato YYYY-MM (ex: 2026-05).", false), {
+    return new Response(votePageHtml("Mês inválido. Use formato YYYY-MM (ex: 2026-05).", false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -812,7 +854,7 @@ async function handleLeaderboardByMonth(
   if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
     return new Response(votePageHtml(
       `O leaderboard de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
-      false,
+      false, null, null, null, brand,
     ), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
@@ -826,7 +868,7 @@ async function handleLeaderboardByMonth(
     ? "public, max-age=2592000, immutable" // 30d, mês fechado nunca muda
     : "public, max-age=60"; // 60s pro mês corrente
 
-  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl);
+  return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, brand);
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -835,7 +877,10 @@ function renderLeaderboardHtml(
   periodLabel: string,
   year: number,
   cacheControl: string,
+  brand: Brand = "diaria",
 ): Response {
+  // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
+  const info = BRAND_INFO[brand];
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
   const ranked = rankEntries(scores).slice(0, 50);
@@ -856,7 +901,7 @@ function renderLeaderboardHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Leaderboard de ${periodLabel} de ${year} | Diar.ia</title>
+<title>Leaderboard de ${periodLabel} de ${year} | ${info.name}</title>
 <style>
   body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
   h1 { font-size: 1.5rem; }
@@ -871,7 +916,7 @@ function renderLeaderboardHtml(
 <body>
 <h1 style="margin-bottom:4px;">Leaderboard de ${periodLabel} de ${year}</h1>
 <h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
-<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https://diar.ia.br">Diar.ia</a>.</p>
+<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=3 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
@@ -888,11 +933,11 @@ function renderLeaderboardHtml(
 
 // ── /leaderboard ──────────────────────────────────────────────────────────────
 
-async function handleLeaderboard(env: Env): Promise<Response> {
+async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Promise<Response> {
   // #1345: /leaderboard agora delega pro slug do mês corrente. Schema único
   // (`score-by-month:*`) — `score:*` global continua mantido pra all-time
   // potencial mas não é mais lido pelo leaderboard.
-  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env);
+  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand);
 }
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
@@ -967,6 +1012,7 @@ export function votePageHtml(
   nicknameForm?: { email: string; sig: string } | null,
   resultImages?: VoteResultImages | null,
   leaderboardSlug?: string | null,
+  brand: Brand = "diaria",
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -982,6 +1028,7 @@ export function votePageHtml(
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
+    ${brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
     <button type="submit" class="nick-save">Salvar</button>
   </form>
@@ -996,7 +1043,7 @@ export function votePageHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>É IA? | Diar.ia</title>
+<title>É IA? | ${BRAND_INFO[brand].name}</title>
 <style>
   body { font-family: -apple-system, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
   .msg { font-size: 1.4rem; line-height: 1.4; margin: 20px 0; }
@@ -1048,7 +1095,7 @@ export function votePageHtml(
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${formHtml}
-<p class="footer-links"><a href="https://diar.ia.br">← Voltar para a Diar.ia</a> &nbsp;|&nbsp; <a href="${leaderboardSlug ? `/leaderboard/${leaderboardSlug}` : "/leaderboard"}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardHref(brand, leaderboardSlug)}">Ver leaderboard</a></p>
 </body>
 </html>`;
 }
@@ -1086,20 +1133,20 @@ ${renderSide("B")}
 
 // ── /set-name — leitor escolhe nickname pra leaderboard (#1078) ─────────────
 
-export async function handleSetName(url: URL, env: Env): Promise<Response> {
+export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
   const email = url.searchParams.get("email")?.toLowerCase().trim();
   const name = url.searchParams.get("name")?.trim();
   const sig = url.searchParams.get("sig");
 
   if (!email || !name || !sig) {
-    return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false), {
+    return new Response(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
 
   const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
   if (!valid) {
-    return new Response(votePageHtml("Link inválido ou expirado.", false), {
+    return new Response(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), {
       status: 403, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1107,7 +1154,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
   // Sanitize name: max 40 chars, strip HTML
   const cleanName = name.slice(0, 40).replace(/[<>]/g, "");
   if (!cleanName) {
-    return new Response(votePageHtml("Nome vazio — tente novamente.", false), {
+    return new Response(votePageHtml("Nome vazio — tente novamente.", false, null, null, null, brand), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1120,7 +1167,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
   // #1758: rejeita apelido vazio-de-conteúdo (emoji-only) ou na blacklist ("eu").
   const validationError = validateNickname(cleanName);
   if (validationError) {
-    return new Response(votePageHtml(validationError, false, retryForm), {
+    return new Response(votePageHtml(validationError, false, retryForm, null, null, brand), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1128,7 +1175,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
   const scoreKey = `score:${email}`;
   const raw = await env.POLL.get(scoreKey);
   if (!raw) {
-    return new Response(votePageHtml("Vote primeiro antes de definir nickname.", false), {
+    return new Response(votePageHtml("Vote primeiro antes de definir nickname.", false, null, null, null, brand), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1145,7 +1192,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
     try { other = JSON.parse(otherRaw); } catch { continue; }
     if (other.nickname && normalizeNickname(other.nickname) === targetNorm) {
       return new Response(
-        votePageHtml("Esse apelido já está em uso. Escolha outro.", false, retryForm),
+        votePageHtml("Esse apelido já está em uso. Escolha outro.", false, retryForm, null, null, brand),
         { status: 409, headers: { "Content-Type": "text/html;charset=utf-8" } },
       );
     }
@@ -1160,7 +1207,7 @@ export async function handleSetName(url: URL, env: Env): Promise<Response> {
   // vote criar entry com nickname atualizado.
   await propagateNicknameByMonth(env, email, cleanName);
 
-  return new Response(votePageHtml(`Pronto, ${cleanName}! Você aparece assim no ranking.`, true), {
+  return new Response(votePageHtml(`Pronto, ${cleanName}! Você aparece assim no ranking.`, true, null, null, null, brand), {
     status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
   });
 }
@@ -1269,17 +1316,23 @@ export default {
       }, 503, env);
     }
 
-    if (path === "/vote" && request.method === "GET") return handleVote(url, env);
-    if (path === "/stats" && request.method === "GET") return handleStats(url, env);
-    if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(env);
-    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, env);
+    // #1905: brand isola o leaderboard (diaria diário vs clarice mensal). `env`
+    // embrulhado prefixa as chaves KV; handlers de display recebem o brand.
+    // Imagens (/img) usam o `env` original — keys de imagem são compartilhadas.
+    const brand = parseBrandParam(url.searchParams.get("brand"));
+    const bEnv = brandedEnv(env, brand);
+
+    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
+    if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv);
+    if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(bEnv, brand);
+    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
-      if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], env);
+      if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
     }
-    if (path === "/set-name" && request.method === "GET") return handleSetName(url, env);
-    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, env);
+    if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
+    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv);
     if (path.startsWith("/img/") && request.method === "GET") return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 

@@ -58,10 +58,15 @@ const targetNickname = flagValue("--nickname")?.toLowerCase() ?? null;
 const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 
 if ((targetNickname === null) === (targetEmail === null)) {
-  console.error("Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--execute]");
+  console.error("Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice] [--execute]");
   console.error("     passe exatamente UM de --nickname ou --email");
   process.exit(2);
 }
+
+// #1905: namespace por marca. Vazio p/ diaria (chaves legadas), "clarice:" p/
+// Clarice News. Todas as chaves de KV (score/vote/stats/snapshot) usam o prefixo.
+const BRAND = flagValue("--brand") === "clarice" ? "clarice" : "diaria";
+const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 
 const KV_BASE = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/storage/kv/namespaces/${NAMESPACE_ID}`;
 
@@ -136,7 +141,7 @@ async function resolveTargetEmails(sbmKeys: string[]): Promise<Set<string>> {
 
   // Modo --nickname: scan score-by-month:* primeiro
   for (const key of sbmKeys) {
-    const m = key.match(/^score-by-month:(\d{4}-\d{2}):(.+)$/);
+    const m = key.match(new RegExp(`^${BP}score-by-month:(\\d{4}-\\d{2}):(.+)$`));
     if (!m) continue;
     const [, , email] = m;
     const raw = await kvGet(key);
@@ -152,9 +157,9 @@ async function resolveTargetEmails(sbmKeys: string[]): Promise<Set<string>> {
   // sem score-by-month correspondente). Varre score:* também.
   if (matched.size === 0) {
     console.log("[purge] sem match em score-by-month:* — escaneando score:* tambem...");
-    const scoreKeys = await kvList("score:");
+    const scoreKeys = await kvList(`${BP}score:`);
     for (const key of scoreKeys) {
-      const email = key.replace(/^score:/, "");
+      const email = key.replace(new RegExp(`^${BP}score:`), "");
       const raw = await kvGet(key);
       if (!raw) continue;
       let entry: { nickname?: string | null };
@@ -172,8 +177,9 @@ async function main(): Promise<void> {
   const target = targetEmail ? `email: "${targetEmail}"` : `nickname: "${targetNickname}"`;
   console.log(`[purge] mode: ${execute ? "EXECUTE" : "DRY-RUN"} — target ${target}`);
 
+  console.log(`[purge] brand: ${BRAND}${BP ? ` (prefixo "${BP}")` : ""}`);
   console.log("[purge] listando score-by-month:* keys...");
-  const sbmKeys = await kvList("score-by-month:");
+  const sbmKeys = await kvList(`${BP}score-by-month:`);
   console.log(`[purge] ${sbmKeys.length} score-by-month entries no KV`);
 
   const matchedEmails = await resolveTargetEmails(sbmKeys);
@@ -194,20 +200,20 @@ async function main(): Promise<void> {
   for (const email of matchedEmails) {
     const plan: Plan = {
       email,
-      scoreKey: `score:${email}`,
+      scoreKey: `${BP}score:${email}`,
       sbmKeys: sbmKeys.filter((k) => k.endsWith(`:${email}`)),
       voteKeys: [],
-      scoreExists: (await kvGet(`score:${email}`)) !== null,
+      scoreExists: (await kvGet(`${BP}score:${email}`)) !== null,
     };
     plans.push(plan);
     for (const k of plan.sbmKeys) {
-      const sm = k.match(/^score-by-month:(\d{4}-\d{2}):/);
+      const sm = k.match(new RegExp(`^${BP}score-by-month:(\\d{4}-\\d{2}):`));
       if (sm) slugsTouched.add(sm[1]);
     }
   }
 
   console.log("[purge] listando vote:* keys...");
-  const voteKeys = await kvList("vote:");
+  const voteKeys = await kvList(`${BP}vote:`);
   for (const plan of plans) {
     plan.voteKeys = voteKeys.filter((k) => k.endsWith(`:${plan.email}`));
   }
@@ -240,7 +246,7 @@ async function main(): Promise<void> {
   const statsAdjust = new Map<string, { dTotal: number; dA: number; dB: number; dCorrect: number }>();
   for (const plan of plans) {
     for (const vk of plan.voteKeys) {
-      const m = vk.match(/^vote:(\d{6}):/);
+      const m = vk.match(new RegExp(`^${BP}vote:(\\d{6}):`));
       if (!m) continue;
       const edition = m[1];
       const raw = await kvGet(vk);
@@ -258,7 +264,7 @@ async function main(): Promise<void> {
 
   console.log(`\n[purge] ajustando stats:{edition} pra ${statsAdjust.size} edition(s)...`);
   for (const [edition, delta] of statsAdjust) {
-    const sKey = `stats:${edition}`;
+    const sKey = `${BP}stats:${edition}`;
     const raw = await kvGet(sKey);
     if (!raw) { console.log(`  [skip] ${sKey} não existe`); continue; }
     let s: StatsRecord;
@@ -280,8 +286,8 @@ async function main(): Promise<void> {
 
   console.log("\n[purge] invalidando snapshots...");
   for (const slug of slugsTouched) {
-    await kvDelete(`leaderboard-snapshot:${slug}`);
-    console.log(`  [del] leaderboard-snapshot:${slug}`);
+    await kvDelete(`${BP}leaderboard-snapshot:${slug}`);
+    console.log(`  [del] ${BP}leaderboard-snapshot:${slug}`);
   }
 
   console.log(`\n[purge] done — ${totalKeys} keys apagadas, ${slugsTouched.size} snapshots invalidados.`);
