@@ -7,8 +7,51 @@ import {
   countEditorSubmissions,
   formatCoverageLine,
   resolveEditorEmail,
+  readInboxLinkCountFromMarker,
 } from "../scripts/lib/inbox-stats.ts";
 import { checkCoverageLine } from "../scripts/lint-newsletter-md.ts";
+
+describe("readInboxLinkCountFromMarker (#1864)", () => {
+  function setup(marker: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), "inbox-links-"));
+    writeFileSync(join(dir, ".marker-inject-inbox-urls.json"), JSON.stringify(marker), "utf8");
+    return dir;
+  }
+
+  it("soma total_editor_urls + total_newsletter_urls (links do canal do editor)", () => {
+    const dir = setup({ total_editor_urls: 3, total_newsletter_urls: 154 });
+    try {
+      assert.equal(readInboxLinkCountFromMarker(dir), 157);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("suporta campos em `details` (shape novo)", () => {
+    const dir = setup({ details: { total_editor_urls: 3, total_newsletter_urls: 154 } });
+    try {
+      assert.equal(readInboxLinkCountFromMarker(dir), 157);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("campo ausente conta como 0; ambos ausentes → null", () => {
+    const d1 = setup({ total_editor_urls: 5 });
+    const d2 = setup({ foo: "bar" });
+    try {
+      assert.equal(readInboxLinkCountFromMarker(d1), 5); // só editor
+      assert.equal(readInboxLinkCountFromMarker(d2), null); // nenhum campo
+    } finally {
+      rmSync(d1, { recursive: true, force: true });
+      rmSync(d2, { recursive: true, force: true });
+    }
+  });
+
+  it("marker ausente → null (caller faz fallback)", () => {
+    assert.equal(readInboxLinkCountFromMarker(join(tmpdir(), "nao-existe-dir-xyz")), null);
+  });
+});
 
 const sampleArchive = `# Inbox Editorial — Diar.ia
 

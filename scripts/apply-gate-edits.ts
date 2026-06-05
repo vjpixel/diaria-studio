@@ -25,14 +25,15 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { canonicalize as canonicalize_, sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { computeTotalConsidered } from "./lib/categorized-stats.ts";
 import {
   countEditorSubmissions,
   formatCoverageLine,
   resolveEditorEmail,
-} from "./lib/inbox-stats.ts"; // #592, #609
+  readInboxLinkCountFromMarker,
+} from "./lib/inbox-stats.ts"; // #592, #609, #1864
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — segue padrão de
@@ -312,8 +313,13 @@ function main() {
   // #592 + #609: linha de cobertura — submissões / descobertos / selecionados
   const platformConfigPath = resolve(ROOT, "platform.config.json");
   const editorEmail = resolveEditorEmail(platformConfigPath);
-  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
-  const totalConsidered = computeTotalConsidered(jsonPath, data);
+  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail); // X = nº de e-mails
+  const totalConsidered = computeTotalConsidered(jsonPath, data); // total de LINKS no pool
+  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
+  // LINKS que vieram pelo canal do editor (forwards + newsletters). Antes Y =
+  // totalConsidered − editorSubmissions misturava unidades (links − e-mails),
+  // inflando o "Diar.ia encontrou". X conta e-mails, Y conta links (#1864).
+  const inboxLinks = readInboxLinkCountFromMarker(dirname(jsonPath)) ?? editorSubmissions;
   const totalSelected =
     approved.highlights.length +
     approved.lancamento.length +
@@ -321,7 +327,7 @@ function main() {
     (approved.use_melhor?.length ?? 0) +
     (approved.video?.length ?? 0);
   if (totalConsidered !== null) {
-    const diariaDiscovered = Math.max(0, totalConsidered - editorSubmissions);
+    const diariaDiscovered = Math.max(0, totalConsidered - inboxLinks);
     approved.coverage = {
       editor_submitted: editorSubmissions,
       diaria_discovered: diariaDiscovered,

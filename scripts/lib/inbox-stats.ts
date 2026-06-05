@@ -15,8 +15,41 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const DEFAULT_EDITOR_EMAIL = "vjpixel@gmail.com";
+
+/**
+ * #1864: número de LINKS que entraram pelo canal do editor (forwards diretos +
+ * newsletters) — `total_editor_urls + total_newsletter_urls` do marker
+ * `.marker-inject-inbox-urls.json` (escrito pelo inject-inbox-urls).
+ *
+ * Usado pra calcular Y ("a Diar.ia encontrou outros Y artigos") como
+ * `total_pool_links − inbox_links`. O bug do #1864: Y subtraía a contagem de
+ * EMAILS (X) da contagem de LINKS (pool), misturando unidades → "Diar.ia
+ * encontrou" inflado. X conta e-mails (submissões), Y conta links — os links do
+ * editor (inbox) são subtraídos do pool pra sobrar só o que a Diar.ia descobriu.
+ *
+ * Retorna null se o marker ausente/sem os campos (caller faz fallback).
+ */
+export function readInboxLinkCountFromMarker(internalDir: string): number | null {
+  const markerPath = join(internalDir, ".marker-inject-inbox-urls.json");
+  if (!existsSync(markerPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      total_editor_urls?: number;
+      total_newsletter_urls?: number;
+      details?: { total_editor_urls?: number; total_newsletter_urls?: number };
+    };
+    const data = raw.details ?? raw;
+    const e = typeof data.total_editor_urls === "number" ? data.total_editor_urls : null;
+    const n = typeof data.total_newsletter_urls === "number" ? data.total_newsletter_urls : null;
+    if (e === null && n === null) return null;
+    return (e ?? 0) + (n ?? 0);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Conta TODOS os blocos no archive como submissões do editor (#1486).
