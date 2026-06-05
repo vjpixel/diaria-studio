@@ -565,12 +565,20 @@ export function resolvePreviousError(
 
   if (fromJsonl && fromMd) {
     if (fromMd.edition === fromJsonl.edition) {
-      // Caso 1: mesma edição — JSONL é autoritativo, MD preenche o que faltar.
-      const enriched: RevealEntry = { ...fromJsonl };
-      if (!enriched.narrative && fromMd.narrative) enriched.narrative = fromMd.narrative;
-      if (!enriched.correct_value && fromMd.correct_value) enriched.correct_value = fromMd.correct_value;
-      if (!enriched.detail && fromMd.detail) enriched.detail = fromMd.detail;
-      if (!enriched.gabarito && fromMd.gabarito) enriched.gabarito = fromMd.gabarito;
+      // Caso 1: mesma edição — #1589: MD frontmatter é a fonte AUTORITATIVA.
+      // Quando há drift entre JSONL e MD (incidente 260528→260529:
+      // detail/correct_value divergiam), MD vence — incluindo correct_value.
+      // Evita "reveal Frankenstein". Entre publicar N-1 e renderizar N nada
+      // re-sincroniza o JSONL, então o MD ao vivo é a verdade mais recente.
+      // narrative/gabarito não existem no JSONL (frontmatterToEntry só grava
+      // detail+correct_value), então sempre vêm do MD.
+      const enriched: RevealEntry = {
+        ...fromJsonl,
+        narrative: fromMd.narrative,
+        gabarito: fromMd.gabarito,
+        ...(fromMd.detail ? { detail: fromMd.detail } : {}),
+        ...(fromMd.correct_value ? { correct_value: fromMd.correct_value } : {}),
+      };
       return { prev: enriched, source: "jsonl+md", gap: false };
     }
     if (fromMd.edition > fromJsonl.edition) {

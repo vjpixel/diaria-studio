@@ -117,6 +117,9 @@ function main(): number {
         error_type: "editor_declared",
         is_feature: true,
         detail: prose.detail ?? prose.narrative,
+        // #1860: preserva a narrativa pra composeRevealText aplicar a correção
+        // do #1443 ("o correto é Y") no reveal seguinte, em vez do detail cru.
+        narrative: prose.narrative,
         ...(prose.correct_value ? { correct_value: prose.correct_value } : {}),
         source: "prose_block",
         detected_by: "sync-intentional-error.ts fallback de prosa (#1860)",

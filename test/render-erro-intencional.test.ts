@@ -977,12 +977,35 @@ describe("resolvePreviousError (#1854/#1860)", () => {
     assert.equal(r.prev?.narrative, "md-narrativa-260603");
   });
 
-  it("mesma edição não sobrescreve correct_value já presente no JSONL", () => {
+  it("#1589: mesma edição com drift → MD frontmatter vence (correct_value)", () => {
+    // JSONL tem correct_value stale (publish-time); editor corrigiu o MD
+    // depois. MD é autoritativo — evita o "reveal Frankenstein" do 260528→260529.
     const r = resolvePreviousError(
-      jsonl("260603", { correct_value: "Satya Nadella" }),
-      md("260603", { correct_value: "outro" }),
+      jsonl("260603", { correct_value: "valor-stale-do-jsonl" }),
+      md("260603", { correct_value: "Satya Nadella" }),
     );
     assert.equal(r.prev?.correct_value, "Satya Nadella");
+  });
+
+  it("#1589: mesma edição com drift → MD frontmatter vence (detail)", () => {
+    const r = resolvePreviousError(
+      jsonl("260603", { detail: "detail-stale-do-jsonl" }),
+      md("260603", { detail: "detail-corrigido-no-md" }),
+    );
+    assert.equal(r.prev?.detail, "detail-corrigido-no-md");
+    // narrative/gabarito sempre vêm do MD (JSONL nunca os carrega).
+    assert.equal(r.prev?.narrative, "md-narrativa-260603");
+    assert.equal(r.prev?.gabarito, "md-gabarito-260603");
+  });
+
+  it("#1589: MD sem correct_value → preserva o do JSONL (não apaga)", () => {
+    // Old behavior: `...(fromMd.correct_value ? {…} : {})` — MD só sobrescreve
+    // quando tem valor. Sem valor no MD, mantém o do JSONL.
+    const r = resolvePreviousError(
+      jsonl("260603", { correct_value: "do-jsonl" }),
+      md("260603"), // md() não inclui correct_value
+    );
+    assert.equal(r.prev?.correct_value, "do-jsonl");
   });
 
   it("MD mais recente que JSONL → gap-fill do MD (source md, gap true)", () => {

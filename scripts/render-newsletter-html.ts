@@ -1273,10 +1273,13 @@ export function pickErroIntencionalReveal(text: string): string | null {
   if (explicit) return explicit;
   // Fallback só dispara pra parágrafo que referencia a edição ANTERIOR
   // (temporal). Assim um reveal reescrito pelo editor ("Na edição de ontem…",
-  // "Há duas edições atrás…", "Na edição anterior…") ainda renderiza, mas
-  // texto solto/placeholder ("Apenas placeholder do editor.") não vira um
-  // callout fantasma com o reveal errado.
-  const REVEAL_HINT_RE = /\b(?:[úu]ltim[ao]|anterior|passad[ao]|ontem)\b|edi[çc][õo]es/i;
+  // "Há duas edições atrás…", "Na edição anterior…", "Na última edição…")
+  // ainda renderiza, mas texto solto/placeholder ("Apenas placeholder do
+  // editor.") não vira um callout fantasma com o reveal errado.
+  // Sem `\b`: o JS `\b` é ASCII-only e NÃO cria boundary antes do "ú" acentuado
+  // (U+00FA), então `\b[úu]ltim` jamais casava "última" — a palavra mais comum
+  // num reveal. Estas palavras são distintivas o bastante pra dispensar boundary.
+  const REVEAL_HINT_RE = /[úu]ltim[ao]|anterior|passad[ao]|ontem|edi[çc][õo]es/i;
   const fallback = paragraphs.find(
     (p) => !isTeaserOrBoilerplate(p) && REVEAL_HINT_RE.test(p),
   );

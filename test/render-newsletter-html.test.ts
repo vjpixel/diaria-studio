@@ -66,6 +66,27 @@ describe("pickErroIntencionalReveal (#1859)", () => {
     const text = "Nessa edição, escondemos um erro pra você achar.";
     assert.equal(pickErroIntencionalReveal(text), null);
   });
+
+  it("fallback casa 'última' ACENTUADO (regressão do \\b ASCII-only)", () => {
+    // Sem o `u` flag, JS `\b` não cria boundary antes do "ú" (U+00FA); um
+    // `\b[úu]ltim` jamais casaria "última". Reveal reescrito que NÃO começa
+    // com "Na última edição" mas menciona "última" acentuada não pode sumir.
+    const text = "Erramos na última edição: o ano de fundação estava trocado.";
+    // Não começa com "Na última edição" → cai no fallback, que precisa casar
+    // o "última" acentuado.
+    assert.equal(
+      pickErroIntencionalReveal(text),
+      "Erramos na última edição: o ano de fundação estava trocado.",
+    );
+  });
+
+  it("fallback casa reveal reescrito com 'edição anterior'", () => {
+    const text = "Na edição anterior, atribuímos a frase à pessoa errada.";
+    assert.equal(
+      pickErroIntencionalReveal(text),
+      "Na edição anterior, atribuímos a frase à pessoa errada.",
+    );
+  });
 });
 
 describe("parseListItems (#172)", () => {
