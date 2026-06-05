@@ -208,13 +208,12 @@ npx tsx scripts/image-generate.ts \
 ```
 Se `_internal/02-d1-prompt.md` não existir, emitir aviso e pular (não bloquear).
 
-**É IA? mensal (novo):**
+**É IA? mensal (#1912):** seleciona a edição diária do mês cujo poll teve a
+taxa de acerto **mais próxima de 50%** (o É IA? que mais dividiu os leitores —
+melhor pro recap mensal). Fallback automático ao último dia se nenhum poll for
+elegível (gabarito + ≥5 votos). A tabela de candidatos vai pro stderr (auditoria).
 ```bash
-EAI_EDITION=$(node -e "
-  const y='$1', yr=2000+parseInt(y.slice(0,2)), mo=parseInt(y.slice(2,4));
-  const last=new Date(Date.UTC(yr,mo,0)).getUTCDate();
-  process.stdout.write(String(yr).slice(2)+String(mo).padStart(2,'0')+String(last).padStart(2,'0'));
-")
+EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month $1)
 npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
 ```
 Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
