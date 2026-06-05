@@ -377,6 +377,27 @@ function readApprovedTitles(approvedPath: string): string[] {
 export { isValidEditionDir };
 
 /**
+ * Pure (#1856): deriva o AAMMDD da edição corrente a partir de um path que passa
+ * por `editions/{AAMMDD}/` (tipicamente `--out` ou `--articles`, ex:
+ * `data/editions/260605/_internal/01-approved.json`). Retorna o 1º match.
+ *
+ * Usado pra excluir a edição corrente do dedup subject-level mesmo quando o
+ * caller esquece `--current-edition` — senão a edição deduplica contra o próprio
+ * `01-approved.json` (self-match) e re-runs/resumes esvaziam a edição (#1856).
+ */
+export function deriveCurrentEdition(...paths: Array<string | undefined>): string | undefined {
+  for (const p of paths) {
+    if (!p) continue;
+    const m = p.replace(/\\/g, "/").match(/(?:^|\/)editions\/(\d{6})(?:\/|$)/);
+    // #1875 review: valida o AAMMDD (rejeita 260999/261301 de dirs sintéticos/
+    // markers) pra ficar consistente com recentEditionDirs e surfaçar paths
+    // malformados em vez de mascará-los.
+    if (m && isValidEditionDir(m[1])) return m[1];
+  }
+  return undefined;
+}
+
+/**
  * true se o dir contém algum artefato de edição real (não é um marker vazio).
  * Espelha as fontes que extractPastDestaqueUrls/extractPastEditionArticleTitles
  * sabem ler: MD revisado, HTML final publicado, ou approved.json (root/_internal).
@@ -1125,7 +1146,15 @@ async function main() {
   const subjectVsPastThresholdLowered = parseFloat(
     args["subject-vs-past-threshold-lowered"] ?? "0.55",
   );
-  const currentAammdd = args["current-edition"]; // optional, exclude self
+  // #1856: exclui a edição corrente do subject-dedup pra não deduplicar contra o
+  // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
+  // removia os próprios destaques). Deriva do --out/--articles quando o caller
+  // não passa --current-edition explícito.
+  const currentAammdd =
+    args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
+  if (!args["current-edition"] && currentAammdd) {
+    console.error(`[dedup] edição corrente derivada do path: ${currentAammdd} (excluída do subject-dedup #1856)`);
+  }
   const pastArticleTitles = extractPastEditionArticleTitles(
     editionsDir,
     window,
