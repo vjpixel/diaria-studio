@@ -216,6 +216,42 @@ describe("stitchNewsletter (#1463)", () => {
     }
   });
 
+  it("#1855: USE MELHOR com tutoriais EN sobrevive ao stitch completo (bug #1851 era na camada do stitch)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+      writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          use_melhor: [
+            { title: "How to fine-tune your first model", url: "https://en.com/1", summary: "A step-by-step guide to training and deploying with the new API.", summary_lang: "en" },
+            { title: "Build an agent with the new SDK", url: "https://en.com/2", summary: "How to wire the tools end to end.", summary_lang: "en" },
+          ],
+          radar: [{ title: "R1", url: "https://r.com/1", summary: "rdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      // A seção NÃO some com tutoriais 100% EN (era o #1851).
+      assert.match(result, /🛠️ USE MELHOR/, "USE MELHOR não pode sumir com EN");
+      assert.match(result, /https:\/\/en\.com\/1/);
+      assert.match(result, /https:\/\/en\.com\/2/);
+      // Título EN verbatim, descrição EN com [TRADUZIR].
+      assert.match(result, /\*\*\[How to fine-tune your first model\]/);
+      assert.match(result, /\[TRADUZIR\] A step-by-step guide/);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("omite section vazia (LANÇAMENTOS sem items)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {

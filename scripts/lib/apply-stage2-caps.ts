@@ -158,12 +158,19 @@ export interface CapReport {
   removed_overlap: { lancamento: number; radar: number };
   /**
    * #1855: enforcement do mínimo de USE MELHOR.
-   *   before    — quantos itens o bucket tinha antes da promoção
-   *   promoted  — quantos runners-up `use_melhor` foram promovidos pra bater o mínimo
-   *   after     — total final
-   *   shortfall — quantos AINDA faltam pro mínimo (pool insuficiente) → warn loud no gate
+   *   before          — quantos itens o bucket tinha antes (pré-dedup/promoção)
+   *   removed_overlap  — itens removidos por já estarem em highlights[] (#1240)
+   *   promoted         — runners-up `use_melhor` promovidos pra bater o mínimo
+   *   after            — total final
+   *   shortfall        — quantos AINDA faltam pro mínimo (pool insuficiente) → warn loud no gate
    */
-  use_melhor: { before: number; promoted: number; after: number; shortfall: number };
+  use_melhor: {
+    before: number;
+    removed_overlap: number;
+    promoted: number;
+    after: number;
+    shortfall: number;
+  };
 }
 
 /**
@@ -205,8 +212,10 @@ export function promoteUseMelhorToMinimum(
       const canon = canonicalize(url);
       if (seen.has(canon) || highlightUrlsCanon.has(canon)) continue;
       // Materializa o runner-up como StageArticle (nested article preferido,
-      // fallback pro shape flat).
-      const art: StageArticle = r.article ?? { url: r.url, title: r.title, score: r.score };
+      // fallback pro shape flat). No flat, espalha o runner-up inteiro pra
+      // preservar summary/summary_lang — sem isso o item promovido renderiza
+      // sem descrição (e sem [TRADUZIR]).
+      const art: StageArticle = r.article ?? { ...r };
       kept.push(art);
       seen.add(canon);
       promoted++;
@@ -277,11 +286,14 @@ export function applyStage2Caps(
   const rCap = capRadar(dest, lFinal);
   const rFinal = Math.min(rDeduped.kept.length, rCap);
 
-  // #1855: USE MELHOR não tem cap máximo, mas tem mínimo (2). Promove runners-up
-  // `use_melhor` quando o bucket fica curto.
+  // #1855: USE MELHOR não tem cap máximo, mas tem mínimo (2). Antes de promover,
+  // dedup vs highlights[] (#1240 — igual lançamento/radar): um tutorial promovido
+  // a destaque NÃO pode render 2× (no destaque + na seção). Sem esse dedup o
+  // bucket escapava o #1240 e duplicava o item.
   const umBefore = approved.use_melhor?.length ?? 0;
+  const umDeduped = dedupAgainstHighlights(approved.use_melhor, highlightUrlsCanon);
   const um = promoteUseMelhorToMinimum(
-    approved.use_melhor,
+    umDeduped.kept,
     approved.runners_up,
     highlightUrlsCanon,
     STAGE_2_MIN_USE_MELHOR,
@@ -316,6 +328,7 @@ export function applyStage2Caps(
       },
       use_melhor: {
         before: umBefore,
+        removed_overlap: umDeduped.removed,
         promoted: um.promoted,
         after: um.kept.length,
         shortfall: um.shortfall,

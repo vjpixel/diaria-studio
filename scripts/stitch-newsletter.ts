@@ -90,13 +90,12 @@ export function renderSection(
   namePlural: string,
   items: ArticleLike[],
 ): string {
-  const kept = items;
-  if (kept.length === 0) return "";
-  const header = kept.length === 1
+  if (items.length === 0) return "";
+  const header = items.length === 1
     ? `**${emoji} ${nameSingular}**`
     : `**${emoji} ${namePlural}**`;
   const lines: string[] = [header, ""];
-  for (const a of kept) {
+  for (const a of items) {
     if (!a.url || !a.title) continue;
     // #1697/#1634: o TÍTULO de item de seção secundária sai SEMPRE no idioma
     // original — nunca prefixar [TRADUZIR] no título. O prefixo no título induzia
