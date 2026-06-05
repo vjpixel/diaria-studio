@@ -702,10 +702,12 @@ export function isCustomerSlug(url: string): boolean {
  * `cvpr-research`, título não tinha keyword de pesquisa → caía em lançamento.
  *
  * Só siglas de conferência de ALTA precisão + arxiv/preprint. `research` cru NÃO
- * entra (casaria "research preview", que é termo de lançamento).
+ * entra (casaria "research preview", que é termo de lançamento). `nips` (nome
+ * legado do NeurIPS) ficou de fora — `neurips` cobre o nome atual e `nips`
+ * colide com token solto (review #1875).
  */
 const RESEARCH_SLUG_RE =
-  /\b(cvpr|neurips|nips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|interspeech|arxiv|preprint)\b/i;
+  /\b(cvpr|neurips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|interspeech|arxiv|preprint)\b/i;
 export function isResearchBySlug(url: string): boolean {
   let slug = "";
   try {
@@ -1074,6 +1076,13 @@ export function categorize(article: Article): Category {
     // #1852: customer story "Frontiers" da OpenAI → noticias. Caso 260605:
     // openai.com/index/endava-frontiers. Roda antes do short-circuit type_hint.
     if (isOpenAIFrontiersStory(article.url)) return "noticias";
+    // #1852: HF /blog/ sobre CLI/SDK própria = post de design da ferramenta, não
+    // a página oficial do produto (#160). Caso 260605: hf-cli-for-agents. Roda
+    // ANTES do short-circuit type_hint — o agent às vezes lê o post e o rotula
+    // launch, mas o editor (260605) move pra RADAR; o blog não é a página do
+    // produto. Escopo conservador (host HF + /blog/ + token cli/sdk) evita pegar
+    // model release.
+    if (isFirstPartyToolingBlog(article.url)) return "noticias";
 
     // #1759: re-anúncio de produto pré-existente → noticias. Roda ANTES do
     // short-circuit type_hint=lancamento: o agent às vezes rotula re-anúncio/
@@ -1104,7 +1113,6 @@ export function categorize(article: Article): Category {
     if (isExplainerByTitle(article)) return "noticias";
     if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
     if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
-    if (isFirstPartyToolingBlog(article.url)) return "noticias"; // #1852 — HF /blog/ sobre CLI/SDK própria, não página de produto
 
     // #1453: resultado científico/prova matemática em domínio que normalmente
     // seria lançamento → pesquisa. Caso real 260522:

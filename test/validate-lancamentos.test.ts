@@ -324,15 +324,20 @@ describe("não-produto (governança/política) — #1799", () => {
     assert.ok(!isNonProductLancamento("https://www.nvidia.com/rtx-spark", "RTX Spark"));
   });
 
-  it("#1852: flaga blog/pesquisa/case-study/CLI em domínio oficial (backstop do gate)", () => {
+  it("#1852: flaga pesquisa/case-study em domínio oficial (backstop do gate)", () => {
     // Defesa-em-profundidade: itens que escaparam o categorize via type_hint.
     assert.ok(isNonProductLancamento("https://blogs.nvidia.com/blog/cvpr-research-grasping/"), "cvpr");
     assert.ok(isNonProductLancamento("https://x.com/index/some-arxiv-paper"), "arxiv");
     assert.ok(isNonProductLancamento("https://x.com/blog/acme-case-study"), "case study");
-    assert.ok(isNonProductLancamento("https://huggingface.co/blog/hf-cli-for-agents"), "cli");
   });
 
-  it("#1852: NÃO flaga lançamento real sem sinal de blog/pesquisa", () => {
+  it("#1852 review: NÃO flaga lançamento de CLI/SDK (é produto — cli/sdk fora do regex)", () => {
+    // Um CLI/SDK É software; a mensagem "não software/hardware" seria errada.
+    assert.ok(!isNonProductLancamento("https://github.blog/github-cli-2-0"));
+    assert.ok(!isNonProductLancamento("https://vercel.com/blog/vercel-ai-sdk"));
+  });
+
+  it("#1852: NÃO flaga lançamento real sem sinal de pesquisa/case-study", () => {
     assert.ok(!isNonProductLancamento("https://openai.com/index/introducing-gpt-5", "GPT-5"));
     assert.ok(!isNonProductLancamento("https://blog.google/technology/gemini-3", "Gemini 3"));
   });
