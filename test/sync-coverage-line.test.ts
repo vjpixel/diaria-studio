@@ -111,6 +111,20 @@ describe("countEditorVsAuto (#1323)", () => {
     // Se forwardedEmails > pool (impossível em prod mas defensive)
     assert.deepEqual(countEditorVsAuto([{ url: "u" }], 5), { x: 5, y: 0 });
   });
+
+  it("#1864: Y subtrai os LINKS do editor (não os e-mails) quando inboxLinkCount é passado", () => {
+    // X = e-mails, Y = links Diar.ia encontrou. Caso 260605: pool 350 links,
+    // editor enviou 12 e-mails que trouxeram 157 links (3 editor + 154 newsletter).
+    const pool = Array.from({ length: 350 }, (_, i) => ({ url: `u${i}` }));
+    const { x, y } = countEditorVsAuto(pool, 12, 157);
+    assert.equal(x, 12, "X = nº de e-mails (submissões)");
+    assert.equal(y, 193, "Y = 350 links − 157 links do canal do editor (NÃO 350 − 12 e-mails = 338)");
+  });
+
+  it("#1864: sem inboxLinkCount → fallback legado (pool − e-mails)", () => {
+    const pool = Array.from({ length: 350 }, (_, i) => ({ url: `u${i}` }));
+    assert.equal(countEditorVsAuto(pool, 12).y, 338); // comportamento antigo preservado
+  });
 });
 
 describe("countForwardedEmailsFromInbox (#1323)", () => {

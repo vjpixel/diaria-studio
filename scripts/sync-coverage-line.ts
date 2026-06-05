@@ -44,7 +44,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { resolveEditorEmail, readInboxLinkCountFromMarker } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
 
 interface RawArticle {
@@ -67,9 +67,15 @@ interface RawArticle {
 export function countEditorVsAuto(
   pool: RawArticle[],
   forwardedEmailsCount: number,
+  inboxLinkCount?: number,
 ): { x: number; y: number } {
-  const x = forwardedEmailsCount;
-  return { x, y: Math.max(0, pool.length - x) };
+  const x = forwardedEmailsCount; // X = nº de e-mails (submissões)
+  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
+  // LINKS que vieram pelo canal do editor (forwards + newsletters). Antes Y =
+  // pool − x misturava unidades (links − e-mails) → "Diar.ia encontrou" inflado.
+  // Sem inboxLinkCount (legado/marker ausente), cai no comportamento antigo.
+  const inboxLinks = inboxLinkCount ?? forwardedEmailsCount;
+  return { x, y: Math.max(0, pool.length - inboxLinks) };
 }
 
 /**
@@ -357,7 +363,10 @@ function main(): void {
     forwardedEmails = countForwardedEmailsFromInbox(inboxMdPath, editorEmail);
     source = "inbox_md";
   }
-  const { x, y } = countEditorVsAuto(pool, forwardedEmails);
+  // #1864: nº de LINKS do canal do editor (forwards + newsletters), do marker —
+  // usado pra Y = pool − inbox_links (não pool − e-mails).
+  const inboxLinks = readInboxLinkCountFromMarker(join(root, "_internal")) ?? undefined;
+  const { x, y } = countEditorVsAuto(pool, forwardedEmails, inboxLinks);
   const z = countSelectedItems(md);
 
   const { md: updatedMd, changed } = rewriteCoverageLine(md, x, y, z);
