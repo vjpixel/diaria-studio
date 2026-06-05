@@ -322,7 +322,7 @@ export function parseEiaLegend(eiaMd: string): string {
   // Remove a linha de header (`**É IA?**` ou `É IA?`), pega o resto. Sem `\b`:
   // o boundary ASCII não casa antes de `É` nem depois de `*` (#1914 review).
   const lines = noFront.split(/\r?\n/);
-  const startIdx = lines.findIndex((l) => /É\s?IA\?/.test(l));
+  const startIdx = lines.findIndex((l) => /É\s*IA\?/.test(l)); // \s* tolera 2+ espaços
   const body = (startIdx >= 0 ? lines.slice(startIdx + 1) : lines).join("\n").trim();
   return body;
 }
@@ -340,7 +340,12 @@ export function renderEia(
   creditOverride?: string,
 ): string {
   const lines = chunk.split("\n");
-  const content = creditOverride?.trim() || lines.slice(1).join("\n").trim();
+  // #1914: prefere a legenda do 01-eia.md; cai pro corpo do chunk só se ela
+  // vier vazia. E descarta um corpo que seja só placeholder `[...]` (#1915
+  // review) pra ele nunca vazar como crédito no email.
+  const fallbackBody = lines.slice(1).join("\n").trim();
+  const cleanFallback = /^\[[\s\S]*\]$/.test(fallbackBody) ? "" : fallbackBody;
+  const content = creditOverride?.trim() || cleanFallback;
   const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
   const edition = eiaEditionFromYymm(yymm);
   const TEAL = "#00A0A0";
@@ -644,10 +649,12 @@ export function draftToEmail(
       continue;
     }
 
-    // #1914: tolera o rótulo longo do template ("É IA? — DESTAQUE DO MÊS") além
-    // do curto. Sem isso a seção caía no fallback e o placeholder `[...]`
-    // aparecia literal no email.
-    if (label === "É IA?" || label === "É IA? — DESTAQUE DO MÊS") {
+    // #1914: tolera qualquer sufixo no rótulo ("É IA? — DESTAQUE DO MÊS" e
+    // variantes de travessão/encurtamento do editor) além do curto "É IA?".
+    // startsWith é dash-agnóstico no sufixo — match exato no em-dash era frágil
+    // (#1915 review). Sem isso a seção cai no fallback e o placeholder `[...]`
+    // aparece literal no email.
+    if (label === "É IA?" || label.startsWith("É IA?")) {
       bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit));
       continue;
     }

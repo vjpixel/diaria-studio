@@ -50,6 +50,12 @@ describe("renderEia creditOverride (#1914)", () => {
     assert.ok(html.includes("🤔 É IA?"), "deve renderizar o card");
     assert.ok(html.includes("brand=clarice"), "voto vai pro leaderboard da Clarice");
   });
+  it("descarta corpo que é só placeholder [...] mesmo sem override (#1915 review)", () => {
+    const chunk = "É IA? — DESTAQUE DO MÊS\n[Selecionar manualmente a edição...]";
+    const html = renderEia(chunk, "2605", "https://x/A.jpg", "https://x/B.jpg");
+    assert.ok(!html.includes("Selecionar manualmente"), "placeholder não pode vazar como crédito");
+    assert.ok(html.includes("🤔 É IA?"), "card ainda renderiza");
+  });
 });
 
 describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {

@@ -62,8 +62,11 @@ async function uploadEiaImages(
     const pathA = resolve(monthlyDir, nameA);
     const pathB = resolve(monthlyDir, nameB);
     if (existsSync(pathA) && existsSync(pathB)) {
-      const a = await uploadMonthlyImage(pathA, eiaEdition, ROOT);
-      const b = await uploadMonthlyImage(pathB, eiaEdition, ROOT);
+      // Uploads independentes → paralelos (#1915 review).
+      const [a, b] = await Promise.all([
+        uploadMonthlyImage(pathA, eiaEdition, ROOT),
+        uploadMonthlyImage(pathB, eiaEdition, ROOT),
+      ]);
       return { a, b };
     }
   }
