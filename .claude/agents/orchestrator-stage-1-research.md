@@ -444,7 +444,7 @@ Daqui em diante usar `_internal/tmp-finalized.json` como os buckets enriquecidos
 Após o filtro de score, contar itens remanescentes em cada bucket e preparar lista de avisos para o gate (#1629: 4 buckets agora):
 - Se `lancamento.length < 3`: registrar `⚠️ Apenas {N} lançamento(s) — mínimo esperado: 3`
 - Se `radar.length < 8`: registrar `⚠️ Apenas {N} item(ns) em RADAR — mínimo esperado: 8` (fusão de pesquisa + outras notícias do esquema pré-#1629)
-- Se `use_melhor.length < 3`: registrar `⚠️ Apenas {N} tutorial(is) — mínimo esperado: 3` (opcional na newsletter, warn não-bloqueante)
+- Se `use_melhor.length < 3`: registrar `⚠️ Apenas {N} tutorial(is) — mínimo esperado: 3 candidatos` (warn não-bloqueante; EN é aceitável — #1855). O **mínimo de 2 RENDERIZADOS** é enforçado depois, em Stage 2, pelo `promoteUseMelhorToMinimum` (promove runners-up `use_melhor`); se nem assim der 2, o `apply-stage2-caps` emite warn loud (`shortfall`) pro gate.
 
 Avisos são exibidos no GATE HUMANO. Mínimos são avisos — não bloqueiam o gate.
 

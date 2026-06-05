@@ -13,9 +13,12 @@ import {
   checkStage2Caps,
   capRadar,
   highlightUrl,
+  promoteUseMelhorToMinimum,
   STAGE_2_CAP_LANCAMENTOS,
   STAGE_2_MIN_RADAR,
+  STAGE_2_MIN_USE_MELHOR,
 } from "../scripts/lib/apply-stage2-caps.ts";
+import { canonicalize } from "../scripts/lib/url-utils.ts";
 
 describe("capRadar (#358, #1629)", () => {
   it("max(5, 12 - 3 - 2) = 7", () => {
@@ -133,6 +136,159 @@ describe("applyStage2Caps", () => {
     assert.equal(capped.lancamento?.length, 0);
     assert.equal(capped.radar?.length, 0);
     assert.equal(capped.radar?.length, 0);
+  });
+});
+
+describe("promoteUseMelhorToMinimum (#1855)", () => {
+  it("bucket ≥ mínimo → no-op (sem promoção)", () => {
+    const r = promoteUseMelhorToMinimum(
+      [{ url: "https://t/1" }, { url: "https://t/2" }],
+      [{ url: "https://ru/1", bucket: "use_melhor", score: 90 }],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.promoted, 0);
+    assert.equal(r.shortfall, 0);
+  });
+
+  it("bucket com 1 item → promove 1 runner-up use_melhor (por score desc) até 2", () => {
+    const r = promoteUseMelhorToMinimum(
+      [{ url: "https://t/1" }],
+      [
+        { url: "https://ru/low", bucket: "use_melhor", score: 40 },
+        { url: "https://ru/high", bucket: "use_melhor", score: 95 },
+        { url: "https://ru/radar", bucket: "radar", score: 99 },
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.promoted, 1);
+    assert.equal(r.shortfall, 0);
+    // Promoveu o de maior score, não o radar (bucket errado).
+    assert.equal((r.kept[1] as { url: string }).url, "https://ru/high");
+  });
+
+  it("tie-break por score igual → preserva ordem de entrada (sort estável)", () => {
+    const r = promoteUseMelhorToMinimum(
+      [],
+      [
+        { url: "https://ru/a", bucket: "use_melhor", score: 80 },
+        { url: "https://ru/b", bucket: "use_melhor", score: 80 },
+        { url: "https://ru/c", bucket: "use_melhor", score: 80 },
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal((r.kept[0] as { url: string }).url, "https://ru/a");
+    assert.equal((r.kept[1] as { url: string }).url, "https://ru/b");
+  });
+
+  it("só promove bucket use_melhor — nunca completa com outro bucket", () => {
+    const r = promoteUseMelhorToMinimum(
+      [],
+      [
+        { url: "https://ru/n1", bucket: "radar", score: 99 },
+        { url: "https://ru/l1", bucket: "lancamento", score: 98 },
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.promoted, 0);
+    assert.equal(r.shortfall, 2); // warn loud no gate
+  });
+
+  it("pool insuficiente → shortfall > 0 (não inventa)", () => {
+    const r = promoteUseMelhorToMinimum(
+      [],
+      [{ url: "https://ru/1", bucket: "use_melhor", score: 80 }],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.promoted, 1);
+    assert.equal(r.shortfall, 1);
+  });
+
+  it("dedup: não promove runner-up já presente no bucket nem em highlights", () => {
+    const highlightsCanon = new Set<string>();
+    highlightsCanon.add(canonicalize("https://dup/highlight"));
+    const r = promoteUseMelhorToMinimum(
+      [{ url: "https://dup/existing" }],
+      [
+        { url: "https://dup/existing", bucket: "use_melhor", score: 90 }, // já no bucket
+        { url: "https://dup/highlight", bucket: "use_melhor", score: 88 }, // já em highlights
+        { url: "https://ru/fresh", bucket: "use_melhor", score: 70 },
+      ],
+      highlightsCanon,
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal((r.kept[1] as { url: string }).url, "https://ru/fresh");
+    assert.equal(r.promoted, 1);
+  });
+
+  it("materializa runner-up nested (article) e flat preservando summary/summary_lang", () => {
+    const r = promoteUseMelhorToMinimum(
+      [],
+      [
+        { bucket: "use_melhor", score: 90, article: { url: "https://nested/1", title: "Nested", summary: "Desc nested." } },
+        { bucket: "use_melhor", score: 80, url: "https://flat/1", title: "Flat", summary: "A flat english summary.", summary_lang: "en" },
+      ],
+      new Set<string>(),
+      STAGE_2_MIN_USE_MELHOR,
+    );
+    assert.equal(r.kept.length, 2);
+    assert.equal((r.kept[0] as { url: string }).url, "https://nested/1");
+    const flat = r.kept[1] as { url: string; summary?: string; summary_lang?: string };
+    assert.equal(flat.url, "https://flat/1");
+    // #1855 review: flat não pode perder summary/summary_lang (senão renderiza
+    // sem descrição e sem [TRADUZIR]).
+    assert.equal(flat.summary, "A flat english summary.");
+    assert.equal(flat.summary_lang, "en");
+  });
+
+  it("applyStage2Caps promove e reporta use_melhor", () => {
+    const approved = {
+      highlights: [{ url: "https://h/1" }],
+      use_melhor: [{ url: "https://t/1" }],
+      runners_up: [{ url: "https://ru/1", bucket: "use_melhor", score: 75 }],
+      radar: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    assert.equal(capped.use_melhor?.length, 2);
+    assert.equal(report.use_melhor.before, 1);
+    assert.equal(report.use_melhor.promoted, 1);
+    assert.equal(report.use_melhor.after, 2);
+    assert.equal(report.use_melhor.shortfall, 0);
+  });
+
+  it("#1855 review: dedup item EXISTENTE do use_melhor que também é highlight (#1240)", () => {
+    // Um tutorial promovido a destaque (highlight) E presente no bucket
+    // use_melhor não pode render 2×. applyStage2Caps remove o overlap.
+    const approved = {
+      highlights: [{ article: { url: "https://dup/tut" } }],
+      use_melhor: [
+        { url: "https://dup/tut" }, // = highlight → deve sair
+        { url: "https://t/keep" },
+      ],
+      runners_up: [
+        { url: "https://ru/fill", bucket: "use_melhor", score: 70 },
+      ],
+      radar: [],
+    };
+    const { approved: capped, report } = applyStage2Caps(approved);
+    const urls = (capped.use_melhor ?? []).map((a) => (a as { url: string }).url);
+    assert.ok(!urls.includes("https://dup/tut"), "item duplicado do highlight removido");
+    assert.ok(urls.includes("https://t/keep"));
+    assert.equal(report.use_melhor.removed_overlap, 1);
+    // Ficou 1 após dedup → promove 1 runner-up pra bater 2.
+    assert.equal(capped.use_melhor?.length, 2);
+    assert.equal(report.use_melhor.promoted, 1);
+    assert.ok(urls.includes("https://ru/fill"));
   });
 });
 

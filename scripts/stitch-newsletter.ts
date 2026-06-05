@@ -35,8 +35,8 @@ interface ArticleLike {
 }
 
 // #1790: looksEnglish unificado no lib canônico (./lib/lang-detect.ts, importado
-// no topo) — era divergente do categorize. isEnglishItem passa minWords:4 pra
-// cobrir TÍTULOS curtos; o lib adiciona o guard de PT (não flaga texto PT-pesado).
+// no topo) — usado abaixo só pra marcar [TRADUZIR] na DESCRIÇÃO de itens EN
+// (o título sai sempre verbatim, #1634).
 
 interface ApprovedJsonShape {
   coverage?: { line?: string };
@@ -74,46 +74,28 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * Renderiza uma section secundária (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS)
+ * Renderiza uma section secundária (USE MELHOR/LANÇAMENTOS/RADAR/VÍDEOS)
  * com emoji prefix + items em formato canonical `[**title**](url)` + summary.
  *
  * Singular vs plural conforme `count` (#1324).
+ *
+ * #1855: USE MELHOR deixou de ser PT-only (revert do #1632). Tutoriais EN agora
+ * aparecem como em qualquer outra seção secundária — título verbatim + [TRADUZIR]
+ * na descrição EN. A grande maioria de cookbooks de qualidade é em inglês;
+ * descartá-los esvaziava a seção recorrentemente (#1851).
  */
-export interface RenderSectionOpts {
-  /**
-   * #1632: descarta itens em inglês inteiramente (não só marca [TRADUZIR]).
-   * Usado na seção USE MELHOR, cuja regra editorial é "links só em português —
-   * nunca tutorial/link em inglês nesta seção". Detecção pelo summary (sinal
-   * primário, igual ao [TRADUZIR]); sem summary, cai no título.
-   */
-  dropEnglish?: boolean;
-}
-
-/** #1632: item considerado "em inglês" pro filtro da seção USE MELHOR. */
-export function isEnglishItem(a: ArticleLike): boolean {
-  if (a.summary_lang === "en") return true;
-  // minWords:4 — summaries de USE MELHOR e títulos podem ser curtos; preserva o
-  // bar baixo da impl antiga do stitch (#1790).
-  if (a.summary) return looksEnglish(a.summary, { minWords: 4 });
-  return looksEnglish(a.title ?? "", { minWords: 4 });
-}
-
 export function renderSection(
   emoji: string,
   nameSingular: string,
   namePlural: string,
   items: ArticleLike[],
-  opts: RenderSectionOpts = {},
 ): string {
-  // #1632: na seção PT-only (USE MELHOR), filtrar itens EN antes de tudo —
-  // inclusive antes de decidir singular/plural e se a seção aparece.
-  const kept = opts.dropEnglish ? items.filter((a) => !isEnglishItem(a)) : items;
-  if (kept.length === 0) return "";
-  const header = kept.length === 1
+  if (items.length === 0) return "";
+  const header = items.length === 1
     ? `**${emoji} ${nameSingular}**`
     : `**${emoji} ${namePlural}**`;
   const lines: string[] = [header, ""];
-  for (const a of kept) {
+  for (const a of items) {
     if (!a.url || !a.title) continue;
     // #1697/#1634: o TÍTULO de item de seção secundária sai SEMPRE no idioma
     // original — nunca prefixar [TRADUZIR] no título. O prefixo no título induzia
@@ -187,11 +169,10 @@ export function stitchNewsletter(input: StitchInput): string {
   // #1752: USE MELHOR (bucket use_melhor) era tipado mas NUNCA renderizado —
   // a seção sumia da newsletter mesmo com conteúdo selecionado pelo scorer.
   // Ordem: USE MELHOR vem ANTES de LANÇAMENTOS (decisão editorial 260603).
-  // #1632: USE MELHOR é PT-only — tutoriais em inglês são descartados (não só
-  // marcados [TRADUZIR] como nas demais seções secundárias).
-  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? [], {
-    dropEnglish: true,
-  });
+  // #1855: tutoriais EN agora aparecem (revert do PT-only #1632) — mesma regra
+  // [TRADUZIR]-na-descrição das demais seções. O mínimo de 2 itens é garantido
+  // upstream pelo promoteUseMelhorToMinimum em apply-stage2-caps.
+  const useMelhor = renderSection("🛠️", "USE MELHOR", "USE MELHOR", approved.use_melhor ?? []);
   const lancamentos = renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", approved.lancamento ?? []);
   // #1569 / #1629: RADAR é bucket único (Pesquisas + Outras Notícias fundidos
   // no categorize.ts). Editor pode re-ordenar no gate Stage 2.
