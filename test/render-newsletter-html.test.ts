@@ -23,7 +23,50 @@ import {
   truncateAtSectionTerminator,
   joinMultilineLinks,
   singularizeSectionName,
+  pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
+
+describe("pickErroIntencionalReveal (#1859)", () => {
+  it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
+    const text = [
+      "Na última edição, escrevi X onde deveria ser Y.",
+      "",
+      "Nessa edição, plantamos outro erro.",
+    ].join("\n\n");
+    assert.equal(
+      pickErroIntencionalReveal(text),
+      "Na última edição, escrevi X onde deveria ser Y.",
+    );
+  });
+
+  it("fallback: reveal reescrito sem o prefixo literal → 1º parágrafo não-teaser", () => {
+    // #1859: editor reescreveu o reveal sem começar com "Na última edição".
+    // Antes o bloco inteiro sumia; agora cai no 1º parágrafo que não é teaser.
+    const text = [
+      "Há duas edições atrás, atribuímos a citação ao CEO errado.",
+      "",
+      "Nessa edição, tem mais um erro escondido.",
+    ].join("\n\n");
+    assert.equal(
+      pickErroIntencionalReveal(text),
+      "Há duas edições atrás, atribuímos a citação ao CEO errado.",
+    );
+  });
+
+  it("ignora teaser 'Nessa edição', boilerplate e placeholder", () => {
+    const text = [
+      "Esta edição tem um erro proposital.",
+      "",
+      "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+    ].join("\n\n");
+    assert.equal(pickErroIntencionalReveal(text), null);
+  });
+
+  it("retorna null quando só há teaser da edição corrente", () => {
+    const text = "Nessa edição, escondemos um erro pra você achar.";
+    assert.equal(pickErroIntencionalReveal(text), null);
+  });
+});
 
 describe("parseListItems (#172)", () => {
   it("formato novo: Título / URL / Descrição", () => {
