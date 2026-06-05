@@ -162,6 +162,50 @@ describe("stripUrlTrailingPunct (#626)", () => {
     );
   });
 
+  it("#1863: strip sufixo ')=' (artefato de markdown — caso Meta 260605)", () => {
+    // O `/)=` é `/` (path real, fim do link markdown) + `)` (fecha o `](…)`) +
+    // `=` (artefato). Strip do `)=` e do `)` desbalanceado deixa a barra real;
+    // canonicalize remove a trailing slash depois.
+    assert.equal(
+      stripUrlTrailingPunct("https://developers.facebook.com/products/meta-business-agent/)="),
+      "https://developers.facebook.com/products/meta-business-agent/",
+    );
+  });
+
+  it("#1863: strip ')=' sem barra → URL limpa", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/meta-business-agent)="),
+      "https://x.com/meta-business-agent",
+    );
+  });
+
+  it("#1863: idempotente também via canonicalize (slug final sem '/')", () => {
+    const cleaned = stripUrlTrailingPunct("https://x.com/agent/)=");
+    assert.equal(cleaned, "https://x.com/agent/");
+  });
+
+  it("#1863: strip sufixo ']=' (markdown link malformado)", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/path]="), "https://x.com/path");
+  });
+
+  it("#1863: NÃO toca query string válida terminando em '=' (?q=)", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/search?q="), "https://x.com/search?q=");
+    assert.equal(stripUrlTrailingPunct("https://x.com/a?b=c&d="), "https://x.com/a?b=c&d=");
+  });
+
+  it("#1863: preserva ')' balanceado mesmo com '=' que não é artefato", () => {
+    // `(bar)` balanceado seguido de `?x=` — não strippar.
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/Foo_(bar)?x="),
+      "https://x.com/Foo_(bar)?x=",
+    );
+  });
+
+  it("#1863: idempotente em URL já limpa", () => {
+    const u = "https://developers.facebook.com/products/meta-business-agent";
+    assert.equal(stripUrlTrailingPunct(stripUrlTrailingPunct(u)), u);
+  });
+
   it("strip ponto final sentence", () => {
     assert.equal(
       stripUrlTrailingPunct("https://x.com/y."),

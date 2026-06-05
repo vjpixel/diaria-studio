@@ -86,16 +86,33 @@ export function urlsMatch(a: string, b: string): boolean {
  *   - Caminhos com parênteses balanceados em geral
  */
 export function stripUrlTrailingPunct(url: string): string {
-  let cleaned = url.replace(/[.,;:!?]+$/, "");
-  while (cleaned.endsWith(")")) {
-    const opens = (cleaned.match(/\(/g) || []).length;
-    const closes = (cleaned.match(/\)/g) || []).length;
-    if (closes > opens) {
-      cleaned = cleaned.slice(0, -1);
-    } else {
-      break;
+  let cleaned = url;
+  let prev: string;
+  do {
+    prev = cleaned;
+    // #1863: `)=` / `]=` no fim = artefato de parse de markdown (fechamento de
+    // link `](…)` + `=` colado). Remove o(s) `=` SÓ quando colado num `)`/`]`
+    // — pra o fechamento desbalanceado cair no trim abaixo — sem tocar em query
+    // string válida (`?q=`, que não tem `)`/`]` antes do `=`). Caso 260605:
+    // `…/meta-business-agent/)=` → `…/meta-business-agent`.
+    cleaned = cleaned.replace(/([)\]])=+$/, "$1");
+    // pontuação de sentença no fim
+    cleaned = cleaned.replace(/[.,;:!?]+$/, "");
+    // `)` desbalanceado no fim (preserva Wikipedia `Foo_(bar)`)
+    while (cleaned.endsWith(")")) {
+      const opens = (cleaned.match(/\(/g) || []).length;
+      const closes = (cleaned.match(/\)/g) || []).length;
+      if (closes > opens) cleaned = cleaned.slice(0, -1);
+      else break;
     }
-  }
+    // #1863: `]` desbalanceado no fim (artefato de markdown link `[txt](url]`)
+    while (cleaned.endsWith("]")) {
+      const opens = (cleaned.match(/\[/g) || []).length;
+      const closes = (cleaned.match(/\]/g) || []).length;
+      if (closes > opens) cleaned = cleaned.slice(0, -1);
+      else break;
+    }
+  } while (cleaned !== prev);
   return cleaned;
 }
 

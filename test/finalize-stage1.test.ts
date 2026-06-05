@@ -16,6 +16,7 @@ import {
   applyPastSecondaryFilter,
   finalizeStage1,
   unwrapCategorizedInput,
+  sanitizeUrlsDeep,
   DEFAULT_DOMAIN_CAP,
   type Article,
   type ScoredEntry,
@@ -26,6 +27,44 @@ import {
 // ---------------------------------------------------------------------------
 // normalizeTitle
 // ---------------------------------------------------------------------------
+
+describe("sanitizeUrlsDeep (#1863)", () => {
+  it("limpa sufixo ')=' em highlights + buckets consistentemente", () => {
+    const buckets = {
+      highlights: [
+        { rank: 1, bucket: "lancamento", article: { url: "https://x.com/meta-business-agent)=", title: "Meta" } },
+        { rank: 2, bucket: "radar", url: "https://x.com/top-level)=" },
+      ],
+      runners_up: [{ article: { url: "https://x.com/runner)=", title: "R" } }],
+      lancamento: [{ url: "https://x.com/lanc)=", title: "L" }],
+      radar: [{ url: "https://x.com/ok", title: "OK" }],
+    };
+    sanitizeUrlsDeep(buckets);
+    assert.equal(buckets.highlights[0].article!.url, "https://x.com/meta-business-agent");
+    assert.equal(buckets.highlights[1].url, "https://x.com/top-level");
+    assert.equal(buckets.runners_up[0].article!.url, "https://x.com/runner");
+    assert.equal(buckets.lancamento[0].url, "https://x.com/lanc");
+    // URL já limpa fica inalterada.
+    assert.equal(buckets.radar[0].url, "https://x.com/ok");
+  });
+
+  it("não toca campos que não são 'url' (ex: title com ')=')", () => {
+    const node = { url: "https://x.com/a)=", title: "Foo )= bar" };
+    sanitizeUrlsDeep(node);
+    assert.equal(node.url, "https://x.com/a");
+    assert.equal(node.title, "Foo )= bar"); // título preservado
+  });
+
+  it("idempotente + tolera null/undefined/array vazio", () => {
+    sanitizeUrlsDeep(null);
+    sanitizeUrlsDeep(undefined);
+    sanitizeUrlsDeep([]);
+    const n = { url: "https://x.com/clean" };
+    sanitizeUrlsDeep(n);
+    sanitizeUrlsDeep(n);
+    assert.equal(n.url, "https://x.com/clean");
+  });
+});
 
 describe("normalizeTitle", () => {
   it("lowercasa e remove pontuação", () => {
