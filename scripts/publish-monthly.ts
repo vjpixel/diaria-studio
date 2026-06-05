@@ -261,7 +261,9 @@ async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<v
   // Calcular HMAC admin (mesmo algoritmo de close-poll.ts)
   const { createHmac } = await import("node:crypto");
   const sig = createHmac("sha256", secret).update(`${edition}:${aiSide}`).digest("hex");
-  const url = `${workerUrl}/admin/correct?edition=${edition}&answer=${aiSide}&sig=${sig}`;
+  // #1905: brand=clarice — gabarito do É IA? mensal atualiza o leaderboard da
+  // Clarice News (namespace isolado do diário).
+  const url = `${workerUrl}/admin/correct?edition=${edition}&answer=${aiSide}&sig=${sig}&brand=clarice`;
 
   try {
     const res = await fetch(url, { method: "POST" });

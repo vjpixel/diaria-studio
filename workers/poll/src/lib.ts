@@ -193,6 +193,47 @@ export function classify403Reason(sig: string): Vote403Reason {
   return sig === "" ? "sig_empty" : "sig_invalid";
 }
 
+// ── Brand namespacing do leaderboard (#1905) ────────────────────────────────
+
+/**
+ * Marcas que têm leaderboard É IA? próprio. `diaria` é o diário (Beehiiv);
+ * `clarice` é o digest mensal (Clarice News / Brevo). Cada uma tem ranking,
+ * gate de edições e apelidos isolados.
+ */
+export type Brand = "diaria" | "clarice";
+
+export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string }> = {
+  diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br" },
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai" },
+};
+
+/**
+ * Lê `?brand=` e normaliza. Só `clarice` é não-default; qualquer outro valor
+ * (ausente, typo, "diaria") cai em `diaria` — back-compat: as chaves KV legadas
+ * (sem prefixo) pertencem ao diário.
+ */
+export function parseBrandParam(raw: string | null): Brand {
+  return raw === "clarice" ? "clarice" : "diaria";
+}
+
+/**
+ * Prefixo de KV por brand. Vazio para `diaria` (chaves legadas intactas:
+ * `score-by-month:...`, `vote:...`), `clarice:` para a Clarice
+ * (`clarice:score-by-month:...`). Isola os dois rankings.
+ */
+export function brandKvPrefix(brand: Brand): string {
+  return brand === "diaria" ? "" : `${brand}:`;
+}
+
+/**
+ * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).
+ * `slug` opcional → `/leaderboard/{slug}`.
+ */
+export function leaderboardHref(brand: Brand, slug?: string | null): string {
+  const base = slug ? `/leaderboard/${slug}` : "/leaderboard";
+  return brand === "diaria" ? base : `${base}?brand=${brand}`;
+}
+
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
 
 /**
