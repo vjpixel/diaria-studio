@@ -259,6 +259,19 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
     if (!start && opts.status === "running" && now) start = now;
     let end = opts.end ?? r.end;
     if (!end && (opts.status === "done" || opts.status === "failed") && now) end = now;
+    // #1853: transição pra done/failed SEM start (o mark-running `--start` foi
+    // pulado — regressão do #1783) deixava o stage sem duração silenciosamente
+    // no relatório. Backfill: `start` = `end` do stage ANTERIOR (stages são
+    // sequenciais → duração aproximada porém não-vazia). Sem stage anterior /
+    // sem end dele → `start = end` (duração ~0). Warn `stage_start_backfilled`.
+    if (!start && (opts.status === "done" || opts.status === "failed") && end) {
+      const prevEnd = doc.rows.find((x) => x.stage === opts.stage - 1)?.end;
+      start = prevEnd ?? end;
+      console.error(
+        `[update-stage-status] stage_start_backfilled: stage ${opts.stage} marcado ${opts.status} sem --start; ` +
+          `start backfillado de ${prevEnd ? `end do stage ${opts.stage - 1}` : "end do próprio stage (dur≈0)"} (${start}).`,
+      );
+    }
     // Repassa os timestamps efetivos pro cálculo de duração/pipeline.
     const effective: UpdateOpts = { ...opts, start, end };
     return {

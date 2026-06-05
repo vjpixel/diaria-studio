@@ -88,6 +88,37 @@ describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido",
     assert.equal(doc.rows.find((r) => r.stage === 1)!.start, undefined);
   });
 
+  it("#1853: done com --end SEM start prévio → backfill start do end do stage anterior", () => {
+    // Caso 260604: stage 2 marcado done com --end mas mark-running pulado.
+    let doc = makeInitialDoc("260604");
+    // Stage 1 rodou normalmente (tem end).
+    doc = applyUpdate(doc, { stage: 1, status: "running" }, "2026-06-03T18:00:00.000Z");
+    doc = applyUpdate(doc, { stage: 1, status: "done" }, "2026-06-03T18:10:00.000Z");
+    // Stage 2 vai DIRETO pra done com --end, sem nunca ter sido running.
+    doc = applyUpdate(doc, { stage: 2, status: "done", end: "2026-06-03T18:22:00.000Z" });
+    const r2 = doc.rows.find((r) => r.stage === 2)!;
+    // start backfillado do end do stage 1 (18:10) → duração = 12 min, não vazia.
+    assert.equal(r2.start, "2026-06-03T18:10:00.000Z");
+    assert.equal(r2.duration_ms, 12 * 60 * 1000);
+  });
+
+  it("#1853: done sem start E sem stage anterior com end → start = end (dur≈0, não trava)", () => {
+    let doc = makeInitialDoc("260604");
+    // Stage 1 direto pra done com --end, sem stage anterior (stage 0 sem end).
+    doc = applyUpdate(doc, { stage: 1, status: "done", end: "2026-06-03T18:00:00.000Z" });
+    const r1 = doc.rows.find((r) => r.stage === 1)!;
+    assert.equal(r1.start, "2026-06-03T18:00:00.000Z"); // start = end (backfill fallback)
+  });
+
+  it("#1853: NÃO backfila quando já há start (preserva duração real)", () => {
+    let doc = makeInitialDoc("260604");
+    doc = applyUpdate(doc, { stage: 2, status: "running" }, "2026-06-03T10:00:00.000Z");
+    doc = applyUpdate(doc, { stage: 2, status: "done", end: "2026-06-03T10:30:00.000Z" });
+    const r2 = doc.rows.find((r) => r.stage === 2)!;
+    assert.equal(r2.start, "2026-06-03T10:00:00.000Z"); // start original, não backfillado
+    assert.equal(r2.duration_ms, 30 * 60 * 1000);
+  });
+
   it("#1783: --start/--end explícitos têm precedência sobre o auto-carimbo", () => {
     let doc = makeInitialDoc("260603");
     doc = applyUpdate(doc, { stage: 1, status: "running", start: "2026-06-03T09:00:00.000Z" }, "2026-06-03T10:00:00.000Z");
