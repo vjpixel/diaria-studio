@@ -204,7 +204,9 @@ export type Brand = "diaria" | "clarice";
 
 export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string }> = {
   diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br" },
-  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai" },
+  // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
+  // Clarice voltado ao leitor precisa carregar.
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria" },
 };
 
 /**
