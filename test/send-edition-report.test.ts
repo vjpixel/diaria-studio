@@ -201,11 +201,13 @@ describe("links do relatório (#1824)", () => {
     assert.ok(!html.includes("draft.diaria.workers.dev/260525\""), "sem o fallback hashless (404)");
   });
 
-  it("rótulos Cloudflare/Beehiiv claros nos links", () => {
+  it("rótulos Cloudflare/Beehiiv claros nos links, com prefixo de emoji", () => {
     const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
-    assert.ok(html.includes("Rascunho (Beehiiv)"));
-    assert.ok(html.includes("Preview newsletter (Cloudflare)"));
-    assert.ok(html.includes("Preview social (Cloudflare)"));
+    // #1824 §3: rótulos com emoji + "Editar no Beehiiv" (é a URL /posts/{uuid}/edit, não só "rascunho").
+    assert.ok(html.includes("📄 Preview newsletter (Cloudflare)"));
+    assert.ok(html.includes("📱 Preview social (Cloudflare)"));
+    assert.ok(html.includes("✏️ Editar no Beehiiv"));
+    assert.ok(!html.includes("Rascunho (Beehiiv)"), "rótulo antigo substituído por 'Editar no Beehiiv'");
   });
 });
 

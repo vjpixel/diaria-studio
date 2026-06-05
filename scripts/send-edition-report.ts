@@ -413,17 +413,17 @@ export function renderHtmlReport(
   <h2>Publicacao</h2>
   <h3 style="font-size:14px;">Newsletter</h3>
   <p>${nlStatus}</p>
-  <p>Rascunho (Beehiiv): ${draftUrl}</p>
-  <p>Preview newsletter (Cloudflare): ${
+  <p>📄 Preview newsletter (Cloudflare): ${
     previewUrl
       ? `<a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a>`
       : `<span style="color:#999;">(preview indisponível — draft_preview_url não persistido)</span>`
   }</p>
-  <p>Preview social (Cloudflare): ${
+  <p>📱 Preview social (Cloudflare): ${
     socialPreviewUrl
       ? `<a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a>`
       : `<span style="color:#999;">(social preview não gerado)</span>`
   }</p>
+  <p>✏️ Editar no Beehiiv: ${draftUrl}</p>
 
   ${(social?.posts ?? []).length > 0 ? `
   <h3 style="font-size:14px;">Social</h3>
