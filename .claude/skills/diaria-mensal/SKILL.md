@@ -199,14 +199,17 @@ Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empreg
 
 Disparar **em paralelo** (mesma mensagem):
 
-**D1:**
+**Destaques D1/D2/D3 — todas 2x1 (#1916):** uma chamada por destaque que tiver
+prompt. `--ratio 2x1` força o formato wide pra todos (≠ da diária):
 ```bash
-npx tsx scripts/image-generate.ts \
-  --editorial data/monthly/$1/_internal/02-d1-prompt.md \
-  --out-dir data/monthly/$1/ \
-  --destaque d1
+for D in d1 d2 d3; do
+  P="data/monthly/$1/_internal/02-$D-prompt.md"
+  [ -f "$P" ] && npx tsx scripts/image-generate.ts \
+    --editorial "$P" --out-dir data/monthly/$1/ --destaque $D --ratio 2x1
+done
 ```
-Se `_internal/02-d1-prompt.md` não existir, emitir aviso e pular (não bloquear).
+Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
+Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (+ crops 1x1).
 
 **É IA? mensal (#1912):** seleciona a edição diária do mês cujo poll teve a
 taxa de acerto **mais próxima de 50%** (o É IA? que mais dividiu os leitores —

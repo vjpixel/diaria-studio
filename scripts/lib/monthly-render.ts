@@ -86,13 +86,14 @@ export function renderParagraphs(text: string): string {
 /**
  * Renders a DESTAQUE section block. Aceita override de tema (usado pra
  * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
+ * `imageUrl` (#1916): imagem 2x1 do destaque, embutida no topo do bloco.
  *
  * Formatos de header reconhecidos (após `normalizeLabel`):
  *   - `DESTAQUE 1 | ANTHROPIC` (formato antigo, separador `|`)
  *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
  *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
  */
-export function renderDestaque(chunk: string, temaOverride?: string): string {
+export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string): string {
   const lines = chunk.split("\n");
   // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
   const cleaned = normalizeLabel(lines[0])
@@ -144,7 +145,12 @@ export function renderDestaque(chunk: string, temaOverride?: string): string {
     ? `<p style="margin:20px 0 0 0;font-style:italic;color:#444;border-left:3px solid #d0e8e8;padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
     : "";
 
-  return label + titleHtml + mainHtml + conductorHtml;
+  // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
+  const imageHtml = imageUrl
+    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(tema || title)}" style="display:block;width:100%;height:auto;border-radius:8px;margin:0 0 20px 0;" />`
+    : "";
+
+  return imageHtml + label + titleHtml + mainHtml + conductorHtml;
 }
 
 /**
@@ -183,8 +189,27 @@ export function renderIntro(body: string): string {
  *   → Teste agora: [link](url)
  */
 export function renderLaboratorio(chunk: string): string {
+  return renderClariceBox(chunk, "LABORATÓRIO CLARICE");
+}
+
+/**
+ * Box de marca Clarice (borda tracejada, h3 título, parágrafos, lista numerada),
+ * com rótulo de cabeçalho parametrizável. Compartilhado por LABORATÓRIO CLARICE
+ * e CLARICE — DIVULGAÇÃO (#1918 review request: divulgação usa o mesmo box,
+ * com rótulo "Desconto exclusivo").
+ *
+ * Estrutura esperada (após `**` strip):
+ *   {RÓTULO}
+ *
+ *   **Subtítulo bold**
+ *
+ *   Parágrafo introdutório.
+ *   1. Item lista ...
+ *   → CTA: [link](url)
+ */
+export function renderClariceBox(chunk: string, headerLabelText: string): string {
   const lines = chunk.split("\n");
-  // Skip header (LABORATÓRIO CLARICE) + blank lines.
+  // Skip header (o rótulo de seção) + blank lines.
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
 
@@ -218,7 +243,7 @@ export function renderLaboratorio(chunk: string): string {
   }
 
   const TEAL = "#00A0A0";
-  const headerLabel = `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:Arial,Helvetica,sans-serif;">LABORATÓRIO CLARICE</p>`;
+  const headerLabel = `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:Arial,Helvetica,sans-serif;">${escHtml(headerLabelText)}</p>`;
   const subtitleHtml = subtitle
     ? `<h3 style="margin:0 0 16px 0;font-size:18px;font-weight:bold;font-family:Georgia,'Times New Roman',serif;line-height:1.3;color:#1a1a1a;">${renderInline(subtitle)}</h3>`
     : "";
@@ -233,19 +258,13 @@ export function renderLaboratorio(chunk: string): string {
   ].join("");
 }
 
-/** Renders a CLARICE — DIVULGAÇÃO placeholder section. */
+/**
+ * Renders a CLARICE — DIVULGAÇÃO section. Mesmo box do laboratório, com rótulo
+ * "Desconto exclusivo" (não "CLARICE — DIVULGAÇÃO", que é só o label interno do
+ * draft). Pedido do editor: divulgação com a mesma formatação do laboratório.
+ */
 export function renderClarice(chunk: string): string {
-  const lines = chunk.split("\n");
-  // Drive exporta `**[CLARICE — DIVULGAÇÃO]**` ou `**LABORATÓRIO CLARICE**`.
-  const headerLine = escHtml(normalizeLabel(lines[0]));
-  const content = lines.slice(1).join("\n").trim();
-  return [
-    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed #bbb;border-radius:4px;background:#fafaf4;">`,
-    `<tr><td style="padding:20px 24px;">`,
-    `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:#888;font-family:Arial,Helvetica,sans-serif;">${headerLine}</p>`,
-    `<p style="margin:0;color:#999;font-style:italic;">${renderInline(content)}</p>`,
-    `</td></tr></table>`,
-  ].join("");
+  return renderClariceBox(chunk, "Desconto exclusivo");
 }
 
 /**
@@ -559,6 +578,7 @@ export function draftToEmail(
   eiaImageUrlA?: string,
   eiaImageUrlB?: string,
   eiaCredit?: string,
+  destaqueImageUrls?: Record<number, string>, // #1916: {1: url, 2: url, 3: url}
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -616,8 +636,10 @@ export function draftToEmail(
     }
 
     // DESTAQUE — aceita `DESTAQUE N | TEMA` antigo E `DESTAQUE N\] TEMA` novo.
-    if (label.match(/^DESTAQUE\s+\d+/)) {
-      bodyParts.push(renderDestaque(chunk));
+    const destaqueMatch = label.match(/^DESTAQUE\s+(\d+)/);
+    if (destaqueMatch) {
+      const n = Number(destaqueMatch[1]); // #1916: imagem 2x1 por destaque
+      bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[n]));
       continue;
     }
 
@@ -635,12 +657,12 @@ export function draftToEmail(
     // #1904-followup: dispatch tolerante ao rótulo curto (editor encurta
     // "USE MELHOR DO MÊS" → "USE MELHOR"). O título de exibição é sempre o longo.
     if (label === "USE MELHOR" || label === "USE MELHOR DO MÊS") {
-      bodyParts.push(renderLinkListSection(chunk, "Use Melhor do Mês"));
+      bodyParts.push(renderLinkListSection(chunk, "Use Melhor")); // #1919: sem "do Mês"
       continue;
     }
 
     if (label === "RADAR" || label === "RADAR DO MÊS") {
-      bodyParts.push(renderLinkListSection(chunk, "Radar do Mês"));
+      bodyParts.push(renderLinkListSection(chunk, "Radar")); // #1919: sem "do Mês"
       continue;
     }
 

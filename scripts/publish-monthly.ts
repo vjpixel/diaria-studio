@@ -37,7 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
-import { uploadMonthlyImage as uploadMonthlyImageLib } from "./lib/monthly-image-upload.ts"; // #1914
+import { uploadMonthlyImage as uploadMonthlyImageLib, uploadDestaqueImages } from "./lib/monthly-image-upload.ts"; // #1914 #1916
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
 // main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
@@ -423,6 +423,18 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     await registerEiaAnswer(monthlyDir, eiaEdition);
   }
 
+  // #1916: imagens 2x1 dos destaques (D1/D2/D3) → URLs públicas no KV.
+  let destaqueImageUrls: Record<number, string> = {};
+  if (!dryRun) {
+    try {
+      destaqueImageUrls = await uploadDestaqueImages(monthlyDir, eiaEdition, ROOT);
+      const ns = Object.keys(destaqueImageUrls);
+      process.stdout.write(ns.length ? `Imagens de destaque enviadas: D${ns.join(", D")}\n` : "warn: sem imagens de destaque (04-d{N}-2x1.jpg)\n");
+    } catch (e) {
+      process.stderr.write(`warn: upload de imagens de destaque falhou — ${(e as Error).message}\n`);
+    }
+  }
+
   // #1914: legenda do É IA? vem do 01-eia.md (o draft só tem placeholder).
   const eiaMdPath = resolve(monthlyDir, "01-eia.md");
   const eiaCredit = existsSync(eiaMdPath)
@@ -430,7 +442,7 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     : undefined;
 
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls);
 
   if (!subject) {
     process.stderr.write(
