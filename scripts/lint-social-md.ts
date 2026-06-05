@@ -34,6 +34,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { tokenizeForJaccard, jaccardSimilarity } from "./dedup.ts"; // #1861
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exportadas pra tests
@@ -479,6 +480,99 @@ const HASHTAG_ONLY_LINE_RE = /^(#[\p{L}\w-]+(\s+#[\p{L}\w-]+)*)$/u;
 // "fim editorial" que o #1762 mira; pulamos pra checar a última frase do corpo.
 const SUBSCRIBE_CTA_LINE_RE = /diar\.ia\.br|assine\s+gr[áa]tis|receba\s+not[íi]cias/i;
 
+/**
+ * #1861: o `## post_pixel` (post pessoal standalone do Pixel) é por convenção
+ * sobre o **D1** (#1690). Quando os destaques são reordenados DEPOIS de gerar o
+ * social (reorder no gate / edição manual), os `## d{N}` são remapeados mas o
+ * post_pixel atrelado ao D1 antigo fica stale — e nenhum lint pegava (caso
+ * 260605: D1 virou MIT empregos, post_pixel ficou sobre ChatGPT, o D1 antigo).
+ *
+ * Heurística de ALTA precisão (evita FP num post reescrito): compara a
+ * sobreposição de tokens (Jaccard, reusa o de dedup.ts) do post_pixel com o
+ * main de cada destaque. Só falha quando o post_pixel é claramente MAIS parecido
+ * com OUTRO destaque (d2/d3) que com o d1 — `bestOther > simD1` E
+ * `bestOther ≥ MIN_SIGNAL`. Um post_pixel reescrito mas ainda sobre o D1
+ * compartilha as entidades-núcleo do D1 → passa.
+ */
+export interface PostPixelMatchResult {
+  ok: boolean;
+  /** false = no-op (sem seção LinkedIn / sem post_pixel / sem d1). */
+  checked: boolean;
+  best_match?: string;
+  sims?: Record<string, number>;
+  detail?: string;
+}
+
+const POST_PIXEL_MIN_SIGNAL = 0.15;
+
+export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
+  const section = extractPlatformSection(md, "linkedin");
+  if (!section) return { ok: true, checked: false };
+
+  // Mapa de blocos `## <name>` → conteúdo até o próximo `## <name>` (mesmo nível).
+  const text = "\n" + section.replace(/\r\n/g, "\n");
+  const blocks: Record<string, string> = {};
+  const re = /\n## ([a-z0-9_]+)\n([\s\S]*?)(?=\n## [a-z0-9_]+\n|$)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    blocks[m[1].toLowerCase()] = m[2];
+  }
+
+  const postPixelRaw = blocks["post_pixel"];
+  if (!postPixelRaw || postPixelRaw.trim().length === 0) {
+    return { ok: true, checked: false };
+  }
+
+  // Main text de um destaque = conteúdo antes do 1º `### ` (subseções comment),
+  // sem char-count comments.
+  const destaqueMain = (name: string): string | null => {
+    const raw = blocks[name];
+    if (raw === undefined) return null;
+    const idx = raw.search(/\n### /);
+    const main = idx === -1 ? raw : raw.slice(0, idx);
+    return main.replace(/<!--[\s\S]*?-->/g, "").trim();
+  };
+
+  const d1 = destaqueMain("d1");
+  if (d1 === null) return { ok: true, checked: false }; // sem d1 não há baseline
+
+  // Strip hashtags + comments do post_pixel pra não poluir tokens.
+  const ppClean = postPixelRaw.replace(/<!--[\s\S]*?-->/g, "").replace(/#[\p{L}\w-]+/gu, " ");
+  const ppTokens = tokenizeForJaccard(ppClean);
+
+  const sims: Record<string, number> = {};
+  for (const name of ["d1", "d2", "d3"]) {
+    const main = destaqueMain(name);
+    if (main === null) continue;
+    sims[name] = jaccardSimilarity(ppTokens, tokenizeForJaccard(main));
+  }
+
+  const simD1 = sims["d1"] ?? 0;
+  let bestOther = -1;
+  let bestOtherName = "";
+  for (const [name, s] of Object.entries(sims)) {
+    if (name === "d1") continue;
+    if (s > bestOther) {
+      bestOther = s;
+      bestOtherName = name;
+    }
+  }
+
+  if (bestOther > simD1 && bestOther >= POST_PIXEL_MIN_SIGNAL) {
+    return {
+      ok: false,
+      checked: true,
+      best_match: bestOtherName,
+      sims,
+      detail:
+        `post_pixel parece sobre ${bestOtherName} (Jaccard ${bestOther.toFixed(2)}), não d1 ` +
+        `(Jaccard ${simD1.toFixed(2)}). Reordenou destaques após gerar o social? Re-sincronize ` +
+        `o post_pixel pro D1 atual (#1861).`,
+    };
+  }
+  return { ok: true, checked: true, best_match: "d1", sims };
+}
+
 export function lastMeaningfulSentence(body: string): string {
   const cleaned = body.replace(/<!--[\s\S]*?-->/g, ""); // strip char_count comments
   const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -546,7 +640,8 @@ function main(): void {
     console.error(
       "Uso: lint-social-md.ts --md <path>\n" +
         "  ou: lint-social-md.ts --check relative-time --md <path>\n" +
-        "  ou: lint-social-md.ts --check linkedin-schema --md <path>",
+        "  ou: lint-social-md.ts --check linkedin-schema --md <path>\n" +
+        "  ou: lint-social-md.ts --check post_pixel-matches-d1 --md <path>",
     );
     process.exit(2);
   }
@@ -601,6 +696,18 @@ function main(): void {
         `\n❌ ${result.errors.length} erro(s) no schema LinkedIn (#595 — main + comment_diaria + comment_pixel por destaque):`,
       );
       for (const e of result.errors) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check post_pixel-matches-d1 (#1861) — post pessoal do Pixel deve ser
+  // sobre o D1 atual (não ficar stale após reorder dos destaques).
+  if (args.check === "post_pixel-matches-d1") {
+    const result = lintPostPixelMatchesD1(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ post_pixel desalinhado com D1 (#1861):\n  ${result.detail}`);
       process.exit(1);
     }
     return;

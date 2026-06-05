@@ -7,7 +7,97 @@ import {
   lintSocialMd,
   lintRelativeTime,
   lintLinkedinSchema,
+  lintPostPixelMatchesD1,
 } from "../scripts/lint-social-md.ts";
+
+describe("lintPostPixelMatchesD1 (#1861)", () => {
+  const mk = (d1: string, d2: string, d3: string, postPixel: string) => `# LinkedIn
+
+## d1
+
+${d1}
+
+### comment_diaria
+
+Edição completa em diar.ia.br/p/edicao
+
+### comment_pixel
+
+Comentário pessoal.
+
+## d2
+
+${d2}
+
+### comment_diaria
+
+Edição completa em diar.ia.br/p/edicao
+
+## d3
+
+${d3}
+
+### comment_diaria
+
+Edição completa em diar.ia.br/p/edicao
+
+## post_pixel
+
+${postPixel}
+
+#IA #futuro
+`;
+
+  it("falha quando post_pixel é sobre d2, não d1 (caso 260605: reorder MIT→D1)", () => {
+    const md = mk(
+      "Pesquisa do MIT mostra que automação não destruiu empregos como o pânico previa; os dados de trabalho contam outra história.",
+      "A memória do ChatGPT agora consolida tudo em background, lembrando de você entre conversas — um salto na personalização do assistente.",
+      "Build 2026 da Microsoft decretou o fim da era do aplicativo com agentes que orquestram tarefas.",
+      // post_pixel STALE: fala do ChatGPT/memória (d2), não do MIT/empregos (d1)
+      "Fico pensando na memória do ChatGPT que agora lembra de você entre conversas em background. A personalização do assistente muda como confiamos nele.",
+    );
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.checked, true);
+    assert.equal(r.best_match, "d2");
+  });
+
+  it("passa quando post_pixel (reescrito) é sobre o d1 atual", () => {
+    const md = mk(
+      "Pesquisa do MIT mostra que automação não destruiu empregos como o pânico previa; os dados de trabalho contam outra história.",
+      "A memória do ChatGPT agora consolida tudo em background entre conversas.",
+      "Build 2026 da Microsoft decretou o fim da era do aplicativo.",
+      // post_pixel reescrito mas sobre o D1: compartilha MIT/empregos/automação/dados
+      "O estudo do MIT sobre automação e empregos me fez repensar o pânico: os dados de trabalho mostram um cenário bem menos apocalíptico.",
+    );
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.checked, true);
+    assert.equal(r.best_match, "d1");
+  });
+
+  it("no-op (checked:false) quando não há post_pixel", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Texto do destaque 1.
+
+### comment_diaria
+
+diar.ia.br
+`;
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.checked, false);
+  });
+
+  it("no-op quando não há seção LinkedIn", () => {
+    const r = lintPostPixelMatchesD1("# Facebook\n## d1\nfoo");
+    assert.equal(r.ok, true);
+    assert.equal(r.checked, false);
+  });
+});
 
 const validMd = `# LinkedIn
 

@@ -303,7 +303,7 @@ describe("Stage 2 invariants", () => {
 
   it("social-passes-lints falha com 'file-exists' quando 03-social.md ausente", () => {
     const v = checkSocialPassesLints(fixture);
-    assert.equal(v.length, 2); // linkedin-schema + relative-time
+    assert.equal(v.length, 3); // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861)
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
