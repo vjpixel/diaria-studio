@@ -28,7 +28,7 @@ Vários subagentes na pipeline Diar.ia são invocados via `Task` (spawn de conte
 
 ### 1. `deduplicator` → `scripts/dedup.ts`
 
-**O que faz hoje:** recebe lista de artigos, lê `context/past-editions.md`, remove artigos que já apareceram nas últimas 3 edições.
+**O que faz hoje:** recebe lista de artigos, lê `data/past-editions.md`, remove artigos que já apareceram nas últimas 3 edições.
 
 **Por que não precisa de LLM:** a lógica é:
 1. Normalizar URL (sem `www`, sem trailing `/`, sem parâmetros UTM)
@@ -39,7 +39,7 @@ Vários subagentes na pipeline Diar.ia são invocados via `Task` (spawn de conte
 ```bash
 npx tsx scripts/dedup.ts \
   --articles-json '[...]' \
-  --past-editions context/past-editions.md \
+  --past-editions data/past-editions.md \
   --window 3
 # stdout: JSON com artigos filtrados + { removed: N, reasons: [...] }
 ```

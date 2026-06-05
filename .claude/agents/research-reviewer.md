@@ -21,7 +21,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 
 ### Filtro 2 — Cobertura recente de temas
 
-1. Ler `context/past-editions.md`. Extrair apenas as edições dos últimos **7 dias** em relação a `edition_date` (filtrar por data de cabeçalho das seções).
+1. Ler `data/past-editions.md`. Extrair apenas as edições dos últimos **7 dias** em relação a `edition_date` (filtrar por data de cabeçalho das seções).
 2. Para cada artigo nos 4 buckets (`lancamento`, `radar`, `use_melhor`, `video` — #1629), avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
    - Comparar o `title` (e `summary` se disponível) do artigo com os títulos e resumos das edições recentes.
    - Critério conservador: remover **só** quando o overlap temático for claro e direto (mesma notícia, mesmo produto, mesmo anúncio). Artigos que aprofundam, contradizem ou atualizam um tema coberto devem ser **mantidos**.

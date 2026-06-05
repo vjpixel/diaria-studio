@@ -102,7 +102,7 @@ const benchmarks: BenchDef[] = [
       timeExec("npx", [
         "tsx", resolve(ROOT, "scripts/dedup.ts"),
         "--articles", resolve(tmpDir, "01-raw-articles.json"),
-        "--past-editions", resolve(ROOT, "context/past-editions.md"),
+        "--past-editions", resolve(ROOT, "data/past-editions.md"),
         "--out", resolve(tmpDir, "bench-deduped.json"),
       ], ROOT),
   },

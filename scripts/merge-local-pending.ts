@@ -1,7 +1,7 @@
 /**
  * merge-local-pending.ts (#325)
  *
- * Injeta edições locais aprovadas-mas-não-publicadas no `context/past-editions.md`
+ * Injeta edições locais aprovadas-mas-não-publicadas no `data/past-editions.md`
  * para evitar que suas URLs vazem pra edição atual via dedup.
  *
  * Problema: `refresh-dedup-runner` só vê posts `published` no Beehiiv. Edições
@@ -16,7 +16,7 @@
  *     --past-raw data/past-editions-raw.json
  *
  * O script NÃO modifica `data/past-editions-raw.json` (fonte canônica do Beehiiv).
- * Apenas faz append de seções `## YYYY-MM-DD` em `context/past-editions.md`
+ * Apenas faz append de seções `## YYYY-MM-DD` em `data/past-editions.md`
  * pra edições pending, com flag `(pending_publish)` no título pra distinguir.
  */
 
@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
 const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
-const MD_PATH = resolve(ROOT, "context/past-editions.md");
+const MD_PATH = resolve(ROOT, "data/past-editions.md");
 
 interface ApprovedJson {
   highlights?: Array<{ url?: string; article?: { url?: string } }>;

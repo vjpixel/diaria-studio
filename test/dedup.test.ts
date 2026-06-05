@@ -8,6 +8,7 @@ import {
   normalizeTitle,
   titleSimilarity,
   extractPastUrls,
+  readPastEditionsMd,
   extractPastTitles,
   extractPastEditionArticleTitles,
   extractPastDestaqueUrls,
@@ -167,6 +168,33 @@ Links usados:
     const emptyMd = "# Últimas edições publicadas — para dedup\n\natualizado em: 2026-05-05\n";
     const urls = extractPastUrls(emptyMd, 14);
     assert.equal(urls.size, 0, "header-only MD deve retornar Set vazio (não crashar)");
+  });
+
+  it("#1847: readPastEditionsMd retorna '' quando o arquivo está ausente (default/bootstrap)", () => {
+    // Pós-#1847 past-editions.md mora em data/ (gitignored) — pode faltar antes
+    // do 1º refresh-dedup. Ler deve devolver "" (histórico vazio), não crashar.
+    const missing = join(tmpdir(), "nao-existe-past-editions-1847.md");
+    assert.equal(readPastEditionsMd(missing), "");
+    // E o "" alimenta extractPastUrls sem erro → Set vazio.
+    assert.equal(extractPastUrls(readPastEditionsMd(missing), 3).size, 0);
+  });
+
+  it("#1887: readPastEditionsMd com required=true lança se o arquivo está ausente (wiring error)", () => {
+    // Path EXPLÍCITO ausente = erro de wiring (não bootstrap) → falhar alto, em
+    // vez de degradar silenciosamente a dedup-vs-histórico pra "".
+    const missing = join(tmpdir(), "nao-existe-past-editions-1887.md");
+    assert.throws(() => readPastEditionsMd(missing, { required: true }), /não encontrado/);
+  });
+
+  it("#1847: readPastEditionsMd lê o conteúdo quando o arquivo existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dedup-1847-"));
+    try {
+      const p = join(dir, "past-editions.md");
+      writeFileSync(p, "## 2026-06-01\nLinks usados:\n- https://a.com/x\n");
+      assert.match(readPastEditionsMd(p), /https:\/\/a\.com\/x/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

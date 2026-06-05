@@ -19,7 +19,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - `context/editorial-rules.md` — regras absolutas (sem markdown, sem agregadores, etc.).
 - `context/templates/newsletter-monthly.md` — formato exato.
 - `context/audience-profile.md` — perfil de tom e CTR por tema.
-- `context/past-editions.md` — voz e linguagem recorrentes (pra manter consistência).
+- `data/past-editions.md` — voz e linguagem recorrentes (pra manter consistência).
 
 ## Processo
 

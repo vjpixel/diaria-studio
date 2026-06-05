@@ -146,7 +146,7 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
 Rodar `scripts/refresh-dedup.ts` via Bash. O script:
 - Usa a Beehiiv REST API direto (token em `BEEHIIV_API_KEY`); sem dependência de MCP ou subagente (#895 — o agent legado `refresh-dedup-runner` apontava pra UUID antigo de MCP que não existe mais; rodar inline no top-level pulava a regen do MD, regredindo #162).
 - Detecta bootstrap (raw não existe) vs incremental (raw existe → busca só edições mais novas que `max(published_at)` do raw).
-- **Sempre regenera `context/past-editions.md`** — mesmo com 0 novos posts (cobre o caso de `git pull` ter resetado o tracked file enquanto o raw, gitignored, ficou intacto; #162).
+- **Sempre regenera `data/past-editions.md`** — mesmo com 0 novos posts (cobre o caso de `git pull` ter resetado o tracked file enquanto o raw, gitignored, ficou intacto; #162).
 - Popula `links[]` resolvendo tracking URLs do Beehiiv (#234) e lendo `_internal/01-approved.json` local quando disponível (#238).
 - Respeita `dedupEditionCount` do `platform.config.json`.
 - Retorna JSON `{ mode, new_posts, total_in_base, most_recent_date, skipped: false, md_regenerated: true }`.
@@ -156,9 +156,9 @@ Rodar `scripts/refresh-dedup.ts` via Bash. O script:
 npx tsx scripts/refresh-dedup.ts
 ```
 
-**Summary do dedup refresh (#314).** Após retornar, imprimir via Bash node snippet que lê `context/past-editions.md` e lista as 5 edições mais recentes (`## YYYY-MM-DD` sections). Se `new_posts > 0`, indicar `+{new_posts} nova(s)`. Como `skipped` agora é sempre `false` e o MD é sempre regenerado, indicar `no-op (MD regenerado)` quando `new_posts === 0`.
+**Summary do dedup refresh (#314).** Após retornar, imprimir via Bash node snippet que lê `data/past-editions.md` e lista as 5 edições mais recentes (`## YYYY-MM-DD` sections). Se `new_posts > 0`, indicar `+{new_posts} nova(s)`. Como `skipped` agora é sempre `false` e o MD é sempre regenerado, indicar `no-op (MD regenerado)` quando `new_posts === 0`.
 
-**Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `context/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
+**Publicação manual (sem Stage 4 automático):** quando o editor publica diretamente no Beehiiv sem passar pela Etapa 4 do pipeline, `data/past-editions.md` não é atualizado automaticamente. Após qualquer publicação manual, rodar `/diaria-refresh-dedup` para sincronizar.
 
 ### 0d.bis Maintain `valid_editions` window do Worker (#1086, #1233)
 
@@ -232,7 +232,7 @@ npx tsx scripts/merge-local-pending.ts \
 ```
 O script:
 1. Escaneia `data/editions/*/` em busca de edições dos últimos 5 dias **a partir do `anchor_iso` (today)** que tenham `_internal/01-approved.json` mas **não** tenham `_internal/05-published.json` com `status: "published"`.
-2. Extrai todas as URLs dessas edições e injeta em `context/past-editions.md` com flag `pending_publish: true`.
+2. Extrai todas as URLs dessas edições e injeta em `data/past-editions.md` com flag `pending_publish: true`.
 3. Se encontrar edições pending há > 2 dias **a partir de today**, alertar com mensagem `🟡 Edição {N} aprovada local há {D} dia(s) mas ainda draft no Beehiiv — URLs dela bloqueadas no dedup de hoje`.
 
 **`--anchor-iso` (#863)**: A janela de pending detection é ancorada em "hoje" (data de execução), não em `edition_date`. Crítico para test mode com edição agendada no futuro — sem isso, pending legítimos da última semana saem da janela. Se omitido, default é `Date.now()` UTC.

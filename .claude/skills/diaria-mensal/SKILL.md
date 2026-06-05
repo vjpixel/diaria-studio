@@ -121,7 +121,7 @@ Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars.
 Invocar skill humanizador in-place no `draft.md`:
 
 ```
-Skill("humanizador", "Leia data/monthly/$1/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com context/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
+Skill("humanizador", "Leia data/monthly/$1/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
 ```
 
 Se falhar: warning, seguir com o arquivo original (não bloqueia).

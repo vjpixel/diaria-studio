@@ -8,7 +8,7 @@
  * top-level pulava a regen do MD — bug #895, regressão de #162).
  *
  * Mantém `data/past-editions-raw.json` (canônico) e regenera
- * `context/past-editions.md` (derivado, lido por dedup.ts) end-to-end:
+ * `data/past-editions.md` (derivado, lido por dedup.ts) end-to-end:
  *
  *   1. Detecta bootstrap (raw não existe) ou incremental (raw existe).
  *   2. Bootstrap: busca as `dedupEditionCount` edições mais recentes.
@@ -58,7 +58,7 @@ import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
-const MD_PATH = resolve(ROOT, "context/past-editions.md");
+const MD_PATH = resolve(ROOT, "data/past-editions.md");
 // `BEEHIIV_API_URL` override permite que testes apontem pra mock server local
 // (#895). Em produção, ausente — usa a URL canônica.
 const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";

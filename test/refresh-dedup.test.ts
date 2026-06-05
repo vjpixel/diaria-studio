@@ -1,10 +1,11 @@
 /**
  * Tests for scripts/refresh-dedup.ts (#895 — substitui subagente refresh-dedup-runner).
  *
- * Foco principal — regression de #162: o MD `context/past-editions.md`
- * **deve sempre ser regenerado**, mesmo quando 0 novos posts são detectados
- * no Beehiiv. Isso cobre o caso de `git pull` ter resetado o tracked file
- * enquanto o raw (gitignored) ficou intacto.
+ * Foco principal — regression de #162: o MD `data/past-editions.md` (#1847:
+ * movido de context/) **deve sempre ser regenerado**, mesmo quando 0 novos
+ * posts são detectados no Beehiiv. Pós-#1847 o MD também é gitignored, então a
+ * classe "git pull resetou o tracked file" deixou de existir — mas o regen
+ * incondicional continua sendo a garantia.
  *
  * Estratégia: importa `refreshDedup` direto, injeta paths de sandbox via
  * opts, e mocka `globalThis.fetch` pra responder Beehiiv API. Sem

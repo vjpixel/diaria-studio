@@ -1,5 +1,5 @@
 /**
- * Regera `context/past-editions.md` a partir de `data/past-editions-raw.json`.
+ * Regera `data/past-editions.md` a partir de `data/past-editions-raw.json`.
  *
  * O raw JSON é a fonte canônica — o markdown é derivado. O orchestrator
  * (via subagente `refresh-dedup-runner`) alimenta este script com:
@@ -27,7 +27,7 @@ import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const RAW_PATH = resolve(ROOT, "data/past-editions-raw.json");
-const MD_PATH = resolve(ROOT, "context/past-editions.md");
+const MD_PATH = resolve(ROOT, "data/past-editions.md");
 
 export type Post = {
   id: string;

@@ -6,7 +6,7 @@
 
 ## Contexto
 
-`research-reviewer` Filtro 2 (após #1112 que extraiu o Filtro 1 pra script) detecta se um artigo da edição atual tem tema já coberto pela Diar.ia nos últimos 7 dias. Implementação atual: Haiku 4.5 pinned compara semanticamente título + summary do artigo com headers de seção de `context/past-editions.md`.
+`research-reviewer` Filtro 2 (após #1112 que extraiu o Filtro 1 pra script) detecta se um artigo da edição atual tem tema já coberto pela Diar.ia nos últimos 7 dias. Implementação atual: Haiku 4.5 pinned compara semanticamente título + summary do artigo com headers de seção de `data/past-editions.md`.
 
 **Custo atual** (estimado): ~5-15k input tokens + ~2-3k output tokens por edição. Em Haiku 4.5: ~$0.005-0.015 por edição. **Ínfimo** se rodado 1×/dia (~$1-5/ano). Variância entre runs é a dor real, não custo.
 

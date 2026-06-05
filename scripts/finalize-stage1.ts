@@ -696,7 +696,7 @@ function main(): void {
   // #1068 phase 2: carrega past URLs flat - past destaque URLs = past-secondary.
   // Caller pode override via --past-editions e --editions-dir; defaults
   // batem com convenções do dedup.ts.
-  const pastEditionsPath = args["past-editions"] ?? "context/past-editions.md";
+  const pastEditionsPath = args["past-editions"] ?? "data/past-editions.md";
   const editionsDir = args["editions-dir"] ?? "data/editions";
   // Alinhar com dedup.ts (DEFAULT_PAST_WINDOW). Mismatch anterior (14) fazia
   // phase 2 dropar past-secondary fora da janela que phase 1 já tinha
