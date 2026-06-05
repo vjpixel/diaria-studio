@@ -8,7 +8,7 @@ Beehiiv tem 2 tipos de poll: **Voting** (que usamos) e **Trivia** (que não usam
 
 ### Antes da publicação
 
-Edição 260427 (ou primeira pós-PR) usa Trivia em vez de Voting na seção É IA?. Roteiro em `context/publishers/beehiiv.md` § "É IA?" passo 4.
+Edição 260427 (ou primeira pós-PR) usa Trivia em vez de Voting na seção É IA?. Roteiro em `context/publishers/beehiiv-playbook.md` § "É IA?" passo 4 (#1846: `beehiiv.md` legacy removido, substituído pelo playbook em #1114).
 
 ### Após a publicação (~24h depois pra ter respostas)
 
