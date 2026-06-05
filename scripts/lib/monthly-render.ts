@@ -481,7 +481,9 @@ export function isSectionLabel(line: string): boolean {
   const normalized = normalizeLabel(trimmed);
   // #1904-followup: aceita os rótulos com OU sem " DO MÊS" — o editor encurta
   // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
-  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?|RADAR(\s+DO\s+M[ÊE]S)?|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+  // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
+  // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
+  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
     normalized
   );
 }

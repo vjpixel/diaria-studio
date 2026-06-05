@@ -35,6 +35,13 @@ describe("isSectionLabel — novos labels Use Melhor / Radar", () => {
   it("reconhece o rótulo curto **RADAR** (sem DO MÊS)", () => {
     assert.equal(isSectionLabel("**RADAR**"), true);
   });
+  // #1904-followup (code-review #1906): "RADAR"/"USE MELHOR" são palavras comuns;
+  // uma linha 100%-bold que apenas COMEÇA com elas NÃO é fronteira de seção.
+  it("NÃO trata **RADAR DA OPENAI** / **USE MELHOR SEU TEMPO** como rótulo", () => {
+    assert.equal(isSectionLabel("**RADAR DA OPENAI**"), false);
+    assert.equal(isSectionLabel("**USE MELHOR SEU TEMPO**"), false);
+    assert.equal(isSectionLabel("**RADARES DA SEMANA**"), false);
+  });
 });
 
 describe("renderLinkListSection", () => {
