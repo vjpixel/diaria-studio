@@ -188,9 +188,8 @@
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
 
 ### OpenAI Cookbook
-- URL: https://cookbook.openai.com/
-- Site query: `site:cookbook.openai.com`
-- RSS: https://cookbook.openai.com/rss.xml
+- URL: https://developers.openai.com/cookbook
+- Site query: `site:developers.openai.com/cookbook`
 
 ### Sebastian Raschka (Ahead of AI)
 - URL: https://magazine.sebastianraschka.com/
@@ -200,12 +199,11 @@
 ### Fast.ai
 - URL: https://www.fast.ai/
 - Site query: `site:fast.ai`
-- RSS: https://www.fast.ai/atom.xml
+- RSS: https://www.fast.ai/index.xml
 
 ### LangChain Blog
-- URL: https://blog.langchain.dev/
-- Site query: `site:blog.langchain.dev`
-- RSS: https://blog.langchain.dev/rss/
+- URL: https://www.langchain.com/blog
+- Site query: `site:langchain.com/blog`
 
 ### Pinecone Learn
 - URL: https://www.pinecone.io/learn/
@@ -230,9 +228,8 @@
 - Site query: `site:kaggle.com/learn`
 
 ### Weights & Biases
-- URL: https://wandb.ai/site/articles
-- Site query: `site:wandb.ai/site/articles`
-- RSS: https://wandb.ai/site/articles/rss.xml
+- URL: https://wandb.ai/fully-connected
+- Site query: `site:wandb.ai/fully-connected`
 
 ### Microsoft Learn AI
 - URL: https://learn.microsoft.com/en-us/training/browse/?products=ai-services
