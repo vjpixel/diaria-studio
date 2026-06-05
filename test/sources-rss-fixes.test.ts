@@ -81,4 +81,41 @@ describe("sources RSS fixes (#1266)", () => {
       "DeepMind feed é válido apesar da cadência baixa",
     );
   });
+
+  // #1862: 7 fontes "Tutoriais" reportadas como secas. Investigação (curl
+  // server-side) distinguiu feed quebrado de fonte de baixa cadência:
+  it("#1862: Fast.ai usa index.xml (atom.xml era 404)", () => {
+    const s = byName.get("Fast.ai");
+    assert.ok(s, "Fast.ai deve existir em sources.md");
+    assert.equal(
+      s!.rss,
+      "https://www.fast.ai/index.xml",
+      "atom.xml retornava 404; index.xml é o feed declarado no homepage (200 application/xml)",
+    );
+  });
+
+  // #1862: feeds RSS mortos (404 / HTML React/Webflow) — fonte mantida pra
+  // WebSearch `site:`, mas RSS limpo + URL apontando pro domínio atual.
+  const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [
+    { name: "OpenAI Cookbook", url: "https://developers.openai.com/cookbook" }, // migrou de cookbook.openai.com (rss 404)
+    { name: "LangChain Blog", url: "https://www.langchain.com/blog" }, // blog.langchain.dev/rss → 301 → HTML Webflow
+    { name: "Weights & Biases", url: "https://wandb.ai/fully-connected" }, // /site/articles/rss.xml 404; fully-connected é React (sem XML)
+  ];
+  for (const { name, url } of SOURCES_1862_NO_RSS) {
+    it(`#1862: ${name} sem RSS (feed morto) + URL no domínio atual`, () => {
+      const s = byName.get(name);
+      assert.ok(s, `${name} deve existir em sources.md (mantida pra WebSearch site:)`);
+      assert.equal(s!.rss, undefined, `${name} não deve ter RSS — feed morto`);
+      assert.equal(s!.url, url, `${name} URL deve apontar pro domínio atual`);
+    });
+  }
+
+  it("#1862: fontes de baixa cadência mantidas com RSS válido (não eram quebradas)", () => {
+    // 0 hard failures, só empties → feed funciona, publica pouco. NÃO mexer.
+    for (const name of ["Sebastian Raschka (Ahead of AI)", "Hamel Husain", "Eugene Yan"]) {
+      const s = byName.get(name);
+      assert.ok(s, `${name} deve existir`);
+      assert.ok(s!.rss && s!.rss.length > 0, `${name} deve manter o RSS válido (baixa cadência ≠ quebrado)`);
+    }
+  });
 });

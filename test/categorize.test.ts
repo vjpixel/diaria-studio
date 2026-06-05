@@ -891,6 +891,32 @@ describe("categorize() — bucket tutorial (#59 slice 2)", () => {
         "tutorial",
       );
     });
+
+    it("#1862: developers.openai.com/cookbook → tutorial (domínio migrado)", () => {
+      assert.equal(
+        categorize({ url: "https://developers.openai.com/cookbook/examples/how-to-stream" }),
+        "tutorial",
+      );
+    });
+
+    it("#1862: langchain.com/blog → tutorial; langchain.com (produto) NÃO", () => {
+      assert.equal(
+        categorize({ url: "https://www.langchain.com/blog/build-an-agent" }),
+        "tutorial",
+      );
+      // Path-scoped: página de produto langchain.com não vira tutorial.
+      assert.notEqual(
+        categorize({ url: "https://www.langchain.com/langgraph", title: "LangGraph platform" }),
+        "tutorial",
+      );
+    });
+
+    it("#1862: wandb.ai/fully-connected → tutorial", () => {
+      assert.equal(
+        categorize({ url: "https://wandb.ai/fully-connected/how-to-finetune" }),
+        "tutorial",
+      );
+    });
   });
 
   describe("precedência tutorial vs pesquisa", () => {

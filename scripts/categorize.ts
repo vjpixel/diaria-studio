@@ -940,7 +940,12 @@ const TUTORIAL_PATTERNS: RegExp[] = [
   /^(www\.)?pinecone\.io\/learn\//,
   /^(www\.)?kaggle\.com\/learn/,
   /^wandb\.ai\/site\/articles/,
+  /^wandb\.ai\/fully-connected/, // #1862 — W&B "Fully Connected" (novo hub; /site/articles tinha feed morto)
   /^learn\.microsoft\.com\/.*\/(training|paths)\//i,
+  // #1862 — fontes "Use Melhor" que migraram de domínio (RSS morto → WebSearch
+  // site:). Path-scoped (não host-wide) pra não pegar páginas de produto.
+  /^developers\.openai\.com\/cookbook/, // OpenAI Cookbook migrou de cookbook.openai.com
+  /^(www\.)?langchain\.com\/blog/, // LangChain Blog migrou de blog.langchain.dev
 ];
 
 /**
