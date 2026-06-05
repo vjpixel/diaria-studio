@@ -211,6 +211,30 @@ describe("links do relatório (#1824)", () => {
   });
 });
 
+describe("relatório de edição não enumera issues criadas (#1825)", () => {
+  // O editor não quer ver a lista de issues criadas pelo auto-reporter no
+  // relatório. send-edition-report.ts não lê issues-reported.json — a
+  // enumeração é estruturalmente impossível aqui. Este teste trava isso:
+  // mesmo num render totalmente populado, o HTML não contém links de issue
+  // GitHub nem cabeçalho de enumeração de issues.
+  it("HTML do relatório não contém enumeração de issues nem links de issue GitHub", () => {
+    const published = {
+      draft_url: "https://app.beehiiv.com/posts/abc/edit",
+      title: "Edição",
+      status: "draft",
+      draft_preview_url: "https://draft.diaria.workers.dev/260525-796cd4",
+    } as unknown as Parameters<typeof renderHtmlReport>[2];
+    const social = {
+      posts: [{ platform: "facebook", destaque: "d1", status: "published", scheduled_at: "2026-05-25T20:00:00Z" }],
+    };
+    const warnings = [{ level: "warn", message: "timeout", agent: "researcher", stage: 1, edition: "260525" }];
+    const html = renderHtmlReport("260525", MINIMAL_DOC, published, social, warnings, [], null, "https://draft.diaria.workers.dev/260525-social-ab12");
+    assert.ok(!/github\.com\/[^/]+\/[^/]+\/issues\/\d+/.test(html), "sem links de issue GitHub no relatório");
+    assert.ok(!/Issues? (criadas|propostas|reportadas)/i.test(html), "sem cabeçalho de enumeração de issues");
+    assert.ok(!html.includes("issues-reported.json"), "não referencia o registro interno de issues");
+  });
+});
+
 describe("buildSummary", () => {
   // #1609: total soma pipeline_ms (fallback duration_ms): 60k+300k+900k+300k+300k.
   it("computes total pipeline duration from all stages (sem aguardo gate)", () => {
