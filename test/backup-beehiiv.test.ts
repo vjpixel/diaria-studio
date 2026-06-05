@@ -160,13 +160,28 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
   // (ignorado pela Beehiiv em /subscriptions).
   let sawLimit = false;
   let sawPerPage = false;
-  let maxOffset = 0;
+  let maxPage = 0;
+  let subRequests = 0;
+
+  // Parâmetros do mock, ajustados por teste.
+  // `reportedTotal`: o que o envelope diz em `total_results`.
+  // `available`: quantas linhas REALMENTE existem (offset além disso → página vazia,
+  //   pra simular truncamento). Por padrão = reportedTotal (base coerente).
+  // `PAGE_CAP`: o cap REAL da Beehiiv é por NÚMERO DE PÁGINA (~100), não por offset
+  //   de registro — confirmado no dado real (limit=100 drenou 1253/1253, offsets
+  //   até 1200, sem cap; o run antigo morreu "na página 101" com limit=10).
+  let reportedTotal = 1253;
+  let available = 1253;
+  const PAGE_CAP = 100;
 
   beforeEach(() => {
     saved = globalThis.fetch;
     sawLimit = false;
     sawPerPage = false;
-    maxOffset = 0;
+    maxPage = 0;
+    subRequests = 0;
+    reportedTotal = 1253;
+    available = 1253;
     rmSync(outDir, { recursive: true, force: true });
   });
   afterEach(() => {
@@ -174,25 +189,25 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
     rmSync(outDir, { recursive: true, force: true });
   });
 
-  const TOTAL_SUBS = 150;
-
   function mockFetch(url: string): Response {
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
     if (url.includes("/subscriptions")) {
+      subRequests++;
       const limitMatch = url.match(/[?&]limit=(\d+)/);
       const perPageMatch = url.match(/[?&]per_page=(\d+)/);
       if (limitMatch) sawLimit = true;
       if (perPageMatch) sawPerPage = true;
       const page = Number(url.match(/[?&]page=(\d+)/)?.[1] ?? "1");
-      // Simula a Beehiiv: respeita `limit`; se só vier `per_page`, IGNORA (cap 10).
+      maxPage = Math.max(maxPage, page);
+      // Beehiiv respeita `limit`; se só vier `per_page`, IGNORA (cap default 10).
       const effLimit = limitMatch ? Number(limitMatch[1]) : 10;
+      // Cap REAL por número de página: estoura → HTTP 400 (o sintoma do #1897 no
+      // run antigo com limit=10, que precisava de ~126 páginas).
+      if (page > PAGE_CAP) return json({ error: "page cap" }, 400);
       const start = (page - 1) * effLimit;
-      maxOffset = Math.max(maxOffset, start);
-      // Offset cap real da Beehiiv (~1000): se o paginador estourar, devolve 400.
-      if (start >= 1000) return json({ error: "offset cap" }, 400);
-      const slice = Array.from({ length: Math.max(0, Math.min(effLimit, TOTAL_SUBS - start)) }, (_, i) => ({
+      const slice = Array.from({ length: Math.max(0, Math.min(effLimit, available - start)) }, (_, i) => ({
         id: `sub_${start + i}`,
         email: `s${start + i}@example.com`,
       }));
@@ -200,8 +215,8 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
         data: slice,
         page,
         limit: effLimit,
-        total_results: TOTAL_SUBS,
-        total_pages: Math.ceil(TOTAL_SUBS / effLimit),
+        total_results: reportedTotal,
+        total_pages: Math.ceil(reportedTotal / effLimit),
       });
     }
     // posts list
@@ -213,32 +228,59 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
     return json({ data: [], total_pages: 1 });
   }
 
-  it("manda limit (não per_page) e salva os 150 subscribers sem estourar offset cap", async () => {
+  function installMock() {
     globalThis.fetch = (async (input: string | URL | Request) =>
       mockFetch(typeof input === "string" ? input : input.toString())) as typeof fetch;
+  }
 
-    const manifest = await backupBeehiiv({
-      date: "2026-06-05",
-      outDir,
-      subscribers: true,
-      content: false,
-      postsLimit: null,
-      dryRun: false,
-      configOverride: { apiKey: "test-key", publicationId: "pub_test" },
-    });
+  const baseOpts = {
+    outDir,
+    subscribers: true,
+    content: false,
+    postsLimit: null,
+    dryRun: false,
+    configOverride: { apiKey: "test-key", publicationId: "pub_test" },
+  } as const;
+
+  it("usa limit= e drena os 1253 subscribers em ~13 páginas, sem bater no page cap", async () => {
+    // Base > offset antigo (1253) com cap por-página em 100. O código ANTIGO
+    // (per_page ignorado → limit efetivo 10) precisaria de 126 páginas e morreria
+    // na página 101 (HTTP 400). O novo (limit=100) drena em 13 páginas. Esta é a
+    // asserção que de fato distingue o fix do bug (#633).
+    installMock();
+    const manifest = await backupBeehiiv({ ...baseOpts, date: "2026-06-05" });
 
     assert.equal(sawLimit, true, "deve paginar /subscriptions com limit=");
     assert.equal(sawPerPage, false, "nunca deve usar per_page= em /subscriptions (é ignorado)");
-    assert.ok(maxOffset < 1000, `offset não deve estourar o cap (~1000); foi ${maxOffset}`);
+    assert.equal(subRequests, Math.ceil(1253 / 100), "limit=100 → 13 requests (não ~126 do per_page ignorado)");
+    assert.ok(maxPage <= PAGE_CAP, `não deve cruzar o page cap (${PAGE_CAP}); chegou a ${maxPage}`);
 
     const subsEntry = manifest.endpoints.find((e) => e.key === "subscribers")!;
     assert.equal(subsEntry.status, "ok");
-    assert.equal(subsEntry.count, TOTAL_SUBS);
-    assert.equal(manifest.subscribers?.fetched, TOTAL_SUBS);
+    assert.equal(subsEntry.count, 1253);
+    assert.equal(manifest.subscribers?.fetched, 1253);
 
     const lines = readFileSync(resolve(outDir, "subscribers.jsonl"), "utf8").trim().split("\n");
-    assert.equal(lines.length, TOTAL_SUBS, "subscribers.jsonl deve ter 1 linha por subscriber");
+    assert.equal(lines.length, 1253, "subscribers.jsonl deve ter 1 linha por subscriber");
     assert.ok(!existsSync(resolve(outDir, "subscribers.jsonl.partial")), "não deixa .partial órfão");
+  });
+
+  it("marca status error (não ok) quando o loop encerra antes de drenar total_results", async () => {
+    // Simula hiccup: API informa total_results=300 mas só entrega 150 linhas
+    // (página vazia em offset ≥ 150). A reconciliação anti-truncamento-silencioso
+    // deve falhar barulhento em vez de gravar um backup parcial como "ok" (#1897).
+    reportedTotal = 300;
+    available = 150;
+    installMock();
+    const manifest = await backupBeehiiv({ ...baseOpts, date: "2026-06-05" });
+
+    const subsEntry = manifest.endpoints.find((e) => e.key === "subscribers")!;
+    assert.equal(subsEntry.status, "error", "truncamento não pode ser gravado como ok");
+    assert.match(subsEntry.error ?? "", /truncado: 150\/300/);
+    assert.notEqual(manifest.subscribers?.fetched, 150, "não conta a base truncada como completa");
+    // .jsonl não é gerado (renameSync pulado); só o .partial sobra como sinal.
+    assert.ok(!existsSync(resolve(outDir, "subscribers.jsonl")), "não grava .jsonl truncado");
+    assert.ok(existsSync(resolve(outDir, "subscribers.jsonl.partial")), "preserva .partial como sinal");
   });
 });
 

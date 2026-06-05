@@ -429,6 +429,7 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
       let page = 1;
       let count = 0;
       let more = true;
+      let totalResults: number | null = null;
       // `/subscriptions` ignora `per_page` (responde sempre limit=10) e infla
       // `total_pages` → usamos `limit` (respeitado) e drenamos por `total_results`
       // via hasMorePages, ignorando `total_pages`. (#1897)
@@ -443,6 +444,7 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
         const chunk = got.map((sub) => JSON.stringify(sub)).join("\n");
         if (chunk) appendFileSync(subsPartial, chunk + "\n", "utf8");
         count += got.length;
+        if (body.total_results != null) totalResults = body.total_results;
         more = hasMorePages({
           collected: count,
           gotLength: got.length,
@@ -450,9 +452,20 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
           effectiveLimit: body.limit,
           requestedPerPage: PER_PAGE,
         });
-        const totalNote = body.total_results ? `/${body.total_results}` : "";
+        const totalNote = body.total_results != null ? `/${body.total_results}` : "";
         process.stderr.write(`[backup-beehiiv] subscribers: página ${page} (${count}${totalNote} total)\n`);
         page++;
+      }
+      // Reconciliação anti-truncamento-silencioso (#1897): o loop pode encerrar
+      // cedo via guard de página vazia (hiccup da API devolvendo 200 com data:[]
+      // antes de drenar tudo). Sem isso, um backup parcial seria gravado como
+      // "ok" — exatamente o sintoma do #1897 (faltavam 253 e ninguém viu). Se a
+      // API informou total_results e não chegamos lá, falha barulhento: o throw
+      // cai no catch → status "error" e o .partial é preservado (não renomeado).
+      if (totalResults != null && totalResults > 0 && count < totalResults) {
+        throw new Error(
+          `subscriptions truncado: ${count}/${totalResults} (loop encerrou antes de drenar total_results)`,
+        );
       }
       // Garante que o .partial existe mesmo numa base vazia (0 subscribers),
       // senão renameSync lançaria ENOENT.
