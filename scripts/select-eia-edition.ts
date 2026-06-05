@@ -17,7 +17,7 @@
  * naturalmente filtradas.
  *
  * Uso:
- *   npx tsx scripts/select-eia-edition.ts --month 2605 [--threshold 10] \
+ *   npx tsx scripts/select-eia-edition.ts --month 2605 [--threshold 5] \
  *     [--base https://poll.diaria.workers.dev]
  *
  * stdout = a edição AAMMDD escolhida (uma linha, pra capturar na skill).
@@ -41,6 +41,13 @@ export interface EditionPollStat {
   correct_pct: number | null;
   /** Gabarito definido (admin/correct). null = sem gabarito → inelegível. */
   correct_answer: string | null;
+  /**
+   * Só CLI (#1913 review): true se o GET /stats falhou (rede/5xx/timeout), pra
+   * distinguir "0 votos" de "não consegui ler". O seletor puro ignora este
+   * campo — ele existe só pra o main() avisar quando a seleção pode estar
+   * comprometida por falha de fetch (em vez de mascarar como fallback).
+   */
+  fetchError?: boolean;
 }
 
 /**
@@ -113,8 +120,14 @@ async function fetchStat(
   edition: string,
 ): Promise<EditionPollStat> {
   try {
-    const r = await fetch(`${base}/stats?edition=${edition}`);
-    if (!r.ok) return { edition, total: 0, correct_pct: null, correct_answer: null };
+    // Timeout (#1913 review): sem ele, um worker pendurado travaria o
+    // Promise.all — e a Etapa 3 do mensal — indefinidamente.
+    const r = await fetch(`${base}/stats?edition=${edition}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) {
+      return { edition, total: 0, correct_pct: null, correct_answer: null, fetchError: true };
+    }
     const j = (await r.json()) as {
       total?: number;
       correct_pct?: number | null;
@@ -127,7 +140,9 @@ async function fetchStat(
       correct_answer: j.correct_answer ?? null,
     };
   } catch {
-    return { edition, total: 0, correct_pct: null, correct_answer: null };
+    // Rede/timeout/JSON inválido → marca fetchError pra o main() distinguir de
+    // "0 votos" e avisar que a seleção pode estar incompleta (#1913 review).
+    return { edition, total: 0, correct_pct: null, correct_answer: null, fetchError: true };
   }
 }
 
@@ -143,11 +158,27 @@ async function main() {
     process.exit(1);
   }
   const threshold = Number(get("--threshold") ?? DEFAULT_THRESHOLD);
+  // `??` não cobre NaN (ex: `--threshold abc`) → validar explicitamente, senão
+  // `total >= NaN` filtra tudo e cai em fallback silencioso (#1913 review).
+  if (!Number.isFinite(threshold) || threshold < 0) {
+    console.error(`ERRO: --threshold deve ser um número ≥ 0 (recebi "${get("--threshold")}")`);
+    process.exit(1);
+  }
   const base = get("--base") ?? DEFAULT_BASE;
 
   const days = monthDays(yymm);
   // Busca em paralelo — 28-31 GETs leves no worker.
   const stats = await Promise.all(days.map((d) => fetchStat(base, d)));
+
+  // Falha de fetch ≠ "0 votos": se algum GET caiu, a seleção pode ter perdido a
+  // verdadeira vencedora. Avisa explícito em vez de mascarar como fallback (#1913).
+  const failed = stats.filter((s) => s.fetchError);
+  if (failed.length > 0) {
+    console.error(
+      `⚠ ${failed.length}/${stats.length} edições falharam no fetch de /stats ` +
+        `(${failed.map((s) => s.edition).join(", ")}). A seleção pode estar incompleta.`,
+    );
+  }
 
   // Tabela de auditoria (só edições com algum voto) → stderr.
   const withVotes = stats
