@@ -8,7 +8,7 @@
  * diverge do outro e a imagem quebra pós-voto — exatamente o bug do #1908).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
@@ -52,4 +52,34 @@ export async function uploadMonthlyImage(
     kvNamespaceId,
     workerUrl,
   });
+}
+
+/**
+ * #1916: sobe as imagens 2x1 dos destaques (D1/D2/D3) do digest mensal pro KV e
+ * devolve o map `{ 1: url, 2: url, 3: url }` (só os que existem). Usa
+ * `uploadMonthlyImage` (mesma convenção de key `img-{edition}-04-d{N}-2x1.jpg`).
+ * Compartilhado entre o preview Cloudflare e o publish-monthly (Brevo).
+ *
+ * `eiaEdition` = AAMMDD do É IA? (último dia do mês) — mesma usada pras imagens
+ * do É IA?, pra manter todas as imagens da edição sob a mesma `edition` no KV.
+ */
+export async function uploadDestaqueImages(
+  monthlyDir: string,
+  eiaEdition: string,
+  root: string = DEFAULT_ROOT,
+): Promise<Record<number, string>> {
+  // Uploads independentes → paralelos (#1922 review, consistente com uploadEiaImages).
+  const present = [1, 2, 3].filter((n) =>
+    existsSync(resolve(monthlyDir, `04-d${n}-2x1.jpg`)),
+  );
+  const urls = await Promise.all(
+    present.map((n) =>
+      uploadMonthlyImage(resolve(monthlyDir, `04-d${n}-2x1.jpg`), eiaEdition, root),
+    ),
+  );
+  const out: Record<number, string> = {};
+  present.forEach((n, i) => {
+    out[n] = urls[i];
+  });
+  return out;
 }

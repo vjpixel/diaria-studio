@@ -199,14 +199,17 @@ Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empreg
 
 Disparar **em paralelo** (mesma mensagem):
 
-**D1:**
+**Destaques D1/D2/D3 — todas 2x1 (#1916):** uma chamada por destaque que tiver
+prompt. `--ratio 2x1` força o formato wide pra todos (≠ da diária):
 ```bash
-npx tsx scripts/image-generate.ts \
-  --editorial data/monthly/$1/_internal/02-d1-prompt.md \
-  --out-dir data/monthly/$1/ \
-  --destaque d1
+for D in d1 d2 d3; do
+  P="data/monthly/$1/_internal/02-$D-prompt.md"
+  [ -f "$P" ] && npx tsx scripts/image-generate.ts \
+    --editorial "$P" --out-dir data/monthly/$1/ --destaque $D --ratio 2x1
+done
 ```
-Se `_internal/02-d1-prompt.md` não existir, emitir aviso e pular (não bloquear).
+Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
+Saída: `04-d1-2x1.jpg`, `04-d2-2x1.jpg`, `04-d3-2x1.jpg` (+ crops 1x1).
 
 **É IA? mensal (#1912):** seleciona a edição diária do mês cujo poll teve a
 taxa de acerto **mais próxima de 50%** (o É IA? que mais dividiu os leitores —
@@ -350,9 +353,10 @@ Teste enviado para: {test_email}
 
 Próximos passos manuais (Etapa Clarice):
   1. Abrir o dashboard Brevo acima
-  2. Preencher as seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL (marcadas com borda tracejada)
-  3. Adicionar imagem D1 (data/monthly/$1/04-d1-2x1.jpg) no topo da campanha
-  4. Revisar e enviar para a lista de contatos da Clarice
+  2. Conferir que renderizaram automaticamente (#1916/#1918): imagens 2x1 de
+     D1/D2/D3, imagens do É IA?, e os boxes "Desconto exclusivo" + "Laboratório
+     Clarice" (vêm do draft, não precisam mais ser preenchidos/adicionados à mão)
+  3. Revisar e enviar para a lista de contatos da Clarice
 
 Aprovado? sim / retry (regenerar campanha)
 ```

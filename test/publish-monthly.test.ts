@@ -342,6 +342,36 @@ describe("renderLaboratorio", () => {
   });
 });
 
+// ─── renderClarice (divulgação) — #1918 review request ──────────────────────
+
+describe("renderClarice (DIVULGAÇÃO)", () => {
+  const chunk = [
+    "CLARICE — DIVULGAÇÃO",
+    "",
+    "**Escreva melhor em português com a Clarice.ai**",
+    "",
+    "A única IA criada por brasileiros para brasileiros.",
+    "",
+    "→ [Acesse](https://clarice.ai/precos-planos?via=diaria)",
+  ].join("\n");
+
+  it("usa o mesmo box do laboratório (border dashed) com header 'Desconto exclusivo'", () => {
+    const out = renderClarice(chunk);
+    assert.match(out, /border:2px dashed/);
+    assert.match(out, /Desconto exclusivo/);
+  });
+  it("NÃO mostra o rótulo interno 'CLARICE — DIVULGAÇÃO'", () => {
+    const out = renderClarice(chunk);
+    assert.ok(!out.includes("CLARICE — DIVULGAÇÃO"), "rótulo interno não pode vazar");
+    assert.ok(!out.includes("DIVULGAÇÃO"), "nada de DIVULGAÇÃO visível");
+  });
+  it("renderiza o subtítulo como h3 e mantém o CTA com via=diaria", () => {
+    const out = renderClarice(chunk);
+    assert.match(out, /<h3[^>]*>Escreva melhor em português com a Clarice\.ai<\/h3>/);
+    assert.match(out, /clarice\.ai\/precos-planos\?via=diaria/);
+  });
+});
+
 // ─── renderOutrasNoticias ──────────────────────────────────────────────────
 
 describe("renderOutrasNoticias", () => {

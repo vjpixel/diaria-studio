@@ -35,7 +35,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend } from "./lib/monthly-render.ts";
-import { uploadMonthlyImage } from "./lib/monthly-image-upload.ts";
+import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -106,9 +106,10 @@ async function main(): Promise<void> {
     ? readFileSync(chosenSubjectPath, "utf8").trim()
     : null;
 
-  // Imagens do É IA? → URLs públicas (pulado em dry-run pra não gastar upload).
+  // Imagens (É IA? + destaques 2x1) → URLs públicas no KV (pulado em dry-run).
   const eiaEdition = eiaEditionFromYymm(yymm);
   let eia: { a?: string; b?: string } = {};
+  let destaqueImages: Record<number, string> = {};
   if (!dryRun) {
     try {
       eia = await uploadEiaImages(monthlyDir, eiaEdition);
@@ -120,6 +121,13 @@ async function main(): Promise<void> {
     } catch (e) {
       console.error(`warn: upload de imagens É IA? falhou — ${(e as Error).message}`);
     }
+    try {
+      destaqueImages = await uploadDestaqueImages(monthlyDir, eiaEdition, ROOT); // #1916
+      const ns = Object.keys(destaqueImages);
+      console.error(ns.length ? `Imagens de destaque enviadas: D${ns.join(", D")}` : "warn: sem imagens de destaque (04-d{N}-2x1.jpg)");
+    } catch (e) {
+      console.error(`warn: upload de imagens de destaque falhou — ${(e as Error).message}`);
+    }
   }
 
   // Legenda do É IA? vem do 01-eia.md (o draft só tem o placeholder). #1914
@@ -129,7 +137,7 @@ async function main(): Promise<void> {
     : undefined;
 
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit);
+  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages);
 
   // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
   const internalDir = resolve(monthlyDir, "_internal");

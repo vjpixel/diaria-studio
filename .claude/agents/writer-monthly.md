@@ -63,7 +63,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    ```
    Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why`/`body` do `raw_path` (ou do título, se a URL não estiver no JSON). Sem score, sem categoria, sem a contagem de cliques. Sem item vazio: todos devem ter descrição. Se o `prioritized.md` trouxer Use Melhor vazio (mês sem fonte de tutoriais), omitir a seção `USE MELHOR DO MÊS` e registrar warning.
 
-7. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
+7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
 8. **É IA? e encerramento.** Verificar se `eia-used.json` (raiz do projeto) tem entradas do mês com `poll_id` preenchido. Se sim, selecionar a edição cujo poll ficou mais próximo de 50% de acerto (mais ambígua). Se não houver `poll_id` disponível, emitir placeholder: `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`. Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda este e-mail. Leio cada um.`
 
@@ -75,7 +75,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? placeholder e encerramento presentes
    - Sem markdown excêntrico; sem links de paywall/agregador
-   - `_internal/02-d1-prompt.md` gravado
+   - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 
    Gravar `out_path`. Responder ao orchestrator com:
 

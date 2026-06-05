@@ -103,11 +103,14 @@ describe("draftToEmail — render das seções Use Melhor + Radar", () => {
     assert.equal(r.previewText, "Preview de teste.");
   });
   it("renderiza a seção Use Melhor com seu título e item", () => {
-    assert.ok(r.html.includes("Use Melhor do Mês"));
+    // #1919: título de exibição é "Use Melhor", SEM "do Mês".
+    assert.ok(r.html.includes("Use Melhor"));
+    assert.ok(!r.html.includes("Use Melhor do Mês"));
     assert.ok(r.html.includes("Claude 101"));
   });
   it("renderiza a seção Radar com seu título e item", () => {
-    assert.ok(r.html.includes("Radar do Mês"));
+    assert.ok(r.html.includes("Radar"));
+    assert.ok(!r.html.includes("Radar do Mês"));
     assert.ok(r.html.includes("DeepSeek corta 75%"));
   });
 
@@ -116,9 +119,11 @@ describe("draftToEmail — render das seções Use Melhor + Radar", () => {
   const draftShort = draft.replace("**USE MELHOR DO MÊS**", "**USE MELHOR**").replace("**RADAR DO MÊS**", "**RADAR**");
   const rShort = draftToEmail(draftShort, null, "2605");
   it("rótulo curto USE MELHOR/RADAR renderiza as seções (não cai em prosa)", () => {
-    assert.ok(rShort.html.includes("Use Melhor do Mês"));
+    assert.ok(rShort.html.includes("Use Melhor"));
+    assert.ok(!rShort.html.includes("Use Melhor do Mês"));
     assert.ok(rShort.html.includes("Claude 101"));
-    assert.ok(rShort.html.includes("Radar do Mês"));
+    assert.ok(rShort.html.includes("Radar"));
+    assert.ok(!rShort.html.includes("Radar do Mês"));
     assert.ok(rShort.html.includes("DeepSeek corta 75%"));
   });
 });
