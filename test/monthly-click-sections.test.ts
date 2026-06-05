@@ -15,15 +15,24 @@ import {
   baseUrl,
   parseEdition,
   selectSections,
+  replaceSectionsBlock,
+  buildSectionsBlock,
+  parseUseMelhorSource,
   type LinkItem,
 } from "../scripts/monthly-click-sections.ts";
 
 describe("baseUrl", () => {
-  it("strips query, hash e barra final, e normaliza case", () => {
+  it("strips query/hash/barra final e lowercaseia o HOST, preservando o case do path", () => {
     assert.equal(
       baseUrl("https://Example.com/Path/?utm_source=x&a=1#frag"),
-      "https://example.com/path",
+      "https://example.com/Path",
     );
+  });
+  it("não funde URLs distintas que diferem só no case do path", () => {
+    assert.notEqual(baseUrl("https://site.com/Foo"), baseUrl("https://site.com/foo"));
+  });
+  it("strip de pontuação final (vírgula/ponto coladas pela prosa)", () => {
+    assert.equal(baseUrl("https://foo.com/bar/."), "https://foo.com/bar");
   });
   it("é idempotente p/ URL já limpa", () => {
     assert.equal(baseUrl("https://foo.com/bar"), "https://foo.com/bar");
@@ -95,6 +104,116 @@ describe("parseEdition", () => {
   });
   it("carrega a edição em cada item", () => {
     assert.ok(items.every((i) => i.edition === "260601"));
+  });
+
+  it("não trata linha de prosa começando com keyword como header de seção", () => {
+    // "Acesse o tutorial..." NÃO pode flipar a seção e dropar o link seguinte.
+    const md2 = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "[**Tutorial Z**](https://t.com/z)  ",
+      "Acesse o passo a passo completo no link.",
+      "",
+      "[**Vídeo guia do produto**](https://t.com/v)  ",
+      "Vídeos curtos ensinam o fluxo.",
+      "",
+    ].join("\n");
+    const it2 = parseEdition("260602", md2);
+    assert.equal(it2.length, 2);
+    assert.ok(it2.every((i) => i.section === "use_melhor"));
+  });
+
+  it("preserva o case do path no link parseado", () => {
+    const md3 = "**📰 OUTRAS NOTÍCIAS**\n\n[**X**](https://Site.com/Path/Slug)\ndesc\n";
+    const it3 = parseEdition("260603", md3);
+    assert.equal(it3[0].baseUrl, "https://site.com/Path/Slug");
+  });
+});
+
+describe("replaceSectionsBlock", () => {
+  const PRIORITIZED = [
+    "## Destaques",
+    "",
+    "D1: tema",
+    "- 260513 — Enter — https://x.com/enter",
+    "",
+    "## Outras Notícias",
+    "",
+    "Top 10 ...",
+    "",
+    "- 260525 — DeepSeek — https://x.com/deepseek",
+    "",
+    "## Warnings",
+    "",
+    "Pouca cobertura Brasil este mês.",
+    "",
+    "---",
+    "",
+    "## Apêndice — todos os temas",
+    "",
+    "- tema X: 3 artigos",
+    "",
+  ].join("\n");
+
+  const block = buildSectionsBlock({
+    use_melhor: [
+      { url: "https://t.com/Claude-101", title: "Claude 101", desc: "", clicks: 4, editions: ["260601"], sections: ["use_melhor"] },
+    ],
+    radar: [
+      { url: "https://x.com/n1", title: "N1", desc: "", clicks: 3, editions: ["260514"], sections: ["outro"] },
+    ],
+  } as any);
+
+  const out = replaceSectionsBlock(PRIORITIZED, block);
+
+  it("substitui Outras Notícias por Use Melhor + Radar", () => {
+    assert.ok(out);
+    assert.ok(out!.includes("## Use Melhor"));
+    assert.ok(out!.includes("## Radar"));
+    assert.ok(!out!.includes("## Outras Notícias"));
+  });
+  it("PRESERVA a seção ## Warnings (regressão #1903)", () => {
+    assert.ok(out!.includes("## Warnings"));
+    assert.ok(out!.includes("Pouca cobertura Brasil este mês."));
+  });
+  it("PRESERVA a seção ## Apêndice", () => {
+    assert.ok(out!.includes("## Apêndice — todos os temas"));
+    assert.ok(out!.includes("- tema X: 3 artigos"));
+  });
+  it("preserva o case do path da URL renderizada (sem 404 por lowercase)", () => {
+    assert.ok(out!.includes("https://t.com/Claude-101"));
+  });
+  it("re-run é idempotente: o resultado patchado pode ser re-patchado", () => {
+    const out2 = replaceSectionsBlock(out!, block);
+    assert.ok(out2);
+    assert.ok(out2!.includes("## Apêndice — todos os temas"));
+    assert.ok(out2!.includes("## Warnings"));
+    // não duplica os headings
+    assert.equal(out2!.match(/## Use Melhor/g)?.length, 1);
+    assert.equal(out2!.match(/## Radar/g)?.length, 1);
+  });
+  it("retorna null quando não há âncora", () => {
+    assert.equal(replaceSectionsBlock("# Título\n\nsem seções", block), null);
+  });
+});
+
+describe("parseUseMelhorSource", () => {
+  it("parseia forma --flag=val e --flag val", () => {
+    assert.deepEqual(parseUseMelhorSource(["--use-melhor-source=260601:32c6c918,260602:d7adab86"]), [
+      { edition: "260601", prefix: "32c6c918" },
+      { edition: "260602", prefix: "d7adab86" },
+    ]);
+    assert.deepEqual(parseUseMelhorSource(["--use-melhor-source", "260603:e8b02883"]), [
+      { edition: "260603", prefix: "e8b02883" },
+    ]);
+  });
+  it("descarta entradas malformadas (edição não-6-dígitos / prefixo não-hex)", () => {
+    assert.deepEqual(parseUseMelhorSource(["--use-melhor-source", "abc:xyz,2606:zz,260604:a2fe05de"]), [
+      { edition: "260604", prefix: "a2fe05de" },
+    ]);
+  });
+  it("retorna [] sem a flag", () => {
+    assert.deepEqual(parseUseMelhorSource(["2605"]), []);
   });
 });
 

@@ -21,9 +21,11 @@
  *  - Mapeamento edição→prefixo Beehiiv: nomes dos arquivos em
  *    data/monthly/{yymm}/raw-posts/post_{prefix}_{AAMMDD}.txt.
  *
- * Métrica: email.unique_clicks somados por URL (de-dup por baseUrl). Decisão de
- * produto (#1901/#1902): "mais clicados" = cliques únicos absolutos. CTR exigiria
- * aberturas por edição e favoreceria/penalizaria por tamanho de lista variável.
+ * Métrica: cliques únicos somados por URL (de-dup por baseUrl) =
+ * `email.unique_clicks` + `web.total_unique_clicked` (web é resíduo, mas conta).
+ * Decisão de produto (#1901/#1902): "mais clicados" = cliques únicos absolutos.
+ * CTR exigiria aberturas por edição e favoreceria/penalizaria por tamanho de
+ * lista variável.
  *
  * Saídas:
  *  - data/monthly/{yymm}/_internal/monthly-clicks.json (dados completos).
@@ -47,13 +49,19 @@ const RADAR_COUNT = 7;
 // Strip de query/hash/barra final pra casar a URL clicada (com utm) contra a
 // URL limpa do 02-reviewed.md.
 export function baseUrl(raw: string): string {
+  // Só o host é case-insensitive; o path é case-sensitive na maioria dos
+  // servidores. Lowercase só o host evita (a) merge falso de URLs distintas
+  // que diferem só no case do path e (b) renderizar um link quebrado em
+  // minúsculas no digest. Strip de query/hash/`.`,`,` finais + barra final,
+  // pra casar a URL clicada (com utm) contra a URL limpa do 02-reviewed.
   try {
     const u = new URL(raw.trim());
+    u.hostname = u.hostname.toLowerCase();
     u.search = "";
     u.hash = "";
-    return u.toString().replace(/\/$/, "").toLowerCase();
+    return u.toString().replace(/[.,]+$/, "").replace(/\/$/, "");
   } catch {
-    return raw.trim().replace(/\/$/, "").toLowerCase();
+    return raw.trim().replace(/[.,]+$/, "").replace(/\/$/, "");
   }
 }
 
@@ -71,13 +79,18 @@ function normalizeHeader(line: string): string {
 }
 
 // Headers de seção conhecidos (novo formato bold+emoji e antigo plain).
+// Ancorado à LINHA INTEIRA (`$`, com sufixo opcional ` DO MÊS`/`:`) — um header
+// é uma linha curta de rótulo, não uma frase de prosa. Sem isso, uma descrição
+// como "Acesse o tutorial..." ou "Vídeos da conferência..." casaria com o
+// prefixo e flipava `current`, mis-bucketando os links seguintes.
+const HEADER_SUFFIX = `( DO M[EÊ]S)?:?$`;
 function sectionOfHeader(h: string): Section | null {
   if (/^DESTAQUE\s*\d+\b/.test(h)) return "destaque";
-  if (/^USE MELHOR\b/.test(h)) return "use_melhor";
+  if (new RegExp(`^USE MELHOR${HEADER_SUFFIX}`).test(h)) return "use_melhor";
   if (
-    /^(LAN[ÇC]AMENTOS?|RADAR|OUTRAS NOT[IÍ]CIAS|NOT[IÍ]CIAS|PESQUISAS?|V[IÍ]DEOS?|SORTEIO|PARA ENCERRAR|[ÉE] IA\?|ERRO INTENCIONAL|T[IÍ]TULO|SUBT[IÍ]TULO|ACESSE)\b/.test(
-      h,
-    )
+    new RegExp(
+      `^(LAN[ÇC]AMENTOS?|RADAR|OUTRAS NOT[IÍ]CIAS|NOT[IÍ]CIAS|PESQUISAS?|V[IÍ]DEOS?|SORTEIO|PARA ENCERRAR|[ÉE] IA\\?|ERRO INTENCIONAL|T[IÍ]TULO|SUBT[IÍ]TULO|ACESSE)${HEADER_SUFFIX}`,
+    ).test(h)
   )
     return "outro";
   return null;
@@ -136,12 +149,14 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
 
     let title = firstLinkOnLine.title;
     if (!title) {
-      // título antigo: linha não-vazia acima
+      // título antigo: primeira linha não-vazia acima que NÃO seja header de
+      // seção (senão um link logo abaixo de "OUTRAS NOTÍCIAS" herdaria o rótulo).
       for (let j = i - 1; j >= 0; j--) {
-        if (lines[j].trim()) {
-          title = lines[j].trim().replace(/\*/g, "").trim();
-          break;
-        }
+        const t = lines[j].trim();
+        if (!t) continue;
+        if (sectionOfHeader(normalizeHeader(t)) || /\]\(/.test(t)) break;
+        title = t.replace(/\*/g, "").trim();
+        break;
       }
     }
     // descrição: próxima linha não-vazia sem link
@@ -170,7 +185,11 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
 // ── Cliques por post ────────────────────────────────────────────────
 function loadClicks(prefix: string): Map<string, number> {
   const dir = join(ROOT, "data/beehiiv-cache/posts");
-  const file = readdirSync(dir).find((f) => f.startsWith(`post_${prefix}`));
+  // O prefixo é o 1º segmento do UUID (8 hex), sempre seguido de `-` no nome do
+  // cache `post_{uuid}.json`. Exigir a fronteira `-` evita casar o post errado
+  // quando um prefixo é prefixo-string de outro (`startsWith` cru é ambíguo).
+  const matches = readdirSync(dir).filter((f) => f.startsWith(`post_${prefix}-`));
+  const file = matches[0];
   const map = new Map<string, number>();
   if (!file) return map;
   const d = JSON.parse(readFileSync(join(dir, file), "utf8"));
@@ -411,44 +430,60 @@ function renderItems(items: RankedLink[], withEdition: boolean): string {
     .join("\n");
 }
 
-function patchPrioritized(yymm: string, result: ReturnType<typeof compute>): boolean {
-  const p = join(ROOT, "data/monthly", yymm, "prioritized.md");
-  if (!existsSync(p)) return false;
-  let md = readFileSync(p, "utf8");
-
-  const newBlock =
+export function buildSectionsBlock(result: {
+  use_melhor: RankedLink[];
+  radar: RankedLink[];
+}): string {
+  return (
     `## Use Melhor\n\n` +
     `Os 3 tutoriais mais clicados do mês (seção Use Melhor das edições diárias):\n\n` +
     `${renderItems(result.use_melhor, false)}\n\n` +
     `## Radar\n\n` +
     `Os 7 links mais clicados do mês (excluindo os já cobertos nos Destaques e no Use Melhor):\n\n` +
-    `${renderItems(result.radar, true)}\n`;
+    `${renderItems(result.radar, true)}\n`
+  );
+}
 
-  // Substitui o bloco "## Outras Notícias" ... até o próximo "---\n\n## " ou "## Apêndice".
-  const startIdx = md.indexOf("## Outras Notícias");
-  if (startIdx !== -1) {
-    const after = md.slice(startIdx);
-    const endMatch = after.match(/\n---\s*\n\s*## /);
-    const endIdx = endMatch ? startIdx + (endMatch.index ?? 0) + 1 : md.length;
-    md = md.slice(0, startIdx) + newBlock + "\n" + md.slice(endIdx);
-  } else if (md.includes("## Radar") || md.includes("## Use Melhor")) {
-    // já aplicado anteriormente — substitui ambos os blocos
-    const reIdx = md.search(/\n## Use Melhor/);
-    if (reIdx !== -1) {
-      const after = md.slice(reIdx + 1);
-      const endMatch = after.match(/\n---\s*\n\s*## /);
-      const endIdx = endMatch ? reIdx + 1 + (endMatch.index ?? 0) + 1 : md.length;
-      md = md.slice(0, reIdx + 1) + newBlock + "\n" + md.slice(endIdx);
-    }
-  } else {
-    return false;
+/**
+ * Substitui (puro) o bloco "## Outras Notícias" — ou, em re-run, o par
+ * "## Use Melhor"+"## Radar" — por `newBlock`, cortando SÓ até a próxima
+ * fronteira de seção (`\n## ` ou `\n---`). Preserva seções subsequentes como
+ * `## Warnings` e `## Apêndice` (#1903 review). Retorna o novo md, ou `null`
+ * se nenhuma âncora foi encontrada.
+ */
+export function replaceSectionsBlock(md: string, newBlock: string): string | null {
+  const nextBoundary = (from: number): number => {
+    const m = md.slice(from).match(/\n(?:## |---)/);
+    return m ? from + (m.index ?? 0) : md.length;
+  };
+  const splice = (start: number, end: number): string =>
+    md.slice(0, start) + newBlock.trimEnd() + "\n\n" + md.slice(end).replace(/^\n+/, "");
+
+  const outrasIdx = md.indexOf("## Outras Notícias");
+  if (outrasIdx !== -1) {
+    return splice(outrasIdx, nextBoundary(outrasIdx + "## Outras Notícias".length));
   }
+  // re-run: arquivo já tem ## Use Melhor + ## Radar — substitui o par inteiro.
+  const useMelhorIdx = md.indexOf("## Use Melhor");
+  if (useMelhorIdx !== -1) {
+    const radarIdx = md.indexOf("## Radar", useMelhorIdx);
+    if (radarIdx === -1) return null;
+    return splice(useMelhorIdx, nextBoundary(radarIdx + "## Radar".length));
+  }
+  return null;
+}
 
-  writeFileSync(p, md, "utf8");
+function patchPrioritized(yymm: string, result: ReturnType<typeof compute>): boolean {
+  const p = join(ROOT, "data/monthly", yymm, "prioritized.md");
+  if (!existsSync(p)) return false;
+  const md = readFileSync(p, "utf8");
+  const next = replaceSectionsBlock(md, buildSectionsBlock(result));
+  if (next === null || next === md) return false;
+  writeFileSync(p, next, "utf8");
   return true;
 }
 
-function parseUseMelhorSource(argv: string[]): { edition: string; prefix: string }[] {
+export function parseUseMelhorSource(argv: string[]): { edition: string; prefix: string }[] {
   const flag = argv.find((a) => a.startsWith("--use-melhor-source="));
   const raw = flag
     ? flag.split("=").slice(1).join("=")
