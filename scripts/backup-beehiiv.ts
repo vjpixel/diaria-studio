@@ -179,6 +179,36 @@ export function resolveTotalPages(
   return gotLength >= perPage ? page + 1 : page;
 }
 
+/**
+ * Decide se há mais páginas a buscar, robusto a endpoints que IGNORAM o tamanho
+ * de página pedido. Pure — testável sem rede.
+ *
+ * Motivação (#1897): `GET /subscriptions` ignora `per_page` (responde sempre
+ * `limit=10`) e seu `total_pages` vinha inflado — confiar nele levava a paginação
+ * até a página ~101, onde batia no offset cap (~1000) da Beehiiv → HTTP 400 e
+ * truncava a base inteira. O fix manda `limit` (respeitado) e drena pela
+ * autoridade `total_results`, ignorando `total_pages` por completo.
+ *
+ * Regra:
+ *  - `gotLength === 0` sempre encerra (guard anti-loop-infinito).
+ *  - Se `total_results` é conhecido (> 0), drena até `collected >= total_results`.
+ *  - Sem `total_results`, cai pro heurístico "página cheia" usando o `limit` REAL
+ *    reportado pelo envelope (não o que pedimos — a API pode ter ignorado).
+ */
+export function hasMorePages(input: {
+  collected: number;
+  gotLength: number;
+  totalResults?: number | null;
+  effectiveLimit?: number | null;
+  requestedPerPage: number;
+}): boolean {
+  const { collected, gotLength, totalResults, effectiveLimit, requestedPerPage } = input;
+  if (gotLength === 0) return false;
+  if (totalResults != null && totalResults > 0) return collected < totalResults;
+  const lim = effectiveLimit && effectiveLimit > 0 ? effectiveLimit : requestedPerPage;
+  return gotLength >= lim;
+}
+
 function loadConfig(): Config {
   const apiKey = process.env.BEEHIIV_API_KEY;
   if (!apiKey) {
@@ -246,6 +276,8 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<F
 interface Page<T> {
   data?: T[];
   total_pages?: number;
+  total_results?: number;
+  limit?: number;
   page?: number;
 }
 
@@ -395,11 +427,14 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
       rmSync(subsFile, { force: true });
       rmSync(subsPartial, { force: true });
       let page = 1;
-      let totalPages = 1;
       let count = 0;
-      while (page <= totalPages) {
+      let more = true;
+      // `/subscriptions` ignora `per_page` (responde sempre limit=10) e infla
+      // `total_pages` → usamos `limit` (respeitado) e drenamos por `total_results`
+      // via hasMorePages, ignorando `total_pages`. (#1897)
+      while (more) {
         const res = await apiFetch<Page<unknown>>(
-          `/publications/${cfg.publicationId}/subscriptions?expand[]=custom_fields&expand[]=tags&expand[]=referrals&per_page=${PER_PAGE}&page=${page}`,
+          `/publications/${cfg.publicationId}/subscriptions?expand[]=custom_fields&expand[]=tags&expand[]=referrals&limit=${PER_PAGE}&page=${page}`,
           cfg.apiKey,
         );
         if (!res.ok) throw new Error(`Beehiiv API ${res.status} em subscriptions (página ${page})`);
@@ -408,10 +443,20 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
         const chunk = got.map((sub) => JSON.stringify(sub)).join("\n");
         if (chunk) appendFileSync(subsPartial, chunk + "\n", "utf8");
         count += got.length;
-        totalPages = resolveTotalPages(got.length, body.total_pages, page, PER_PAGE);
-        process.stderr.write(`[backup-beehiiv] subscribers: página ${page} (${count} total)\n`);
+        more = hasMorePages({
+          collected: count,
+          gotLength: got.length,
+          totalResults: body.total_results,
+          effectiveLimit: body.limit,
+          requestedPerPage: PER_PAGE,
+        });
+        const totalNote = body.total_results ? `/${body.total_results}` : "";
+        process.stderr.write(`[backup-beehiiv] subscribers: página ${page} (${count}${totalNote} total)\n`);
         page++;
       }
+      // Garante que o .partial existe mesmo numa base vazia (0 subscribers),
+      // senão renameSync lançaria ENOENT.
+      if (!existsSync(subsPartial)) appendFileSync(subsPartial, "", "utf8");
       renameSync(subsPartial, subsFile);
       subscribers = { fetched: count };
       endpoints.push({ key: "subscribers", file: "subscribers.jsonl", status: "ok", count });
