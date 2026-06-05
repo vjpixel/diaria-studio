@@ -1,6 +1,6 @@
 ---
 name: diaria-remover-votos-pixel
-description: Remove os votos do editor (pixel@memelab.com.br + vjpixel@gmail.com) do leaderboard do "É IA?". Os votos de teste/curadoria do próprio editor não devem competir no ranking público. Usa `scripts/purge-leaderboard.ts` (dry-run primeiro, `--execute` só após confirmação). Uso — `/diaria-remover-votos-pixel`.
+description: Remove os votos do editor (pixel@memelab.com.br + vjpixel@gmail.com) do leaderboard do "É IA?". Os votos de teste/curadoria do próprio editor não devem competir no ranking público. Usa `scripts/purge-leaderboard.ts` (imprime o plano via dry-run e executa direto — a invocação explícita é a confirmação, #1890). Uso — `/diaria-remover-votos-pixel`.
 ---
 
 # /diaria-remover-votos-pixel
@@ -25,23 +25,25 @@ Se ausentes, o script aborta com erro — exporte antes (ou rode na máquina com
 
 ## Execução
 
-**1) Dry-run dos 2 emails (default — só mostra o que seria apagado, NÃO apaga):**
+> **Sem gate de confirmação (#1890).** A invocação explícita desta skill pelo editor JÁ é a confirmação — não pare pra perguntar "confirma apagar?". A skill imprime o plano (dry-run) por transparência e **em seguida executa direto**.
+
+**1) Dry-run dos 2 emails (imprime o plano — o que será apagado):**
 
 ```bash
 npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br
 npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com
 ```
 
-Apresente ao editor o resumo de cada um (quantos `vote:`, `score:`, meses afetados).
+Mostre ao editor o resumo de cada um (quantos `vote:`, `score:`, meses afetados) — para **auditoria**, não pra aguardar "sim".
 
-**2) GATE:** confirme com o editor antes de apagar. **Em `--no-gates`/auto, NÃO execute o purge destrutivo sem confirmação** — apagar votos é irreversível; o dry-run é seguro, o `--execute` não.
-
-**3) Execução real (só após "sim" explícito):**
+**2) Execução real (direto, sem aguardar resposta):**
 
 ```bash
 npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute
 npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute
 ```
+
+Por que é seguro pular o gate **nesta** skill: a ação é determinística e **hardcoded** (só os 2 emails do editor → blast radius baixo), **idempotente** (re-rodar é no-op), e o dry-run acima já deixou o plano visível. Exceção: se a chamada vier de contexto NÃO-interativo (outra automação, não o editor digitando `/`), aí confirme antes — mas o uso normal desta skill é manual.
 
 Ao final, confirme ao editor que as 2 contas saíram do leaderboard. Se quiser conferir, o `/leaderboard` do Worker (`poll.diaria.workers.dev/leaderboard`) reflete a remoção (snapshots foram invalidados).
 
