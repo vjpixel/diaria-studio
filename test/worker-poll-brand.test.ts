@@ -18,7 +18,7 @@ import {
   leaderboardHref,
   BRAND_INFO,
 } from "../workers/poll/src/lib.ts";
-import { brandedNamespace, type Env } from "../workers/poll/src/index.ts";
+import { brandedNamespace, votePageHtml, type Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
 
 // ── Mock KV backed por Map ───────────────────────────────────────────
@@ -171,5 +171,23 @@ describe("isolamento e2e via router (#1905)", () => {
     // chave legada (sem prefixo), não 'xyz:'
     assert.ok(env.POLL._map.has("vote:260531:a@x.com"));
     assert.equal([...env.POLL._map.keys()].some((k) => k.startsWith("xyz:")), false);
+  });
+});
+
+describe("votePageHtml propaga brand no form de set-name (code-review #1907)", () => {
+  const form = { email: "a@x.com", sig: "deadbeef" };
+
+  it("brand=clarice: form tem input hidden brand + título da marca", () => {
+    const html = votePageHtml("ok", true, form, null, "2026-05", "clarice");
+    assert.match(html, /name="brand"\s+value="clarice"/);
+    assert.match(html, /<title>É IA\? \| Clarice News<\/title>/);
+    // o link do leaderboard também carrega o brand
+    assert.match(html, /\/leaderboard\/2026-05\?brand=clarice/);
+  });
+
+  it("brand=diaria: SEM input hidden brand (back-compat) + título Diar.ia", () => {
+    const html = votePageHtml("ok", true, form, null, "2026-05", "diaria");
+    assert.equal(/name="brand"/.test(html), false);
+    assert.match(html, /<title>É IA\? \| Diar\.ia<\/title>/);
   });
 });

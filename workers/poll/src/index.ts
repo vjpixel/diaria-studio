@@ -1028,6 +1028,7 @@ export function votePageHtml(
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
+    ${brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
     <button type="submit" class="nick-save">Salvar</button>
   </form>
@@ -1042,7 +1043,7 @@ export function votePageHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>É IA? | Diar.ia</title>
+<title>É IA? | ${BRAND_INFO[brand].name}</title>
 <style>
   body { font-family: -apple-system, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
   .msg { font-size: 1.4rem; line-height: 1.4; margin: 20px 0; }
