@@ -38,6 +38,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SECTIONS } from "./lib/section-naming.ts"; // #1836: fonte única dos patterns de nome de seção
 
 export interface HumanizerMetrics {
   /** Linhas terminadas em `  ` (2 espaços trailing → markdown `<br>`) */
@@ -57,10 +58,37 @@ export interface HumanizerMetrics {
 const FRONTMATTER_RE = /^---\s*\n[\s\S]*?\n---\s*$/m;
 const BOLD_LINK_NESTING_RE = /\*\*\[[^\]]+?\]\([^)]+?\)\*\*/g;
 const LINK_WITH_INNER_BOLD_RE = /\[\*\*[^*]+?\*\*\]\([^)]+?\)/g;
+// #1836: headers fixos (boilerplate estrutural) FICAM locais de propósito — esse
+// vocabulário (SORTEIO/PARA ENCERRAR/ERRO INTENCIONAL/ASSINE/TÍTULO/SUBTÍTULO)
+// NÃO é seção de conteúdo, então não vive no registry `section-naming.ts` (que é
+// só LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS/PESQUISAS/OUTRAS NOTÍCIAS). Consolidar
+// aqui criaria um acoplamento errado.
 const FIXED_SECTION_HEADER_RE =
   /^\*\*[^\n\[]*?(?:SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL|ASSINE|TÍTULO|SUBTÍTULO)[^\n]*\*\*\s*$/gim;
-const MAIN_SECTION_HEADER_RE =
-  /^\*\*[^\n\[]*?(?:LAN[ÇC]AMENTOS?|PESQUISAS?|OUTRAS\s+NOT[ÍI]CIAS?)[^\n]*\*\*\s*$/gim;
+
+// #1836: os NOMES das 3 seções "principais" legadas vêm do registry (fonte única
+// de spelling/acento — se a grafia mudar lá, este lint herda, sem drift). Escopo
+// MANTIDO em 3 (não `ALL_SECTION_NAMES_PATTERN`): este detector é case-insensitive
+// (`i`) com prefixo/sufixo permissivos, então incluir RADAR/USE MELHOR/VÍDEOS faria
+// uma linha de prosa em negrito como `**Assista ao vídeo completo**` casar como
+// "header de seção" (i-flag + `V[ÍI]DEOS?`) → violação espúria no gate do
+// humanizador. Delta vs. a forma antiga: registry usa `OUTRAS?` (aceita singular
+// "OUTRA NOTÍCIA") — superset benigno, simétrico no pre/post.
+const MAIN_SECTION_LABELS = ["LANÇAMENTOS", "PESQUISAS", "OUTRAS NOTÍCIAS"];
+const MAIN_SECTION_DEFS = SECTIONS.filter((s) => MAIN_SECTION_LABELS.includes(s.label));
+// #1836 tripwire: se o registry renomear/remover esses labels, o filtro encolhe
+// silenciosamente — e `[].join("|")` viraria `""`, fazendo `(?:)` casar QUALQUER
+// linha em negrito (detector arruinado). Falhar alto em vez de degradar o gate.
+if (MAIN_SECTION_DEFS.length !== MAIN_SECTION_LABELS.length) {
+  throw new Error(
+    `lint-humanized-output: esperava ${MAIN_SECTION_LABELS.length} seções principais no registry section-naming.ts, achei ${MAIN_SECTION_DEFS.length} — labels mudaram? (#1836)`,
+  );
+}
+const MAIN_SECTION_NAMES_PATTERN = MAIN_SECTION_DEFS.map((s) => s.pattern).join("|");
+const MAIN_SECTION_HEADER_RE = new RegExp(
+  String.raw`^\*\*[^\n\[]*?(?:${MAIN_SECTION_NAMES_PATTERN})[^\n]*\*\*\s*$`,
+  "gim",
+);
 
 /**
  * Pure: extrai métricas estruturais de um markdown.

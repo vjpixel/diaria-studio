@@ -73,6 +73,25 @@ describe("computeHumanizerMetrics (#1439)", () => {
     assert.equal(m.main_section_headers, 3);
   });
 
+  it("#1836: nomes vêm do registry — singular 'OUTRA NOTÍCIA' (superset OUTRAS?) conta", () => {
+    const md = ["**🚀 LANÇAMENTO**", "x", "**📰 OUTRA NOTÍCIA**", "y"].join("\n");
+    const m = computeHumanizerMetrics(md);
+    // LANÇAMENTO (singular, S? do registry) + OUTRA NOTÍCIA (singular, OUTRAS?/NOTÍCIAS? do registry)
+    assert.equal(m.main_section_headers, 2);
+  });
+
+  it("#1836: escopo mantido em 3 — 'vídeo'/'radar' em prosa NÃO contam como main header", () => {
+    // Razão de não usar ALL_SECTION_NAMES_PATTERN: i-flag + prefixo permissivo
+    // fariam linhas de prosa em negrito virar falso-positivo no gate.
+    const md = [
+      "**Assista ao vídeo completo da demo**",
+      "**Veja no nosso radar de tendências**",
+      "**🚀 LANÇAMENTOS**",
+    ].join("\n");
+    const m = computeHumanizerMetrics(md);
+    assert.equal(m.main_section_headers, 1, "só o header de LANÇAMENTOS real conta");
+  });
+
   it("section header detection ignora conteúdo dentro de [...] (não confunde título com header)", () => {
     const md = [
       "**[Título A com OUTRAS NOTÍCIAS no meio](https://x.com/a)**",
