@@ -60,17 +60,27 @@ DESTAQUE 3 | [TEMA]
 
 ---
 
-OUTRAS NOTÍCIAS DO MÊS
+USE MELHOR DO MÊS
 
-[[Título do destaque 1](https://url)]
+[[Título do tutorial 1](https://url)]
+
+[1-2 frases — o que o tutorial ensina.]
+
+[... 3 itens: os tutoriais Use Melhor mais clicados do mês (de `## Use Melhor` em prioritized.md)]
+
+---
+
+RADAR DO MÊS
+
+[[Título do link 1](https://url)]
 
 [1-2 frases de descrição — por que importa.]
 
-[[Título do destaque 2](https://url)]
+[[Título do link 2](https://url)]
 
 [1-2 frases de descrição — por que importa.]
 
-[... 10 itens: título ancorado à URL, linha em branco, descrição, linha em branco entre itens]
+[... 7 itens: os links mais clicados do mês fora dos Destaques e do Use Melhor (de `## Radar` em prioritized.md)]
 
 ---
 
@@ -101,9 +111,10 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
-- **Links ancorados nos destaques**: cada evento ou dado referenciado usa a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. O fio condutor não recebe links. Nas Outras Notícias, o título é a âncora: `[Título](url)`. Os limites de chars (D1: 1.500, D2/D3: 1.200) excluem URLs da contagem.
+- **Links ancorados nos destaques**: cada evento ou dado referenciado usa a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. O fio condutor não recebe links. No Use Melhor e no Radar, o título é a âncora: `[Título](url)`. Os limites de chars (D1: 1.500, D2/D3: 1.200) excluem URLs da contagem.
 - **Sem bloco "Para aprofundar"**: não listar URLs ao final de cada destaque.
-- **Outras Notícias**: 10 destaques standalone que não couberam nos 3 temas. Formato: `Título URL` (mesma linha) + descrição de 1–2 frases abaixo. Igual à edição diária.
+- **Use Melhor**: 3 tutoriais mais clicados do bucket `use_melhor` das edições diárias do mês (#1902). Vem pronto de `## Use Melhor` em `prioritized.md` (selecionado por `monthly-click-sections.ts`). Formato: `Título URL` + descrição de 1–2 frases abaixo.
+- **Radar**: 7 links mais clicados do mês, fora dos já cobertos nos Destaques e no Use Melhor (#1901). Vem pronto de `## Radar` em `prioritized.md`. Formato: `Título URL` + descrição de 1–2 frases abaixo. (Ex-"Outras Notícias", 10 itens por relevância editorial.)
 - **É IA? recap**: preferir a edição com poll mais próximo de 50% de acerto (mais ambígua). Se poll não disponível (ver issue #419), escolher a mais visualmente difícil.
 
 ## Diferenças vs template diário (`newsletter.md`)
@@ -111,8 +122,8 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - 3 opções de **subject line** auto-geradas (em vez de ficar no nível dos destaques).
 - Sem "Por que isso importa:" → vira "O fio condutor:" (síntese do tema, não justificativa de pauta).
 - **Sem bloco "Para aprofundar"** (diferente de versões anteriores do template).
-- Outras Notícias tem **descrição** após título+URL (igual ao diário, diferente de versões anteriores).
-- Sem LANÇAMENTOS / PESQUISAS — toda categoria vira tema ou Outras Notícias.
+- Use Melhor e Radar têm **descrição** após título+URL (igual ao diário, diferente de versões anteriores).
+- Sem LANÇAMENTOS / PESQUISAS — toda categoria vira tema ou Radar.
 - É IA? é recap de uma do mês, não comparação nova.
 - Limites de caracteres por destaque (D1: 1.500, D2/D3: 1.200).
 
@@ -125,5 +136,5 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - Não adicionar emojis.
 - Não mencionar "Diar.ia" dentro do corpo dos destaques.
 - Não inventar conexões — só conectar artigos que de fato cobrem o mesmo tema.
-- Não repetir destaques entre temas. Cada artigo de suporte aparece em no máximo um destaque (os que sobram vão pra Outras Notícias).
+- Não repetir destaques entre temas. Cada artigo de suporte aparece em no máximo um destaque (os que sobram concorrem ao Radar por cliques).
 - Não listar "Para aprofundar" com URLs ao final dos destaques.
