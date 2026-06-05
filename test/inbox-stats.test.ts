@@ -8,8 +8,61 @@ import {
   formatCoverageLine,
   resolveEditorEmail,
   readInboxLinkCountFromMarker,
+  readInjectPoolSizeFromMarker,
+  computeDiariaDiscovered,
 } from "../scripts/lib/inbox-stats.ts";
 import { checkCoverageLine } from "../scripts/lint-newsletter-md.ts";
+
+describe("readInjectPoolSizeFromMarker (#1864)", () => {
+  it("lê total_pool_size (top-level e details); ausente → null", () => {
+    const d1 = mkdtempSync(join(tmpdir(), "pool-"));
+    const d2 = mkdtempSync(join(tmpdir(), "pool-"));
+    const d3 = mkdtempSync(join(tmpdir(), "pool-"));
+    writeFileSync(join(d1, ".marker-inject-inbox-urls.json"), JSON.stringify({ total_pool_size: 350 }), "utf8");
+    writeFileSync(join(d2, ".marker-inject-inbox-urls.json"), JSON.stringify({ details: { total_pool_size: 350 } }), "utf8");
+    writeFileSync(join(d3, ".marker-inject-inbox-urls.json"), JSON.stringify({ foo: 1 }), "utf8");
+    try {
+      assert.equal(readInjectPoolSizeFromMarker(d1), 350);
+      assert.equal(readInjectPoolSizeFromMarker(d2), 350);
+      assert.equal(readInjectPoolSizeFromMarker(d3), null);
+      assert.equal(readInjectPoolSizeFromMarker(join(tmpdir(), "nope-xyz")), null);
+    } finally {
+      for (const d of [d1, d2, d3]) rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("computeDiariaDiscovered (#1864)", () => {
+  it("stage-consistente: rawPoolSize − inboxLinks (caso 260605 → 193)", () => {
+    assert.equal(
+      computeDiariaDiscovered({ rawPoolSize: 350, inboxLinks: 157, totalConsidered: 138, editorSubmissions: 12 }),
+      193,
+    );
+  });
+  it("NÃO zera quando rawPoolSize disponível (não usa totalConsidered pós-filtro)", () => {
+    // O bug do review: 138 − 157 = −19 → 0. Com rawPoolSize, usa 350 − 157 = 193.
+    const y = computeDiariaDiscovered({ rawPoolSize: 350, inboxLinks: 157, totalConsidered: 138, editorSubmissions: 12 });
+    assert.notEqual(y, 0);
+  });
+  it("fallback (marker ausente): totalConsidered − editorSubmissions", () => {
+    assert.equal(
+      computeDiariaDiscovered({ rawPoolSize: null, inboxLinks: null, totalConsidered: 138, editorSubmissions: 12 }),
+      126,
+    );
+  });
+  it("nenhum total conhecido → null (sem coverage)", () => {
+    assert.equal(
+      computeDiariaDiscovered({ rawPoolSize: null, inboxLinks: null, totalConsidered: null, editorSubmissions: 12 }),
+      null,
+    );
+  });
+  it("clamp a 0 (defensive) se inboxLinks > rawPoolSize", () => {
+    assert.equal(
+      computeDiariaDiscovered({ rawPoolSize: 5, inboxLinks: 9, totalConsidered: null, editorSubmissions: 0 }),
+      0,
+    );
+  });
+});
 
 describe("readInboxLinkCountFromMarker (#1864)", () => {
   function setup(marker: Record<string, unknown>): string {

@@ -33,6 +33,8 @@ import {
   formatCoverageLine,
   resolveEditorEmail,
   readInboxLinkCountFromMarker,
+  readInjectPoolSizeFromMarker,
+  computeDiariaDiscovered,
 } from "./lib/inbox-stats.ts"; // #592, #609, #1864
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 
@@ -314,20 +316,29 @@ function main() {
   const platformConfigPath = resolve(ROOT, "platform.config.json");
   const editorEmail = resolveEditorEmail(platformConfigPath);
   const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail); // X = nº de e-mails
-  const totalConsidered = computeTotalConsidered(jsonPath, data); // total de LINKS no pool
-  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
-  // LINKS que vieram pelo canal do editor (forwards + newsletters). Antes Y =
-  // totalConsidered − editorSubmissions misturava unidades (links − e-mails),
-  // inflando o "Diar.ia encontrou". X conta e-mails, Y conta links (#1864).
-  const inboxLinks = readInboxLinkCountFromMarker(dirname(jsonPath)) ?? editorSubmissions;
   const totalSelected =
     approved.highlights.length +
     approved.lancamento.length +
     approved.radar.length +
     (approved.use_melhor?.length ?? 0) +
     (approved.video?.length ?? 0);
-  if (totalConsidered !== null) {
-    const diariaDiscovered = Math.max(0, totalConsidered - inboxLinks);
+  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
+  // LINKS que vieram pelo canal do editor (forwards + newsletters). X conta
+  // e-mails (submissões), Y conta links — métricas em unidades diferentes.
+  //
+  // Os DOIS operandos têm que ser do MESMO estágio: o `total_pool_size` e o
+  // `total_editor_urls + total_newsletter_urls` do marker são ambos PRÉ-filtro
+  // (escritos no inject). Antes, subtrair os links pré-filtro de `totalConsidered`
+  // (pós-categorize) zerava o Y (138 − 157 < 0 → 0) (#1864 review). Fallback
+  // (marker ausente): totalConsidered − editorSubmissions (comportamento antigo).
+  const inboxMarkerDir = dirname(jsonPath);
+  const diariaDiscovered = computeDiariaDiscovered({
+    rawPoolSize: readInjectPoolSizeFromMarker(inboxMarkerDir),
+    inboxLinks: readInboxLinkCountFromMarker(inboxMarkerDir),
+    totalConsidered: computeTotalConsidered(jsonPath, data),
+    editorSubmissions,
+  });
+  if (diariaDiscovered !== null) {
     approved.coverage = {
       editor_submitted: editorSubmissions,
       diaria_discovered: diariaDiscovered,

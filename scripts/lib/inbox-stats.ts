@@ -32,23 +32,72 @@ const DEFAULT_EDITOR_EMAIL = "vjpixel@gmail.com";
  *
  * Retorna null se o marker ausente/sem os campos (caller faz fallback).
  */
-export function readInboxLinkCountFromMarker(internalDir: string): number | null {
+function readInjectMarker(internalDir: string): {
+  total_editor_urls?: number;
+  total_newsletter_urls?: number;
+  total_pool_size?: number;
+} | null {
   const markerPath = join(internalDir, ".marker-inject-inbox-urls.json");
   if (!existsSync(markerPath)) return null;
   try {
     const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
       total_editor_urls?: number;
       total_newsletter_urls?: number;
-      details?: { total_editor_urls?: number; total_newsletter_urls?: number };
+      total_pool_size?: number;
+      details?: { total_editor_urls?: number; total_newsletter_urls?: number; total_pool_size?: number };
     };
-    const data = raw.details ?? raw;
-    const e = typeof data.total_editor_urls === "number" ? data.total_editor_urls : null;
-    const n = typeof data.total_newsletter_urls === "number" ? data.total_newsletter_urls : null;
-    if (e === null && n === null) return null;
-    return (e ?? 0) + (n ?? 0);
+    return raw.details ?? raw;
   } catch {
     return null;
   }
+}
+
+export function readInboxLinkCountFromMarker(internalDir: string): number | null {
+  const data = readInjectMarker(internalDir);
+  if (!data) return null;
+  const e = typeof data.total_editor_urls === "number" ? data.total_editor_urls : null;
+  const n = typeof data.total_newsletter_urls === "number" ? data.total_newsletter_urls : null;
+  if (e === null && n === null) return null;
+  return (e ?? 0) + (n ?? 0);
+}
+
+/**
+ * #1864: tamanho do pool BRUTO (pré-dedup/filtro) = `total_pool_size` do mesmo
+ * marker. Pareado com `readInboxLinkCountFromMarker` (também pré-filtro) pra
+ * computar Y = pool_bruto − inbox_links de forma STAGE-CONSISTENTE — subtrair os
+ * links do editor (pré-filtro) de um total pós-filtro (totalConsidered) zerava o
+ * Y (review #1882: 138 categorizados − 157 injetados = max(0,−19)=0).
+ *
+ * Retorna null se ausente (caller faz fallback).
+ */
+export function readInjectPoolSizeFromMarker(internalDir: string): number | null {
+  const data = readInjectMarker(internalDir);
+  if (!data || typeof data.total_pool_size !== "number") return null;
+  return data.total_pool_size;
+}
+
+/**
+ * Pure (#1864): Y da linha de cobertura ("a Diar.ia encontrou outros Y artigos")
+ * = nº de LINKS descobertos pela Diar.ia (fora do canal do editor).
+ *
+ * Caminho preferido (STAGE-CONSISTENTE): `rawPoolSize − inboxLinks`, ambos
+ * pré-filtro do marker do inject. Fallback (marker ausente): `totalConsidered −
+ * editorSubmissions` (comportamento legado — mistura unidades, mas é o melhor
+ * disponível sem o marker). `null` quando nenhum total é conhecido.
+ */
+export function computeDiariaDiscovered(opts: {
+  rawPoolSize: number | null;
+  inboxLinks: number | null;
+  totalConsidered: number | null;
+  editorSubmissions: number;
+}): number | null {
+  if (opts.rawPoolSize !== null && opts.inboxLinks !== null) {
+    return Math.max(0, opts.rawPoolSize - opts.inboxLinks);
+  }
+  if (opts.totalConsidered !== null) {
+    return Math.max(0, opts.totalConsidered - opts.editorSubmissions);
+  }
+  return null;
 }
 
 /**
