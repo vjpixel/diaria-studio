@@ -9,7 +9,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 ## Input
 
-- `prioritized_path`: ex: `data/monthly/2604/prioritized.md` — aprovado pelo editor no gate. Contém os 3 destaques temáticos com artigos de suporte + 10 Outras Notícias.
+- `prioritized_path`: ex: `data/monthly/2604/prioritized.md` — aprovado pelo editor no gate. Contém os 3 destaques temáticos com artigos de suporte + a seção `## Use Melhor` (3 tutoriais mais clicados) + a seção `## Radar` (7 links mais clicados), ambas já selecionadas por cliques por `monthly-click-sections.ts`.
 - `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — metadata estruturada de todos os destaques do mês (parse direto do markdown publicado no Beehiiv): `edition`, `position`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`.
 - `out_path`: ex: `data/monthly/2604/draft.md`.
 - `yymm`: ex: `2604`.
@@ -23,7 +23,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 ## Processo
 
-1. **Ler inputs.** Extrair de `prioritized_path`: 3 destaques (D1/D2/D3) com tema + URLs de suporte, e 10 Outras Notícias. Para cada URL, recuperar o objeto completo de `raw_path` (campos `body`, `why`, `title`, `url`, `edition`). URLs ausentes no JSON: registrar warning e seguir.
+1. **Ler inputs.** Extrair de `prioritized_path`: 3 destaques (D1/D2/D3) com tema + URLs de suporte, a seção `## Use Melhor` (3 itens) e a seção `## Radar` (7 itens). Cada item de Use Melhor/Radar já vem com título + URL (e contagem de cliques entre parênteses, que NÃO entra no draft). Para cada URL, recuperar o objeto completo de `raw_path` (campos `body`, `why`, `title`, `url`, `edition`) para derivar a descrição; URLs ausentes no JSON (ex.: Use Melhor emprestado de outro mês): usar o título do `prioritized.md` e derivar a descrição do próprio título, registrando warning.
 
 2. **Cabeçalho: subject line (3 opções) + preview.** Gerar 3 opções de assunto (cada ≤ 70 chars, PT-BR, mês por extenso), cada uma com ângulo distinto (tema central / ângulo alternativo / síntese do mês). Exemplos: `"Diar.ia | Abril 2026 — Brasil acelera regulação de IA"`. Gerar também 1 preview line ≤ 100 chars sintetizando o mês.
 
@@ -34,7 +34,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - Corpo narrativo (3–4 parágrafos): (1) evento mais marcante; (2) desenvolvimento conectando outras fontes do mês; (3) atores, dados, números — só do `body`/`why` dos inputs, nunca inventados; quando o limite de chars apertar, fundir P3 e P4 em um único parágrafo conclusivo em vez de cortar o fio condutor.
    - `O fio condutor:` [1 parágrafo — síntese do que o tema revelou sobre o mês] — **obrigatório**. Se na primeira escrita o destaque não couber com o fio condutor dentro do limite, reescrever cortando a prosa narrativa, nunca o fio condutor.
    - **Sem bloco "Para aprofundar"** — não listar URLs ao final do destaque.
-   - **Links ancorados:** ao mencionar cada artigo de suporte, ancorar a URL ao texto que descreve o evento usando a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. Escolher como âncora o trecho de texto que melhor descreve o evento ou dado da fonte. Frases curtas podem ser âncora inteira; frases longas, ancorar só o núcleo informativo. O fio condutor não recebe links. Nas Outras Notícias, o título é a âncora: `[Título da notícia](url)`.
+   - **Links ancorados:** ao mencionar cada artigo de suporte, ancorar a URL ao texto que descreve o evento usando a sintaxe `[texto âncora](url)` — ex: `o [modelo identificou 27 mil falhas](https://...)`. Escolher como âncora o trecho de texto que melhor descreve o evento ou dado da fonte. Frases curtas podem ser âncora inteira; frases longas, ancorar só o núcleo informativo. O fio condutor não recebe links. No Use Melhor e no Radar, o título é a âncora: `[Título da notícia](url)`.
    - **Limite de caracteres:** D1 máximo **1.500 chars** (prosa + fio condutor), D2 e D3 máximo **1.200 chars** cada. Contar do primeiro parágrafo até o fim do fio condutor, excluindo a linha de cabeçalho, a linha de título e as URLs inline. Estimar ≈ 80–100 chars por linha de prosa; se suspeitar de excesso, encurtar antes de gravar.
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial" quando o sujeito concreto couber; sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
@@ -53,13 +53,15 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    ```
    O conteúdo é preenchido manualmente pelo editor antes da publicação. Não inventar texto para essas seções.
 
-6. **Outras Notícias do mês.** Os 10 destaques standalone do `prioritized.md` em formato compacto: `OUTRAS NOTÍCIAS DO MÊS` → para cada item, na ordem do prioritized:
-   ```
-   [Título da notícia](https://url)
+6. **Use Melhor + Radar do mês.** Duas seções compactas, na ordem do `prioritized.md`:
 
-   Descrição 1–2 frases — por que importa.
+   `USE MELHOR DO MÊS` → os 3 tutoriais de `## Use Melhor`. `RADAR DO MÊS` → os 7 links de `## Radar`. Para cada item:
    ```
-   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why` ou `body` do `raw_path`. Sem score nem categoria. Sem item vazio: todos os 10 devem ter descrição.
+   [Título](https://url)
+
+   Descrição 1–2 frases — o que ensina (Use Melhor) / por que importa (Radar).
+   ```
+   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why`/`body` do `raw_path` (ou do título, se a URL não estiver no JSON). Sem score, sem categoria, sem a contagem de cliques. Sem item vazio: todos devem ter descrição. Se o `prioritized.md` trouxer Use Melhor vazio (mês sem fonte de tutoriais), omitir a seção `USE MELHOR DO MÊS` e registrar warning.
 
 7. **Prompt de imagem D1.** Gerar `_internal/02-d1-prompt.md` com cena Van Gogh impasto derivada do tema D1: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Gravar com `Write`.
 
@@ -70,7 +72,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
-   - Outras Notícias com 10 itens, formato `título URL\ndescrição 1-2 frases` (warning se menos)
+   - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? placeholder e encerramento presentes
    - Sem markdown excêntrico; sem links de paywall/agregador
    - `_internal/02-d1-prompt.md` gravado
@@ -88,12 +90,14 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
   ],
   "preview": "...",
   "destaques_count": 3,
-  "outras_count": 10,
+  "use_melhor_count": 3,
+  "radar_count": 7,
   "checklist": {
     "three_subjects": true,
     "preview_under_100": true,
     "three_destaques": true,
-    "outras_count_ok": true,
+    "use_melhor_ok": true,
+    "radar_count_ok": true,
     "no_markdown_in_body": true,
     "no_paywall_links": true,
     "d1_prompt_generated": true
@@ -108,5 +112,5 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 - Cada destaque é narrativa de tema do mês — não resumo de artigo individual.
 - Conecte artigos com cronologia: "no início do mês X anunciou Y, duas semanas depois Z respondeu".
 - Não invente fatos, citações ou números — use apenas os campos `body` e `why` dos artigos de suporte.
-- Se um link parecer paywall/agregador, pule ele das Outras Notícias e registre em `warnings`.
+- Se um link parecer paywall/agregador, pule ele do Use Melhor/Radar e registre em `warnings`.
 - **Output sem markdown** (regra absoluta do `editorial-rules.md` seção 6).

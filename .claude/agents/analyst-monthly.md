@@ -1,6 +1,6 @@
 ---
 name: analyst-monthly
-description: Stage 1 da pipeline mensal — agrupa os ~90 destaques do mês por tema, garante Brasil como um dos 3 destaques, e gera `prioritized.md` com 3 destaques temáticos propostos + 10 destaques standalone como Outras Notícias. Editor revisa no gate antes do `writer-monthly` rodar.
+description: Stage 1 da pipeline mensal — agrupa os ~90 destaques do mês por tema, garante Brasil como um dos 3 destaques, e gera `prioritized.md` com 3 destaques temáticos propostos + um pool candidato de standalones. Após o analista, `scripts/monthly-click-sections.ts` substitui esse pool pelas seções finais Use Melhor (3) e Radar (7), ranqueadas por cliques (#1901/#1902). Editor revisa no gate antes do `writer-monthly` rodar.
 model: claude-opus-4-7
 tools: Read, Write
 ---
@@ -70,13 +70,18 @@ revisar manualmente no gate ou substituir o tema.
 - **Título narrativo**: 1 frase de até 60 chars descrevendo o arco do tema. Ex: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes". Não copie título de artigo individual.
 - **Artigos de suporte**: lista de destaques pertencentes ao tema, ordenados **cronologicamente** (do mais antigo pro mais recente — facilita narrativa do `writer-monthly`). Inclua todos os destaques do grupo, não só os top.
 
-### 5. Outras Notícias — top 10 standalones
+### 5. Outras Notícias — pool candidato (fallback)
 
-Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), selecionar os **10 mais relevantes** para a seção Outras Notícias do digest. Lista única, sem separação por categoria — decisão do template `newsletter-monthly.md`.
+Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), liste os **10 mais relevantes** num bloco `## Outras Notícias`. **Esse bloco é um pool candidato de fallback** — depois do analista, `scripts/monthly-click-sections.ts` o substitui pelas seções finais **Use Melhor** (3) e **Radar** (7), ranqueadas por **cliques** das edições diárias (#1901/#1902). O pool editorial só é usado se o click data estiver indisponível.
 
 - Se o destaque tiver o campo `score` (adicionado pelo `scorer-monthly`), ordenar por `score desc`. Em caso de empate, desempatar por recência (`edition desc`).
 - Se `score` estiver ausente ou `null`, usar **julgamento editorial**: categorias com maior CTR histórico em `audience-profile.md` primeiro; dentro da mesma categoria, recência.
 - Se o mês tiver < 10 standalones no total, listar os que tiver e registrar warning (`destaques_unused < 10`).
+
+> **Seções finais (pós-analista, determinístico):**
+> - **Use Melhor** — os 3 links mais clicados do bucket `use_melhor` das edições diárias do mês (#1902). Se as edições do mês forem anteriores à criação da seção Use Melhor (#1568), a skill pode emprestar edições de outro período via `--use-melhor-source`.
+> - **Radar** — os 7 links mais clicados do mês (excluindo os já cobertos nos Destaques e no Use Melhor, de-dup por URL) (#1901).
+> Mantenha o cabeçalho exato `## Outras Notícias` para que o script encontre e substitua o bloco.
 
 ### 6. Gerar `prioritized.md`
 

@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + 10 Outras Notícias. Uso — `/diaria-mensal YYMM [--no-gate]`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
+description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal YYMM [--no-gate]`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
 ---
 
 # /diaria-mensal
@@ -80,6 +80,24 @@ Disparar `analyst-monthly` via `Agent`:
 - `out_path = data/monthly/$1/prioritized.md`
 - `yymm = $1`
 
+### 1d. Seções por cliques (Use Melhor + Radar) — #1901/#1902
+
+Após o analista, rodar o ranking determinístico por cliques, que substitui o bloco `## Outras Notícias` do `prioritized.md` por `## Use Melhor` (3 tutoriais mais clicados) + `## Radar` (7 links mais clicados, fora dos Destaques e do Use Melhor):
+
+```bash
+npx tsx scripts/monthly-click-sections.ts $1
+```
+
+Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (enriquecido via `beehiiv-clicks-enricher`) + seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
+
+**Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Garantir que essas edições estejam enriquecidas com clicks antes (rodar `beehiiv-clicks-enricher` nelas). Ex. para o digest de maio:
+```bash
+npx tsx scripts/monthly-click-sections.ts 2605 \
+  --use-melhor-source 260601:32c6c918,260602:d7adab86,260603:e8b02883,260604:a2fe05de
+```
+
+Output: `_internal/monthly-clicks.json` + patch em `prioritized.md`. Warning (não bloqueia) se Use Melhor < 3 ou Radar < 7 candidatos.
+
 ### Gate Etapa 1 (pulado com `--no-gate`)
 
 Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
@@ -89,7 +107,8 @@ Apresentar ao editor:
 D1: {tema} ({N} artigos)
 D2: {tema} ({N} artigos)
 D3: {tema} ({N} artigos)
-Outras Notícias: {N} itens
+Use Melhor: {N} tutoriais (mais clicados)
+Radar: {N} links (mais clicados)
 
 Aprovar? sim / editar / retry
 ```
@@ -336,7 +355,8 @@ Aprovado? sim / retry (regenerar campanha)
 Todos em `data/monthly/{YYMM}/`:
 
 - `_internal/raw-destaques.json` — coleta bruta (Etapa 1)
-- `prioritized.md` — destaques aprovados (Etapa 1)
+- `_internal/monthly-clicks.json` — ranking por cliques Use Melhor + Radar (Etapa 1d)
+- `prioritized.md` — destaques aprovados + Use Melhor + Radar (Etapa 1)
 - `draft.md` — texto final (Etapa 2)
 - `_internal/02-d1-prompt.md` — prompt imagem D1 (Etapa 2)
 - `04-d1-2x1.jpg` + `04-d1-1x1.jpg` — imagem D1 (Etapa 3)
