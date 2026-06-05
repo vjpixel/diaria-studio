@@ -7,6 +7,7 @@ import {
   displaySectionName,
   SECTIONS,
   ALL_SECTION_NAMES_PATTERN,
+  SECTION_EMOJI,
   SECTION_EMOJI_PREFIX,
   sectionHeaderRegex,
 } from "../scripts/lib/section-naming.ts";
@@ -253,5 +254,31 @@ describe("sectionHeaderRegex — builder canônico (#1737)", () => {
     });
     // captura NÃO inclui o trailing whitespace (fica fora do grupo)
     assert.equal("**🚀 LANÇAMENTOS**  ".match(reEmoji)?.[1], "🚀 LANÇAMENTOS");
+  });
+});
+
+describe("SECTION_EMOJI + SECTION_EMOJI_PREFIX — consolidação (#1836)", () => {
+  it("SECTION_EMOJI_PREFIX deriva de SECTION_EMOJI (versão opcional)", () => {
+    assert.equal(SECTION_EMOJI_PREFIX, `(?:${SECTION_EMOJI})?`);
+  });
+
+  it("SECTION_EMOJI_PREFIX é byte-idêntico ao superset hardcoded antigo", () => {
+    // string que lint-test-email-structure / render-erro-intencional tinham em cópia local
+    const legacy = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+)?`;
+    assert.equal(SECTION_EMOJI_PREFIX, legacy);
+  });
+
+  it("SECTION_EMOJI (mandatório) casa header com emoji, rejeita sem", () => {
+    const re = new RegExp(`^${SECTION_EMOJI}LAN[ÇC]AMENTOS$`, "imu");
+    assert.equal(re.test("🚀 LANÇAMENTOS"), true);
+    assert.equal(re.test("LANÇAMENTOS"), false); // sem emoji → não casa o mandatório
+  });
+
+  it("SORTEIO/ENCERRAR via prefix opcional casam com e sem emoji (#1836 render-erro)", () => {
+    const sort = new RegExp(`^\\s*(?:\\*\\*)?${SECTION_EMOJI_PREFIX}SORTEIO(?:\\*\\*)?\\s*$`, "imu");
+    for (const s of ["🎁 SORTEIO", "**🎁 SORTEIO**", "SORTEIO", "**SORTEIO**", "🙋🏼‍♀️ SORTEIO"]) {
+      assert.equal(sort.test(s), true, s);
+    }
+    assert.equal(sort.test("## d1"), false);
   });
 });

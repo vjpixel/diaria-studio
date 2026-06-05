@@ -169,7 +169,14 @@ export const SECTIONS: SectionDef[] = [
  *
  * Requer flag `u` no RegExp final (code points `\u{...}`).
  */
-export const SECTION_EMOJI_PREFIX = String.raw`(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+)?`;
+/**
+ * #1836: emoji de seção OBRIGATÓRIO (sem o `(?:...)?` externo) — um codepoint
+ * de emoji + zero-ou-mais modificadores + whitespace. Usado quando o header
+ * SEMPRE tem emoji (ex: lint-test-email-structure no body do HTML renderizado,
+ * onde o render sempre prefixa). `SECTION_EMOJI_PREFIX` é a versão opcional.
+ */
+export const SECTION_EMOJI = String.raw`[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+`;
+export const SECTION_EMOJI_PREFIX = `(?:${SECTION_EMOJI})?`;
 
 /** Alternação de TODOS os patterns (incl. legacy) — pra item-header / boundary. */
 export const ALL_SECTION_NAMES_PATTERN = SECTIONS.map((s) => s.pattern).join("|");

@@ -25,6 +25,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// #1836: fonte única do prefixo de emoji de seção (mandatório + opcional).
+import { SECTION_EMOJI, SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts";
 
 export interface StructureIssue {
   // #1721: `section_item_count_mismatch` removido — era declarado mas NUNCA
@@ -84,9 +86,9 @@ const KNOWN_SECTIONS: KnownSection[] = [
 // que mascarava `section_missing` (presença-por-nome em compareStructure ficava
 // satisfeita pelo fantasma). O render sempre prefixa o header com emoji
 // (section-naming.ts: 🚀📡🛠️📺, fallback 📰).
-const SECTION_EMOJI =
-  "[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}][\\u{FE0F}\\u{200D}\\u{1F3FB}-\\u{1F3FF}\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]*\\s+";
-const SECTION_EMOJI_OPT = `(?:${SECTION_EMOJI})?`;
+// #1836: SECTION_EMOJI (mandatório) + SECTION_EMOJI_PREFIX (opcional) vêm do
+// registry section-naming.ts — antes havia cópia local idêntica aqui.
+const SECTION_EMOJI_OPT = SECTION_EMOJI_PREFIX;
 
 /**
  * Extrai snapshot estrutural de MD (source).
