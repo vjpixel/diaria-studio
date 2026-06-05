@@ -27,6 +27,21 @@ describe("isSectionLabel — novos labels Use Melhor / Radar", () => {
   it("ainda reconhece **OUTRAS NOTÍCIAS DO MÊS** (back-compat)", () => {
     assert.equal(isSectionLabel("**OUTRAS NOTÍCIAS DO MÊS**"), true);
   });
+
+  // #1904-followup: o editor encurta os rótulos pra "USE MELHOR"/"RADAR".
+  it("reconhece o rótulo curto **USE MELHOR** (sem DO MÊS)", () => {
+    assert.equal(isSectionLabel("**USE MELHOR**"), true);
+  });
+  it("reconhece o rótulo curto **RADAR** (sem DO MÊS)", () => {
+    assert.equal(isSectionLabel("**RADAR**"), true);
+  });
+  // #1904-followup (code-review #1906): "RADAR"/"USE MELHOR" são palavras comuns;
+  // uma linha 100%-bold que apenas COMEÇA com elas NÃO é fronteira de seção.
+  it("NÃO trata **RADAR DA OPENAI** / **USE MELHOR SEU TEMPO** como rótulo", () => {
+    assert.equal(isSectionLabel("**RADAR DA OPENAI**"), false);
+    assert.equal(isSectionLabel("**USE MELHOR SEU TEMPO**"), false);
+    assert.equal(isSectionLabel("**RADARES DA SEMANA**"), false);
+  });
 });
 
 describe("renderLinkListSection", () => {
@@ -94,5 +109,16 @@ describe("draftToEmail — render das seções Use Melhor + Radar", () => {
   it("renderiza a seção Radar com seu título e item", () => {
     assert.ok(r.html.includes("Radar do Mês"));
     assert.ok(r.html.includes("DeepSeek corta 75%"));
+  });
+
+  // #1904-followup: mesmo draft com os rótulos CURTOS (editor encurtou) renderiza
+  // as duas seções — antes caíam no fallback de prosa (mergiam no bloco anterior).
+  const draftShort = draft.replace("**USE MELHOR DO MÊS**", "**USE MELHOR**").replace("**RADAR DO MÊS**", "**RADAR**");
+  const rShort = draftToEmail(draftShort, null, "2605");
+  it("rótulo curto USE MELHOR/RADAR renderiza as seções (não cai em prosa)", () => {
+    assert.ok(rShort.html.includes("Use Melhor do Mês"));
+    assert.ok(rShort.html.includes("Claude 101"));
+    assert.ok(rShort.html.includes("Radar do Mês"));
+    assert.ok(rShort.html.includes("DeepSeek corta 75%"));
   });
 });

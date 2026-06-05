@@ -479,7 +479,11 @@ export function isSectionLabel(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.startsWith("**") || !trimmed.endsWith("**")) return false;
   const normalized = normalizeLabel(trimmed);
-  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR\s+DO\s+M[ÊE]S|RADAR\s+DO\s+M[ÊE]S|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+  // #1904-followup: aceita os rótulos com OU sem " DO MÊS" — o editor encurta
+  // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
+  // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
+  // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
+  return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
     normalized
   );
 }
@@ -595,12 +599,14 @@ export function draftToEmail(
       continue;
     }
 
-    if (label === "USE MELHOR DO MÊS") {
+    // #1904-followup: dispatch tolerante ao rótulo curto (editor encurta
+    // "USE MELHOR DO MÊS" → "USE MELHOR"). O título de exibição é sempre o longo.
+    if (label === "USE MELHOR" || label === "USE MELHOR DO MÊS") {
       bodyParts.push(renderLinkListSection(chunk, "Use Melhor do Mês"));
       continue;
     }
 
-    if (label === "RADAR DO MÊS") {
+    if (label === "RADAR" || label === "RADAR DO MÊS") {
       bodyParts.push(renderLinkListSection(chunk, "Radar do Mês"));
       continue;
     }
