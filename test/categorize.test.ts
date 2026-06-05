@@ -15,6 +15,9 @@ import {
   isCoursePage,
   hasPreExistenceSignal,
   isIncrementalReleaseOnThirdPartyBlog,
+  isResearchBySlug,
+  isOpenAIFrontiersStory,
+  isFirstPartyToolingBlog,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -31,6 +34,53 @@ describe("categorize() — regras de domínio", () => {
 
   it("classifica blog da Hugging Face como lancamento", () => {
     const art: Article = { url: "https://huggingface.co/blog/cool-model" };
+    assert.equal(categorize(art), "lancamento");
+  });
+
+  it("#1852: NVIDIA blog com slug de conferência (cvpr) → pesquisa, não lançamento", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/cvpr-research-grasping-driving-agent-training/",
+      title: "Grasping, driving and agent training advances",
+    };
+    assert.equal(categorize(art), "pesquisa");
+    assert.equal(isResearchBySlug(art.url), true);
+  });
+
+  it("#1852: research-slug vence type_hint=lancamento (conferência é autoritativa)", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/neurips-2025-foundation-model/",
+      title: "Foundation model results",
+      type_hint: "lancamento",
+    };
+    assert.equal(categorize(art), "pesquisa");
+  });
+
+  it("#1852: 'research preview' NÃO é capturado pelo research-slug (é lançamento)", () => {
+    // research cru fora — `research preview` é termo de produto.
+    assert.equal(isResearchBySlug("https://openai.com/index/research-preview-of-o5/"), false);
+  });
+
+  it("#1852: OpenAI Frontiers (customer story) → noticias, não lançamento", () => {
+    const art: Article = {
+      url: "https://openai.com/index/endava-frontiers/",
+      title: "How Endava scaled with OpenAI",
+    };
+    assert.equal(categorize(art), "noticias");
+    assert.equal(isOpenAIFrontiersStory(art.url), true);
+  });
+
+  it("#1852: HF /blog/ sobre CLI própria → noticias (não página de produto)", () => {
+    const art: Article = {
+      url: "https://huggingface.co/blog/hf-cli-for-agents",
+      title: "Designing the HF CLI for agents",
+    };
+    assert.equal(categorize(art), "noticias");
+    assert.equal(isFirstPartyToolingBlog(art.url), true);
+  });
+
+  it("#1852: HF model release (sem cli/sdk) continua lançamento", () => {
+    assert.equal(isFirstPartyToolingBlog("https://huggingface.co/blog/smollm3"), false);
+    const art: Article = { url: "https://huggingface.co/blog/smollm3", title: "Introducing SmolLM3" };
     assert.equal(categorize(art), "lancamento");
   });
 

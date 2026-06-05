@@ -324,6 +324,19 @@ describe("não-produto (governança/política) — #1799", () => {
     assert.ok(!isNonProductLancamento("https://www.nvidia.com/rtx-spark", "RTX Spark"));
   });
 
+  it("#1852: flaga blog/pesquisa/case-study/CLI em domínio oficial (backstop do gate)", () => {
+    // Defesa-em-profundidade: itens que escaparam o categorize via type_hint.
+    assert.ok(isNonProductLancamento("https://blogs.nvidia.com/blog/cvpr-research-grasping/"), "cvpr");
+    assert.ok(isNonProductLancamento("https://x.com/index/some-arxiv-paper"), "arxiv");
+    assert.ok(isNonProductLancamento("https://x.com/blog/acme-case-study"), "case study");
+    assert.ok(isNonProductLancamento("https://huggingface.co/blog/hf-cli-for-agents"), "cli");
+  });
+
+  it("#1852: NÃO flaga lançamento real sem sinal de blog/pesquisa", () => {
+    assert.ok(!isNonProductLancamento("https://openai.com/index/introducing-gpt-5", "GPT-5"));
+    assert.ok(!isNonProductLancamento("https://blog.google/technology/gemini-3", "Gemini 3"));
+  });
+
   it("NÃO flaga 'framework'/'agenda'/'blueprint' (produto real — review #1817)", () => {
     // framework/agenda/blueprint são comuns em produto; removidos do regex.
     assert.ok(!isNonProductLancamento("https://x.com/langgraph-framework", "LangGraph framework"));

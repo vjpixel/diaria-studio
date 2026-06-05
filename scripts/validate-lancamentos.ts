@@ -66,6 +66,19 @@ const URL_RE = /https?:\/\/\S+/g;
 const NON_PRODUCT_RE =
   /\b(policy|policies|governance|manifesto|principles|white\s?paper|commitment|charter|testimony|pol[íi]tica|governan[çc]a|diretrizes)\b/i;
 
+/**
+ * #1852: defesa-em-profundidade pra LANÇAMENTOS que escaparam o categorize via
+ * `type_hint=lancamento` (agent vence as heurísticas). Sinais no SLUG de que a
+ * URL é blog/pesquisa/case-study, não a página oficial do produto:
+ *   - conferência/pesquisa (cvpr/neurips/.../arxiv/preprint)
+ *   - case study / customer story
+ *   - post de design de CLI/SDK (ferramenta, não produto) — caso 260605 hf-cli-for-agents
+ * Match SÓ no slug (não no título): o título de um lançamento real pode citar
+ * "research"/"CLI" sem que a URL seja um blog. Warn-only no gate, não bloqueia.
+ */
+const NON_PRODUCT_SLUG_RE =
+  /\b(cvpr|neurips|nips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|arxiv|preprint|case stud(y|ies)|customer stor(y|ies)|cli|sdk)\b/i;
+
 export function isNonProductLancamento(url: string, title?: string): boolean {
   let slug = "";
   try {
@@ -73,7 +86,11 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
   } catch {
     slug = url;
   }
-  return NON_PRODUCT_RE.test(slug) || (!!title && NON_PRODUCT_RE.test(title));
+  return (
+    NON_PRODUCT_RE.test(slug) ||
+    NON_PRODUCT_SLUG_RE.test(slug) ||
+    (!!title && NON_PRODUCT_RE.test(title))
+  );
 }
 
 /**

@@ -694,6 +694,42 @@ export function isCustomerSlug(url: string): boolean {
   }
 }
 
+/**
+ * #1852: pesquisa identificada pelo SLUG (não só pelo título). Ocorre quando um
+ * lab posta um paper/resultado de conferência no próprio blog oficial e o slug
+ * carrega a sigla da conferência, mas o título não. Caso 260605:
+ * blogs.nvidia.com/blog/cvpr-research-grasping-driving-agent-training/ — slug tem
+ * `cvpr-research`, título não tinha keyword de pesquisa → caía em lançamento.
+ *
+ * Só siglas de conferência de ALTA precisão + arxiv/preprint. `research` cru NÃO
+ * entra (casaria "research preview", que é termo de lançamento).
+ */
+const RESEARCH_SLUG_RE =
+  /\b(cvpr|neurips|nips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|interspeech|arxiv|preprint)\b/i;
+export function isResearchBySlug(url: string): boolean {
+  let slug = "";
+  try {
+    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+  } catch {
+    return false;
+  }
+  return RESEARCH_SLUG_RE.test(slug);
+}
+
+/**
+ * #1852: "Frontiers" é a série de customer stories da OpenAI
+ * (openai.com/index/{empresa}-frontiers). Caso 260605:
+ * openai.com/index/endava-frontiers — estudo de caso da Endava, não lançamento.
+ * O slug é multi-token (`endava-frontiers`), então escapa o `isCustomerSlug`
+ * (single-token only). Match host+path específico pra não pegar um produto que
+ * por acaso tenha "frontiers" no nome.
+ */
+const OPENAI_FRONTIERS_RE = /^openai\.com\/index\/[a-z0-9-]*frontiers(\/|$)/i;
+export function isOpenAIFrontiersStory(url: string): boolean {
+  const { full } = hostAndPath(url);
+  return OPENAI_FRONTIERS_RE.test(full);
+}
+
 // #1473/#1790: looksEnglish movido pro lib canônico (./lib/lang-detect.ts,
 // importado no topo) — era duplicado aqui e em stitch-newsletter.ts.
 
@@ -730,6 +766,31 @@ export function isThirdPartyBlogAboutOtherCompany(url: string): boolean {
     if (blogIdx < 0 || blogIdx + 1 >= segments.length) return false;
     const companySegment = segments[blogIdx + 1].toLowerCase();
     return KNOWN_COMPANY_SLUGS.has(companySegment);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #1852: post de blog primeira-parte sobre a CLI/SDK própria (design/uso da
+ * ferramenta), não a página oficial do produto. Caso 260605:
+ * huggingface.co/blog/hf-cli-for-agents — design de uma CLI, não anúncio de
+ * produto. Per #160, LANÇAMENTOS exige a página oficial do produto; um post de
+ * /blog/ sobre uma ferramenta é cobertura/design → noticias (RADAR).
+ *
+ * Conservador: só nos hosts de blog-de-terceiro (huggingface.co) + path /blog/
+ * + slug com token de tooling (`cli`/`sdk`). Um model release ("Introducing
+ * SmolLM3") não casa (sem cli/sdk no slug) e segue como lançamento.
+ */
+const TOOLING_SLUG_RE = /\b(cli|sdk)\b/i;
+export function isFirstPartyToolingBlog(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (!THIRD_PARTY_BLOG_HOSTS.has(host)) return false;
+    if (!/^\/blog\//i.test(u.pathname)) return false;
+    const slug = decodeURIComponent(u.pathname).replace(/[-_/]+/g, " ");
+    return TOOLING_SLUG_RE.test(slug);
   } catch {
     return false;
   }
@@ -1006,7 +1067,13 @@ export function categorize(article: Article): Category {
   //    - SEM verbo de anúncio no título → noticias (#898). Defensive final.
   if (LANCAMENTO_DOMAINS.has(host) || LANCAMENTO_PATTERNS.some((p) => p.test(full))) {
     if (/\/research\//.test(full)) return "pesquisa";
+    // #1852: sigla de conferência no slug (cvpr/neurips/...) → pesquisa, mesmo
+    // que o agent rotule launch. Caso 260605: blogs.nvidia.com/blog/cvpr-research-…
+    if (isResearchBySlug(article.url)) return "pesquisa";
     if (isNonLaunchPath(article.url)) return "noticias"; // #898
+    // #1852: customer story "Frontiers" da OpenAI → noticias. Caso 260605:
+    // openai.com/index/endava-frontiers. Roda antes do short-circuit type_hint.
+    if (isOpenAIFrontiersStory(article.url)) return "noticias";
 
     // #1759: re-anúncio de produto pré-existente → noticias. Roda ANTES do
     // short-circuit type_hint=lancamento: o agent às vezes rotula re-anúncio/
@@ -1037,6 +1104,7 @@ export function categorize(article: Article): Category {
     if (isExplainerByTitle(article)) return "noticias";
     if (isLikelyNewsNotLaunch(article.title ?? "")) return "noticias"; // #1442 — "X for {Country}" / "for Countries" / eventos / conferences / awards
     if (isThirdPartyBlogAboutOtherCompany(article.url)) return "noticias"; // #1472 — HF blog about NVIDIA etc.
+    if (isFirstPartyToolingBlog(article.url)) return "noticias"; // #1852 — HF /blog/ sobre CLI/SDK própria, não página de produto
 
     // #1453: resultado científico/prova matemática em domínio que normalmente
     // seria lançamento → pesquisa. Caso real 260522:
