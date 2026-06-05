@@ -166,3 +166,49 @@ export function findMismatchedUrls(
   return mismatched;
 }
 
+// ── Auditoria de links de afiliado da Clarice (#1910) ───────────────────────
+
+/**
+ * Pure: true se `url` é um link da Clarice voltado ao leitor que está SEM o
+ * tracking de afiliado `via=diaria` (Rewardful → revenue share da parceria).
+ *
+ * Considera afiliado qualquer host `clarice.ai` (incluindo `www.` e `app.`),
+ * EXENTANDO:
+ *   - `cortex.clarice.ai` — endpoint da API de correção, não é link de afiliado.
+ *   - protocolos não-http (mailto: `ti@clarice.ai`, etc.).
+ *
+ * Detecta `via` em qualquer posição da query (`?via=diaria`, `?x=1&via=diaria`).
+ */
+export function clariceLinkMissingVia(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (!/(^|\.)clarice\.ai$/.test(host)) return false;
+  if (host === "cortex.clarice.ai") return false; // API, não afiliado
+  return u.searchParams.get("via") !== "diaria";
+}
+
+/**
+ * Pure: varre um texto (markdown ou código) e retorna os links da Clarice
+ * voltados ao leitor que estão sem `via=diaria`. Usado pelo guard de #1910.
+ */
+export function findClariceLinksMissingVia(text: string): string[] {
+  const out: string[] = [];
+  // URLs em qualquer forma (markdown `](url)` ou plano), parando em delimitadores.
+  const re = /https?:\/\/[^\s)"'<>]+/g;
+  let m: RegExpExecArray | null;
+  const seen = new Set<string>();
+  while ((m = re.exec(text)) !== null) {
+    const url = m[0].replace(/[.,]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    if (clariceLinkMissingVia(url)) out.push(url);
+  }
+  return out;
+}
+
