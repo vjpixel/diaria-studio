@@ -27,7 +27,7 @@ import Papa from "papaparse";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = resolve(ROOT, "context/audience-profile.md");
-const HISTORY_DIR = resolve(ROOT, "context/audience-history");
+const HISTORY_DIR = resolve(ROOT, "docs/audience-history"); // #1846: movido de context/ (snapshots históricos não precisam de cache de prompt)
 const CTR_CSV = resolve(ROOT, "data/link-ctr-table.csv");
 const SURVEY_JSON = resolve(ROOT, "data/audience-raw.json");
 const PUB_JSON = resolve(ROOT, "data/beehiiv-cache/publication.json");

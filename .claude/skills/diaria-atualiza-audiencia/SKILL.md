@@ -16,7 +16,7 @@ Atualiza o perfil de audiência a partir das respostas mais recentes do survey n
 5. Salvar respostas brutas em `data/audience-raw.json` (array JSON no formato que `scripts/update-audience.ts` espera — ver comentário no topo do script).
 6. Rodar: `npx tsx scripts/update-audience.ts data/audience-raw.json`.
 7. O script:
-   - Arquiva `context/audience-profile.md` atual em `context/audience-history/{YYYY-MM-DD}.md`.
+   - Arquiva `context/audience-profile.md` atual em `docs/audience-history/{YYYY-MM-DD}.md` (#1846: histórico fora do cache de prompt).
    - Gera novo `context/audience-profile.md` com pesos por content_type, sector, themes.
 8. Mostrar ao usuário o topo do arquivo gerado para confirmação.
 

@@ -186,5 +186,5 @@ Conclusão: está dentro da faixa de uso aceitável definida em `CLAUDE.md` — 
 
 - Issue #275 (root).
 - Issue #194 (LinkedIn JS injection — pattern similar usado pra contenteditable).
-- `context/publishers/beehiiv.md` — playbook editorial atual.
+- `context/publishers/beehiiv-playbook.md` — playbook editorial atual (#1846: `beehiiv.md` legacy removido, ver #1114).
 - TipTap docs: https://tiptap.dev/docs/editor/api/commands (referência só — não usaremos API direto, paste event é mais robusto).

@@ -23,8 +23,8 @@ Score: **migrar** = lógica é determinística e migração reduz custo/tempo/bu
 | `social-facebook` | sonnet 4.6 | 1×/edição | **Manter** | Ídem `social-linkedin`. |
 | `title-picker` | opus 4.7 | fallback 1×/edição | **Manter** | Escolha 1-de-3 títulos com raciocínio sobre concretude + CTR. Opus deliberado por alto impacto editorial (#159). |
 | `publish-newsletter` | sonnet 4.6 | 1×/edição (playbook) | **Manter** | Chrome paste via TipTap + merge tag preservation. UI navigation. Hoje já é "playbook lido pelo top-level" e não subagent Agent-dispatched, mas a marcação como agent persiste. Cleanup possível: mover pra `context/publishers/` como roteiro puro. |
-| `social-instagram` | haiku | n/a (não usado) | **Remover** | Não invocado pela pipeline atual (`/diaria-edicao` só dispatcha LinkedIn + Facebook). Confirmar com Pixel antes de apagar. |
-| `social-twitter` | haiku | n/a (não usado) | **Remover** | Idem `social-instagram`. |
+| `social-instagram` | haiku | n/a (não usado) | ~~Remover~~ **FEITO (#1846)** | Os arquivos de agente já não existiam; os assets de `context/` (`publishers/instagram.md`, `templates/social-instagram.md`) foram removidos em #1846. Restaurar do git history se #49 (Instagram) for priorizada. |
+| `social-twitter` | haiku | n/a (não usado) | ~~Remover~~ **FEITO (#1846)** | Idem. `context/templates/social-twitter.md` removido em #1846. Sem issue de Twitter → não volta. |
 
 ### Suporte
 
