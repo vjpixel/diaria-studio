@@ -91,9 +91,22 @@ export const DEFAULT_PAST_WINDOW = 3;
  * pode não existir — tratar como histórico vazio (mesma semântica do guard #672)
  * em vez de crashar com ENOENT. `extractPastUrls`/`extractPastTitles` já tratam
  * "" como histórico vazio.
+ *
+ * `required: true` (quando o caller passou `--past-editions` EXPLÍCITO): aí a
+ * ausência é erro de wiring (typo no path, refresh que não escreveu), não
+ * bootstrap — falhar ALTO em vez de degradar a dedup-vs-histórico pra "" e
+ * deixar um link das últimas 3 edições vazar pro publicado (review #1887). Só o
+ * default-ausente é tratado como bootstrap silencioso.
  */
-export function readPastEditionsMd(path: string): string {
-  return existsSync(path) ? readFileSync(path, "utf8") : "";
+export function readPastEditionsMd(path: string, opts: { required?: boolean } = {}): string {
+  if (existsSync(path)) return readFileSync(path, "utf8");
+  if (opts.required) {
+    throw new Error(
+      `past-editions.md não encontrado em '${path}' (passado via --past-editions mas ausente — ` +
+        `wiring error). Pra bootstrap sem histórico, omita --past-editions (usa o default em data/).`,
+    );
+  }
+  return "";
 }
 
 export function extractPastUrls(md: string, window: number): Set<string> {
@@ -1096,6 +1109,9 @@ async function main() {
   const args = parseCliArgs(process.argv.slice(2)).values;
 
   const articlesPath = args["articles"];
+  // #1887: `--past-editions` explícito ausente = wiring error (fail loud);
+  // default ausente = bootstrap (histórico vazio).
+  const pastEditionsExplicit = args["past-editions"] !== undefined;
   const pastEditionsPath = args["past-editions"] ?? "data/past-editions.md";
   const window = parseInt(args["window"] ?? String(DEFAULT_PAST_WINDOW), 10);
   const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
@@ -1136,7 +1152,7 @@ async function main() {
   // pode estar AUSENTE num clone fresco / CI antes do primeiro refresh-dedup.
   // Tratar ausência como histórico vazio (mesma semântica do guard #672 abaixo),
   // não crashar com ENOENT. finalize-stage1.ts já fazia esse existsSync-guard.
-  const pastMd = readPastEditionsMd(pastEditionsPath);
+  const pastMd = readPastEditionsMd(pastEditionsPath, { required: pastEditionsExplicit });
   const pastUrls = extractPastUrls(pastMd, window);
   const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
 
