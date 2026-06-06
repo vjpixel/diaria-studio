@@ -34,7 +34,7 @@ export function run(args: {
 }): { previous: string[]; current: string[]; changed: boolean } {
   const { edition, remove } = args;
   if (!isValidEditionDir(edition)) {
-    throw new Error(`--edition deve ser AAMMDD válido (mês 01-12, dia 01-31), recebido: "${edition}"`);
+    throw new Error(`--edition deve ser AAMMDD (data de calendário válida), recebido: "${edition}"`);
   }
 
   const raw = wranglerKvGet("valid_editions");

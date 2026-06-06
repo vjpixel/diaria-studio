@@ -42,8 +42,8 @@ describe("add-valid-edition rejeita data inválida (#1811)", () => {
   // A validação roda ANTES do wranglerKvGet (network), então o reject é testável
   // sem wrangler; o happy-path precisa de KV e fica fora do unit.
   it("rejeita mês/dia impossíveis antes de tocar o KV (260631, 261301)", () => {
-    assert.throws(() => addValidEdition({ edition: "260631", remove: false }), /válido/);
-    assert.throws(() => addValidEdition({ edition: "261301", remove: false }), /válido/);
-    assert.throws(() => addValidEdition({ edition: "26051", remove: false }), /válido/);
+    assert.throws(() => addValidEdition({ edition: "260631", remove: false }), /válid/);
+    assert.throws(() => addValidEdition({ edition: "261301", remove: false }), /válid/);
+    assert.throws(() => addValidEdition({ edition: "26051", remove: false }), /válid/);
   });
 });
