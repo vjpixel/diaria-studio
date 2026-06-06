@@ -1136,8 +1136,8 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.match(html, /Na última edição, disse X mas o correto era Y/);
     // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
     assert.doesNotMatch(html, /\{placeholder\}/);
-    // Estilo callout box (#1a1a1a border + radius)
-    assert.match(html, /border:1px solid #1a1a1a/);
+    // Estilo callout box (#171411 border + radius)
+    assert.match(html, /border:1px solid #171411/);
     assert.match(html, /border-radius:10px/);
   });
 
@@ -1158,7 +1158,7 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
   it("graceful skip: sem erroIntencional, HTML não inclui o callout", () => {
     const html = renderHTML(fixt({ sorteio: "S.", encerrar: "E." }));
     assert.doesNotMatch(html, /Na última edição/);
-    assert.doesNotMatch(html, /border:1px solid #1a1a1a/);
+    assert.doesNotMatch(html, /border:1px solid #171411/);
   });
 
   it("graceful skip: erroIntencional presente mas sem 'Na última edição', HTML não inclui callout", () => {
@@ -1167,7 +1167,7 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
       sorteio: "S.",
       encerrar: "E.",
     }));
-    assert.doesNotMatch(html, /border:1px solid #1a1a1a/);
+    assert.doesNotMatch(html, /border:1px solid #171411/);
   });
 });
 
@@ -1208,7 +1208,7 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
     assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
     // E o regex deve dar match na forma fina (sanity check do helper):
-    assert.match(sectionBlock, /border-top:1px solid #E5E5E5/i, "rule fina (1px solid #E5E5E5) deve estar presente");
+    assert.match(sectionBlock, /border-top:1px solid #E0D9C4/i, "rule fina (1px solid #E0D9C4) deve estar presente");
   });
 
   it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
