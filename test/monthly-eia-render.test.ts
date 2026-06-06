@@ -58,6 +58,34 @@ describe("renderEia creditOverride (#1914)", () => {
   });
 });
 
+describe("renderEia layout = diária (#1918)", () => {
+  const html = renderEia(
+    "É IA? — DESTAQUE DO MÊS\n[placeholder]",
+    "2605",
+    "https://x/A.jpg",
+    "https://x/B.jpg",
+    "Crédito.",
+  );
+  it("usa a frase da diária", () => {
+    assert.ok(html.includes("Clique na imagem que foi gerada por IA."));
+    assert.ok(!html.includes("Qual das imagens foi gerada por IA?"), "frase antiga removida");
+  });
+  it("NÃO tem botão de votar — a imagem é o link", () => {
+    assert.ok(!html.includes("Votar: esta é IA"), "sem botão");
+    // imagem A dentro de <a href=...choice=A...&brand=clarice>
+    assert.match(html, /<a href="[^"]*choice=A[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*A\.jpg/);
+    assert.match(html, /<a href="[^"]*choice=B[^"]*brand=clarice[^"]*"[^>]*>\s*<img[^>]*B\.jpg/);
+  });
+  it("imagens lado a lado com mob-stack (empilham no mobile)", () => {
+    assert.match(html, /width="50%"[^>]*class="mob-stack"/);
+    assert.equal((html.match(/class="mob-stack"/g) || []).length, 2, "duas células mob-stack");
+  });
+  it("mantém o merge tag Brevo e a legenda", () => {
+    assert.ok(html.includes("{{ contact.EMAIL }}"), "merge tag Brevo preservado");
+    assert.ok(html.includes("Crédito."), "legenda renderizada");
+  });
+});
+
 describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
   const draft = [
     "**\\[ASSUNTO\\]**",
