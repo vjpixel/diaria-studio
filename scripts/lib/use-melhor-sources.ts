@@ -32,6 +32,25 @@ export function isUseMelhorSource(s: { use_melhor?: string }): boolean {
   return (s.use_melhor ?? "").trim() === "1";
 }
 
+/**
+ * Pure: prefixo `host/path` normalizado de uma URL (lowercase, sem `www.`, sem
+ * trailing slash; path "/" vira só o host). "" se inválida.
+ *
+ * #1927 review: host nu over-matcharia hosts multi-uso (github.com, aws.amazon.com).
+ * O prefixo path-aware casa o site inteiro pra hosts dedicados (`fast.ai`) E só a
+ * subárvore pra hosts largos (`github.com/anthropics/anthropic-cookbook`).
+ */
+export function sourcePrefix(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    const path = u.pathname.replace(/\/+$/, "");
+    return path && path !== "" ? `${host}${path}` : host;
+  } catch {
+    return "";
+  }
+}
+
 /** Pure: host de uma URL (lowercase, sem `www.`). "" se inválida. */
 export function sourceHost(url: string): string {
   try {
@@ -42,19 +61,32 @@ export function sourceHost(url: string): string {
 }
 
 /**
- * Lê `seed/sources.csv` e retorna os hosts das fontes flagueadas `use_melhor`.
- * Usado pelo roteamento do categorizer (follow-up) pra dar override de bucket
- * `use_melhor` a artigos vindos dessas fontes (respeitando o de-classificador
- * de não-tutorial existente).
+ * Lê `seed/sources.csv` e retorna os **prefixos `host/path`** das fontes
+ * flagueadas `use_melhor` (path-aware — ver `sourcePrefix`). Usado pelo
+ * roteamento do categorizer (follow-up) pra dar override de bucket `use_melhor`
+ * a artigos cujo `host/path` comece com um desses prefixos (respeitando o
+ * de-classificador de não-tutorial existente).
  */
-export function loadUseMelhorHosts(root: string = ROOT): string[] {
+export function loadUseMelhorPrefixes(root: string = ROOT): string[] {
   const csv = readFileSync(resolve(root, "seed", "sources.csv"), "utf8");
   const { data } = Papa.parse<SourceRow>(csv, { header: true, skipEmptyLines: true });
-  const hosts = new Set<string>();
+  const prefixes = new Set<string>();
   for (const row of data) {
     if (!row.URL || !isUseMelhorSource(row)) continue;
-    const h = sourceHost(row.URL);
-    if (h) hosts.add(h);
+    const p = sourcePrefix(row.URL);
+    if (p) prefixes.add(p);
   }
-  return [...hosts].sort();
+  return [...prefixes].sort();
+}
+
+/**
+ * Pure: true se a URL de um artigo cai sob algum prefixo de fonte Use Melhor
+ * (boundary-safe: `github.com/anthropics` casa `.../anthropics/x` mas não
+ * `.../anthropics-other`). O caller (categorizer) ainda aplica o de-classificador
+ * de não-tutorial por cima.
+ */
+export function matchesUseMelhorPrefix(url: string, prefixes: string[]): boolean {
+  const target = sourcePrefix(url);
+  if (!target) return false;
+  return prefixes.some((p) => target === p || target.startsWith(p + "/"));
 }

@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 import {
   isUseMelhorSource,
   sourceHost,
-  loadUseMelhorHosts,
+  sourcePrefix,
+  loadUseMelhorPrefixes,
+  matchesUseMelhorPrefix,
 } from "../scripts/lib/use-melhor-sources.ts";
 
 describe("isUseMelhorSource (#1899)", () => {
@@ -33,16 +35,45 @@ describe("sourceHost (#1899)", () => {
   });
 });
 
-describe("loadUseMelhorHosts (seed real, #1899)", () => {
-  const hosts = loadUseMelhorHosts();
-  it("retorna os hosts das fontes flagueadas (não-vazio, sem www)", () => {
-    assert.ok(hosts.length > 0, "deve haver fontes Use Melhor no seed");
-    assert.ok(hosts.every((h) => !h.startsWith("www.")), "hosts sem www");
-    // fontes-semente conhecidas (Tipo=Tutoriais)
-    assert.ok(hosts.includes("fast.ai"), "fast.ai marcada");
-    assert.ok(hosts.includes("huggingface.co"), "huggingface marcada");
+describe("sourcePrefix (#1927 review)", () => {
+  it("host dedicado → só host; host largo → host/path", () => {
+    assert.equal(sourcePrefix("https://www.fast.ai/"), "fast.ai");
+    assert.equal(
+      sourcePrefix("https://github.com/anthropics/anthropic-cookbook"),
+      "github.com/anthropics/anthropic-cookbook",
+    );
+    assert.equal(sourcePrefix("nope"), "");
   });
-  it("não inclui uma fonte de notícia (ex: canaltech)", () => {
-    assert.ok(!hosts.includes("canaltech.com.br"), "fonte de notícia não é Use Melhor");
+});
+
+describe("loadUseMelhorPrefixes (seed real, #1899)", () => {
+  const prefixes = loadUseMelhorPrefixes();
+  it("retorna prefixos host/path das fontes flagueadas (path-aware)", () => {
+    assert.ok(prefixes.length > 0, "deve haver fontes Use Melhor no seed");
+    assert.ok(prefixes.includes("fast.ai"), "host dedicado = só host");
+    // host largo (github) deve vir com path, não nu
+    assert.ok(
+      prefixes.some((p) => p.startsWith("github.com/")),
+      "github vem com path, não host nu",
+    );
+    assert.ok(!prefixes.includes("github.com"), "github.com NU não pode estar (over-match)");
+  });
+});
+
+describe("matchesUseMelhorPrefix (#1927 review)", () => {
+  const prefixes = ["fast.ai", "github.com/anthropics/anthropic-cookbook"];
+  it("casa artigo sob o prefixo", () => {
+    assert.equal(matchesUseMelhorPrefix("https://www.fast.ai/posts/x.html", prefixes), true);
+    assert.equal(
+      matchesUseMelhorPrefix("https://github.com/anthropics/anthropic-cookbook/blob/main/x.ipynb", prefixes),
+      true,
+    );
+  });
+  it("NÃO casa outro path do mesmo host largo (boundary-safe)", () => {
+    assert.equal(matchesUseMelhorPrefix("https://github.com/openai/whatever", prefixes), false);
+    assert.equal(matchesUseMelhorPrefix("https://github.com/anthropics-other/x", prefixes), false);
+  });
+  it("não casa fonte de notícia", () => {
+    assert.equal(matchesUseMelhorPrefix("https://canaltech.com.br/ia/x", prefixes), false);
   });
 });
