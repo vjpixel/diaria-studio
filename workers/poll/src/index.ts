@@ -910,7 +910,7 @@ function renderLeaderboardHtml(
   h1 { font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
   p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.55); text-transform: uppercase; letter-spacing: 0.08em; font-family: system-ui, sans-serif; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: system-ui, sans-serif; }
   td { padding: 10px 8px; border-bottom: 1px solid #ebe5d0; }
   tr.leader td { font-weight: 600; }
   a { color: #171411; text-decoration: underline; }
@@ -925,8 +925,8 @@ function renderLeaderboardHtml(
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.5)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
-<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.5)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.62)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
@@ -1067,7 +1067,7 @@ export function votePageHtml(
   .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
   .nick-explain { font-size: 0.95rem; color: rgba(23,20,17,0.65); margin: 0 0 12px 0; line-height: 1.5; }
   .nick-explain code { background: #fff; padding: 1px 4px; border-radius: 3px; }
-  .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.55); margin: 10px 0 0 0; }
+  .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.62); margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #d8cfb8; border-radius: 4px; font-size: 0.95rem; font-family: system-ui, sans-serif; }
   .nick-save { padding: 8px 16px; background: #171411; color: #f4efe2; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
