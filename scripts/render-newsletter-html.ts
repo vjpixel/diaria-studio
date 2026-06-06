@@ -694,15 +694,21 @@ export function extractContent(editionDir: string): NewsletterContent {
 // Produces email-safe HTML matching Beehiiv's Default template styling.
 // Uses inline styles, table layout, Poppins/Inter fonts.
 
-const TEAL = "#00A0A0";
-const TEXT_COLOR = "#1A1A1A";
-const MUTED = "#666666";
-const RULE = "#E5E5E5";
-// #1085: design "editorial-magazine" adotado como padrão (2026-05-11).
-// Fonte única Inter em todo o email — sem Poppins/serif. Hierarquia via
-// font-size + weight + uppercase kickers.
-const FONT_HEADING = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
-const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
+// #1894/#1895: novo design Diar.ia — base creme + tinta. O "sai o teal" vale pra
+// BASE (corpo/estrutura monocromático); o teal `#00A0A0` (--brand-bright)
+// PERMANECE como ACCENT pontual — underline de título, links, CTA, kicker,
+// borda de bloco/callout. Separadores/réguas ficam tinta×creme (RULE/TEXT_COLOR).
+const PAPER = "#F4EFE2"; // fundo creme (papel)
+const SURFACE = "#EBE5D0"; // creme-2 — boxes/calouts/É IA?
+const TEAL = "#00A0A0"; // teal da marca — accent (underline/links/CTA/kicker/borda); #1894
+const TEXT_COLOR = "#171411"; // tinta
+const MUTED = "#6E6A60"; // tinta dessaturada (~rgba(23,20,17,0.62) sólido)
+const RULE = "#E0D9C4"; // régua sutil sobre creme
+// #1895: Newsreader serif (display+corpo) com fallback Georgia (email-safe —
+// clients sem web font caem no serif). Kickers em sans (system-ui).
+const FONT_HEADING = "'Newsreader', Georgia, 'Times New Roman', serif";
+const FONT_BODY = "'Newsreader', Georgia, 'Times New Roman', serif";
+const FONT_LABEL = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 // #1083: URL montada inline com edition literal + merge tags Beehiiv
 // (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
 // HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
@@ -857,7 +863,7 @@ function renderCategoryLabel(_emoji: string, category: string): string {
   // #1085: kicker minimalista — uppercase + letterspacing em vez de h6 grande.
   // String `category` já vem com emoji prefixado (ex: "🚀 LANÇAMENTO").
   return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
+  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
 </td></tr>`;
 }
 
@@ -925,7 +931,7 @@ function renderWhyBlock(text: string): string {
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
   <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="border-left:3px solid ${TEAL};padding:4px 0 4px 16px;">
-    <p style="font-family:${FONT_BODY};color:#444444;font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
+    <p style="font-family:${FONT_BODY};color:${MUTED};font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
   </td></tr></table>
 </td></tr>`;
 }
@@ -963,7 +969,7 @@ export function renderCoverage(text: string): string {
 export function renderIntroCallout(text: string): string {
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td align="left" style="padding:16px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border-left:4px solid ${TEAL};border-radius:4px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-left:4px solid ${TEAL};border-radius:4px;">
     <tr><td style="padding:12px 16px;">
       <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
     </td></tr>
@@ -1032,7 +1038,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0FAFA;border:1px solid ${TEAL};border-radius:6px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border:1px solid ${TEAL};border-radius:6px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:14px 16px 16px;">
       <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0 0 12px;padding:0;">${processInlineLinks(body)}</p>
@@ -1099,10 +1105,10 @@ function renderEIA(eia: EIA): string {
 ${renderRule()}
 <tr><td style="padding:32px 0 0 0;">
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:#FAFAFA;padding:32px 24px;border-radius:8px;">
+    <tr><td style="background-color:${SURFACE};padding:32px 24px;border-radius:8px;">
       <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
         <tr><td align="left" style="padding:0 0 16px 0;">
-          <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0;padding:0;">🖼️ É IA?</p>
+          <p style="font-family:${FONT_LABEL};color:${MUTED};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0;padding:0;">🖼️ É IA?</p>
         </td></tr>
         <tr><td align="center" style="padding:0 0 20px 0;">
           <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:20px;line-height:1.3;margin:0;padding:0;">Clique na imagem que foi gerada por IA.</p>
@@ -1300,7 +1306,7 @@ function renderErroIntencionalReveal(text: string): string {
   return `<!-- ERRO INTENCIONAL — reveal -->
 <tr><td style="padding:24px 2px 0 2px;">
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:#FFFFFF;border:1px solid #1a1a1a;border-radius:10px;padding:14px 16px;">
+    <tr><td style="background-color:${SURFACE};border:1px solid ${TEAL};border-radius:10px;padding:14px 16px;">
       <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${mdInlineToHtml(reveal)}</p>
     </td></tr>
   </table>
@@ -1386,7 +1392,7 @@ function renderEncerrar(text: string): string {
   const ctaBox = ctaBlock
     ? `
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:#FAFAFA;padding:32px 24px;border-radius:8px;">
+    <tr><td style="background-color:${SURFACE};padding:32px 24px;border-radius:8px;">
       <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0;padding:0;">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
     </td></tr>
   </table>`
