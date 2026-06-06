@@ -1136,8 +1136,9 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.match(html, /Na última edição, disse X mas o correto era Y/);
     // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
     assert.doesNotMatch(html, /\{placeholder\}/);
-    // Estilo callout box (#171411 border + radius)
-    assert.match(html, /border:1px solid #171411/);
+    // Estilo callout box (#1894: creme + borda teal, igual aos outros blocos)
+    assert.match(html, /border:1px solid #00A0A0/);
+    assert.match(html, /background-color:#EBE5D0/);
     assert.match(html, /border-radius:10px/);
   });
 
