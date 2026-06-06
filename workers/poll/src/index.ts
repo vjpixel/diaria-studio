@@ -1061,7 +1061,7 @@ export function votePageHtml(
   .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #f4efe2; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #ffffff; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
@@ -1072,7 +1072,7 @@ export function votePageHtml(
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #d8cfb8; border-radius: 4px; font-size: 0.95rem; font-family: system-ui, sans-serif; }
   /* #1894: CTA em accent verde (--brand-bright, "subscribe/accent" do v1-daily). */
-  .nick-save { padding: 8px 16px; background: #00A0A0; color: #f4efe2; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
+  .nick-save { padding: 8px 16px; background: #00A0A0; color: #ffffff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
