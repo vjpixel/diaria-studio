@@ -1,49 +1,49 @@
-Nome,Tipo,URL,RSS,topic_filter
-Canaltech (IA),Brasil,https://canaltech.com.br/inteligencia-artificial/,https://canaltech.com.br/rss/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-Exame,Brasil,https://exame.com/inteligencia-artificial/,https://exame.com/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-G1 Tecnologia (IA),Brasil,https://g1.globo.com/tecnologia/,,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-MIT Technology Review Brasil (IA),Brasil,https://mittechreview.com.br/category/inteligencia-artificial/,https://mittechreview.com.br/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-Tecnoblog (IA),Brasil,https://tecnoblog.net/topico/inteligencia-artificial/,https://tecnoblog.net/tema/inteligencia-artificial/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-CNN,Brasil,https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/,https://www.cnnbrasil.com.br/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-StartSe (IA),Brasil,https://www.startse.com/noticias/ia/,,
-Meta AI Blog,Primária,https://ai.meta.com/blog/,,
-arXiv,Pesquisa,https://arxiv.org/,https://rss.arxiv.org/rss/cs.AI,"AI,artificial intelligence,language model,LLM,large language,agent,agentic,GPT,Claude,Gemini,Llama,deep learning,neural network,transformer,alignment,safety,benchmark,reasoning,multimodal,generative,fine-tuning,RAG,retrieval,foundation model,reinforcement learning"
-Google,Primária,https://blog.google/,https://blog.google/rss/,
-Cohere Blog,Primária,https://cohere.com/blog,,
-DeepMind,Primária,https://deepmind.google/research/publications/,https://deepmind.google/blog/rss.xml,
-Hugging Face Blog,Primária,https://huggingface.co/blog,https://huggingface.co/blog/feed.xml,
-Apple Machine Learning Research,Primária,https://machinelearning.apple.com/,https://machinelearning.apple.com/rss.xml,
-Microsoft,Primária,https://microsoft.ai/news/,,
-Mistral AI News,Primária,https://mistral.ai/news/,,
-Nvidia,Primária,https://blogs.nvidia.com/,https://blogs.nvidia.com/feed/,
-OpenAI,Primária,https://openai.com/news/company-announcements/,https://openai.com/news/rss.xml,
-Anthropic,Primária,https://www.anthropic.com/news/,,
-AlphaSignal,Secundária,https://alphasignal.ai/,https://alphasignalai.substack.com/feed,
-The Deep View,Secundária,https://archive.thedeepview.com/,https://rss.beehiiv.com/feeds/nswNBn2yqy.xml,
-Import AI (Jack Clark),Secundária,https://importai.substack.com/,https://importai.substack.com/feed,
-TLDR AI,Secundária,https://tldr.tech/ai,https://tldr.tech/api/rss/ai,
-Ben's Bites,Secundária,https://www.bensbites.co/,https://www.bensbites.com/feed,
-Cyberman,Secundária,https://www.cyberman.ai/,,
-Reuters,Secundária,https://www.reuters.com/technology/artificial-intelligence/,,
-The Guardian (AI),Secundária,https://www.theguardian.com/technology/artificialintelligenceai,https://www.theguardian.com/technology/artificialintelligenceai/rss,"AI,IA,artificial intelligence,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model"
-The Rundown AI,Secundária,https://www.therundown.ai/archive,https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml,
-Evolving AI,Secundária,https://evolvingai.io/,,
-Anthropic Cookbook,Tutoriais,https://github.com/anthropics/anthropic-cookbook,,
-HuggingFace Learn,Tutoriais,https://huggingface.co/learn,,
-DeepLearning.ai The Batch,Tutoriais,https://www.deeplearning.ai/the-batch/,,
-Latent Space,Tutoriais,https://www.latent.space/,https://www.latent.space/feed,
-Google AI for Developers Blog,Tutoriais,https://developers.googleblog.com/en/ai/,https://feeds.feedburner.com/GDBcode,
-AWS Machine Learning Blog,Tutoriais,https://aws.amazon.com/blogs/machine-learning/,https://aws.amazon.com/blogs/machine-learning/feed/,
-OpenAI Cookbook,Tutoriais,https://developers.openai.com/cookbook,,
-Sebastian Raschka (Ahead of AI),Tutoriais,https://magazine.sebastianraschka.com/,https://magazine.sebastianraschka.com/feed,
-Fast.ai,Tutoriais,https://www.fast.ai/,https://www.fast.ai/index.xml,
-LangChain Blog,Tutoriais,https://www.langchain.com/blog,,
-Pinecone Learn,Tutoriais,https://www.pinecone.io/learn/,,
-Hamel Husain,Tutoriais,https://hamel.dev/,https://hamel.dev/index.xml,
-Eugene Yan,Tutoriais,https://eugeneyan.com/,https://eugeneyan.com/rss/,
-Asimov Academy,Tutoriais,https://hub.asimov.academy/,,
-Kaggle Learn,Tutoriais,https://www.kaggle.com/learn,,
-Weights & Biases,Tutoriais,https://wandb.ai/fully-connected,,
-Microsoft Learn AI,Tutoriais,https://learn.microsoft.com/en-us/training/browse/?products=ai-services,,
-Perplexity Research,Pesquisa,https://research.perplexity.ai/,https://research.perplexity.ai/sitemap.xml,
-Anthropic Institute,Pesquisa,https://www.anthropic.com/institute,,
+Nome,Tipo,URL,RSS,topic_filter,use_melhor
+Canaltech (IA),Brasil,https://canaltech.com.br/inteligencia-artificial/,https://canaltech.com.br/rss/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+Exame,Brasil,https://exame.com/inteligencia-artificial/,https://exame.com/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+G1 Tecnologia (IA),Brasil,https://g1.globo.com/tecnologia/,,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+MIT Technology Review Brasil (IA),Brasil,https://mittechreview.com.br/category/inteligencia-artificial/,https://mittechreview.com.br/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+Tecnoblog (IA),Brasil,https://tecnoblog.net/topico/inteligencia-artificial/,https://tecnoblog.net/tema/inteligencia-artificial/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+CNN,Brasil,https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/,https://www.cnnbrasil.com.br/feed/,"AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+StartSe (IA),Brasil,https://www.startse.com/noticias/ia/,,,
+Meta AI Blog,Primária,https://ai.meta.com/blog/,,,
+arXiv,Pesquisa,https://arxiv.org/,https://rss.arxiv.org/rss/cs.AI,"AI,artificial intelligence,language model,LLM,large language,agent,agentic,GPT,Claude,Gemini,Llama,deep learning,neural network,transformer,alignment,safety,benchmark,reasoning,multimodal,generative,fine-tuning,RAG,retrieval,foundation model,reinforcement learning",
+Google,Primária,https://blog.google/,https://blog.google/rss/,,
+Cohere Blog,Primária,https://cohere.com/blog,,,
+DeepMind,Primária,https://deepmind.google/research/publications/,https://deepmind.google/blog/rss.xml,,
+Hugging Face Blog,Primária,https://huggingface.co/blog,https://huggingface.co/blog/feed.xml,,
+Apple Machine Learning Research,Primária,https://machinelearning.apple.com/,https://machinelearning.apple.com/rss.xml,,
+Microsoft,Primária,https://microsoft.ai/news/,,,
+Mistral AI News,Primária,https://mistral.ai/news/,,,
+Nvidia,Primária,https://blogs.nvidia.com/,https://blogs.nvidia.com/feed/,,
+OpenAI,Primária,https://openai.com/news/company-announcements/,https://openai.com/news/rss.xml,,
+Anthropic,Primária,https://www.anthropic.com/news/,,,
+AlphaSignal,Secundária,https://alphasignal.ai/,https://alphasignalai.substack.com/feed,,
+The Deep View,Secundária,https://archive.thedeepview.com/,https://rss.beehiiv.com/feeds/nswNBn2yqy.xml,,
+Import AI (Jack Clark),Secundária,https://importai.substack.com/,https://importai.substack.com/feed,,
+TLDR AI,Secundária,https://tldr.tech/ai,https://tldr.tech/api/rss/ai,,
+Ben's Bites,Secundária,https://www.bensbites.co/,https://www.bensbites.com/feed,,
+Cyberman,Secundária,https://www.cyberman.ai/,,,
+Reuters,Secundária,https://www.reuters.com/technology/artificial-intelligence/,,,
+The Guardian (AI),Secundária,https://www.theguardian.com/technology/artificialintelligenceai,https://www.theguardian.com/technology/artificialintelligenceai/rss,"AI,IA,artificial intelligence,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model",
+The Rundown AI,Secundária,https://www.therundown.ai/archive,https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml,,
+Evolving AI,Secundária,https://evolvingai.io/,,,
+Anthropic Cookbook,Tutoriais,https://github.com/anthropics/anthropic-cookbook,,,1
+HuggingFace Learn,Tutoriais,https://huggingface.co/learn,,,1
+DeepLearning.ai The Batch,Tutoriais,https://www.deeplearning.ai/the-batch/,,,1
+Latent Space,Tutoriais,https://www.latent.space/,https://www.latent.space/feed,,1
+Google AI for Developers Blog,Tutoriais,https://developers.googleblog.com/en/ai/,https://feeds.feedburner.com/GDBcode,,1
+AWS Machine Learning Blog,Tutoriais,https://aws.amazon.com/blogs/machine-learning/,https://aws.amazon.com/blogs/machine-learning/feed/,,1
+OpenAI Cookbook,Tutoriais,https://developers.openai.com/cookbook,,,1
+Sebastian Raschka (Ahead of AI),Tutoriais,https://magazine.sebastianraschka.com/,https://magazine.sebastianraschka.com/feed,,1
+Fast.ai,Tutoriais,https://www.fast.ai/,https://www.fast.ai/index.xml,,1
+LangChain Blog,Tutoriais,https://www.langchain.com/blog,,,1
+Pinecone Learn,Tutoriais,https://www.pinecone.io/learn/,,,1
+Hamel Husain,Tutoriais,https://hamel.dev/,https://hamel.dev/index.xml,,1
+Eugene Yan,Tutoriais,https://eugeneyan.com/,https://eugeneyan.com/rss/,,1
+Asimov Academy,Tutoriais,https://hub.asimov.academy/,,,1
+Kaggle Learn,Tutoriais,https://www.kaggle.com/learn,,,1
+Weights & Biases,Tutoriais,https://wandb.ai/fully-connected,,,1
+Microsoft Learn AI,Tutoriais,https://learn.microsoft.com/en-us/training/browse/?products=ai-services,,,1
+Perplexity Research,Pesquisa,https://research.perplexity.ai/,https://research.perplexity.ai/sitemap.xml,,
+Anthropic Institute,Pesquisa,https://www.anthropic.com/institute,,,

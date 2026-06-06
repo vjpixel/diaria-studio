@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 48 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 48 fontes (17 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -167,74 +167,91 @@
 ### Anthropic Cookbook
 - URL: https://github.com/anthropics/anthropic-cookbook
 - Site query: `site:github.com/anthropics/anthropic-cookbook`
+- Use Melhor: sim
 
 ### HuggingFace Learn
 - URL: https://huggingface.co/learn
 - Site query: `site:huggingface.co/learn`
+- Use Melhor: sim
 
 ### DeepLearning.ai The Batch
 - URL: https://www.deeplearning.ai/the-batch/
 - Site query: `site:deeplearning.ai/the-batch`
+- Use Melhor: sim
 
 ### Latent Space
 - URL: https://www.latent.space/
 - Site query: `site:latent.space`
 - RSS: https://www.latent.space/feed
+- Use Melhor: sim
 
 ### Google AI for Developers Blog
 - URL: https://developers.googleblog.com/en/ai/
 - Site query: `site:developers.googleblog.com/en/ai`
 - RSS: https://feeds.feedburner.com/GDBcode
+- Use Melhor: sim
 
 ### AWS Machine Learning Blog
 - URL: https://aws.amazon.com/blogs/machine-learning/
 - Site query: `site:aws.amazon.com/blogs/machine-learning`
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
+- Use Melhor: sim
 
 ### OpenAI Cookbook
 - URL: https://developers.openai.com/cookbook
 - Site query: `site:developers.openai.com/cookbook`
+- Use Melhor: sim
 
 ### Sebastian Raschka (Ahead of AI)
 - URL: https://magazine.sebastianraschka.com/
 - Site query: `site:magazine.sebastianraschka.com`
 - RSS: https://magazine.sebastianraschka.com/feed
+- Use Melhor: sim
 
 ### Fast.ai
 - URL: https://www.fast.ai/
 - Site query: `site:fast.ai`
 - RSS: https://www.fast.ai/index.xml
+- Use Melhor: sim
 
 ### LangChain Blog
 - URL: https://www.langchain.com/blog
 - Site query: `site:langchain.com/blog`
+- Use Melhor: sim
 
 ### Pinecone Learn
 - URL: https://www.pinecone.io/learn/
 - Site query: `site:pinecone.io/learn`
+- Use Melhor: sim
 
 ### Hamel Husain
 - URL: https://hamel.dev/
 - Site query: `site:hamel.dev`
 - RSS: https://hamel.dev/index.xml
+- Use Melhor: sim
 
 ### Eugene Yan
 - URL: https://eugeneyan.com/
 - Site query: `site:eugeneyan.com`
 - RSS: https://eugeneyan.com/rss/
+- Use Melhor: sim
 
 ### Asimov Academy
 - URL: https://hub.asimov.academy/
 - Site query: `site:hub.asimov.academy`
+- Use Melhor: sim
 
 ### Kaggle Learn
 - URL: https://www.kaggle.com/learn
 - Site query: `site:kaggle.com/learn`
+- Use Melhor: sim
 
 ### Weights & Biases
 - URL: https://wandb.ai/fully-connected
 - Site query: `site:wandb.ai/fully-connected`
+- Use Melhor: sim
 
 ### Microsoft Learn AI
 - URL: https://learn.microsoft.com/en-us/training/browse/?products=ai-services
 - Site query: `site:learn.microsoft.com/en-us/training/browse`
+- Use Melhor: sim

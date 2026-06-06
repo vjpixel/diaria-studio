@@ -7,7 +7,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCES_CSV = resolve(ROOT, "seed/sources.csv");
 const OUT = resolve(ROOT, "context/sources.md");
 
-type Source = { Nome: string; Tipo: string; URL: string; RSS?: string; topic_filter?: string };
+import { isUseMelhorSource } from "./lib/use-melhor-sources.ts"; // #1899
+
+type Source = { Nome: string; Tipo: string; URL: string; RSS?: string; topic_filter?: string; use_melhor?: string };
 
 const csv = readFileSync(SOURCES_CSV, "utf8");
 const { data, errors } = Papa.parse<Source>(csv, { header: true, skipEmptyLines: true });
@@ -39,7 +41,7 @@ function siteQuery(url: string): string {
 const lines: string[] = [
   "# Fontes cadastradas — Diar.ia",
   "",
-  `**Total:** ${data.length} fontes. Gerado de \`seed/sources.csv\` via \`npm run sync-sources\`.`,
+  `**Total:** ${data.length} fontes (${data.filter(isUseMelhorSource).length} marcadas Use Melhor). Gerado de \`seed/sources.csv\` via \`npm run sync-sources\`.`,
   "",
 ];
 
@@ -69,6 +71,7 @@ function renderSource(s: Source, out: string[]): void {
   if (rss) out.push(`- RSS: ${rss}`);
   const topicFilter = s.topic_filter?.trim();
   if (topicFilter) out.push(`- Topic filter: ${topicFilter}`);
+  if (isUseMelhorSource(s)) out.push(`- Use Melhor: sim`); // #1899
   out.push("");
 }
 
