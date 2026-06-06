@@ -104,39 +104,6 @@
       "summary": "Introdução aos subcampos da IA pra interações textuais e análise de imagens."
     },
     {
-      "id": "ibm-redacao-de-prompts",
-      "title": "Dominando a Arte da Redação de Prompts",
-      "platform": "IBM SkillsBuild",
-      "url": "https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai",
-      "language": "pt-br",
-      "level": "iniciante",
-      "format": "hands-on",
-      "duration_hours": 1,
-      "cost": "free",
-      "certificate": true,
-      "themes": [
-        "Prompt Engineering"
-      ],
-      "summary": "Prompt engineering — como otimizar a eficiência e a qualidade das interações com modelos generativos."
-    },
-    {
-      "id": "ibm-melhoria-curriculo-genai",
-      "title": "Melhoria de Currículo com IA Generativa",
-      "platform": "IBM SkillsBuild",
-      "url": "https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai",
-      "language": "pt-br",
-      "level": "iniciante",
-      "format": "hands-on",
-      "duration_hours": 0.67,
-      "cost": "free",
-      "certificate": true,
-      "themes": [
-        "Carreira",
-        "IA Generativa"
-      ],
-      "summary": "Aplicação prática: usar IA generativa pra otimizar currículo e busca de emprego."
-    },
-    {
       "id": "bradesco-ia-direito",
       "title": "IA para Profissionais do Direito",
       "platform": "Fundação Bradesco (Escola Virtual)",
@@ -333,12 +300,12 @@
       "id": "google-ai-essentials",
       "title": "Google AI Essentials",
       "platform": "Google Skills",
-      "url": "https://www.skills.google/paths/2336",
+      "url": "https://www.coursera.org/learn/google-ai-essentials",
       "language": "en",
       "level": "iniciante",
       "format": "video",
       "duration_hours": 4.75,
-      "cost": "free",
+      "cost": "subscription",
       "certificate": true,
       "themes": [
         "Produtividade",
