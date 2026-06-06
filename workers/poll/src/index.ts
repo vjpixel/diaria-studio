@@ -912,7 +912,7 @@ function renderLeaderboardHtml(
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
   th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: system-ui, sans-serif; }
   td { padding: 10px 8px; border-bottom: 1px solid #ebe5d0; }
-  tr.leader td { font-weight: 600; color: #1F8A5B; }
+  tr.leader td { font-weight: 600; color: #00A0A0; }
   a { color: #171411; text-decoration: underline; }
   .kicker { font-family: system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
 </style>
@@ -1057,11 +1057,11 @@ export function votePageHtml(
   a { color: #171411; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
   .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
-  /* #1894: accent verde da marca (--brand-bright #1F8A5B) — sinal da imagem clicada. */
-  .result-image.clicked { border-color: #1F8A5B; box-shadow: 0 0 0 2px rgba(31,138,91,.28); }
+  /* #1894: accent verde da marca (--brand-bright #00A0A0) — sinal da imagem clicada. */
+  .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #1F8A5B; color: #f4efe2; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #f4efe2; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
@@ -1072,7 +1072,7 @@ export function votePageHtml(
   .nick-form { display: flex; gap: 8px; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #d8cfb8; border-radius: 4px; font-size: 0.95rem; font-family: system-ui, sans-serif; }
   /* #1894: CTA em accent verde (--brand-bright, "subscribe/accent" do v1-daily). */
-  .nick-save { padding: 8px 16px; background: #1F8A5B; color: #f4efe2; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
+  .nick-save { padding: 8px 16px; background: #00A0A0; color: #f4efe2; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
