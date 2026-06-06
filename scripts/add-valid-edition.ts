@@ -20,6 +20,7 @@
 
 import "dotenv/config"; // #1379 — carrega CLOUDFLARE_API_TOKEN do .env pra wrangler
 import { parseArgs } from "./lib/cli-args.ts";
+import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811
 import { wranglerKvGet, wranglerKvPut } from "./lib/poll-kv.ts";
 
 // #1086: Node 24 introduziu mudança em spawnSync que quebra .cmd files no
@@ -32,8 +33,8 @@ export function run(args: {
   remove: boolean;
 }): { previous: string[]; current: string[]; changed: boolean } {
   const { edition, remove } = args;
-  if (!/^\d{6}$/.test(edition)) {
-    throw new Error(`--edition deve ser AAMMDD (6 dígitos), recebido: "${edition}"`);
+  if (!isValidEditionDir(edition)) {
+    throw new Error(`--edition deve ser AAMMDD válido (mês 01-12, dia 01-31), recebido: "${edition}"`);
   }
 
   const raw = wranglerKvGet("valid_editions");

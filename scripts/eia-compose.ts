@@ -45,6 +45,7 @@ import { execFileSync } from "node:child_process";
 import { CONFIG } from "./lib/config.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
+import { runTsx } from "./lib/run-tsx.ts"; // #1811
 
 interface WikimediaImage {
   title?: string;
@@ -793,10 +794,7 @@ const CHILD_STDIO: ["inherit", "ignore", "inherit"] = [
 // Sem shell:true → args com espaços são preservados corretamente (#213).
 function runScript(cmd: string, args: string[]): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  execFileSync(process.execPath, ["--import", "tsx", cmd, ...args], {
-    cwd: ROOT,
-    stdio: CHILD_STDIO,
-  });
+  runTsx(cmd, args, { cwd: ROOT, stdout: "ignore" }); // #1811: helper compartilhado
 }
 
 function runNode(cmd: string, args: string[]): void {

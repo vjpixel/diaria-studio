@@ -24,9 +24,14 @@ const EDITIONS_DIR = resolve(ROOT, "data", "editions");
 export function isValidEditionDir(name: string): boolean {
   const m = /^(\d{2})(\d{2})(\d{2})$/.exec(name);
   if (!m) return false;
+  const year = 2000 + Number(m[1]);
   const month = Number(m[2]);
   const day = Number(m[3]);
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+  if (month < 1 || month > 12 || day < 1) return false;
+  // #1811: calendar-aware — rejeita dias impossíveis pro mês (260631 = 31 jun,
+  // 260229 em ano não-bissexto). Dia 0 do mês seguinte = último dia deste (UTC).
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= lastDay;
 }
 
 /**
