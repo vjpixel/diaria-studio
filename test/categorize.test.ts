@@ -2498,3 +2498,32 @@ describe("#1754 — curso/formação → use_melhor (tutorial), não radar", () 
     }), "tutorial");
   });
 });
+
+describe("#1899: routing por fonte use_melhor (lista-semente)", () => {
+  it("artigo de fonte flagueada (prefixo) → tutorial (use_melhor)", () => {
+    // github.com/anthropics/anthropic-cookbook é flagueado no seed; o host nu
+    // github.com NÃO está em TUTORIAL_DOMAINS — é o branch #1899 que pega.
+    assert.equal(
+      categorize({
+        url: "https://github.com/anthropics/anthropic-cookbook/blob/main/skills/x.ipynb",
+        title: "Building agents with the Anthropic Cookbook",
+      }),
+      "tutorial",
+    );
+    // kaggle.com/learn flagueado
+    assert.equal(
+      categorize({ url: "https://www.kaggle.com/learn/intro-to-machine-learning" }),
+      "tutorial",
+    );
+  });
+  it("outro path do mesmo host largo NÃO vira tutorial (prefixo boundary-safe)", () => {
+    // github.com/openai/... não é o cookbook flagueado → não cai no branch #1899
+    const cat = categorize({ url: "https://github.com/openai/some-random-repo" });
+    assert.notEqual(cat, "tutorial");
+    // kaggle competitions (não /learn) também não
+    assert.notEqual(
+      categorize({ url: "https://www.kaggle.com/competitions/some-comp" }),
+      "tutorial",
+    );
+  });
+});
