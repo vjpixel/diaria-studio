@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 47 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 48 fontes. Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -157,6 +157,10 @@
 - URL: https://research.perplexity.ai/
 - Site query: `site:research.perplexity.ai`
 - RSS: https://research.perplexity.ai/sitemap.xml
+
+### Anthropic Institute
+- URL: https://www.anthropic.com/institute
+- Site query: `site:anthropic.com/institute`
 
 ## Tutoriais
 
