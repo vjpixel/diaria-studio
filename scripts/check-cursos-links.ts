@@ -73,7 +73,7 @@ export function loadCourses(root: string = ROOT): Course[] {
   return arr;
 }
 
-async function probe(url: string): Promise<CourseLinkProbe> {
+async function probeOnce(url: string): Promise<CourseLinkProbe> {
   try {
     const r = await fetch(url, {
       method: "GET",
@@ -89,6 +89,16 @@ async function probe(url: string): Promise<CourseLinkProbe> {
   } catch (e) {
     return { ok: false, status: 0, finalUrl: url, originalUrl: url, error: (e as Error).message };
   }
+}
+
+/** #1925 review: 1 retry só em falha TRANSITÓRIA (rede/timeout/5xx) — um 4xx
+ *  real não se beneficia de retry. Reduz falso-`broken` por blip momentâneo. */
+async function probe(url: string): Promise<CourseLinkProbe> {
+  const first = await probeOnce(url);
+  const transient = !!first.error || first.status >= 500;
+  if (!transient) return first;
+  await new Promise((r) => setTimeout(r, 1000));
+  return probeOnce(url);
 }
 
 async function main() {
