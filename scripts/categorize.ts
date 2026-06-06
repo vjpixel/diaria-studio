@@ -32,6 +32,7 @@ import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./lib/a
 import { isLikelyNewsNotLaunch } from "./lib/launch-vs-news.ts"; // #1442
 import type { Article } from "./lib/types/article.ts"; // #650
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
+import { loadUseMelhorPrefixes, matchesUseMelhorPrefix } from "./lib/use-melhor-sources.ts"; // #1899
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export type { Article };
 
@@ -85,6 +86,19 @@ export interface BucketedArticles {
 // ---------------------------------------------------------------------------
 const LANCAMENTO_DOMAINS = lancamentoDomains();
 const LANCAMENTO_PATTERNS = lancamentoPatterns();
+
+// #1899: prefixos host/path das fontes flagueadas `use_melhor` no seed (lista-
+// semente do híbrido lista+tipo). Carregado 1× no import; try/catch garante que
+// uma falha de leitura do CSV não derrube o categorizer (fallback: lista vazia,
+// só a inferência por conteúdo opera — comportamento pré-#1899).
+const USE_MELHOR_PREFIXES: string[] = (() => {
+  try {
+    return loadUseMelhorPrefixes();
+  } catch (e) {
+    console.error(`[categorize] WARN: loadUseMelhorPrefixes falhou (${(e as Error).message}) — só inferência por conteúdo`);
+    return [];
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // Domínios e padrões que indicam PESQUISA (papers, estudos, relatórios)
@@ -1030,6 +1044,19 @@ export function categorize(article: Article): Category {
   // sinal claro de não-tutorial — senão use_melhor fica poluído.
   if (TUTORIAL_DOMAINS.has(host) && !isNewsNotTutorial(article)) return "tutorial";
   if (TUTORIAL_PATTERNS.some((p) => p.test(full)) && !isNewsNotTutorial(article)) return "tutorial";
+
+  // #1899 (Slice 2): fonte flagueada `use_melhor` no seed (lista-semente) →
+  // tutorial, com o MESMO guard de não-tutorial (#1712) dos domínios de tutorial.
+  // Híbrido lista+tipo: a flag cobre fontes dedicadas (kaggle.com/learn,
+  // github.com/anthropics/anthropic-cookbook) que os patterns hardcoded não
+  // pegavam; isTutorialByKeyword/etc seguem capturando how-to fora da lista.
+  if (
+    USE_MELHOR_PREFIXES.length > 0 &&
+    matchesUseMelhorPrefix(article.url, USE_MELHOR_PREFIXES) &&
+    !isNewsNotTutorial(article)
+  ) {
+    return "tutorial";
+  }
 
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {
