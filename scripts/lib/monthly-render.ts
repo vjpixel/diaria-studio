@@ -348,7 +348,10 @@ export function parseEiaLegend(eiaMd: string): string {
 }
 
 /**
- * Renders the É IA? section with images and voting buttons (#465).
+ * Renders the É IA? section (#465). Layout espelha a diária (#1918): imagens
+ * A/B lado a lado, clicáveis (o voto vai no clique da própria imagem — sem
+ * botão), empilhando no mobile via `.mob-stack`; frase "Clique na imagem que
+ * foi gerada por IA.". Voto vai pro leaderboard `brand=clarice` (#1905).
  * `creditOverride` (#1914): legenda vinda do `01-eia.md` — quando presente,
  * substitui o corpo do chunk (que na mensal é só um placeholder `[...]`).
  */
@@ -374,45 +377,38 @@ export function renderEia(
   const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A&amp;brand=clarice`;
   const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B&amp;brand=clarice`;
 
-  // Renderiza um bloco imagem + botão de votação (sem label separado — botão já identifica A/B)
-  function imageBlock(label: string, imgUrl: string | undefined, voteUrl: string): string {
+  // #1918: imagem clicável (sem botão), lado a lado e empilhando no mobile —
+  // espelha o renderEIA da diária. O voto vai no clique da própria imagem.
+  const imageCell = (label: "A" | "B", imgUrl: string | undefined, voteUrl: string): string => {
     const imgHtml = imgUrl
-      ? `<img src="${escHtml(imgUrl)}" alt="Imagem ${label}" style="display:block;width:100%;height:auto;border-radius:6px;" />`
-      : `<div style="width:100%;height:180px;background:#f0f0f0;border:2px dashed #ccc;border-radius:6px;text-align:center;line-height:180px;color:#bbb;font-family:Arial,sans-serif;font-size:13px;">Imagem ${label}</div>`;
-    return `
-<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 12px;">
-  <tr><td>${imgHtml}</td></tr>
-  <tr><td align="center" style="padding:12px 0 0;">
-    <a href="${voteUrl}"
-       style="display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;background-color:${TEAL};border-radius:50px;padding:12px 32px;text-decoration:none;letter-spacing:0.02em;">Votar: esta é IA</a>
-  </td></tr>
-</table>`;
-  }
+      ? `<img src="${escHtml(imgUrl)}" alt="Imagem ${label}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0" />`
+      : `<div style="width:100%;height:160px;background:#f0f0f0;border:2px dashed #ccc;border-radius:6px;text-align:center;line-height:160px;color:#bbb;font-family:Arial,sans-serif;font-size:13px;">Imagem ${label}</div>`;
+    return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">
+            <a href="${voteUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">${imgHtml}</a>
+          </td>`;
+  };
 
   return `
 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#f0fafa;border-radius:10px;margin:0;">
   <tr><td style="padding:24px 28px 20px;">
 
     <!-- Cabeçalho -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 20px;">
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px;">
       <tr>
         <td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
       </tr>
       <tr>
-        <td style="font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:bold;color:#1a1a1a;padding:4px 0 0;">Qual das imagens foi gerada por IA?</td>
+        <td align="center" style="font-family:Georgia,'Times New Roman',serif;font-size:20px;color:#1a1a1a;padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
       </tr>
     </table>
 
-    <!-- Imagem A -->
-    ${imageBlock("A", imageUrlA, voteUrlA)}
-
-    <!-- Separador -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:4px 0 16px;">
-      <tr><td><hr style="border:none;border-top:1px solid #d0e8e8;margin:0;" /></td></tr>
+    <!-- Imagens A / B lado a lado (clicáveis, sem botão) -->
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 4px;">
+      <tr>
+        ${imageCell("A", imageUrlA, voteUrlA)}
+        ${imageCell("B", imageUrlB, voteUrlB)}
+      </tr>
     </table>
-
-    <!-- Imagem B -->
-    ${imageBlock("B", imageUrlB, voteUrlB)}
 
     <!-- Crédito -->
     <p style="margin:12px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:13px;font-style:italic;color:#666;">${renderInline(content)}</p>
@@ -504,6 +500,12 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escHtml(subject)}</title>
+  <style>
+    /* #1918: empilha as imagens A/B do É IA? em telas estreitas, como na diária. */
+    @media only screen and (max-width: 480px) {
+      .mob-stack { display:block !important; width:100% !important; padding:0 0 12px 0 !important; }
+    }
+  </style>
 </head>
 <body style="margin:0;padding:0;background:#f2f2f2;">
   <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
