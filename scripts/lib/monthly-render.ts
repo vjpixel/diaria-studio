@@ -22,25 +22,73 @@ export function stripBackslashEscapes(s: string): string {
   return s.replace(/\\([!&\[\]])/g, "$1");
 }
 
-/** Converts [text](url) markdown links to <a> tags + **bold** to <strong>. Escapes surrounding text. */
+/**
+ * Renderiza um trecho de texto FORA de link: escapa HTML, depois `**bold**` e
+ * `*italic*`. Bold roda primeiro — a regex de bold consome os `**`, então a de
+ * italic (1 asterisco, com lookaround anti-`**`) não os repega.
+ *
+ * #1917: a regex de italic exige conteúdo **flanqueado por não-espaço**
+ * (`*x*`, não `* x *`). A versão solta portada da diária (`\*([^*\n]+?)\*`)
+ * transformava em itálico qualquer par de `*` avulsos numa linha — e a mensal
+ * carrega conteúdo cheio deles que a diária não tem: rodapés de produto no
+ * RADAR/USE MELHOR (`5GB* (*com anúncios)`), tutoriais de CLI/glob do
+ * Laboratório Clarice (`*.json`), multiplicação (`palavras * 1.3 * margem`).
+ * O flanco não-espaço preserva o caso real (`*Canis aureus*`) e ignora esses.
+ */
+function renderTextInline(s: string): string {
+  return escHtml(s)
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>');
+}
+
+/**
+ * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
+ * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
+ * só escapado, sem bold/italic, igual à diária.)
+ *
+ * #1917/#1634: o destino do link é parseado contando parênteses balanceados,
+ * não com `\([^)]+\)`. A regex antiga (split por `\[[^\]]+\]\([^)]+\)`) fechava
+ * o link no PRIMEIRO `)`, então uma URL com parênteses — ex: um PDF da Clarice
+ * `.../arquivo%20(1).pdf` — truncava o href e vazava `.pdf)` como texto puro.
+ * Mesmo bug que o #1634 corrigiu na diária; a mensal nunca tinha recebido o fix.
+ */
 export function renderInline(text: string): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
-  const preStripped = stripBackslashEscapes(text);
-  // Split by link pattern; odd indices = link matches
-  const parts = preStripped.split(/(\[[^\]]+\]\([^)]+\))/);
-  return parts
-    .map((part, i) => {
-      if (i % 2 === 1) {
-        const m = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-        if (m) {
-          return `<a href="${escHtml(m[2])}" style="color:#0066cc;text-decoration:underline;">${escHtml(m[1])}</a>`;
-        }
+  const input = stripBackslashEscapes(text);
+  const parts: string[] = [];
+  let lastIdx = 0;
+  const linkStart = /\[([^\]]+)\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(input)) !== null) {
+    const destStart = m.index + m[0].length;
+    // Varre o destino balanceando parênteses: `(` aprofunda, `)` em depth 0 fecha.
+    let depth = 0;
+    let j = destStart;
+    for (; j < input.length; j++) {
+      const ch = input[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
       }
-      // Escapa primeiro, depois converte `**bold**` em <strong>.
-      return escHtml(part).replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
-    })
-    .join("");
+    }
+    if (j >= input.length) continue; // sem `)` de fechamento → não é link válido
+    const url = input.substring(destStart, j);
+    if (url.length === 0) {
+      // `[texto]()` não é link — preserva (não emite `<a href="">`).
+      linkStart.lastIndex = j + 1;
+      continue;
+    }
+    if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
+    parts.push(
+      `<a href="${escHtml(url)}" style="color:#0066cc;text-decoration:underline;">${escHtml(m[1])}</a>`,
+    );
+    lastIdx = j + 1;
+    linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
+  }
+  if (lastIdx < input.length) parts.push(renderTextInline(input.substring(lastIdx)));
+  return parts.join("");
 }
 
 /**

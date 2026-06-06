@@ -191,6 +191,45 @@ describe("renderInline", () => {
     const out = renderInline("[link](https://x.com?a=1&b=2)");
     assert.match(out, /href="https:\/\/x\.com\?a=1&amp;b=2"/);
   });
+
+  // #1917/#1634: regressão — URL com parênteses balanceados (ex: PDF da Clarice)
+  // não pode truncar o href no primeiro `)`.
+  it("preserva URL com parênteses balanceados (não trunca o href)", () => {
+    const out = renderInline(
+      "[Playbook](https://drive.example.com/The-Founders-Playbook%20(1).pdf)",
+    );
+    assert.match(out, /href="https:\/\/drive\.example\.com\/The-Founders-Playbook%20\(1\)\.pdf"/);
+    assert.match(out, />Playbook<\/a>/);
+    // O `.pdf)` NÃO pode vazar como texto puro após o link.
+    assert.doesNotMatch(out, /\.pdf\)/);
+  });
+
+  // #1364: `*x*` solo → <em>, sem confundir com `**bold**`.
+  it("converte `*italico*` em <em> e preserva `**bold**`", () => {
+    const out = renderInline("um *termo* e um **forte** aqui");
+    assert.match(out, /<em style="font-style:italic;">termo<\/em>/);
+    assert.match(out, /<strong>forte<\/strong>/);
+  });
+
+  // #1364: caso real que motivou o italic — nome científico.
+  it("italiciza conteúdo flanqueado por não-espaço (`*Canis aureus*`)", () => {
+    assert.match(
+      renderInline("o chacal (*Canis aureus*) corre"),
+      /\(<em style="font-style:italic;">Canis aureus<\/em>\)/,
+    );
+  });
+
+  // #1917: NÃO italicizar `*` avulsos da mensal (rodapés, glob, multiplicação).
+  // Sem o flanco não-espaço, esses pares viravam <em> espúrio no email.
+  it("NÃO italiciza asteriscos avulsos flanqueados por espaço/borda", () => {
+    for (const input of [
+      "Grátis até 5GB* (*com anúncios)",
+      "Calcule: palavras * 1.3 * margem",
+      "Selecione *.pdf e *.docx",
+    ]) {
+      assert.doesNotMatch(renderInline(input), /<em/, `não deveria italicizar: ${input}`);
+    }
+  });
 });
 
 // ─── renderParagraphs ──────────────────────────────────────────────────────
