@@ -902,27 +902,31 @@ function renderLeaderboardHtml(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Leaderboard de ${periodLabel} de ${year} | ${info.name}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet">
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
-  h1 { font-size: 1.5rem; }
-  p.sub { color: #666; font-size: 0.9rem; }
+  /* #1894: novo design Diar.ia — papel creme + tinta, Newsreader serif, sem teal. */
+  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #f4efe2; }
+  h1 { font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 2px solid #eee; font-size: 0.8rem; color: #666; text-transform: uppercase; }
-  td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
-  tr.leader td { font-weight: bold; }
-  a { color: #0066cc; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.55); text-transform: uppercase; letter-spacing: 0.08em; font-family: system-ui, sans-serif; }
+  td { padding: 10px 8px; border-bottom: 1px solid #ebe5d0; }
+  tr.leader td { font-weight: 600; }
+  a { color: #171411; text-decoration: underline; }
+  .kicker { font-family: system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
 </style>
 </head>
 <body>
-<h1 style="margin-bottom:4px;">Leaderboard de ${periodLabel} de ${year}</h1>
-<h2 style="font-size:1.1rem;font-weight:500;color:#666;margin:0 0 12px 0;">É IA?</h2>
+<h1>Leaderboard de ${periodLabel} de ${year}</h1>
+<p class="kicker">É IA?</p>
 <p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
-<tbody>${rows || "<tr><td colspan=3 style='color:#999;text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
+<tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
 </table>
-<p style="margin-top:30px;font-size:0.8rem;color:#999">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
-<p style="margin-top:8px;font-size:0.8rem;color:#999">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
+<p style="margin-top:30px;font-size:0.8rem;color:rgba(23,20,17,0.5)">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
+<p style="margin-top:8px;font-size:0.8rem;color:rgba(23,20,17,0.5)">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 </body>
 </html>`;
 
@@ -1044,26 +1048,29 @@ export function votePageHtml(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | ${BRAND_INFO[brand].name}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet">
 <style>
-  body { font-family: -apple-system, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
-  .msg { font-size: 1.4rem; line-height: 1.4; margin: 20px 0; }
-  a { color: #0066cc; }
+  /* #1894: novo design Diar.ia — papel creme + tinta, Newsreader serif, sem teal. */
+  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #f4efe2; }
+  .msg { font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
+  a { color: #171411; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
   .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
-  .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.18); }
+  .result-image.clicked { border-color: #171411; box-shadow: 0 0 0 2px rgba(23,20,17,.18); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-size: 0.95rem; margin-top: 8px; color: #444; font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #fff; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  .result-image .label { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #171411; color: #f4efe2; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
-  .nick-box { margin: 30px auto; padding: 20px; background: #f5f5f5; border-radius: 8px; max-width: 380px; }
-  .nick-title { font-size: 1.05rem; margin: 0 0 12px 0; font-weight: 600; }
-  .nick-explain { font-size: 0.95rem; color: #444; margin: 0 0 12px 0; line-height: 1.5; }
+  .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
+  .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
+  .nick-explain { font-size: 0.95rem; color: rgba(23,20,17,0.65); margin: 0 0 12px 0; line-height: 1.5; }
   .nick-explain code { background: #fff; padding: 1px 4px; border-radius: 3px; }
-  .nick-note { font-size: 0.85rem; color: #666; margin: 10px 0 0 0; }
+  .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.55); margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
-  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
-  .nick-save { padding: 8px 16px; background: #00A0A0; color: #fff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; }
+  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #d8cfb8; border-radius: 4px; font-size: 0.95rem; font-family: system-ui, sans-serif; }
+  .nick-save { padding: 8px 16px; background: #171411; color: #f4efe2; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
