@@ -694,13 +694,13 @@ export function extractContent(editionDir: string): NewsletterContent {
 // Produces email-safe HTML matching Beehiiv's Default template styling.
 // Uses inline styles, table layout, Poppins/Inter fonts.
 
-// #1894/#1895: novo design Diar.ia — paleta MONOCROMÁTICA creme + tinta (sai o
-// teal). O accent some; o contraste é tinta×creme. `TEAL` mantém o nome pra não
-// re-fiar 30+ usos, mas agora vale TINTA (#171411) — vira o "destaque" via
-// peso/contraste, não cor. Superfícies de bloco usam o creme-2 (SURFACE).
+// #1894/#1895: novo design Diar.ia — base creme + tinta. O "sai o teal" vale pra
+// BASE (corpo/estrutura monocromático); o teal `#00A0A0` (--brand-bright)
+// PERMANECE como ACCENT pontual — underline de título, links, CTA, kicker,
+// borda de bloco/callout. Separadores/réguas ficam tinta×creme (RULE/TEXT_COLOR).
 const PAPER = "#F4EFE2"; // fundo creme (papel)
 const SURFACE = "#EBE5D0"; // creme-2 — boxes/calouts/É IA?
-const TEAL = "#171411"; // tinta (ex-teal) — underline/CTA/borda de bloco
+const TEAL = "#00A0A0"; // teal da marca — accent (underline/links/CTA/kicker/borda); #1894
 const TEXT_COLOR = "#171411"; // tinta
 const MUTED = "#6E6A60"; // tinta dessaturada (~rgba(23,20,17,0.62) sólido)
 const RULE = "#E0D9C4"; // régua sutil sobre creme
@@ -863,7 +863,7 @@ function renderCategoryLabel(_emoji: string, category: string): string {
   // #1085: kicker minimalista — uppercase + letterspacing em vez de h6 grande.
   // String `category` já vem com emoji prefixado (ex: "🚀 LANÇAMENTO").
   return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
-  <p style="font-family:${FONT_LABEL};color:${MUTED};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
+  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
 </td></tr>`;
 }
 
@@ -1034,7 +1034,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const imgTag = `<img src="${safeImg}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
   const cta = safeLink
-    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:${PAPER};font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
+    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
     : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
