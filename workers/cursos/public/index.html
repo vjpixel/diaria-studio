@@ -89,6 +89,9 @@
       <label>Nível
         <select id="f-level"><option value="">Todos</option><option value="iniciante">Iniciante</option><option value="intermediario">Intermediário</option><option value="avancado">Avançado</option></select>
       </label>
+      <label>Custo
+        <select id="f-cost"><option value="">Todos</option><option value="free">Gratuito</option><option value="subscription">Assinatura</option></select>
+      </label>
       <label>Formato
         <select id="f-format"><option value="">Todos</option><option value="video">Vídeo</option><option value="texto">Texto</option><option value="hands-on">Hands-on</option></select>
       </label>
@@ -102,7 +105,7 @@
         <select id="f-cert"><option value="">Todos</option><option value="sim">Com certificado</option><option value="nao">Sem certificado</option></select>
       </label>
       <label>Tema
-        <select id="f-theme"><option value="">Todos</option><option value="carreira">Carreira</option><option value="cloud">Cloud</option><option value="deep-learning">Deep Learning</option><option value="direito">Direito</option><option value="estrategia">Estratégia</option><option value="etica">Ética</option><option value="fundamentos">Fundamentos</option><option value="ia-aplicada">IA Aplicada</option><option value="ia-generativa">IA Generativa</option><option value="machine-learning">Machine Learning</option><option value="negocios">Negócios</option><option value="nlp">NLP</option><option value="produtividade">Produtividade</option><option value="prompt-engineering">Prompt Engineering</option><option value="redes-neurais">Redes Neurais</option><option value="reinforcement-learning">Reinforcement Learning</option><option value="setor-social">Setor Social</option><option value="visao-computacional">Visão Computacional</option></select>
+        <select id="f-theme"><option value="">Todos</option><option value="cloud">Cloud</option><option value="deep-learning">Deep Learning</option><option value="direito">Direito</option><option value="estrategia">Estratégia</option><option value="etica">Ética</option><option value="fundamentos">Fundamentos</option><option value="ia-aplicada">IA Aplicada</option><option value="ia-generativa">IA Generativa</option><option value="machine-learning">Machine Learning</option><option value="negocios">Negócios</option><option value="nlp">NLP</option><option value="produtividade">Produtividade</option><option value="prompt-engineering">Prompt Engineering</option><option value="redes-neurais">Redes Neurais</option><option value="reinforcement-learning">Reinforcement Learning</option><option value="setor-social">Setor Social</option><option value="visao-computacional">Visão Computacional</option></select>
       </label>
       <span class="count" id="count"></span>
     </div>
@@ -199,42 +202,6 @@
         <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">NLP</span><span class="badge">Visão Computacional</span></p>
         <p class="summary">Introdução aos subcampos da IA pra interações textuais e análise de imagens.</p>
         <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
-      </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="prompt-engineering">
-        <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Dominando a Arte da Redação de Prompts</a></h2>
-          <span class="note">1h</span>
-        </div>
-        <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Prompt Engineering</span></p>
-        <p class="summary">Prompt engineering — como otimizar a eficiência e a qualidade das interações com modelos generativos.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
-      </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="carreira ia-generativa">
-        <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Melhoria de Currículo com IA Generativa</a></h2>
-          <span class="note">0h 40m</span>
-        </div>
-        <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Carreira</span><span class="badge">IA Generativa</span></p>
-        <p class="summary">Aplicação prática: usar IA generativa pra otimizar currículo e busca de emprego.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/adult-learners/explore-learning/back-to-school-with-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
       <article class="card"
         data-lang="pt-br"
@@ -437,20 +404,20 @@
       <article class="card"
         data-lang="en"
         data-level="iniciante"
-        data-cost="free"
+        data-cost="subscription"
         data-format="video"
         data-duration="curto"
         data-platform="google-skills"
         data-cert="sim"
         data-themes="produtividade prompt-engineering">
         <div class="title-row">
-          <h2><a href="https://www.skills.google/paths/2336" target="_blank" rel="noopener noreferrer">Google AI Essentials</a></h2>
+          <h2><a href="https://www.coursera.org/learn/google-ai-essentials" target="_blank" rel="noopener noreferrer">Google AI Essentials</a></h2>
           <span class="note">4h 45m</span>
         </div>
         <p class="platform">Google Skills</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Produtividade</span><span class="badge">Prompt Engineering</span></p>
+        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Assinatura</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Produtividade</span><span class="badge">Prompt Engineering</span></p>
         <p class="summary">GenAI, prompt engineering e produtividade — como usar IA pra gerar ideias, pesquisar e acelerar tarefas diárias.</p>
-        <a class="cta" href="https://www.skills.google/paths/2336" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <a class="cta" href="https://www.coursera.org/learn/google-ai-essentials" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
       <article class="card"
         data-lang="en"
@@ -477,7 +444,7 @@
   <footer><div class="wrap">Diar.ia · diar.ia.br — curadoria de cursos sobre IA</div></footer>
 <script>
   (function () {
-    var THEME_LABELS = {"carreira":"Carreira","cloud":"Cloud","deep-learning":"Deep Learning","direito":"Direito","estrategia":"Estratégia","etica":"Ética","fundamentos":"Fundamentos","ia-aplicada":"IA Aplicada","ia-generativa":"IA Generativa","machine-learning":"Machine Learning","negocios":"Negócios","nlp":"NLP","produtividade":"Produtividade","prompt-engineering":"Prompt Engineering","redes-neurais":"Redes Neurais","reinforcement-learning":"Reinforcement Learning","setor-social":"Setor Social","visao-computacional":"Visão Computacional"};
+    var THEME_LABELS = {"cloud":"Cloud","deep-learning":"Deep Learning","direito":"Direito","estrategia":"Estratégia","etica":"Ética","fundamentos":"Fundamentos","ia-aplicada":"IA Aplicada","ia-generativa":"IA Generativa","machine-learning":"Machine Learning","negocios":"Negócios","nlp":"NLP","produtividade":"Produtividade","prompt-engineering":"Prompt Engineering","redes-neurais":"Redes Neurais","reinforcement-learning":"Reinforcement Learning","setor-social":"Setor Social","visao-computacional":"Visão Computacional"};
     var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
     var countEl = document.getElementById('count');
     var emptyEl = document.getElementById('empty');
