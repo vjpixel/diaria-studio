@@ -380,12 +380,12 @@ export function renderEia(
   // #1918: imagem clicável (sem botão), lado a lado e empilhando no mobile —
   // espelha o renderEIA da diária. O voto vai no clique da própria imagem.
   const imageCell = (label: "A" | "B", imgUrl: string | undefined, voteUrl: string): string => {
-    const imgHtml = imgUrl
-      ? `<img src="${escHtml(imgUrl)}" alt="Imagem ${label}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0" />`
+    // #1923 review: só envolve em <a> de voto quando há imagem — sem imagem, o
+    // placeholder cinza não deve ser clicável/votável.
+    const inner = imgUrl
+      ? `<a href="${voteUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;"><img src="${escHtml(imgUrl)}" alt="Imagem ${label}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0" /></a>`
       : `<div style="width:100%;height:160px;background:#f0f0f0;border:2px dashed #ccc;border-radius:6px;text-align:center;line-height:160px;color:#bbb;font-family:Arial,sans-serif;font-size:13px;">Imagem ${label}</div>`;
-    return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">
-            <a href="${voteUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">${imgHtml}</a>
-          </td>`;
+    return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">${inner}</td>`;
   };
 
   return `
