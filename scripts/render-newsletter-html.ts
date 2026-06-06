@@ -1306,7 +1306,7 @@ function renderErroIntencionalReveal(text: string): string {
   return `<!-- ERRO INTENCIONAL — reveal -->
 <tr><td style="padding:24px 2px 0 2px;">
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:#FFFFFF;border:1px solid ${TEXT_COLOR};border-radius:10px;padding:14px 16px;">
+    <tr><td style="background-color:${SURFACE};border:1px solid ${TEAL};border-radius:10px;padding:14px 16px;">
       <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${mdInlineToHtml(reveal)}</p>
     </td></tr>
   </table>
