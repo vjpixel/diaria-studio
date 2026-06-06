@@ -35,13 +35,14 @@
  *   1 — args inválidos OU gate duro falhou (NÃO enviar a newsletter)
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env + .env.local (precedência)
 import { renderHaltBanner } from "./lib/gate-banner.ts";
+import { runTsx } from "./lib/run-tsx.ts"; // #1811
+import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -214,11 +215,8 @@ function childEnv(): NodeJS.ProcessEnv {
  */
 const defaultRunner: StepRunner = (spec) => {
   try {
-    const stdout = execFileSync(
-      process.execPath,
-      ["--import", "tsx", spec.script, ...spec.args],
-      { cwd: ROOT, stdio: ["inherit", "pipe", "inherit"], env: childEnv(), encoding: "utf8" },
-    );
+    // #1811: helper compartilhado (capture = pipa stdout pra parse).
+    const stdout = runTsx(spec.script, spec.args, { cwd: ROOT, env: childEnv(), stdout: "capture" });
     if (stdout) process.stderr.write(stdout);
     return { exitCode: 0, stdout: stdout ?? "" };
   } catch (e) {
@@ -267,8 +265,8 @@ export function runPreflight(
 function main(): void {
   const { values } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
-  if (!edition || !/^\d{6}$/.test(edition)) {
-    console.error("Uso: preflight-poll-dispatch.ts --edition AAMMDD");
+  if (!edition || !isValidEditionDir(edition)) {
+    console.error("Uso: preflight-poll-dispatch.ts --edition AAMMDD (data válida)");
     process.exit(1);
   }
 
