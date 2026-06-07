@@ -67,6 +67,15 @@ describe("checkDuplicateHeadings", () => {
     const issues = checkDuplicateHeadings("<h2>TITLE</h2><h2>title</h2>");
     assert.equal(issues.length, 1);
   });
+
+  it("#1936: detecta manchetes <a class=\"headline\"> duplicadas (DS não usa <h>)", () => {
+    const html =
+      `<a class="headline" href="https://x.com/a" style="font-size:26px;">Modelo X lança</a>` +
+      `<a class="headline" href="https://x.com/b" style="font-size:26px;">Outra coisa</a>` +
+      `<a class="headline" href="https://x.com/c" style="font-size:26px;">Modelo X lança</a>`;
+    const issues = checkDuplicateHeadings(html);
+    assert.equal(issues.length, 1, "headline duplicada deve ser pega (guard não é no-op)");
+  });
 });
 
 describe("checkMojibake", () => {

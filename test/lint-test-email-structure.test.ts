@@ -137,6 +137,21 @@ describe("extractEmailStructure (#1248)", () => {
     assert.ok(lan!.item_count >= 1);
   });
 
+  it("#1936: detecta seção com bullet ● (kicker DS sem emoji)", () => {
+    // O novo design troca o emoji do kicker pelo ponto ● (`&#9679;`). A detecção
+    // não pode exigir emoji, senão o loop do Stage 4 reporta toda seção faltando.
+    const html = `
+      <td style="color:#00A0A0;"><span style="color:#00A0A0;">&#9679;</span>&nbsp;RADAR</td>
+      <a href="https://r.com/1">N1</a>
+      <a href="https://r.com/2">N2</a>
+      <td style="color:#00A0A0;"><span style="color:#00A0A0;">&#9679;</span>&nbsp;USE MELHOR</td>
+      <a href="https://t.com/x">Tutorial</a>
+    `;
+    const r = extractEmailStructure(html);
+    assert.ok(r.sections.find((s) => s.name === "RADAR"), "RADAR detectado via bullet ●");
+    assert.ok(r.sections.find((s) => s.name === "USE MELHOR"), "USE MELHOR detectado via bullet ●");
+  });
+
   it("#1660: detecta USE MELHOR e VÍDEOS no email (headers com emoji)", () => {
     const html = `
       <h3>📡 RADAR</h3>

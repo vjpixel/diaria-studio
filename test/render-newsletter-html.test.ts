@@ -863,6 +863,14 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html, /\{\{poll_sig\}\}/);
   });
 
+  it("#1936: emite o marcador exato <!-- Destaque N --> (contrato do lint)", () => {
+    // checkRequiredSections (lint-newsletter-html.ts) busca o substring exato
+    // `<!-- Destaque 1 -->`. Acoplado de propósito — se o comentário do render
+    // mudar, este teste falha antes do lint dar falso-positivo de seção faltando.
+    const html = renderHTML(fixtureComEia);
+    assert.match(html, /<!-- Destaque 1 -->/);
+  });
+
   it("renderHTML excludeEia=true: omite seção È IA? mesmo quando configurada", () => {
     const html = renderHTML(fixtureComEia, { excludeEia: true });
     assert.ok(!html.includes("É IA?"), "body não deve mencionar È IA?");
@@ -1082,6 +1090,20 @@ Agora interaja!`,
     assert.match(html, /href="https:\/\/example\.com\/cursos"/);
     assert.match(html, /href="https:\/\/example\.com\/livros"/);
     assert.match(html, /Agora interaja/);
+  });
+
+  it("#1936: item de pill com conteúdo misto NÃO vaza markdown cru", () => {
+    const html = renderHTML(fixt({
+      encerrar: `Texto.
+
+- [Cursos](https://example.com/c) — novidades
+- Veja o **catálogo**`,
+    }));
+    // Regressão: o parser de pill só casava link puro; o resto caía em esc(cru).
+    // Agora mdInlineToHtml renderiza link/bold — nunca [..](..) nem ** literais.
+    assert.doesNotMatch(html, /\[Cursos\]\(/, "não vaza markdown de link");
+    assert.doesNotMatch(html, /\*\*catálogo\*\*/, "não vaza markdown de bold");
+    assert.match(html, /<b>catálogo<\/b>/, "bold renderizado");
   });
 
   it("graceful skip: sem sorteio nem encerrar, HTML sai sem esses blocos", () => {

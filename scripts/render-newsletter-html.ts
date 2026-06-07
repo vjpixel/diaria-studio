@@ -698,7 +698,7 @@ export function extractContent(editionDir: string): NewsletterContent {
 // #1936: design system canônico (vjpixel/diaria-design) — valores inline via
 // scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
 // sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
-// (links, kickers, marcas) + réguas (decisão editorial #1936, ver RULE_ACCENT).
+// (links, kickers, marcas). Réguas/bordas = bege (--rule); ver design-tokens.ts.
 const PAPER = COLORS.paper; // --paper #FBFAF6 (fundo/papel)
 const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA?)
 const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
@@ -854,10 +854,6 @@ export function processInlineLinks(s: string): string {
   }
   if (lastIdx < input.length) parts.push(esc(input.substring(lastIdx)));
   return parts.join("");
-}
-
-function renderSpacer(height = 20): string {
-  return `<tr><td height="${height}px" style="line-height:1px;font-size:1px;height:${height}px;">&nbsp;</td></tr>`;
 }
 
 // #1936 (DS email template): cada seção é UMA linha `<tr><td class="pad">` com
@@ -1048,7 +1044,7 @@ function renderDestaque(d: RenderDestaque): string {
     renderBodyParasInner(d.body),
     renderWhyBoxInner(d.why),
   ].filter(Boolean).join("\n  ");
-  return `<!-- Destaque ${d.n}: ${esc(stripKickerEmoji(d.category))} -->
+  return `<!-- Destaque ${d.n} -->
 <tr><td class="pad" style="padding:${pad};">
   ${inner}
 </td></tr>`;
@@ -1347,9 +1343,11 @@ function renderEncerrar(text: string): string {
     if (b.type === "ul") {
       const cells = b.content.map((c) => {
         const m = c.match(/^\[([^\]]+)\]\((.+)\)$/);
+        // Link puro → pill clicável. Senão, mdInlineToHtml (links/bold inline)
+        // pra NUNCA vazar markdown cru (invariante "output sem markdown").
         const pill = m
           ? `<a href="${esc(m[2].trim())}" style="${pillStyle}">${esc(m[1])}</a>`
-          : `<span style="${pillStyle}">${esc(c)}</span>`;
+          : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
         return `<td style="padding:0 10px 10px 0;">${pill}</td>`;
       }).join("");
       return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse:</p>
