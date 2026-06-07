@@ -593,7 +593,7 @@ describe("wrapEmail", () => {
     assert.match(out, /<p>parte 1<\/p>/);
     assert.match(out, /<p>parte 2<\/p>/);
     // Divider tem hr inside
-    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #e0e0e0;"/g);
+    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #00A0A0;"/g);
     assert.equal(dividerMatches?.length, 1, "Esperava 1 divider entre 2 parts");
   });
 

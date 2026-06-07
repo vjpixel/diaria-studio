@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
+import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936
 import { buildPrevResultLine, readPrevPollStats } from "./eia-compose.ts"; // #1707 fallback
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -694,21 +695,21 @@ export function extractContent(editionDir: string): NewsletterContent {
 // Produces email-safe HTML matching Beehiiv's Default template styling.
 // Uses inline styles, table layout, Poppins/Inter fonts.
 
-// #1894/#1895: novo design Diar.ia — base creme + tinta. O "sai o teal" vale pra
-// BASE (corpo/estrutura monocromático); o teal `#00A0A0` (--brand-bright)
-// PERMANECE como ACCENT pontual — underline de título, links, CTA, kicker,
-// borda de bloco/callout. Separadores/réguas ficam tinta×creme (RULE/TEXT_COLOR).
-const PAPER = "#F4EFE2"; // fundo creme (papel)
-const SURFACE = "#EBE5D0"; // creme-2 — boxes/calouts/É IA?
-const TEAL = "#00A0A0"; // teal da marca — accent (underline/links/CTA/kicker/borda); #1894
-const TEXT_COLOR = "#171411"; // tinta
-const MUTED = "#6E6A60"; // tinta dessaturada (~rgba(23,20,17,0.62) sólido)
-const RULE = "#E0D9C4"; // régua sutil sobre creme
-// #1895: Newsreader serif (display+corpo) com fallback Georgia (email-safe —
-// clients sem web font caem no serif). Kickers em sans (system-ui).
-const FONT_HEADING = "'Newsreader', Georgia, 'Times New Roman', serif";
-const FONT_BODY = "'Newsreader', Georgia, 'Times New Roman', serif";
-const FONT_LABEL = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+// #1936: design system canônico (vjpixel/diaria-design) — valores inline via
+// scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
+// sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
+// (links, kickers, marcas) + réguas (decisão editorial #1936, ver RULE_ACCENT).
+const PAPER = COLORS.paper; // --paper #FBFAF6 (fundo/papel)
+const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA?)
+const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
+const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
+const MUTED = COLORS.ink; // #1936: DS não tem cinza — secundário também é ink (italic/size diferencia)
+const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção)
+// #1936: serif Georgia (manchetes+corpo; email-safe — carrega em todo client);
+// sans Geist (kickers/labels; web font → cai pra system sans em email).
+const FONT_HEADING = FONTS.serif;
+const FONT_BODY = FONTS.serif;
+const FONT_LABEL = FONTS.sans;
 // #1083: URL montada inline com edition literal + merge tags Beehiiv
 // (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
 // HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
@@ -939,7 +940,8 @@ function renderWhyBlock(text: string): string {
 function renderRule(thick = false): string {
   // #1085: separador horizontal entre blocos editoriais. `thick` = 2px (entre
   // destaques e seções/pesquisa); fino = 1px (entre destaques).
-  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${RULE}`;
+  // #1935: régua fina no accent teal (#00A0A0); a grossa segue tinta (separador forte).
+  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${TEAL}`;
   return `<tr><td style="padding:36px 2px 0 2px;"><hr style="border:0;border-top:${border};margin:0;"/></td></tr>`;
 }
 
@@ -1105,10 +1107,10 @@ function renderEIA(eia: EIA): string {
 ${renderRule()}
 <tr><td style="padding:32px 0 0 0;">
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:${SURFACE};padding:32px 24px;border-radius:8px;">
+    <tr><td style="background-color:${SURFACE};padding:24px 28px 20px;border-radius:10px;">
       <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
         <tr><td align="left" style="padding:0 0 16px 0;">
-          <p style="font-family:${FONT_LABEL};color:${MUTED};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0;padding:0;">🖼️ É IA?</p>
+          <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0;padding:0;">🤔 É IA?</p>
         </td></tr>
         <tr><td align="center" style="padding:0 0 20px 0;">
           <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:20px;line-height:1.3;margin:0;padding:0;">Clique na imagem que foi gerada por IA.</p>
@@ -1232,7 +1234,7 @@ function renderSection(section: Section): string {
   return `<!-- ${section.name} -->
 ${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(displayName)}</p>
+  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(displayName)}</p>
   <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%">
     ${itemsHtml}
   </table>
@@ -1326,7 +1328,7 @@ function renderSorteio(text: string): string {
   return `<!-- 🎁 SORTEIO -->
 ${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🎁 Sorteio</p>
+  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🎁 Sorteio</p>
   ${html}
 </td></tr>`;
 }
@@ -1401,7 +1403,7 @@ function renderEncerrar(text: string): string {
   return `<!-- 🙋🏼‍♀️ PARA ENCERRAR -->
 ${renderRule()}
 <tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🙋🏼‍♀️ Para encerrar</p>
+  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🙋🏼‍♀️ Para encerrar</p>
   ${html}${ctaBox}
 </td></tr>`;
 }

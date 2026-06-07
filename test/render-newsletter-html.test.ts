@@ -1208,8 +1208,8 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
     // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
     assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
-    // E o regex deve dar match na forma fina (sanity check do helper):
-    assert.match(sectionBlock, /border-top:1px solid #E0D9C4/i, "rule fina (1px solid #E0D9C4) deve estar presente");
+    // #1935: a régua fina agora usa o accent teal (#00A0A0), não o creme.
+    assert.match(sectionBlock, /border-top:1px solid #00A0A0/i, "rule fina (1px solid #00A0A0 teal) deve estar presente");
   });
 
   it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
