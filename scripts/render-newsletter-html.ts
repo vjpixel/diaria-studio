@@ -881,7 +881,10 @@ function renderKicker(label: string): string {
 
 /** Manchete de destaque: Georgia 26px, ink, underline teal (link). HTML interno. */
 function renderHeadlineInner(title: string, url: string): string {
-  return `<a class="headline" href="${esc(url)}" style="display:block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.08;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
+  // #1936: underline teal via border-bottom (email-safe). O template do DS usa
+  // text-decoration-color, que Gmail/Outlook removem → o teal sumiria. ver
+  // diaria-design#2. display:inline-block pra a borda abraçar o texto, não o bloco.
+  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.08;color:${TEXT_COLOR};text-decoration:none;border-bottom:2px solid ${TEAL};padding-bottom:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
 }
 
 function imageGeneratorCredit(): string {
@@ -1162,7 +1165,7 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
  */
 function renderSectionItem(item: SectionItem, first: boolean): string {
   const titleHtml = item.url
-    ? `<a href="${esc(item.url)}" style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
+    ? `<a href="${esc(item.url)}" style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
     : `<span style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};">${esc(item.title)}</span>`;
   const spacer = first ? "" : `<div style="height:22px;line-height:22px;font-size:0;">&nbsp;</div>`;
   const desc = item.description
