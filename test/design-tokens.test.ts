@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { COLORS, FONTS, RULE_ACCENT } from "../scripts/lib/design-tokens.ts";
+import { COLORS, FONTS, BOX } from "../scripts/lib/design-tokens.ts";
 import { renderHTML } from "../scripts/render-newsletter-html.ts";
 import { draftToEmail } from "../scripts/publish-monthly.ts";
 
@@ -30,8 +30,10 @@ describe("design-tokens — valores canônicos (vjpixel/diaria-design)", () => {
     assert.match(FONTS.mono, /^'Geist Mono',/);
   });
 
-  it("RULE_ACCENT = teal (decisão editorial #1936: réguas no brand, não no --rule bege)", () => {
-    assert.equal(RULE_ACCENT, COLORS.brand);
+  it("BOX espelha guidelines/boxes.html — contorno (papel+rule) e painel (paperAlt); sem teal estrutural", () => {
+    assert.equal(BOX.contornoBg, COLORS.paper); // #FBFAF6
+    assert.equal(BOX.contornoBorder, COLORS.rule); // #EBE5D0 bege
+    assert.equal(BOX.painelBg, COLORS.paperAlt); // #EBE5D0 bege filled
   });
 });
 
@@ -57,16 +59,27 @@ const dailyFixture = {
 describe("diária — render-newsletter-html aplica os tokens canônicos", () => {
   const html = renderHTML(dailyFixture);
 
-  it("usa serif Georgia + ink #171411 + acento teal #00A0A0", () => {
-    assert.match(html, /Georgia, 'Times New Roman', serif/);
+  it("serif Georgia em título + corpo sans Geist + ink + teal só em acento", () => {
+    assert.match(html, /Georgia, 'Times New Roman', serif/); // títulos
+    assert.match(html, /'Geist',/); // corpo/labels sans
     assert.match(html, /#171411/);
-    assert.match(html, /#00A0A0/);
+    assert.match(html, /#00A0A0/); // kickers/links
+  });
+
+  it("réguas são bege #EBE5D0, não teal (DS: teal nunca é estrutura)", () => {
+    assert.match(html, /border-top:1px solid #EBE5D0/); // régua fina = --rule bege
+    assert.doesNotMatch(html, /border-top:1px solid #00A0A0/); // nunca teal
+    assert.doesNotMatch(html, /border-left:[0-9]px solid #00A0A0/); // sem barra teal
+  });
+
+  it("'Por que isso importa' é box contorno (papel + borda bege + kicker teal)", () => {
+    assert.match(html, /Por que isso importa/);
+    assert.match(html, /border:1px solid #EBE5D0/); // box contorno
   });
 
   it("não vaza valores ad-hoc da extração antiga do canvas", () => {
     assert.doesNotMatch(html, /Newsreader/);
     assert.doesNotMatch(html, /#F4EFE2/i); // paper antigo
-    assert.doesNotMatch(html, /#6E6A60/i); // cinza muted antigo
     assert.doesNotMatch(html, /#E0D9C4/i); // régua bege antiga
     assert.doesNotMatch(html, /#f0fafa/i); // box É IA? teal-tint ad-hoc
   });
@@ -96,12 +109,17 @@ Parágrafo final do destaque.
 describe("mensal — monthly-render aplica os tokens canônicos", () => {
   const { html } = draftToEmail(MONTHLY_DRAFT, null, "2605");
 
-  it("usa serif Georgia + sans Geist + papel #FBFAF6 + ink #171411 + teal #00A0A0", () => {
-    assert.match(html, /Georgia, 'Times New Roman', serif/);
-    assert.match(html, /'Geist',/);
+  it("serif Georgia em título + corpo sans Geist + papel #FBFAF6 + ink + teal acento", () => {
+    assert.match(html, /Georgia, 'Times New Roman', serif/); // h2/h3 títulos
+    assert.match(html, /'Geist',/); // corpo + labels sans
     assert.match(html, /#FBFAF6/);
     assert.match(html, /#171411/);
-    assert.match(html, /#00A0A0/);
+    assert.match(html, /#00A0A0/); // kickers/links
+  });
+
+  it("divider entre seções é bege #EBE5D0, não teal", () => {
+    assert.match(html, /border-top:1px solid #EBE5D0/);
+    assert.doesNotMatch(html, /border-top:1px solid #00A0A0/);
   });
 
   it("não vaza valores ad-hoc (ink #1a1a1a, cinzas, Arial, shell #f2f2f2)", () => {

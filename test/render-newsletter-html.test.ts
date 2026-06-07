@@ -1136,10 +1136,10 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.match(html, /Na última edição, disse X mas o correto era Y/);
     // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
     assert.doesNotMatch(html, /\{placeholder\}/);
-    // Estilo callout box (#1894: creme + borda teal, igual aos outros blocos)
-    assert.match(html, /border:1px solid #00A0A0/);
+    // Estilo callout box (#1936: painel bege do DS — fundo #EBE5D0, sem borda teal)
     assert.match(html, /background-color:#EBE5D0/);
-    assert.match(html, /border-radius:10px/);
+    assert.doesNotMatch(html, /border:1px solid #00A0A0/);
+    assert.match(html, /border-radius:12px/);
   });
 
   it("posicionamento: entre SORTEIO e PARA ENCERRAR", () => {
@@ -1208,8 +1208,9 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
     // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
     assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
-    // #1935: a régua fina agora usa o accent teal (#00A0A0), não o creme.
-    assert.match(sectionBlock, /border-top:1px solid #00A0A0/i, "rule fina (1px solid #00A0A0 teal) deve estar presente");
+    // #1936: a régua fina usa o --rule bege (#EBE5D0); teal nunca é estrutura.
+    assert.match(sectionBlock, /border-top:1px solid #EBE5D0/i, "rule fina (1px solid #EBE5D0 bege) deve estar presente");
+    assert.doesNotMatch(sectionBlock, /border-top:1px solid #00A0A0/i, "régua nunca é teal");
   });
 
   it("section header tem border-bottom (linha fina abaixo do kicker)", () => {

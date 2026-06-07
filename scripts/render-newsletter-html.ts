@@ -705,10 +705,11 @@ const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicke
 const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
 const MUTED = COLORS.ink; // #1936: DS não tem cinza — secundário também é ink (italic/size diferencia)
 const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção)
-// #1936: serif Georgia (manchetes+corpo; email-safe — carrega em todo client);
-// sans Geist (kickers/labels; web font → cai pra system sans em email).
+// #1936: DS usa serif Georgia SÓ em manchetes/títulos; CORPO + labels/kickers em
+// sans Geist (confirmado pelo template de email do DS + typography.css "Body & UI
+// (sans)"). Georgia é email-safe; Geist cai pra system sans em email.
 const FONT_HEADING = FONTS.serif;
-const FONT_BODY = FONTS.serif;
+const FONT_BODY = FONTS.sans;
 const FONT_LABEL = FONTS.sans;
 // #1083: URL montada inline com edition literal + merge tags Beehiiv
 // (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
@@ -925,14 +926,14 @@ function renderParagraphs(text: string): string {
 }
 
 function renderWhyBlock(text: string): string {
-  // #1085: "Por que isso importa" como pull-quote inline — table com
-  // border-left teal, parágrafo em itálico cinza. Em vez de h3 grande +
-  // parágrafos depois (legacy renderWhyHeading), agrega ambos em um único
-  // bloco editorial estilo magazine.
+  // #1936: "Por que isso importa" no padrão DS = box "contorno" (guidelines/
+  // boxes.html): fundo papel #FBFAF6 + borda 1px bege #EBE5D0 + radius 12px,
+  // kicker teal uppercase + corpo ink sans (sem itálico/cinza, sem barra teal).
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
   return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="border-left:3px solid ${TEAL};padding:4px 0 4px 16px;">
-    <p style="font-family:${FONT_BODY};color:${MUTED};font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
+  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="background-color:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
+    <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:700;text-transform:uppercase;letter-spacing:1.5px;font-size:12px;margin:0 0 10px 0;padding:0;">Por que isso importa</p>
+    <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.62;margin:0;padding:0;">${body}</p>
   </td></tr></table>
 </td></tr>`;
 }
@@ -940,8 +941,9 @@ function renderWhyBlock(text: string): string {
 function renderRule(thick = false): string {
   // #1085: separador horizontal entre blocos editoriais. `thick` = 2px (entre
   // destaques e seções/pesquisa); fino = 1px (entre destaques).
-  // #1935: régua fina no accent teal (#00A0A0); a grossa segue tinta (separador forte).
-  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${TEAL}`;
+  // #1936: DS — régua fina = --rule (bege #EBE5D0 hairline); grossa = --rule-strong
+  // (tinta 2px). Teal NUNCA é régua (só links/kickers/marca).
+  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${RULE}`;
   return `<tr><td style="padding:36px 2px 0 2px;"><hr style="border:0;border-top:${border};margin:0;"/></td></tr>`;
 }
 
@@ -971,7 +973,7 @@ export function renderCoverage(text: string): string {
 export function renderIntroCallout(text: string): string {
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td align="left" style="padding:16px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-left:4px solid ${TEAL};border-radius:4px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:12px 16px;">
       <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
     </td></tr>
@@ -1040,7 +1042,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border:1px solid ${TEAL};border-radius:6px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:14px 16px 16px;">
       <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0 0 12px;padding:0;">${processInlineLinks(body)}</p>
@@ -1308,7 +1310,7 @@ function renderErroIntencionalReveal(text: string): string {
   return `<!-- ERRO INTENCIONAL — reveal -->
 <tr><td style="padding:24px 2px 0 2px;">
   <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:${SURFACE};border:1px solid ${TEAL};border-radius:10px;padding:14px 16px;">
+    <tr><td style="background-color:${SURFACE};border-radius:12px;padding:14px 16px;">
       <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${mdInlineToHtml(reveal)}</p>
     </td></tr>
   </table>

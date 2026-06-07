@@ -199,20 +199,20 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
     : "";
-  // #1935: o ÚLTIMO parágrafo de cada destaque fecha com a régua teal
-  // (border-left), igual ao "Por que importa" da diária. Só quando NÃO há
-  // "O fio condutor:" — que já carrega a régua como pull-quote italic abaixo.
+  // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
+  // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
+  // NÃO há "O fio condutor:" — que já carrega a régua como pull-quote italic.
   const mainHtml = mainParas
     .map((p, idx) => {
       const isLast = idx === mainParas.length - 1;
       const style = isLast && !conductorText
-        ? "margin:20px 0 0 0;border-left:3px solid ${TEAL};padding-left:16px;"
+        ? `margin:20px 0 0 0;border-left:3px solid ${BEGE};padding-left:16px;`
         : "margin:0 0 16px 0;";
       return `<p style="${style}">${renderInline(p.replace(/\n/g, " "))}</p>`;
     })
     .join("\n");
   const conductorHtml = conductorText
-    ? `<p style="margin:20px 0 0 0;font-style:italic;color:${INK};border-left:3px solid ${TEAL};padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
+    ? `<p style="margin:20px 0 0 0;font-style:italic;color:${INK};border-left:3px solid ${BEGE};padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
     : "";
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
@@ -237,7 +237,7 @@ export function renderIntro(body: string): string {
       return `<p style="margin:0 0 16px 0;font-size:19px;font-style:italic;color:${INK};line-height:1.6;">${inline}</p>`;
     })
     .join("\n");
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${TEAL};">${labelHtml}${bodyHtml}</td></tr></table>`;
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${BEGE};">${labelHtml}${bodyHtml}</td></tr></table>`;
 }
 
 /**
@@ -465,7 +465,7 @@ export function renderEia(
         <td style="font-family:${FONT_SANS};font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
       </tr>
       <tr>
-        <td align="center" style="font-family:${FONT_SERIF};font-size:20px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
+        <td align="center" style="font-family:${FONT_SANS};font-size:20px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
       </tr>
     </table>
 
@@ -478,7 +478,7 @@ export function renderEia(
     </table>
 
     <!-- Crédito -->
-    <p style="margin:12px 0 0;font-family:${FONT_SERIF};font-size:13px;font-style:italic;color:${INK};">${renderInline(content)}</p>
+    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:13px;font-style:italic;color:${INK};">${renderInline(content)}</p>
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
@@ -559,7 +559,7 @@ export function parseHeaderChunk(chunk: string): {
 /** Wraps rendered HTML parts in a full email document. */
 export function wrapEmail(subject: string, bodyParts: string[]): string {
   // #1935: régua entre seções no teal da marca (era cinza #e0e0e0).
-  const divider = `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:28px 0;"><tr><td><hr style="border:none;border-top:1px solid ${TEAL};" /></td></tr></table>`;
+  const divider = `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:28px 0;"><tr><td><hr style="border:none;border-top:1px solid ${BEGE};" /></td></tr></table>`;
   const body = bodyParts.join(divider);
 
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -581,7 +581,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
       <td align="center" style="padding:20px 10px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
-            <td style="padding:36px 44px;font-family:${FONT_SERIF};color:${INK};font-size:17px;line-height:1.7;">
+            <td style="padding:36px 44px;font-family:${FONT_SANS};color:${INK};font-size:17px;line-height:1.7;">
               ${body}
             </td>
           </tr>

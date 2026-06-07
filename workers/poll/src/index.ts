@@ -906,8 +906,8 @@ function renderLeaderboardHtml(
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
   /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: Georgia, 'Times New Roman', serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
-  h1 { font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
   p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
   th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
@@ -1052,8 +1052,8 @@ export function votePageHtml(
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
   /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
-  body { font-family: Georgia, 'Times New Roman', serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
-  .msg { font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
+  .msg { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
   a { color: #171411; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
   .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #FBFAF6; }

@@ -33,20 +33,26 @@ export const COLORS = {
 } as const;
 
 export const FONTS = {
-  /** --font-serif · manchetes + corpo editorial. Georgia = system/email-safe. */
+  /** --font-serif · MANCHETES/títulos (só). Georgia = system/email-safe. */
   serif: "Georgia, 'Times New Roman', serif",
-  /** --font-sans · UI / labels / kickers. Geist = web font; cai pra system sans em email. */
+  /** --font-sans · CORPO + UI + labels/kickers. Geist = web font; cai pra system sans em email. */
   sans: "'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
   /** --font-mono · meta/dados. */
   mono: "'Geist Mono', 'JetBrains Mono', ui-monospace, monospace",
 } as const;
 
 /**
- * Decisão editorial #1936 (registrada no PR): as réguas/separadores usam o teal
- * da marca (`COLORS.brand`), NÃO o `--rule` bege do DS. O editor pediu explícita
- * e repetidamente o verde nas réguas ("senti falta do verde"). Teal é cor
- * canônica (--brand) aplicada a um papel estrutural — divergência consciente do
- * DS, que concentraria teal só em links/kickers/marcas e deixaria as réguas bege.
- * Centralizado aqui pra a decisão ter um único ponto de reversão.
+ * Sistema de boxes do DS (guidelines/boxes.html) — exatamente 2 variantes, sem
+ * bordas/barras teal em lugar nenhum (teal é SÓ texto: links/kickers/marca●):
+ *   - contorno: fundo `paper` (#FBFAF6) + borda `1px rule` (#EBE5D0 bege).
+ *     Usado em "Por que isso importa", callouts/CTA.
+ *   - painel:   fundo `paperAlt` (#EBE5D0 bege preenchido), sem borda.
+ *     Usado no É IA?, seções recuadas.
+ * Réguas/separadores = `rule` (#EBE5D0) hairline; `ruleStrong` (#171411) só pra
+ * régua pesada 2px. Fontes: serif Georgia em TÍTULOS, sans Geist no CORPO.
  */
-export const RULE_ACCENT: string = COLORS.brand;
+export const BOX = {
+  contornoBg: COLORS.paper,
+  contornoBorder: COLORS.rule,
+  painelBg: COLORS.paperAlt,
+} as const;
