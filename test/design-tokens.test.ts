@@ -67,8 +67,8 @@ describe("diária — render-newsletter-html aplica os tokens canônicos", () =>
   });
 
   it("réguas são bege #EBE5D0, não teal (DS: teal nunca é estrutura)", () => {
-    assert.match(html, /border-top:1px solid #EBE5D0/); // régua fina = --rule bege
-    assert.doesNotMatch(html, /border-top:1px solid #00A0A0/); // nunca teal
+    assert.match(html, /border-bottom:1px solid #EBE5D0/); // régua do kicker = --rule bege
+    assert.doesNotMatch(html, /border-bottom:1px solid #00A0A0/); // nunca teal
     assert.doesNotMatch(html, /border-left:[0-9]px solid #00A0A0/); // sem barra teal
   });
 
