@@ -89,6 +89,13 @@ export function checkDuplicateHeadings(html: string): LintIssue[] {
     const text = m[2].trim().toLowerCase();
     seen[text] = (seen[text] ?? 0) + 1;
   }
+  // #1936: o design DS não usa <h1-6> no corpo — as manchetes de destaque são
+  // `<a class="headline">`. Sem isto, o guard vira no-op e não pega título de
+  // destaque duplicado por erro de parse.
+  for (const m of html.matchAll(/<a class="headline"[^>]*>([^<]+)<\/a>/gi)) {
+    const text = m[1].trim().toLowerCase();
+    seen[text] = (seen[text] ?? 0) + 1;
+  }
   const dups = Object.entries(seen).filter(([, n]) => n > 1);
   if (dups.length === 0) return [];
   return [

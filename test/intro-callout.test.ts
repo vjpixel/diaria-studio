@@ -62,12 +62,13 @@ describe("extractIntroCallout (#1648)", () => {
 });
 
 describe("renderIntroCallout (#1648)", () => {
-  it("renderiza callout com borda teal (accent #1894) e link clicável", () => {
+  it("renderiza callout como painel bege (DS #1936) e link clicável", () => {
     const html = renderIntroCallout(
       "🎉 Sorteio: [Google Meet](https://meet.google.com/awi-jter-dwm)",
     );
-    // #1894: borda do callout usa o accent teal da marca (--brand-bright).
-    assert.match(html, /border-left:4px solid #00A0A0/);
+    // #1936: callout = box "painel" do DS (fundo bege #EBE5D0, sem borda teal).
+    assert.match(html, /background:#EBE5D0/);
+    assert.doesNotMatch(html, /border-left:[0-9]px solid #00A0A0/);
     assert.match(html, /<a href="https:\/\/meet\.google\.com\/awi-jter-dwm"/);
     assert.match(html, /font-weight:600/);
   });

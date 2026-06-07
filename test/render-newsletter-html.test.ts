@@ -863,6 +863,14 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html, /\{\{poll_sig\}\}/);
   });
 
+  it("#1936: emite o marcador exato <!-- Destaque N --> (contrato do lint)", () => {
+    // checkRequiredSections (lint-newsletter-html.ts) busca o substring exato
+    // `<!-- Destaque 1 -->`. Acoplado de propósito — se o comentário do render
+    // mudar, este teste falha antes do lint dar falso-positivo de seção faltando.
+    const html = renderHTML(fixtureComEia);
+    assert.match(html, /<!-- Destaque 1 -->/);
+  });
+
   it("renderHTML excludeEia=true: omite seção È IA? mesmo quando configurada", () => {
     const html = renderHTML(fixtureComEia, { excludeEia: true });
     assert.ok(!html.includes("É IA?"), "body não deve mencionar È IA?");
@@ -899,15 +907,13 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html!, /<\/table>$/);
   });
 
-  it("#1422: caption do POTD em font-style:italic (legenda de foto)", () => {
+  it("#1936: caption do É IA? em sans 12px ink (DS, sem itálico)", () => {
     const html = renderHTML(fixtureComEia);
-    // Localiza o <p> que envolve o credit ("Foto: Author / CC BY-SA 4.0.") e
-    // valida que o style attribute inclui font-style:italic. Não pode validar
-    // só substring "font-style:italic" no HTML inteiro porque renderImage
-    // (line 662) já injeta italic em captions de destaques.
+    // #1936: o template do DS usa legenda sans 12px ink (não itálico) no painel.
     const creditMatch = html.match(/<p style="([^"]+)">Foto: Author[^<]*<\/p>/);
     assert.ok(creditMatch, "credit <p> deve existir no HTML renderizado");
-    assert.match(creditMatch![1], /font-style:italic/, "caption do POTD precisa de italic");
+    assert.match(creditMatch![1], /font-size:12px/, "caption do DS é 12px");
+    assert.doesNotMatch(creditMatch![1], /font-style:italic/, "DS não italiciza a legenda");
   });
 
   it("#1422: leaderboard row NÃO é italicizada (semântica de label, não caption)", () => {
@@ -1062,12 +1068,12 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
     const html = renderHTML(fixt({
       sorteio: "Você presta atenção ao conteúdo? **Responda** e ganhe um livro.",
     }));
-    assert.match(html, /🎁 Sorteio/);
+    assert.match(html, /Sorteio/); // #1936: kicker sem emoji (DS usa ●)
     assert.match(html, /Você presta atenção/);
     assert.match(html, /<b>Responda<\/b>/);
   });
 
-  it("inclui PARA ENCERRAR com lista no HTML quando presente", () => {
+  it("inclui PARA ENCERRAR com pills no HTML quando presente", () => {
     const html = renderHTML(fixt({
       encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
 
@@ -1076,12 +1082,28 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
 
 Agora interaja!`,
     }));
-    assert.match(html, /🙋🏼‍♀️ Para encerrar/);
+    assert.match(html, /Para encerrar/); // #1936: kicker sem emoji
     assert.match(html, /<b>Diar\.ia<\/b>/);
-    assert.match(html, /<ul/);
+    // #1936: lista vira PILLS (DS), precedidas de "Acesse:"
+    assert.match(html, /Acesse:/);
+    assert.match(html, /border-radius:999px/);
     assert.match(html, /href="https:\/\/example\.com\/cursos"/);
     assert.match(html, /href="https:\/\/example\.com\/livros"/);
     assert.match(html, /Agora interaja/);
+  });
+
+  it("#1936: item de pill com conteúdo misto NÃO vaza markdown cru", () => {
+    const html = renderHTML(fixt({
+      encerrar: `Texto.
+
+- [Cursos](https://example.com/c) — novidades
+- Veja o **catálogo**`,
+    }));
+    // Regressão: o parser de pill só casava link puro; o resto caía em esc(cru).
+    // Agora mdInlineToHtml renderiza link/bold — nunca [..](..) nem ** literais.
+    assert.doesNotMatch(html, /\[Cursos\]\(/, "não vaza markdown de link");
+    assert.doesNotMatch(html, /\*\*catálogo\*\*/, "não vaza markdown de bold");
+    assert.match(html, /<b>catálogo<\/b>/, "bold renderizado");
   });
 
   it("graceful skip: sem sorteio nem encerrar, HTML sai sem esses blocos", () => {
@@ -1095,10 +1117,10 @@ Agora interaja!`,
       sorteio: "Texto sorteio.",
       encerrar: "Texto encerrar.",
     }));
-    assert.match(html, /🎁 Sorteio/);
-    assert.match(html, /🙋🏼‍♀️ Para encerrar/);
+    assert.match(html, /Sorteio/);
+    assert.match(html, /Para encerrar/);
     // Ordem: SORTEIO antes de ENCERRAR
-    const sorteioIdx = html.indexOf("🎁 Sorteio");
+    const sorteioIdx = html.indexOf("Sorteio");
     const encerrarIdx = html.indexOf("Para encerrar");
     assert.ok(sorteioIdx > 0 && encerrarIdx > sorteioIdx);
   });
@@ -1136,10 +1158,10 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.match(html, /Na última edição, disse X mas o correto era Y/);
     // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
     assert.doesNotMatch(html, /\{placeholder\}/);
-    // Estilo callout box (#1894: creme + borda teal, igual aos outros blocos)
-    assert.match(html, /border:1px solid #00A0A0/);
-    assert.match(html, /background-color:#EBE5D0/);
-    assert.match(html, /border-radius:10px/);
+    // #1936: box "contorno" do DS — fundo papel #FBFAF6 + borda bege, sem teal.
+    assert.match(html, /background:#FBFAF6;border:1px solid #EBE5D0/);
+    assert.doesNotMatch(html, /border:1px solid #00A0A0/);
+    assert.match(html, /border-radius:12px/);
   });
 
   it("posicionamento: entre SORTEIO e PARA ENCERRAR", () => {
@@ -1148,7 +1170,7 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
       sorteio: "Sorteio.",
       encerrar: "Encerrar.",
     }));
-    const sorteioIdx = html.indexOf("🎁 Sorteio");
+    const sorteioIdx = html.indexOf("Sorteio");
     const revealIdx = html.indexOf("Na última edição");
     const encerrarIdx = html.indexOf("Para encerrar");
     assert.ok(sorteioIdx > 0, "sorteio renderizou");
@@ -1196,27 +1218,24 @@ describe("renderSection thin rule + bottom border (#1090)", () => {
     encerrar: null,
   });
 
-  it("section header não usa rule grossa 2px solid (TEXT_COLOR)", () => {
+  it("#1936: kicker do DS — sem rule grossa, hairline bege, nunca teal", () => {
     const html = renderHTML(fixt());
-    // Encontra o BLOCO da section PESQUISA (comment + hr + tr).
-    // #1328: kicker agora vem com emoji prefix — `<p>🔬 PESQUISA</p>`.
+    // #1936: kicker = `<td>●&nbsp;PESQUISA</td>` + `<td ...border-bottom bege>`.
     const blockStart = html.indexOf("<!-- PESQUISA -->");
     assert.ok(blockStart > 0, "comment PESQUISA deve aparecer");
-    const kickerIdx = html.indexOf("PESQUISA</p>", blockStart);
-    assert.ok(kickerIdx > blockStart, "kicker contendo PESQUISA</p> deve vir após comment");
-    const sectionBlock = html.slice(blockStart, kickerIdx);
-    // Regression: rule grossa (2px solid TEXT_COLOR=#1A1A1A) não deve aparecer
-    // dentro do bloco da section. Versão antiga usava `renderRule(true)`.
-    assert.doesNotMatch(sectionBlock, /border-top:2px solid #1A1A1A/i, "rule grossa não deve aparecer dentro do bloco da section");
-    // E o regex deve dar match na forma fina (sanity check do helper):
-    assert.match(sectionBlock, /border-top:1px solid #E0D9C4/i, "rule fina (1px solid #E0D9C4) deve estar presente");
+    const kickerIdx = html.indexOf("PESQUISA</td>", blockStart);
+    assert.ok(kickerIdx > blockStart, "kicker contendo PESQUISA</td> deve vir após comment");
+    const sectionBlock = html.slice(blockStart, kickerIdx + 200);
+    assert.doesNotMatch(sectionBlock, /2px solid #1A1A1A/i, "sem rule grossa 2px tinta");
+    assert.match(sectionBlock, /border-bottom:1px solid #EBE5D0/i, "hairline do kicker = bege --rule");
+    assert.doesNotMatch(sectionBlock, /border-bottom:1px solid #00A0A0/i, "régua nunca é teal");
   });
 
-  it("section header tem border-bottom (linha fina abaixo do kicker)", () => {
+  it("#1936: kicker tem ponto ● + label sem emoji + hairline bege", () => {
     const html = renderHTML(fixt());
-    // O kicker é renderizado como `<p ...>🔬 PESQUISA</p>` com border-bottom no
-    // próprio <p>. #1328: emoji prefix obrigatório.
-    assert.match(html, /<p [^>]*border-bottom:1px solid[^>]*>🔬 PESQUISA<\/p>/u, "kicker <p> deve ter border-bottom 1px + emoji 🔬");
+    // DS: ponto teal ● + label uppercase (emoji removido) + régua bege preenchendo.
+    assert.match(html, /&#9679;<\/span>&nbsp;PESQUISA<\/td>/u, "kicker ● + label PESQUISA sem emoji");
+    assert.match(html, /<td style="width:100%;border-bottom:1px solid #EBE5D0;[^>]*>&nbsp;<\/td>/, "régua bege preenche a linha do kicker");
   });
 });
 
@@ -1308,7 +1327,7 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
   it("renderCoverage retorna <tr> com texto escapado", () => {
     const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
     const html = renderCoverage(text);
-    assert.match(html, /^<!-- #1093 coverage line -->/);
+    assert.match(html, /^<!-- INTRO \(coverage\) -->/);
     assert.match(html, /<tr><td/);
     assert.match(html, /enviei 5 submissões/);
     // HTML escape do & → &amp; (segurança contra injection de entities)
@@ -1341,8 +1360,8 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.ok(coverageIdx > 0, "coverage line presente no HTML");
     assert.ok(destaqueIdx > 0, "destaque presente no HTML");
     assert.ok(coverageIdx < destaqueIdx, "coverage line antes do destaque");
-    // Confirma que tem o comment marcador
-    assert.match(html, /<!-- #1093 coverage line -->/);
+    // Confirma que tem o comment marcador (#1936: INTRO)
+    assert.match(html, /<!-- INTRO \(coverage\) -->/);
   });
 
   it("renderHTML sem coverageLine: graceful skip (edições antigas)", () => {
@@ -1670,30 +1689,31 @@ describe("renderHTML — singular nas seções quando N=1 (#1070)", () => {
     encerrar: null,
   });
 
-  it("renderiza 🚀 LANÇAMENTO singular quando seção tem 1 item (#1324, #1328)", () => {
+  it("renderiza LANÇAMENTO singular quando seção tem 1 item (#1324, #1936: sem emoji)", () => {
     const html = renderHTML(fixt([
       { name: "LANÇAMENTOS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
     ]));
-    assert.match(html, />🚀 LANÇAMENTO</u);
-    assert.doesNotMatch(html, />🚀 LANÇAMENTOS</u);
+    // #1936: kicker do DS — emoji removido, label no `&nbsp;…</td>`.
+    assert.match(html, /&nbsp;LANÇAMENTO<\/td>/u);
+    assert.doesNotMatch(html, /&nbsp;LANÇAMENTOS<\/td>/u);
   });
 
-  it("mantém 🚀 LANÇAMENTOS plural quando seção tem 2 items (#1328)", () => {
+  it("mantém LANÇAMENTOS plural quando seção tem 2 items (#1328)", () => {
     const html = renderHTML(fixt([
       { name: "LANÇAMENTOS", items: [
         { title: "A", description: "x", url: "https://example.com/a" },
         { title: "B", description: "y", url: "https://example.com/b" },
       ] },
     ]));
-    assert.match(html, />🚀 LANÇAMENTOS</u);
+    assert.match(html, /&nbsp;LANÇAMENTOS<\/td>/u);
   });
 
-  it("renderiza 📰 OUTRA NOTÍCIA singular quando seção tem 1 item (#1324, #1328)", () => {
+  it("renderiza OUTRA NOTÍCIA singular quando seção tem 1 item (#1324, #1936: sem emoji)", () => {
     const html = renderHTML(fixt([
       { name: "OUTRAS NOTÍCIAS", items: [{ title: "Foo", description: "Bar", url: "https://example.com/x" }] },
     ]));
-    assert.match(html, />📰 OUTRA NOTÍCIA</u);
-    assert.doesNotMatch(html, />📰 OUTRAS NOTÍCIAS</u);
+    assert.match(html, /&nbsp;OUTRA NOTÍCIA<\/td>/u);
+    assert.doesNotMatch(html, /&nbsp;OUTRAS NOTÍCIAS<\/td>/u);
   });
 });
 

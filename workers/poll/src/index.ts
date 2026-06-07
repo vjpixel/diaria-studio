@@ -903,18 +903,18 @@ function renderLeaderboardHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Leaderboard de ${periodLabel} de ${year} | ${info.name}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1894: novo design Diar.ia — papel creme + tinta, Newsreader serif, sem teal. */
-  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #f4efe2; }
-  h1 { font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #171411; background: #FBFAF6; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
   p.sub { color: rgba(23,20,17,0.6); font-size: 0.95rem; }
   table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: system-ui, sans-serif; }
+  th { text-align: left; padding: 8px; border-bottom: 1px solid #171411; font-size: 0.72rem; color: rgba(23,20,17,0.62); text-transform: uppercase; letter-spacing: 0.08em; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   td { padding: 10px 8px; border-bottom: 1px solid #ebe5d0; }
   tr.leader td { font-weight: 600; color: #00A0A0; }
   a { color: #171411; text-decoration: underline; }
-  .kicker { font-family: system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
+  .kicker { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(23,20,17,0.6); margin: 0 0 12px 0; }
 </style>
 </head>
 <body>
@@ -1049,30 +1049,30 @@ export function votePageHtml(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>É IA? | ${BRAND_INFO[brand].name}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
-  /* #1894: novo design Diar.ia — papel creme + tinta, Newsreader serif, sem teal. */
-  body { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #f4efe2; }
-  .msg { font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
+  /* #1936: design system canônico — papel #FBFAF6 + tinta #171411, serif Georgia, sans Geist, acento teal #00A0A0. */
+  body { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: #171411; background: #FBFAF6; }
+  .msg { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
   a { color: #171411; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
-  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #fff; }
+  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: #FBFAF6; }
   /* #1894: accent verde da marca (--brand-bright #00A0A0) — sinal da imagem clicada. */
   .result-image.clicked { border-color: #00A0A0; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-family: system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #ffffff; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  .result-image .label { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 0.95rem; margin-top: 8px; color: rgba(23,20,17,0.65); font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: #00A0A0; color: #FBFAF6; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: #ebe5d0; border-radius: 8px; max-width: 380px; }
   .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
   .nick-explain { font-size: 0.95rem; color: rgba(23,20,17,0.65); margin: 0 0 12px 0; line-height: 1.5; }
-  .nick-explain code { background: #fff; padding: 1px 4px; border-radius: 3px; }
+  .nick-explain code { background: #FBFAF6; padding: 1px 4px; border-radius: 3px; }
   .nick-note { font-size: 0.85rem; color: rgba(23,20,17,0.62); margin: 10px 0 0 0; }
   .nick-form { display: flex; gap: 8px; }
-  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #d8cfb8; border-radius: 4px; font-size: 0.95rem; font-family: system-ui, sans-serif; }
+  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid #EBE5D0; border-radius: 4px; font-size: 0.95rem; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   /* #1894: CTA em accent verde (--brand-bright, "subscribe/accent" do v1-daily). */
-  .nick-save { padding: 8px 16px; background: #00A0A0; color: #ffffff; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: system-ui, sans-serif; }
+  .nick-save { padding: 8px 16px; background: #00A0A0; color: #FBFAF6; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,

@@ -344,9 +344,10 @@ describe("renderIntro", () => {
     assert.match(out, /font-size:19px/);
   });
 
-  it("renderiza com border-left teal", () => {
+  it("renderiza com border-left bege (DS #1936: teal não é estrutura)", () => {
     const out = renderIntro("Sumário.");
-    assert.match(out, /border-left:4px solid #00A0A0/);
+    assert.match(out, /border-left:4px solid #EBE5D0/);
+    assert.doesNotMatch(out, /border-left:[0-9]px solid #00A0A0/);
   });
 });
 
@@ -593,8 +594,8 @@ describe("wrapEmail", () => {
     assert.match(out, /<p>parte 1<\/p>/);
     assert.match(out, /<p>parte 2<\/p>/);
     // Divider tem hr inside
-    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #e0e0e0;"/g);
-    assert.equal(dividerMatches?.length, 1, "Esperava 1 divider entre 2 parts");
+    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #EBE5D0;"/g);
+    assert.equal(dividerMatches?.length, 1, "Esperava 1 divider bege entre 2 parts");
   });
 
   it("zero bodyParts produz HTML válido (só wrapper, sem body)", () => {

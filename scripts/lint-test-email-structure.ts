@@ -161,14 +161,19 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   // de tags + colapso de whitespace, `📺 VÍDEOS` fica contíguo (independente de
   // como o template separa emoji e nome em tags), e a âncora de emoji impede
   // fantasma de keyword bare em prosa. Tolera acento (í/i) e singular (#1324).
+  // #1936: o novo design (DS) troca o emoji do kicker pelo ponto ● (entidade
+  // `&#9679;`, que sobrevive ao strip de tags). Aceitar AMBOS: o emoji (emails
+  // legados) OU o bullet `&#9679;`. Mantém a âncora (não casa keyword solta em
+  // prosa), só amplia o prefixo permitido.
+  const SECTION_ANCHOR = String.raw`(?:${SECTION_EMOJI}|&#9679;\s*)`;
   const headerInText = (body: string): boolean =>
-    new RegExp(`${SECTION_EMOJI}${body}`, "iu").test(text);
+    new RegExp(`${SECTION_ANCHOR}${body}`, "iu").test(text);
   // Posição do header no RAW content (pra contar <a href> no slice). Best-effort
   // — item_count é COSMÉTICO (só entra na detail string; compareStructure usa
   // presença, não count). Se a âncora falhar no raw (tags entre emoji e nome),
   // count=0 mas a presença (acima) já foi registrada → sem falso section_missing.
   const rawPos = (body: string, from = 0): { idx: number; len: number } => {
-    const m = content.slice(from).match(new RegExp(`${SECTION_EMOJI}${body}`, "iu"));
+    const m = content.slice(from).match(new RegExp(`${SECTION_ANCHOR}${body}`, "iu"));
     if (m?.index === undefined) return { idx: -1, len: 0 };
     return { idx: from + m.index, len: m[0].length };
   };

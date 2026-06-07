@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "./extract-destaques.js";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
+import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936
 import { buildPrevResultLine, readPrevPollStats } from "./eia-compose.ts"; // #1707 fallback
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -694,21 +695,21 @@ export function extractContent(editionDir: string): NewsletterContent {
 // Produces email-safe HTML matching Beehiiv's Default template styling.
 // Uses inline styles, table layout, Poppins/Inter fonts.
 
-// #1894/#1895: novo design Diar.ia — base creme + tinta. O "sai o teal" vale pra
-// BASE (corpo/estrutura monocromático); o teal `#00A0A0` (--brand-bright)
-// PERMANECE como ACCENT pontual — underline de título, links, CTA, kicker,
-// borda de bloco/callout. Separadores/réguas ficam tinta×creme (RULE/TEXT_COLOR).
-const PAPER = "#F4EFE2"; // fundo creme (papel)
-const SURFACE = "#EBE5D0"; // creme-2 — boxes/calouts/É IA?
-const TEAL = "#00A0A0"; // teal da marca — accent (underline/links/CTA/kicker/borda); #1894
-const TEXT_COLOR = "#171411"; // tinta
-const MUTED = "#6E6A60"; // tinta dessaturada (~rgba(23,20,17,0.62) sólido)
-const RULE = "#E0D9C4"; // régua sutil sobre creme
-// #1895: Newsreader serif (display+corpo) com fallback Georgia (email-safe —
-// clients sem web font caem no serif). Kickers em sans (system-ui).
-const FONT_HEADING = "'Newsreader', Georgia, 'Times New Roman', serif";
-const FONT_BODY = "'Newsreader', Georgia, 'Times New Roman', serif";
-const FONT_LABEL = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+// #1936: design system canônico (vjpixel/diaria-design) — valores inline via
+// scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
+// sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
+// (links, kickers, marcas). Réguas/bordas = bege (--rule); ver design-tokens.ts.
+const PAPER = COLORS.paper; // --paper #FBFAF6 (fundo/papel)
+const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA?)
+const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
+const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
+const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção)
+// #1936: DS usa serif Georgia SÓ em manchetes/títulos; CORPO + labels/kickers em
+// sans Geist (confirmado pelo template de email do DS + typography.css "Body & UI
+// (sans)"). Georgia é email-safe; Geist cai pra system sans em email.
+const FONT_HEADING = FONTS.serif;
+const FONT_BODY = FONTS.sans;
+const FONT_LABEL = FONTS.sans;
 // #1083: URL montada inline com edition literal + merge tags Beehiiv
 // (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
 // HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
@@ -855,26 +856,35 @@ export function processInlineLinks(s: string): string {
   return parts.join("");
 }
 
-function renderSpacer(height = 20): string {
-  return `<tr><td height="${height}px" style="line-height:1px;font-size:1px;height:${height}px;">&nbsp;</td></tr>`;
+// #1936 (DS email template): cada seção é UMA linha `<tr><td class="pad">` com
+// padding lateral de 48px (mobile → 24px via .pad). Os helpers abaixo retornam
+// HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
+const PAD_SECTION = "40px 48px 0"; // padrão entre seções
+const PAD_LEAD = "36px 48px 0"; // destaque líder (D1)
+
+/** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
+function stripKickerEmoji(s: string): string {
+  return s.replace(/^[^\p{L}\p{N}]+/u, "").trim();
 }
 
-function renderCategoryLabel(_emoji: string, category: string): string {
-  // #1085: kicker minimalista — uppercase + letterspacing em vez de h6 grande.
-  // String `category` já vem com emoji prefixado (ex: "🚀 LANÇAMENTO").
-  return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
-  <p style="font-family:${FONT_LABEL};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0 0 12px 0;padding:0;">${esc(category)}</p>
-</td></tr>`;
+/**
+ * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
+ * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
+ */
+function renderKicker(label: string): string {
+  const clean = esc(stripKickerEmoji(label));
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};white-space:nowrap;padding-right:12px;"><span style="color:${TEAL};">&#9679;</span>&nbsp;${clean}</td>
+    <td style="width:100%;border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td>
+  </tr></table>`;
 }
 
-function renderTitle(title: string, url: string): string {
-  // #1085: h1 30px Inter font-weight 400 + border-bottom 2px solid teal
-  // (email-safe substitute pra text-decoration-color, que Gmail strip).
-  return `<tr><td align="left" valign="top" style="padding:0px 2px;text-align:left;">
-  <h1 style="font-family:${FONT_HEADING};color:${TEXT_COLOR};font-weight:400;font-size:30px;line-height:1.2;letter-spacing:-0.5px;margin:0 0 20px 0;padding:0;">
-    <a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:2px solid ${TEAL};padding-bottom:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>
-  </h1>
-</td></tr>`;
+/** Manchete de destaque: Georgia 26px, ink, underline teal (link). HTML interno. */
+function renderHeadlineInner(title: string, url: string): string {
+  // #1936: underline teal via border-bottom (email-safe). O template do DS usa
+  // text-decoration-color, que Gmail/Outlook removem → o teal sumiria. ver
+  // diaria-design#2. display:inline-block pra a borda abraçar o texto, não o bloco.
+  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.08;color:${TEXT_COLOR};text-decoration:none;border-bottom:2px solid ${TEAL};padding-bottom:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
 }
 
 function imageGeneratorCredit(): string {
@@ -893,58 +903,33 @@ function imageGeneratorCredit(): string {
   }
 }
 
-function renderImage(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  return `<tr><td align="left" valign="top" style="padding:0 2px;">
-  <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;margin:0 0 8px 0;" border="0"/>
-  <p style="font-family:${FONT_BODY};font-size:16px;color:${MUTED};font-style:italic;margin:0 0 20px 0;padding:0;text-align:right;">${esc(caption)}</p>
-</td></tr>`;
+/** Imagem hero (só D1) + legenda sans 12px uppercase ink (DS). HTML interno. */
+function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
+  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
+  <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
 }
 
-function renderImageNoCaption(placeholder: string, alt = ""): string {
-  return `<tr><td align="center" valign="top" style="padding:2px;">
-  <table role="none" border="0" cellspacing="0" cellpadding="0" style="margin:0 auto;">
-    <tr><td align="center" valign="top" style="width:578px;">
-      <img src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="578" style="display:block;width:100%;height:auto;" border="0"/>
-    </td></tr>
-  </table>
-</td></tr>`;
-}
-
-function renderParagraphs(text: string): string {
+/** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno. */
+function renderBodyParasInner(text: string): string {
   return text
     .split(/\n\n+/)
     .filter((p) => p.trim())
     .map(
-      (p) =>
-        `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${escText(p.trim())}</p>
-</td></tr>`
+      (p, i) =>
+        `<p style="margin:${i === 0 ? "18px" : "16px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${escText(p.trim())}</p>`,
     )
-    .join("\n");
+    .join("\n  ");
 }
 
-function renderWhyBlock(text: string): string {
-  // #1085: "Por que isso importa" como pull-quote inline — table com
-  // border-left teal, parágrafo em itálico cinza. Em vez de h3 grande +
-  // parágrafos depois (legacy renderWhyHeading), agrega ambos em um único
-  // bloco editorial estilo magazine.
+/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker teal). HTML interno. */
+function renderWhyBoxInner(text: string): string {
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
-  return `<tr><td align="left" style="padding:0px 2px;text-align:left;word-break:break-word;">
-  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="border-left:3px solid ${TEAL};padding:4px 0 4px 16px;">
-    <p style="font-family:${FONT_BODY};color:${MUTED};font-size:16px;line-height:1.6;font-style:italic;margin:0;padding:0;"><b style="color:${TEXT_COLOR};font-style:normal;">Por que isso importa.</b> ${body}</p>
-  </td></tr></table>
-</td></tr>`;
-}
-
-function renderRule(thick = false): string {
-  // #1085: separador horizontal entre blocos editoriais. `thick` = 2px (entre
-  // destaques e seções/pesquisa); fino = 1px (entre destaques).
-  const border = thick ? `2px solid ${TEXT_COLOR}` : `1px solid ${RULE}`;
-  return `<tr><td style="padding:36px 2px 0 2px;"><hr style="border:0;border-top:${border};margin:0;"/></td></tr>`;
-}
-
-function renderTopPadding(): string {
-  return `<tr><td style="padding:32px 2px 0 2px;font-size:1px;line-height:1px;">&nbsp;</td></tr>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
+      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${body}</p>
+    </td>
+  </tr></table>`;
 }
 
 /**
@@ -954,24 +939,24 @@ function renderTopPadding(): string {
  * subtítulo) e antes do primeiro destaque.
  */
 export function renderCoverage(text: string): string {
-  return `<!-- #1093 coverage line -->
-<tr><td align="left" style="padding:24px 2px 0 2px;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:15px;line-height:1.5;font-style:italic;margin:0;padding:0;">${escText(text)}</p>
+  // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
+  // seção, padding 44px 48px 8px.
+  return `<!-- INTRO (coverage) -->
+<tr><td class="pad" style="padding:44px 48px 8px;">
+  <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${escText(text)}</p>
 </td></tr>`;
 }
 
 /**
- * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). Callout com
- * fundo claro + borda esquerda teal, texto em peso 600 — visualmente distinto da
- * coverage line (cinza itálico) pra não passar despercebido. Links em markdown
- * são processados via processInlineLinks.
+ * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). DS: box
+ * "painel" (bege), texto peso 600. Links via processInlineLinks (underline teal).
  */
 export function renderIntroCallout(text: string): string {
   return `<!-- #1648 intro callout (sorteio/CTA) -->
-<tr><td align="left" style="padding:16px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-left:4px solid ${TEAL};border-radius:4px;">
-    <tr><td style="padding:12px 16px;">
-      <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(text)}</p>
+<tr><td class="pad" style="padding:8px 48px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
+    <tr><td style="padding:16px 20px;">
+      <p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(text)}</p>
     </td></tr>
   </table>
 </td></tr>`;
@@ -1037,11 +1022,11 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
     : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
-<tr><td align="left" style="padding:18px 2px 0 2px;text-align:left;word-break:break-word;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border:1px solid ${TEAL};border-radius:6px;">
+<tr><td class="pad" style="padding:8px 48px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
-    <tr><td style="padding:14px 16px 16px;">
-      <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0 0 12px;padding:0;">${processInlineLinks(body)}</p>
+    <tr><td style="padding:16px 20px;">
+      <p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>
       ${cta}
     </td></tr>
   </table>
@@ -1049,83 +1034,67 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
 }
 
 function renderDestaque(d: RenderDestaque): string {
-  // #1085: sem box ciano — destaques separados por <hr> finos. Mantém
-  // imagem inline em D1 (cover) e D2/D3 sem (#1077, memory
-  // feedback_newsletter_only_d1_image.md). Estrutura "magazine" editorial:
-  // kicker → h1 → cover (se D1) → parágrafos → blockquote "Por que importa".
+  // #1936 (DS email template): seção = uma linha padded (48px lateral). Estrutura:
+  // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero (só
+  // D1, #1077) → parágrafos sans → box "Por que isso importa". Sem <hr> separador
+  // (cada seção abre com seu próprio kicker).
   const showInlineImage = d.n === 1;
+  const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
+  const inner = [
+    renderKicker(d.category),
+    renderHeadlineInner(d.title, d.url),
+    showInlineImage ? renderHeroImageInner(d.imageFile, d.title) : "",
+    renderBodyParasInner(d.body),
+    renderWhyBoxInner(d.why),
+  ].filter(Boolean).join("\n  ");
   return `<!-- Destaque ${d.n} -->
-${renderTopPadding()}
-${renderCategoryLabel(d.emoji, d.category)}
-${renderTitle(d.title, d.url)}
-${showInlineImage ? renderImage(d.imageFile) : ""}
-${renderParagraphs(d.body)}
-${renderWhyBlock(d.why)}`;
+<tr><td class="pad" style="padding:${pad};">
+  ${inner}
+</td></tr>`;
 }
 
 function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
-  const paragraphStyle = `font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:16px;line-height:1.5;margin:0;padding:0;`;
-  // #1422: caption do POTD em itálico (convenção de legenda de foto). Mantém
-  // paragraphStyle separado pra não italicizar a leaderboard row (#1160), que
-  // tem semântica de label, não de caption.
-  const captionStyle = paragraphStyle + "font-style:italic;";
+  // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
+  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:13px;line-height:1.5;color:${TEXT_COLOR};`;
+  const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
 
-  // #1160: bloco leaderboard no rodapé do È IA?. Omitido quando ausente.
-  // #1646: posições ordinais por acertos, sem percentual.
-  // Formato: "🏆 Vencedores de Maio: 1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida"
-  const leaderboardRow = renderLeaderboardTop1Row(eia, paragraphStyle);
-
-  // #1630: emite a linha "Resultado da última edição: X% acertaram" (parseada
-  // em prevResultLine mas antes nunca renderizada). Mostra o % de acertos da
-  // edição anterior no rodapé do bloco É IA?.
+  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 12px bold
+  // uppercase teal, no rodapé do painel.
   const prevResultHtml = eia.prevResultLine
-    ? `
-        <tr><td align="left" style="padding:8px 0 0 0;">
-          <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${processInlineLinks(eia.prevResultLine)}</p>
-        </td></tr>`
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
-  // #1085: É IA? mantém um background suave (#FAFAFA) pra sinalizar bloco
-  // interativo, sem o border ciano grosso dos destaques antigos. Padding
-  // simétrico em ambos <td> das imagens (#1085) — alinha A/B no stack mobile.
-  const imageStyle = `display:block;width:100%;height:auto;`;
   const buildVoteUrl = (choice: "A" | "B") =>
     `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
-  const eiaChoice = (choice: "A" | "B", imgFile: string) =>
-    `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">
-            ${eia.edition
-              ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;">`
-              : ""}
-              <img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="${imageStyle}" border="0"/>
-            ${eia.edition ? "</a>" : ""}
-          </td>`;
+  // DS: imagens A/B lado a lado, poll-col empilha no mobile.
+  const eiaChoice = (choice: "A" | "B", imgFile: string, side: "a" | "b") => {
+    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
+    const inner = eia.edition
+      ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${img}</a>`
+      : img;
+    const pad = side === "a" ? "padding-right:8px;" : "padding-left:8px;";
+    const cls = side === "a" ? "poll-col" : "poll-col poll-col-b";
+    return `<td class="${cls}" valign="top" width="50%" style="${pad}">${inner}</td>`;
+  };
 
-  return `<!-- É IA? -->
-${renderRule()}
-<tr><td style="padding:32px 0 0 0;">
-  <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:${SURFACE};padding:32px 24px;border-radius:8px;">
-      <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-        <tr><td align="left" style="padding:0 0 16px 0;">
-          <p style="font-family:${FONT_LABEL};color:${MUTED};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:13px;margin:0;padding:0;">🖼️ É IA?</p>
-        </td></tr>
-        <tr><td align="center" style="padding:0 0 20px 0;">
-          <p style="font-family:${FONT_BODY};font-weight:400;color:${TEXT_COLOR};font-size:20px;line-height:1.3;margin:0;padding:0;">Clique na imagem que foi gerada por IA.</p>
-        </td></tr>
-        <tr><td>
-          <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
-            ${eiaChoice("A", eia.imageA)}
-            ${eiaChoice("B", eia.imageB)}
-          </tr></table>
-        </td></tr>
-        <tr><td align="left" style="padding:16px 0 0 0;">
-          <p style="${captionStyle}">${creditHtml}</p>
-        </td></tr>${prevResultHtml}
+  return `<!-- É IA? (poll) -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker("É IA?")}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_HEADING};font-size:22px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;"><tr>
+        ${eiaChoice("A", eia.imageA, "a")}
+        ${eiaChoice("B", eia.imageB, "b")}
+      </tr></table>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
+        <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
+      </td></tr>${prevResultHtml}
 ${leaderboardRow}
       </table>
-    </td></tr>
-  </table>
+    </td>
+  </tr></table>
 </td></tr>`;
 }
 
@@ -1189,26 +1158,22 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
       </td></tr>`;
 }
 
-/** Render a single section item as its own table row(s) */
-function renderSectionItem(item: SectionItem, last: boolean): string {
-  // #1085: título com border-bottom 1px solid teal (email-safe), descrição em
-  // cinza. Espaçamento entre items via padding-bottom no último <td>.
+/**
+ * Item de lista (Use melhor / Lançamentos / Radar) no padrão DS: título Georgia
+ * 22px com underline teal + descrição sans ink. Itens separados por spacer 22px
+ * (exceto o primeiro). Retorna um `<tr>` com o item; HTML interno do bloco.
+ */
+function renderSectionItem(item: SectionItem, first: boolean): string {
   const titleHtml = item.url
-    ? `<a href="${esc(item.url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
-    : esc(item.title);
-
-  const bottomPad = last ? "0" : "16px";
-  const titleRow = `<tr><td align="left" style="padding:0 0 ${item.description ? "4px" : bottomPad} 0;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:600;color:${TEXT_COLOR};font-size:16px;line-height:1.4;margin:0;padding:0;">${titleHtml}</p>
-</td></tr>`;
-
-  if (!item.description) return titleRow;
-
-  const descRow = `<tr><td align="left" style="padding:0 0 ${bottomPad} 0;text-align:left;word-break:break-word;">
-  <p style="font-family:${FONT_BODY};font-weight:400;color:${MUTED};font-size:16px;line-height:1.5;margin:0;padding:0;">${esc(item.description)}</p>
-</td></tr>`;
-
-  return titleRow + "\n" + descRow;
+    ? `<a href="${esc(item.url)}" style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
+    : `<span style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};">${esc(item.title)}</span>`;
+  const spacer = first ? "" : `<div style="height:22px;line-height:22px;font-size:0;">&nbsp;</div>`;
+  const desc = item.description
+    ? `\n      <p style="margin:7px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${esc(item.description)}</p>`
+    : "";
+  return `<tr><td style="padding:22px 0 0;">
+      ${spacer}${titleHtml}${desc}
+    </td></tr>`;
 }
 
 // #1324: singularizeSectionName movido pra scripts/lib/section-naming.ts.
@@ -1218,22 +1183,18 @@ export { singularizeSectionName } from "./lib/section-naming.ts";
 function renderSection(section: Section): string {
   if (section.items.length === 0) return "";
 
-  // #1090: rule fina (1px RULE) cima E baixo do kicker pra simetria visual —
-  // versão anterior tinha rule grossa (2px TEXT_COLOR) só em cima, ficava
-  // pesada e desbalanceada (feedback Pixel 2026-05-11).
   const itemsHtml = section.items
-    .map((item, i) => renderSectionItem(item, i === section.items.length - 1))
-    .join("\n");
+    .map((item, i) => renderSectionItem(item, i === 0))
+    .join("\n    ");
 
-  // #1070 + #1328: emoji prefix + singular quando só tem 1 item
-  // (🚀 LANÇAMENTO em vez de 🚀 LANÇAMENTOS)
+  // #1070 + #1328: singular quando só tem 1 item. stripKickerEmoji remove o emoji
+  // (DS usa ponto ●, não emoji).
   const displayName = displaySectionName(section.name, section.items.length);
 
   return `<!-- ${section.name} -->
-${renderRule()}
-<tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">${esc(displayName)}</p>
-  <table role="none" border="0" cellspacing="0" cellpadding="0" width="100%">
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker(displayName)}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
     ${itemsHtml}
   </table>
 </td></tr>`;
@@ -1303,30 +1264,31 @@ export function pickErroIntencionalReveal(text: string): string | null {
 function renderErroIntencionalReveal(text: string): string {
   const reveal = pickErroIntencionalReveal(text);
   if (!reveal) return "";
+  // DS: box "contorno" (papel + borda bege) logo abaixo dos parágrafos do
+  // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
+  // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.
   return `<!-- ERRO INTENCIONAL — reveal -->
-<tr><td style="padding:24px 2px 0 2px;">
-  <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:${SURFACE};border:1px solid ${TEAL};border-radius:10px;padding:14px 16px;">
-      <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.5;margin:0;padding:0;">${mdInlineToHtml(reveal)}</p>
-    </td></tr>
-  </table>
+<tr><td class="pad" style="padding:14px 48px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(reveal)}</p>
+    </td>
+  </tr></table>
 </td></tr>`;
 }
 
 /**
- * Pure (#1076): renderiza o bloco 🎁 SORTEIO. Texto bruto vem do reviewed.md
- * (parágrafos + lista). Output em estilo editorial (#1085): kicker uppercase
- * + parágrafos sem box ciano.
+ * Pure (#1076): bloco SORTEIO no padrão DS — kicker (●+régua) + parágrafos sans.
+ * O reveal "Na última edição…" vai num box painel separado (renderErroIntencionalReveal).
  */
 function renderSorteio(text: string): string {
   const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
-  const html = paragraphs.map((p) =>
-    `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 14px 0;padding:0;">${mdInlineToHtml(p.trim())}</p>`
-  ).join("");
-  return `<!-- 🎁 SORTEIO -->
-${renderRule()}
-<tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🎁 Sorteio</p>
+  const html = paragraphs.map((p, i) =>
+    `<p style="margin:${i === 0 ? "22px" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(p.trim())}</p>`
+  ).join("\n  ");
+  return `<!-- Sorteio -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker("Sorteio")}
   ${html}
 </td></tr>`;
 }
@@ -1377,31 +1339,41 @@ function renderEncerrar(text: string): string {
   const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
   const ctaBlock = isAgoraCta ? lastBlock : null;
 
+  // DS: lista `- [label](url)` vira PILLS (borda bege, radius 999px) precedidas
+  // do rótulo "Acesse:". Parágrafos = sans ink com links underline teal.
+  const pillStyle = `display:inline-block;border:1px solid ${RULE};border-radius:999px;padding:10px 18px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
   const renderBlock = (b: { type: "p" | "ul"; content: string[] }) => {
     if (b.type === "ul") {
-      const items = b.content.map((c) =>
-        `<li style="margin:0 0 4px 0;">${mdInlineToHtml(c)}</li>`
-      ).join("");
-      return `<ul style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0 0 0 20px;">${items}</ul>`;
+      const cells = b.content.map((c) => {
+        const m = c.match(/^\[([^\]]+)\]\((.+)\)$/);
+        // Link puro → pill clicável. Senão, mdInlineToHtml (links/bold inline)
+        // pra NUNCA vazar markdown cru (invariante "output sem markdown").
+        const pill = m
+          ? `<a href="${esc(m[2].trim())}" style="${pillStyle}">${esc(m[1])}</a>`
+          : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
+        return `<td style="padding:0 10px 10px 0;">${pill}</td>`;
+      }).join("");
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse:</p>
+  <table role="presentation" cellpadding="0" cellspacing="0"><tr>${cells}</tr></table>`;
     }
-    return `<p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0 0 16px 0;padding:0;">${mdInlineToHtml(b.content.join(" "))}</p>`;
+    return `<p style="margin:22px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(b.content.join(" "))}</p>`;
   };
 
-  const html = mainBlocks.map(renderBlock).join("");
+  const html = mainBlocks.map(renderBlock).join("\n  ");
 
+  // CTA final ("Agora que chegou…") = box "painel" do DS.
   const ctaBox = ctaBlock
     ? `
-  <table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
-    <tr><td style="background-color:${SURFACE};padding:32px 24px;border-radius:8px;">
-      <p style="font-family:${FONT_BODY};color:${TEXT_COLOR};font-size:16px;line-height:1.6;margin:0;padding:0;">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
-    </td></tr>
-  </table>`
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
+    </td>
+  </tr></table>`
     : "";
 
-  return `<!-- 🙋🏼‍♀️ PARA ENCERRAR -->
-${renderRule()}
-<tr><td style="padding:24px 2px 0 2px;">
-  <p style="font-family:${FONT_BODY};color:${TEAL};font-weight:600;text-transform:uppercase;letter-spacing:2px;font-size:16px;margin:0 0 16px 0;padding:0 0 16px 0;border-bottom:1px solid ${RULE};">🙋🏼‍♀️ Para encerrar</p>
+  return `<!-- Para encerrar -->
+<tr><td class="pad" style="padding:40px 48px 8px;">
+  ${renderKicker("Para encerrar")}
   ${html}${ctaBox}
 </td></tr>`;
 }
@@ -1412,7 +1384,28 @@ export interface RenderOpts {
    * via insertContent pra preservar merge tags `{{poll_x_url}}` que TipTap
    * normalizaria. Default false (output legado: body único com È IA? embutido). */
   excludeEia?: boolean;
+  /** #1936 — quando `true`, embrulha o container num documento HTML completo
+   * (doctype + body bege + preheader + tabela de centralização). Usado pro
+   * preview/email Worker-hosted. Default `false`: emite só o container 600px
+   * (fragmento pro paste no Beehiiv, que provê o shell). */
+  fullDocument?: boolean;
 }
+
+// #1936 (DS): media query + hover do template de email. Progressive enhancement
+// (Gmail/Apple Mail honram); o design carrega nos estilos inline.
+const DS_STYLE_BLOCK = `<style>
+  body { margin:0; padding:0; width:100% !important; }
+  img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
+  table { border-collapse:collapse; }
+  a.headline:hover { color:${TEAL} !important; }
+  @media only screen and (max-width:480px) {
+    .container { width:100% !important; }
+    .pad { padding-left:24px !important; padding-right:24px !important; }
+    .poll-col { display:block !important; width:100% !important; padding:0 !important; }
+    .poll-col-b { padding-top:12px !important; }
+    .hero { height:auto !important; }
+  }
+</style>`;
 
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
@@ -1462,10 +1455,41 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
-  return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
-<table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
+  // #1936 (DS): container de 600px (papel + trilhos bege) — a estrutura do
+  // template de email do DS. Cada `part` é uma linha `<tr><td class="pad">`.
+  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};border-left:1px solid ${RULE};border-right:1px solid ${RULE};">
 ${parts.join("\n")}
 </table>`;
+
+  if (!opts.fullDocument) {
+    // Fragmento pro Beehiiv: container + style (progressive enhancement).
+    return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
+${DS_STYLE_BLOCK}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};"><tr><td align="center" style="padding:0;">
+${container}
+</td></tr></table>`;
+  }
+
+  // Documento completo (preview / email Worker-hosted): shell bege + preheader.
+  const preheader = esc(
+    content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
+  );
+  return `<!doctype html>
+<html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="x-apple-disable-message-reformatting" />
+<title>Diar.ia — Edição</title>
+${DS_STYLE_BLOCK}
+</head>
+<body style="margin:0; padding:0; background:${SURFACE};">
+<div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};"><tr><td align="center" style="padding:0;">
+${container}
+</td></tr></table>
+</body>
+</html>`;
 }
 
 /**
@@ -1544,7 +1568,9 @@ function main(): void {
   if (format === "json") {
     output = JSON.stringify(content, null, 2);
   } else {
-    output = renderHTML(content);
+    // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
+    // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
+    output = renderHTML(content, { fullDocument: flags.has("full") });
   }
 
   if (outPath) {
