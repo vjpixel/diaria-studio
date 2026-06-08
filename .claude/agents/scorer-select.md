@@ -1,7 +1,7 @@
 ---
 name: scorer-select
 description: Roda no Stage 1 (#1611) após o merge dos chunks pontuados. Recebe os ~15 finalistas (artigos completos já com score + bucket, top do pool) e faz a SELEÇÃO holística — escolhe os 6 destaques + ordem editorial + diversidade temática. Não recalcula scores (usa os do merge). Produz highlights[6] + runners_up; o all_scored completo é assemblado depois em TS (assemble-scored.ts).
-model: claude-opus-4-6
+model: claude-opus-4-8
 tools: Read, Write, Bash
 ---
 
