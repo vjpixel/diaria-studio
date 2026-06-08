@@ -17,10 +17,12 @@
  *     stripe-export-excluded.csv         ← idem
  *     stripe-export-t01-assinantes-ativos.csv … t10-leads-caudao.csv  ← base segmentada (merge, root)
  *     {conteúdo}-{envio}/               ← artefatos POR-CICLO (ex: 2605-06/)
- *       stripe-export-t02-ex-assinantes-verified.csv / -rejected.csv / -unknown.csv
+ *       mv-export-t02-ex-assinantes-verified.csv / -rejected.csv / -unknown.csv  (saída do MV)
+ *       mv-export-maio-verified.csv / …            (cohort maio, se houver)
  *       .mv-cache-*.json
- *       waves/
- *         t1-openers.csv · t1-non-openers.csv · t2-w3.csv · t2-w4.csv
+ *       waves/   (nome = wX + ferramenta que segmentou + tier)
+ *         w1-brevo-export-t1-openers.csv · w2-brevo-export-t1-non-openers.csv
+ *         w3-mv-export-t2.csv · w4-mv-export-t2.csv · w5-mv-export-maio.csv (opcional)
  *         waves-summary.json
  *
  * O `--cycle {conteúdo}-{envio}` é OBRIGATÓRIO nos scripts por-ciclo (como

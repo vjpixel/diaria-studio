@@ -28,13 +28,16 @@
  *
  * Inputs:
  *   stripe-export-t01-assinantes-ativos.csv            T1 canônico (BASE, no root) — email,NOME,OPEN_PROBABILITY
- *   {ciclo}/stripe-export-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
+ *   {ciclo}/mv-export-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
+ *   {ciclo}/mv-export-maio-verified.csv                W5 OPCIONAL — leads frescos de maio (se existir)
  *
- * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
- *   t1-openers.csv      W1
- *   t1-non-openers.csv  W2
- *   t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
- *   t2-w4.csv           W4
+ * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/). Nome = wX + ferramenta
+ * que segmentou + tier (T1 = segmentado por opens da Brevo; T2/maio = vêm do MV-verified):
+ *   w1-brevo-export-t1-openers.csv      W1
+ *   w2-brevo-export-t1-non-openers.csv  W2
+ *   w3-mv-export-t2.csv                 W3 (+RECENCY_QUARTIL, RECENCY_RANK)
+ *   w4-mv-export-t2.csv                 W4
+ *   w5-mv-export-maio.csv               W5 (só se o cohort de maio existir; suprime blacklist + tira MV_*)
  *   waves-summary.json
  */
 
@@ -321,7 +324,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // T1 é BASE (root, output da merge); t02-verified é por-ciclo (output do verify-mv).
   const t1Path = clariceBaseFile("stripe-export-t01-assinantes-ativos.csv");
-  const t2Path = resolve(cycleDir, "stripe-export-t02-ex-assinantes-verified.csv");
+  const t2Path = resolve(cycleDir, "mv-export-t02-ex-assinantes-verified.csv");
   for (const p of [t1Path, t2Path]) {
     if (!existsSync(p)) {
       console.error(`input não encontrado: ${p}`);
@@ -340,8 +343,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t1 = readCsv(t1Path);
   const t1Key = emailKeyOf(t1.fields);
   const split = classifyT1(t1.rows, t1Key, engagement);
-  writeCsv(wavesDir, "t1-openers.csv", t1.fields, split.openers);
-  writeCsv(wavesDir, "t1-non-openers.csv", t1.fields, split.nonOpeners);
+  writeCsv(wavesDir, "w1-brevo-export-t1-openers.csv", t1.fields, split.openers);
+  writeCsv(wavesDir, "w2-brevo-export-t1-non-openers.csv", t1.fields, split.nonOpeners);
   console.error(
     `\n📨 T1: W1(abriu)=${split.openers.length} · W2(não-abriu)=${split.nonOpeners.length} · ` +
       `suprimidos=${split.suppressed.length} · não-encontrados(excluídos)=${split.notFound.length}`,
@@ -357,11 +360,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // emite só os fields listados, então os MV_* nas rows são ignorados.
   const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
   const { w3, w4 } = representativeSplit(tagged, w3Size);
-  writeCsv(wavesDir, "t2-w3.csv", t2Fields, w3);
-  writeCsv(wavesDir, "t2-w4.csv", t2Fields, w4);
+  writeCsv(wavesDir, "w3-mv-export-t2.csv", t2Fields, w3);
+  writeCsv(wavesDir, "w4-mv-export-t2.csv", t2Fields, w4);
   console.error(
     `📨 T2: W3=${w3.length} · W4=${w4.length} · suprimidos(blacklist)=${dropped.length} (de ${t2.rows.length})`,
   );
+
+  // 4) W5 (opcional) — leads frescos de maio, SE o cohort verificado existir no
+  // ciclo. Mesmo tratamento do T2 (suprime blacklist + tira MV_*) pra ser
+  // reprodutível: re-rodar regenera, em vez de depender de arquivo hand-built.
+  // Sem o cohort (outros ciclos), simplesmente não emite W5.
+  const maioVerifiedPath = resolve(cycleDir, "mv-export-maio-verified.csv");
+  let w5Count: number | null = null;
+  if (existsSync(maioVerifiedPath)) {
+    const maio = readCsv(maioVerifiedPath);
+    const maioKey = emailKeyOf(maio.fields);
+    const { kept: maioKept, dropped: maioDropped } = suppressBlacklisted(maio.rows, maioKey, blacklist);
+    const maioFields = maio.fields.filter((f) => !/^MV_/i.test(f)); // não vaza MV_* pro Brevo
+    writeCsv(wavesDir, "w5-mv-export-maio.csv", maioFields, maioKept);
+    w5Count = maioKept.length;
+    console.error(
+      `📨 W5 (maio): ${maioKept.length} · suprimidos(blacklist)=${maioDropped.length} (de ${maio.rows.length})`,
+    );
+  }
 
   const summary = {
     generated_for: "próximo envio Clarice (warm-up por engajamento)",
@@ -372,6 +393,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       w2_t1_non_openers: split.nonOpeners.length,
       w3_t2: w3.length,
       w4_t2: w4.length,
+      ...(w5Count !== null ? { w5_maio: w5Count } : {}),
     },
     t1_suppressed: split.suppressed.length,
     t1_not_found_excluded: split.notFound.length,

@@ -18,8 +18,10 @@
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (só usado em --execute)
  *
- * Inputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/, gerados por clarice-build-waves.ts):
- *   t1-openers.csv · t1-non-openers.csv · t2-w3.csv · t2-w4.csv
+ * Inputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
+ *   w1-brevo-export-t1-openers.csv · w2-brevo-export-t1-non-openers.csv ·
+ *   w3-mv-export-t2.csv · w4-mv-export-t2.csv (gerados por clarice-build-waves) ·
+ *   w5-mv-export-maio.csv (opcional — cohort de maio, pulado se ausente)
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -40,13 +42,20 @@ export interface WaveDef {
   file: string;
   /** Rótulo curto pro nome da lista. */
   desc: string;
+  /** Opcional: pula sem erro se o arquivo não existir (wave específica do ciclo,
+   *  ex: leads de maio). As W1–W4 são obrigatórias (faltar = build-waves falhou). */
+  optional?: boolean;
 }
 
+// Nome = wX + ferramenta que segmentou + tier (#provenance): T1 via opens da Brevo,
+// T2/maio via MV-verified. W1–W4 são geradas pelo build-waves (toda edição); W5
+// (leads frescos de maio) é cohort específico do ciclo → opcional.
 export const WAVES: WaveDef[] = [
-  { key: "W1", file: "t1-openers.csv", desc: "T1 abriu" },
-  { key: "W2", file: "t1-non-openers.csv", desc: "T1 nao-abriu" },
-  { key: "W3", file: "t2-w3.csv", desc: "T2 parte1" },
-  { key: "W4", file: "t2-w4.csv", desc: "T2 parte2" },
+  { key: "W1", file: "w1-brevo-export-t1-openers.csv", desc: "T1 abriu" },
+  { key: "W2", file: "w2-brevo-export-t1-non-openers.csv", desc: "T1 nao-abriu" },
+  { key: "W3", file: "w3-mv-export-t2.csv", desc: "T2 parte1" },
+  { key: "W4", file: "w4-mv-export-t2.csv", desc: "T2 parte2" },
+  { key: "W5", file: "w5-mv-export-maio.csv", desc: "Leads maio (fresh)", optional: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -161,11 +170,18 @@ interface Plan {
   columns: string[];
 }
 
-function buildPlan(label: string, cycle: string): Plan[] {
+// `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
+export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
   const plans: Plan[] = [];
   for (const wave of WAVES) {
-    const path = resolve(clariceWavesDir(cycle), wave.file);
+    const path = resolve(wavesDir, wave.file);
     if (!existsSync(path)) {
+      // Opcional (ex: W5 maio) ausente → pula com aviso. Obrigatória ausente →
+      // erro (build-waves falhou; não importar parcial sem o editor saber).
+      if (wave.optional) {
+        console.error(`ℹ️  wave opcional ausente, pulando: ${wave.key} (${wave.file})`);
+        continue;
+      }
       throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --cycle ${cycle}' antes.`);
     }
     const raw = readFileSync(path, "utf-8");

@@ -1,11 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   listNameFor,
   countRows,
   normalizeImportCsv,
   parseArgs,
   findExistingConflicts,
+  buildPlan,
   WAVES,
 } from "../scripts/clarice-import-waves.ts";
 
@@ -13,6 +17,60 @@ describe("listNameFor", () => {
   it("nome determinístico por wave + label", () => {
     assert.equal(listNameFor(WAVES[0], "Jun/2026"), "Clarice Jun/2026 W1 — T1 abriu");
     assert.equal(listNameFor(WAVES[2], "Jun/2026"), "Clarice Jun/2026 W3 — T2 parte1");
+  });
+});
+
+describe("WAVES (proveniência no nome + W5 opcional)", () => {
+  it("nomes wX-{ferramenta}-{tier}: T1 via Brevo, T2/maio via MV", () => {
+    const byKey = Object.fromEntries(WAVES.map((w) => [w.key, w.file]));
+    assert.equal(byKey.W1, "w1-brevo-export-t1-openers.csv");
+    assert.equal(byKey.W2, "w2-brevo-export-t1-non-openers.csv");
+    assert.equal(byKey.W3, "w3-mv-export-t2.csv");
+    assert.equal(byKey.W4, "w4-mv-export-t2.csv");
+    assert.equal(byKey.W5, "w5-mv-export-maio.csv");
+  });
+  it("W1–W4 obrigatórias; só W5 (cohort do ciclo) é opcional", () => {
+    for (const w of WAVES) {
+      assert.equal(!!w.optional, w.key === "W5", `${w.key} optional flag`);
+    }
+  });
+});
+
+describe("buildPlan — opcional pula, obrigatória explode", () => {
+  const HEADER = "email,NOME\nfoo@bar.com,Foo\n";
+  const tmpWaves = (files: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), "clarice-waves-"));
+    for (const f of files) writeFileSync(join(dir, f), HEADER, "utf8");
+    return dir;
+  };
+
+  it("todas presentes → 5 planos (W1–W5)", () => {
+    const dir = tmpWaves(WAVES.map((w) => w.file));
+    try {
+      assert.equal(buildPlan("L", "2605-06", dir).length, 5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("W5 (opcional) ausente → pula sem erro, 4 planos", () => {
+    const dir = tmpWaves(WAVES.filter((w) => !w.optional).map((w) => w.file));
+    try {
+      const plans = buildPlan("L", "2605-06", dir);
+      assert.equal(plans.length, 4);
+      assert.ok(!plans.some((p) => p.wave.key === "W5"), "W5 não deve entrar no plano");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("wave obrigatória (W3) ausente → throw (não importa parcial)", () => {
+    const dir = tmpWaves(WAVES.filter((w) => w.key !== "W3").map((w) => w.file));
+    try {
+      assert.throws(() => buildPlan("L", "2605-06", dir), /wave faltando/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
