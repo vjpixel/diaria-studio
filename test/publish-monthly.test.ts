@@ -338,10 +338,10 @@ describe("renderIntro", () => {
     assert.match(out, /#00A0A0/, "label deve ser teal");
   });
 
-  it("renderiza body em italic 19px", () => {
+  it("renderiza body em italic 22px (#1955: type-scale snap 19→22)", () => {
     const out = renderIntro("Sumário.");
     assert.match(out, /font-style:italic/);
-    assert.match(out, /font-size:19px/);
+    assert.match(out, /font-size:22px/);
   });
 
   it("renderiza com border-left bege (DS #1936: teal não é estrutura)", () => {
