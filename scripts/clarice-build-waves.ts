@@ -295,6 +295,19 @@ function writeCsv(name: string, fields: string[], rows: Row[]): void {
   writeFileAtomic(resolve(WAVES_DIR, name), Papa.unparse({ fields, data: rows }));
 }
 
+/** YYMM do mês atual (ex: "2606"). Default do `--month`. */
+export function currentYYMM(d: Date = new Date()): string {
+  return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Nome do arquivo de wave com o mês do ENVIO como prefixo. Sem isso, o T1-W1
+ * deste mês sobrescreveria o do mês passado (os nomes eram fixos). Pure.
+ */
+export function waveName(month: string, base: string): string {
+  return `${month}-${base}`;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -313,6 +326,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   };
   const w3Size = argOf("--w3-size", 2000);
   const concurrency = argOf("--concurrency", 6);
+  // #wave-month-prefix: mês do envio no nome das waves (evita colisão entre
+  // meses). Default = mês atual; override com `--month YYMM`.
+  const monthIdx = argv.indexOf("--month");
+  const monthArg = monthIdx >= 0 ? argv[monthIdx + 1] : undefined;
+  const month = monthArg && /^\d{4}$/.test(monthArg) ? monthArg : currentYYMM();
 
   const t1Path = resolve(DATA_DIR, "brevo-import-t01.csv");
   const t2Path = resolve(DATA_DIR, "brevo-import-t02-verified.csv");
@@ -334,8 +352,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t1 = readCsv(t1Path);
   const t1Key = emailKeyOf(t1.fields);
   const split = classifyT1(t1.rows, t1Key, engagement);
-  writeCsv("t1-openers.csv", t1.fields, split.openers);
-  writeCsv("t1-non-openers.csv", t1.fields, split.nonOpeners);
+  writeCsv(waveName(month, "t1-openers.csv"), t1.fields, split.openers);
+  writeCsv(waveName(month, "t1-non-openers.csv"), t1.fields, split.nonOpeners);
   console.error(
     `\n📨 T1: W1(abriu)=${split.openers.length} · W2(não-abriu)=${split.nonOpeners.length} · ` +
       `suprimidos=${split.suppressed.length} · não-encontrados(excluídos)=${split.notFound.length}`,
@@ -351,14 +369,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // emite só os fields listados, então os MV_* nas rows são ignorados.
   const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
   const { w3, w4 } = representativeSplit(tagged, w3Size);
-  writeCsv("t2-w3.csv", t2Fields, w3);
-  writeCsv("t2-w4.csv", t2Fields, w4);
+  writeCsv(waveName(month, "t2-w3.csv"), t2Fields, w3);
+  writeCsv(waveName(month, "t2-w4.csv"), t2Fields, w4);
   console.error(
     `📨 T2: W3=${w3.length} · W4=${w4.length} · suprimidos(blacklist)=${dropped.length} (de ${t2.rows.length})`,
   );
 
   const summary = {
     generated_for: "próximo envio Clarice (warm-up por engajamento)",
+    month,
     blacklisted_suppressed: blacklist.size,
     waves: {
       w1_t1_openers: split.openers.length,
@@ -371,7 +390,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     t2_suppressed: dropped.length,
     w3_size_param: w3Size,
   };
-  writeFileAtomic(resolve(WAVES_DIR, "waves-summary.json"), JSON.stringify(summary, null, 2));
+  writeFileAtomic(resolve(WAVES_DIR, waveName(month, "waves-summary.json")), JSON.stringify(summary, null, 2));
   console.error(`\n✅ waves em ${WAVES_DIR}`);
   console.log(JSON.stringify(summary, null, 2));
 }

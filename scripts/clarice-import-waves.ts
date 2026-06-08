@@ -26,6 +26,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost } from "./lib/brevo-client.ts";
+import { currentYYMM, waveName } from "./clarice-build-waves.ts"; // #wave-month-prefix
 
 loadProjectEnv();
 
@@ -126,6 +127,7 @@ interface Args {
   execute: boolean;
   label: string;
   folderId: number;
+  month: string;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -138,10 +140,15 @@ export function parseArgs(argv: string[]): Args {
     return v && !v.startsWith("--") ? v : undefined;
   };
   const folder = parseInt(get("--folder-id") ?? "1", 10);
+  // #wave-month-prefix: lê as waves do mês informado (default = mês atual).
+  // Casa com o `--month` do clarice-build-waves.
+  const monthRaw = get("--month");
+  const month = monthRaw && /^\d{4}$/.test(monthRaw) ? monthRaw : currentYYMM();
   return {
     execute: argv.includes("--execute"),
     label: get("--label") ?? "edição atual",
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
+    month,
   };
 }
 
@@ -157,12 +164,12 @@ interface Plan {
   columns: string[];
 }
 
-function buildPlan(label: string): Plan[] {
+function buildPlan(label: string, month: string): Plan[] {
   const plans: Plan[] = [];
   for (const wave of WAVES) {
-    const path = resolve(WAVES_DIR, wave.file);
+    const path = resolve(WAVES_DIR, waveName(month, wave.file));
     if (!existsSync(path)) {
-      throw new Error(`wave faltando: ${path} — rode clarice-build-waves.ts antes.`);
+      throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --month ${month}' antes.`);
     }
     const raw = readFileSync(path, "utf-8");
     const csv = normalizeImportCsv(raw);
@@ -174,7 +181,7 @@ function buildPlan(label: string): Plan[] {
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
-  const plans = buildPlan(args.label);
+  const plans = buildPlan(args.label, args.month);
 
   // --- Plano (sempre imprime) ---
   console.error(`\n📋 Plano de import — folder ${args.folderId} — modo ${args.execute ? "EXECUTE 🔴" : "DRY-RUN"}`);
