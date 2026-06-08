@@ -1425,7 +1425,7 @@ function renderEncerrar(text: string): string {
           : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
         return `<td style="padding:0 10px 10px 0;">${pill}</td>`;
       }).join("");
-      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse:</p>
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
   <table role="presentation" cellpadding="0" cellspacing="0"><tr>${cells}</tr></table>`;
     }
     return `<p style="margin:22px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(b.content.join(" "))}</p>`;
