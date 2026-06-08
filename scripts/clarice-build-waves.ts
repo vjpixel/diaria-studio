@@ -28,13 +28,14 @@
  *
  * Inputs:
  *   stripe-export-t01-assinantes-ativos.csv            T1 canônico (BASE, no root) — email,NOME,OPEN_PROBABILITY
- *   {ciclo}/stripe-export-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
+ *   {ciclo}/mv-export-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
  *
- * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
- *   t1-openers.csv      W1
- *   t1-non-openers.csv  W2
- *   t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
- *   t2-w4.csv           W4
+ * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/). Nome = wX + ferramenta
+ * que segmentou + tier (T1 = segmentado por opens da Brevo; T2 = vem do MV-verified):
+ *   w1-brevo-export-t1-openers.csv      W1
+ *   w2-brevo-export-t1-non-openers.csv  W2
+ *   w3-mv-export-t2.csv                 W3 (+RECENCY_QUARTIL, RECENCY_RANK)
+ *   w4-mv-export-t2.csv                 W4
  *   waves-summary.json
  */
 
@@ -321,7 +322,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // T1 é BASE (root, output da merge); t02-verified é por-ciclo (output do verify-mv).
   const t1Path = clariceBaseFile("stripe-export-t01-assinantes-ativos.csv");
-  const t2Path = resolve(cycleDir, "stripe-export-t02-ex-assinantes-verified.csv");
+  const t2Path = resolve(cycleDir, "mv-export-t02-ex-assinantes-verified.csv");
   for (const p of [t1Path, t2Path]) {
     if (!existsSync(p)) {
       console.error(`input não encontrado: ${p}`);
@@ -340,8 +341,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t1 = readCsv(t1Path);
   const t1Key = emailKeyOf(t1.fields);
   const split = classifyT1(t1.rows, t1Key, engagement);
-  writeCsv(wavesDir, "t1-openers.csv", t1.fields, split.openers);
-  writeCsv(wavesDir, "t1-non-openers.csv", t1.fields, split.nonOpeners);
+  writeCsv(wavesDir, "w1-brevo-export-t1-openers.csv", t1.fields, split.openers);
+  writeCsv(wavesDir, "w2-brevo-export-t1-non-openers.csv", t1.fields, split.nonOpeners);
   console.error(
     `\n📨 T1: W1(abriu)=${split.openers.length} · W2(não-abriu)=${split.nonOpeners.length} · ` +
       `suprimidos=${split.suppressed.length} · não-encontrados(excluídos)=${split.notFound.length}`,
@@ -357,8 +358,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // emite só os fields listados, então os MV_* nas rows são ignorados.
   const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
   const { w3, w4 } = representativeSplit(tagged, w3Size);
-  writeCsv(wavesDir, "t2-w3.csv", t2Fields, w3);
-  writeCsv(wavesDir, "t2-w4.csv", t2Fields, w4);
+  writeCsv(wavesDir, "w3-mv-export-t2.csv", t2Fields, w3);
+  writeCsv(wavesDir, "w4-mv-export-t2.csv", t2Fields, w4);
   console.error(
     `📨 T2: W3=${w3.length} · W4=${w4.length} · suprimidos(blacklist)=${dropped.length} (de ${t2.rows.length})`,
   );

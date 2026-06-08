@@ -25,11 +25,12 @@
  * Input  (BASE, no root data/clarice-subscribers/):
  *   stripe-export-t02-ex-assinantes.csv   colunas: email,NOME,OPEN_PROBABILITY
  *
- * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/, basename do input):
- *   stripe-export-t02-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
- *   stripe-export-t02-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
- *   stripe-export-t02-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
- *   .mv-cache-stripe-export-t02-ex-assinantes.json checkpoint resumível (gitignored via data/)
+ * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/). Proveniência:
+ * input `stripe-export-` → saídas `mv-export-` (output do MillionVerifier):
+ *   mv-export-t02-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
+ *   mv-export-t02-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
+ *   mv-export-t02-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
+ *   .mv-cache-mv-export-t02-ex-assinantes.json checkpoint resumível (gitignored via data/)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
@@ -67,6 +68,18 @@ export function classifyResult(result: string | undefined | null): Bucket {
   if (r === "ok" || r === "catch_all") return "verified";
   if (r === "invalid" || r === "disposable") return "rejected";
   return "unknown";
+}
+
+/**
+ * Basename das SAÍDAS do MV a partir do nome do input. Proveniência: o input é
+ * output da merge (`stripe-export-…`); as saídas são do MillionVerifier, então o
+ * prefixo vira `mv-export-` (convenção: nome = última ferramenta que processou).
+ * Fallback: input sem o prefixo esperado mantém o basename (só tira o .csv).
+ */
+export function mvOutputBase(inputFile: string): string {
+  return basename(inputFile)
+    .replace(/\.csv$/i, "")
+    .replace(/^stripe-export-/, "mv-export-");
 }
 
 /** Monta a URL da single-verification API (testável sem rede). */
@@ -373,7 +386,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // --input deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
   ensureDir(cycleDir);
 
-  const base = basename(args.input).replace(/\.csv$/i, "");
+  // Proveniência: input é output da merge (`stripe-export-…`); as SAÍDAS são do
+  // MillionVerifier → prefixo vira `mv-export-` (convenção: nome = última ferramenta).
+  const base = mvOutputBase(args.input);
   const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);
 
   const { rows, fields, emailKey } = readInput(inputPath);

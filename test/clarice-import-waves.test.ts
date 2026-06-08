@@ -16,6 +16,22 @@ describe("listNameFor", () => {
   });
 });
 
+describe("WAVES (proveniência no nome + W5 opcional)", () => {
+  it("nomes wX-{ferramenta}-{tier}: T1 via Brevo, T2/maio via MV", () => {
+    const byKey = Object.fromEntries(WAVES.map((w) => [w.key, w.file]));
+    assert.equal(byKey.W1, "w1-brevo-export-t1-openers.csv");
+    assert.equal(byKey.W2, "w2-brevo-export-t1-non-openers.csv");
+    assert.equal(byKey.W3, "w3-mv-export-t2.csv");
+    assert.equal(byKey.W4, "w4-mv-export-t2.csv");
+    assert.equal(byKey.W5, "w5-mv-export-maio.csv");
+  });
+  it("W1–W4 obrigatórias; só W5 (cohort do ciclo) é opcional", () => {
+    for (const w of WAVES) {
+      assert.equal(!!w.optional, w.key === "W5", `${w.key} optional flag`);
+    }
+  });
+});
+
 describe("countRows", () => {
   it("desconta o header e linhas vazias", () => {
     assert.equal(countRows("email,NOME\na@x.com,Ana\nb@x.com,Bia\n"), 2);

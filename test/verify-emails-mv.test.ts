@@ -6,11 +6,25 @@ import { join } from "node:path";
 import {
   classifyResult,
   buildVerifyUrl,
+  mvOutputBase,
   readInput,
   splitRows,
   parseArgs,
   type Bucket,
 } from "../scripts/verify-emails-mv.ts";
+
+describe("mvOutputBase (proveniência: stripe-export- → mv-export-)", () => {
+  it("mapeia o prefixo stripe-export- pra mv-export- e tira o .csv", () => {
+    assert.equal(mvOutputBase("stripe-export-t02-ex-assinantes.csv"), "mv-export-t02-ex-assinantes");
+    assert.equal(mvOutputBase("stripe-export-maio.csv"), "mv-export-maio");
+  });
+  it("aceita caminho completo (usa basename)", () => {
+    assert.equal(mvOutputBase("data/clarice-subscribers/stripe-export-maio.csv"), "mv-export-maio");
+  });
+  it("fallback: input sem o prefixo esperado mantém o basename (só tira .csv)", () => {
+    assert.equal(mvOutputBase("custom-list.csv"), "custom-list");
+  });
+});
 
 describe("classifyResult", () => {
   it("ok e catch_all → verified", () => {
