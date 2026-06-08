@@ -1001,7 +1001,7 @@ export function renderIntroCallout(text: string): string {
   if (paras.length > 1) {
     // multi-parágrafo: 1º = título serif (marcador 📣/📚/🎉 removido), demais = corpo normal.
     const title = stripCalloutMarker(paras[0]);
-    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:20px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
+    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:22px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
     const bodyHtml = paras
       .slice(1)
       .map(
@@ -1084,7 +1084,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const imgTag = `<img src="${safeImg}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
   const cta = safeLink
-    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
+    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:16px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
   // título serif (marcador removido) + demais peso normal, igual ao caminho
@@ -1092,7 +1092,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const bodyHtml =
     bodyParas.length > 1
-      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:20px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
+      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:22px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
         bodyParas
           .slice(1)
           .map(
@@ -1136,7 +1136,7 @@ function renderDestaque(d: RenderDestaque): string {
 function renderEIA(eia: EIA): string {
   const creditHtml = processInlineLinks(eia.credit);
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
-  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:13px;line-height:1.5;color:${TEXT_COLOR};`;
+  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
 
   // #1630: "Resultado da última edição: X% acertaram" — DS: sans 12px bold
