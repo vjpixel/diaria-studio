@@ -93,8 +93,8 @@ describe("clarice cycle paths (#1961)", () => {
   });
 
   it("clariceBaseFile fica no root (não por-ciclo): stripe, excluded, tiers", () => {
-    assert.ok(norm(clariceBaseFile("brevo-import-t01-assinantes-ativos.csv")).endsWith("clarice-subscribers/brevo-import-t01-assinantes-ativos.csv"));
-    assert.ok(norm(clariceBaseFile("brevo-import-excluded.csv")).endsWith("clarice-subscribers/brevo-import-excluded.csv"));
+    assert.ok(norm(clariceBaseFile("stripe-export-t01-assinantes-ativos.csv")).endsWith("clarice-subscribers/stripe-export-t01-assinantes-ativos.csv"));
+    assert.ok(norm(clariceBaseFile("stripe-export-excluded.csv")).endsWith("clarice-subscribers/stripe-export-excluded.csv"));
   });
 
   it("parseCycleArg: extrai --cycle, vazio quando ausente/inválido (main aborta)", () => {

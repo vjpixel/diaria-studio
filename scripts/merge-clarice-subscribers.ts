@@ -13,13 +13,13 @@
  *   npx tsx scripts/merge-clarice-subscribers.ts [--filter-clrc-pt]
  *
  * Output (em data/clarice-subscribers/) — nome descritivo via tierFileName():
- *   brevo-import-t01-assinantes-ativos.csv   Tier 1: assinante atual
- *   brevo-import-t02-ex-assinantes.csv       Tier 2: ex-assinante
- *   brevo-import-t03-leads-2026-jan-abr.csv  Tier 3: lead semestre corrente (range real do corte)
- *   brevo-import-t04-leads-2025H2.csv        Tier 4: lead 2025-H2
- *   ...                                       (T4–T9: semestre deslizante)
- *   brevo-import-t10-leads-caudao.csv        Tier 10: lead caudão antigo
- *   brevo-import-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
+ *   stripe-export-t01-assinantes-ativos.csv   Tier 1: assinante atual
+ *   stripe-export-t02-ex-assinantes.csv       Tier 2: ex-assinante
+ *   stripe-export-t03-leads-2026-jan-abr.csv  Tier 3: lead semestre corrente (range real do corte)
+ *   stripe-export-t04-leads-2025H2.csv        Tier 4: lead 2025-H2
+ *   ...                                        (T4–T9: semestre deslizante)
+ *   stripe-export-t10-leads-caudao.csv        Tier 10: lead caudão antigo
+ *   stripe-export-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
@@ -502,7 +502,7 @@ export function tierFileName(tier: number, now: Date, rows: Scored[]): string {
     const sIdx = semesterIndex(now) - (offset[tier] ?? 0);
     slug = `leads-${Math.floor(sIdx / 2)}${sIdx % 2 === 1 ? "H2" : "H1"}`;
   }
-  return `brevo-import-t${nn}-${slug}.csv`;
+  return `stripe-export-t${nn}-${slug}.csv`;
 }
 
 /**
@@ -566,7 +566,7 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
   // (PT-BR: NOME mapeia pra firstname). Sem uppercase, o Brevo cria atributos
   // novos (first_name) em vez de popular os canônicos (verificado via API).
   //
-  // Tier é implícito no filename (brevo-import-t{NN}.csv).
+  // Tier é implícito no filename (stripe-export-t{NN}-{slug}.csv).
   // Ordem das linhas implica ordenação por score (não precisa coluna).
   //
   // verify_risk não vai no output: a verificação MillionVerifier é um passo
@@ -586,13 +586,16 @@ function formatTierRow(r: Scored): { [k: string]: string | number } {
 export function main(dataDir: string = DATA_DIR): void {
   const filterClrcPt = process.argv.includes("--filter-clrc-pt");
 
-  // Filtra arquivos CSV que NÃO são output do próprio script (importa só fontes
-  // do Stripe). Tanto `kit-import-*` (legacy) quanto `brevo-import-*` (atual).
+  // Filtra arquivos CSV que NÃO são output do próprio script (importa só as
+  // FONTES cruas do Stripe = stripe-customers-*). Pula os outputs `stripe-export-*`
+  // (atual) e os legados `brevo-import-*`/`kit-import-*`. NB: `stripe-customers-`
+  // NÃO casa com `stripe-export-`, então as fontes continuam sendo lidas.
   const files = readdirSync(dataDir)
     .filter((f) =>
       f.endsWith(".csv") &&
       !f.startsWith("kit-import-") &&
-      !f.startsWith("brevo-import-"),
+      !f.startsWith("brevo-import-") &&
+      !f.startsWith("stripe-export-"),
     );
 
   console.error(`📂 lendo ${files.length} CSVs de ${dataDir}`);
@@ -716,7 +719,7 @@ export function main(dataDir: string = DATA_DIR): void {
     writeFileSync(resolve(dataDir, filename), csv, "utf8");
   }
 
-  // Output: 10 CSVs com nome descritivo (brevo-import-t01-assinantes-ativos.csv …).
+  // Output: 10 CSVs com nome descritivo (stripe-export-t01-assinantes-ativos.csv …).
   // O prefixo t{NN}- garante ordenação no filesystem + match dos readers.
   // Escrevemos ANTES de limpar (ver cleanup abaixo): os arquivos canônicos nunca
   // ficam ausentes numa janela — write sobrescreve, depois remove só os órfãos.
@@ -728,15 +731,16 @@ export function main(dataDir: string = DATA_DIR): void {
     written.add(filename);
   }
 
-  // Cleanup de outputs órfãos: schema antigo (kit-import-*, brevo-import-tier{N}.csv),
-  // o numérico puro pré-rename (brevo-import-t01.csv) e slugs de OUTRO run/semestre
-  // (brevo-import-t03-leads-2026-jan-mar.csv). Roda DEPOIS do write e PULA os nomes
-  // recém-escritos (`written`) — então nunca apaga o output deste run, só os obsoletos.
+  // Cleanup de outputs órfãos: o atual `stripe-export-t{NN}-*` de OUTRO run/semestre
+  // (slug mudou) + os esquemas LEGADOS (`kit-import-*`, `brevo-import-tier{N}`, e o
+  // `brevo-import-t{NN}[-slug]` da nomenclatura pré-stripe-export). Roda DEPOIS do
+  // write e PULA os nomes recém-escritos (`written`) — nunca apaga o output deste run.
   // (não pega -verified/-rejected/-unknown, que moram no dir do ciclo, não no root)
   const orphanPatterns = [
     /^kit-import-(tier\d+|excluded)\.csv$/,
-    /^brevo-import-tier\d+\.csv$/, // sem padding (tier1, tier2, tier3 antigos)
-    /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // -[A-Za-z…]: o slug tem H maiúsculo (2025H2)
+    /^brevo-import-tier\d+\.csv$/, // legado sem padding (tier1, tier2, tier3 antigos)
+    /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // legado pré-stripe-export (#1965)
+    /^stripe-export-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // atual: slug-drift entre runs ([A-Za-z…]: H maiúsculo do 2025H2)
   ];
   for (const f of readdirSync(dataDir)) {
     if (written.has(f)) continue; // nunca remove o que acabamos de escrever
@@ -763,7 +767,7 @@ export function main(dataDir: string = DATA_DIR): void {
       stripe_ids: r.stripe_ids.join(";"),
     })),
   );
-  writeFileSync(resolve(dataDir, "brevo-import-excluded.csv"), excludedCsv, "utf8");
+  writeFileSync(resolve(dataDir, "stripe-export-excluded.csv"), excludedCsv, "utf8");
 
   // Distribuição de motivos
   const reasons: { [k: string]: number } = {};
