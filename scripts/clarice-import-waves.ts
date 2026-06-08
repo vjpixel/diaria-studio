@@ -10,16 +10,16 @@
  * cria listas e importa contatos na conta de PRODUÇÃO da Clarice.
  *
  * Uso:
- *   npx tsx scripts/clarice-import-waves.ts --month 2606 --label "Jun/2026"            # dry-run
- *   npx tsx scripts/clarice-import-waves.ts --month 2606 --label "Jun/2026" --execute  # cria + importa
- *   --month YYMM      OBRIGATÓRIO — mês do envio (casa com clarice-build-waves --month)
- *   [--folder-id N]   folder Brevo onde criar as listas (default 1)
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026"            # dry-run
+ *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
+ *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio (casa com clarice-build-waves --cycle)
+ *   [--folder-id N]              folder Brevo onde criar as listas (default 1)
  *
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (só usado em --execute)
  *
- * Inputs (em data/clarice-subscribers/waves/, gerados por clarice-build-waves.ts):
- *   {YYMM}-t1-openers.csv · {YYMM}-t1-non-openers.csv · {YYMM}-t2-w3.csv · {YYMM}-t2-w4.csv
+ * Inputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/, gerados por clarice-build-waves.ts):
+ *   t1-openers.csv · t1-non-openers.csv · t2-w3.csv · t2-w4.csv
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -27,12 +27,9 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost } from "./lib/brevo-client.ts";
-import { currentYYMM, waveName } from "./clarice-build-waves.ts"; // #wave-month-prefix
+import { clariceWavesDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
 
 loadProjectEnv();
-
-const ROOT = resolve(import.meta.dirname, "..");
-const WAVES_DIR = resolve(ROOT, "data/clarice-subscribers/waves");
 
 // ---------------------------------------------------------------------------
 // Definição das waves (ordem de envio = ordem do warm-up)
@@ -128,7 +125,7 @@ interface Args {
   execute: boolean;
   label: string;
   folderId: number;
-  month: string;
+  cycle: string;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -141,16 +138,14 @@ export function parseArgs(argv: string[]): Args {
     return v && !v.startsWith("--") ? v : undefined;
   };
   const folder = parseInt(get("--folder-id") ?? "1", 10);
-  // #wave-month-prefix: lê as waves do mês informado. OBRIGATÓRIO (sem default):
-  // parseArgs devolve "" quando ausente/inválido; main aborta. Evita ler/gravar
-  // o mês errado perto da virada. Casa com o `--month` do clarice-build-waves.
-  const monthRaw = get("--month");
-  const month = monthRaw && /^\d{4}$/.test(monthRaw) ? monthRaw : "";
+  // #1961: lê as waves do ciclo em {conteúdo}-{envio}/waves/. OBRIGATÓRIO (sem
+  // default): parseCycleArg devolve "" quando ausente/inválido; main aborta.
+  const cycle = parseCycleArg(argv);
   return {
     execute: argv.includes("--execute"),
     label: get("--label") ?? "edição atual",
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
-    month,
+    cycle,
   };
 }
 
@@ -166,12 +161,12 @@ interface Plan {
   columns: string[];
 }
 
-function buildPlan(label: string, month: string): Plan[] {
+function buildPlan(label: string, cycle: string): Plan[] {
   const plans: Plan[] = [];
   for (const wave of WAVES) {
-    const path = resolve(WAVES_DIR, waveName(month, wave.file));
+    const path = resolve(clariceWavesDir(cycle), wave.file);
     if (!existsSync(path)) {
-      throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --month ${month}' antes.`);
+      throw new Error(`wave faltando: ${path} — rode 'clarice-build-waves.ts --cycle ${cycle}' antes.`);
     }
     const raw = readFileSync(path, "utf-8");
     const csv = normalizeImportCsv(raw);
@@ -183,11 +178,11 @@ function buildPlan(label: string, month: string): Plan[] {
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
-  if (!args.month) {
-    console.error(`--month YYMM é obrigatório (mês do envio — ex: --month ${currentYYMM()}).`);
+  if (!args.cycle) {
+    console.error("--cycle {conteúdo}-{envio} é obrigatório (ex: --cycle 2605-06).");
     process.exit(1);
   }
-  const plans = buildPlan(args.label, args.month);
+  const plans = buildPlan(args.label, args.cycle);
 
   // --- Plano (sempre imprime) ---
   console.error(`\n📋 Plano de import — folder ${args.folderId} — modo ${args.execute ? "EXECUTE 🔴" : "DRY-RUN"}`);
