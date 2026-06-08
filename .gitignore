@@ -17,3 +17,5 @@ data/
 .tmp/
 # Cloudflare Wrangler local build/cache state (root + workers/*/.wrangler)
 .wrangler/
+# Tipos gerados por `wrangler types` (regenerados localmente, não versionar)
+worker-configuration.d.ts
