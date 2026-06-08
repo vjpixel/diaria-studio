@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   renderIntroCallout,
+  renderMidCallout,
+  isSponsoredCallout,
   extractContent,
   renderHTML,
 } from "../scripts/render-newsletter-html.ts";
@@ -151,5 +153,77 @@ describe("#1938 — renderIntroCallout multi-parágrafo segue o DS", () => {
     const html = renderIntroCallout("🎉 Sorteio ao vivo nesta edição!");
     assert.match(html, /font-weight:600/, "1 parágrafo mantém peso 600");
     assert.ok(html.includes("🎉"), "emoji preservado no callout de 1 parágrafo");
+  });
+});
+
+// ── Review #1942: endereçando os 4 comentários ────────────────────────
+
+describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots", () => {
+  it("isSponsoredCallout: 📣 = patrocinado; 🎉/📚/texto/null = não", () => {
+    assert.equal(isSponsoredCallout("📣 Anúncio"), true);
+    assert.equal(isSponsoredCallout("🎉 Sorteio"), false);
+    assert.equal(isSponsoredCallout("📚 Promo"), false);
+    assert.equal(isSponsoredCallout("Texto comum"), false);
+    assert.equal(isSponsoredCallout(null), false);
+    assert.equal(isSponsoredCallout(undefined), false);
+  });
+
+  it("anúncio 📣 na região de intro (topo) também recebe 'Divulgação'", () => {
+    const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
+    try {
+      const content = extractContent(dir);
+      // injeta um introCallout patrocinado no topo
+      content.introCallout = "📣 Patrocínio no topo. [Acesse](https://anunciante.com).";
+      const html = renderHTML(content);
+      assert.ok(html.includes("Divulgação"), "anúncio no topo deve ter disclosure");
+      assert.ok(
+        html.indexOf("Divulgação") < html.indexOf("Patrocínio no topo"),
+        "separador antes do anúncio do topo",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parágrafo", () => {
+  it("corpo multi-parágrafo COM imagem não vira blocão (título serif + 2 parágrafos)", () => {
+    const html = renderMidCallout(
+      "📣 Título do anúncio\n\nPrimeiro parágrafo do corpo.\n\nSegundo parágrafo. [Acesse](https://anunciante.com)",
+      "https://img.example/p.jpg",
+    );
+    // título serif (FONT_HEADING) sem o marcador 📣
+    assert.match(html, /font-family:Georgia[^"]*"[^>]*>Título do anúncio/, "título serif sem 📣");
+    assert.ok(!html.includes("📣"), "marcador removido do título");
+    // dois parágrafos de corpo (não um <p> só)
+    const bodyParas = (html.match(/font-size:16px;line-height:1\.62/g) || []).length;
+    assert.ok(bodyParas >= 2, `esperava ≥2 parágrafos de corpo, achou ${bodyParas}`);
+  });
+
+  it("corpo de 1 parágrafo COM imagem mantém o estilo atual (livros promo)", () => {
+    const html = renderMidCallout(
+      "📚 Curadoria de livros. [Confira](https://livros.diaria.workers.dev).",
+      "https://img.example/p.jpg",
+    );
+    assert.match(html, /font-weight:600/, "1 parágrafo mantém peso 600");
+    assert.ok(html.includes("Ver os livros"), "botão CTA presente");
+  });
+});
+
+describe("#1942 review #3 — strip do marcador 📣 no callout de 1 parágrafo", () => {
+  it("anúncio 📣 de 1 parágrafo remove o emoji (o kicker 'Divulgação' rotula)", () => {
+    const html = renderIntroCallout("📣 Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/x).");
+    assert.ok(!html.includes("📣"), "📣 removido do anúncio de 1 parágrafo");
+    assert.ok(html.includes("Escreva melhor com a Clarice.ai"), "texto preservado");
+  });
+});
+
+describe("#1942 review #4 — stripCalloutMarker não engole '[' de título com link", () => {
+  it("título multi-parágrafo começando com link mantém o link vivo", () => {
+    const html = renderIntroCallout(
+      "[Confira o parceiro](https://parceiro.com) lançou novidade\n\nCorpo do bloco.",
+    );
+    assert.ok(html.includes('href="https://parceiro.com"'), "link do título sobrevive");
+    assert.ok(!html.includes("](https://parceiro.com)"), "markdown cru não vaza");
   });
 });

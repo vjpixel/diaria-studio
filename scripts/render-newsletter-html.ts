@@ -868,6 +868,32 @@ function stripKickerEmoji(s: string): string {
 }
 
 /**
+ * Remove SÓ o marcador de callout (📣/📚/🎉 + variation selector + espaço) do
+ * início. Diferente de `stripKickerEmoji`, NÃO engole `[` (markdown-link), aspas
+ * ou outros não-alfanuméricos — preservando títulos que começam com link/citação
+ * (#1942 review #4).
+ */
+function stripCalloutMarker(s: string): string {
+  return s.replace(/^\s*(?:📣|📚|🎉)️?\s*/u, "").trim();
+}
+
+/**
+ * Convenção de marcadores de callout (#1942 review #1):
+ *   📣 = bloco PATROCINADO (anúncio) → recebe o separador "Divulgação".
+ *   🎉 = CTA/sorteio editorial · 📚 = promo interna → SEM disclosure.
+ * O disclosure é dirigido por este predicado (não pelo slot intro vs mid), então
+ * um anúncio recebe "Divulgação" tanto no topo quanto entre D1 e D2.
+ */
+export function isSponsoredCallout(text: string | null | undefined): boolean {
+  return !!text && /^\s*📣/u.test(text);
+}
+
+/** Linha do separador "Divulgação" (disclosure de patrocínio, #1940). */
+function renderDivulgacaoSeparator(): string {
+  return `<tr><td class="pad" style="padding:32px 48px 0;">${renderKicker("Divulgação")}</td></tr>`;
+}
+
+/**
  * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
  * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
  */
@@ -961,10 +987,12 @@ export function renderIntroCallout(text: string): string {
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
   // 1º parágrafo = título serif (emoji de marcação removido), demais = corpo
   // peso normal; os links já saem em negrito via processInlineLinks.
+  const sponsored = isSponsoredCallout(text);
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   let inner: string;
   if (paras.length > 1) {
-    const title = stripKickerEmoji(paras[0]);
+    // multi-parágrafo: 1º = título serif (marcador 📣/📚/🎉 removido), demais = corpo normal.
+    const title = stripCalloutMarker(paras[0]);
     const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:20px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
     const bodyHtml = paras
       .slice(1)
@@ -975,7 +1003,11 @@ export function renderIntroCallout(text: string): string {
       .join("\n      ");
     inner = `${titleHtml}\n      ${bodyHtml}`;
   } else {
-    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(paras[0] ?? text)}</p>`;
+    // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
+    // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
+    const single = paras[0] ?? text;
+    const only = sponsored ? stripCalloutMarker(single) : single;
+    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td class="pad" style="padding:8px 48px 0;">
@@ -1046,12 +1078,27 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const cta = safeLink
     ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:15px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
     : "";
+  // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
+  // título serif (marcador removido) + demais peso normal, igual ao caminho
+  // sem imagem (#1938). 1 parágrafo mantém o estilo atual (peso 600, emoji preservado).
+  const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const bodyHtml =
+    bodyParas.length > 1
+      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:20px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
+        bodyParas
+          .slice(1)
+          .map(
+            (p, i) =>
+              `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+          )
+          .join("\n      ")
+      : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td class="pad" style="padding:8px 48px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:16px 20px;">
-      <p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>
+      ${bodyHtml}
       ${cta}
     </td></tr>
   </table>
@@ -1443,6 +1490,8 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
 
   // #1648: CTA de destaque (ex: sorteio ao vivo) logo após a coverage line.
   if (content.introCallout) {
+    // #1942 review #1: disclosure também cobre anúncio (📣) colocado no topo.
+    if (isSponsoredCallout(content.introCallout)) parts.push(renderDivulgacaoSeparator());
     parts.push(renderIntroCallout(content.introCallout));
   }
 
@@ -1458,12 +1507,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
     // do introCallout. Posicionado após o 1º destaque.
     if (i === 0 && content.midCallout) {
-      // #1940: separador "Divulgação" antes de bloco PATROCINADO (marcado com 📣
-      // no MD). Não aparece em promo interna (📚, ex: página de livros) nem no
-      // sorteio/introCallout — só conteúdo de anunciante precisa do disclosure.
-      if (/^\s*📣/u.test(content.midCallout)) {
-        parts.push(`<tr><td class="pad" style="padding:32px 48px 0;">${renderKicker("Divulgação")}</td></tr>`);
-      }
+      // #1940: separador "Divulgação" antes de bloco PATROCINADO (📣). Promo
+      // interna (📚) e sorteio (🎉) não recebem disclosure — ver isSponsoredCallout.
+      if (isSponsoredCallout(content.midCallout)) parts.push(renderDivulgacaoSeparator());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
     if (includeEia && !eiaInserted && i === 1) {
