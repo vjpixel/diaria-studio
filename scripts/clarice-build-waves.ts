@@ -19,35 +19,33 @@
  *     os 4 quartis (RECENCY_QUARTIL), permitindo a correlação intra-dia.
  *
  * Uso:
- *   npx tsx scripts/clarice-build-waves.ts --month 2606 [--w3-size 2000] [--concurrency 6]
- *   (--month YYMM é OBRIGATÓRIO — mês do envio, explícito; vira prefixo das waves)
+ *   npx tsx scripts/clarice-build-waves.ts --cycle 2605-06 [--w3-size 2000] [--concurrency 6]
+ *   (--cycle {conteúdo}-{envio} é OBRIGATÓRIO — ciclo do envio; waves vivem em
+ *    {conteúdo}-{envio}/waves/, #1961)
  *
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (lê opens + blacklist do T1)
  *
- * Inputs (em data/clarice-subscribers/):
- *   brevo-import-t01.csv            T1 canônico (email,NOME,OPEN_PROBABILITY)
- *   brevo-import-t02-verified.csv   T2 limpo pós-MV, já em recência DESC
+ * Inputs:
+ *   brevo-import-t01.csv            T1 canônico (BASE, no root) — email,NOME,OPEN_PROBABILITY
+ *   {ciclo}/brevo-import-t02-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
  *
- * Outputs (em data/clarice-subscribers/waves/, prefixados pelo mês {YYMM}-):
- *   {YYMM}-t1-openers.csv      W1
- *   {YYMM}-t1-non-openers.csv  W2
- *   {YYMM}-t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
- *   {YYMM}-t2-w4.csv           W4
- *   {YYMM}-waves-summary.json
+ * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
+ *   t1-openers.csv      W1
+ *   t1-non-openers.csv  W2
+ *   t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
+ *   t2-w4.csv           W4
+ *   waves-summary.json
  */
 
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 
 loadProjectEnv();
-
-const ROOT = resolve(import.meta.dirname, "..");
-const DATA_DIR = resolve(ROOT, "data/clarice-subscribers");
-const WAVES_DIR = resolve(DATA_DIR, "waves");
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -290,23 +288,10 @@ function emailKeyOf(fields: string[]): string {
   return k;
 }
 
-function writeCsv(name: string, fields: string[], rows: Row[]): void {
+function writeCsv(dir: string, name: string, fields: string[], rows: Row[]): void {
   // Atômico: os CSVs de wave são o deliverável de fato (vão pro import Brevo).
   // Um write truncado por crash/SIGINT seria importado como wave parcial.
-  writeFileAtomic(resolve(WAVES_DIR, name), Papa.unparse({ fields, data: rows }));
-}
-
-/** YYMM do mês atual (ex: "2606"). Default do `--month`. */
-export function currentYYMM(d: Date = new Date()): string {
-  return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-/**
- * Nome do arquivo de wave com o mês do ENVIO como prefixo. Sem isso, o T1-W1
- * deste mês sobrescreveria o do mês passado (os nomes eram fixos). Pure.
- */
-export function waveName(month: string, base: string): string {
-  return `${month}-${base}`;
+  writeFileAtomic(resolve(dir, name), Papa.unparse({ fields, data: rows }));
 }
 
 // ---------------------------------------------------------------------------
@@ -327,27 +312,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   };
   const w3Size = argOf("--w3-size", 2000);
   const concurrency = argOf("--concurrency", 6);
-  // #wave-month-prefix: mês do ENVIO no nome das waves (evita colisão entre
-  // meses). OBRIGATÓRIO e explícito (como "data da edição é sempre explícita"):
-  // sem default pra não rotular com o mês errado perto da virada (build dia 31
-  // / import dia 1 dariam meses diferentes).
-  const monthIdx = argv.indexOf("--month");
-  const monthArg = monthIdx >= 0 ? argv[monthIdx + 1] : undefined;
-  if (!monthArg || !/^\d{4}$/.test(monthArg)) {
-    console.error(`--month YYMM é obrigatório (mês do envio — ex: --month ${currentYYMM()}).`);
-    process.exit(1);
-  }
-  const month = monthArg;
+  // #1961: ciclo do ENVIO obrigatório → waves + t02-verified vivem em
+  // {conteúdo}-{envio}/. Explícito (como "data da edição é sempre explícita"):
+  // sem default, pra não ler/gravar o ciclo errado perto da virada.
+  const cycle = requireCycleArg(argv);
+  const cycleDir = clariceCycleDir(cycle);
+  const wavesDir = clariceWavesDir(cycle);
 
-  const t1Path = resolve(DATA_DIR, "brevo-import-t01.csv");
-  const t2Path = resolve(DATA_DIR, "brevo-import-t02-verified.csv");
+  // T1 é BASE (root, output da merge); t02-verified é por-ciclo (output do verify-mv).
+  const t1Path = clariceBaseFile("brevo-import-t01.csv");
+  const t2Path = resolve(cycleDir, "brevo-import-t02-verified.csv");
   for (const p of [t1Path, t2Path]) {
     if (!existsSync(p)) {
       console.error(`input não encontrado: ${p}`);
       process.exit(1);
     }
   }
-  mkdirSync(WAVES_DIR, { recursive: true });
+  ensureDir(wavesDir);
 
   // 1) engajamento Brevo
   const engagement = await fetchBrevoEngagement(apiKey, concurrency);
@@ -359,8 +340,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const t1 = readCsv(t1Path);
   const t1Key = emailKeyOf(t1.fields);
   const split = classifyT1(t1.rows, t1Key, engagement);
-  writeCsv(waveName(month, "t1-openers.csv"), t1.fields, split.openers);
-  writeCsv(waveName(month, "t1-non-openers.csv"), t1.fields, split.nonOpeners);
+  writeCsv(wavesDir, "t1-openers.csv", t1.fields, split.openers);
+  writeCsv(wavesDir, "t1-non-openers.csv", t1.fields, split.nonOpeners);
   console.error(
     `\n📨 T1: W1(abriu)=${split.openers.length} · W2(não-abriu)=${split.nonOpeners.length} · ` +
       `suprimidos=${split.suppressed.length} · não-encontrados(excluídos)=${split.notFound.length}`,
@@ -376,15 +357,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // emite só os fields listados, então os MV_* nas rows são ignorados.
   const t2Fields = [...t2.fields.filter((f) => !/^MV_/i.test(f)), "RECENCY_QUARTIL", "RECENCY_RANK"];
   const { w3, w4 } = representativeSplit(tagged, w3Size);
-  writeCsv(waveName(month, "t2-w3.csv"), t2Fields, w3);
-  writeCsv(waveName(month, "t2-w4.csv"), t2Fields, w4);
+  writeCsv(wavesDir, "t2-w3.csv", t2Fields, w3);
+  writeCsv(wavesDir, "t2-w4.csv", t2Fields, w4);
   console.error(
     `📨 T2: W3=${w3.length} · W4=${w4.length} · suprimidos(blacklist)=${dropped.length} (de ${t2.rows.length})`,
   );
 
   const summary = {
     generated_for: "próximo envio Clarice (warm-up por engajamento)",
-    month,
+    cycle,
     blacklisted_suppressed: blacklist.size,
     waves: {
       w1_t1_openers: split.openers.length,
@@ -397,8 +378,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     t2_suppressed: dropped.length,
     w3_size_param: w3Size,
   };
-  writeFileAtomic(resolve(WAVES_DIR, waveName(month, "waves-summary.json")), JSON.stringify(summary, null, 2));
-  console.error(`\n✅ waves em ${WAVES_DIR}`);
+  writeFileAtomic(resolve(wavesDir, "waves-summary.json"), JSON.stringify(summary, null, 2));
+  console.error(`\n✅ waves em ${wavesDir}`);
   console.log(JSON.stringify(summary, null, 2));
 }
 
