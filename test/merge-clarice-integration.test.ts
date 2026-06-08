@@ -166,6 +166,10 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv")), false, "slug antigo (H maiúsculo) deve ser removido");
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-t05.csv")), false, "nome numérico puro (pré-rename) deve ser removido");
 
+    // Over-deletion guard: o cleanup NÃO pode comer o input (stripe) nem o audit (excluded).
+    assert.ok(existsSync(join(tmpDataDir, "stripe-customers-fixture.csv")), "input do Stripe não pode ser removido pelo cleanup");
+    assert.ok(existsSync(join(tmpDataDir, "brevo-import-excluded.csv")), "excluded.csv (audit) não pode ser removido pelo cleanup");
+
     // Os t01–t10 e excluded continuam
     for (let t = 1; t <= 10; t++) {
       const filename = tierFile(tmpDataDir, t);

@@ -487,7 +487,14 @@ export function tierFileName(tier: number, now: Date, rows: Scored[]): string {
     } else {
       const min = dates.reduce((a, b) => (a < b ? a : b));
       const max = dates.reduce((a, b) => (a > b ? a : b));
-      slug = `leads-${min.getUTCFullYear()}-${MONTHS_PT[min.getUTCMonth()]}-${MONTHS_PT[max.getUTCMonth()]}`;
+      const minY = min.getUTCFullYear();
+      const maxY = max.getUTCFullYear();
+      const minM = MONTHS_PT[min.getUTCMonth()];
+      const maxM = MONTHS_PT[max.getUTCMonth()];
+      // Mesmo ano (caso normal — 1 semestre): leads-2026-jan-abr.
+      // Anos diferentes (raro — datas futuras em fixtures, back<0): inclui os DOIS
+      // anos pra não dropar o ano do max nem inverter os meses (leads-2025-dez-2026-jan).
+      slug = minY === maxY ? `leads-${minY}-${minM}-${maxM}` : `leads-${minY}-${minM}-${maxY}-${maxM}`;
     }
   } else {
     // T4–T9: semestre deslizante (mesma matemática do tierLabel).
@@ -709,20 +716,30 @@ export function main(dataDir: string = DATA_DIR): void {
     writeFileSync(resolve(dataDir, filename), csv, "utf8");
   }
 
-  // Cleanup de outputs órfãos de runs anteriores que usavam taxonomia diferente.
-  // Remove APENAS arquivos no schema antigo (kit-import-* e brevo-import-tier{N}.csv);
-  // os novos brevo-import-t{NN}.csv (com padding zero) são preservados/sobrescritos.
-  // Idempotente: se rodar 2x, o segundo run já não acha nada pra remover.
+  // Output: 10 CSVs com nome descritivo (brevo-import-t01-assinantes-ativos.csv …).
+  // O prefixo t{NN}- garante ordenação no filesystem + match dos readers.
+  // Escrevemos ANTES de limpar (ver cleanup abaixo): os arquivos canônicos nunca
+  // ficam ausentes numa janela — write sobrescreve, depois remove só os órfãos.
+  const written = new Set<string>();
+  for (let t = 1; t <= 10; t++) {
+    const rows = byTier.get(t) ?? [];
+    const filename = tierFileName(t, now, rows);
+    writeTier(filename, rows);
+    written.add(filename);
+  }
+
+  // Cleanup de outputs órfãos: schema antigo (kit-import-*, brevo-import-tier{N}.csv),
+  // o numérico puro pré-rename (brevo-import-t01.csv) e slugs de OUTRO run/semestre
+  // (brevo-import-t03-leads-2026-jan-mar.csv). Roda DEPOIS do write e PULA os nomes
+  // recém-escritos (`written`) — então nunca apaga o output deste run, só os obsoletos.
+  // (não pega -verified/-rejected/-unknown, que moram no dir do ciclo, não no root)
   const orphanPatterns = [
     /^kit-import-(tier\d+|excluded)\.csv$/,
-    /^brevo-import-tier\d+\.csv$/, // só sem padding (tier1, tier2, tier3 antigos)
-    // Nomes de tier de runs anteriores — tanto o numérico puro (brevo-import-t01.csv)
-    // quanto slugs antigos (brevo-import-t03-leads-2026-jan-mar.csv): removidos antes
-    // de reescrever pra não acumular nome obsoleto quando o slug muda. (não pega
-    // -verified/-rejected/-unknown, que moram no dir do ciclo, não aqui no root)
+    /^brevo-import-tier\d+\.csv$/, // sem padding (tier1, tier2, tier3 antigos)
     /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // -[A-Za-z…]: o slug tem H maiúsculo (2025H2)
   ];
   for (const f of readdirSync(dataDir)) {
+    if (written.has(f)) continue; // nunca remove o que acabamos de escrever
     if (orphanPatterns.some((re) => re.test(f))) {
       const path = resolve(dataDir, f);
       try {
@@ -732,13 +749,6 @@ export function main(dataDir: string = DATA_DIR): void {
         console.error(`⚠️  falha ao remover ${f}: ${(e as Error).message}`);
       }
     }
-  }
-
-  // Output: 10 CSVs com nome descritivo (brevo-import-t01-assinantes-ativos.csv …).
-  // O prefixo t{NN}- garante ordenação no filesystem + match dos readers.
-  for (let t = 1; t <= 10; t++) {
-    const rows = byTier.get(t) ?? [];
-    writeTier(tierFileName(t, now, rows), rows);
   }
 
   const excludedCsv = Papa.unparse(

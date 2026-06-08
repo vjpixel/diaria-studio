@@ -752,6 +752,21 @@ describe("tierFileName", () => {
     assert.equal(tierFileName(3, NOW, []), "brevo-import-t03-leads-2026-jan-jun.csv");
   });
 
+  it("T3 com range cruzando o ano inclui os DOIS anos (não dropa, não inverte)", () => {
+    // Caso raro (datas futuras em fixture): min dez/2025, max jan/2026.
+    assert.equal(
+      tierFileName(3, NOW, rows(new Date("2025-12-20T00:00:00Z"), new Date("2026-01-10T00:00:00Z"))),
+      "brevo-import-t03-leads-2025-dez-2026-jan.csv",
+    );
+  });
+
+  it("T3 com 1 só data → mês repetido (min===max)", () => {
+    assert.equal(
+      tierFileName(3, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
+      "brevo-import-t03-leads-2026-fev-fev.csv",
+    );
+  });
+
   it("prefixo t{NN}- estável (os readers acham por ele)", () => {
     for (let t = 1; t <= 10; t++) {
       assert.match(
