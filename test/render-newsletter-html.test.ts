@@ -1158,8 +1158,9 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.match(html, /Na última edição, disse X mas o correto era Y/);
     // Filtra o "Nessa edição, {placeholder}" — só reveal "Na última..." renderiza
     assert.doesNotMatch(html, /\{placeholder\}/);
-    // #1936: box "contorno" do DS — fundo papel #FBFAF6 + borda bege, sem teal.
-    assert.match(html, /background:#FBFAF6;border:1px solid #EBE5D0/);
+    // #1936/#1943: box "contorno" do DS — borda bege, sem teal. O fundo acompanha
+    // o container: paper #FBFAF6 na web/mensal, branco #FFFFFF no e-mail (#1943).
+    assert.match(html, /background:#FFFFFF;border:1px solid #EBE5D0/);
     assert.doesNotMatch(html, /border:1px solid #00A0A0/);
     assert.match(html, /border-radius:12px/);
   });

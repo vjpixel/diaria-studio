@@ -1465,9 +1465,9 @@ export interface RenderOpts {
    * normalizaria. Default false (output legado: body único com È IA? embutido). */
   excludeEia?: boolean;
   /** #1936 — quando `true`, embrulha o container num documento HTML completo
-   * (doctype + body bege + preheader + tabela de centralização). Usado pro
-   * preview/email Worker-hosted. Default `false`: emite só o container 600px
-   * (fragmento pro paste no Beehiiv, que provê o shell). */
+   * (doctype + body branco #1945 + preheader + tabela de centralização). Usado
+   * pro preview/email Worker-hosted. Default `false`: emite só o container 648px
+   * (#1945; fragmento pro paste no Beehiiv, que provê o shell). */
   fullDocument?: boolean;
 }
 
