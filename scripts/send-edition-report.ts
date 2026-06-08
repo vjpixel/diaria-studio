@@ -510,6 +510,46 @@ export function buildSummary(
 // CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * #1950: gera + escreve o edition-report.html (+ manifest md5), reutilizável
+ * fora do CLI. Usado pelo `refresh-dedup` pra garantir o relatório quando a
+ * edição foi publicada manualmente / Stage 4 interrompido (o relatório é o
+ * último passo do Stage 4 e era pulado nesses casos — caso 260608).
+ * Retorna o md5 do HTML escrito. Lança se o editionDir não existir.
+ */
+export function writeEditionReport(
+  edition: string,
+  editionDir: string,
+  outPath: string,
+): { md5: string; outPath: string } {
+  if (!existsSync(editionDir)) {
+    throw new Error(`edition dir não encontrado: ${editionDir}`);
+  }
+  const stageDoc = loadDoc(editionDir, edition);
+  const published = loadPublished(editionDir);
+  const social = loadSocial(editionDir);
+  const { warnings, errors } = loadRunLogEntries(edition, stageDoc.run_started_at);
+  const braveCredits = computeBraveCreditStats(edition);
+  const html = renderHtmlReport(
+    edition,
+    stageDoc,
+    published,
+    social,
+    warnings,
+    errors,
+    braveCredits,
+    loadSocialPreviewUrl(editionDir),
+  );
+  const absOut = resolve(ROOT, outPath);
+  mkdirSync(dirname(absOut), { recursive: true });
+  writeFileSync(absOut, html, "utf8");
+  const md5 = createHash("md5").update(html).digest("hex");
+  const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
+  mkdirSync(dirname(manifestPath), { recursive: true });
+  writeFileSync(manifestPath, md5 + "\n", "utf8");
+  return { md5, outPath: absOut };
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
