@@ -699,11 +699,19 @@ export function extractContent(editionDir: string): NewsletterContent {
 // scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
 // sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
 // (links, kickers, marcas). Réguas/bordas = bege (--rule); ver design-tokens.ts.
-const PAPER = COLORS.paper; // --paper #FBFAF6 (fundo/papel)
-const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA?)
+// #1943: fundo do e-mail BRANCO (override email-only). O token canônico
+// --paper (#FBFAF6) segue em design-tokens.ts pra web/mensal/É IA?; só o
+// render do e-mail diário usa branco. PAPER aqui é o fundo do container +
+// dos boxes "contorno" (Por que importa / reveal), que acompanham o fundo.
+const PAPER = "#FFFFFF"; // #1943 (era COLORS.paper #FBFAF6)
+const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA? — painéis de contraste, mantidos bege)
+// #1945: fundo EXTERNO do e-mail branco (sem as faixas bege laterais ao redor
+// do container). Antes usava SURFACE (#EBE5D0), que aparecia como bandas bege
+// à esquerda/direita em telas largas. Os painéis de contraste seguem SURFACE.
+const PAGE_BG = "#FFFFFF"; // #1945 (era SURFACE #EBE5D0 no wrapper externo)
 const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
 const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
-const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção)
+const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção + bordas dos boxes contorno)
 // #1936: DS usa serif Georgia SÓ em manchetes/títulos; CORPO + labels/kickers em
 // sans Geist (confirmado pelo template de email do DS + typography.css "Body & UI
 // (sans)"). Georgia é email-safe; Geist cai pra system sans em email.
@@ -857,10 +865,10 @@ export function processInlineLinks(s: string): string {
 }
 
 // #1936 (DS email template): cada seção é UMA linha `<tr><td class="pad">` com
-// padding lateral de 48px (mobile → 24px via .pad). Os helpers abaixo retornam
+// padding lateral de 32px (mobile → 24px via .pad). Os helpers abaixo retornam
 // HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
-const PAD_SECTION = "40px 48px 0"; // padrão entre seções
-const PAD_LEAD = "36px 48px 0"; // destaque líder (D1)
+const PAD_SECTION = "40px 32px 0"; // padrão entre seções
+const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 
 /** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
 function stripKickerEmoji(s: string): string {
@@ -890,7 +898,7 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
 
 /** Linha do separador "Divulgação" (disclosure de patrocínio, #1940). */
 function renderDivulgacaoSeparator(): string {
-  return `<tr><td class="pad" style="padding:32px 48px 0;">${renderKicker("Divulgação")}</td></tr>`;
+  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker("Divulgação")}</td></tr>`;
 }
 
 /**
@@ -970,9 +978,9 @@ function renderWhyBoxInner(text: string): string {
  */
 export function renderCoverage(text: string): string {
   // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
-  // seção, padding 44px 48px 8px.
+  // seção, padding 44px 32px 8px.
   return `<!-- INTRO (coverage) -->
-<tr><td class="pad" style="padding:44px 48px 8px;">
+<tr><td class="pad" style="padding:44px 32px 8px;">
   <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${escText(text)}</p>
 </td></tr>`;
 }
@@ -1010,7 +1018,7 @@ export function renderIntroCallout(text: string): string {
     inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
-<tr><td class="pad" style="padding:8px 48px 0;">
+<tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:16px 20px;">
       ${inner}
@@ -1094,7 +1102,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
           .join("\n      ")
       : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
   return `<!-- mid callout com imagem (promo página de livros) -->
-<tr><td class="pad" style="padding:8px 48px 0;">
+<tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:16px 20px;">
@@ -1106,7 +1114,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
 }
 
 function renderDestaque(d: RenderDestaque): string {
-  // #1936 (DS email template): seção = uma linha padded (48px lateral). Estrutura:
+  // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
   // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero (só
   // D1, #1077) → parágrafos sans → box "Por que isso importa". Sem <hr> separador
   // (cada seção abre com seu próprio kicker).
@@ -1340,7 +1348,7 @@ function renderErroIntencionalReveal(text: string): string {
   // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
   // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.
   return `<!-- ERRO INTENCIONAL — reveal -->
-<tr><td class="pad" style="padding:14px 48px 0;">
+<tr><td class="pad" style="padding:14px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
       <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(reveal)}</p>
@@ -1444,7 +1452,7 @@ function renderEncerrar(text: string): string {
     : "";
 
   return `<!-- Para encerrar -->
-<tr><td class="pad" style="padding:40px 48px 8px;">
+<tr><td class="pad" style="padding:40px 32px 8px;">
   ${renderKicker("Para encerrar")}
   ${html}${ctaBox}
 </td></tr>`;
@@ -1457,8 +1465,8 @@ export interface RenderOpts {
    * normalizaria. Default false (output legado: body único com È IA? embutido). */
   excludeEia?: boolean;
   /** #1936 — quando `true`, embrulha o container num documento HTML completo
-   * (doctype + body bege + preheader + tabela de centralização). Usado pro
-   * preview/email Worker-hosted. Default `false`: emite só o container 600px
+   * (doctype + body branco #1945 + preheader + tabela de centralização). Usado
+   * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
    * (fragmento pro paste no Beehiiv, que provê o shell). */
   fullDocument?: boolean;
 }
@@ -1532,22 +1540,26 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
-  // #1936 (DS): container de 600px (papel + trilhos bege) — a estrutura do
-  // template de email do DS. Cada `part` é uma linha `<tr><td class="pad">`.
-  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};border-left:1px solid ${RULE};border-right:1px solid ${RULE};">
+  // #1936/#1945 (DS): container do corpo, 600px (email-safe — Outlook corta
+  // acima disso, cf. checkWideTables). Texto mais largo vem do padding lateral
+  // reduzido (48 → 32px no `.pad`, #1945), não de container mais largo. Sem os
+  // "trilhos" bege laterais (#1945: removidos border-left/right RULE), fundo
+  // branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
+  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};">
 ${parts.join("\n")}
 </table>`;
 
   if (!opts.fullDocument) {
     // Fragmento pro Beehiiv: container + style (progressive enhancement).
+    // #1945: wrapper externo branco (PAGE_BG) — sem faixas bege nas laterais.
     return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
 ${DS_STYLE_BLOCK}
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};"><tr><td align="center" style="padding:0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>`;
   }
 
-  // Documento completo (preview / email Worker-hosted): shell bege + preheader.
+  // Documento completo (preview / email Worker-hosted): shell branco (#1945) + preheader.
   const preheader = esc(
     content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
   );
@@ -1560,9 +1572,9 @@ ${container}
 <title>Diar.ia — Edição</title>
 ${DS_STYLE_BLOCK}
 </head>
-<body style="margin:0; padding:0; background:${SURFACE};">
+<body style="margin:0; padding:0; background:${PAGE_BG};">
 <div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};"><tr><td align="center" style="padding:0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
 ${container}
 </td></tr></table>
 </body>
