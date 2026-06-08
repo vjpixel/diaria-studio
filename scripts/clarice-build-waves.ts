@@ -27,8 +27,8 @@
  *   BREVO_CLARICE_API_KEY   obrigatório (lê opens + blacklist do T1)
  *
  * Inputs:
- *   brevo-import-t01-assinantes-ativos.csv            T1 canônico (BASE, no root) — email,NOME,OPEN_PROBABILITY
- *   {ciclo}/brevo-import-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
+ *   stripe-export-t01-assinantes-ativos.csv            T1 canônico (BASE, no root) — email,NOME,OPEN_PROBABILITY
+ *   {ciclo}/stripe-export-t02-ex-assinantes-verified.csv   T2 limpo pós-MV (por-ciclo), já em recência DESC
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
  *   t1-openers.csv      W1
@@ -320,8 +320,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const wavesDir = clariceWavesDir(cycle);
 
   // T1 é BASE (root, output da merge); t02-verified é por-ciclo (output do verify-mv).
-  const t1Path = clariceBaseFile("brevo-import-t01-assinantes-ativos.csv");
-  const t2Path = resolve(cycleDir, "brevo-import-t02-ex-assinantes-verified.csv");
+  const t1Path = clariceBaseFile("stripe-export-t01-assinantes-ativos.csv");
+  const t2Path = resolve(cycleDir, "stripe-export-t02-ex-assinantes-verified.csv");
   for (const p of [t1Path, t2Path]) {
     if (!existsSync(p)) {
       console.error(`input não encontrado: ${p}`);

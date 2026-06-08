@@ -14,7 +14,7 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
  *   2. Copia fixture CSV (15 contatos cobrindo T1–T10 + 3 exclusões)
  *   3. Roda main(tempDir)
  *   4. Verifica:
- *      - 10 CSVs gerados (brevo-import-t01-assinantes-ativos.csv ... t10-leads-caudao.csv)
+ *      - 10 CSVs gerados (stripe-export-t01-assinantes-ativos.csv ... t10-leads-caudao.csv)
  *      - excluded.csv com 3 entradas (dispute, role, disposable)
  *      - Schema do CSV de tier (3 colunas exatas)
  *      - Counts batem com tier expectativa
@@ -25,14 +25,14 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
 const FIXTURE_PATH = resolve(import.meta.dirname, "fixtures/clarice-fixtures/stripe-customers-fixture.csv");
 
 /**
- * Nomes de tier agora são descritivos (brevo-import-t{NN}-{slug}.csv, ex:
+ * Nomes de tier agora são descritivos (stripe-export-t{NN}-{slug}.csv, ex:
  * t01-assinantes-ativos, t03-leads-2026-jan-abr) e o slug dos leads é dinâmico
  * (acompanha `now`/dados). Os testes casam pelo prefixo ESTÁVEL `t{NN}-` em vez
  * do nome exato, pra não acoplar à data de execução.
  */
 function tierFile(dir: string, tier: number): string {
   const nn = String(tier).padStart(2, "0");
-  const f = readdirSync(dir).find((x) => x.startsWith(`brevo-import-t${nn}-`) && x.endsWith(".csv"));
+  const f = readdirSync(dir).find((x) => x.startsWith(`stripe-export-t${nn}-`) && x.endsWith(".csv"));
   if (!f) throw new Error(`arquivo do tier t${nn} não encontrado em ${dir}`);
   return f;
 }
@@ -63,8 +63,8 @@ describe("merge-clarice integration: outputs end-to-end", () => {
       );
     }
     assert.ok(
-      existsSync(join(tmpDataDir, "brevo-import-excluded.csv")),
-      "Esperava brevo-import-excluded.csv no tempDir após main()",
+      existsSync(join(tmpDataDir, "stripe-export-excluded.csv")),
+      "Esperava stripe-export-excluded.csv no tempDir após main()",
     );
   });
 
@@ -82,7 +82,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
   });
 
   it("schema do excluded.csv tem coluna `reason`", () => {
-    const content = readFileSync(join(tmpDataDir, "brevo-import-excluded.csv"), "utf8");
+    const content = readFileSync(join(tmpDataDir, "stripe-export-excluded.csv"), "utf8");
     const firstLine = content.split("\n")[0];
     assert.match(firstLine, /reason/, "excluded.csv deve ter coluna `reason`");
     assert.match(firstLine, /email/, "excluded.csv deve ter coluna `email`");
@@ -108,11 +108,11 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     assert.equal(count(tierFile(tmpDataDir, 10)), 1, "T10 deve ter 1 (lead 2022)");
 
     // Excluded: 3 (dispute, role, disposable)
-    assert.equal(count("brevo-import-excluded.csv"), 3, "Excluded deve ter 3 (dispute + role + disposable)");
+    assert.equal(count("stripe-export-excluded.csv"), 3, "Excluded deve ter 3 (dispute + role + disposable)");
   });
 
   it("excluded contém os 3 reasons corretos", () => {
-    const content = readFileSync(join(tmpDataDir, "brevo-import-excluded.csv"), "utf8");
+    const content = readFileSync(join(tmpDataDir, "stripe-export-excluded.csv"), "utf8");
     const rows = Papa.parse<{ email: string; reason: string }>(content, {
       header: true,
       skipEmptyLines: true,
@@ -130,8 +130,8 @@ describe("merge-clarice integration: outputs end-to-end", () => {
       const filename = tierFile(tmpDataDir, t);
       beforeContent[filename] = readFileSync(join(tmpDataDir, filename), "utf8");
     }
-    beforeContent["brevo-import-excluded.csv"] = readFileSync(
-      join(tmpDataDir, "brevo-import-excluded.csv"),
+    beforeContent["stripe-export-excluded.csv"] = readFileSync(
+      join(tmpDataDir, "stripe-export-excluded.csv"),
       "utf8",
     );
 
@@ -145,16 +145,18 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     }
   });
 
-  it("cleanup remove órfãos legacy (kit-import-* e brevo-import-tier{N}.csv)", () => {
+  it("cleanup remove órfãos: legacy (kit-import-*, brevo-import-*) + slug-drift atual (stripe-export-)", () => {
     // Cria órfãos artificiais
     writeFileSync(join(tmpDataDir, "kit-import-tier1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "kit-import-excluded.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "brevo-import-tier1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "brevo-import-tier2.csv"), "stale\n", "utf8");
-    // Slug antigo de tier (de um run em outro semestre) — com H MAIÚSCULO (2099H1)
-    // e o numérico puro (pré-rename): ambos devem sumir no rewrite.
+    // Legado pré-stripe-export (#1965): slug com H maiúsculo + numérico puro.
     writeFileSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "brevo-import-t05.csv"), "stale\n", "utf8");
+    // Atual (stripe-export-): slug-drift de outro run/semestre (H maiúsculo) — deve sumir tb.
+    writeFileSync(join(tmpDataDir, "stripe-export-t04-leads-2099H1.csv"), "stale\n", "utf8");
+    writeFileSync(join(tmpDataDir, "stripe-export-t05.csv"), "stale\n", "utf8");
 
     main(tmpDataDir);
 
@@ -163,12 +165,14 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     assert.equal(existsSync(join(tmpDataDir, "kit-import-excluded.csv")), false);
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-tier1.csv")), false);
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-tier2.csv")), false);
-    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv")), false, "slug antigo (H maiúsculo) deve ser removido");
-    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t05.csv")), false, "nome numérico puro (pré-rename) deve ser removido");
+    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv")), false, "legado: slug H maiúsculo deve ser removido");
+    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t05.csv")), false, "legado: numérico puro deve ser removido");
+    assert.equal(existsSync(join(tmpDataDir, "stripe-export-t04-leads-2099H1.csv")), false, "stripe-export slug-drift deve ser removido");
+    assert.equal(existsSync(join(tmpDataDir, "stripe-export-t05.csv")), false, "stripe-export numérico deve ser removido");
 
     // Over-deletion guard: o cleanup NÃO pode comer o input (stripe) nem o audit (excluded).
     assert.ok(existsSync(join(tmpDataDir, "stripe-customers-fixture.csv")), "input do Stripe não pode ser removido pelo cleanup");
-    assert.ok(existsSync(join(tmpDataDir, "brevo-import-excluded.csv")), "excluded.csv (audit) não pode ser removido pelo cleanup");
+    assert.ok(existsSync(join(tmpDataDir, "stripe-export-excluded.csv")), "excluded.csv (audit) não pode ser removido pelo cleanup");
 
     // Os t01–t10 e excluded continuam
     for (let t = 1; t <= 10; t++) {

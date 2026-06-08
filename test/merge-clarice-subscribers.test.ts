@@ -724,46 +724,46 @@ describe("tierFileName", () => {
     dates.map((created) => ({ created })) as unknown as Parameters<typeof tierFileName>[2];
 
   it("T1/T2/T10 têm slug estável (sem semestre)", () => {
-    assert.equal(tierFileName(1, NOW, []), "brevo-import-t01-assinantes-ativos.csv");
-    assert.equal(tierFileName(2, NOW, []), "brevo-import-t02-ex-assinantes.csv");
-    assert.equal(tierFileName(10, NOW, []), "brevo-import-t10-leads-caudao.csv");
+    assert.equal(tierFileName(1, NOW, []), "stripe-export-t01-assinantes-ativos.csv");
+    assert.equal(tierFileName(2, NOW, []), "stripe-export-t02-ex-assinantes.csv");
+    assert.equal(tierFileName(10, NOW, []), "stripe-export-t10-leads-caudao.csv");
   });
 
   it("T4–T9 usam semestre deslizante (acompanha now, igual tierLabel)", () => {
     // NOW = mai/2026 → corrente 2026-H1; T4 = 2025-H2, T9 = 2023-H1
-    assert.equal(tierFileName(4, NOW, []), "brevo-import-t04-leads-2025H2.csv");
-    assert.equal(tierFileName(9, NOW, []), "brevo-import-t09-leads-2023H1.csv");
+    assert.equal(tierFileName(4, NOW, []), "stripe-export-t04-leads-2025H2.csv");
+    assert.equal(tierFileName(9, NOW, []), "stripe-export-t09-leads-2023H1.csv");
   });
 
   it("T3 reflete o RANGE real de created (corte do export) e auto-corrige", () => {
     // Dados jan–abr/2026 (corte 30/abr) → jan-abr
     assert.equal(
       tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-04-30T00:00:00Z"))),
-      "brevo-import-t03-leads-2026-jan-abr.csv",
+      "stripe-export-t03-leads-2026-jan-abr.csv",
     );
     // Export posterior (até maio) → jan-mai, SEM rename manual (auto-corrige)
     assert.equal(
       tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-05-20T00:00:00Z"))),
-      "brevo-import-t03-leads-2026-jan-mai.csv",
+      "stripe-export-t03-leads-2026-jan-mai.csv",
     );
   });
 
   it("T3 sem datas cai no semestre corrente (fallback)", () => {
-    assert.equal(tierFileName(3, NOW, []), "brevo-import-t03-leads-2026-jan-jun.csv");
+    assert.equal(tierFileName(3, NOW, []), "stripe-export-t03-leads-2026-jan-jun.csv");
   });
 
   it("T3 com range cruzando o ano inclui os DOIS anos (não dropa, não inverte)", () => {
     // Caso raro (datas futuras em fixture): min dez/2025, max jan/2026.
     assert.equal(
       tierFileName(3, NOW, rows(new Date("2025-12-20T00:00:00Z"), new Date("2026-01-10T00:00:00Z"))),
-      "brevo-import-t03-leads-2025-dez-2026-jan.csv",
+      "stripe-export-t03-leads-2025-dez-2026-jan.csv",
     );
   });
 
   it("T3 com 1 só data → mês repetido (min===max)", () => {
     assert.equal(
       tierFileName(3, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
-      "brevo-import-t03-leads-2026-fev-fev.csv",
+      "stripe-export-t03-leads-2026-fev-fev.csv",
     );
   });
 
@@ -771,7 +771,7 @@ describe("tierFileName", () => {
     for (let t = 1; t <= 10; t++) {
       assert.match(
         tierFileName(t, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
-        new RegExp(`^brevo-import-t${String(t).padStart(2, "0")}-`),
+        new RegExp(`^stripe-export-t${String(t).padStart(2, "0")}-`),
       );
     }
   });

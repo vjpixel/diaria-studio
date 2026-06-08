@@ -157,7 +157,7 @@ describe("splitRows", () => {
 describe("parseArgs", () => {
   it("defaults", () => {
     const a = parseArgs([]);
-    assert.equal(a.input, "brevo-import-t02-ex-assinantes.csv");
+    assert.equal(a.input, "stripe-export-t02-ex-assinantes.csv");
     assert.equal(a.concurrency, 12);
     assert.equal(a.timeout, 20);
     assert.equal(a.limit, null);
@@ -166,12 +166,12 @@ describe("parseArgs", () => {
 
   it("flags customizadas", () => {
     const a = parseArgs([
-      "--input", "brevo-import-t03.csv",
+      "--input", "stripe-export-t03.csv",
       "--concurrency", "20",
       "--timeout", "30",
       "--limit", "50",
     ]);
-    assert.equal(a.input, "brevo-import-t03.csv");
+    assert.equal(a.input, "stripe-export-t03.csv");
     assert.equal(a.concurrency, 20);
     assert.equal(a.timeout, 30);
     assert.equal(a.limit, 50);
