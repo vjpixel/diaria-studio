@@ -511,6 +511,27 @@ export function buildSummary(
 // ---------------------------------------------------------------------------
 
 /**
+ * #1950: escreve o HTML do relatório + o manifest md5 (.edition-report-md5.txt).
+ * Ponto ÚNICO desse contrato (#1579 edition-report-not-rewritten) — usado tanto
+ * pelo `main()` (caminho --out) quanto por `writeEditionReport` (refresh-dedup),
+ * pra os dois nunca divergirem nos bytes/manifest.
+ */
+export function writeReportFile(
+  editionDir: string,
+  outPath: string,
+  html: string,
+): { md5: string; absOut: string } {
+  const absOut = resolve(ROOT, outPath);
+  mkdirSync(dirname(absOut), { recursive: true });
+  writeFileSync(absOut, html, "utf8");
+  const md5 = createHash("md5").update(html).digest("hex");
+  const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
+  mkdirSync(dirname(manifestPath), { recursive: true });
+  writeFileSync(manifestPath, md5 + "\n", "utf8");
+  return { md5, absOut };
+}
+
+/**
  * #1950: gera + escreve o edition-report.html (+ manifest md5), reutilizável
  * fora do CLI. Usado pelo `refresh-dedup` pra garantir o relatório quando a
  * edição foi publicada manualmente / Stage 4 interrompido (o relatório é o
@@ -540,13 +561,7 @@ export function writeEditionReport(
     braveCredits,
     loadSocialPreviewUrl(editionDir),
   );
-  const absOut = resolve(ROOT, outPath);
-  mkdirSync(dirname(absOut), { recursive: true });
-  writeFileSync(absOut, html, "utf8");
-  const md5 = createHash("md5").update(html).digest("hex");
-  const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
-  mkdirSync(dirname(manifestPath), { recursive: true });
-  writeFileSync(manifestPath, md5 + "\n", "utf8");
+  const { md5, absOut } = writeReportFile(editionDir, outPath, html);
   return { md5, outPath: absOut };
 }
 
@@ -597,13 +612,7 @@ async function main(): Promise<void> {
   // orchestrator reescreveu htmlBody com narrativa custom em vez de ler o
   // arquivo).
   if (outPath) {
-    const absOut = resolve(ROOT, outPath);
-    mkdirSync(dirname(absOut), { recursive: true });
-    writeFileSync(absOut, html, "utf8");
-    const md5 = createHash("md5").update(html).digest("hex");
-    const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
-    mkdirSync(dirname(manifestPath), { recursive: true });
-    writeFileSync(manifestPath, md5 + "\n", "utf8");
+    const { md5, absOut } = writeReportFile(editionDir, outPath, html);
     process.stderr.write(`[send-edition-report] wrote ${absOut} (md5: ${md5.slice(0, 8)})\n`);
   } else {
     process.stdout.write(html);
