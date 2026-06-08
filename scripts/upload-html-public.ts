@@ -150,16 +150,16 @@ export function wrapForPreview(body: string): string {
   body {
     margin: 0;
     padding: 12px;
-    background: #f5f5f5;
+    background: #ffffff;
     font-size: 16px;
   }
   .preview-wrapper {
     max-width: 620px;
     margin: 0 auto;
-    background: #fff;
-    border-radius: 8px;
+    background: #ffffff;
+    border-radius: 0;
     padding: 16px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    box-shadow: none;
   }
   .preview-wrapper img {
     max-width: 100%;
