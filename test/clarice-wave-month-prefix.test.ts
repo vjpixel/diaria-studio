@@ -24,9 +24,9 @@ describe("waves Clarice — prefixo de mês (#wave-month-prefix)", () => {
     assert.match(currentYYMM(), /^\d{4}$/);
   });
 
-  it("import-waves: --month lê o mês informado, default = mês atual", () => {
+  it("import-waves: --month é obrigatório (parseArgs não inventa default)", () => {
     assert.equal(parseArgs(["--month", "2606"]).month, "2606");
-    assert.equal(parseArgs([]).month, currentYYMM()); // default
-    assert.equal(parseArgs(["--month", "lixo"]).month, currentYYMM()); // inválido → default
+    assert.equal(parseArgs([]).month, ""); // ausente → vazio (main aborta)
+    assert.equal(parseArgs(["--month", "lixo"]).month, ""); // inválido → vazio
   });
 });

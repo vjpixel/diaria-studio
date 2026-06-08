@@ -19,7 +19,8 @@
  *     os 4 quartis (RECENCY_QUARTIL), permitindo a correlação intra-dia.
  *
  * Uso:
- *   npx tsx scripts/clarice-build-waves.ts [--w3-size 2000] [--concurrency 6]
+ *   npx tsx scripts/clarice-build-waves.ts --month 2606 [--w3-size 2000] [--concurrency 6]
+ *   (--month YYMM é OBRIGATÓRIO — mês do envio, explícito; vira prefixo das waves)
  *
  * Env:
  *   BREVO_CLARICE_API_KEY   obrigatório (lê opens + blacklist do T1)
@@ -28,12 +29,12 @@
  *   brevo-import-t01.csv            T1 canônico (email,NOME,OPEN_PROBABILITY)
  *   brevo-import-t02-verified.csv   T2 limpo pós-MV, já em recência DESC
  *
- * Outputs (em data/clarice-subscribers/waves/):
- *   t1-openers.csv      W1
- *   t1-non-openers.csv  W2
- *   t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
- *   t2-w4.csv           W4
- *   waves-summary.json
+ * Outputs (em data/clarice-subscribers/waves/, prefixados pelo mês {YYMM}-):
+ *   {YYMM}-t1-openers.csv      W1
+ *   {YYMM}-t1-non-openers.csv  W2
+ *   {YYMM}-t2-w3.csv           W3 (+RECENCY_QUARTIL, RECENCY_RANK)
+ *   {YYMM}-t2-w4.csv           W4
+ *   {YYMM}-waves-summary.json
  */
 
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
@@ -326,11 +327,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   };
   const w3Size = argOf("--w3-size", 2000);
   const concurrency = argOf("--concurrency", 6);
-  // #wave-month-prefix: mês do envio no nome das waves (evita colisão entre
-  // meses). Default = mês atual; override com `--month YYMM`.
+  // #wave-month-prefix: mês do ENVIO no nome das waves (evita colisão entre
+  // meses). OBRIGATÓRIO e explícito (como "data da edição é sempre explícita"):
+  // sem default pra não rotular com o mês errado perto da virada (build dia 31
+  // / import dia 1 dariam meses diferentes).
   const monthIdx = argv.indexOf("--month");
   const monthArg = monthIdx >= 0 ? argv[monthIdx + 1] : undefined;
-  const month = monthArg && /^\d{4}$/.test(monthArg) ? monthArg : currentYYMM();
+  if (!monthArg || !/^\d{4}$/.test(monthArg)) {
+    console.error(`--month YYMM é obrigatório (mês do envio — ex: --month ${currentYYMM()}).`);
+    process.exit(1);
+  }
+  const month = monthArg;
 
   const t1Path = resolve(DATA_DIR, "brevo-import-t01.csv");
   const t2Path = resolve(DATA_DIR, "brevo-import-t02-verified.csv");
