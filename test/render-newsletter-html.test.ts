@@ -1084,8 +1084,8 @@ Agora interaja!`,
     }));
     assert.match(html, /Para encerrar/); // #1936: kicker sem emoji
     assert.match(html, /<b>Diar\.ia<\/b>/);
-    // #1936: lista vira PILLS (DS), precedidas de "Acesse:"
-    assert.match(html, /Acesse:/);
+    // #1936: lista vira PILLS (DS), precedidas de "Acesse nossas curadorias:" (#1942)
+    assert.match(html, /Acesse nossas curadorias:/);
     assert.match(html, /border-radius:999px/);
     assert.match(html, /href="https:\/\/example\.com\/cursos"/);
     assert.match(html, /href="https:\/\/example\.com\/livros"/);

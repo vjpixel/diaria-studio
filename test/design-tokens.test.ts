@@ -77,11 +77,15 @@ describe("diária — render-newsletter-html aplica os tokens canônicos", () =>
     assert.match(html, /border:1px solid #EBE5D0/); // box contorno
   });
 
-  it("underline teal das manchetes é email-safe (border-bottom, não text-decoration-color)", () => {
-    // #1936/diaria-design#2: Gmail/Outlook removem text-decoration-color → teal
-    // sumiria. border-bottom teal aparece em todo cliente.
-    assert.match(html, /border-bottom:2px solid #00A0A0/); // manchete
-    assert.doesNotMatch(html, /text-decoration-color/);
+  it("underline teal das manchetes via text-decoration (multi-linha, #1941)", () => {
+    // #1941: o border-bottom do #1936 (display:inline-block) só traçava a ÚLTIMA
+    // linha de um título que quebra. text-decoration:underline sublinha todas as
+    // linhas; a cor teal vem de text-decoration-color (honrado por Apple Mail /
+    // Gmail moderno; degrada pra ink onde o client remove — ainda sublinhado em
+    // todas as linhas, melhor que o teal só na última). Substitui o border-bottom.
+    assert.match(html, /class="headline"[^>]*text-decoration:underline/); // manchete sublinha todas as linhas
+    assert.match(html, /text-decoration-color:#00A0A0/); // teal na manchete
+    assert.doesNotMatch(html, /border-bottom:2px solid #00A0A0/); // abordagem antiga removida
   });
 
   it("não vaza valores ad-hoc da extração antiga do canvas", () => {
