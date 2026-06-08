@@ -4,7 +4,9 @@
  * Trava os ajustes de design do e-mail diário pedidos pelo editor:
  *   #1943 — fundo do e-mail BRANCO (era paper #FBFAF6)
  *   #1945 — sem faixas bege laterais (wrapper externo branco) + sem trilhos
- *           border-left/right no container + largura 600 → 648px
+ *           border-left/right no container + texto mais largo via padding
+ *           lateral 48 → 32px (container fica em 600px, email-safe — Outlook
+ *           corta acima disso, cf. checkWideTables)
  *   #1946 — crédito da Clarice no encerramento usa cupons NEWS25/NEWS50
  *           (era cupom DIARIA) + URL /precos-planos?via=diaria
  *
@@ -50,10 +52,13 @@ describe("e-mail diário — fundo branco + laterais sem bege + largura (#1943/#
     assert.doesNotMatch(html, /class="container"[^>]*#FBFAF6/);
   });
 
-  it("#1945: container com largura 648px (era 600)", () => {
-    assert.match(html, /class="container" width="648"/);
-    assert.match(html, /width:648px;max-width:648px/);
-    assert.doesNotMatch(html, /width:600px;max-width:600px/);
+  it("#1945: container fica em 600px (email-safe) com padding lateral 32px", () => {
+    assert.match(html, /class="container" width="600"/);
+    assert.match(html, /width:600px;max-width:600px/);
+    // texto mais largo vem do padding lateral reduzido (48 → 32px), não de
+    // container > 600 (que o checkWideTables flaga / Outlook corta).
+    assert.match(html, /class="pad" style="padding:[0-9]+px 32px/);
+    assert.doesNotMatch(html, /class="pad" style="padding:[0-9]+px 48px/);
   });
 
   it("#1945: sem trilhos bege laterais (border-left/right) no container", () => {

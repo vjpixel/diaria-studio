@@ -865,10 +865,10 @@ export function processInlineLinks(s: string): string {
 }
 
 // #1936 (DS email template): cada seção é UMA linha `<tr><td class="pad">` com
-// padding lateral de 48px (mobile → 24px via .pad). Os helpers abaixo retornam
+// padding lateral de 32px (mobile → 24px via .pad). Os helpers abaixo retornam
 // HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
-const PAD_SECTION = "40px 48px 0"; // padrão entre seções
-const PAD_LEAD = "36px 48px 0"; // destaque líder (D1)
+const PAD_SECTION = "40px 32px 0"; // padrão entre seções
+const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
 
 /** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
 function stripKickerEmoji(s: string): string {
@@ -898,7 +898,7 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
 
 /** Linha do separador "Divulgação" (disclosure de patrocínio, #1940). */
 function renderDivulgacaoSeparator(): string {
-  return `<tr><td class="pad" style="padding:32px 48px 0;">${renderKicker("Divulgação")}</td></tr>`;
+  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker("Divulgação")}</td></tr>`;
 }
 
 /**
@@ -978,9 +978,9 @@ function renderWhyBoxInner(text: string): string {
  */
 export function renderCoverage(text: string): string {
   // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
-  // seção, padding 44px 48px 8px.
+  // seção, padding 44px 32px 8px.
   return `<!-- INTRO (coverage) -->
-<tr><td class="pad" style="padding:44px 48px 8px;">
+<tr><td class="pad" style="padding:44px 32px 8px;">
   <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${escText(text)}</p>
 </td></tr>`;
 }
@@ -1018,7 +1018,7 @@ export function renderIntroCallout(text: string): string {
     inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
-<tr><td class="pad" style="padding:8px 48px 0;">
+<tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:16px 20px;">
       ${inner}
@@ -1102,7 +1102,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
           .join("\n      ")
       : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
   return `<!-- mid callout com imagem (promo página de livros) -->
-<tr><td class="pad" style="padding:8px 48px 0;">
+<tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:16px 20px;">
@@ -1114,7 +1114,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
 }
 
 function renderDestaque(d: RenderDestaque): string {
-  // #1936 (DS email template): seção = uma linha padded (48px lateral). Estrutura:
+  // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
   // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero (só
   // D1, #1077) → parágrafos sans → box "Por que isso importa". Sem <hr> separador
   // (cada seção abre com seu próprio kicker).
@@ -1348,7 +1348,7 @@ function renderErroIntencionalReveal(text: string): string {
   // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
   // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.
   return `<!-- ERRO INTENCIONAL — reveal -->
-<tr><td class="pad" style="padding:14px 48px 0;">
+<tr><td class="pad" style="padding:14px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
       <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(reveal)}</p>
@@ -1452,7 +1452,7 @@ function renderEncerrar(text: string): string {
     : "";
 
   return `<!-- Para encerrar -->
-<tr><td class="pad" style="padding:40px 48px 8px;">
+<tr><td class="pad" style="padding:40px 32px 8px;">
   ${renderKicker("Para encerrar")}
   ${html}${ctaBox}
 </td></tr>`;
@@ -1466,8 +1466,8 @@ export interface RenderOpts {
   excludeEia?: boolean;
   /** #1936 — quando `true`, embrulha o container num documento HTML completo
    * (doctype + body branco #1945 + preheader + tabela de centralização). Usado
-   * pro preview/email Worker-hosted. Default `false`: emite só o container 648px
-   * (#1945; fragmento pro paste no Beehiiv, que provê o shell). */
+   * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
+   * (fragmento pro paste no Beehiiv, que provê o shell). */
   fullDocument?: boolean;
 }
 
@@ -1540,11 +1540,12 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
-  // #1936/#1945 (DS): container do corpo. Largura 648px (#1945: era 600 — texto
-  // um pouco mais largo). Sem os "trilhos" bege laterais (#1945: removidos
-  // border-left/right RULE), fundo branco (#1943). Cada `part` é uma linha
-  // `<tr><td class="pad">`.
-  const container = `<table role="presentation" class="container" width="648" cellpadding="0" cellspacing="0" style="width:648px;max-width:648px;background:${PAPER};">
+  // #1936/#1945 (DS): container do corpo, 600px (email-safe — Outlook corta
+  // acima disso, cf. checkWideTables). Texto mais largo vem do padding lateral
+  // reduzido (48 → 32px no `.pad`, #1945), não de container mais largo. Sem os
+  // "trilhos" bege laterais (#1945: removidos border-left/right RULE), fundo
+  // branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
+  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};">
 ${parts.join("\n")}
 </table>`;
 
