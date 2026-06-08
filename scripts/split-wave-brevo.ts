@@ -24,7 +24,8 @@ if (!API_KEY) { console.error("BREVO_CLARICE_API_KEY missing"); process.exit(2);
 
 const SOURCE_LIST_ID = 14; // T1-W6 antiga (348)
 const NEW_LIST_NAME = "T1-W7 (48 contatos)";
-const W7_CSV = "data/clarice-subscribers/brevo-import-t01-W7.csv";
+// #1961: o arquivo foi movido pro ciclo do envio (abril→maio) em 2604-05/waves/.
+const W7_CSV = "data/clarice-subscribers/2604-05/waves/brevo-import-t01-W7.csv";
 
 async function brevoFetch(path: string, opts: RequestInit = {}): Promise<unknown> {
   const res = await fetch(`https://api.brevo.com/v3${path}`, {
