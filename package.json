@@ -28,6 +28,7 @@
     "archive-editions": "tsx scripts/archive-editions.ts",
     "setup-hooks": "node -e \"const fs=require('fs');const src='scripts/hooks/pre-commit';const dst='.git/hooks/pre-commit';fs.copyFileSync(src,dst);fs.chmodSync(dst,'755');console.log('Hook instalado.');\"",
     "typecheck": "tsc --noEmit",
+    "pretest": "tsx scripts/assert-test-discovery.ts",
     "test": "node --import tsx --test",
     "check-cursos-links": "tsx scripts/check-cursos-links.ts"
   },
