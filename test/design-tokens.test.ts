@@ -120,10 +120,12 @@ Parágrafo final do destaque.
 describe("mensal — monthly-render aplica os tokens canônicos", () => {
   const { html } = draftToEmail(MONTHLY_DRAFT, null, "2605");
 
-  it("serif Georgia em título + corpo sans Geist + papel #FBFAF6 + ink + teal acento", () => {
+  it("serif Georgia em título + corpo sans Geist + card branco (#1955) + ink + teal acento", () => {
     assert.match(html, /Georgia, 'Times New Roman', serif/); // h2/h3 títulos
     assert.match(html, /'Geist',/); // corpo + labels sans
-    assert.match(html, /#FBFAF6/);
+    // #1955: e-mail mensal branco (era #FBFAF6); --paper segue só na web.
+    assert.match(html, /#FFFFFF/);
+    assert.doesNotMatch(html, /#FBFAF6/);
     assert.match(html, /#171411/);
     assert.match(html, /#00A0A0/); // kickers/links
   });

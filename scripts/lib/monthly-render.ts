@@ -19,9 +19,12 @@ import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
 const TEAL = BRAND; // alias dos templates (acento + régua)
-const PAPER = COLORS.paper; // --paper #FBFAF6 (card / superfície clara)
-const SHELL = COLORS.paperAlt; // --paper-alt #EBE5D0 (shell do email)
-const BEGE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes recuados / É IA?)
+// #1955: e-mail mensal BRANCO (override email-only, espelha o diário #1943/#1945).
+// O token canônico --paper (#FBFAF6) segue em design-tokens.ts pra web; só o
+// render do e-mail usa branco. SHELL (página) idem. BEGE (boxes/régua) fica.
+const PAPER = "#FFFFFF"; // #1955 card branco (era COLORS.paper #FBFAF6)
+const SHELL = "#FFFFFF"; // #1955 página branca (era COLORS.paperAlt #EBE5D0)
+const BEGE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes recuados / É IA? / réguas — contraste, mantido)
 const FONT_SERIF = FONTS.serif; // Georgia (manchetes+corpo)
 const FONT_SANS = FONTS.sans; // Geist (labels/kickers)
 
@@ -194,10 +197,10 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
   const label = tema
-    ? `<p style="margin:0 0 4px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;color:${TEAL};text-transform:uppercase;font-family:${FONT_SANS};">${escHtml(tema)}</p>`
+    ? `<p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;color:${TEAL};text-transform:uppercase;font-family:${FONT_SANS};">${escHtml(tema)}</p>`
     : "";
   const titleHtml = title
-    ? `<h2 style="margin:0 0 20px 0;font-size:21px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
+    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
     : "";
   // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
   // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
@@ -229,12 +232,12 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
  * Estrutura: label teal "RESUMO DO MÊS" + parágrafo italic com border-left teal.
  */
 export function renderIntro(body: string): string {
-  const labelHtml = `<p style="margin:0 0 10px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">Resumo do mês</p>`;
+  const labelHtml = `<p style="margin:0 0 10px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">Resumo do mês</p>`;
   const paras = body.split(/\n\n+/).filter((p) => p.trim());
   const bodyHtml = paras
     .map((p) => {
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;font-size:19px;font-style:italic;color:${INK};line-height:1.6;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-size:22px;font-style:italic;color:${INK};line-height:1.6;">${inline}</p>`;
     })
     .join("\n");
   return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${BEGE};">${labelHtml}${bodyHtml}</td></tr></table>`;
@@ -312,9 +315,9 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
     }
   }
 
-  const headerLabel = `<p style="margin:0 0 8px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(headerLabelText)}</p>`;
+  const headerLabel = `<p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(headerLabelText)}</p>`;
   const subtitleHtml = subtitle
-    ? `<h3 style="margin:0 0 16px 0;font-size:18px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
+    ? `<h3 style="margin:0 0 16px 0;font-size:22px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
     : "";
 
   return [
@@ -344,7 +347,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(displayTitle)}</p>`;
+  const header = `<p style="margin:0 0 24px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(displayTitle)}</p>`;
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -451,7 +454,7 @@ export function renderEia(
     // placeholder cinza não deve ser clicável/votável.
     const inner = imgUrl
       ? `<a href="${voteUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:block;"><img src="${escHtml(imgUrl)}" alt="Imagem ${label}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0" /></a>`
-      : `<div style="width:100%;height:160px;background:${BEGE};border:2px dashed ${INK};border-radius:6px;text-align:center;line-height:160px;color:${INK};font-family:${FONT_SANS};font-size:13px;">Imagem ${label}</div>`;
+      : `<div style="width:100%;height:160px;background:${BEGE};border:2px dashed ${INK};border-radius:6px;text-align:center;line-height:160px;color:${INK};font-family:${FONT_SANS};font-size:12px;">Imagem ${label}</div>`;
     return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">${inner}</td>`;
   };
 
@@ -462,10 +465,10 @@ export function renderEia(
     <!-- Cabeçalho -->
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px;">
       <tr>
-        <td style="font-family:${FONT_SANS};font-size:13px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
+        <td style="font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
       </tr>
       <tr>
-        <td align="center" style="font-family:${FONT_SANS};font-size:20px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
+        <td align="center" style="font-family:${FONT_SANS};font-size:22px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
       </tr>
     </table>
 
@@ -478,7 +481,7 @@ export function renderEia(
     </table>
 
     <!-- Crédito -->
-    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:13px;font-style:italic;color:${INK};">${renderInline(content)}</p>
+    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;font-style:italic;color:${INK};">${renderInline(content)}</p>
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
@@ -581,7 +584,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
       <td align="center" style="padding:20px 10px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
-            <td style="padding:36px 44px;font-family:${FONT_SANS};color:${INK};font-size:17px;line-height:1.7;">
+            <td style="padding:36px 44px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.7;">
               ${body}
             </td>
           </tr>
