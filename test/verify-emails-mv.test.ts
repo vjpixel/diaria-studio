@@ -24,6 +24,10 @@ describe("mvOutputBase (proveniência: stripe-export- → mv-export-)", () => {
   it("fallback: input sem o prefixo esperado mantém o basename (só tira .csv)", () => {
     assert.equal(mvOutputBase("custom-list.csv"), "custom-list");
   });
+  it("idempotente: input já com mv-export- não dobra o prefixo", () => {
+    // só ^stripe-export- é mapeado; mv-export- já mapeado fica como está.
+    assert.equal(mvOutputBase("mv-export-maio.csv"), "mv-export-maio");
+  });
 });
 
 describe("classifyResult", () => {

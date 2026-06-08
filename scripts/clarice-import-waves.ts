@@ -170,10 +170,11 @@ interface Plan {
   columns: string[];
 }
 
-function buildPlan(label: string, cycle: string): Plan[] {
+// `wavesDir` é injetável pra teste (default = dir do ciclo). #provenance
+export function buildPlan(label: string, cycle: string, wavesDir: string = clariceWavesDir(cycle)): Plan[] {
   const plans: Plan[] = [];
   for (const wave of WAVES) {
-    const path = resolve(clariceWavesDir(cycle), wave.file);
+    const path = resolve(wavesDir, wave.file);
     if (!existsSync(path)) {
       // Opcional (ex: W5 maio) ausente → pula com aviso. Obrigatória ausente →
       // erro (build-waves falhou; não importar parcial sem o editor saber).
