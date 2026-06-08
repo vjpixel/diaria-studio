@@ -5,11 +5,20 @@
  * --import tsx --test`). `node --test` sai com **exit 0 mesmo descobrindo 0
  * arquivos** — uma suíte "verde vazia" passaria a CI silenciosamente. Este
  * guard conta os arquivos `*.test.ts` do repo e **falha** se ficar abaixo de um
- * piso conservador, fazendo o caso catastrófico (test dir sumiu / glob quebrou
- * / 0 descobertos) explodir alto em vez de passar verde.
+ * piso conservador, fazendo o caso de **arquivos de teste sumirem do disco**
+ * (test dir removido/renomeado, .gitignore errado num clone) explodir alto em
+ * vez de passar verde.
+ *
+ * ESCOPO (o que NÃO cobre): conta arquivos no FILESYSTEM, independente do
+ * runner. Se o `node --test` parasse de casar arquivos que existem no disco
+ * (ex.: alguém adicionar um glob custom quebrado ao script `test`), isto NÃO
+ * pega — pra isso seria preciso capturar a contagem reportada pelo runner.
+ * Hoje o `test` usa o default sem glob custom, então o gap é teórico; este
+ * guard cobre o caso catastrófico (0 arquivos) com custo ~zero e sem mexer no
+ * comando `npm test`.
  *
  * Contexto (#1948): a suspeita original ("CI verde sem rodar a suíte") NÃO
- * reproduziu — `node --import tsx --test` descobre ~6000 testes (296 arquivos),
+ * reproduziu — `node --import tsx --test` descobre ~6000 testes (~298 arquivos),
  * e o log da CI mostra a suíte rodando. A observação de "npm test vazio/exit 0"
  * foi artefato de captura (run em background + pipe pra grep). Este guard é
  * defesa-em-profundidade barata pra esse modo de falha não voltar despercebido.
@@ -18,8 +27,8 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** Piso conservador: ~2/3 dos 296 atuais. Detecta colapso de descoberta, não
- *  flutuações normais (adicionar/remover alguns arquivos). */
+/** Piso conservador: ~2/3 dos ~298 atuais. Detecta sumiço em massa dos arquivos
+ *  de teste, não flutuações normais (adicionar/remover alguns arquivos). */
 export const TEST_FILE_FLOOR = 200;
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".wrangler", "data"]);
