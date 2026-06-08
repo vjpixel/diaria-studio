@@ -34,7 +34,9 @@ describe("type scale do e-mail alinhado ao DS (diaria-design#4)", () => {
 });
 
 describe("preview do Worker em fundo 100% branco (#1952)", () => {
-  for (const f of ["scripts/upload-html-public.ts", "scripts/wrap-draft-preview.ts"]) {
+  // Só o shell VIVO (wrapForPreview, servido em draft.diaria.workers.dev).
+  // wrap-draft-preview.ts era dead code e foi removido neste PR.
+  for (const f of ["scripts/upload-html-public.ts"]) {
     const src = readFileSync(join(ROOT, f), "utf8");
     it(`${f}: shell sem cinza #f5f5f5`, () => {
       assert.doesNotMatch(src, /#f5f5f5/i, `${f}: shell do preview ainda tem fundo cinza`);
