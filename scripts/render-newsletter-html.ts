@@ -881,10 +881,14 @@ function renderKicker(label: string): string {
 
 /** Manchete de destaque: Georgia 26px, ink, underline teal (link). HTML interno. */
 function renderHeadlineInner(title: string, url: string): string {
-  // #1936: underline teal via border-bottom (email-safe). O template do DS usa
-  // text-decoration-color, que Gmail/Outlook removem → o teal sumiria. ver
-  // diaria-design#2. display:inline-block pra a borda abraçar o texto, não o bloco.
-  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.08;color:${TEXT_COLOR};text-decoration:none;border-bottom:2px solid ${TEAL};padding-bottom:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
+  // #1941: underline em TODAS as linhas do título multi-linha. A versão #1936
+  // usava `border-bottom` num `display:inline-block` — a borda traça só o rodapé
+  // da caixa, ou seja, embaixo da última linha. `text-decoration:underline`
+  // sublinha cada linha do texto. Mantemos a cor teal via `text-decoration-color`
+  // (honrado por Apple Mail / Gmail moderno); onde o client remove (Outlook),
+  // degrada pra cor do texto/ink — ainda sublinhado em todas as linhas, melhor
+  // que o teal só na última. `display:inline-block` preservado pro `margin-top`.
+  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
 }
 
 function imageGeneratorCredit(): string {
@@ -952,11 +956,32 @@ export function renderCoverage(text: string): string {
  * "painel" (bege), texto peso 600. Links via processInlineLinks (underline teal).
  */
 export function renderIntroCallout(text: string): string {
+  // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
+  // mantém o comportamento antigo (negrito, emoji preservado). Bloco
+  // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
+  // 1º parágrafo = título serif (emoji de marcação removido), demais = corpo
+  // peso normal; os links já saem em negrito via processInlineLinks.
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  let inner: string;
+  if (paras.length > 1) {
+    const title = stripKickerEmoji(paras[0]);
+    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:20px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
+    const bodyHtml = paras
+      .slice(1)
+      .map(
+        (p, i) =>
+          `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+      )
+      .join("\n      ");
+    inner = `${titleHtml}\n      ${bodyHtml}`;
+  } else {
+    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(paras[0] ?? text)}</p>`;
+  }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td class="pad" style="padding:8px 48px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:16px 20px;">
-      <p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(text)}</p>
+      ${inner}
     </td></tr>
   </table>
 </td></tr>`;
@@ -1433,6 +1458,12 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
     // do introCallout. Posicionado após o 1º destaque.
     if (i === 0 && content.midCallout) {
+      // #1940: separador "Divulgação" antes de bloco PATROCINADO (marcado com 📣
+      // no MD). Não aparece em promo interna (📚, ex: página de livros) nem no
+      // sorteio/introCallout — só conteúdo de anunciante precisa do disclosure.
+      if (/^\s*📣/u.test(content.midCallout)) {
+        parts.push(`<tr><td class="pad" style="padding:32px 48px 0;">${renderKicker("Divulgação")}</td></tr>`);
+      }
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
     if (includeEia && !eiaInserted && i === 1) {
