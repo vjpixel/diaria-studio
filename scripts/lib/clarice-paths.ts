@@ -30,21 +30,38 @@
 import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getArg } from "./cli-args.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** Raiz da base Clarice (junction → OneDrive). Inputs-base + tiers moram aqui. */
 export const CLARICE_BASE = resolve(REPO_ROOT, "data/clarice-subscribers");
 
-/** Pure: valida o rótulo de ciclo `{conteúdo}-{envio}` = `YYMM-MM` (ex: 2605-06). */
+/**
+ * Pure: valida o rótulo de ciclo `{conteúdo}-{envio}` = `YYMM-MM` (ex: 2605-06).
+ *
+ * Não basta a FORMA (`\d{4}-\d{2}`): valida também a semântica, senão typos como
+ * `2605-13`/`2605-00` (mês impossível) ou `2605-07` (pulando o envio) passariam —
+ * e é justamente o mislabel de mês que o `{conteúdo}-{envio}` existe pra prevenir.
+ *   - mês do conteúdo e mês do envio ∈ 01..12;
+ *   - envio = conteúdo + 1 (rollover dez→jan), a invariante do programa
+ *     ("o digest de abril sai em maio").
+ */
 export function isValidCycle(c: string | undefined | null): c is string {
-  return !!c && /^\d{4}-\d{2}$/.test(c);
+  if (!c || !/^\d{4}-\d{2}$/.test(c)) return false;
+  const contentMonth = Number(c.slice(2, 4)); // MM do {YYMM}
+  const sendMonth = Number(c.slice(5, 7));
+  if (contentMonth < 1 || contentMonth > 12) return false;
+  if (sendMonth < 1 || sendMonth > 12) return false;
+  return sendMonth === (contentMonth % 12) + 1;
 }
 
 /** Diretório do ciclo (`…/clarice-subscribers/{conteúdo}-{envio}`). Pure (path join). */
 export function clariceCycleDir(cycle: string): string {
   if (!isValidCycle(cycle)) {
-    throw new Error(`ciclo inválido: ${cycle} (esperado {conteúdo}-{envio}, ex: 2605-06)`);
+    throw new Error(
+      `ciclo inválido: ${cycle} (esperado {conteúdo}-{envio} com envio = conteúdo+1, ex: 2605-06)`,
+    );
   }
   return resolve(CLARICE_BASE, cycle);
 }
@@ -65,23 +82,22 @@ export function ensureDir(dir: string): string {
   return dir;
 }
 
+/** Pure (testável): parseia `--cycle`; "" quando ausente/inválido (caller valida).
+ *  Usa o `getArg` compartilhado (trata `--cycle` no fim / seguido de outra flag). */
+export function parseCycleArg(argv: string[]): string {
+  const v = getArg(argv, "cycle");
+  return isValidCycle(v) ? v : "";
+}
+
 /**
  * Extrai `--cycle {conteúdo}-{envio}` do argv. OBRIGATÓRIO: aborta o processo
  * (exit 1) com mensagem clara se ausente/inválido. Use no `main()` dos scripts.
  */
 export function requireCycleArg(argv: string[]): string {
-  const i = argv.indexOf("--cycle");
-  const v = i >= 0 ? argv[i + 1] : undefined;
-  if (!isValidCycle(v)) {
+  const v = parseCycleArg(argv);
+  if (!v) {
     console.error("--cycle {conteúdo}-{envio} é obrigatório (ex: --cycle 2605-06).");
     process.exit(1);
   }
   return v;
-}
-
-/** Pure (testável): parseia `--cycle`; "" quando ausente/inválido (caller valida). */
-export function parseCycleArg(argv: string[]): string {
-  const i = argv.indexOf("--cycle");
-  const v = i >= 0 ? argv[i + 1] : undefined;
-  return isValidCycle(v) ? v : "";
 }

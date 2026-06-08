@@ -39,7 +39,7 @@ import { resolve, basename } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceBaseFile, clariceCycleDir, ensureDir } from "./lib/clarice-paths.ts"; // #1961
+import { clariceBaseFile, clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
 
 // .env.local (precedência) + .env — loader canônico do projeto (#923).
 // Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
@@ -318,7 +318,8 @@ export function parseArgs(argv: string[]): Args {
     // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.
     limit: Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : null,
     single: get("--single") ?? null,
-    cycle: get("--cycle") ?? "", // #1961: saídas verificadas vivem em {ciclo}/ (main valida)
+    // #1961: valida formato/semântica do ciclo (igual import-waves); "" se inválido → main aborta limpo.
+    cycle: parseCycleArg(argv),
   };
 }
 
@@ -362,12 +363,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error("--cycle {conteúdo}-{envio} é obrigatório (saídas em {ciclo}/ — ex: --cycle 2605-06).");
     process.exit(1);
   }
-  const cycleDir = ensureDir(clariceCycleDir(args.cycle));
+  const cycleDir = clariceCycleDir(args.cycle);
   const inputPath = clariceBaseFile(args.input);
   if (!existsSync(inputPath)) {
     console.error(`input não encontrado: ${inputPath}`);
     process.exit(1);
   }
+  // Só cria a pasta do ciclo DEPOIS de validar o input — senão um typo no
+  // --input deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
+  ensureDir(cycleDir);
 
   const base = basename(args.input).replace(/\.csv$/i, "");
   const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);

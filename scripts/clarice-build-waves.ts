@@ -38,12 +38,12 @@
  *   waves-summary.json
  */
 
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { clariceBaseFile, clariceCycleDir, clariceWavesDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { clariceBaseFile, clariceCycleDir, clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 
 loadProjectEnv();
 
@@ -328,7 +328,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
   }
-  mkdirSync(wavesDir, { recursive: true });
+  ensureDir(wavesDir);
 
   // 1) engajamento Brevo
   const engagement = await fetchBrevoEngagement(apiKey, concurrency);
