@@ -54,6 +54,7 @@ import {
 } from "./refresh-past-editions.ts";
 import { extractPublishedAtIso, extractPublishedDate } from "./lib/beehiiv-timestamp.ts";
 import { parseListPostsResponse, parseBeehiivPost } from "./lib/schemas/beehiiv.ts";
+import { writeEditionReport } from "./send-edition-report.ts"; // #1950
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -310,6 +311,33 @@ export function autoStampPublishedJson(
   }
 }
 
+/**
+ * #1950: garante que `_internal/edition-report.html` exista pra uma edição
+ * confirmada como publicada. O relatório é o último passo do Stage 4 e era
+ * pulado quando a edição saía por publish manual / Stage 4 interrompido
+ * (caso 260608 — editor não achou o relatório). Aqui, no mesmo ponto em que
+ * já detectamos a publicação (auto-stamp #978), geramos o relatório se faltar.
+ * Idempotente (só gera se ausente) e best-effort (falha vira warning, nunca
+ * quebra o refresh-dedup). Retorna true quando gerou.
+ */
+export function ensureEditionReport(editionsRoot: string, post: Post): boolean {
+  const edition = publishedAtToEditionDir(post.published_at);
+  if (!edition) return false;
+  const dirPath = resolve(editionsRoot, edition);
+  if (!existsSync(dirPath)) return false; // sem edition local
+  const reportPath = resolve(dirPath, "_internal", "edition-report.html");
+  if (existsSync(reportPath)) return false; // já existe — não re-gera
+  try {
+    writeEditionReport(edition, dirPath, reportPath);
+    return true;
+  } catch (e) {
+    process.stderr.write(
+      `[refresh-dedup] warn: falha ao gerar edition-report de ${edition} (#1950): ${(e as Error).message}\n`,
+    );
+    return false;
+  }
+}
+
 function mergeById(existing: Post[], incoming: Post[]): Post[] {
   const byId = new Map<string, Post>();
   for (const p of existing) byId.set(p.id, p);
@@ -471,12 +499,19 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
   if (!opts.dryRun && !opts.noAutoStamp) {
     const editionsRoot = opts.editionsRoot ?? resolve(ROOT, "data/editions");
     let stamped = 0;
+    let reports = 0;
     for (const post of truncated) {
       if (autoStampPublishedJson(editionsRoot, post)) stamped++;
+      if (ensureEditionReport(editionsRoot, post)) reports++; // #1950
     }
     if (stamped > 0) {
       process.stderr.write(
         `[refresh-dedup] Auto-stamped 05-published.json pra ${stamped} edição(ões) (#978)\n`,
+      );
+    }
+    if (reports > 0) {
+      process.stderr.write(
+        `[refresh-dedup] Gerou edition-report.html pra ${reports} edição(ões) faltante(s) (#1950)\n`,
       );
     }
   }
