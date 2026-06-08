@@ -73,6 +73,19 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 - Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
+### Config 1x da publicação — rodapé branco (#1944)
+
+O **rodapé que a Beehiiv anexa** ao e-mail (endereço, unsubscribe, "powered by
+beehiiv") **não** vem do HTML que colamos — é estilizado pelo tema de e-mail da
+publicação. Pra casar com o corpo branco (#1943/#1945), setar o fundo do rodapé
+para **branco** uma vez no dashboard:
+
+> Beehiiv → **Settings → Publication → Email** (ou **Design/Branding**) →
+> seção do **Footer** → cor de fundo = **#FFFFFF**.
+
+É config global (aplica a todas as edições). Não há endpoint na API/MCP pra
+isso — ação manual do editor, uma vez. Conferir no test email da próxima edição.
+
 ## Processo (modo create) — fluxo Custom HTML (#74)
 
 O fluxo foi migrado pra **Custom HTML block único**. Elimina block-by-block filling no editor (causa dos 5 bugs do #39: encoding, template items não removidos, truncamento, imagens inline faltando, É IA? não verificado).
