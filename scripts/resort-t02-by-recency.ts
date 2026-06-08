@@ -8,8 +8,8 @@
  *
  * Em vez do sort atual por `score` (dominado por log(spend)).
  *
- * Output: data/clarice-subscribers/brevo-import-t02.csv reordenado (overwrite).
- * Backup: data/clarice-subscribers/brevo-import-t02.csv.bak-score-sorted
+ * Output: data/clarice-subscribers/brevo-import-t02-ex-assinantes.csv reordenado (overwrite).
+ * Backup: data/clarice-subscribers/brevo-import-t02-ex-assinantes.csv.bak-score-sorted
  */
 import { readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import Papa from "papaparse";
@@ -80,7 +80,7 @@ function main() {
   console.error(`      stripe map: ${stripe.size} emails únicos`);
 
   console.error("[2/4] Lendo t02.csv atual...");
-  const t02Path = `${ROOT}/brevo-import-t02.csv`;
+  const t02Path = `${ROOT}/brevo-import-t02-ex-assinantes.csv`;
   const t02Content = readFileSync(t02Path, "utf8");
   const t02Parsed = Papa.parse<T02Row>(t02Content, { header: true, skipEmptyLines: true });
   const t02 = t02Parsed.data.filter((r) => r.email && r.email.includes("@"));

@@ -14,7 +14,7 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
  *   2. Copia fixture CSV (15 contatos cobrindo T1–T10 + 3 exclusões)
  *   3. Roda main(tempDir)
  *   4. Verifica:
- *      - 10 CSVs gerados (brevo-import-t01.csv ... t10.csv)
+ *      - 10 CSVs gerados (brevo-import-t01-assinantes-ativos.csv ... t10-leads-caudao.csv)
  *      - excluded.csv com 3 entradas (dispute, role, disposable)
  *      - Schema do CSV de tier (3 colunas exatas)
  *      - Counts batem com tier expectativa
@@ -23,6 +23,19 @@ import { main } from "../scripts/merge-clarice-subscribers.ts";
  */
 
 const FIXTURE_PATH = resolve(import.meta.dirname, "fixtures/clarice-fixtures/stripe-customers-fixture.csv");
+
+/**
+ * Nomes de tier agora são descritivos (brevo-import-t{NN}-{slug}.csv, ex:
+ * t01-assinantes-ativos, t03-leads-2026-jan-abr) e o slug dos leads é dinâmico
+ * (acompanha `now`/dados). Os testes casam pelo prefixo ESTÁVEL `t{NN}-` em vez
+ * do nome exato, pra não acoplar à data de execução.
+ */
+function tierFile(dir: string, tier: number): string {
+  const nn = String(tier).padStart(2, "0");
+  const f = readdirSync(dir).find((x) => x.startsWith(`brevo-import-t${nn}-`) && x.endsWith(".csv"));
+  if (!f) throw new Error(`arquivo do tier t${nn} não encontrado em ${dir}`);
+  return f;
+}
 
 let tmpDataDir: string;
 
@@ -42,30 +55,22 @@ describe("merge-clarice integration: outputs end-to-end", () => {
   it("gera 10 CSVs t01–t10 + excluded ao rodar main(tempDir)", () => {
     main(tmpDataDir);
 
-    const expected = [
-      "brevo-import-t01.csv",
-      "brevo-import-t02.csv",
-      "brevo-import-t03.csv",
-      "brevo-import-t04.csv",
-      "brevo-import-t05.csv",
-      "brevo-import-t06.csv",
-      "brevo-import-t07.csv",
-      "brevo-import-t08.csv",
-      "brevo-import-t09.csv",
-      "brevo-import-t10.csv",
-      "brevo-import-excluded.csv",
-    ];
-    for (const f of expected) {
+    // Os 10 tiers (nome descritivo, achado por prefixo t{NN}-):
+    for (let t = 1; t <= 10; t++) {
       assert.ok(
-        existsSync(join(tmpDataDir, f)),
-        `Esperava arquivo ${f} no tempDir após main()`,
+        existsSync(join(tmpDataDir, tierFile(tmpDataDir, t))),
+        `Esperava arquivo do tier t${t} no tempDir após main()`,
       );
     }
+    assert.ok(
+      existsSync(join(tmpDataDir, "brevo-import-excluded.csv")),
+      "Esperava brevo-import-excluded.csv no tempDir após main()",
+    );
   });
 
   it("schema dos CSVs de tier é exatamente: email,NOME,OPEN_PROBABILITY", () => {
     for (let t = 1; t <= 10; t++) {
-      const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+      const filename = tierFile(tmpDataDir, t);
       const content = readFileSync(join(tmpDataDir, filename), "utf8");
       const firstLine = content.split("\n")[0].trim();
       assert.equal(
@@ -91,16 +96,16 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     }
 
     // T1 tem 2 (active + trialing); T2 tem 2 (canceled+paid + unpaid+paid); T3-T10 têm 1 cada
-    assert.equal(count("brevo-import-t01.csv"), 2, "T1 deve ter 2 contatos (active + trialing)");
-    assert.equal(count("brevo-import-t02.csv"), 2, "T2 deve ter 2 contatos (canceled + unpaid, ambos paid)");
-    assert.equal(count("brevo-import-t03.csv"), 1, "T3 deve ter 1 contato (lead 2026)");
-    assert.equal(count("brevo-import-t04.csv"), 1, "T4 deve ter 1 (lead 2025-H2)");
-    assert.equal(count("brevo-import-t05.csv"), 1, "T5 deve ter 1 (lead 2025-H1)");
-    assert.equal(count("brevo-import-t06.csv"), 1, "T6 deve ter 1 (lead 2024-H2)");
-    assert.equal(count("brevo-import-t07.csv"), 1, "T7 deve ter 1 (lead 2024-H1)");
-    assert.equal(count("brevo-import-t08.csv"), 1, "T8 deve ter 1 (lead 2023-H2)");
-    assert.equal(count("brevo-import-t09.csv"), 1, "T9 deve ter 1 (lead 2023-H1)");
-    assert.equal(count("brevo-import-t10.csv"), 1, "T10 deve ter 1 (lead 2022)");
+    assert.equal(count(tierFile(tmpDataDir, 1)), 2, "T1 deve ter 2 contatos (active + trialing)");
+    assert.equal(count(tierFile(tmpDataDir, 2)), 2, "T2 deve ter 2 contatos (canceled + unpaid, ambos paid)");
+    assert.equal(count(tierFile(tmpDataDir, 3)), 1, "T3 deve ter 1 contato (lead 2026)");
+    assert.equal(count(tierFile(tmpDataDir, 4)), 1, "T4 deve ter 1 (lead 2025-H2)");
+    assert.equal(count(tierFile(tmpDataDir, 5)), 1, "T5 deve ter 1 (lead 2025-H1)");
+    assert.equal(count(tierFile(tmpDataDir, 6)), 1, "T6 deve ter 1 (lead 2024-H2)");
+    assert.equal(count(tierFile(tmpDataDir, 7)), 1, "T7 deve ter 1 (lead 2024-H1)");
+    assert.equal(count(tierFile(tmpDataDir, 8)), 1, "T8 deve ter 1 (lead 2023-H2)");
+    assert.equal(count(tierFile(tmpDataDir, 9)), 1, "T9 deve ter 1 (lead 2023-H1)");
+    assert.equal(count(tierFile(tmpDataDir, 10)), 1, "T10 deve ter 1 (lead 2022)");
 
     // Excluded: 3 (dispute, role, disposable)
     assert.equal(count("brevo-import-excluded.csv"), 3, "Excluded deve ter 3 (dispute + role + disposable)");
@@ -122,7 +127,7 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     // Snapshot dos arquivos atuais
     const beforeContent: { [k: string]: string } = {};
     for (let t = 1; t <= 10; t++) {
-      const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+      const filename = tierFile(tmpDataDir, t);
       beforeContent[filename] = readFileSync(join(tmpDataDir, filename), "utf8");
     }
     beforeContent["brevo-import-excluded.csv"] = readFileSync(
@@ -146,6 +151,10 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     writeFileSync(join(tmpDataDir, "kit-import-excluded.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "brevo-import-tier1.csv"), "stale\n", "utf8");
     writeFileSync(join(tmpDataDir, "brevo-import-tier2.csv"), "stale\n", "utf8");
+    // Slug antigo de tier (de um run em outro semestre) — com H MAIÚSCULO (2099H1)
+    // e o numérico puro (pré-rename): ambos devem sumir no rewrite.
+    writeFileSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv"), "stale\n", "utf8");
+    writeFileSync(join(tmpDataDir, "brevo-import-t05.csv"), "stale\n", "utf8");
 
     main(tmpDataDir);
 
@@ -154,10 +163,12 @@ describe("merge-clarice integration: outputs end-to-end", () => {
     assert.equal(existsSync(join(tmpDataDir, "kit-import-excluded.csv")), false);
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-tier1.csv")), false);
     assert.equal(existsSync(join(tmpDataDir, "brevo-import-tier2.csv")), false);
+    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t04-leads-2099H1.csv")), false, "slug antigo (H maiúsculo) deve ser removido");
+    assert.equal(existsSync(join(tmpDataDir, "brevo-import-t05.csv")), false, "nome numérico puro (pré-rename) deve ser removido");
 
     // Os t01–t10 e excluded continuam
     for (let t = 1; t <= 10; t++) {
-      const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+      const filename = tierFile(tmpDataDir, t);
       assert.ok(existsSync(join(tmpDataDir, filename)), `${filename} foi removido por engano`);
     }
   });
@@ -205,7 +216,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     // Estará em algum tier; vou buscar em todos
     let found: { [k: string]: string } | undefined;
     for (let t = 1; t <= 10; t++) {
-      const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
+      const filename = tierFile(mergeDir, t);
       found = findContact(filename, "duplicated@clrctest.com.br");
       if (found) break;
     }
@@ -213,7 +224,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     // Schema CSV minimal não inclui stripe_ids. Apenas validamos que email apareceu 1x (não 3x)
     let totalAppearances = 0;
     for (let t = 1; t <= 10; t++) {
-      if (findContact(`brevo-import-t${String(t).padStart(2, "0")}.csv`, "duplicated@clrctest.com.br")) {
+      if (findContact(tierFile(mergeDir, t), "duplicated@clrctest.com.br")) {
         totalAppearances++;
       }
     }
@@ -225,7 +236,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     // Merge usa created mais recente — cohort3 vence
     let found: { [k: string]: string } | undefined;
     for (let t = 1; t <= 10; t++) {
-      found = findContact(`brevo-import-t${String(t).padStart(2, "0")}.csv`, "duplicated@clrctest.com.br");
+      found = findContact(tierFile(mergeDir, t), "duplicated@clrctest.com.br");
       if (found) break;
     }
     assert.ok(found);
@@ -236,21 +247,21 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
   it("duplicated: paid (spend > 0) é detectado mesmo se o último cohort não tiver pagamento", () => {
     // duplicated tem total_spend = 200 + 100 + 50 = 350 (somado).
     // Vai pra T2 (ex-assinante) — não é active hoje.
-    const found = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    const found = findContact(tierFile(mergeDir, 2), "duplicated@clrctest.com.br");
     assert.ok(found, "duplicated deveria estar em T2 (paid alguma vez, não active hoje)");
   });
 
   it("delinquent@: status active de cohort2 vence canceled de cohort1 → vai pra T1", () => {
     // cohort1: canceled / cohort2: active. Merge mantém active.
-    const found = findContact("brevo-import-t01.csv", "delinquent@clrctest.com.br");
+    const found = findContact(tierFile(mergeDir, 1), "delinquent@clrctest.com.br");
     assert.ok(found, "delinquent@ deveria estar em T1 após status='active' vencer");
   });
 
   it("solo (1 cohort apenas) é tratado normalmente", () => {
-    const solo2023 = findContact("brevo-import-t02.csv", "solo2023a@clrctest.com.br");
+    const solo2023 = findContact(tierFile(mergeDir, 2), "solo2023a@clrctest.com.br");
     assert.ok(solo2023, "solo2023a deveria estar em T2 (paid, antigo, não active)");
 
-    const fresh2026 = findContact("brevo-import-t03.csv", "fresh2026@clrctest.com.br");
+    const fresh2026 = findContact(tierFile(mergeDir, 3), "fresh2026@clrctest.com.br");
     assert.ok(fresh2026, "fresh2026 deveria estar em T3 (lead 2026, never paid)");
   });
 
@@ -268,7 +279,7 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     //   - Payment_count somado: sem soma, cohort3 sozinho teria pmt=1 → sem bonus +4
     //   - Delinquent OR: sem OR, cohort3 (false) ganharia → sem penalidade −5
     //   - Created mais recente: sem isso, cohort1 (2023) ganharia → recency seria 0 ou negativa
-    const duplicated = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    const duplicated = findContact(tierFile(mergeDir, 2), "duplicated@clrctest.com.br");
     assert.ok(duplicated, "duplicated deveria estar em T2");
     assert.equal(
       duplicated!.OPEN_PROBABILITY,
@@ -288,8 +299,8 @@ describe("merge-clarice: invariantes de merge cross-CSV", () => {
     //   +4 (payment_count: 2 → 7, sem mod vs +4)
     //   −5 (delinquent: false vs true)
     //   = +10 +6 +4 −5 = +15 ✓
-    const solo = findContact("brevo-import-t02.csv", "solo2024@clrctest.com.br");
-    const dup = findContact("brevo-import-t02.csv", "duplicated@clrctest.com.br");
+    const solo = findContact(tierFile(mergeDir, 2), "solo2024@clrctest.com.br");
+    const dup = findContact(tierFile(mergeDir, 2), "duplicated@clrctest.com.br");
     assert.ok(solo && dup);
     const soloProb = parseInt(solo!.OPEN_PROBABILITY, 10);
     const dupProb = parseInt(dup!.OPEN_PROBABILITY, 10);

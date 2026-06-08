@@ -12,13 +12,13 @@
  * Uso:
  *   npx tsx scripts/merge-clarice-subscribers.ts [--filter-clrc-pt]
  *
- * Output (em data/clarice-subscribers/):
- *   brevo-import-t01.csv      Tier 1: assinante atual
- *   brevo-import-t02.csv      Tier 2: ex-assinante
- *   brevo-import-t03.csv      Tier 3: lead 2026-H1
- *   brevo-import-t04.csv      Tier 4: lead 2025-H2
- *   ...
- *   brevo-import-t10.csv      Tier 10: lead 2021–2022
+ * Output (em data/clarice-subscribers/) — nome descritivo via tierFileName():
+ *   brevo-import-t01-assinantes-ativos.csv   Tier 1: assinante atual
+ *   brevo-import-t02-ex-assinantes.csv       Tier 2: ex-assinante
+ *   brevo-import-t03-leads-2026-jan-abr.csv  Tier 3: lead semestre corrente (range real do corte)
+ *   brevo-import-t04-leads-2025H2.csv        Tier 4: lead 2025-H2
+ *   ...                                       (T4–T9: semestre deslizante)
+ *   brevo-import-t10-leads-caudao.csv        Tier 10: lead caudão antigo
  *   brevo-import-excluded.csv (audit trail — bounce risk, dispute, low-quality email)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
@@ -458,6 +458,46 @@ export function tierLabel(tier: number, now: Date = new Date()): string {
   return `Lead nunca-pagou — ${year}-${half}`;
 }
 
+const MONTHS_PT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+/**
+ * Nome de arquivo DESCRITIVO do tier. Mantém o prefixo `t{NN}-` (ordenação no
+ * filesystem + os readers acham por ele), seguido de um slug legível:
+ *   - T1/T2/T10: estáveis (`assinantes-ativos`, `ex-assinantes`, `leads-caudao`);
+ *   - T4–T9: semestre deslizante (`leads-2025H2`…), acompanha `now` como tierLabel;
+ *   - T3: semestre corrente — PARCIAL por causa do corte do export — então usa o
+ *     range REAL de `created` dos dados (`leads-2026-jan-abr`). Assim o nome reflete
+ *     o corte e se AUTO-CORRIGE no próximo export (vira jan-mai, jan-jun…), sem
+ *     rename manual.
+ */
+export function tierFileName(tier: number, now: Date, rows: Scored[]): string {
+  const nn = String(tier).padStart(2, "0");
+  let slug: string;
+  if (tier === 1) {
+    slug = "assinantes-ativos";
+  } else if (tier === 2) {
+    slug = "ex-assinantes";
+  } else if (tier === 10) {
+    slug = "leads-caudao";
+  } else if (tier === 3) {
+    const dates = rows.map((r) => r.created).filter((d): d is Date => !!d);
+    if (dates.length === 0) {
+      const sIdx = semesterIndex(now);
+      slug = `leads-${Math.floor(sIdx / 2)}-${sIdx % 2 === 1 ? "jul-dez" : "jan-jun"}`;
+    } else {
+      const min = dates.reduce((a, b) => (a < b ? a : b));
+      const max = dates.reduce((a, b) => (a > b ? a : b));
+      slug = `leads-${min.getUTCFullYear()}-${MONTHS_PT[min.getUTCMonth()]}-${MONTHS_PT[max.getUTCMonth()]}`;
+    }
+  } else {
+    // T4–T9: semestre deslizante (mesma matemática do tierLabel).
+    const offset: { [k: number]: number } = { 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6 };
+    const sIdx = semesterIndex(now) - (offset[tier] ?? 0);
+    slug = `leads-${Math.floor(sIdx / 2)}${sIdx % 2 === 1 ? "H2" : "H1"}`;
+  }
+  return `brevo-import-t${nn}-${slug}.csv`;
+}
+
 /**
  * Tier de um contato.
  *
@@ -676,6 +716,11 @@ export function main(dataDir: string = DATA_DIR): void {
   const orphanPatterns = [
     /^kit-import-(tier\d+|excluded)\.csv$/,
     /^brevo-import-tier\d+\.csv$/, // só sem padding (tier1, tier2, tier3 antigos)
+    // Nomes de tier de runs anteriores — tanto o numérico puro (brevo-import-t01.csv)
+    // quanto slugs antigos (brevo-import-t03-leads-2026-jan-mar.csv): removidos antes
+    // de reescrever pra não acumular nome obsoleto quando o slug muda. (não pega
+    // -verified/-rejected/-unknown, que moram no dir do ciclo, não aqui no root)
+    /^brevo-import-t\d{2}(-[A-Za-z0-9-]+)?\.csv$/, // -[A-Za-z…]: o slug tem H maiúsculo (2025H2)
   ];
   for (const f of readdirSync(dataDir)) {
     if (orphanPatterns.some((re) => re.test(f))) {
@@ -689,12 +734,11 @@ export function main(dataDir: string = DATA_DIR): void {
     }
   }
 
-  // Output: 10 CSVs (brevo-import-t01.csv ... t10.csv).
-  // Padding zero garante ordenação alfabética correta no filesystem.
+  // Output: 10 CSVs com nome descritivo (brevo-import-t01-assinantes-ativos.csv …).
+  // O prefixo t{NN}- garante ordenação no filesystem + match dos readers.
   for (let t = 1; t <= 10; t++) {
     const rows = byTier.get(t) ?? [];
-    const filename = `brevo-import-t${String(t).padStart(2, "0")}.csv`;
-    writeTier(filename, rows);
+    writeTier(tierFileName(t, now, rows), rows);
   }
 
   const excludedCsv = Papa.unparse(

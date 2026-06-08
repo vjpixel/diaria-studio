@@ -15,9 +15,9 @@
  *   data/clarice-subscribers/
  *     stripe-customers-*.csv            ← inputs-base (root, não por-ciclo)
  *     brevo-import-excluded.csv         ← idem
- *     brevo-import-t01.csv … t10.csv    ← base segmentada (output da merge, root)
+ *     brevo-import-t01-assinantes-ativos.csv … t10-leads-caudao.csv  ← base segmentada (merge, root)
  *     {conteúdo}-{envio}/               ← artefatos POR-CICLO (ex: 2605-06/)
- *       brevo-import-t02-verified.csv / -rejected.csv / -unknown.csv
+ *       brevo-import-t02-ex-assinantes-verified.csv / -rejected.csv / -unknown.csv
  *       .mv-cache-*.json
  *       waves/
  *         t1-openers.csv · t1-non-openers.csv · t2-w3.csv · t2-w4.csv

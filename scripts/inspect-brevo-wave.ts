@@ -2,7 +2,7 @@
  * inspect-brevo-wave.ts (one-off — usado pra verificar wave slicing logic)
  *
  * Fetcha contatos de uma lista Brevo + compara com slice esperado de
- * data/clarice-subscribers/brevo-import-t01.csv.
+ * data/clarice-subscribers/brevo-import-t01-assinantes-ativos.csv.
  *
  * Uso: npx tsx scripts/inspect-brevo-wave.ts --list-id 13 --start 501 --end 750
  */
@@ -43,7 +43,7 @@ async function fetchListContacts(listId: number): Promise<string[]> {
 }
 
 function readCsvSlice(start1based: number, end1based: number): string[] {
-  const csv = readFileSync(resolve(ROOT, "data/clarice-subscribers/brevo-import-t01.csv"), "utf8");
+  const csv = readFileSync(resolve(ROOT, "data/clarice-subscribers/brevo-import-t01-assinantes-ativos.csv"), "utf8");
   const lines = csv.split("\n").slice(1); // skip header
   const slice = lines.slice(start1based - 1, end1based)
     .map((l) => l.split(",")[0].toLowerCase().trim())

@@ -10,6 +10,7 @@ import {
   hasClariceAudienceTag,
   tierOf,
   tierLabel,
+  tierFileName,
   type Merged,
 } from "../scripts/merge-clarice-subscribers.ts";
 
@@ -714,5 +715,49 @@ describe("tierLabel — labels dinâmicos (#1020)", () => {
   it("tier desconhecido retorna fallback", () => {
     assert.match(tierLabel(99, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
     assert.match(tierLabel(0, new Date("2026-05-08T00:00:00Z")), /desconhecido/);
+  });
+});
+
+// tierFileName — nomes de arquivo descritivos (prefixo t{NN}- estável + slug)
+describe("tierFileName", () => {
+  const rows = (...dates: (Date | null)[]) =>
+    dates.map((created) => ({ created })) as unknown as Parameters<typeof tierFileName>[2];
+
+  it("T1/T2/T10 têm slug estável (sem semestre)", () => {
+    assert.equal(tierFileName(1, NOW, []), "brevo-import-t01-assinantes-ativos.csv");
+    assert.equal(tierFileName(2, NOW, []), "brevo-import-t02-ex-assinantes.csv");
+    assert.equal(tierFileName(10, NOW, []), "brevo-import-t10-leads-caudao.csv");
+  });
+
+  it("T4–T9 usam semestre deslizante (acompanha now, igual tierLabel)", () => {
+    // NOW = mai/2026 → corrente 2026-H1; T4 = 2025-H2, T9 = 2023-H1
+    assert.equal(tierFileName(4, NOW, []), "brevo-import-t04-leads-2025H2.csv");
+    assert.equal(tierFileName(9, NOW, []), "brevo-import-t09-leads-2023H1.csv");
+  });
+
+  it("T3 reflete o RANGE real de created (corte do export) e auto-corrige", () => {
+    // Dados jan–abr/2026 (corte 30/abr) → jan-abr
+    assert.equal(
+      tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-04-30T00:00:00Z"))),
+      "brevo-import-t03-leads-2026-jan-abr.csv",
+    );
+    // Export posterior (até maio) → jan-mai, SEM rename manual (auto-corrige)
+    assert.equal(
+      tierFileName(3, NOW, rows(new Date("2026-01-05T00:00:00Z"), new Date("2026-05-20T00:00:00Z"))),
+      "brevo-import-t03-leads-2026-jan-mai.csv",
+    );
+  });
+
+  it("T3 sem datas cai no semestre corrente (fallback)", () => {
+    assert.equal(tierFileName(3, NOW, []), "brevo-import-t03-leads-2026-jan-jun.csv");
+  });
+
+  it("prefixo t{NN}- estável (os readers acham por ele)", () => {
+    for (let t = 1; t <= 10; t++) {
+      assert.match(
+        tierFileName(t, NOW, rows(new Date("2026-02-01T00:00:00Z"))),
+        new RegExp(`^brevo-import-t${String(t).padStart(2, "0")}-`),
+      );
+    }
   });
 });
