@@ -13,7 +13,7 @@
  *
  * Uso:
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06                          # T02 (default)
- *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --input brevo-import-t03.csv
+ *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --input brevo-import-t03-leads-2026-jan-abr.csv
  *   npx tsx scripts/verify-emails-mv.ts --single foo@bar.com     # smoke (1 crédito; sem --cycle)
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --limit 50               # só os 50 primeiros
  *   npx tsx scripts/verify-emails-mv.ts --cycle 2605-06 --concurrency 20
@@ -23,13 +23,13 @@
  *   MILLION_VERIFIER_API_KEY   obrigatório (dashboard MV → API)
  *
  * Input  (BASE, no root data/clarice-subscribers/):
- *   brevo-import-t02.csv       colunas: email,NOME,OPEN_PROBABILITY
+ *   brevo-import-t02-ex-assinantes.csv   colunas: email,NOME,OPEN_PROBABILITY
  *
  * Output (POR-CICLO, em data/clarice-subscribers/{conteúdo}-{envio}/, basename do input):
- *   brevo-import-t02-verified.csv   result ok | catch_all   → MANDAR pro Brevo
- *   brevo-import-t02-rejected.csv   result invalid | disposable → EXCLUIR
- *   brevo-import-t02-unknown.csv    unknown | reverify | error  → inconclusivo
- *   .mv-cache-brevo-import-t02.json checkpoint resumível (gitignored via data/)
+ *   brevo-import-t02-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
+ *   brevo-import-t02-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
+ *   brevo-import-t02-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
+ *   .mv-cache-brevo-import-t02-ex-assinantes.json checkpoint resumível (gitignored via data/)
  *
  * Stdout: JSON sumário; stderr: progresso humano-legível.
  */
@@ -312,7 +312,7 @@ export function parseArgs(argv: string[]): Args {
   const rawLimit = get("--limit");
   const parsedLimit = rawLimit != null ? parseInt(rawLimit, 10) : NaN;
   return {
-    input: get("--input") ?? "brevo-import-t02.csv",
+    input: get("--input") ?? "brevo-import-t02-ex-assinantes.csv",
     concurrency: posInt(get("--concurrency"), 12),
     timeout: posInt(get("--timeout"), 20),
     // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.
