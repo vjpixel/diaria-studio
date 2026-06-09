@@ -65,7 +65,7 @@
 
 ### Hugging Face Blog
 - URL: https://huggingface.co/blog
-- Site query: `site:huggingface.co`
+- Site query: `site:huggingface.co/blog`
 - RSS: https://huggingface.co/blog/feed.xml
 
 ### Apple Machine Learning Research
@@ -93,7 +93,7 @@
 
 ### Anthropic
 - URL: https://www.anthropic.com/news/
-- Site query: `site:anthropic.com`
+- Site query: `site:anthropic.com/news`
 
 ## Secundária
 
@@ -160,18 +160,18 @@
 
 ### Anthropic Institute
 - URL: https://www.anthropic.com/institute
-- Site query: `site:anthropic.com`
+- Site query: `site:anthropic.com/institute`
 
 ## Tutoriais
 
 ### Anthropic Cookbook
 - URL: https://github.com/anthropics/anthropic-cookbook
-- Site query: `site:github.com`
+- Site query: `site:github.com/anthropics/anthropic-cookbook`
 - Use Melhor: sim
 
 ### HuggingFace Learn
 - URL: https://huggingface.co/learn
-- Site query: `site:huggingface.co`
+- Site query: `site:huggingface.co/learn`
 - Use Melhor: sim
 
 ### DeepLearning.ai The Batch
@@ -237,5 +237,5 @@
 
 ### Weights & Biases
 - URL: https://wandb.ai/fully-connected
-- Site query: `site:wandb.ai`
+- Site query: `site:wandb.ai/fully-connected`
 - Use Melhor: sim

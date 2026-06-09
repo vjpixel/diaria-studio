@@ -27,24 +27,58 @@ for (const row of data) {
   byType.get(type)!.push(row);
 }
 
+// #1987: hosts MULTI-TENANT — o path é load-bearing (host-only retornaria
+// conteúdo de OUTROS usuários/orgs). Code-review pegou github.com (Anthropic
+// Cookbook → todo o GitHub) e wandb.ai (projetos de qualquer usuário). Pra esses,
+// manter o path-scoping (status quo) é melhor que floodar de conteúdo errado.
+const SHARED_HOSTS = new Set([
+  "github.com",
+  "gitlab.com",
+  "wandb.ai",
+  "medium.com",
+  "substack.com",
+  "youtube.com",
+  "reddit.com",
+  "kaggle.com",
+]);
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
 /**
- * #1987: `site:{host}` SEM path. O `site:{host}/path` path-scoped sub-retornava
- * no backend de busca — fontes com path (OpenAI Cookbook /cookbook, LangChain
- * /blog, W&B /fully-connected, Pinecone /learn) davam 0 resultados apesar de
- * vivas. Host-only retorna; a relevância vem da query (`AI OR "inteligência
- * artificial"`) + topic_filter + categorize + score downstream. (Path-filter
- * estrito foi DESCARTADO: os tutoriais do W&B moram em sub-paths de autor
- * `wandb.ai/wandb_fc/...`, não só `/fully-connected` — um filtro de path os
- * excluiria. Auditoria #1971/#1987.)
+ * #1987: `site:{host}` SEM path quando o host é DEDICADO a uma única fonte — o
+ * `site:{host}/path` path-scoped sub-retornava no backend (OpenAI Cookbook,
+ * LangChain, Pinecone davam 0 apesar de vivas). Host-only retorna; relevância
+ * vem da query (`AI OR …`) + topic_filter + categorize + score downstream.
+ *
+ * MANTÉM o path quando: (a) host multi-tenant (SHARED_HOSTS — host-only floodaria
+ * de conteúdo de terceiros); ou (b) host aparece em >1 fonte cadastrada
+ * (huggingface.co Blog+Learn, anthropic.com news+institute) — host-only colidiria
+ * as queries (buscas Brave duplicadas + double-attribution). Code-review #1987.
  */
-function siteQuery(url: string): string {
+function siteQuery(url: string, hostCounts: Map<string, number>): string {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, "");
-    return `site:${host}`;
+    const path = u.pathname.replace(/\/$/, "");
+    const keepPath = SHARED_HOSTS.has(host) || (hostCounts.get(host) ?? 0) > 1;
+    return path && path !== "/" && keepPath ? `site:${host}${path}` : `site:${host}`;
   } catch {
     return `site:${url}`;
   }
+}
+
+// Conta quantas fontes compartilham cada host (pra decidir keepPath por colisão).
+const hostCounts = new Map<string, number>();
+for (const row of data) {
+  if (!row.Nome || !row.URL) continue;
+  const h = hostOf(row.URL);
+  if (h) hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1);
 }
 
 const lines: string[] = [
@@ -75,7 +109,7 @@ for (const [t, rows] of byType) {
 }
 
 function renderSource(s: Source, out: string[]): void {
-  out.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL)}\``);
+  out.push(`### ${s.Nome}`, `- URL: ${s.URL}`, `- Site query: \`${siteQuery(s.URL, hostCounts)}\``);
   const rss = s.RSS?.trim();
   if (rss) out.push(`- RSS: ${rss}`);
   const topicFilter = s.topic_filter?.trim();
