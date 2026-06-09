@@ -48,4 +48,10 @@ describe("mdInlineToHtml (#2001 follow-up: URLs com parênteses)", () => {
     assert.ok(out.includes('href="https://example.com/page_(v2)"'), `href: ${out}`);
     assert.ok(out.includes("<b>novidades</b>"), `bold: ${out}`);
   });
+
+  it("[text]() URL vazia — preserva texto bruto sem emitir <a href=''>", () => {
+    const out = mdInlineToHtml("[clique aqui]()");
+    assert.doesNotMatch(out, /<a\b/, `não deve emitir tag <a>: ${out}`);
+    assert.ok(out.includes("[clique aqui]()"), `texto bruto deve ser preservado: ${out}`);
+  });
 });

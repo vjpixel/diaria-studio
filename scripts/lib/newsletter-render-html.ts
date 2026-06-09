@@ -533,6 +533,8 @@ export function mdInlineToHtml(s: string): string {
   const parts: string[] = [];
   let lastIdx = 0;
   for (const { url, start, end } of links) {
+    // URL vazia `[texto]()` — preserva texto bruto, igual ao guard de processInlineLinks.
+    if (!url) continue;
     const labelEnd = input.indexOf("]", start + 1);
     const label = input.slice(start + 1, labelEnd);
     parts.push(input.slice(lastIdx, start));
