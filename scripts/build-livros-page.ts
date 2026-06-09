@@ -204,7 +204,7 @@ export function renderLivrosPage(books: Book[]): string {
   h1 .dot { color: var(--teal); }
   .tagline { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
     color: var(--ink); margin: 18px 0 0; }
-  .lede { font-size: 19px; line-height: 1.5; color: var(--ink); max-width: 64ch; margin: 16px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: var(--ink); margin: 16px 0 0; }
   .lede + .lede { margin-top: 10px; font-size: 16px; color: var(--ink); }
 
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
