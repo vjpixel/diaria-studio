@@ -106,6 +106,8 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
 ```
 
+**#1938:** o stitch auto-injeta o midCallout de divulgação CLARICE (`**📣 …**`, fonte única `context/snippets/clarice-divulgacao.md`) entre D1 e D2 em **todo daily** (decisão editorial). Idempotente (pula se D1/D2 já trazem `**📣 …**`). Kill-switch pontual: `--no-sponsor`.
+
 O script é determinístico, sem LLM. Ordem canonical:
 - Coverage line (do `01-approved-capped.json > coverage.line`)
 - DESTAQUE 1 block (lê `_internal/02-d1-draft.md`)
