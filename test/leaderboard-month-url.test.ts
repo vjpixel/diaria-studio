@@ -12,7 +12,11 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderLeaderboardTop1Row, type EIA } from "../scripts/render-newsletter-html.ts";
+import {
+  renderLeaderboardTop1Row,
+  renderLeaderboardLinkRow,
+  type EIA,
+} from "../scripts/render-newsletter-html.ts";
 
 const STYLE = "font-family:sans-serif;";
 const LB = "https://poll.diaria.workers.dev/leaderboard";
@@ -89,5 +93,25 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
     assert.match(html, /1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida/);
     // sem percentuais no texto (#1646)
     assert.doesNotMatch(html, /%/);
+  });
+});
+
+describe("renderLeaderboardLinkRow — link persistente (#1970)", () => {
+  it("sempre emite link pra raiz /leaderboard (sem slug do mês)", () => {
+    const html = renderLeaderboardLinkRow(STYLE);
+    assert.match(html, new RegExp(`href="${LB}"`));
+    // raiz, não /leaderboard/{slug} (link estático, sem depender do mês)
+    assert.doesNotMatch(html, /\/leaderboard\/\d/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
+    assert.match(html, /target="_blank"/);
+  });
+
+  it("independe de pódio/slug — toda edição renderiza igual", () => {
+    // O ponto do #1970: o link NÃO depende de leaderboardPeriod/Podium (1ª-do-mês).
+    assert.equal(renderLeaderboardLinkRow(STYLE), renderLeaderboardLinkRow(STYLE));
+    // Edição NÃO-1ª-do-mês (sem líderes, sem slug): renderLeaderboardTop1Row é
+    // "" mas o link persistente AINDA aparece — complementares no renderEIA.
+    assert.equal(renderLeaderboardTop1Row(baseEia(), STYLE), "");
+    assert.notEqual(renderLeaderboardLinkRow(STYLE), "");
   });
 });

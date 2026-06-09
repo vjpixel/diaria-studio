@@ -863,6 +863,16 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html, /\{\{poll_sig\}\}/);
   });
 
+  it("#1970: link persistente da leaderboard mesmo SEM pódio (edição não-1ª-do-mês)", () => {
+    // fixtureComEia não tem leaderboardPodium nem leaderboardPeriodSlug → o pódio
+    // (renderLeaderboardTop1Row) é omitido, mas o link persistente DEVE aparecer.
+    const html = renderHTML(fixtureComEia);
+    assert.match(html, /href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard"/);
+    assert.match(html, /Veja o ranking de quem mais acerta/);
+    // sem pódio nesta edição (sem "Vencedores")
+    assert.doesNotMatch(html, /Vencedores/);
+  });
+
   it("#1936: emite o marcador exato <!-- Destaque N --> (contrato do lint)", () => {
     // checkRequiredSections (lint-newsletter-html.ts) busca o substring exato
     // `<!-- Destaque 1 -->`. Acoplado de propósito — se o comentário do render
