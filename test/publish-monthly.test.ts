@@ -149,6 +149,10 @@ describe("escHtml", () => {
     assert.equal(escHtml("a < b > c & d \" e"), "a &lt; b &gt; c &amp; d &quot; e");
   });
 
+  it("escapa aspas simples (#1990 follow-up: alinhado com escapeHtml de format.ts)", () => {
+    assert.equal(escHtml("it's"), "it&#39;s");
+  });
+
   it("não toca em texto plano", () => {
     assert.equal(escHtml("Olá, mundo!"), "Olá, mundo!");
   });

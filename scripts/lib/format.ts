@@ -24,11 +24,4 @@ export function fmtDuration(ms: number | undefined): string {
   return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
 }
 
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+export { escHtml as escapeHtml } from "./html-escape.ts"; // #1990 follow-up: canonical impl

@@ -21,6 +21,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
+import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
 
 export interface ImageMap {
   [key: string]: {
@@ -71,9 +72,6 @@ export function loadImageMap(imagesPath: string | null): ImageLoadResult {
   }
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
 
 export interface Post {
   destaque: string;
