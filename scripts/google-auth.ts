@@ -21,7 +21,16 @@ export interface GoogleCredentials {
   access_token: string;
   refresh_token: string;
   expiry_ms: number; // epoch ms quando o access_token expira
+  /** #1973: epoch ms de quando o REFRESH token foi obtido (oauth-setup). Apps
+   * OAuth em "Testing" no Google Cloud expiram o refresh token em 7 dias — com
+   * este stamp dá pra avisar com antecedência. Ausente em creds legadas. */
+  refresh_obtained_ms?: number;
 }
+
+/** #1973: refresh tokens de app OAuth em "Testing" expiram em 7 dias. */
+export const TESTING_REFRESH_TTL_DAYS = 7;
+/** Avisar quando a idade do refresh token cruzar este limite (≥ 5.5d). */
+const NEAR_LIMIT_THRESHOLD_DAYS = TESTING_REFRESH_TTL_DAYS - 1.5;
 
 export class GoogleAuthError extends Error {
   constructor(message: string) {
@@ -48,8 +57,11 @@ function saveCredentials(creds: GoogleCredentials): void {
   writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), "utf8");
 }
 
-async function refreshAccessToken(creds: GoogleCredentials): Promise<GoogleCredentials> {
-  const res = await fetch(TOKEN_URL, {
+async function refreshAccessToken(
+  creds: GoogleCredentials,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GoogleCredentials> {
+  const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -86,6 +98,101 @@ export async function getAccessToken(): Promise<string> {
     creds = await refreshAccessToken(creds);
   }
   return creds.access_token;
+}
+
+// ── #1973: health-check proativo do token OAuth ──────────────────────────────
+// O mesmo refresh token cobre Drive + Gmail (inbox-drain) + upload de imagens
+// sociais. Quando expira (silenciosamente), 3 sistemas caem juntos e submissões
+// do editor podem se perder. Checagem antecipada no Stage 0 + banner único.
+
+export type TokenHealthStatus =
+  | "valid"
+  | "expiring_soon" // refresh ok, mas idade perto do limite de 7d (app em Testing)
+  | "invalid_grant" // refresh falhou: expirado ou revogado
+  | "no_credentials"
+  | "error";
+
+export interface TokenHealth {
+  ok: boolean; // true só em "valid" (expiring_soon ainda funciona, mas avisa)
+  status: TokenHealthStatus;
+  detail: string;
+  /** Idade do refresh token em dias (se `refresh_obtained_ms` presente). */
+  refreshAgeDays?: number;
+}
+
+/**
+ * Pure (#1973): classifica a mensagem de erro de um refresh falho. `invalid_grant`
+ * (expirado/revogado) é o caso que pede re-auth; o resto é erro transiente/outro.
+ */
+export function classifyRefreshError(msg: string): "invalid_grant" | "error" {
+  return /invalid_grant/i.test(msg) ? "invalid_grant" : "error";
+}
+
+/**
+ * Pure (#1973): idade do refresh token + se está perto do limite de 7d.
+ * `now`/`obtainedMs` injetáveis pra teste determinístico.
+ */
+export function classifyRefreshAge(
+  obtainedMs: number | undefined,
+  now: number,
+): { ageDays?: number; nearLimit: boolean } {
+  if (!obtainedMs) return { nearLimit: false };
+  const ageDays = (now - obtainedMs) / 86_400_000;
+  return { ageDays, nearLimit: ageDays >= NEAR_LIMIT_THRESHOLD_DAYS };
+}
+
+/**
+ * Pure (#1973): banner consolidado pro Stage 0 — UM aviso claro em vez de 3
+ * falhas espalhadas (Drive + inbox-drain + imagens sociais).
+ */
+export function renderTokenHealthBanner(health: TokenHealth): string {
+  if (health.status === "valid") return "";
+  const age = health.refreshAgeDays !== undefined ? ` (idade ${health.refreshAgeDays.toFixed(1)}d)` : "";
+  const head =
+    health.status === "expiring_soon"
+      ? `🔐 OAuth Google EXPIRANDO${age} — refresh token perto do limite de ${TESTING_REFRESH_TTL_DAYS}d (app em Testing).`
+      : `🔐 OAuth Google ${health.status === "no_credentials" ? "AUSENTE" : "EXPIRADO/INVÁLIDO"} — ${health.detail}.`;
+  return [
+    head,
+    "Afeta de uma vez: Drive sync · inbox-drain (submissões do editor) · upload de imagens sociais.",
+    "Ação: npx tsx scripts/oauth-setup.ts  (re-autentica em ~1min; rode /diaria-inbox depois pra recuperar submissões).",
+    "Causa raiz provável dos 7d: app OAuth em Testing — ver docs/google-oauth-production.md.",
+  ].join("\n");
+}
+
+/**
+ * #1973: checa proativamente a saúde do token OAuth. O refresh é o teste
+ * DEFINITIVO de validade (invalid_grant = expirado/revogado). Também avalia a
+ * idade do refresh token vs o limite de 7d de apps em Testing. Side-effect
+ * benéfico: um refresh bem-sucedido renova o access_token salvo.
+ */
+export async function checkTokenHealth(fetchImpl: typeof fetch = fetch): Promise<TokenHealth> {
+  if (!existsSync(CREDENTIALS_PATH)) {
+    return { ok: false, status: "no_credentials", detail: `credenciais ausentes em ${CREDENTIALS_PATH}` };
+  }
+  let creds: GoogleCredentials;
+  try {
+    creds = loadCredentials();
+  } catch (e) {
+    return { ok: false, status: "error", detail: String((e as Error).message) };
+  }
+  const { ageDays, nearLimit } = classifyRefreshAge(creds.refresh_obtained_ms, Date.now());
+  try {
+    await refreshAccessToken(creds, fetchImpl);
+  } catch (e) {
+    const msg = String((e as Error).message);
+    const status = classifyRefreshError(msg);
+    return {
+      ok: false,
+      status,
+      detail: status === "invalid_grant" ? "token expirado ou revogado (invalid_grant)" : msg,
+      refreshAgeDays: ageDays,
+    };
+  }
+  if (nearLimit) {
+    return { ok: false, status: "expiring_soon", detail: "refresh ok, mas perto do limite de 7d", refreshAgeDays: ageDays };
+  }
+  return { ok: true, status: "valid", detail: "refresh ok", refreshAgeDays: ageDays };
 }
 
 // Força refresh bypassando o check de expiry — usado quando o Google

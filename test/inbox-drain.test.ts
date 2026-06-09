@@ -18,7 +18,41 @@ import {
   EMPTY_DRAIN_WARN_THRESHOLD,
   loadCursor,
   main as drainMain,
+  isAuthExpiredError,
+  authExpiredWarn,
+  buildSearchFailedResult,
 } from "../scripts/inbox-drain.ts";
+
+describe("#1973 — OAuth expirado vs falha transiente", () => {
+  it("isAuthExpiredError: invalid_grant / expired / revoked → true", () => {
+    assert.equal(isAuthExpiredError("invalid_grant"), true);
+    assert.equal(isAuthExpiredError("Token has been expired or revoked"), true);
+    assert.equal(isAuthExpiredError("Invalid Credentials"), true);
+    // transiente → false
+    assert.equal(isAuthExpiredError("ECONNRESET socket hang up"), false);
+    assert.equal(isAuthExpiredError("503 backend error"), false);
+  });
+
+  it("buildSearchFailedResult: invalid_grant → reason auth_expired + flag", () => {
+    const r = buildSearchFailedResult("Gmail search: invalid_grant token revoked");
+    assert.equal(r.reason, "auth_expired");
+    assert.equal(r.auth_expired, true);
+    assert.equal(r.skipped, true);
+  });
+
+  it("buildSearchFailedResult: erro transiente → reason search_failed (sem flag)", () => {
+    const r = buildSearchFailedResult("network timeout");
+    assert.equal(r.reason, "search_failed");
+    assert.equal(r.auth_expired, undefined);
+  });
+
+  it("authExpiredWarn: explicita submissões perdidas + ação", () => {
+    const w = authExpiredWarn();
+    assert.match(w, /SUBMISSÕES DO EDITOR.*PERDIDAS/);
+    assert.match(w, /oauth-setup\.ts/);
+    assert.match(w, /diaria-inbox/);
+  });
+});
 
 function makeMessage(subject: string, id = "msg"): {
   id: string;

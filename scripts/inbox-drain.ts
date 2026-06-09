@@ -301,19 +301,45 @@ function saveCursor(cursor: InboxCursor): void {
 export const EMPTY_DRAIN_WARN_THRESHOLD = 3;
 
 /**
+ * #1973: `true` se o erro de pesquisa é expiração/revogação do OAuth Google
+ * (`invalid_grant` etc.) — distinto de um erro transiente de rede. Pure.
+ */
+export function isAuthExpiredError(errorMsg: string): boolean {
+  return /invalid_grant|token has been expired or revoked|invalid credentials|unauthorized|invalid_token/i.test(
+    errorMsg,
+  );
+}
+
+/**
+ * #1973: warn LOUD pro caso de OAuth expirado — explicita que SUBMISSÕES DO
+ * EDITOR podem ter sido perdidas nesta edição (impacto silencioso do #1973),
+ * não um genérico "search failed". Pure (testável).
+ */
+export function authExpiredWarn(): string {
+  return [
+    "🔐 [inbox-drain] OAuth Google EXPIRADO (invalid_grant) — inbox NÃO foi drenado.",
+    "⚠️  SUBMISSÕES DO EDITOR para o inbox editorial PODEM TER SIDO PERDIDAS nesta edição.",
+    "Ação: npx tsx scripts/oauth-setup.ts  e depois  /diaria-inbox  pra recuperar as submissões.",
+  ].join("\n");
+}
+
+/**
  * Constrói um DrainResult de falha de pesquisa (#665).
  * Exportado para permitir testes unitários sem precisar de credenciais Gmail.
+ * #1973: marca `auth_expired` quando o erro é OAuth expirado.
  */
-export function buildSearchFailedResult(errorMsg: string): DrainResult {
+export function buildSearchFailedResult(errorMsg: string): DrainResult & { auth_expired?: boolean } {
+  const auth_expired = isAuthExpiredError(errorMsg);
   return {
     new_entries: 0,
     urls: [],
     topics: [],
     most_recent_iso: null,
     skipped: true,
-    reason: "search_failed",
+    reason: auth_expired ? "auth_expired" : "search_failed",
     errors: 1,
     error_samples: [errorMsg.slice(0, 200)],
+    ...(auth_expired ? { auth_expired: true } : {}),
   };
 }
 
@@ -687,9 +713,16 @@ async function main(): Promise<void> {
     primaryThreads = await searchThreads(query);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
-    );
+    // #1973: OAuth expirado é distinto de falha transiente — warn LOUD sobre
+    // submissões perdidas (impacto silencioso), não um genérico "search failed".
+    if (isAuthExpiredError(msg)) {
+      console.error("\n" + authExpiredWarn() + "\n");
+      logDrainWarn(`auth_expired: ${msg.slice(0, 200)}`);
+    } else {
+      console.error(
+        `[inbox-drain] WARN: searchThreads falhou (${query}) — ${msg.slice(0, 200)}. Abortando drain.`,
+      );
+    }
     console.log(JSON.stringify(buildSearchFailedResult(msg), null, 2));
     return;
   }

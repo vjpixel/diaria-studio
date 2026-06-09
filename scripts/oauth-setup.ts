@@ -193,6 +193,8 @@ async function main(): Promise<void> {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     expiry_ms: Date.now() + tokens.expires_in * 1000,
+    // #1973: stamp pra o health-check avisar antes do limite de 7d (app Testing).
+    refresh_obtained_ms: Date.now(),
   };
 
   writeFileSync(CREDENTIALS_PATH, JSON.stringify(credentials, null, 2), "utf8");
