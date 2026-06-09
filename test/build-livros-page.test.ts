@@ -170,6 +170,13 @@ describe("renderLivrosPage (#1744)", () => {
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
     assert.match(evil, /&lt;script&gt;/);
   });
+  it("badge de idioma SEM teal (#1994 followup — pedido do editor 2026-06-09)", () => {
+    // O editor pediu pra remover o teal do badge de idioma: volta ao .badge
+    // padrão (texto ink + borda bege). A classe `badge--lang` segue no HTML.
+    assert.doesNotMatch(html, /\.badge--lang\s*\{[^}]*var\(--teal\)/, "badge--lang não pode reintroduzir teal");
+    assert.match(html, /badge--lang">/, "a classe badge--lang segue no HTML (hook)");
+  });
+
   it("papéis de fonte do DS: CORPO em Geist sans, TÍTULOS em Georgia serif", () => {
     // DS canônico (#1936): serif (Georgia) SÓ em títulos; corpo + UI = sans (Geist).
     // Pedido do editor 2026-06-09: body herdava serif → descrições em serif; corrigido.
