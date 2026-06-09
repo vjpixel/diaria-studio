@@ -170,6 +170,15 @@ describe("renderLivrosPage (#1744)", () => {
     assert.doesNotMatch(evil, /<script>alert\(1\)<\/script>/);
     assert.match(evil, /&lt;script&gt;/);
   });
+  it("papéis de fonte do DS: CORPO em Geist sans, TÍTULOS em Georgia serif", () => {
+    // DS canônico (#1936): serif (Georgia) SÓ em títulos; corpo + UI = sans (Geist).
+    // Pedido do editor 2026-06-09: body herdava serif → descrições em serif; corrigido.
+    assert.match(html, /body\s*\{\s*font-family:\s*'Geist'/, "corpo (body) deve ser Geist sans");
+    assert.match(html, /\bh1\s*\{\s*font-family:\s*Georgia/, "h1 (título) deve ser Georgia serif");
+    assert.match(html, /\.title-row h2\s*\{\s*font-family:\s*Georgia/, "h2 do card (título) deve ser Georgia serif");
+    assert.match(html, /\.filters select\s*\{\s*font-family:\s*'Geist'/, "dropdown (UI) deve ser Geist sans");
+    assert.doesNotMatch(html, /body\s*\{\s*font-family:\s*Georgia/, "body não pode ser serif");
+  });
 });
 
 describe("seed real seed/books/livros-ia.json (#1744)", () => {

@@ -190,7 +190,7 @@ export function renderLivrosPage(books: Book[]): string {
 <style>
   :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; --rule: ${RULE}; }
   * { box-sizing: border-box; }
-  body { font-family: ${SERIF}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
+  body { font-family: ${SANS}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
     -webkit-font-smoothing: antialiased; }
   a { color: inherit; }
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
@@ -212,7 +212,7 @@ export function renderLivrosPage(books: Book[]): string {
   .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
     color: var(--ink); display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
-  .filters select { font-family: ${SERIF}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
+  .filters select { font-family: ${SANS}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
     border: 0; border-bottom: 1px solid var(--rule); background: transparent; min-width: 140px; cursor: pointer;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
