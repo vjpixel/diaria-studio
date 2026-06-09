@@ -107,7 +107,7 @@ async function runOne(
   const topicFilter = src.filter
     ? src.filter.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
-  const effectiveDays = src.low_cadence ? LOW_CADENCE_DAYS : days;
+  const effectiveDays = src.low_cadence ? Math.max(days, LOW_CADENCE_DAYS) : days;
 
   try {
     // Promise.race com timeout custom
@@ -137,9 +137,12 @@ async function runOne(
 
     // #1992: mark the N most-recent articles from low-cadence sources so
     // filter-date-window keeps them regardless of the date window.
-    let mappedArticles = articles.map((a) => ({ ...a, source: src.name }));
+    let mappedArticles: (Article & { source: string; bypass_date_window?: boolean })[] = articles.map((a) => ({ ...a, source: src.name }));
     if (src.low_cadence) {
-      mappedArticles = markLowCadenceBypass(mappedArticles, LOW_CADENCE_TOP_N) as typeof mappedArticles;
+      if (articles.length === 0) {
+        console.warn(`[fetch-rss-batch] low-cadence source "${src.name}" returned 0 articles — feed may not retain ${LOW_CADENCE_DAYS}-day history`);
+      }
+      mappedArticles = markLowCadenceBypass(mappedArticles, LOW_CADENCE_TOP_N);
     }
     const out: RunRecord = {
       source: src.name,
