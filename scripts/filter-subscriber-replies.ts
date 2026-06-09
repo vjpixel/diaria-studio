@@ -25,6 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 
 export interface CapturedReply {
   thread_id?: string;
@@ -44,9 +45,19 @@ export interface CapturedReply {
 const AUTOMATED_FROM_RE =
   /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce|beehiiv|mailchimp|substack\.com|sendgrid|unsubscribe@)/i;
 
-/** Endereços do próprio editor — não rascunhar resposta a si mesmo. */
-const EDITOR_FROM_RE =
-  /(vjpixel@gmail\.com|pixel@memelab\.com\.br|diariaeditor@gmail\.com)/i;
+/**
+ * Endereços do próprio editor — não rascunhar resposta a si mesmo.
+ * #1969: comparados via `canonicalizeGmail`, então as variantes Gmail com ponto
+ * / `+tag` (`diaria.editor@`, `vj.pixel@`, `diariaeditor+x@`) casam sozinhas —
+ * sem precisar listar cada forma na regex (que antes só tinha `diariaeditor@`).
+ */
+const EDITOR_ADDRESSES = ["vjpixel@gmail.com", "pixel@memelab.com.br", "diariaeditor@gmail.com"];
+const EDITOR_CANON = new Set(EDITOR_ADDRESSES.map((a) => canonicalizeGmail(a)));
+
+/** `true` se o e-mail é de um endereço do editor (canonicalizado). */
+export function isEditorAddress(email: string): boolean {
+  return EDITOR_CANON.has(canonicalizeGmail(email));
+}
 
 /**
  * Prefixo de resposta — cobre `Re:`, `RE :`, `Res:` (Outlook PT-BR) e `Re[2]:`
@@ -75,7 +86,7 @@ export function looksLikeSubscriberReply(msg: {
   const email = extractEmail(msg.from ?? "");
   if (!email) return false;
   if (AUTOMATED_FROM_RE.test(email)) return false;
-  if (EDITOR_FROM_RE.test(email)) return false;
+  if (isEditorAddress(email)) return false;
   return true;
 }
 

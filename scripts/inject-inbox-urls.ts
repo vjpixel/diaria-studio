@@ -38,6 +38,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { basename, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
+import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 import { writeMarker } from "./lib/pipeline-state.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
@@ -159,10 +160,15 @@ export function parseInboxMd(text: string): InboxBlock[] {
   return blocks;
 }
 
-/** Filtra blocos enviados pelo editor (com base no e-mail). */
+/**
+ * Filtra blocos enviados pelo editor (com base no e-mail).
+ * #1969: compara via `canonicalizeGmail` — `diaria.editor@` e `diariaeditor@`
+ * (dot/+tag/case) são a mesma caixa. Antes era `toLowerCase().includes()`,
+ * que tratava a forma com ponto como remetente diferente.
+ */
 export function filterEditorBlocks(blocks: InboxBlock[], editorEmail: string): InboxBlock[] {
-  const lower = editorEmail.toLowerCase();
-  return blocks.filter((b) => b.from.toLowerCase().includes(lower));
+  const canon = canonicalizeGmail(editorEmail);
+  return blocks.filter((b) => canonicalizeGmail(b.from) === canon);
 }
 
 /** Tracking-only URLs that aren't actual content (Beehiiv tracking, redirects, image CDNs). */
@@ -242,8 +248,8 @@ export function extractEditorUrls(blocks: InboxBlock[]): SyntheticInboxArticle[]
  * conforme regra `feedback_aggregators.md`.
  */
 export function filterNewsletterBlocks(blocks: InboxBlock[], editorEmail: string): InboxBlock[] {
-  const lower = editorEmail.toLowerCase();
-  return blocks.filter((b) => !b.from.toLowerCase().includes(lower));
+  const canon = canonicalizeGmail(editorEmail);
+  return blocks.filter((b) => canonicalizeGmail(b.from) !== canon);
 }
 
 /**
