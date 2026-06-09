@@ -17,6 +17,9 @@ import {
   lintRelativeTime as rtDirect,
 } from "../scripts/lib/lint-checks/relative-time.ts";
 import {
+  lintCalloutPlacement as cpDirect,
+} from "../scripts/lib/lint-checks/callout-placement.ts";
+import {
   checkWhyMattersFormat as wmDirect,
 } from "../scripts/lib/lint-checks/why-matters-format.ts";
 import {
@@ -53,6 +56,7 @@ import {
 import {
   lintMultilineLinks as mlReexport,
   lintRelativeTime as rtReexport,
+  lintCalloutPlacement as cpReexport,
   checkWhyMattersFormat as wmReexport,
   checkEaiSection as eaiReexport,
   checkCoverageLine as covReexport,
@@ -73,6 +77,7 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
   it("re-export de lint-newsletter-md é a MESMA função do módulo", () => {
     assert.strictEqual(mlReexport, mlDirect);
     assert.strictEqual(rtReexport, rtDirect);
+    assert.strictEqual(cpReexport, cpDirect);
     assert.strictEqual(wmReexport, wmDirect);
     assert.strictEqual(eaiReexport, eaiDirect);
     assert.strictEqual(covReexport, covDirect);
@@ -100,6 +105,64 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.matches[0].word.toLowerCase(), "ontem");
     assert.equal(rtDirect("A OpenAI lançou em 1º de junho.").ok, true);
+  });
+
+  it("callout-placement: módulo auto-contido funciona standalone (#1972)", () => {
+    // Callout dentro da seção do D1 (antes do `---`) → flag.
+    const misplaced = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "Corpo.",
+      "",
+      "**📣 Box da Clarice. [Acesse](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(cpDirect(misplaced).ok, false);
+    assert.equal(cpDirect(misplaced).matches[0].line, 7);
+    // Callout isolado em sua própria seção entre dois `---` → ok.
+    const ok = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "[Título](https://x.com)",
+      "",
+      "Corpo.",
+      "",
+      "---",
+      "",
+      "**📣 Box da Clarice. [Acesse](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(cpDirect(ok).ok, true);
+    // introCallout (🎉/📣 antes do 1º DESTAQUE) NÃO é flag.
+    const intro = ["**🎉 Sorteio ao vivo hoje!**", "", "---", "", "**DESTAQUE 1 | LANÇAMENTO**"].join(
+      "\n",
+    );
+    assert.equal(cpDirect(intro).ok, true);
+    // Separador com espaço final `--- ` NÃO splita pro parseDestaques (/^---$/m
+    // sem trim) → o callout seguinte É absorvido no D1. O lint precisa ser
+    // estrito igual: flag (senão falso-negativo — passa, mas o render quebra).
+    const trailingSpaceSep = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "Corpo.",
+      "",
+      "--- ", // ← espaço final: NÃO é separador pro render
+      "",
+      "**📣 Box da Clarice. [Acesse](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(cpDirect(trailingSpaceSep).ok, false);
   });
 
   it("why-matters-format: módulo auto-contido funciona standalone", () => {

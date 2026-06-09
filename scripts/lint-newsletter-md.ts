@@ -37,6 +37,7 @@ import {
 } from "./lib/lint-checks/url-bucket.ts";
 import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
+import { lintCalloutPlacement } from "./lib/lint-checks/callout-placement.ts";
 import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
 import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
 import { checkCoverageLine } from "./lib/lint-checks/coverage-line-format.ts";
@@ -63,6 +64,11 @@ export {
   type RelativeTimeMatch,
   type RelativeTimeResult,
 } from "./lib/lint-checks/relative-time.ts";
+export {
+  lintCalloutPlacement,
+  type CalloutPlacementMatch,
+  type CalloutPlacementResult,
+} from "./lib/lint-checks/callout-placement.ts";
 export {
   checkWhyMattersFormat,
   type WhyMattersError,
@@ -573,6 +579,36 @@ intentional_error:
           `  linha ${m.line}: relative_time: '${m.word}' encontrado — edição publica D+1, use data absoluta\n    contexto: "...${m.context}..."`,
         );
       }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
+  // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
+  if (args.check === "callout-placement") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check callout-placement --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = lintCalloutPlacement(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.matches.length} callout(s) colado(s) dentro de uma seção de DESTAQUE:`,
+      );
+      for (const m of result.matches) {
+        console.error(`  linha ${m.line}: "${m.context}"`);
+      }
+      console.error(
+        `\n   Fix: mova o callout pra sua PRÓPRIA seção, isolada entre o \`---\` que fecha o D1 e o \`---\` que abre o D2. (O render já de-duplica — #1972 Opção A — mas o MD deve ficar correto.)`,
+      );
       process.exit(1);
     }
     return;
