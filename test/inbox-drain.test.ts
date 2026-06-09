@@ -28,6 +28,9 @@ describe("#1973 — OAuth expirado vs falha transiente", () => {
     assert.equal(isAuthExpiredError("invalid_grant"), true);
     assert.equal(isAuthExpiredError("Token has been expired or revoked"), true);
     assert.equal(isAuthExpiredError("Invalid Credentials"), true);
+    // code-review #1973: 401 moderno do Google (UNAUTHENTICATED)
+    assert.equal(isAuthExpiredError("Request had invalid authentication credentials. Expected OAuth 2 access token"), true);
+    assert.equal(isAuthExpiredError("401 UNAUTHENTICATED"), true);
     // transiente → false
     assert.equal(isAuthExpiredError("ECONNRESET socket hang up"), false);
     assert.equal(isAuthExpiredError("503 backend error"), false);

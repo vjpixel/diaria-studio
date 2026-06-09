@@ -305,7 +305,11 @@ export const EMPTY_DRAIN_WARN_THRESHOLD = 3;
  * (`invalid_grant` etc.) — distinto de um erro transiente de rede. Pure.
  */
 export function isAuthExpiredError(errorMsg: string): boolean {
-  return /invalid_grant|token has been expired or revoked|invalid credentials|unauthorized|invalid_token/i.test(
+  // Cobre o legado (`invalid_grant`, `Invalid Credentials`) E o 401 moderno do
+  // Google (`Request had invalid authentication credentials`, `UNAUTHENTICATED`)
+  // — code-review #1973: sem a forma moderna, um token morto que surge como 401
+  // UNAUTHENTICATED viraria `search_failed` genérico (false-negative).
+  return /invalid_grant|token has been expired or revoked|invalid[_ ]?(authentication )?credentials|unauthenticated|unauthorized|invalid_token/i.test(
     errorMsg,
   );
 }
