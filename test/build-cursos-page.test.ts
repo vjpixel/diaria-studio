@@ -8,6 +8,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   validateCourses,
@@ -177,6 +180,14 @@ describe("renderCursosPage (#1745)", () => {
     assert.ok(html.includes('"deep-learning":"Deep Learning"'), "tema en no mapa");
   });
 
+  it("badge de idioma SEM teal (#1994 followup — pedido do editor 2026-06-09)", () => {
+    // O editor pediu pra remover o teal do badge de idioma: ele volta ao estilo
+    // padrão .badge (texto ink + borda bege). A classe `badge--lang` segue
+    // emitida no HTML (hook semântico), mas sem override de cor teal.
+    assert.doesNotMatch(html, /\.badge--lang\s*\{[^}]*var\(--teal\)/, "badge--lang não pode reintroduzir o override teal");
+    assert.match(html, /class="badge badge--lang"/, "a classe badge--lang segue no HTML (hook)");
+  });
+
   it("papéis de fonte do DS: CORPO em Geist sans, TÍTULOS em Georgia serif", () => {
     // DS canônico (#1936): serif (Georgia) SÓ em manchetes/títulos; corpo + UI =
     // sans (Geist). Pedido do editor 2026-06-09: o body herdava Georgia (serif),
@@ -187,5 +198,20 @@ describe("renderCursosPage (#1745)", () => {
     assert.match(html, /\.filters select\s*\{\s*font-family:\s*'Geist'/, "dropdown (UI) deve ser Geist sans");
     // o body NÃO pode voltar a ser serif (regressão do pedido do editor).
     assert.doesNotMatch(html, /body\s*\{\s*font-family:\s*Georgia/, "body não pode ser serif");
+  });
+});
+
+describe("seed cursos — títulos sem sufixo de idioma/código (#1994 followup)", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const seed = JSON.parse(readFileSync(resolve(ROOT, "seed/courses/cursos-ia.json"), "utf8")) as {
+    courses: Array<{ id: string; title: string }>;
+  };
+  const byId = Object.fromEntries(seed.courses.map((c) => [c.id, c.title]));
+
+  it("o título do curso PT-BR não traz mais o sufixo '(PT-BR)' (idioma vai no badge/filtro)", () => {
+    assert.equal(byId["deeplearning-introducao-genai-ptbr"], "Introdução à IA generativa");
+  });
+  it("o título do MIT não traz mais o código '(6.036)'", () => {
+    assert.equal(byId["mit-ocw-machine-learning"], "Introduction to Machine Learning");
   });
 });
