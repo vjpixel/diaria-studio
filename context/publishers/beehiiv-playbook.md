@@ -238,6 +238,19 @@ if (!isFieldVerified(post.title, newTitle)) {
 
 **⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. O `isFieldVerified` cobre isso. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
 
+#### 4a-bis. Setar slug SEO acent-correto (#1989)
+
+Se não setado, a Beehiiv auto-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`) — slug quebrado prejudica SEO/UX/compartilhamento. Computar o slug acent-correto e setá-lo em **Settings → SEO/URL slug** do post:
+
+```typescript
+import { seoSlug, seoMetaDescription } from "scripts/lib/slug.ts";
+const slug = seoSlug(title);             // ex: "empregos-e-automacao-panico-vs-dados"
+const metaDesc = seoMetaDescription(title, subtitle); // ≤155ch
+// Setar o campo de slug do post nas configurações (Beehiiv: post settings → SEO).
+```
+
+(Opcional mas recomendado; o campo de slug fica em post settings. Medição do impacto via `scripts/seo-pull.ts` — GSC, ver #1896/#1989.)
+
 #### 4b. Aplicar a cover image — DataTransfer (#1801 / #1500)
 
 Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Método primário (validado ao vivo 260602/260604):** `DataTransfer` no `input[type=file]` do editor + `.click()` na img recém-subida, que aplica **automático** (sem botão Insert) — porque o upload veio do próprio input do editor (user-activation context).

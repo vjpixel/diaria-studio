@@ -42,6 +42,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.labels",
   "https://www.googleapis.com/auth/gmail.modify", // para criar labels
+  "https://www.googleapis.com/auth/webmasters.readonly", // #1989: GSC Search Analytics (seo-pull)
 ];
 
 function buildAuthUrl(clientId: string): string {
