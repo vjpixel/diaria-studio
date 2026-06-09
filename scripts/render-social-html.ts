@@ -72,7 +72,6 @@ export function loadImageMap(imagesPath: string | null): ImageLoadResult {
   }
 }
 
-
 export interface Post {
   destaque: string;
   main: string;
