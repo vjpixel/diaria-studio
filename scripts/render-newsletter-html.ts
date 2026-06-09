@@ -1001,7 +1001,7 @@ export function renderIntroCallout(text: string): string {
   if (paras.length > 1) {
     // multi-parágrafo: 1º = título serif (marcador 📣/📚/🎉 removido), demais = corpo normal.
     const title = stripCalloutMarker(paras[0]);
-    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:22px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
+    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
     const bodyHtml = paras
       .slice(1)
       .map(
@@ -1163,7 +1163,7 @@ function renderEIA(eia: EIA): string {
   ${renderKicker("É IA?")}
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
-      <p style="margin:0;font-family:${FONT_HEADING};font-size:22px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
+      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;"><tr>
         ${eiaChoice("A", eia.imageA, "a")}
         ${eiaChoice("B", eia.imageB, "b")}
