@@ -7,7 +7,8 @@
  * filtros client-side inline) servido pelo Worker `cursos`.
  *
  * Espelha `build-livros-page.ts` (#1744) — mesmo design editorial Diar.ia
- * (Newsreader serif, accent teal, fundo creme), cards text-focused — mas com o
+ * (#1936/#1935: DS canônico — Georgia serif, accent teal #00A0A0, papel #FBFAF6,
+ * molduras bege #EBE5D0, texto ink), cards text-focused — mas com o
  * conjunto completo de filtros: idioma, nível, custo, formato, duração,
  * plataforma, certificado e tema. Cada dropdown só aparece se houver ≥2 valores
  * distintos (ex: se todos os cursos forem gratuitos, o filtro de custo some).
@@ -23,17 +24,23 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { slugify } from "./lib/slug.ts"; // #1989: single source
+import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936/#1935: DS canônico
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
 const DEFAULT_OUT = resolve(ROOT, "data/cursos/index.html");
 
-const TEAL = "#00A0A0";
-const INK = "#1A1A1A";
-const PAPER = "#F5F1E8";
-const CARD_BG = "#FFFDF8";
-const SERIF = "'Newsreader', Georgia, 'Times New Roman', serif";
-const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+// #1936/#1935: DS canônico (vjpixel/diaria-design via lib/design-tokens.ts).
+// Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
+// antigo) — agora os MESMOS tokens da diária/mensal/É IA?: teal #00A0A0,
+// Georgia, papel #FBFAF6, tinta #171411, molduras bege #EBE5D0.
+const TEAL = COLORS.brand; // #00A0A0
+const INK = COLORS.ink; // #171411
+const PAPER = COLORS.paper; // #FBFAF6
+const CARD_BG = COLORS.paper; // card = papel (sem off-white ad-hoc)
+const RULE = COLORS.rule; // #EBE5D0 — molduras/bordas hairline
+const SERIF = FONTS.serif; // Georgia (email-safe + canônico)
+const SANS = FONTS.sans; // Geist → cai pra system sans
 
 export type Language = "pt-br" | "en";
 export type Level = "iniciante" | "intermediario" | "avancado";
@@ -226,7 +233,7 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
 
 /**
  * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
- * cursos, devolve HTML self-contained (só a fonte Newsreader vem externa).
+ * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
 export function renderCursosPage(courses: Course[]): string {
   const cards = courses.map(renderCard).join("\n");
@@ -279,11 +286,8 @@ export function renderCursosPage(courses: Course[]): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cursos sobre IA · Diar.ia</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&display=swap">
 <style>
-  :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; }
+  :root { --teal: ${TEAL}; --ink: ${INK}; --paper: ${PAPER}; --card: ${CARD_BG}; --rule: ${RULE}; }
   * { box-sizing: border-box; }
   body { font-family: ${SERIF}; margin: 0; background: var(--paper); color: var(--ink); line-height: 1.55;
     -webkit-font-smoothing: antialiased; }
@@ -298,27 +302,27 @@ export function renderCursosPage(courses: Course[]): string {
     letter-spacing: -0.02em; margin: 0; }
   h1 .dot { color: var(--teal); }
   .tagline { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
-    color: #6b6256; margin: 18px 0 0; }
-  .lede { font-size: 19px; line-height: 1.5; color: #4a443b; max-width: 64ch; margin: 16px 0 0; }
-  .lede + .lede { margin-top: 10px; font-size: 16px; color: #6b6256; }
+    color: var(--ink); margin: 18px 0 0; }
+  .lede { font-size: 19px; line-height: 1.5; color: var(--ink); max-width: 64ch; margin: 16px 0 0; }
+  .lede + .lede { margin-top: 10px; font-size: 16px; color: var(--ink); }
 
   .filters { position: sticky; top: 0; z-index: 5; background: var(--paper);
-    border-bottom: 1px solid #ddd6c6; margin-top: 40px; }
+    border-bottom: 1px solid var(--rule); margin-top: 40px; }
   .filters .wrap { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 22px; padding-top: 16px; padding-bottom: 16px; }
   .filters label { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: #8a8170; display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+    color: var(--ink); display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
   .filters select { font-family: ${SERIF}; font-size: 16px; color: var(--ink); padding: 7px 28px 7px 2px;
-    border: 0; border-bottom: 1px solid #c9c1ae; background: transparent; min-width: 130px; cursor: pointer;
+    border: 0; border-bottom: 1px solid var(--rule); background: transparent; min-width: 130px; cursor: pointer;
     appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2300A0A0' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 4px center; }
   .filters select:focus { outline: none; border-bottom-color: var(--teal); }
   .count { margin-left: auto; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.16em;
-    text-transform: uppercase; color: #8a8170; align-self: flex-end; }
+    text-transform: uppercase; color: var(--ink); align-self: flex-end; }
 
   main { padding: 40px 0 64px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 1px;
-    background: #e3ddcd; border: 1px solid #e3ddcd; }
+    background: var(--rule); border: 1px solid var(--rule); }
   .card { background: var(--card); display: flex; flex-direction: column; padding: 26px 28px; }
   .title-row { display: flex; gap: 14px; align-items: baseline; justify-content: space-between; }
   .title-row h2 { font-family: ${SERIF}; font-size: 22px; font-weight: 600; line-height: 1.14;
@@ -326,23 +330,23 @@ export function renderCursosPage(courses: Course[]): string {
   .title-row h2 a { text-decoration: none; }
   .title-row h2 a:hover { color: var(--teal); }
   .note { font-family: ${SANS}; font-size: 13px; font-weight: 700; color: var(--teal); white-space: nowrap; }
-  .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: #8a8170; margin: 6px 0 0; }
+  .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
   .badge { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: #6b6256; border: 1px solid #d8d1c0; padding: 4px 9px; border-radius: 2px; }
+    color: var(--ink); border: 1px solid var(--rule); padding: 4px 9px; border-radius: 2px; }
   .badge--lang { border-color: var(--teal); color: var(--teal); }
-  .badge--cert { border-color: #b08900; color: #8a6d00; }
-  .summary { font-size: 16px; line-height: 1.5; color: #3f3a32; margin: 14px 0 18px; flex: 1; }
+  .badge--cert { border-color: var(--ink); color: var(--ink); }
+  .summary { font-size: 16px; line-height: 1.5; color: var(--ink); margin: 14px 0 18px; flex: 1; }
   .cta { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
     font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
     border-bottom: 1px solid transparent; padding-bottom: 2px; }
   .cta:hover { border-bottom-color: var(--teal); }
-  .cta--off { color: #b3ab98; font-weight: 600; }
-  .empty { grid-column: 1 / -1; text-align: center; color: #8a8170; padding: 64px 20px;
+  .cta--off { color: var(--ink); font-weight: 600; }
+  .empty { grid-column: 1 / -1; text-align: center; color: var(--ink); padding: 64px 20px;
     font-size: 18px; background: var(--card); }
-  footer { border-top: 1px solid #ddd6c6; }
+  footer { border-top: 1px solid var(--rule); }
   footer .wrap { padding: 24px 28px; font-family: ${SANS}; font-size: 11px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: #9a9180; }
+    text-transform: uppercase; color: var(--ink); }
 </style>
 </head>
 <body>
