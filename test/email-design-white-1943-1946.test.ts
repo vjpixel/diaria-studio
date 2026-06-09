@@ -85,6 +85,16 @@ describe("e-mail diário — fundo branco + laterais sem bege + largura (#1943/#
     assert.match(full, /<body style="margin:0; padding:0; background:#FFFFFF;">/);
     assert.doesNotMatch(full, /background:#EBE5D0;"><tr><td align="center"/);
   });
+
+  it("#1952: fragmento (Beehiiv/Worker) seta body branco no <style> — sem canvas cinza", () => {
+    // O fragmento (sem fullDocument) é o que o Worker hospeda E o que é colado
+    // no Beehiiv. Sem <body> próprio, o preview dependia do default do browser e
+    // o Beehiiv pintava o canvas cinza. A regra body{background:#FFFFFF} no
+    // <style> compartilhado fixa o preview e — se o Beehiiv honrar o snippet —
+    // sobrepõe o canvas.
+    const frag = renderHTML(dailyFixture); // fullDocument: false (default)
+    assert.match(frag, /body\s*\{[^}]*background:#FFFFFF;[^}]*\}/);
+  });
 });
 
 describe("encerramento — crédito da Clarice usa NEWS25/NEWS50 (#1946)", () => {
