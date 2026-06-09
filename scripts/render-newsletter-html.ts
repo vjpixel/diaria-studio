@@ -1186,6 +1186,8 @@ function renderEIA(eia: EIA): string {
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
   const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
+  // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
+  const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
 
   // #1630: "Resultado da última edição: X% acertaram" — DS: sans 12px bold
   // uppercase teal, no rodapé do painel.
@@ -1220,6 +1222,7 @@ function renderEIA(eia: EIA): string {
         <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
       </td></tr>${prevResultHtml}
 ${leaderboardRow}
+${leaderboardLinkRow}
       </table>
     </td>
   </tr></table>
@@ -1283,6 +1286,22 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
         <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
+      </td></tr>`;
+}
+
+/**
+ * Pure (#1970): link PERSISTENTE pra leaderboard pública no rodapé do É IA?.
+ * Renderiza em TODA edição (não só na 1ª do mês — o pódio/convite de
+ * `renderLeaderboardTop1Row` é 1ª-do-mês, #1753). Estático, sem fetch: aponta
+ * pra raiz `/leaderboard` (sempre mostra o ranking vigente, sem precisar do
+ * slug do mês). Dá ao leitor um ponto de entrada estável pro ranking de quem
+ * mais acerta o "É IA?" toda edição.
+ */
+export function renderLeaderboardLinkRow(paragraphStyle: string): string {
+  const url = `${POLL_WORKER_URL}/leaderboard`;
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
+  return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">leaderboard</a></p>
       </td></tr>`;
 }
 
