@@ -27,12 +27,21 @@ for (const row of data) {
   byType.get(type)!.push(row);
 }
 
+/**
+ * #1987: `site:{host}` SEM path. O `site:{host}/path` path-scoped sub-retornava
+ * no backend de busca — fontes com path (OpenAI Cookbook /cookbook, LangChain
+ * /blog, W&B /fully-connected, Pinecone /learn) davam 0 resultados apesar de
+ * vivas. Host-only retorna; a relevância vem da query (`AI OR "inteligência
+ * artificial"`) + topic_filter + categorize + score downstream. (Path-filter
+ * estrito foi DESCARTADO: os tutoriais do W&B moram em sub-paths de autor
+ * `wandb.ai/wandb_fc/...`, não só `/fully-connected` — um filtro de path os
+ * excluiria. Auditoria #1971/#1987.)
+ */
 function siteQuery(url: string): string {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, "");
-    const path = u.pathname.replace(/\/$/, "");
-    return path && path !== "/" ? `site:${host}${path}` : `site:${host}`;
+    return `site:${host}`;
   } catch {
     return `site:${url}`;
   }

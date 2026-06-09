@@ -25,6 +25,23 @@ describe("sources RSS fixes (#1266)", () => {
   const sources = parseSourcesMd(md);
   const byName = new Map(sources.map((s) => [s.name, s]));
 
+  it("#1987: site_query é host-only (sem path) — path-scoping sub-retornava", () => {
+    // OpenAI Cookbook /cookbook, LangChain /blog, W&B /fully-connected, Pinecone
+    // /learn davam 0 resultados path-scoped apesar de vivas. Host-only retorna.
+    const withQuery = sources.filter((s) => s.site_query);
+    assert.ok(withQuery.length > 0, "deve haver fontes com site_query");
+    for (const s of withQuery) {
+      assert.doesNotMatch(
+        s.site_query!,
+        /^site:[^/\s]+\//,
+        `${s.name}: site_query deve ser host-only (sem path) — '${s.site_query}'`,
+      );
+    }
+    // sanity: as 4 que eram path-scoped agora host-only
+    assert.equal(byName.get("OpenAI Cookbook")?.site_query, "site:developers.openai.com");
+    assert.equal(byName.get("Weights & Biases")?.site_query, "site:wandb.ai");
+  });
+
   it("Apple ML Research usa rss.xml (não rss-feed.rss)", () => {
     const s = byName.get("Apple Machine Learning Research");
     assert.ok(s, "Apple ML Research deve existir em sources.md");
