@@ -507,4 +507,20 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
       cleanup();
     }
   });
+
+  it("code-review: callout 📚/🎉 pré-existente também suprime injeção (não cria 2º midCallout)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // um 📚 (livros) já na região do D1 → NÃO injetar 📣 (dois midCallouts orfanariam um)
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**📚 Curadoria de livros [ver](https://livros.diaria.workers.dev)**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.ok(!out.includes("📣"), "não injeta 📣 quando já há 📚");
+      assert.equal((out.match(/📚/g) || []).length, 1);
+    } finally {
+      cleanup();
+    }
+  });
 });

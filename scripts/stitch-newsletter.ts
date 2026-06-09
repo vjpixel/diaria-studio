@@ -202,7 +202,12 @@ export function stitchNewsletter(input: StitchInput): string {
   // Idempotente: pula se D1/D2 já trazem um `**📣 …**` (editor já colou à mão, ou
   // re-run). Kill-switch: sponsor=false. Graceful: snippet ausente → sem callout.
   const wantSponsor = input.sponsor !== false;
-  const alreadyHasCallout = /\*\*\s*📣/.test(d1) || /\*\*\s*📣/.test(d2);
+  // Code-review #1938: casa QUALQUER marcador de callout (📣/📚/🎉), não só 📣 —
+  // se um 📚 (livros) ou 🎉 (sorteio) já estiver na região do D1, um 2º callout
+  // 📣 criaria dois midCallouts (extractMidCallout só renderiza o 1º, o outro
+  // orfana). Qualquer callout pré-existente suprime a injeção.
+  const calloutRe = /\*\*\s*(?:📣|📚|🎉)/;
+  const alreadyHasCallout = calloutRe.test(d1) || calloutRe.test(d2);
   const clariceCallout = wantSponsor && !alreadyHasCallout ? loadClariceCallout() : null;
 
   const parts: string[] = [
