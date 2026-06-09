@@ -6,48 +6,48 @@
 
 ### Canaltech (IA)
 - URL: https://canaltech.com.br/inteligencia-artificial/
-- Site query: `site:canaltech.com.br/inteligencia-artificial`
+- Site query: `site:canaltech.com.br`
 - RSS: https://canaltech.com.br/rss/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### Exame
 - URL: https://exame.com/inteligencia-artificial/
-- Site query: `site:exame.com/inteligencia-artificial`
+- Site query: `site:exame.com`
 - RSS: https://exame.com/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### G1 Tecnologia (IA)
 - URL: https://g1.globo.com/tecnologia/
-- Site query: `site:g1.globo.com/tecnologia`
+- Site query: `site:g1.globo.com`
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### MIT Technology Review Brasil (IA)
 - URL: https://mittechreview.com.br/category/inteligencia-artificial/
-- Site query: `site:mittechreview.com.br/category/inteligencia-artificial`
+- Site query: `site:mittechreview.com.br`
 - RSS: https://mittechreview.com.br/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### Tecnoblog (IA)
 - URL: https://tecnoblog.net/topico/inteligencia-artificial/
-- Site query: `site:tecnoblog.net/topico/inteligencia-artificial`
+- Site query: `site:tecnoblog.net`
 - RSS: https://tecnoblog.net/tema/inteligencia-artificial/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### CNN
 - URL: https://www.cnnbrasil.com.br/tudo-sobre/inteligencia-artificial/
-- Site query: `site:cnnbrasil.com.br/tudo-sobre/inteligencia-artificial`
+- Site query: `site:cnnbrasil.com.br`
 - RSS: https://www.cnnbrasil.com.br/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### StartSe (IA)
 - URL: https://www.startse.com/noticias/ia/
-- Site query: `site:startse.com/noticias/ia`
+- Site query: `site:startse.com`
 
 ## Primária
 
 ### Meta AI Blog
 - URL: https://ai.meta.com/blog/
-- Site query: `site:ai.meta.com/blog`
+- Site query: `site:ai.meta.com`
 
 ### Google
 - URL: https://blog.google/
@@ -56,11 +56,11 @@
 
 ### Cohere Blog
 - URL: https://cohere.com/blog
-- Site query: `site:cohere.com/blog`
+- Site query: `site:cohere.com`
 
 ### DeepMind
 - URL: https://deepmind.google/research/publications/
-- Site query: `site:deepmind.google/research/publications`
+- Site query: `site:deepmind.google`
 - RSS: https://deepmind.google/blog/rss.xml
 
 ### Hugging Face Blog
@@ -75,11 +75,11 @@
 
 ### Microsoft
 - URL: https://microsoft.ai/news/
-- Site query: `site:microsoft.ai/news`
+- Site query: `site:microsoft.ai`
 
 ### Mistral AI News
 - URL: https://mistral.ai/news/
-- Site query: `site:mistral.ai/news`
+- Site query: `site:mistral.ai`
 
 ### Nvidia
 - URL: https://blogs.nvidia.com/
@@ -88,7 +88,7 @@
 
 ### OpenAI
 - URL: https://openai.com/news/company-announcements/
-- Site query: `site:openai.com/news/company-announcements`
+- Site query: `site:openai.com`
 - RSS: https://openai.com/news/rss.xml
 
 ### Anthropic
@@ -114,7 +114,7 @@
 
 ### TLDR AI
 - URL: https://tldr.tech/ai
-- Site query: `site:tldr.tech/ai`
+- Site query: `site:tldr.tech`
 - RSS: https://tldr.tech/api/rss/ai
 
 ### Ben's Bites
@@ -128,17 +128,17 @@
 
 ### Reuters
 - URL: https://www.reuters.com/technology/artificial-intelligence/
-- Site query: `site:reuters.com/technology/artificial-intelligence`
+- Site query: `site:reuters.com`
 
 ### The Guardian (AI)
 - URL: https://www.theguardian.com/technology/artificialintelligenceai
-- Site query: `site:theguardian.com/technology/artificialintelligenceai`
+- Site query: `site:theguardian.com`
 - RSS: https://www.theguardian.com/technology/artificialintelligenceai/rss
 - Topic filter: AI,IA,artificial intelligence,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### The Rundown AI
 - URL: https://www.therundown.ai/archive
-- Site query: `site:therundown.ai/archive`
+- Site query: `site:therundown.ai`
 - RSS: https://rss.beehiiv.com/feeds/2R3C6Bt5wj.xml
 
 ### Evolving AI
@@ -176,7 +176,7 @@
 
 ### DeepLearning.ai The Batch
 - URL: https://www.deeplearning.ai/the-batch/
-- Site query: `site:deeplearning.ai/the-batch`
+- Site query: `site:deeplearning.ai`
 - Use Melhor: sim
 
 ### Latent Space
@@ -187,19 +187,19 @@
 
 ### Google AI for Developers Blog
 - URL: https://developers.googleblog.com/en/ai/
-- Site query: `site:developers.googleblog.com/en/ai`
+- Site query: `site:developers.googleblog.com`
 - RSS: https://feeds.feedburner.com/GDBcode
 - Use Melhor: sim
 
 ### AWS Machine Learning Blog
 - URL: https://aws.amazon.com/blogs/machine-learning/
-- Site query: `site:aws.amazon.com/blogs/machine-learning`
+- Site query: `site:aws.amazon.com`
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
 - Use Melhor: sim
 
 ### OpenAI Cookbook
 - URL: https://developers.openai.com/cookbook
-- Site query: `site:developers.openai.com/cookbook`
+- Site query: `site:developers.openai.com`
 - Use Melhor: sim
 
 ### Sebastian Raschka (Ahead of AI)
@@ -210,12 +210,12 @@
 
 ### LangChain Blog
 - URL: https://www.langchain.com/blog
-- Site query: `site:langchain.com/blog`
+- Site query: `site:langchain.com`
 - Use Melhor: sim
 
 ### Pinecone Learn
 - URL: https://www.pinecone.io/learn/
-- Site query: `site:pinecone.io/learn`
+- Site query: `site:pinecone.io`
 - Use Melhor: sim
 
 ### Hamel Husain
