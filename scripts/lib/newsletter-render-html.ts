@@ -1,0 +1,854 @@
+/**
+ * newsletter-render-html.ts (#1889)
+ *
+ * Render phase: NewsletterContent → HTML.
+ * Extracted from render-newsletter-html.ts — byte-identical functions.
+ */
+
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { escHtml as esc } from "./html-escape.ts"; // #1990
+import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
+import {
+  displaySectionName,
+} from "./section-naming.ts";
+import type {
+  RenderDestaque,
+  SectionItem,
+  Section,
+  EIA,
+  NewsletterContent,
+} from "./newsletter-parse.ts";
+import {
+  unescapeMd,
+  pickErroIntencionalReveal,
+} from "./newsletter-parse.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+// #1936: design system canônico (vjpixel/diaria-design) — valores inline via
+// scripts/lib/design-tokens.ts. Paleta de 4 cores (ink·bege·papel·teal); texto
+// sempre ink (sem cinzas — hierarquia por tamanho/peso). Teal = único acento
+// (links, kickers, marcas). Réguas/bordas = bege (--rule); ver design-tokens.ts.
+// #1943: fundo do e-mail BRANCO (override email-only). O token canônico
+// --paper (#FBFAF6) segue em design-tokens.ts pra web/mensal/É IA?; só o
+// render do e-mail diário usa branco. PAPER aqui é o fundo do container +
+// dos boxes "contorno" (Por que importa / reveal), que acompanham o fundo.
+const PAPER = "#FFFFFF"; // #1943 (era COLORS.paper #FBFAF6)
+const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA? — painéis de contraste, mantidos bege)
+// #1945: fundo EXTERNO do e-mail branco (sem as faixas bege laterais ao redor
+// do container). Antes usava SURFACE (#EBE5D0), que aparecia como bandas bege
+// à esquerda/direita em telas largas. Os painéis de contraste seguem SURFACE.
+const PAGE_BG = "#FFFFFF"; // #1945 (era SURFACE #EBE5D0 no wrapper externo)
+const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
+const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
+const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção + bordas dos boxes contorno)
+// #1936: DS usa serif Georgia SÓ em manchetes/títulos; CORPO + labels/kickers em
+// sans Geist (confirmado pelo template de email do DS + typography.css "Body & UI
+// (sans)"). Georgia é email-safe; Geist cai pra system sans em email.
+const FONT_HEADING = FONTS.serif;
+const FONT_BODY = FONTS.sans;
+const FONT_LABEL = FONTS.sans;
+// #1083: URL montada inline com edition literal + merge tags Beehiiv
+// (`{{email}}` reserved field + `{{poll_sig}}` custom field). poll_sig é
+// HMAC(email) permanente, populado 1x pelo inject-poll-sig.ts.
+// Sintaxe Beehiiv: SEM espaços, SEM prefix `subscriber.` ou `custom_fields.`
+// (validado contra docs oficiais 2026-05-11).
+const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
+
+// #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com
+// padding lateral de 32px (mobile → 24px via .pad). Os helpers abaixo retornam
+// HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
+const PAD_SECTION = "40px 32px 0"; // padrão entre seções
+const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
+
+// #1936 (DS): media query + hover do template de email. Progressive enhancement
+// (Gmail/Apple Mail honram); o design carrega nos estilos inline.
+export const DS_STYLE_BLOCK = `<style>
+  body { margin:0; padding:0; width:100% !important; background:${PAGE_BG}; }
+  img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
+  table { border-collapse:collapse; }
+  a.headline:hover { color:${TEAL} !important; }
+  @media only screen and (max-width:480px) {
+    .container { width:100% !important; }
+    .pad { padding-left:24px !important; padding-right:24px !important; }
+    .poll-col { display:block !important; width:100% !important; padding:0 !important; }
+    .poll-col-b { padding-top:12px !important; }
+    .hero { height:auto !important; }
+  }
+</style>`;
+
+export interface RenderOpts {
+  /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
+   * híbrido (Stage 4 publish-newsletter): body via ClipboardEvent + È IA?
+   * via insertContent pra preservar merge tags `{{poll_x_url}}` que TipTap
+   * normalizaria. Default false (output legado: body único com È IA? embutido). */
+  excludeEia?: boolean;
+  /** #1936 — quando `true`, embrulha o container num documento HTML completo
+   * (doctype + body branco #1945 + preheader + tabela de centralização). Usado
+   * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
+   * (fragmento pro paste no Beehiiv, que provê o shell). */
+  fullDocument?: boolean;
+}
+
+/** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
+export function stripKickerEmoji(s: string): string {
+  return s.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+}
+
+/**
+ * Remove SÓ o marcador de callout (📣/📚/🎉 + variation selector + espaço) do
+ * início. Diferente de `stripKickerEmoji`, NÃO engole `[` (markdown-link), aspas
+ * ou outros não-alfanuméricos — preservando títulos que começam com link/citação
+ * (#1942 review #4).
+ */
+export function stripCalloutMarker(s: string): string {
+  return s.replace(/^\s*(?:📣|📚|🎉)️?\s*/u, "").trim();
+}
+
+/**
+ * Convenção de marcadores de callout (#1942 review #1):
+ *   📣 = bloco PATROCINADO (anúncio) → recebe o separador "Divulgação".
+ *   🎉 = CTA/sorteio editorial · 📚 = promo interna → SEM disclosure.
+ * O disclosure é dirigido por este predicado (não pelo slot intro vs mid), então
+ * um anúncio recebe "Divulgação" tanto no topo quanto entre D1 e D2.
+ */
+export function isSponsoredCallout(text: string | null | undefined): boolean {
+  return !!text && /^\s*📣/u.test(text);
+}
+
+/** Linha do separador "Divulgação" (disclosure de patrocínio, #1940). */
+export function renderDivulgacaoSeparator(): string {
+  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker("Divulgação")}</td></tr>`;
+}
+
+/**
+ * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
+ * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
+ */
+export function renderKicker(label: string): string {
+  const clean = esc(stripKickerEmoji(label));
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};white-space:nowrap;padding-right:12px;"><span style="color:${TEAL};">&#9679;</span>&nbsp;${clean}</td>
+    <td style="width:100%;border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td>
+  </tr></table>`;
+}
+
+/** Manchete de destaque: Georgia 26px, ink, underline teal (link). HTML interno. */
+export function renderHeadlineInner(title: string, url: string): string {
+  // #1941: underline em TODAS as linhas do título multi-linha. A versão #1936
+  // usava `border-bottom` num `display:inline-block` — a borda traça só o rodapé
+  // da caixa, ou seja, embaixo da última linha. `text-decoration:underline`
+  // sublinha cada linha do texto. Mantemos a cor teal via `text-decoration-color`
+  // (honrado por Apple Mail / Gmail moderno); onde o client remove (Outlook),
+  // degrada pra cor do texto/ink — ainda sublinhado em todas as linhas, melhor
+  // que o teal só na última. `display:inline-block` preservado pro `margin-top`.
+  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
+}
+
+export function imageGeneratorCredit(): string {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    const gen = cfg.image_generator ?? "gemini";
+    const credits: Record<string, string> = {
+      gemini:     "Criada com Gemini",
+      openai:     "Criada com gpt-image-2",
+      cloudflare: "Criada com Cloudflare FLUX",
+      comfyui:    "Criada com ComfyUI",
+    };
+    return credits[gen] ?? "Criada com IA";
+  } catch {
+    return "Criada com IA";
+  }
+}
+
+/** Imagem hero (só D1) + legenda sans 12px uppercase ink (DS). HTML interno. */
+export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
+  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
+  <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
+}
+
+/** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno. */
+export function renderBodyParasInner(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .filter((p) => p.trim())
+    .map(
+      (p, i) =>
+        `<p style="margin:${i === 0 ? "18px" : "16px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${escText(p.trim())}</p>`,
+    )
+    .join("\n  ");
+}
+
+/** "Por que isso importa": box "contorno" do DS (papel + borda bege + kicker teal). HTML interno. */
+export function renderWhyBoxInner(text: string): string {
+  const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
+      <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${body}</p>
+    </td>
+  </tr></table>`;
+}
+
+/**
+ * #1093: bloco de cobertura no topo do email. Tipograficamente discreto —
+ * cinza médio, itálico, sem box ou border — pra não competir com o primeiro
+ * destaque. Aparece logo após o header gerado pelo template Beehiiv (título +
+ * subtítulo) e antes do primeiro destaque.
+ */
+export function renderCoverage(text: string): string {
+  // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
+  // seção, padding 44px 32px 8px.
+  return `<!-- INTRO (coverage) -->
+<tr><td class="pad" style="padding:44px 32px 8px;">
+  <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${escText(text)}</p>
+</td></tr>`;
+}
+
+/**
+ * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). DS: box
+ * "painel" (bege), texto peso 600. Links via processInlineLinks (underline teal).
+ */
+export function renderIntroCallout(text: string): string {
+  // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
+  // mantém o comportamento antigo (negrito, emoji preservado). Bloco
+  // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
+  // 1º parágrafo = título serif (emoji de marcação removido), demais = corpo
+  // peso normal; os links já saem em negrito via processInlineLinks.
+  const sponsored = isSponsoredCallout(text);
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  let inner: string;
+  if (paras.length > 1) {
+    // multi-parágrafo: 1º = título serif (marcador 📣/📚/🎉 removido), demais = corpo normal.
+    const title = stripCalloutMarker(paras[0]);
+    const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
+    const bodyHtml = paras
+      .slice(1)
+      .map(
+        (p, i) =>
+          `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+      )
+      .join("\n      ");
+    inner = `${titleHtml}\n      ${bodyHtml}`;
+  } else {
+    // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
+    // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
+    const single = paras[0] ?? text;
+    const only = sponsored ? stripCalloutMarker(single) : single;
+    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
+  }
+  return `<!-- #1648 intro callout (sorteio/CTA) -->
+<tr><td class="pad" style="padding:8px 32px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
+    <tr><td style="padding:16px 20px;">
+      ${inner}
+    </td></tr>
+  </table>
+</td></tr>`;
+}
+
+/**
+ * Acha os links markdown `[texto](url)` de `s` com parsing de parênteses
+ * balanceados (#1634 — a regex ingênua `\(([^)]+)\)` trunca URLs que contêm
+ * parênteses, ex: `...(1).pdf`). Retorna {url, start, end} na ordem de aparição;
+ * `end` é exclusivo (índice logo após o `)` de fechamento).
+ */
+export function findMarkdownLinks(
+  s: string,
+): { url: string; start: number; end: number }[] {
+  const out: { url: string; start: number; end: number }[] = [];
+  const linkStart = /\[[^\]]+\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(s)) !== null) {
+    const destStart = m.index + m[0].length;
+    let depth = 0;
+    let j = destStart;
+    for (; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
+    out.push({ url: s.slice(destStart, j).trim(), start: m.index, end: j + 1 });
+    linkStart.lastIndex = j + 1;
+  }
+  return out;
+}
+
+/**
+ * Box do meio (entre D1 e D2) com imagem proeminente + texto + botão CTA.
+ * Sem imagem → cai no box só-texto (renderIntroCallout). Extrai o link
+ * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
+ */
+export function renderMidCallout(text: string, imageUrl: string | null): string {
+  if (!imageUrl) return renderIntroCallout(text);
+  // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
+  // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
+  const links = findMarkdownLinks(text);
+  const link = links.length ? links[0].url : null;
+  let body = text;
+  for (let i = links.length - 1; i >= 0; i--) {
+    let { start, end } = links[i];
+    while (start > 0 && /\s/.test(body[start - 1])) start--; // engole espaço antes
+    if (body[end] === ".") end++; // e o ponto final do markdown-link
+    body = body.slice(0, start) + body.slice(end);
+  }
+  body = body.trim();
+  // esc() nos atributos: imageUrl vem do cache e link do reviewed.md — escapar
+  // `"`/`<`/`>`/`&` evita quebrar o atributo HTML (#code-review 1807).
+  const safeImg = esc(imageUrl);
+  const safeLink = link ? esc(link) : null;
+  const imgTag = `<img src="${safeImg}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
+  const cta = safeLink
+    ? `<a href="${safeLink}" style="display:inline-block;background:${TEAL};color:#ffffff;font-family:${FONT_BODY};font-weight:600;font-size:16px;text-decoration:none;padding:10px 20px;border-radius:4px;">Ver os livros &rarr;</a>`
+    : "";
+  // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
+  // título serif (marcador removido) + demais peso normal, igual ao caminho
+  // sem imagem (#1938). 1 parágrafo mantém o estilo atual (peso 600, emoji preservado).
+  const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const bodyHtml =
+    bodyParas.length > 1
+      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
+        bodyParas
+          .slice(1)
+          .map(
+            (p, i) =>
+              `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+          )
+          .join("\n      ")
+      : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
+  return `<!-- mid callout com imagem (promo página de livros) -->
+<tr><td class="pad" style="padding:8px 32px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
+    <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
+    <tr><td style="padding:16px 20px;">
+      ${bodyHtml}
+      ${cta}
+    </td></tr>
+  </table>
+</td></tr>`;
+}
+
+export function renderDestaque(d: RenderDestaque): string {
+  // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
+  // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero (só
+  // D1, #1077) → parágrafos sans → box "Por que isso importa". Sem <hr> separador
+  // (cada seção abre com seu próprio kicker).
+  const showInlineImage = d.n === 1;
+  const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
+  const inner = [
+    renderKicker(d.category),
+    renderHeadlineInner(d.title, d.url),
+    showInlineImage ? renderHeroImageInner(d.imageFile, d.title) : "",
+    renderBodyParasInner(d.body),
+    renderWhyBoxInner(d.why),
+  ].filter(Boolean).join("\n  ");
+  return `<!-- Destaque ${d.n} -->
+<tr><td class="pad" style="padding:${pad};">
+  ${inner}
+</td></tr>`;
+}
+
+export function renderEIA(eia: EIA): string {
+  const creditHtml = processInlineLinks(eia.credit);
+  // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
+  const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};`;
+  const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
+  // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
+  const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
+
+  // #1630: "Resultado da última edição: X% acertaram" — DS: sans 12px bold
+  // uppercase teal, no rodapé do painel.
+  const prevResultHtml = eia.prevResultLine
+    ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${TEAL};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
+    : "";
+
+  const buildVoteUrl = (choice: "A" | "B") =>
+    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}&sig={{poll_sig}}`;
+  // DS: imagens A/B lado a lado, poll-col empilha no mobile.
+  const eiaChoice = (choice: "A" | "B", imgFile: string, side: "a" | "b") => {
+    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="100%" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
+    const inner = eia.edition
+      ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${img}</a>`
+      : img;
+    const pad = side === "a" ? "padding-right:8px;" : "padding-left:8px;";
+    const cls = side === "a" ? "poll-col" : "poll-col poll-col-b";
+    return `<td class="${cls}" valign="top" width="50%" style="${pad}">${inner}</td>`;
+  };
+
+  return `<!-- É IA? (poll) -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker("É IA?")}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.15;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA.</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;"><tr>
+        ${eiaChoice("A", eia.imageA, "a")}
+        ${eiaChoice("B", eia.imageB, "b")}
+      </tr></table>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
+        <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
+      </td></tr>${prevResultHtml}
+${leaderboardRow}
+${leaderboardLinkRow}
+      </table>
+    </td>
+  </tr></table>
+</td></tr>`;
+}
+
+/**
+ * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
+ * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
+ * público. #1646: posições ordinais por acertos, sem percentual nem % de ranking.
+ *
+ * Formato:
+ *   - 1 leader: "🏆 Vencedores de Maio: 1º Davyd Wilkerson"
+ *   - 2 leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P"
+ *   - 3+ leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P, 3º Vanessa"
+ *   - Vazio (1ª edição do mês): convite linkado pra leaderboard do mês, ou ""
+ *
+ * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
+ * only) pra compat com arquivos legacy.
+ */
+export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
+  // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
+  // rank pra exibir posições ordinais (1º, 2º, 3º). #1646: ranking por acertos.
+  const ranked: { nickname: string; rank: number }[] =
+    eia.leaderboardPodium && eia.leaderboardPodium.length > 0
+      ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
+      : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
+        // #1672: `top1` (worker computeTop1) são TODOS líderes em rank 1 —
+        // empatados (mesmo pct E mesmo correct, sem campo rank). Atribuir rank 1 a
+        // todos, não i+1, senão fabricamos 2º/3º (ordem alfabética acidental) pra
+        // quem empatou em 1º.
+        ? eia.leaderboardTop1.map((e) => ({ nickname: e.nickname, rank: 1 }))
+        : [];
+  const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+  // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
+  const slug = eia.leaderboardPeriodSlug || "";
+  const lbUrl = slug ? `${POLL_WORKER_URL}/leaderboard/${slug}` : "";
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
+
+  // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
+  // convidar o leitor pra acompanhar a leaderboard do mês na URL histórica.
+  if (ranked.length === 0) {
+    if (!lbUrl) return "";
+    const label = eia.leaderboardPeriod
+      ? `Acompanhe a leaderboard de ${eia.leaderboardPeriod}`
+      : "Acompanhe a leaderboard do mês";
+    return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">🏆 <a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${esc(label)}</a></p>
+      </td></tr>`;
+  }
+
+  // Posições ordinais: "1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida".
+  const phrase = ranked
+    .map((e) => `${e.rank}º ${esc(e.nickname)}`)
+    .join(", ");
+
+  // Quando há slug, o título "Vencedores de {mês}" vira link pra leaderboard histórica.
+  const heading = lbUrl
+    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Vencedores${period}</a>`
+    : `<strong>Vencedores${period}</strong>`;
+
+  return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
+      </td></tr>`;
+}
+
+/**
+ * Pure (#1970): link PERSISTENTE pra leaderboard pública no rodapé do É IA?.
+ * Renderiza em TODA edição (não só na 1ª do mês — o pódio/convite de
+ * `renderLeaderboardTop1Row` é 1ª-do-mês, #1753). Estático, sem fetch: aponta
+ * pra raiz `/leaderboard` (sempre mostra o ranking vigente, sem precisar do
+ * slug do mês). Dá ao leitor um ponto de entrada estável pro ranking de quem
+ * mais acerta o "É IA?" toda edição.
+ */
+export function renderLeaderboardLinkRow(paragraphStyle: string): string {
+  const url = `${POLL_WORKER_URL}/leaderboard`;
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
+  return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">leaderboard</a></p>
+      </td></tr>`;
+}
+
+/**
+ * Item de lista (Use melhor / Lançamentos / Radar) no padrão DS: título Georgia
+ * 22px com underline teal + descrição sans ink. Itens separados por spacer 22px
+ * (exceto o primeiro). Retorna um `<tr>` com o item; HTML interno do bloco.
+ */
+export function renderSectionItem(item: SectionItem, first: boolean): string {
+  const titleHtml = item.url
+    ? `<a href="${esc(item.url)}" style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
+    : `<span style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};">${esc(item.title)}</span>`;
+  const spacer = first ? "" : `<div style="height:22px;line-height:22px;font-size:0;">&nbsp;</div>`;
+  const desc = item.description
+    ? `\n      <p style="margin:7px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${esc(item.description)}</p>`
+    : "";
+  return `<tr><td style="padding:22px 0 0;">
+      ${spacer}${titleHtml}${desc}
+    </td></tr>`;
+}
+
+export function renderSection(section: Section): string {
+  if (section.items.length === 0) return "";
+
+  const itemsHtml = section.items
+    .map((item, i) => renderSectionItem(item, i === 0))
+    .join("\n    ");
+
+  // #1070 + #1328: singular quando só tem 1 item. stripKickerEmoji remove o emoji
+  // (DS usa ponto ●, não emoji).
+  const displayName = displaySectionName(section.name, section.items.length);
+
+  return `<!-- ${section.name} -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker(displayName)}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    ${itemsHtml}
+  </table>
+</td></tr>`;
+}
+
+/**
+ * Converte markdown inline simples (links `[text](url)`, bold `**text**`)
+ * em HTML. Cobre o que aparece em SORTEIO/PARA ENCERRAR. Não é parser
+ * markdown completo — só o subset necessário pros 2 blocos.
+ */
+export function mdInlineToHtml(s: string): string {
+  // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
+  let out = unescapeMd(s);
+  // Bold primeiro pra não engolir links dentro
+  out = out.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_m, label: string, url: string) =>
+      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
+  );
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  return out;
+}
+
+/**
+ * #1279: renderiza o reveal "Na última edição, ..." como callout box bordered
+ * (1px solid #1a1a1a, border-radius 10px) — formato histórico usado em todas
+ * edições publicadas no Beehiiv. Posicionado entre SORTEIO e PARA ENCERRAR.
+ * Filtra: pega só parágrafo que começa com "Na última edição".
+ */
+export function renderErroIntencionalReveal(text: string): string {
+  const reveal = pickErroIntencionalReveal(text);
+  if (!reveal) return "";
+  // DS: box "contorno" (papel + borda bege) logo abaixo dos parágrafos do
+  // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
+  // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.
+  return `<!-- ERRO INTENCIONAL — reveal -->
+<tr><td class="pad" style="padding:14px 32px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(reveal)}</p>
+    </td>
+  </tr></table>
+</td></tr>`;
+}
+
+/**
+ * Pure (#1076): bloco SORTEIO no padrão DS — kicker (●+régua) + parágrafos sans.
+ * O reveal "Na última edição…" vai num box painel separado (renderErroIntencionalReveal).
+ */
+export function renderSorteio(text: string): string {
+  const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
+  const html = paragraphs.map((p, i) =>
+    `<p style="margin:${i === 0 ? "22px" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(p.trim())}</p>`
+  ).join("\n  ");
+  return `<!-- Sorteio -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker("Sorteio")}
+  ${html}
+</td></tr>`;
+}
+
+/**
+ * Pure (#1076): renderiza o bloco 🙋🏼‍♀️ PARA ENCERRAR. Lista `- item` no MD
+ * vira `<ul><li>...`; resto vira parágrafos.
+ */
+export function renderEncerrar(text: string): string {
+  const lines = text.split("\n");
+  type Block = { type: "p" | "ul"; content: string[] };
+  const blocks: Block[] = [];
+  let current: Block | null = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      if (current) {
+        blocks.push(current);
+        current = null;
+      }
+      continue;
+    }
+    const isLi = /^[-*]\s+/.test(line);
+    if (isLi) {
+      if (current?.type !== "ul") {
+        if (current) blocks.push(current);
+        current = { type: "ul", content: [] };
+      }
+      current.content.push(line.replace(/^[-*]\s+/, ""));
+    } else {
+      if (current?.type !== "p") {
+        if (current) blocks.push(current);
+        current = { type: "p", content: [] };
+      }
+      current.content.push(line);
+    }
+  }
+  if (current) blocks.push(current);
+
+  // #1148: último parágrafo (CTA "Agora que chegou...") vai numa caixa
+  // estilo É IA? — fundo #FAFAFA, padding 32px/24px, border-radius 8px.
+  // Heurística: separar último item dos blocos se for um `<p>` começando com
+  // "Agora que chegou"; render o resto inline e o último envelopado em box.
+  const lastBlock = blocks[blocks.length - 1];
+  const isAgoraCta =
+    lastBlock?.type === "p" &&
+    /^agora que chegou/i.test(lastBlock.content.join(" ").trim());
+  const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
+  const ctaBlock = isAgoraCta ? lastBlock : null;
+
+  // DS: lista `- [label](url)` vira PILLS (borda bege, radius 999px) precedidas
+  // do rótulo "Acesse:". Parágrafos = sans ink com links underline teal.
+  const pillStyle = `display:inline-block;border:1px solid ${RULE};border-radius:999px;padding:10px 18px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
+  const renderBlock = (b: { type: "p" | "ul"; content: string[] }) => {
+    if (b.type === "ul") {
+      const cells = b.content.map((c) => {
+        const m = c.match(/^\[([^\]]+)\]\((.+)\)$/);
+        // Link puro → pill clicável. Senão, mdInlineToHtml (links/bold inline)
+        // pra NUNCA vazar markdown cru (invariante "output sem markdown").
+        const pill = m
+          ? `<a href="${esc(m[2].trim())}" style="${pillStyle}">${esc(m[1])}</a>`
+          : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
+        return `<td style="padding:0 10px 10px 0;">${pill}</td>`;
+      }).join("");
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
+  <table role="presentation" cellpadding="0" cellspacing="0"><tr>${cells}</tr></table>`;
+    }
+    return `<p style="margin:22px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(b.content.join(" "))}</p>`;
+  };
+
+  const html = mainBlocks.map(renderBlock).join("\n  ");
+
+  // CTA final ("Agora que chegou…") = box "painel" do DS.
+  const ctaBox = ctaBlock
+    ? `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
+    </td>
+  </tr></table>`
+    : "";
+
+  return `<!-- Para encerrar -->
+<tr><td class="pad" style="padding:40px 32px 8px;">
+  ${renderKicker("Para encerrar")}
+  ${html}${ctaBox}
+</td></tr>`;
+}
+
+export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
+  const parts: string[] = [];
+
+  // #1093: linha de cobertura no topo, antes do primeiro destaque. Graceful
+  // skip quando ausente (edições antigas pré-#1095/#1097).
+  if (content.coverageLine) {
+    parts.push(renderCoverage(content.coverageLine));
+  }
+
+  // #1648: CTA de destaque (ex: sorteio ao vivo) logo após a coverage line.
+  if (content.introCallout) {
+    // #1942 review #1: disclosure também cobre anúncio (📣) colocado no topo.
+    if (isSponsoredCallout(content.introCallout)) parts.push(renderDivulgacaoSeparator());
+    parts.push(renderIntroCallout(content.introCallout));
+  }
+
+  // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
+  // `feedback_beehiiv_sections.md` e convention pre-existente. Fallback
+  // robusto (#1085): se destaques.length < 2 (test fixtures ou edições
+  // atípicas), insere no fim do loop pra garantir que È IA? não seja
+  // silenciosamente omitido.
+  const includeEia = !!(!opts.excludeEia && content.eia.credit);
+  let eiaInserted = false;
+  for (let i = 0; i < content.destaques.length; i++) {
+    parts.push(renderDestaque(content.destaques[i]));
+    // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
+    // do introCallout. Posicionado após o 1º destaque.
+    if (i === 0 && content.midCallout) {
+      // #1940: separador "Divulgação" antes de bloco PATROCINADO (📣). Promo
+      // interna (📚) e sorteio (🎉) não recebem disclosure — ver isSponsoredCallout.
+      if (isSponsoredCallout(content.midCallout)) parts.push(renderDivulgacaoSeparator());
+      parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
+    }
+    if (includeEia && !eiaInserted && i === 1) {
+      parts.push(renderEIA(content.eia));
+      eiaInserted = true;
+    }
+  }
+  if (includeEia && !eiaInserted) {
+    parts.push(renderEIA(content.eia));
+  }
+
+  for (const section of content.sections) {
+    parts.push(renderSection(section));
+  }
+
+  // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
+  // Renderer só emite quando o reviewed.md tem o bloco (graceful skip).
+  if (content.sorteio) parts.push(renderSorteio(content.sorteio));
+  // #1279: reveal "Na última edição..." renderiza entre SORTEIO e PARA ENCERRAR
+  if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
+  if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
+
+  // #1936/#1945 (DS): container do corpo, 600px (email-safe — Outlook corta
+  // acima disso, cf. checkWideTables). Texto mais largo vem do padding lateral
+  // reduzido (48 → 32px no `.pad`, #1945), não de container mais largo. Sem os
+  // "trilhos" bege laterais (#1945: removidos border-left/right RULE), fundo
+  // branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
+  const container = `<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:${PAPER};">
+${parts.join("\n")}
+</table>`;
+
+  if (!opts.fullDocument) {
+    // Fragmento pro Beehiiv: container + style (progressive enhancement).
+    // #1945: wrapper externo branco (PAGE_BG) — sem faixas bege nas laterais.
+    return `<!-- Diar.ia newsletter body — auto-generated by render-newsletter-html.ts -->
+${DS_STYLE_BLOCK}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
+${container}
+</td></tr></table>`;
+  }
+
+  // Documento completo (preview / email Worker-hosted): shell branco (#1945) + preheader.
+  const preheader = esc(
+    content.destaques.map((d) => d.title).filter(Boolean).slice(0, 2).join(" · "),
+  );
+  return `<!doctype html>
+<html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="x-apple-disable-message-reformatting" />
+<title>Diar.ia — Edição</title>
+${DS_STYLE_BLOCK}
+</head>
+<body style="margin:0; padding:0; background:${PAGE_BG};">
+<div style="display:none; max-height:0; overflow:hidden; opacity:0;">${preheader}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${PAGE_BG};"><tr><td align="center" style="padding:0;">
+${container}
+</td></tr></table>
+</body>
+</html>`;
+}
+
+/**
+ * #1046 — Render È IA? section standalone (em outer table própria), pra paste
+ * via `editor.commands.insertContent({type: 'htmlSnippet', ...})` no TipTap
+ * Beehiiv. Preserva merge tags `{{poll_a_url}}` / `{{poll_b_url}}` que
+ * paste-handler normalizaria a empty hrefs.
+ *
+ * Retorna `null` se a edição não tem È IA? configurada (eia.credit vazio).
+ * Caller deve fazer fallback gracioso (renderiza só o body).
+ */
+export function renderEiaStandalone(content: NewsletterContent): string | null {
+  if (!content.eia.credit) return null;
+  return `<!-- Diar.ia È IA? section — auto-generated by render-newsletter-html.ts (#1046) -->
+<!-- Paste via editor.commands.insertContent pra preservar merge tags. -->
+<table role="none" width="100%" border="0" cellspacing="0" cellpadding="0">
+${renderEIA(content.eia)}
+</table>`;
+}
+
+/**
+ * #1364: converte `*text*` (italic markdown) em `<em>text</em>` inline,
+ * preservando `**text**` (bold) intacto.
+ *
+ * Writer agent + crédito do É IA? usam `*Canis aureus*` pra nome científico.
+ * Antes do #1364 o renderer mantinha os asteriscos literais → o email saía
+ * com "(*Canis aureus*)" em texto puro, sem itálico.
+ *
+ * Regex: `*` solo (não-precedido nem seguido de `*`), conteúdo sem `*` nem
+ * newline. `font-style:italic` inline garante renderização email-safe.
+ *
+ * Pure helper — exportado pra teste.
+ */
+export function processInlineItalics(s: string): string {
+  return s.replace(
+    /(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g,
+    '<em style="font-style:italic;">$1</em>',
+  );
+}
+
+/**
+ * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
+ * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`).
+ * Ordem: unescape → esc → italics. Italics roda por último pra que as tags
+ * `<em>` não sejam HTML-escapadas. Usar em conteúdo editorial; NÃO usar em
+ * URLs (backslash em URL é literal, raro mas legítimo).
+ */
+function escText(s: string): string {
+  return processInlineItalics(esc(unescapeMd(s)));
+}
+
+/** Process markdown links [text](url) to <a> tags, escaping surrounding text.
+ * Input é normalizado via `unescapeMd` antes (#1117) — remove backslash escapes
+ * de pontuação ASCII que o writer pode ter adicionado. URLs em markdown não
+ * usam backslash escape (usam % encoding), então unescape upfront é seguro. */
+/**
+ * Processa markdown links inline `[texto](url)` → `<a>`.
+ *
+ * #1634: o destino é parseado contando parênteses balanceados, não com
+ * `\(([^)]+)\)`. A regex antiga fechava o link no PRIMEIRO `)`, então uma URL
+ * com parênteses (ex: `.../The-Founders-Playbook-05062026_v3%20(1).pdf`)
+ * quebrava — o href saía truncado em `...(1` e o resto vazava como texto.
+ * CommonMark permite pares de parênteses balanceados no destino; aqui um `(`
+ * aumenta a profundidade e só um `)` em profundidade 0 fecha o link.
+ */
+export function processInlineLinks(s: string): string {
+  const input = unescapeMd(s);
+  const parts: string[] = [];
+  let lastIdx = 0;
+  const linkStart = /\[([^\]]+)\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(input)) !== null) {
+    const destStart = m.index + m[0].length;
+    // Varre o destino balanceando parênteses: `(` aprofunda, `)` em depth 0 fecha.
+    let depth = 0;
+    let j = destStart;
+    for (; j < input.length; j++) {
+      const ch = input[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= input.length) continue; // sem `)` de fechamento → não é link válido
+    const url = input.substring(destStart, j);
+    // URL vazia (`[texto]()`) não é link — preserva o comportamento da regex
+    // antiga (`[^)]+` exigia destino não-vazio) e evita emitir `<a href="">`.
+    if (url.length === 0) {
+      linkStart.lastIndex = j + 1;
+      continue;
+    }
+    if (m.index > lastIdx) parts.push(esc(input.substring(lastIdx, m.index)));
+    parts.push(
+      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
+    );
+    lastIdx = j + 1;
+    linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
+  }
+  if (lastIdx < input.length) parts.push(esc(input.substring(lastIdx)));
+  return parts.join("");
+}
