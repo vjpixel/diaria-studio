@@ -205,10 +205,10 @@ export function isVerifiedTool(url: string, title?: string, allowlist: string[] 
  */
 export function extractLancamentoUrls(
   text: string,
-): Array<{ url: string; line: number }> {
+): Array<{ url: string; line: number; title?: string }> {
   const lines = text.split("\n");
   let inSection = false;
-  const out: Array<{ url: string; line: number }> = [];
+  const out: Array<{ url: string; line: number; title?: string }> = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -244,9 +244,23 @@ export function extractLancamentoUrls(
         inSection = false;
         continue;
       }
-      const matches = line.matchAll(URL_RE);
-      for (const m of matches) {
-        // Trim trailing punctuation that often follows URLs in markdown
+      // #1978: captura o TÍTULO do formato canônico `**[Título](url)**` (ou
+      // `[Título](url)`) — pra o MD-mode passar o título a isVerifiedTool igual
+      // ao approved-mode (simetria: sinal de produto que vive no título não é
+      // mais perdido no gate do §2).
+      const mdLinkRe = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+      let md: RegExpExecArray | null;
+      while ((md = mdLinkRe.exec(line)) !== null) {
+        const title = md[1].trim();
+        const url = md[2].replace(/[).,;]+$/, "");
+        out.push({ url, line: i + 1, title });
+      }
+      // URLs nuas (sem título): remove primeiro os links markdown da linha pra
+      // não recapturar a URL do `[t](url)` (nem a URL-âncora `[url](url)` com `]`
+      // sobrando — caso contrived de teste). Linhas legacy (URL solta) seguem
+      // capturadas sem título.
+      const lineNoMdLinks = line.replace(/\[[^\]]+\]\(https?:\/\/[^)\s]+\)/g, "");
+      for (const m of lineNoMdLinks.matchAll(URL_RE)) {
         const url = m[0].replace(/[).,;]+$/, "");
         out.push({ url, line: i + 1 });
       }
@@ -269,12 +283,13 @@ export function validateLancamentos(text: string, allowlist: string[] = []): Val
   const invalid = unique.filter((u) => !isOfficialLancamentoUrl(u.url));
   // #1799: itens de governança/política/análise — warn (não muda o status, que
   // segue regido pela regra de domínio oficial #160).
-  const non_product = unique.filter((u) => isNonProductLancamento(u.url));
+  const non_product = unique.filter((u) => isNonProductLancamento(u.url, u.title));
   // #1968: verificação POSITIVA — só URLs oficiais entram na conta (não-oficial
   // já é error por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
+  // #1978: passa o título (capturado de `[Título](url)`) — simetria com approved-mode.
   const official = unique.filter((u) => isOfficialLancamentoUrl(u.url));
-  const verified_product = official.filter((u) => isVerifiedTool(u.url, undefined, allowlist));
-  const not_a_tool = official.filter((u) => !isVerifiedTool(u.url, undefined, allowlist));
+  const verified_product = official.filter((u) => isVerifiedTool(u.url, u.title, allowlist));
+  const not_a_tool = official.filter((u) => !isVerifiedTool(u.url, u.title, allowlist));
   return {
     lancamento_count: unique.length,
     invalid_urls: invalid,

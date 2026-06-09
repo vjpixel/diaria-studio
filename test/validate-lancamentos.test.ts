@@ -221,6 +221,38 @@ describe("#1968 — verificação POSITIVA de ferramenta", () => {
     assert.equal(s.not_a_tool.length, 0); // not_a_tool só avalia oficiais
   });
 
+  it("#1978: MD-mode captura título de [Título](url) e passa pra isVerifiedTool", () => {
+    // slug SEM sinal de produto, mas título COM ('introducing' + 'gpt') → agora
+    // verified no MD-mode (antes era not_a_tool — título era descartado).
+    const md = [
+      "LANÇAMENTOS",
+      "**[Introducing GPT-5.5](https://openai.com/index/frontier-x)**",
+      "Resumo do lançamento.",
+      "",
+      "---",
+    ].join("\n");
+    const urls = extractLancamentoUrls(md);
+    assert.equal(urls.length, 1);
+    assert.equal(urls[0].title, "Introducing GPT-5.5");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1, "título com sinal → verified");
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+
+  it("#1978: slug E título sem sinal → segue not_a_tool (não afrouxa o gate)", () => {
+    const md = [
+      "LANÇAMENTOS",
+      "**[Parceria institucional](https://openai.com/index/economic-exchange)**",
+      "Resumo.",
+      "",
+      "---",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1);
+    assert.equal(r.status, "error");
+  });
+
   it("validateLancamentosFromApproved: oficial sem sinal → not_a_tool (usa título)", () => {
     const approved = {
       lancamento: [
