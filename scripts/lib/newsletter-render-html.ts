@@ -524,13 +524,27 @@ export function renderSection(section: Section): string {
  */
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
-  let out = unescapeMd(s);
-  // Bold primeiro pra não engolir links dentro
-  out = out.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_m, label: string, url: string) =>
+  const input = unescapeMd(s);
+  // #2001 follow-up: usa findMarkdownLinks (paren-balanced) em vez de regex
+  // ingênua `[^)]+` — URLs com `)` (ex: Wikipedia GPT-4_(language_model))
+  // não são truncadas. Label extraído entre `[` e `](`; garantido sem `]`
+  // pelo regex interno (`[^\]]+`).
+  const links = findMarkdownLinks(input);
+  const parts: string[] = [];
+  let lastIdx = 0;
+  for (const { url, start, end } of links) {
+    // URL vazia `[texto]()` — preserva texto bruto, igual ao guard de processInlineLinks.
+    if (!url) continue;
+    const labelEnd = input.indexOf("]", start + 1);
+    const label = input.slice(start + 1, labelEnd);
+    parts.push(input.slice(lastIdx, start));
+    parts.push(
       `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
-  );
+    );
+    lastIdx = end;
+  }
+  parts.push(input.slice(lastIdx));
+  let out = parts.join("");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   return out;
 }
