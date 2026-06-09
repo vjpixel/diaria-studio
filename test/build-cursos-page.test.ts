@@ -176,4 +176,16 @@ describe("renderCursosPage (#1745)", () => {
     assert.ok(html.includes('"fundamentos":"Fundamentos"'), "tema pt-br no mapa");
     assert.ok(html.includes('"deep-learning":"Deep Learning"'), "tema en no mapa");
   });
+
+  it("papéis de fonte do DS: CORPO em Geist sans, TÍTULOS em Georgia serif", () => {
+    // DS canônico (#1936): serif (Georgia) SÓ em manchetes/títulos; corpo + UI =
+    // sans (Geist). Pedido do editor 2026-06-09: o body herdava Georgia (serif),
+    // deixando descrições (.lede/.summary) em serif — corrigido pra sans.
+    assert.match(html, /body\s*\{\s*font-family:\s*'Geist'/, "corpo (body) deve ser Geist sans");
+    assert.match(html, /\bh1\s*\{\s*font-family:\s*Georgia/, "h1 (título) deve ser Georgia serif");
+    assert.match(html, /\.title-row h2\s*\{\s*font-family:\s*Georgia/, "h2 do card (título) deve ser Georgia serif");
+    assert.match(html, /\.filters select\s*\{\s*font-family:\s*'Geist'/, "dropdown (UI) deve ser Geist sans");
+    // o body NÃO pode voltar a ser serif (regressão do pedido do editor).
+    assert.doesNotMatch(html, /body\s*\{\s*font-family:\s*Georgia/, "body não pode ser serif");
+  });
 });
