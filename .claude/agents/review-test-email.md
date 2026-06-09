@@ -77,6 +77,26 @@ Usar apenas se o Gmail MCP falhar:
 
 O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor vera — e o que importa verificar.
 
+> **#1949 — convenções atuais (NÃO falso-positivar).** Um wall de falsos-positivos
+> esconde o problema REAL no meio e custa verificação manual a cada edição. Antes
+> de registrar qualquer issue, internalize:
+>
+> 1. **Leia o email RENDERIZADO/entregue (Gmail MCP `FULL_CONTENT`)**, não o HTML
+>    cru do draft/worker. As **merge tags `{{email}}`, `{{poll_sig}}`, `{{...}}`
+>    são inline POR DESIGN** (#1083) e o Beehiiv as expande **no envio**. Vê-las
+>    no source NÃO é defeito — **nunca** reportar `{{...}}` não-expandida como
+>    blocker.
+> 2. **Novo design system (#1936):** manchetes em **Georgia serif SEM negrito** e
+>    legenda do É IA? em **sans SEM itálico** são CORRETOS. Réguas/bordas bege
+>    (#EBE5D0) são estrutura do DS. NÃO flagar ausência de bold/itálico (itens
+>    10/11 abaixo).
+> 3. **403/401 = bot-block aceitável** (página existe pra humanos): `cursos`/
+>    `livros` no `diaria.beehiiv.com`, tecnoblog etc. NÃO é link morto.
+> 4. **Timeout de link = warning, nunca blocker** (transiente).
+>
+> O lint determinístico (passos 8-9, 17) já trata 1/3/4 — **prefira o CLI** a
+> julgar à mão.
+
 ### 3. Checklist de verificacao
 
 Verificar cada item e registrar como `ok` ou `issue`:
@@ -179,14 +199,18 @@ Verificar cada item e registrar como `ok` ou `issue`:
    `read_page` + computed styles via `javascript_tool`). Verificar atributos de
    estilo nos elementos relevantes:
 
-   10. **Negrito nos títulos dos destaques.** O título de cada destaque (D1, D2,
-       D3) deve estar em negrito (`<b>`, `<strong>`, ou `font-weight:bold|700+`).
-       Se peso normal ou ausente:
-       `"email:formatting: D{N} título sem negrito"`
+   10. **Títulos dos destaques — serif SEM negrito é CORRETO (DS #1936).** O novo
+       design system usa **Georgia serif sem bold** nas manchetes — a hierarquia
+       vem do **tamanho** (título ≥22px vs corpo 16px) e da **fonte serif** (vs
+       corpo sans), NÃO do peso. **NÃO flagar "título sem negrito"** — isso é
+       falso-positivo (#1949). Só registrar issue se o título aparecer no MESMO
+       tamanho/fonte do corpo (sem nenhuma hierarquia visual — ver item 12):
+       não há mais check de negrito.
 
-   11. **Itálico no crédito É IA?.** A linha de crédito/caption da seção É IA?
-       deve estar em itálico (`<i>`, `<em>`, ou `font-style:italic`). Se não:
-       `"email:formatting: seção É IA? crédito não está em itálico"`
+   11. **Crédito/caption do É IA? — sans SEM itálico é CORRETO (DS #1936).** O DS
+       renderiza a legenda em **sans 12px ink, sem itálico**. **NÃO flagar
+       "crédito não está em itálico"** — falso-positivo (#1949). (O check de
+       `*texto*` literal não-convertido segue no item 18 — esse é bug real.)
 
    12. **Tamanho de fonte dos títulos.** Títulos de destaque devem ser
        visivelmente maiores que o corpo (tipicamente ≥18px vs 14-16px do
@@ -242,18 +266,25 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 npx tsx scripts/lint-test-email-link-tracking.ts \
   --email-file /tmp/test-email-{AAMMDD}.txt \
   --out /tmp/lint-link-tracking-{AAMMDD}.json
-# Exit 0 = todos URLs respondem 200 (auth-required skipped não conta).
-# Exit 1 = ao menos 1 link_dead OU link_timeout.
+# Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required/merge_tag não contam, #1949).
+# Exit 1 = ao menos 1 blocker (link_dead OU link_redirect_chain_long).
 ```
 
 Output JSON: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`.
+Cada issue tem `severity: "blocker" | "warning"` (#1949). **Exit 1 só com blocker.**
 
-Mapear `issues[]` pra strings do output do agent:
-- `type:link_dead` → `"email:link_dead: {url} → HTTP {status}"`
-- `type:link_timeout` → `"email:link_timeout: {url} (>5s)"`
-- `type:link_redirect_chain_long` → `"email:link_redirect_chain_long: {url} → {hops} hops"`
+Mapear `issues[]` pra strings do output do agent **respeitando o severity**:
+- `type:link_dead` (severity:blocker) → `"email:link_dead: {url} → HTTP {status}"` (blocker)
+- `type:link_redirect_chain_long` (blocker) → `"email:link_redirect_chain_long: {url} → {hops} hops"` (blocker)
+- `type:link_timeout` (severity:**warning**, #1949) → `"info:link_timeout: {url} (>5s, transiente)"` — **WARNING, nunca blocker**. Timeout é transiente (host lento pontual, ex: anthropic.com); não derruba o fix loop.
 
-Skipped (auth_required + non_http) ficam no JSON pra debug mas não viram issue.
+`skipped[]` (auth_required + non_http + **bot_blocked** + **merge_tag**, #1949) ficam no
+JSON pra debug mas **NÃO viram issue**:
+- **`bot_blocked` (401/403)**: a página existe pra humanos, só bloqueia HEAD de
+  bot (diaria.beehiiv.com/cursos|livros, tecnoblog). **NÃO é link morto** — não
+  reportar.
+- **`merge_tag`**: URL com `{{email}}`/`{{poll_sig}}` (vote URL do É IA?) — o
+  Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
 
 Decoda Gmail Image Proxy (`google.com/url?q=...`) e respeita whitelist de
 domínios que retornam 4xx pra bots (linkedin/facebook). Concurrency 5

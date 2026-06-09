@@ -10,13 +10,16 @@
  * 1. Extrai URLs de hrefs no HTML do email.
  * 2. Para cada URL única, resolve até 3 redirects + HEAD.
  * 3. Reporta:
- *    - `link_dead`: HEAD final retorna 4xx/5xx
- *    - `link_timeout`: HEAD demora >5s
- *    - `link_redirect_chain_long`: >3 hops até 200
+ *    - `link_dead` (blocker): HEAD final retorna 4xx/5xx (exceto 401/403)
+ *    - `link_timeout` (warning, #1949): HEAD demora >5s — transiente, NÃO blocker
+ *    - `link_redirect_chain_long` (blocker): >3 hops até 200
  *
- * Whitelist: domínios que retornam 4xx pra bots mesmo quando OK
- * (linkedin.com, facebook.com — exigem login). Reportados como
- * `link_skip_auth_required` (info).
+ * Skips (não viram issue, #1949):
+ *    - `auth_required`: linkedin/facebook/x — exigem login
+ *    - `bot_blocked`: 401/403 — página existe pra humanos, bloqueia HEAD de bot
+ *      (diaria.beehiiv.com/cursos|livros, tecnoblog)
+ *    - `merge_tag`: URL com `{{email}}`/`{{poll_sig}}` — Beehiiv expande no envio
+ *    - `non_http`/`tel_mailto`: protocolos não-http
  *
  * Uso:
  *   npx tsx scripts/lint-test-email-link-tracking.ts \
@@ -24,8 +27,8 @@
  *     --out /tmp/lint-link-tracking.json
  *
  * Exit codes:
- *   0 = nenhum link_dead/link_timeout (auth-required skipped não conta)
- *   1 = pelo menos 1 link_dead OU link_timeout
+ *   0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required não contam)
+ *   1 = pelo menos 1 blocker (link_dead OU link_redirect_chain_long)
  *   2 = erro de uso
  */
 
@@ -33,6 +36,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export interface LinkIssue {
   type: "link_dead" | "link_timeout" | "link_redirect_chain_long";
+  /** #1949: blocker (link_dead/redirect) vs warning (link_timeout — transiente,
+   * nunca derruba o gate). O exit code só considera blockers. */
+  severity: "blocker" | "warning";
   url: string;
   /** URL final após redirects (se aplicável). */
   final_url?: string;
@@ -44,9 +50,14 @@ export interface LinkIssue {
 }
 
 export interface LinkSkip {
+  /** #1949: `merge_tag` = URL com `{{...}}` (vote URL) — Beehiiv expande no
+   * envio, não dá pra HEAD; `bot_blocked` = 401/403 (página existe pra humanos,
+   * bloqueia bot — ex: diaria.beehiiv.com/cursos, tecnoblog). */
   url: string;
-  reason: "auth_required" | "non_http" | "tel_mailto";
+  reason: "auth_required" | "non_http" | "tel_mailto" | "merge_tag" | "bot_blocked";
   domain?: string;
+  /** Status HTTP quando bot_blocked. */
+  status?: number;
 }
 
 export interface LinkTrackingResult {
@@ -126,7 +137,11 @@ export function decodeRedirectWrapper(url: string): string {
  * - auth_required: domínios que exigem login (skip + info)
  * - null: deve fazer HEAD
  */
-export function categorizeUrl(url: string): "non_http" | "auth_required" | null {
+export function categorizeUrl(url: string): "non_http" | "auth_required" | "merge_tag" | null {
+  // #1949: URL com merge tag Beehiiv (`{{email}}`, `{{poll_sig}}`) — a vote URL
+  // do É IA? é `?email={{email}}&...&sig={{poll_sig}}`. Beehiiv expande no ENVIO;
+  // um HEAD na URL literal retornaria 4xx (falso link_dead). Skip determinístico.
+  if (/\{\{[^}]+\}\}/.test(url)) return "merge_tag";
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -213,6 +228,11 @@ export async function checkLinkTracking(
       skipped.push({ url: decoded, reason: decoded.startsWith("mailto:") ? "tel_mailto" : "non_http" });
       continue;
     }
+    if (cat === "merge_tag") {
+      // #1949: vote URL com {{email}}/{{poll_sig}} — expande no envio.
+      skipped.push({ url: decoded, reason: "merge_tag" });
+      continue;
+    }
     if (cat === "auth_required") {
       const host = (() => { try { return new URL(decoded).hostname; } catch { return ""; } })();
       skipped.push({ url: decoded, reason: "auth_required", domain: host });
@@ -227,25 +247,34 @@ export async function checkLinkTracking(
     const results = await Promise.all(batch.map((u) => headWithRedirects(u, fetchImpl).then((r) => ({ url: u, r }))));
     for (const { url, r } of results) {
       if (r.timed_out) {
+        // #1949: timeout é WARNING, não blocker — transiente (rede/host lento,
+        // ex: anthropic.com >5s pontual), não link morto. Não derruba o gate.
         issues.push({
           type: "link_timeout",
+          severity: "warning",
           url,
           status: null,
           hops: r.hops,
-          details: `HEAD timeout após ${HEAD_TIMEOUT_MS}ms.`,
+          details: `HEAD timeout após ${HEAD_TIMEOUT_MS}ms (transiente — warning, não blocker).`,
         });
       } else if (r.hops > MAX_REDIRECTS) {
         issues.push({
           type: "link_redirect_chain_long",
+          severity: "blocker",
           url,
           final_url: r.final_url,
           status: r.status,
           hops: r.hops,
           details: `${r.hops} redirects (limite ${MAX_REDIRECTS}). Final URL: ${r.final_url}`,
         });
+      } else if (r.status === 401 || r.status === 403) {
+        // #1949: bot-block (página existe pra humanos, bloqueia HEAD de bot —
+        // diaria.beehiiv.com/cursos|livros, tecnoblog). NÃO é link morto.
+        skipped.push({ url, reason: "bot_blocked", status: r.status });
       } else if (r.status !== null && r.status >= 400) {
         issues.push({
           type: "link_dead",
+          severity: "blocker",
           url,
           final_url: r.final_url !== url ? r.final_url : undefined,
           status: r.status,
@@ -304,11 +333,13 @@ async function mainCli(): Promise<number> {
   if (result.issues.length > 0) {
     console.error(`[lint-test-email-link-tracking] ${result.issues.length} issue(s):`);
     for (const i of result.issues) {
-      console.error(`  - [${i.type}] ${i.url} → ${i.details}`);
+      console.error(`  - [${i.severity}:${i.type}] ${i.url} → ${i.details}`);
     }
-    return 1;
   }
-  return 0;
+  // #1949: só blockers (link_dead/redirect) derrubam o exit. link_timeout é
+  // warning (transiente) — fica no JSON pro agent, mas não bloqueia o gate.
+  const blockers = result.issues.filter((i) => i.severity === "blocker");
+  return blockers.length > 0 ? 1 : 0;
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

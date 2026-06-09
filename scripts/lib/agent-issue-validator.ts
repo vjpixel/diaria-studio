@@ -112,6 +112,77 @@ export function isVoteEditionMalformedFalsePositive(
 }
 
 /**
+ * #1949: "título sem negrito" é falso-positivo sob o DS #1936 — manchetes são
+ * Georgia serif SEM bold por design (hierarquia por tamanho/fonte, não peso).
+ *
+ * Code-review: SÓ casa issues `email:formatting:` com frase de AUSÊNCIA de
+ * negrito. Sem o gate de prefixo, um `email:link_missing` cujo título cita
+ * "negrito", ou um defeito INVERSO ("título em negrito demais"), seriam dropados
+ * por engano (over-drop = bug real some). `t[íi]tulo.*negrito` (greedy) foi
+ * removido — pegava o defeito inverso.
+ */
+export function isBoldMissingFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:formatting:/i.test(issue)) return { falsePositive: false };
+  if (/sem\s+negrito|negrito\s+(ausente|faltando)|n[ãa]o\s+est[áa]\s+em\s+negrito/i.test(issue)) {
+    return {
+      falsePositive: true,
+      reason: "DS #1936: manchetes são serif Georgia SEM negrito (hierarquia por tamanho/fonte)",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * #1949: "crédito/caption do É IA? não está em itálico" é falso-positivo sob o
+ * DS #1936 — a legenda é sans 12px ink SEM itálico por design.
+ *
+ * Code-review: SÓ casa `email:formatting:` COM contexto de caption/crédito/
+ * legenda (item 11 é específico do crédito do É IA?). Sem isso, um defeito de
+ * hierarquia de título que só co-menciona "sem itálico" (ex: "D3 título sem
+ * itálico E sem tamanho diferenciado") seria dropado por engano. `italic_literal`
+ * (`*texto*` não convertido) é bug REAL — excluído.
+ */
+export function isItalicMissingFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:formatting:/i.test(issue)) return { falsePositive: false };
+  if (/italic_literal/i.test(issue)) return { falsePositive: false };
+  const mentionsItalicAbsence = /n[ãa]o\s+est[áa]\s+em\s+it[áa]lico|sem\s+it[áa]lico/i.test(issue);
+  const captionContext = /cr[ée]dito|caption|legenda|[ée]\s*ia\?/i.test(issue);
+  if (mentionsItalicAbsence && captionContext) {
+    return {
+      falsePositive: true,
+      reason: "DS #1936: caption/crédito do É IA? é sans ink SEM itálico",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * #1949: reclamação de merge tag inline não expandida é falso-positivo — `{{email}}`
+ * e `{{poll_sig}}` são inline POR DESIGN (#1083), o Beehiiv expande no ENVIO.
+ *
+ * Code-review: SÓ o CONJUNTO FECHADO `{{email}}`/`{{poll_sig}}`, e SÓ em issues
+ * de link/formatting. Um `{{unknown_field}}`/`{{utm_campaign}}` literal num link É
+ * bug real (template var vazada) → NÃO dropar. E `email:subject_mismatch` é
+ * SEMPRE blocker (#1645) — nunca dropar, mesmo se o subject contiver `{{...}}`.
+ */
+export function isMergeTagUnexpandedFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:(link_|formatting:)/i.test(issue)) return { falsePositive: false };
+  if (/\{\{\s*(email|poll_sig)\s*\}\}/i.test(issue)) {
+    return {
+      falsePositive: true,
+      reason: "merge tags inline {{email}}/{{poll_sig}} expandem no envio (#1083)",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
  * Cross-check de uma lista de issues contra o HTML local. Drop os que são
  * falso-positivos verificáveis; mantém os outros (incluindo tipos não
  * conhecidos — caller decide).
@@ -148,7 +219,19 @@ export function filterAgentIssues(
         continue;
       }
     }
-    // Tipos não validáveis (unexpected_content, formatting, etc) passam.
+    // #1949: classes de FP do novo DS / merge tags — baseadas só na string do
+    // issue (a reclamação inteira é FP), independem do HTML.
+    const dsChecks = [
+      isMergeTagUnexpandedFalsePositive(issue),
+      isBoldMissingFalsePositive(issue),
+      isItalicMissingFalsePositive(issue),
+    ];
+    const fp = dsChecks.find((r) => r.falsePositive);
+    if (fp && fp.falsePositive) {
+      dropped.push({ issue, reason: fp.reason });
+      continue;
+    }
+    // Tipos não validáveis (unexpected_content, etc) passam.
     kept.push(issue);
   }
 

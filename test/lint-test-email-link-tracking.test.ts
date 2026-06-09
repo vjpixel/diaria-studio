@@ -128,3 +128,64 @@ describe("checkLinkTracking — integração mock (#1248)", () => {
     assert.equal(r.issues.length, 0);
   });
 });
+
+describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout warning)", () => {
+  it("categorizeUrl: URL com merge tag {{...}} → merge_tag", () => {
+    assert.equal(
+      categorizeUrl("https://poll.diaria.workers.dev/vote?email={{email}}&choice=A&sig={{poll_sig}}"),
+      "merge_tag",
+    );
+    assert.equal(categorizeUrl("https://example.com/p?u={{ email }}"), "merge_tag");
+    // sem merge tag → segue normal
+    assert.equal(categorizeUrl("https://example.com/p?u=real"), null);
+  });
+
+  it("vote URL com {{email}}/{{poll_sig}} é SKIPPED (não vira link_dead)", async () => {
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&sig={{poll_sig}}">vote</a>';
+    // fetchStub jamais deve ser chamado pra merge_tag
+    let called = false;
+    const fetchStub = (): Promise<Response> => {
+      called = true;
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(called, false, "não faz HEAD em URL com merge tag");
+    assert.equal(r.issues.length, 0);
+    assert.equal(r.skipped.filter((s) => s.reason === "merge_tag").length, 1);
+  });
+
+  it("403/401 → bot_blocked skip (não link_dead)", async () => {
+    const html = '<a href="https://diaria.beehiiv.com/cursos">cursos</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 403 }));
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "403 não é issue");
+    const bot = r.skipped.filter((s) => s.reason === "bot_blocked");
+    assert.equal(bot.length, 1);
+    assert.equal(bot[0].status, 403);
+  });
+
+  it("404 (real) ainda é link_dead blocker (não confundir com 403)", async () => {
+    const html = '<a href="https://dead.example.com">x</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 404 }));
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+  });
+
+  it("timeout → link_timeout com severity warning (não blocker)", async () => {
+    const html = '<a href="https://slow.example.com">x</a>';
+    // AbortError simula timeout
+    const fetchStub = (): Promise<Response> => {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      return Promise.reject(e);
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_timeout");
+    assert.equal(r.issues[0].severity, "warning");
+    // nenhum blocker → exit deveria ser 0 (validado via filtro de severity)
+    assert.equal(r.issues.filter((i) => i.severity === "blocker").length, 0);
+  });
+});
