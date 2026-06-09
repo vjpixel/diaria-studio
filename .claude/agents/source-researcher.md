@@ -59,12 +59,19 @@ Orchestrator roda `scripts/check-source-blocklist.ts` antes de dispatchar — fo
       "published_at": "2026-04-16",
       "author": "Nome ou null",
       "summary": "1-2 frases em PT-BR, sem hype",
-      "type_hint": "noticia | opiniao | ferramenta | pesquisa"
+      "type_hint": "noticia | opiniao | ferramenta | pesquisa | lancamento"
     }
   ]
 }
 ```
 
 Sem `utm_*` nas URLs, sem fragmentos `#`. Sem nada válido na janela → `articles: []` com `status: "ok"`.
+
+**type_hint** — escolher o valor que melhor descreve o conteúdo APÓS ler a página:
+- `lancamento` — anúncio oficial de produto/feature **no domínio da própria empresa** (blog.openai.com, anthropic.com/news, ai.google.dev, blogs.nvidia.com, etc.). A empresa anuncia *seu próprio* lançamento. **Excluir mesmo em domínio oficial:** parcerias/acordos comerciais, customer stories (como X usa o produto), resultados de pesquisa/paper, anúncios de logística/entrega, posts de metodologia/técnica, posts sobre clientes de terceiros.
+- `ferramenta` — recurso/guia/tutorial que o leitor pode *usar* (lista de ferramentas, how-to, hands-on).
+- `pesquisa` — paper acadêmico, estudo, relatório técnico com metodologia.
+- `opiniao` — análise pessoal, editorial, coluna de opinião.
+- `noticia` — cobertura jornalística de evento/anúncio por veículo de terceiro (não a empresa anunciando a si mesma).
 
 `duration_ms`: rodar `Bash("date +%s")` antes do passo 1 (`start_ts`) e antes do return (`end_ts`); calcular `(end_ts - start_ts) * 1000`.
