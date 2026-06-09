@@ -50,7 +50,8 @@ describe("loadUseMelhorPrefixes (seed real, #1899)", () => {
   const prefixes = loadUseMelhorPrefixes();
   it("retorna prefixos host/path das fontes flagueadas (path-aware)", () => {
     assert.ok(prefixes.length > 0, "deve haver fontes Use Melhor no seed");
-    assert.ok(prefixes.includes("fast.ai"), "host dedicado = só host");
+    // host dedicado = só host (#1971: era fast.ai, desativada; eugeneyan.com segue no seed)
+    assert.ok(prefixes.includes("eugeneyan.com"), "host dedicado = só host");
     // host largo (github) deve vir com path, não nu
     assert.ok(
       prefixes.some((p) => p.startsWith("github.com/")),
