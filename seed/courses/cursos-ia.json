@@ -157,7 +157,7 @@
     },
     {
       "id": "deeplearning-introducao-genai-ptbr",
-      "title": "Introdução à IA generativa (PT-BR)",
+      "title": "Introdução à IA generativa",
       "platform": "DeepLearning.AI / Coursera",
       "url": "https://www.coursera.org/learn/introduction-to-generative-ai---portugus-brasileiro",
       "language": "pt-br",
@@ -315,7 +315,7 @@
     },
     {
       "id": "mit-ocw-machine-learning",
-      "title": "Introduction to Machine Learning (6.036)",
+      "title": "Introduction to Machine Learning",
       "platform": "MIT OpenCourseWare",
       "url": "https://ocw.mit.edu/courses/6-036-introduction-to-machine-learning-fall-2020/",
       "language": "en",

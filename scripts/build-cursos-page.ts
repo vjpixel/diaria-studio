@@ -334,7 +334,6 @@ export function renderCursosPage(courses: Course[]): string {
   .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
   .badge { font-family: ${SANS}; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
     color: var(--ink); border: 1px solid var(--rule); padding: 4px 9px; border-radius: 2px; }
-  .badge--lang { border-color: var(--teal); color: var(--teal); }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
   .summary { font-size: 16px; line-height: 1.5; color: var(--ink); margin: 14px 0 18px; flex: 1; }
   .cta { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
