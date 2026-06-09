@@ -114,7 +114,7 @@ describe("#1949 — FPs do novo DS + merge tags", () => {
     );
   });
 
-  it("isMergeTagUnexpandedFalsePositive: reclamação de {{...}} é FP (inline por design)", () => {
+  it("isMergeTagUnexpandedFalsePositive: SÓ conjunto fechado {{email}}/{{poll_sig}} em link/formatting", () => {
     assert.equal(
       isMergeTagUnexpandedFalsePositive("email:link_broken: href tem {{email}} não expandido").falsePositive,
       true,
@@ -124,6 +124,44 @@ describe("#1949 — FPs do novo DS + merge tags", () => {
       true,
     );
     assert.equal(isMergeTagUnexpandedFalsePositive("email:link_dead: https://x.com 404").falsePositive, false);
+  });
+
+  it("code-review: NÃO over-dropa bugs reais que co-mencionam negrito/itálico/{{...}}", () => {
+    // F1: subject_mismatch é SEMPRE blocker (#1645) — nunca dropar, mesmo com {{...}}.
+    assert.equal(
+      isMergeTagUnexpandedFalsePositive("email:subject_mismatch: subject é '{{title}}' literal").falsePositive,
+      false,
+    );
+    // F2: {{unknown_field}}/{{utm_campaign}} num link É bug real (var vazada) — não é o conjunto fechado.
+    assert.equal(
+      isMergeTagUnexpandedFalsePositive("email:link_wrong: D1 aponta pra https://x.com/{{utm_campaign}}").falsePositive,
+      false,
+    );
+    // F3: defeito INVERSO (título em negrito demais) NÃO é "sem negrito" → mantém.
+    assert.equal(
+      isBoldMissingFalsePositive("email:formatting: título do D2 em NEGRITO além do tamanho, peso duplicado").falsePositive,
+      false,
+    );
+    // F3b: link_missing cujo TÍTULO cita "negrito" não é formatting → mantém.
+    assert.equal(
+      isBoldMissingFalsePositive("email:link_missing: URL do título 'Texto em negrito no Notion' ausente").falsePositive,
+      false,
+    );
+    // F4: hierarquia de título que co-menciona "sem itálico" (sem contexto de caption) → mantém.
+    assert.equal(
+      isItalicMissingFalsePositive("email:formatting: D3 título sem itálico E sem tamanho diferenciado").falsePositive,
+      false,
+    );
+  });
+
+  it("code-review: filterAgentIssues NÃO dropa subject_mismatch com {{...}} (never-FP #1645)", () => {
+    const issues = [
+      "email:subject_mismatch: subject é '{{subject}}' literal não expandido",
+      "email:formatting: D1 título sem negrito", // FP → dropa
+    ];
+    const r = filterAgentIssues(issues, "<p>x</p>", "260608");
+    assert.ok(r.kept.some((i) => /subject_mismatch/.test(i)), "subject_mismatch mantido apesar do {{...}}");
+    assert.equal(r.kept.length, 1);
   });
 
   it("filterAgentIssues: dropa as 4 classes de FP do 260608, mantém bug real", () => {

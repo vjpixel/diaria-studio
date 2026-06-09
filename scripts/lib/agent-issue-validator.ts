@@ -114,12 +114,18 @@ export function isVoteEditionMalformedFalsePositive(
 /**
  * #1949: "título sem negrito" é falso-positivo sob o DS #1936 — manchetes são
  * Georgia serif SEM bold por design (hierarquia por tamanho/fonte, não peso).
- * Baseado na string do issue (a classe inteira de reclamação é FP), não no HTML.
+ *
+ * Code-review: SÓ casa issues `email:formatting:` com frase de AUSÊNCIA de
+ * negrito. Sem o gate de prefixo, um `email:link_missing` cujo título cita
+ * "negrito", ou um defeito INVERSO ("título em negrito demais"), seriam dropados
+ * por engano (over-drop = bug real some). `t[íi]tulo.*negrito` (greedy) foi
+ * removido — pegava o defeito inverso.
  */
 export function isBoldMissingFalsePositive(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
-  if (/sem\s+negrito|t[íi]tulo.*negrito/i.test(issue)) {
+  if (!/^email:formatting:/i.test(issue)) return { falsePositive: false };
+  if (/sem\s+negrito|negrito\s+(ausente|faltando)|n[ãa]o\s+est[áa]\s+em\s+negrito/i.test(issue)) {
     return {
       falsePositive: true,
       reason: "DS #1936: manchetes são serif Georgia SEM negrito (hierarquia por tamanho/fonte)",
@@ -129,36 +135,48 @@ export function isBoldMissingFalsePositive(
 }
 
 /**
- * #1949: "crédito/caption não está em itálico" é falso-positivo sob o DS #1936 —
- * a legenda do É IA? é sans 12px ink SEM itálico por design. (O `*texto*` literal
- * não-convertido é bug REAL — `italic_literal`, não casado aqui.)
+ * #1949: "crédito/caption do É IA? não está em itálico" é falso-positivo sob o
+ * DS #1936 — a legenda é sans 12px ink SEM itálico por design.
+ *
+ * Code-review: SÓ casa `email:formatting:` COM contexto de caption/crédito/
+ * legenda (item 11 é específico do crédito do É IA?). Sem isso, um defeito de
+ * hierarquia de título que só co-menciona "sem itálico" (ex: "D3 título sem
+ * itálico E sem tamanho diferenciado") seria dropado por engano. `italic_literal`
+ * (`*texto*` não convertido) é bug REAL — excluído.
  */
 export function isItalicMissingFalsePositive(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
-  // só "não está em itálico" (ausência de estilo) — NÃO o italic_literal (`*x*`).
+  if (!/^email:formatting:/i.test(issue)) return { falsePositive: false };
   if (/italic_literal/i.test(issue)) return { falsePositive: false };
-  if (/n[ãa]o\s+est[áa]\s+em\s+it[áa]lico|sem\s+it[áa]lico/i.test(issue)) {
+  const mentionsItalicAbsence = /n[ãa]o\s+est[áa]\s+em\s+it[áa]lico|sem\s+it[áa]lico/i.test(issue);
+  const captionContext = /cr[ée]dito|caption|legenda|[ée]\s*ia\?/i.test(issue);
+  if (mentionsItalicAbsence && captionContext) {
     return {
       falsePositive: true,
-      reason: "DS #1936: caption do É IA? é sans ink SEM itálico",
+      reason: "DS #1936: caption/crédito do É IA? é sans ink SEM itálico",
     };
   }
   return { falsePositive: false };
 }
 
 /**
- * #1949: reclamação de merge tag `{{email}}`/`{{poll_sig}}`/`{{...}}` não
- * expandida é falso-positivo — são inline POR DESIGN (#1083), o Beehiiv expande
- * no ENVIO. O agent que olha o HTML cru do draft as vê literais.
+ * #1949: reclamação de merge tag inline não expandida é falso-positivo — `{{email}}`
+ * e `{{poll_sig}}` são inline POR DESIGN (#1083), o Beehiiv expande no ENVIO.
+ *
+ * Code-review: SÓ o CONJUNTO FECHADO `{{email}}`/`{{poll_sig}}`, e SÓ em issues
+ * de link/formatting. Um `{{unknown_field}}`/`{{utm_campaign}}` literal num link É
+ * bug real (template var vazada) → NÃO dropar. E `email:subject_mismatch` é
+ * SEMPRE blocker (#1645) — nunca dropar, mesmo se o subject contiver `{{...}}`.
  */
 export function isMergeTagUnexpandedFalsePositive(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
-  if (/\{\{[^}]+\}\}/.test(issue)) {
+  if (!/^email:(link_|formatting:)/i.test(issue)) return { falsePositive: false };
+  if (/\{\{\s*(email|poll_sig)\s*\}\}/i.test(issue)) {
     return {
       falsePositive: true,
-      reason: "merge tags ({{email}}/{{poll_sig}}) são inline por design (#1083) — Beehiiv expande no envio",
+      reason: "merge tags inline {{email}}/{{poll_sig}} expandem no envio (#1083)",
     };
   }
   return { falsePositive: false };

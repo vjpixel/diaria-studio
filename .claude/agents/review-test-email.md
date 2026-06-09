@@ -266,8 +266,8 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 npx tsx scripts/lint-test-email-link-tracking.ts \
   --email-file /tmp/test-email-{AAMMDD}.txt \
   --out /tmp/lint-link-tracking-{AAMMDD}.json
-# Exit 0 = todos URLs respondem 200 (auth-required skipped não conta).
-# Exit 1 = ao menos 1 link_dead OU link_timeout.
+# Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required/merge_tag não contam, #1949).
+# Exit 1 = ao menos 1 blocker (link_dead OU link_redirect_chain_long).
 ```
 
 Output JSON: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`.
