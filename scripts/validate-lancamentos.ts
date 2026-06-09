@@ -153,12 +153,23 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
  *    pragmático: esta é uma newsletter de IA; o allowlist cobre o resto).
  *  - número de versão no slug CRU (`gpt-4`, `4.5`, `v2`, `claude-opus-4-5`).
  */
+// Nota (#1968 code-review): `update`/`feature` foram REMOVIDOS — genéricos demais
+// (`company-update`, `policy-update` furavam o gate como "produto"). Lançamentos
+// reais de update/feature quase sempre co-ocorrem com model/launch/família.
 const PRODUCT_SIGNAL_RE =
-  /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|feature|features|update|updates|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
+  /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
 
 // Versão de produto no slug CRU (dashes preservados): `gpt-4`, `claude-opus-4-5`,
-// `4.5`, `v2`, `o1`/`o3`. Sinal forte de lançamento de modelo/produto versionado.
-const VERSION_SIGNAL_RE = /\bv?\d+(?:[.\-]\d+)+\b|\bv\d+\b|-\d+(?:o|b)?\b|\bo\d\b/i;
+// `4.5`, `v2`, `7b`, `o3`. Sinal forte de modelo/produto versionado.
+// #1968 code-review: o major é restrito a 1-2 dígitos pra NÃO casar ANOS — um
+// `-2025` / `2026-01` / `2023-2024` (slug datado de parceria/evento/relatório)
+// NÃO é versão. `gpt-4`/`gpt-4o` caem na família `gpt` do PRODUCT_SIGNAL, não
+// aqui. `\d{1,3}b` = contagem de parâmetros (`7b`, `70b`, `405b`); `o[1-9]` =
+// série o1-o9 da OpenAI; `[a-z]{2,}-\d{1,2}o?` = nome-de-modelo + versão de 1-2
+// dígitos (`cosmos-3`, `olmo-2`, `nemotron-4`) — exige nome (≥2 letras) ANTES,
+// então `lg-2025`/`build-2026` (ano, 4 díg) NÃO casam (sem boundary após 2 díg).
+const VERSION_SIGNAL_RE =
+  /\bv?\d{1,2}(?:[.\-]\d+)+\b|\bv\d+\b|\b\d{1,3}b\b|\bo[1-9]\b|\b[a-z]{2,}-\d{1,2}o?\b/i;
 
 // Path segment `/product(s)/` — página oficial de produto (ex: blog.google/.../
 // products/notebooklm/...). Sinal estrutural, mais forte que keyword no slug.

@@ -157,6 +157,28 @@ describe("#1968 — verificação POSITIVA de ferramenta", () => {
     assert.ok(!hasProductSignal("https://www.anthropic.com/news/hiring-engineers"));
   });
 
+  it("hasProductSignal: ANO no slug NÃO conta como versão (#1968 code-review)", () => {
+    // Furo achado no review: `-\d+` casava `-2025`; `\d+(?:[.\-]\d+)+` casava
+    // `2026-01`/`2023-2024` → qualquer slug DATADO (parceria/evento/relatório)
+    // passava como ferramenta. Regressão: ano não é versão.
+    assert.ok(!hasProductSignal("https://blogs.nvidia.com/blog/nvidia-and-lg-2025-partnership/"));
+    assert.ok(!hasProductSignal("https://openai.com/index/economic-research-2024-agenda/"));
+    assert.ok(!hasProductSignal("https://blogs.nvidia.com/blog/gtc-2025-keynote/"));
+    assert.ok(!hasProductSignal("https://blogs.microsoft.com/blog/2026/06/02/microsoft-build-2026-x/"));
+    assert.ok(!hasProductSignal("https://openai.com/index/2026-01-recap/"));
+    assert.ok(!hasProductSignal("https://anthropic.com/news/2023-2024-review/"));
+    assert.ok(!hasProductSignal("https://x.ai/news/series-c-2025/"));
+  });
+
+  it("hasProductSignal: versão de modelo de 1-2 dígitos AINDA conta (não regrediu)", () => {
+    assert.ok(hasProductSignal("https://huggingface.co/blog/nvidia/cosmos-3-for-physical-ai")); // single-version
+    assert.ok(hasProductSignal("https://allenai.org/olmo-2"));
+    assert.ok(hasProductSignal("https://www.anthropic.com/news/claude-opus-4-5")); // multipart
+    assert.ok(hasProductSignal("https://blog.google/technology/gemini-2-5-flash"));
+    assert.ok(hasProductSignal("https://openai.com/index/o3")); // série o1-o9
+    assert.ok(hasProductSignal("https://mistral.ai/news/mistral-7b")); // param count
+  });
+
   it("isVerifiedTool: governança vence sinal (alta precisão, reforço #1799)", () => {
     // mesmo com 'update' no slug, 'policy' marca governança → não é ferramenta
     assert.ok(!isVerifiedTool("https://openai.com/index/public-policy-update"));
