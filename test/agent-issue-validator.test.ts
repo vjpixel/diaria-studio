@@ -12,6 +12,9 @@ import {
   isEncodingDropFalsePositive,
   isPollSigMissingFalsePositive,
   isVoteEditionMalformedFalsePositive,
+  isBoldMissingFalsePositive,
+  isItalicMissingFalsePositive,
+  isMergeTagUnexpandedFalsePositive,
   filterAgentIssues,
 } from "../scripts/lib/agent-issue-validator.ts";
 
@@ -93,20 +96,64 @@ describe("isVoteEditionMalformedFalsePositive (#1421)", () => {
   });
 });
 
+describe("#1949 — FPs do novo DS + merge tags", () => {
+  it("isBoldMissingFalsePositive: 'título sem negrito' é FP (DS serif sem bold)", () => {
+    assert.equal(isBoldMissingFalsePositive("email:formatting: D2 título sem negrito").falsePositive, true);
+    assert.equal(isBoldMissingFalsePositive("email:formatting: link sem diferenciação").falsePositive, false);
+  });
+
+  it("isItalicMissingFalsePositive: 'não está em itálico' é FP (DS sans sem itálico)", () => {
+    assert.equal(
+      isItalicMissingFalsePositive("email:formatting: seção É IA? crédito não está em itálico").falsePositive,
+      true,
+    );
+    // italic_literal (`*texto*` não convertido) é bug REAL — NÃO é FP
+    assert.equal(
+      isItalicMissingFalsePositive("email:italic_literal: '*Canis aureus*' literal").falsePositive,
+      false,
+    );
+  });
+
+  it("isMergeTagUnexpandedFalsePositive: reclamação de {{...}} é FP (inline por design)", () => {
+    assert.equal(
+      isMergeTagUnexpandedFalsePositive("email:link_broken: href tem {{email}} não expandido").falsePositive,
+      true,
+    );
+    assert.equal(
+      isMergeTagUnexpandedFalsePositive("email:formatting: {{poll_sig}} aparece literal = blocker").falsePositive,
+      true,
+    );
+    assert.equal(isMergeTagUnexpandedFalsePositive("email:link_dead: https://x.com 404").falsePositive, false);
+  });
+
+  it("filterAgentIssues: dropa as 4 classes de FP do 260608, mantém bug real", () => {
+    // Caso 260608 (#1949): ~6 issues, todos FP exceto um defeito real plantado.
+    const issues = [
+      "email:formatting: {{email}} não expandido = blocker crítico", // FP merge tag
+      "email:link_dead: https://diaria.beehiiv.com/cursos → HTTP 403", // (403 já filtrado no link script, mas se vier)
+      "email:formatting: D1 título sem negrito", // FP DS
+      "email:formatting: caption não está em itálico", // FP DS
+      "email:subject_mismatch: subject é placeholder 'New post'", // REAL — mantém
+    ];
+    const r = filterAgentIssues(issues, "<p>x</p>", "260608");
+    assert.ok(r.kept.some((i) => /subject_mismatch/.test(i)), "bug real (subject) mantido");
+    assert.ok(!r.kept.some((i) => /sem negrito|não está em itálico|\{\{/.test(i)), "FPs dropados");
+  });
+});
+
 describe("filterAgentIssues — orchestrator integration (#1421)", () => {
-  it("#1421: caso 260520 — drop 2 encoding_drops falso-positivos, mantém 2 reais", () => {
+  it("#1421/#1949: drop 2 encoding_drops + 1 itálico-FP, mantém 1 real", () => {
     const html = "<p>pré-treino e funcionários estão corretos</p>";
     const issues = [
       "email:encoding_drop: 'pré-treino' pode estar corrompido",  // falso-pos
       "email:encoding_drop: 'funcionários' pode estar corrompido",  // falso-pos
       "email:unexpected_content: Seção 'Liderança de Maio' presente",  // mantém (não validável)
-      "email:formatting: caption não está em itálico",  // mantém
+      "email:formatting: caption não está em itálico",  // #1949: agora DROPADO (DS sans sem itálico)
     ];
     const r = filterAgentIssues(issues, html, "260520");
-    assert.equal(r.kept.length, 2);
-    assert.equal(r.dropped.length, 2);
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.dropped.length, 3);
     assert.match(r.kept[0], /unexpected_content/);
-    assert.match(r.kept[1], /formatting/);
   });
 
   it("issues 100% validáveis → kept vazio, dropped completo", () => {

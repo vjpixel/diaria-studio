@@ -112,6 +112,59 @@ export function isVoteEditionMalformedFalsePositive(
 }
 
 /**
+ * #1949: "título sem negrito" é falso-positivo sob o DS #1936 — manchetes são
+ * Georgia serif SEM bold por design (hierarquia por tamanho/fonte, não peso).
+ * Baseado na string do issue (a classe inteira de reclamação é FP), não no HTML.
+ */
+export function isBoldMissingFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (/sem\s+negrito|t[íi]tulo.*negrito/i.test(issue)) {
+    return {
+      falsePositive: true,
+      reason: "DS #1936: manchetes são serif Georgia SEM negrito (hierarquia por tamanho/fonte)",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * #1949: "crédito/caption não está em itálico" é falso-positivo sob o DS #1936 —
+ * a legenda do É IA? é sans 12px ink SEM itálico por design. (O `*texto*` literal
+ * não-convertido é bug REAL — `italic_literal`, não casado aqui.)
+ */
+export function isItalicMissingFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  // só "não está em itálico" (ausência de estilo) — NÃO o italic_literal (`*x*`).
+  if (/italic_literal/i.test(issue)) return { falsePositive: false };
+  if (/n[ãa]o\s+est[áa]\s+em\s+it[áa]lico|sem\s+it[áa]lico/i.test(issue)) {
+    return {
+      falsePositive: true,
+      reason: "DS #1936: caption do É IA? é sans ink SEM itálico",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
+ * #1949: reclamação de merge tag `{{email}}`/`{{poll_sig}}`/`{{...}}` não
+ * expandida é falso-positivo — são inline POR DESIGN (#1083), o Beehiiv expande
+ * no ENVIO. O agent que olha o HTML cru do draft as vê literais.
+ */
+export function isMergeTagUnexpandedFalsePositive(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (/\{\{[^}]+\}\}/.test(issue)) {
+    return {
+      falsePositive: true,
+      reason: "merge tags ({{email}}/{{poll_sig}}) são inline por design (#1083) — Beehiiv expande no envio",
+    };
+  }
+  return { falsePositive: false };
+}
+
+/**
  * Cross-check de uma lista de issues contra o HTML local. Drop os que são
  * falso-positivos verificáveis; mantém os outros (incluindo tipos não
  * conhecidos — caller decide).
@@ -148,7 +201,19 @@ export function filterAgentIssues(
         continue;
       }
     }
-    // Tipos não validáveis (unexpected_content, formatting, etc) passam.
+    // #1949: classes de FP do novo DS / merge tags — baseadas só na string do
+    // issue (a reclamação inteira é FP), independem do HTML.
+    const dsChecks = [
+      isMergeTagUnexpandedFalsePositive(issue),
+      isBoldMissingFalsePositive(issue),
+      isItalicMissingFalsePositive(issue),
+    ];
+    const fp = dsChecks.find((r) => r.falsePositive);
+    if (fp && fp.falsePositive) {
+      dropped.push({ issue, reason: fp.reason });
+      continue;
+    }
+    // Tipos não validáveis (unexpected_content, etc) passam.
     kept.push(issue);
   }
 
