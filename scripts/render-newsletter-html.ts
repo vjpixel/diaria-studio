@@ -1092,7 +1092,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const bodyHtml =
     bodyParas.length > 1
-      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:22px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
+      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
         bodyParas
           .slice(1)
           .map(
