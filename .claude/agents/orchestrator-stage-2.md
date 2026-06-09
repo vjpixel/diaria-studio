@@ -269,13 +269,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```
   Exit 0 = todas URLs em LANÇAMENTOS estáveis (warnings em outras seções são informativos, não bloqueiam). Exit 1 = Clarice mexeu em URL de lançamento — incluir o output no prompt do gate humano com diff `antes/depois` pra editor decidir: aceitar a versão pós-Clarice (pode quebrar #160) ou restaurar manualmente em `02-reviewed.md`. Não auto-restaurar — preserva agência editorial.
 
-- **Verificar sobrevivência dos cupons CLARICE (#1982).** O bloco de divulgação CLARICE (midCallout `**📣 …**` #1938 + PARA ENCERRAR) passa pela Clarice/humanizer; os cupons `NEWS25`/`NEWS50` e o link de afiliado `?via=diaria` não têm guard. Comparar pré/pós:
+- **Verificar sobrevivência dos cupons CLARICE (#1982).** O bloco de divulgação CLARICE (midCallout `**📣 …**` #1938 + PARA ENCERRAR) passa por humanizer + Clarice; os cupons `NEWS25`/`NEWS50` e o link de afiliado `?via=diaria` não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
   ```bash
   npx tsx scripts/verify-clarice-coupons.ts \
-    --pre data/editions/{AAMMDD}/_internal/02-pre-clarice.md \
+    --pre data/editions/{AAMMDD}/_internal/02-normalized.md \
     --post data/editions/{AAMMDD}/02-reviewed.md
   ```
-  Exit 0 = cupons/link preservados (ou ausentes no pré — edição sem patrocínio). Exit 1 = algum literal sumiu/mudou pós-Clarice → **surfaçar no gate** (quebra tracking de afiliado / cupom do parceiro); editor restaura o literal exato em `02-reviewed.md`. Não auto-restaurar.
+  Exit 0 = cupons/link preservados (ou ausentes no pré — edição sem patrocínio). Exit 1 = algum literal sumiu/mudou pós-LLM → **surfaçar no gate** (quebra tracking de afiliado / cupom do parceiro); editor restaura o literal exato em `02-reviewed.md`. Não auto-restaurar.
 
 - **Sincronizar contagem da intro (#743, #876):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total) e a narrativa pode mencionar "X lançamentos" com X antigo. Corrigir automaticamente, passando o resumo de lançamentos removidos escrito em §2a:
   ```bash

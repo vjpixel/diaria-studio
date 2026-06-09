@@ -2,20 +2,25 @@
  * verify-clarice-coupons.ts (#1982)
  *
  * O bloco de divulgação CLARICE (midCallout daily `**📣 …**` #1938 + PARA
- * ENCERRAR) passa por 2 passos LLM (Clarice `correct_text` + humanizer) antes do
+ * ENCERRAR) passa por 2 passos LLM (humanizer + Clarice `correct_text`) antes do
  * render. Os cupons `NEWS25`/`NEWS50` e o link de afiliado
  * `clarice.ai/precos-planos?via=diaria` NÃO têm guard — `verify-clarice-url-
  * stability.ts` só checa URLs de list-items em LANÇAMENTOS. Um rewrite silencioso
  * quebraria o tracking de afiliado (`?via=diaria`) ou o cupom — sem ninguém
  * perceber até o parceiro reclamar.
  *
- * Este check compara pré-Clarice vs pós-Clarice (reviewed.md) e garante que cada
- * literal patrocinado **sobrevive** (contagem pós ≥ pré). Se o bloco não existia
- * no pré (sem patrocínio), não há o que proteger → ok.
+ * Este check compara um baseline PRÉ-LLM vs o pós (reviewed.md) e garante que
+ * cada literal patrocinado **sobrevive** (contagem pós ≥ pré). Se o bloco não
+ * existia no pré (sem patrocínio), não há o que proteger → ok.
+ *
+ * **Baseline = `02-normalized.md`** (pré-humanizer, code-review #1982): o
+ * midCallout é injetado pelo stitch ANTES de normalize→humanizer→Clarice, então
+ * `02-normalized.md` é o 1º artefato estável pré-LLM e cobre os DOIS passos. Usar
+ * `02-pre-clarice.md` (pós-humanizer) só pegaria mangling da Clarice.
  *
  * Uso:
  *   npx tsx scripts/verify-clarice-coupons.ts \
- *     --pre data/editions/AAMMDD/_internal/02-pre-clarice.md \
+ *     --pre data/editions/AAMMDD/_internal/02-normalized.md \
  *     --post data/editions/AAMMDD/02-reviewed.md
  *
  * Exit: 0 = cupons/link preservados (ou ausentes no pré). 1 = algum sumiu/mudou
