@@ -68,7 +68,7 @@ Orchestrator roda `scripts/check-source-blocklist.ts` antes de dispatchar — fo
 Sem `utm_*` nas URLs, sem fragmentos `#`. Sem nada válido na janela → `articles: []` com `status: "ok"`.
 
 **type_hint** — escolher o valor que melhor descreve o conteúdo APÓS ler a página:
-- `lancamento` — anúncio oficial de produto/feature **no domínio da própria empresa** (blog.openai.com, anthropic.com/news, ai.google.dev, blogs.nvidia.com, etc.). A empresa anuncia *seu próprio* lançamento.
+- `lancamento` — anúncio oficial de produto/feature **no domínio da própria empresa** (blog.openai.com, anthropic.com/news, ai.google.dev, blogs.nvidia.com, etc.). A empresa anuncia *seu próprio* lançamento. **Excluir mesmo em domínio oficial:** parcerias/acordos comerciais, customer stories (como X usa o produto), resultados de pesquisa/paper, anúncios de logística/entrega, posts de metodologia/técnica, posts sobre clientes de terceiros.
 - `ferramenta` — recurso/guia/tutorial que o leitor pode *usar* (lista de ferramentas, how-to, hands-on).
 - `pesquisa` — paper acadêmico, estudo, relatório técnico com metodologia.
 - `opiniao` — análise pessoal, editorial, coluna de opinião.

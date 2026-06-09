@@ -57,7 +57,7 @@ Faça **descoberta aberta** — procurar conteúdo sobre um tema em veículos qu
 ```
 
 **type_hint** — escolher o valor que melhor descreve o conteúdo APÓS ler a página:
-- `lancamento` — anúncio oficial de produto/feature **no domínio da própria empresa** (blog.openai.com, anthropic.com/news, ai.google.dev, etc.). A empresa anuncia *seu próprio* lançamento.
+- `lancamento` — anúncio oficial de produto/feature **no domínio da própria empresa** (blog.openai.com, anthropic.com/news, ai.google.dev, etc.). A empresa anuncia *seu próprio* lançamento. **Excluir mesmo em domínio oficial:** parcerias/acordos comerciais, customer stories (como X usa o produto), resultados de pesquisa/paper, anúncios de logística/entrega, posts de metodologia/técnica, posts sobre clientes de terceiros. **Excluir se o host não for da empresa que lança** (ex: huggingface.co/blog/nvidia não é domínio da NVIDIA).
 - `ferramenta` — recurso/guia/tutorial que o leitor pode *usar* (lista de ferramentas, how-to, hands-on).
 - `pesquisa` — paper acadêmico, estudo, relatório técnico com metodologia.
 - `opiniao` — análise pessoal, editorial, coluna de opinião.
