@@ -1,5 +1,10 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 import {
   categorize,
   isVideoUrl,
@@ -2526,4 +2531,22 @@ describe("#1899: routing por fonte use_melhor (lista-semente)", () => {
       "tutorial",
     );
   });
+});
+
+describe("#1984: vocabulário type_hint dos agentes alinhado com categorize.ts", () => {
+  // Regressão: o short-circuit `type_hint==='lancamento'` em categorize.ts:1132
+  // era dead-code porque os prompts não listavam 'lancamento' no enum.
+  // Este teste garante que ambos os agentes incluam 'lancamento' para que o
+  // short-circuit seja acessível em produção.
+  const AGENTS = [".claude/agents/source-researcher.md", ".claude/agents/discovery-searcher.md"];
+  for (const rel of AGENTS) {
+    it(`${rel} inclui 'lancamento' no enum de type_hint`, () => {
+      const content = readFileSync(resolve(ROOT, rel), "utf8");
+      assert.match(
+        content,
+        /type_hint.*lancamento/,
+        `${rel}: 'lancamento' ausente do type_hint — o short-circuit categorize.ts voltaria a ser dead-code`,
+      );
+    });
+  }
 });
