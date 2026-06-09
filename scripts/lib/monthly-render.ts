@@ -15,6 +15,8 @@
  * (decisão editorial #1936). Shell bege #EBE5D0, card papel #FBFAF6.
  */
 import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
+export { escHtml } from "./html-escape.ts"; // #1990: re-export for back-compat callers
+import { escHtml } from "./html-escape.ts"; // #1990: local usage
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
@@ -27,14 +29,6 @@ const SHELL = "#FFFFFF"; // #1955 página branca (era COLORS.paperAlt #EBE5D0)
 const BEGE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes recuados / É IA? / réguas — contraste, mantido)
 const FONT_SERIF = FONTS.serif; // Georgia (manchetes+corpo)
 const FONT_SANS = FONTS.sans; // Geist (labels/kickers)
-
-export function escHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /** Strip backslash escapes do export Drive (`\!` `\&` `\[` `\]`). */
 export function stripBackslashEscapes(s: string): string {

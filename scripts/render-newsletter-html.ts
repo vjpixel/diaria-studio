@@ -25,6 +25,7 @@ import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./lib/inline-link.ts"; // #599, #1581
 import { COLORS, FONTS } from "./lib/design-tokens.ts"; // #1936
 import { buildPrevResultLine, readPrevPollStats } from "./eia-compose.ts"; // #1707 fallback
+import { escHtml as esc } from "./lib/html-escape.ts"; // #1990
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -772,14 +773,6 @@ const FONT_LABEL = FONTS.sans;
 // Sintaxe Beehiiv: SEM espaços, SEM prefix `subscriber.` ou `custom_fields.`
 // (validado contra docs oficiais 2026-05-11).
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
-
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /**
  * #1117: remove backslash escapes do markdown pra pontuação ASCII comum.
