@@ -23,9 +23,16 @@
  *   no path indicado para que `sync-intro-count.ts` ajuste menções
  *   narrativas a "X lançamentos" no intro pós-Clarice.
  *
+ * #1968: verificação POSITIVA de ferramenta. Além do filtro de domínio oficial
+ * (#160) e do filtro NEGATIVO de governança (#1799), cada item precisa de um
+ * sinal POSITIVO de produto (software/hardware) no slug/título. Item oficial sem
+ * sinal → `not_a_tool` → hard-block (exit 1), surfaçado no gate (pega parceria/
+ * evento/programa/relatório que passariam só no filtro negativo). Override pra
+ * slug atípico legítimo: `seed/lancamentos-tool-allowlist.txt`.
+ *
  * Exit codes:
- *   0  Todas as URLs em LANÇAMENTOS são oficiais (ou seção vazia)
- *   1  Pelo menos 1 URL não-oficial em LANÇAMENTOS
+ *   0  Todas as URLs em LANÇAMENTOS são oficiais E ferramentas (ou seção vazia)
+ *   1  Pelo menos 1 URL não-oficial (#160) OU 1 item sem sinal de produto (#1968)
  *   2  Erro de leitura/uso
  */
 
@@ -35,11 +42,32 @@ import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
+/**
+ * #1968: allowlist de override pra a verificação positiva de ferramenta. Arquivo
+ * `seed/lancamentos-tool-allowlist.txt` — 1 substring de URL por linha (`#` =
+ * comentário). Um item de LANÇAMENTOS cuja URL contém qualquer entrada é tratado
+ * como ferramenta verificada mesmo sem sinal positivo de produto no slug/título
+ * (slug atípico legítimo). Ausente / vazio → allowlist vazia (sem override).
+ */
+export function loadToolAllowlist(root: string): string[] {
+  const p = resolve(root, "seed", "lancamentos-tool-allowlist.txt");
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*$/, "").trim())
+    .filter((l) => l.length > 0);
+}
+
 export interface ValidationResult {
   lancamento_count: number;
   invalid_urls: Array<{ url: string; line: number }>;
   /** #1799: itens que não são software/hardware (governança/política/análise). */
   non_product: Array<{ url: string; line: number }>;
+  /** #1968: itens com sinal POSITIVO de ferramenta (software/hardware). */
+  verified_product: Array<{ url: string; line: number }>;
+  /** #1968: itens SEM sinal positivo de produto (verificação positiva falhou) —
+   * mesmo que não batam em keyword de governança. Hard-block (exit 1). */
+  not_a_tool: Array<{ url: string; line: number }>;
   status: "ok" | "error";
 }
 
@@ -83,18 +111,81 @@ const NON_PRODUCT_RE =
 const NON_PRODUCT_SLUG_RE =
   /\b(cvpr|neurips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|arxiv|preprint|case stud(y|ies)|customer stor(y|ies))\b/i;
 
-export function isNonProductLancamento(url: string, title?: string): boolean {
-  let slug = "";
+/** Slug normalizado (`[-_/]→ espaço`) pra match de palavras; url crua no catch. */
+function normalizedSlug(url: string): string {
   try {
-    slug = decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
+    return decodeURIComponent(new URL(url).pathname).replace(/[-_/]+/g, " ");
   } catch {
-    slug = url;
+    return url;
   }
+}
+
+/** Slug cru (path decodificado, dashes preservados) pra match de versão (`gpt-4`, `4.5`). */
+function rawSlug(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return url;
+  }
+}
+
+export function isNonProductLancamento(url: string, title?: string): boolean {
+  const slug = normalizedSlug(url);
   return (
     NON_PRODUCT_RE.test(slug) ||
     NON_PRODUCT_SLUG_RE.test(slug) ||
     (!!title && NON_PRODUCT_RE.test(title))
   );
+}
+
+/**
+ * #1968: verificação POSITIVA de que o item é uma FERRAMENTA (software/hardware).
+ * Inverte o ônus do #1799: em vez de só flagar governança (filtro negativo),
+ * exige um sinal positivo de produto. Sem sinal → `not_a_tool` (hard-block),
+ * mesmo que não bata em keyword de governança — pega parceria/evento/programa/
+ * relatório que passariam no filtro negativo (ex: nvidia-and-lg-group-ai-factory,
+ * openai.com/index/economic-research-exchange).
+ *
+ * Sinais (slug normalizado + título):
+ *  - verbos de lançamento (introducing/launch/announcing/released/ships/…, PT lança/disponível/…);
+ *  - substantivos de produto (model/app/api/sdk/cli/chip/gpu/device/tool/platform/agent/…);
+ *  - famílias de produto de IA de alta frequência (gpt/claude/gemini/llama/… —
+ *    pragmático: esta é uma newsletter de IA; o allowlist cobre o resto).
+ *  - número de versão no slug CRU (`gpt-4`, `4.5`, `v2`, `claude-opus-4-5`).
+ */
+const PRODUCT_SIGNAL_RE =
+  /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|feature|features|update|updates|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
+
+// Versão de produto no slug CRU (dashes preservados): `gpt-4`, `claude-opus-4-5`,
+// `4.5`, `v2`, `o1`/`o3`. Sinal forte de lançamento de modelo/produto versionado.
+const VERSION_SIGNAL_RE = /\bv?\d+(?:[.\-]\d+)+\b|\bv\d+\b|-\d+(?:o|b)?\b|\bo\d\b/i;
+
+// Path segment `/product(s)/` — página oficial de produto (ex: blog.google/.../
+// products/notebooklm/...). Sinal estrutural, mais forte que keyword no slug.
+const PRODUCT_PATH_RE = /\/products?\//i;
+
+export function hasProductSignal(url: string, title?: string): boolean {
+  const norm = normalizedSlug(url);
+  const raw = rawSlug(url);
+  const t = title ?? "";
+  return (
+    PRODUCT_PATH_RE.test(raw) ||
+    PRODUCT_SIGNAL_RE.test(norm) ||
+    PRODUCT_SIGNAL_RE.test(t) ||
+    VERSION_SIGNAL_RE.test(raw) ||
+    VERSION_SIGNAL_RE.test(t)
+  );
+}
+
+/**
+ * #1968: `true` se o item é uma ferramenta verificada. Allowlist (override pro
+ * editor, slug atípico legítimo) vence tudo. Senão: governança/pesquisa → não é
+ * ferramenta (alta precisão, reforço #1799); senão exige sinal positivo.
+ */
+export function isVerifiedTool(url: string, title?: string, allowlist: string[] = []): boolean {
+  if (allowlist.some((a) => a && url.includes(a))) return true;
+  if (isNonProductLancamento(url, title)) return false;
+  return hasProductSignal(url, title);
 }
 
 /**
@@ -154,7 +245,7 @@ export function extractLancamentoUrls(
   return out;
 }
 
-export function validateLancamentos(text: string): ValidationResult {
+export function validateLancamentos(text: string, allowlist: string[] = []): ValidationResult {
   const urls = extractLancamentoUrls(text);
   // Markdown links [url](url) duplicate the URL — dedup by url string.
   const seen = new Set<string>();
@@ -168,11 +259,19 @@ export function validateLancamentos(text: string): ValidationResult {
   // #1799: itens de governança/política/análise — warn (não muda o status, que
   // segue regido pela regra de domínio oficial #160).
   const non_product = unique.filter((u) => isNonProductLancamento(u.url));
+  // #1968: verificação POSITIVA — só URLs oficiais entram na conta (não-oficial
+  // já é error por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
+  const official = unique.filter((u) => isOfficialLancamentoUrl(u.url));
+  const verified_product = official.filter((u) => isVerifiedTool(u.url, undefined, allowlist));
+  const not_a_tool = official.filter((u) => !isVerifiedTool(u.url, undefined, allowlist));
   return {
     lancamento_count: unique.length,
     invalid_urls: invalid,
     non_product,
-    status: invalid.length === 0 ? "ok" : "error",
+    verified_product,
+    not_a_tool,
+    // #1968: status error se URL não-oficial (#160) OU item sem sinal de produto.
+    status: invalid.length === 0 && not_a_tool.length === 0 ? "ok" : "error",
   };
 }
 
@@ -193,6 +292,10 @@ export interface LancamentosRemovedSummary {
   /** #1799: itens que parecem governança/política/análise (warn, não removidos
    * automaticamente — decisão editorial no gate). */
   flagged_non_product: Array<{ url: string; title?: string }>;
+  /** #1968: itens oficiais SEM sinal positivo de produto (verificação positiva
+   * falhou) — hard-block (exit 1). NÃO são auto-removidos: editor decide no gate
+   * (false-positive de slug atípico vai pro allowlist). */
+  not_a_tool: Array<{ url: string; title?: string }>;
   original_count: number;
   final_count: number;
 }
@@ -209,17 +312,20 @@ interface ApprovedShape {
  */
 export function validateLancamentosFromApproved(
   approved: ApprovedShape,
+  allowlist: string[] = [],
 ): LancamentosRemovedSummary {
   const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
   const removed: LancamentoRemoved[] = [];
   const flagged_non_product: Array<{ url: string; title?: string }> = [];
+  const not_a_tool: Array<{ url: string; title?: string }> = [];
   let kept = 0;
 
   for (const item of list) {
     const url = typeof item.url === "string" ? item.url : "";
     if (!url) continue;
     const title = typeof item.title === "string" ? item.title : undefined;
-    if (isOfficialLancamentoUrl(url)) {
+    const official = isOfficialLancamentoUrl(url);
+    if (official) {
       kept++;
     } else {
       removed.push({ url, title, reason: "non_official_domain" });
@@ -229,10 +335,15 @@ export function validateLancamentosFromApproved(
     if (isNonProductLancamento(url, title)) {
       flagged_non_product.push({ url, title });
     }
+    // #1968: verificação positiva só nos itens oficiais (não-oficial já é
+    // removido por #160; não dupla-flagar). Sem sinal de produto → not_a_tool.
+    if (official && !isVerifiedTool(url, title, allowlist)) {
+      not_a_tool.push({ url, title });
+    }
   }
 
   const original_count = kept + removed.length;
-  return { removed, flagged_non_product, original_count, final_count: kept };
+  return { removed, flagged_non_product, not_a_tool, original_count, final_count: kept };
 }
 
 function mainApproved(args: Record<string, string>, ROOT: string): void {
@@ -248,7 +359,8 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     console.error(`Falha ao parsear ${approvedPath}: ${(err as Error).message}`);
     process.exit(2);
   }
-  const summary = validateLancamentosFromApproved(approved);
+  const allowlist = loadToolAllowlist(ROOT);
+  const summary = validateLancamentosFromApproved(approved, allowlist);
   console.log(JSON.stringify(summary, null, 2));
 
   if (args["write-removed"]) {
@@ -279,6 +391,25 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
       const titleHint = r.title ? ` ("${r.title.slice(0, 60)}")` : "";
       console.error(`  ${r.url}${titleHint}`);
     }
+  }
+
+  // #1968: verificação POSITIVA — item oficial sem sinal de produto = not_a_tool.
+  // Hard-block (exit 1) surfaçado no gate; NÃO auto-removido (editor decide /
+  // allowlist em seed/lancamentos-tool-allowlist.txt pra slug atípico legítimo).
+  if (summary.not_a_tool.length > 0) {
+    console.error(
+      `\n❌ ${summary.not_a_tool.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) (#1968):`,
+    );
+    for (const n of summary.not_a_tool) {
+      const titleHint = n.title ? ` ("${n.title.slice(0, 60)}")` : "";
+      console.error(`  ${n.url}${titleHint}`);
+    }
+    console.error(
+      "Mova pra NOTÍCIAS, ou — se for ferramenta legítima de slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.",
+    );
+  }
+
+  if (summary.removed.length > 0 || summary.not_a_tool.length > 0) {
     process.exit(1);
   }
 }
@@ -313,9 +444,11 @@ function main(): void {
     process.exit(2);
   }
   const text = readFileSync(path, "utf8");
-  const result = validateLancamentos(text);
+  const allowlist = loadToolAllowlist(ROOT);
+  const result = validateLancamentos(text, allowlist);
   console.log(JSON.stringify(result, null, 2));
-  // #1799: warn de não-produto (governança/política) — não muda o status.
+  // #1799: warn de não-produto (governança/política) — informativo (o gate forte
+  // do #1968 é via not_a_tool, que SUBSUME estes via verificação positiva).
   if (result.non_product.length > 0) {
     console.error(
       `\n⚠️ ${result.non_product.length} item(ns) de LANÇAMENTOS parece(m) governança/política/pesquisa/case-study, não página oficial de produto (#1799/#1852):`,
@@ -324,7 +457,7 @@ function main(): void {
       console.error(`  linha ${u.line}: ${u.url}`);
     }
   }
-  if (result.status === "error") {
+  if (result.invalid_urls.length > 0) {
     console.error(
       `\n❌ ${result.invalid_urls.length} URL(s) em LANÇAMENTOS não bate(m) com whitelist oficial:`,
     );
@@ -334,6 +467,20 @@ function main(): void {
     console.error(
       "\nReclassifique como NOTÍCIAS ou substitua por link de domínio oficial. Veja editorial-rules.md → 'Lançamentos só com link oficial'.",
     );
+  }
+  // #1968: verificação POSITIVA — item oficial sem sinal de produto = not_a_tool.
+  if (result.not_a_tool.length > 0) {
+    console.error(
+      `\n❌ ${result.not_a_tool.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) (#1968):`,
+    );
+    for (const u of result.not_a_tool) {
+      console.error(`  linha ${u.line}: ${u.url}`);
+    }
+    console.error(
+      "\nMova pra NOTÍCIAS, ou — se for ferramenta legítima de slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.",
+    );
+  }
+  if (result.status === "error") {
     process.exit(1);
   }
 }

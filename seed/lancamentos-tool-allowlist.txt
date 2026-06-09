@@ -1,0 +1,18 @@
+# Allowlist de override pra a verificação POSITIVA de ferramenta em LANÇAMENTOS (#1968).
+#
+# validate-lancamentos.ts exige um sinal POSITIVO de produto (slug/título com
+# verbo de lançamento, substantivo de produto, família de IA, ou número de
+# versão) pra cada item de LANÇAMENTOS. Item sem sinal → not_a_tool → hard-block
+# (exit 1, surfaçado no gate).
+#
+# Se uma FERRAMENTA legítima tiver slug/título atípico que não casa nenhum sinal
+# (e o gate flagar como not_a_tool por engano), adicione aqui 1 SUBSTRING de URL
+# por linha. Qualquer item de LANÇAMENTOS cuja URL CONTENHA a substring é tratado
+# como ferramenta verificada (override).
+#
+# Linhas começando com `#` são comentário; linhas em branco ignoradas.
+# Prefira a substring mais específica possível (domínio + path) pra não liberar
+# demais. Ex (fictício):
+#   exemplo.com/launches/ferramenta-sem-keyword
+#
+# (vazio por padrão — adicione conforme necessário)

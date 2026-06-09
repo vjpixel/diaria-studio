@@ -8,6 +8,8 @@ import {
   validateLancamentos,
   validateLancamentosFromApproved,
   isNonProductLancamento,
+  hasProductSignal,
+  isVerifiedTool,
 } from "../scripts/validate-lancamentos.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
@@ -128,12 +130,85 @@ describe("validateLancamentos", () => {
     const md = [
       "LANÇAMENTOS",
       "Item",
-      "[https://openai.com/index/x](https://openai.com/index/x)",
+      // #1968: slug com sinal de produto (`gpt-5`) pra status seguir "ok" — o
+      // foco do teste é o dedup, não o gate de ferramenta.
+      "[https://openai.com/index/gpt-5](https://openai.com/index/gpt-5)",
     ].join("\n");
     const r = validateLancamentos(md);
     // Mesma URL aparece 2x no markdown link mas conta como 1
     assert.equal(r.lancamento_count, 1);
     assert.equal(r.status, "ok");
+  });
+});
+
+describe("#1968 — verificação POSITIVA de ferramenta", () => {
+  it("hasProductSignal: verbo/substantivo/família/versão = produto", () => {
+    assert.ok(hasProductSignal("https://openai.com/index/introducing-gpt-5"));
+    assert.ok(hasProductSignal("https://www.anthropic.com/news/claude-opus-4-5"));
+    assert.ok(hasProductSignal("https://blog.google/technology/gemini-2-5-flash"));
+    assert.ok(hasProductSignal("https://openai.com/index/sora")); // família IA
+    assert.ok(hasProductSignal("https://x.com/launch-new-api")); // verbo + noun
+    assert.ok(hasProductSignal("https://blog.google/products/notebooklm/x")); // path /products/
+  });
+
+  it("hasProductSignal: parceria/programa/evento/contratação = SEM sinal", () => {
+    assert.ok(!hasProductSignal("https://nvidia.com/data-center/nvidia-and-lg-group-ai-factory"));
+    assert.ok(!hasProductSignal("https://openai.com/index/economic-research-exchange"));
+    assert.ok(!hasProductSignal("https://www.anthropic.com/news/hiring-engineers"));
+  });
+
+  it("isVerifiedTool: governança vence sinal (alta precisão, reforço #1799)", () => {
+    // mesmo com 'update' no slug, 'policy' marca governança → não é ferramenta
+    assert.ok(!isVerifiedTool("https://openai.com/index/public-policy-update"));
+  });
+
+  it("isVerifiedTool: allowlist faz override de slug atípico", () => {
+    const url = "https://nvidia.com/blog/jetson-thor-edge"; // hardware, slug sem sinal
+    assert.ok(!isVerifiedTool(url), "sem allowlist → não verificado");
+    assert.ok(isVerifiedTool(url, undefined, ["nvidia.com/blog/jetson"]), "allowlist → verificado");
+  });
+
+  it("validateLancamentos: item oficial sem sinal → not_a_tool + status error (hard-block)", () => {
+    const md = ["LANÇAMENTOS", "Item", "https://openai.com/index/economic-research-exchange", "", "---"].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.not_a_tool.length, 1);
+    assert.equal(r.verified_product.length, 0);
+    assert.equal(r.status, "error");
+  });
+
+  it("validateLancamentos: lançamento real → verified_product + status ok", () => {
+    const md = ["LANÇAMENTOS", "Item", "https://openai.com/index/introducing-gpt-5", "", "---"].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.verified_product.length, 1);
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+
+  it("validateLancamentos: allowlist (param) suprime not_a_tool", () => {
+    const md = ["LANÇAMENTOS", "Item", "https://openai.com/index/jetson-thor", "", "---"].join("\n");
+    assert.equal(validateLancamentos(md).status, "error");
+    const r = validateLancamentos(md, ["openai.com/index/jetson"]);
+    assert.equal(r.not_a_tool.length, 0);
+    assert.equal(r.status, "ok");
+  });
+
+  it("validateLancamentosFromApproved: não-oficial não dupla-flaga not_a_tool (só removed)", () => {
+    const approved = { lancamento: [{ url: "https://techcrunch.com/2026/01/x", title: "Cobertura" }] };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.removed.length, 1); // não-oficial
+    assert.equal(s.not_a_tool.length, 0); // not_a_tool só avalia oficiais
+  });
+
+  it("validateLancamentosFromApproved: oficial sem sinal → not_a_tool (usa título)", () => {
+    const approved = {
+      lancamento: [
+        { url: "https://openai.com/index/economic-research-exchange", title: "Economic Research Exchange" },
+        { url: "https://www.anthropic.com/news/claude-opus-4-5", title: "Claude Opus 4.5" },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 1);
+    assert.equal(s.not_a_tool[0].url, "https://openai.com/index/economic-research-exchange");
   });
 });
 
@@ -255,7 +330,9 @@ describe("CLI args (#902, #926)", () => {
       "",
       "LANÇAMENTOS",
       "Item",
-      "https://openai.com/index/x",
+      // #1968: slug com sinal positivo de produto (`introducing` + versão) pra
+      // o CLI passar — estes testes exercitam o parsing de args, não o gate.
+      "https://openai.com/index/introducing-gpt-5",
       "",
       "---",
       "",

@@ -279,7 +279,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```bash
   npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
   ```
-  Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). Se exit code != 0 (URL não-oficial detectada), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide se é erro real ou caso de borda novo (ex: domínio oficial não cadastrado ainda).
+  Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). **#1968 (verificação POSITIVA):** além do domínio oficial, cada item precisa de um sinal de produto (software/hardware) no slug/título — item oficial sem sinal vai pra `not_a_tool` e também faz exit 1 (pega parceria/evento/programa/relatório). Se exit code != 0 (URL não-oficial OU `not_a_tool`), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide. **Se for ferramenta legítima de slug atípico** (ex: hardware NVIDIA Jetson), adicionar a URL a `seed/lancamentos-tool-allowlist.txt` (1 substring por linha) — override permanente da verificação positiva.
 
 - **Sincronizar linha de cobertura (#1097):** após Clarice + validate-lancamentos, antes do render-erro-intencional, rodar:
   ```bash
