@@ -12,9 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractMidCallout,
+  stripMidCalloutFromD1,
   renderMidCallout,
   readMidCalloutImage,
 } from "../scripts/render-newsletter-html.ts";
+import { parseDestaques } from "../scripts/extract-destaques.ts";
 
 const MD = `Para esta edição, selecionamos 15 itens.
 
@@ -175,5 +177,74 @@ describe("midCallout — box entre D1 e D2", () => {
     assert.ok(!html.includes("[ali]"), "2º markdown-link também removido do corpo");
     // o destino da imagem/CTA é o primeiro link
     assert.ok(html.includes("https://a.com"), "CTA usa o primeiro link");
+  });
+});
+
+describe("#1972 — callout colado ANTES do --- do D1 não duplica (de-dup determinístico)", () => {
+  // Caso real 260609: o box da Clarice (**📣 …**) foi colado na região do D1
+  // ANTES do `---` de fechamento. parseDestaques (que fatia em ^---$) absorveu
+  // o bloco no why do D1 (corpo quebrado) E extractMidCallout o pegou (box teal)
+  // → render 2×. O fix: stripMidCalloutFromD1 remove o bloco antes do parse.
+  const MD_MISPLACED = `Para esta edição, selecionamos 15 itens.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Título D1](https://example.com/d1)**
+
+Corpo do destaque 1.
+
+Por que isso importa:
+
+Algo importante sobre o D1.
+
+**📣 Escreva melhor com a Clarice.ai. Cupons NEWS25/NEWS50. [Acesse](https://clarice.ai/precos-planos?via=diaria).**
+
+---
+
+**DESTAQUE 2 | 🚀 LANÇAMENTO**
+
+**[Título D2](https://example.com/d2)**
+
+Corpo do destaque 2.
+`;
+
+  it("sem strip o callout VAZA pro corpo/why do D1 (demonstra o bug)", () => {
+    const raw = parseDestaques(MD_MISPLACED);
+    assert.ok(
+      raw[0].why.includes("Clarice.ai") || raw[0].body.includes("Clarice.ai"),
+      "sem strip, o parser absorve o callout no D1 (bug original)",
+    );
+  });
+
+  it("stripMidCalloutFromD1 remove o bloco → callout NÃO vaza pro D1", () => {
+    const cleaned = stripMidCalloutFromD1(MD_MISPLACED);
+    const d = parseDestaques(cleaned);
+    assert.ok(!d[0].body.includes("Clarice.ai"), "callout fora do body do D1");
+    assert.ok(!d[0].why.includes("Clarice.ai"), "callout fora do why do D1");
+  });
+
+  it("extractMidCallout ainda acha o callout no texto original (render 1×)", () => {
+    const c = extractMidCallout(MD_MISPLACED);
+    assert.ok(c, "callout extraído como midCallout");
+    assert.match(c!, /^📣 Escreva melhor com a Clarice\.ai/);
+  });
+
+  it("stripMidCalloutFromD1 é idempotente quando o callout já está isolado", () => {
+    // Posição correta: callout em sua própria seção entre dois `---`.
+    const MD_OK = MD_MISPLACED.replace(
+      /Algo importante sobre o D1\.\n\n(\*\*📣[^\n]*\*\*)\n/,
+      "Algo importante sobre o D1.\n\n---\n\n$1\n",
+    );
+    const cleaned = stripMidCalloutFromD1(MD_OK);
+    const d = parseDestaques(cleaned);
+    assert.ok(!d[0].why.includes("Clarice.ai"), "callout não está no D1 (já isolado)");
+    assert.match(extractMidCallout(MD_OK)!, /^📣 Escreva melhor/);
+  });
+
+  it("idempotente quando não há callout nenhum (texto inalterado)", () => {
+    const semCallout = MD_MISPLACED.replace(/\n\*\*📣[^\n]*\*\*\n/, "\n");
+    assert.equal(stripMidCalloutFromD1(semCallout), semCallout);
   });
 });

@@ -563,6 +563,32 @@ export function extractIntroCallout(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+const MID_CALLOUT_MARKER = /^\*\*DESTAQUE/m;
+const MID_CALLOUT_BLOCK = /^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m;
+
+/**
+ * Pure (#1972): localiza o bloco do midCallout no texto bruto, retornando o
+ * conteúdo interno + os índices absolutos do match (`**…**` completo). Base
+ * compartilhada por `extractMidCallout` (lê o conteúdo) e `stripMidCalloutFromD1`
+ * (remove o bloco do corpo do D1). Região = entre o 1º e o 2º `**DESTAQUE`
+ * (mesma do split legado, mas preservando offsets pra poder fatiar).
+ */
+function locateMidCallout(
+  text: string,
+): { inner: string; matchStart: number; matchEnd: number } | null {
+  const firstMarker = text.search(MID_CALLOUT_MARKER);
+  if (firstMarker === -1) return null;
+  // 2º marcador (se houver) delimita o fim da região do D1.
+  const afterFirst = text.slice(firstMarker + 1);
+  const secondRel = afterFirst.search(MID_CALLOUT_MARKER);
+  const regionEnd = secondRel === -1 ? text.length : firstMarker + 1 + secondRel;
+  const region = text.slice(firstMarker, regionEnd);
+  const m = MID_CALLOUT_BLOCK.exec(region);
+  if (!m) return null;
+  const matchStart = firstMarker + m.index;
+  return { inner: m[1].trim(), matchStart, matchEnd: matchStart + m[0].length };
+}
+
 /**
  * Callout box posicionado ENTRE o 1º e o 2º destaque (ex: promo da página de
  * livros). Mesmo estilo teal do introCallout. Procura um parágrafo
@@ -571,10 +597,23 @@ export function extractIntroCallout(text: string): string | null {
  * (começam com `[`) nem headers de seção (vêm após o 3º destaque).
  */
 export function extractMidCallout(text: string): string | null {
-  const afterD1 = text.split(/^\*\*DESTAQUE/m)[1];
-  if (!afterD1) return null;
-  const m = afterD1.match(/^\*\*\s*((?:📚|📣|🎉)[\s\S]+?)\*\*\s*$/m);
-  return m ? m[1].trim() : null;
+  return locateMidCallout(text)?.inner ?? null;
+}
+
+/**
+ * Pure (#1972): remove o bloco do midCallout do texto bruto ANTES do parse dos
+ * destaques. Sem isso, um callout colado ANTES do `---` de fechamento do D1
+ * (em vez de isolado entre dois `---`) é absorvido pelo corpo/why do D1 pelo
+ * `parseDestaques` (que fatia em `^---$`) E renderizado como midCallout → box
+ * duplicado e quebrado (260609). De-dup determinístico, robusto à posição do
+ * `---`: o callout sai SÓ como midCallout. Idempotente quando não há callout.
+ */
+export function stripMidCalloutFromD1(text: string): string {
+  const loc = locateMidCallout(text);
+  if (!loc) return text;
+  const without = text.slice(0, loc.matchStart) + text.slice(loc.matchEnd);
+  // Colapsa as linhas em branco órfãs deixadas pela remoção (evita parágrafo vazio).
+  return without.replace(/\n{3,}/g, "\n\n");
 }
 
 /**
@@ -606,8 +645,14 @@ export function extractContent(editionDir: string): NewsletterContent {
 
   const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
 
+  // #1972: remove o bloco do midCallout ANTES do parse dos destaques. Se o
+  // callout estiver colado antes do `---` de fechamento do D1, o parser o
+  // absorveria no corpo/why do D1 (render duplicado). Strip → sai só como
+  // midCallout (extraído abaixo do texto original). De-dup determinístico.
+  const destaquesText = stripMidCalloutFromD1(reviewedText);
+
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
-  const baseDestaques = parseDestaques(reviewedText);
+  const baseDestaques = parseDestaques(destaquesText);
   if (baseDestaques.length !== 3) {
     throw new Error(`Expected 3 destaques, got ${baseDestaques.length}`);
   }
