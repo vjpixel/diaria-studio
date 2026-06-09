@@ -83,15 +83,14 @@ describe("sources RSS fixes (#1266)", () => {
   });
 
   // #1862: 7 fontes "Tutoriais" reportadas como secas. Investigação (curl
-  // server-side) distinguiu feed quebrado de fonte de baixa cadência:
-  it("#1862: Fast.ai usa index.xml (atom.xml era 404)", () => {
-    const s = byName.get("Fast.ai");
-    assert.ok(s, "Fast.ai deve existir em sources.md");
-    assert.equal(
-      s!.rss,
-      "https://www.fast.ai/index.xml",
-      "atom.xml retornava 404; index.xml é o feed declarado no homepage (200 application/xml)",
-    );
+  // server-side) distinguiu feed quebrado de fonte de baixa cadência.
+  // #1971: re-auditoria ao vivo desativou 3 fontes estruturalmente incompatíveis
+  // com o pipeline de recência (Fast.ai pivotou pra ensaios, newest jan/2026;
+  // Kaggle Learn + Microsoft Learn AI = currículo/catálogo estático evergreen).
+  it("#1971: Fast.ai / Kaggle Learn / Microsoft Learn AI desativadas (não no seed)", () => {
+    assert.equal(byName.get("Fast.ai"), undefined, "Fast.ai desativada (#1971)");
+    assert.equal(byName.get("Kaggle Learn"), undefined, "Kaggle Learn desativada (#1971)");
+    assert.equal(byName.get("Microsoft Learn AI"), undefined, "Microsoft Learn AI desativada (#1971)");
   });
 
   // #1862: feeds RSS mortos (404 / HTML React/Webflow) — fonte mantida pra

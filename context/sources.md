@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 48 fontes (17 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 45 fontes (14 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -208,12 +208,6 @@
 - RSS: https://magazine.sebastianraschka.com/feed
 - Use Melhor: sim
 
-### Fast.ai
-- URL: https://www.fast.ai/
-- Site query: `site:fast.ai`
-- RSS: https://www.fast.ai/index.xml
-- Use Melhor: sim
-
 ### LangChain Blog
 - URL: https://www.langchain.com/blog
 - Site query: `site:langchain.com/blog`
@@ -241,17 +235,7 @@
 - Site query: `site:hub.asimov.academy`
 - Use Melhor: sim
 
-### Kaggle Learn
-- URL: https://www.kaggle.com/learn
-- Site query: `site:kaggle.com/learn`
-- Use Melhor: sim
-
 ### Weights & Biases
 - URL: https://wandb.ai/fully-connected
 - Site query: `site:wandb.ai/fully-connected`
-- Use Melhor: sim
-
-### Microsoft Learn AI
-- URL: https://learn.microsoft.com/en-us/training/browse/?products=ai-services
-- Site query: `site:learn.microsoft.com/en-us/training/browse`
 - Use Melhor: sim
