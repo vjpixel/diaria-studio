@@ -81,6 +81,13 @@ describe("parseGscResponse + isoDate (#1989)", () => {
     assert.deepEqual(parseGscResponse({ rows: null }), []);
   });
 
+  it("code-review: elemento null no array não crasha", () => {
+    const rows = parseGscResponse({ rows: [null, { keys: ["p"], impressions: 10 }] });
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].page, ""); // null → defaults
+    assert.equal(rows[1].page, "p");
+  });
+
   it("isoDate: epoch ms → YYYY-MM-DD", () => {
     assert.equal(isoDate(Date.UTC(2026, 5, 9, 12, 0, 0)), "2026-06-09");
   });

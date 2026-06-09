@@ -99,7 +99,8 @@ export function parseGscResponse(json: unknown): GscRow[] {
   const rows = (json as { rows?: unknown[] })?.rows;
   if (!Array.isArray(rows)) return [];
   return rows.map((r) => {
-    const row = r as { keys?: string[]; clicks?: number; impressions?: number; ctr?: number; position?: number };
+    // (r ?? {}): elemento null/undefined no array não crasha (code-review #1989).
+    const row = (r ?? {}) as { keys?: string[]; clicks?: number; impressions?: number; ctr?: number; position?: number };
     const keys = row.keys ?? [];
     return {
       page: keys[0] ?? "",
