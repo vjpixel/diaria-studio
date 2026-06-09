@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, stitchNewsletter } from "../scripts/stitch-newsletter.ts";
+import { renderSection, stitchNewsletter, loadClariceCallout } from "../scripts/stitch-newsletter.ts";
+import { extractMidCallout } from "../scripts/render-newsletter-html.ts";
 
 describe("renderSection (#1463)", () => {
   it("retorna vazio quando não há items", () => {
@@ -428,6 +429,80 @@ Foto descrição.
       assert.match(result, /SORTEIO/);
       assert.match(result, /PARA ENCERRAR/);
       assert.match(result, /diaria\.beehiiv\.com\/cursos-gratuitos-de-ia/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-clarice-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" } }));
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  const base = (dir: string, internalDir: string, sponsor?: boolean) => ({
+    d1Path: join(internalDir, "02-d1-draft.md"),
+    d2Path: join(internalDir, "02-d2-draft.md"),
+    d3Path: join(internalDir, "02-d3-draft.md"),
+    approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+    editionDir: dir,
+    sponsor,
+  });
+
+  it("loadClariceCallout retorna o bloco **📣 …** com cupons + link", () => {
+    const block = loadClariceCallout();
+    assert.ok(block, "snippet existe");
+    assert.match(block!, /^\*\*\s*📣/);
+    assert.match(block!, /\*\*$/);
+    assert.match(block!, /NEWS25|NEWS50/);
+    assert.match(block!, /clarice\.ai\/precos-planos\?via=diaria/);
+  });
+
+  it("default (sponsor on): injeta o callout entre D1 e D2 + extractMidCallout o acha", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir));
+      const d1Pos = out.indexOf("DESTAQUE 1");
+      const calloutPos = out.indexOf("📣");
+      const d2Pos = out.indexOf("DESTAQUE 2");
+      assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
+      // acceptance #1938: snippet presente → midCallout no HTML final (extractMidCallout)
+      const mid = extractMidCallout(out);
+      assert.ok(mid, "extractMidCallout acha o box");
+      assert.match(mid!, /^📣 Escreva melhor/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sponsor=false (kill-switch): NÃO injeta", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, false));
+      assert.ok(!out.includes("📣"), "sem callout quando sponsor=false");
+      assert.equal(extractMidCallout(out), null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("idempotente: D1 já tem **📣 … → não dupla-injeta", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // editor colou o callout à mão no fim do D1
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n**📣 Já colado [x](https://clarice.ai/precos-planos?via=diaria)**",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      const count = (out.match(/📣/g) || []).length;
+      assert.equal(count, 1, "só 1 callout (não dupla-injeta)");
     } finally {
       cleanup();
     }

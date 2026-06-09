@@ -72,6 +72,23 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
+ * #1938: carrega o bloco canônico de divulgação CLARICE (`**📣 …**`) de
+ * `context/snippets/clarice-divulgacao.md` — fonte ÚNICA reaproveitada na
+ * diária (midCallout) e na mensal. Strip do comentário HTML de header; retorna
+ * o bloco `**📣 …**` trimado, ou `null` se o arquivo não existir / não tiver o
+ * marcador (graceful — daily sai sem sponsor em vez de quebrar).
+ */
+export function loadClariceCallout(): string | null {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const p = join(root, "context", "snippets", "clarice-divulgacao.md");
+  if (!existsSync(p)) return null;
+  const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
+  // Exige o bloco bold-wrapped iniciado por 📣 (mesmo que extractMidCallout casa).
+  const m = raw.match(/\*\*\s*📣[\s\S]+?\*\*/);
+  return m ? m[0].trim() : null;
+}
+
+/**
  * Renderiza uma section secundária (USE MELHOR/LANÇAMENTOS/RADAR/VÍDEOS)
  * com emoji prefix + items em formato canonical `[**title**](url)` + summary.
  *
@@ -145,6 +162,9 @@ interface StitchInput {
   d3Path: string;
   approvedCappedPath: string;
   editionDir: string;
+  /** #1938: injeta o midCallout de divulgação CLARICE entre D1 e D2. Default
+   * `true` (todo daily — decisão editorial). Kill-switch: `false` / `--no-sponsor`. */
+  sponsor?: boolean;
 }
 
 export function stitchNewsletter(input: StitchInput): string {
@@ -177,6 +197,14 @@ export function stitchNewsletter(input: StitchInput): string {
   const radar = renderSection("📡", "RADAR", "RADAR", approved.radar ?? []);
   const videos = renderSection("📺", "VÍDEO", "VÍDEOS", approved.video ?? []);
 
+  // #1938: midCallout de divulgação CLARICE entre D1 e D2, isolado entre dois
+  // `---` (posição que extractMidCallout procura; #1972 garante de-dup no render).
+  // Idempotente: pula se D1/D2 já trazem um `**📣 …**` (editor já colou à mão, ou
+  // re-run). Kill-switch: sponsor=false. Graceful: snippet ausente → sem callout.
+  const wantSponsor = input.sponsor !== false;
+  const alreadyHasCallout = /\*\*\s*📣/.test(d1) || /\*\*\s*📣/.test(d2);
+  const clariceCallout = wantSponsor && !alreadyHasCallout ? loadClariceCallout() : null;
+
   const parts: string[] = [
     coverageLine,
     "",
@@ -186,6 +214,11 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
     "---",
     "",
+  ];
+  if (clariceCallout) {
+    parts.push(clariceCallout, "", "---", "");
+  }
+  parts.push(
     d2,
     "",
     "---",
@@ -198,7 +231,7 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
     "---",
     "",
-  ];
+  );
 
   // #1752: USE MELHOR antes de LANÇAMENTOS (decisão editorial 260603).
   if (useMelhor) {
@@ -261,6 +294,8 @@ function main(): void {
       d3Path: join(editionDir, "_internal", "02-d3-draft.md"),
       approvedCappedPath: join(editionDir, "_internal", "01-approved-capped.json"),
       editionDir,
+      // #1938: kill-switch — `--no-sponsor` pula o midCallout da Clarice.
+      sponsor: values["no-sponsor"] ? false : true,
     });
     const outPath = join(editionDir, "_internal", "02-draft.md");
     writeFileSync(outPath, out);
