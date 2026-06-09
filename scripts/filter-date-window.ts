@@ -61,6 +61,11 @@ interface Article {
    */
   published_date?: string | null;
   date_unverified?: boolean;
+  /**
+   * #1992: artigo de fonte low-cadence — os N mais recentes bypassam a janela
+   * de data para que fontes que postam ~1×/mês não sejam sempre descartadas.
+   */
+  bypass_date_window?: boolean;
   [key: string]: unknown;
 }
 
@@ -195,6 +200,14 @@ export function filterDateWindow(
       const bucketDetailSuffix = editionDate
         ? ` (anchor ${anchorDate} - ${bucketDays}d; edition ${editionDate}; bucket-window=${bucketDays}d)`
         : ` (anchor ${anchorDate} - ${bucketDays}d; bucket-window=${bucketDays}d)`;
+
+      // #1992: low-cadence sources marcam seus N artigos mais recentes com
+      // bypass_date_window=true — mantém sem verificar data (eles já saíram do
+      // window, mas são o output mais recente da fonte).
+      if (article.bypass_date_window) {
+        kept[bucket].push(article);
+        continue;
+      }
 
       const eff = effectiveDate(article);
       // Sem date nem published_at = mantém com benefício da dúvida (#1322

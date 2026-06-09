@@ -9,13 +9,16 @@ const OUT = resolve(ROOT, "context/sources.md");
 
 import { isUseMelhorSource } from "./lib/use-melhor-sources.ts"; // #1899
 
-type Source = { Nome: string; Tipo: string; URL: string; RSS?: string; topic_filter?: string; use_melhor?: string };
+type Source = { Nome: string; Tipo: string; URL: string; RSS?: string; topic_filter?: string; use_melhor?: string; low_cadence?: string };
 
 const csv = readFileSync(SOURCES_CSV, "utf8");
 const { data, errors } = Papa.parse<Source>(csv, { header: true, skipEmptyLines: true });
 
-if (errors.length) {
-  console.error("CSV parse errors:", errors);
+// TooFewFields is expected when rows predate a new optional column (e.g. low_cadence).
+// Only hard-fail on structural errors that produce incorrect data (#1992).
+const hardErrors = errors.filter((e) => e.code !== "TooFewFields");
+if (hardErrors.length) {
+  console.error("CSV parse errors:", hardErrors);
   process.exit(1);
 }
 
@@ -115,6 +118,8 @@ function renderSource(s: Source, out: string[]): void {
   const topicFilter = s.topic_filter?.trim();
   if (topicFilter) out.push(`- Topic filter: ${topicFilter}`);
   if (isUseMelhorSource(s)) out.push(`- Use Melhor: sim`); // #1899
+  const lc = s.low_cadence?.trim();
+  if (lc === "1" || lc?.toLowerCase() === "sim") out.push(`- Low cadence: sim`); // #1992
   out.push("");
 }
 

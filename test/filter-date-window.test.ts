@@ -399,6 +399,63 @@ describe("filterDateWindow — fallback published_at (#1322)", () => {
   });
 });
 
+describe("bypass_date_window (#1992 — low-cadence sources)", () => {
+  it("artigo com bypass_date_window=true é mantido mesmo fora da janela", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        // This article is 30 days old — way outside any window — but marked bypass.
+        { url: "https://hamel.dev/post-old", title: "Post antigo", date: "2026-03-01", bypass_date_window: true },
+        // Normal article also outside window → should be removed.
+        { url: "https://other.com/old", title: "Outro antigo", date: "2026-03-01" },
+      ],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.radar.length, 1, "bypass article kept");
+    assert.equal(kept.radar[0].title, "Post antigo");
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0].title, "Outro antigo");
+  });
+
+  it("bypass_date_window não adiciona date_unverified", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        { url: "https://hamel.dev/post", title: "Hamel post", date: "2026-03-01", bypass_date_window: true },
+      ],
+    };
+    const { kept } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.radar[0].date_unverified, undefined);
+  });
+
+  it("bypass_date_window funciona em todos os buckets (lancamento, use_melhor, video)", () => {
+    const old = "2026-01-01";
+    const input = {
+      lancamento: [{ url: "https://a.com/1", title: "L", date: old, bypass_date_window: true }],
+      radar: [],
+      use_melhor: [{ url: "https://b.com/1", title: "U", date: old, bypass_date_window: true }],
+      video: [{ url: "https://c.com/1", title: "V", date: old, bypass_date_window: true }],
+    };
+    const { kept } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.lancamento.length, 1);
+    assert.equal(kept.use_melhor.length, 1);
+    assert.equal(kept.video.length, 1);
+  });
+
+  it("regressão: fontes normais sem bypass continuam sendo filtradas normalmente", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        { url: "https://a.com/recent", title: "Recente", date: "2026-04-23" },
+        { url: "https://a.com/old", title: "Antigo sem bypass", date: "2026-03-01" },
+      ],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.radar.length, 1, "Recente fica");
+    assert.equal(removed.length, 1, "Antigo removido");
+  });
+});
+
 describe("bucketWindowDays (#1155, #1629 — agora aceita Category)", () => {
   // #1629: bucketWindowDays foi adaptado pra receber a Category do artigo
   // (não o Bucket). Bucket `radar` mistura articles com category=pesquisa

@@ -38,6 +38,7 @@ export interface Source {
   site_query?: string;
   rss?: string;
   filter?: string;
+  low_cadence?: boolean; // #1992
 }
 
 /**
@@ -94,6 +95,12 @@ export function parseSourcesMd(md: string): Source[] {
       current.filter = filter[1].trim();
       continue;
     }
+
+    const lc = line.match(/^-\s+Low cadence:\s*sim\s*$/i); // #1992
+    if (lc) {
+      current.low_cadence = true;
+      continue;
+    }
   }
 
   if (current) sources.push(current);
@@ -140,8 +147,11 @@ async function main(): Promise<void> {
   // remove campos não-websearch.
   const formatted = rssOnly
     ? sources.map((s) => {
-        const { name, rss, filter } = s;
-        return filter ? { name, rss, filter } : { name, rss };
+        const { name, rss, filter, low_cadence } = s;
+        const obj: Record<string, unknown> = { name, rss };
+        if (filter) obj.filter = filter;
+        if (low_cadence) obj.low_cadence = true;
+        return obj;
       })
     : websearchOnly
       ? sources.map((s) => {

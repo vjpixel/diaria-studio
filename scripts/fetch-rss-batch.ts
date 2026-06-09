@@ -42,6 +42,10 @@ export interface SourceSpec {
   name: string;
   rss: string;
   filter?: string;
+  /** #1992: fonte de baixa cadência (~1 post/mês). Os 2 artigos mais recentes
+   * são marcados com bypass_date_window=true para não serem descartados pelo
+   * filter-date-window mesmo que caiam fora da janela padrão. */
+  low_cadence?: boolean;
 }
 
 export type Outcome = "ok" | "empty" | "fail" | "timeout";
@@ -68,6 +72,30 @@ export interface BatchSummary {
   timeout: number;
 }
 
+// #1992: low-cadence sources use a large window so we can find the latest post
+// regardless of when it was published, then mark the top 2 with bypass_date_window.
+const LOW_CADENCE_DAYS = 90;
+const LOW_CADENCE_TOP_N = 2;
+
+/**
+ * #1992: given a list of articles from a low-cadence source, mark the `topN`
+ * most-recent articles (by `published_at` desc) with `bypass_date_window: true`
+ * so filter-date-window keeps them even if they fall outside the normal window.
+ */
+export function markLowCadenceBypass<T extends { url: string; published_at?: string | null }>(
+  articles: T[],
+  topN: number,
+): (T & { bypass_date_window?: boolean })[] {
+  if (articles.length === 0) return articles;
+  const sorted = [...articles].sort((a, b) =>
+    (b.published_at ?? "").localeCompare(a.published_at ?? "")
+  );
+  const topUrls = new Set(sorted.slice(0, topN).map((a) => a.url));
+  return articles.map((a) =>
+    topUrls.has(a.url) ? { ...a, bypass_date_window: true } : a
+  );
+}
+
 async function runOne(
   src: SourceSpec,
   days: number,
@@ -79,12 +107,13 @@ async function runOne(
   const topicFilter = src.filter
     ? src.filter.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
+  const effectiveDays = src.low_cadence ? LOW_CADENCE_DAYS : days;
 
   try {
     // Promise.race com timeout custom
     const fetchPromise = isSitemap
-      ? fetchSitemapEntries({ url: src.rss, sourceName: src.name, days })
-      : fetchRss({ url: src.rss, sourceName: src.name, days, topicFilter });
+      ? fetchSitemapEntries({ url: src.rss, sourceName: src.name, days: effectiveDays })
+      : fetchRss({ url: src.rss, sourceName: src.name, days: effectiveDays, topicFilter });
 
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("timeout_60s")), timeoutMs),
@@ -106,13 +135,19 @@ async function runOne(
       };
     }
 
+    // #1992: mark the N most-recent articles from low-cadence sources so
+    // filter-date-window keeps them regardless of the date window.
+    let mappedArticles = articles.map((a) => ({ ...a, source: src.name }));
+    if (src.low_cadence) {
+      mappedArticles = markLowCadenceBypass(mappedArticles, LOW_CADENCE_TOP_N) as typeof mappedArticles;
+    }
     const out: RunRecord = {
       source: src.name,
-      outcome: articles.length > 0 ? "ok" : "empty",
+      outcome: mappedArticles.length > 0 ? "ok" : "empty",
       duration_ms,
       query_used: src.rss,
       method,
-      articles: articles.map((a) => ({ ...a, source: src.name })),
+      articles: mappedArticles,
     };
     // filtered_by_topic só existe em RSS results; truncated_by_cap em ambos.
     if ("filtered_by_topic" in result && typeof result.filtered_by_topic === "number") {
