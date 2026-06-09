@@ -146,6 +146,23 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
       "\n",
     );
     assert.equal(cpDirect(intro).ok, true);
+    // Separador com espaço final `--- ` NÃO splita pro parseDestaques (/^---$/m
+    // sem trim) → o callout seguinte É absorvido no D1. O lint precisa ser
+    // estrito igual: flag (senão falso-negativo — passa, mas o render quebra).
+    const trailingSpaceSep = [
+      "**DESTAQUE 1 | LANÇAMENTO**",
+      "",
+      "Corpo.",
+      "",
+      "--- ", // ← espaço final: NÃO é separador pro render
+      "",
+      "**📣 Box da Clarice. [Acesse](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 2 | LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(cpDirect(trailingSpaceSep).ok, false);
   });
 
   it("why-matters-format: módulo auto-contido funciona standalone", () => {

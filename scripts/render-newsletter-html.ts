@@ -612,8 +612,11 @@ export function stripMidCalloutFromD1(text: string): string {
   const loc = locateMidCallout(text);
   if (!loc) return text;
   const without = text.slice(0, loc.matchStart) + text.slice(loc.matchEnd);
-  // Colapsa as linhas em branco órfãs deixadas pela remoção (evita parágrafo vazio).
-  return without.replace(/\n{3,}/g, "\n\n");
+  // Colapsa as linhas em branco órfãs deixadas pela remoção (evita parágrafo
+  // vazio). `(?:\r?\n)` (não `\n`) pra cobrir CRLF: sob `\r\n`, o `\s*$` do
+  // MID_CALLOUT_BLOCK consome o `\r` mas para antes do `\n`, deixando o seam
+  // `\r\n\r\n\n\r\n` — newlines intercalados com `\r` que `/\n{3,}/` não casaria.
+  return without.replace(/(?:\r?\n){3,}/g, "\n\n");
 }
 
 /**

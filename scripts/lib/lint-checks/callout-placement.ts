@@ -38,6 +38,11 @@ export interface CalloutPlacementResult {
   matches: CalloutPlacementMatch[];
 }
 
+// Separador casado na linha BRUTA (sem trim), espelhando `parseDestaques`
+// (`raw.split(/^---$/m)`) e `parseSections` no render. Estrito de propósito: um
+// `--- ` (espaço final) ou ` ---` (indentado) NÃO splita pra aqueles parsers, então
+// o callout seguinte É absorvido no D1 — o lint precisa ser tão estrito quanto o
+// splitter que protege, senão vira falso-negativo (passa, mas o render quebra).
 const SEPARATOR_RE = /^---$/;
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+[123]\s*\|/;
 const CALLOUT_OPEN_RE = /^\*\*\s*(?:📚|📣|🎉)/u;
@@ -47,11 +52,13 @@ export function lintCalloutPlacement(md: string): CalloutPlacementResult {
   const matches: CalloutPlacementMatch[] = [];
   let sectionHasDestaque = false;
   for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (SEPARATOR_RE.test(t)) {
+    const raw = lines[i];
+    // Separador: linha bruta (sem trim) pra bater com /^---$/m do parseDestaques.
+    if (SEPARATOR_RE.test(raw)) {
       sectionHasDestaque = false;
       continue;
     }
+    const t = raw.trim();
     if (DESTAQUE_HEADER_RE.test(t)) {
       sectionHasDestaque = true;
       continue;

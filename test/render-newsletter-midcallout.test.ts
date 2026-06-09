@@ -247,4 +247,18 @@ Corpo do destaque 2.
     const semCallout = MD_MISPLACED.replace(/\n\*\*📣[^\n]*\*\*\n/, "\n");
     assert.equal(stripMidCalloutFromD1(semCallout), semCallout);
   });
+
+  it("CRLF: strip não deixa seam órfão (\\r\\n intercalado) nem vaza pro D1", () => {
+    // Sob CRLF o `\s*$` do MID_CALLOUT_BLOCK come o `\r` mas para antes do `\n`,
+    // deixando o seam `\r\n\r\n\n\r\n` — newlines intercalados com `\r` que um
+    // collapse `/\n{3,}/` não casaria. Regressão do collapse `(?:\r?\n){3,}`.
+    const crlf = MD_MISPLACED.replace(/\n/g, "\r\n");
+    const cleaned = stripMidCalloutFromD1(crlf);
+    assert.ok(!/(?:\r?\n){3,}/.test(cleaned), "sem run de 3+ newlines órfão após o strip");
+    const d = parseDestaques(cleaned);
+    assert.ok(!d[0].body.includes("Clarice.ai"), "callout fora do body do D1 (CRLF)");
+    assert.ok(!d[0].why.includes("Clarice.ai"), "callout fora do why do D1 (CRLF)");
+    // extractMidCallout ainda acha no original CRLF (render 1×).
+    assert.match(extractMidCallout(crlf)!, /^📣 Escreva melhor/);
+  });
 });
