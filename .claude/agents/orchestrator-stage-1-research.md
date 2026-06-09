@@ -689,7 +689,7 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/01-categorized.md
   ```
-  Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais em LANÇAMENTOS após edição no gate. Corrigir antes de continuar."` — mas **não bloquear automaticamente**.
+  Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais OU itens sem sinal de produto (not_a_tool, #1968) em LANÇAMENTOS. Mover pra NOTÍCIAS, ou allowlistar slug atípico legítimo em seed/lancamentos-tool-allowlist.txt."` — mas **não bloquear automaticamente**.
   Push do MD atualizado de volta para o Drive:
   ```bash
   npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
