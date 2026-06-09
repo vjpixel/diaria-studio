@@ -12,7 +12,6 @@ import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts";
 import { buildPrevResultLine, readPrevPollStats } from "../eia-compose.ts"; // #1707 fallback
 import {
   sectionEmojiPrefix,
-  displaySectionName,
   sectionHeaderRegex,
   ALL_SECTION_NAMES_PATTERN,
 } from "./section-naming.ts";

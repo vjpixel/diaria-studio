@@ -25,8 +25,6 @@ import {
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
 
-export type { RenderDestaque, SectionItem, Section, EIA, NewsletterContent };
-
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // #1936: design system canônico (vjpixel/diaria-design) — valores inline via
@@ -498,10 +496,6 @@ export function renderSectionItem(item: SectionItem, first: boolean): string {
       ${spacer}${titleHtml}${desc}
     </td></tr>`;
 }
-
-// #1324: singularizeSectionName movido pra scripts/lib/section-naming.ts.
-// Re-export pra retrocompat caller importando direto deste módulo.
-export { singularizeSectionName } from "./section-naming.ts";
 
 export function renderSection(section: Section): string {
   if (section.items.length === 0) return "";

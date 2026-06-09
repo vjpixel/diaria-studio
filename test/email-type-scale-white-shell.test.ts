@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("type scale do e-mail alinhado ao DS (diaria-design#4)", () => {
-  const render = readFileSync(join(ROOT, "scripts/render-newsletter-html.ts"), "utf8");
+  const render = readFileSync(join(ROOT, "scripts/lib/newsletter-render-html.ts"), "utf8"); // #1889: CSS moved to lib
   const sizes = [...render.matchAll(/font-size:(\d+)px/g)].map((m) => Number(m[1]));
 
   it("não usa mais 11/13/15/20px (substituídos por 12/12/16/22)", () => {
