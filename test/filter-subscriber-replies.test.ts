@@ -34,6 +34,13 @@ describe("looksLikeSubscriberReply (#1797)", () => {
     assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: "pixel@memelab.com.br" }));
   });
 
+  it("#1969: variante Gmail do editor (ponto/+tag/case) também → false", () => {
+    assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: "vj.pixel@gmail.com" }));
+    assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: "vjpixel+diaria@gmail.com" }));
+    assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: '"Pixel" <Vj.Pixel@googlemail.com>' }));
+    assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: "diaria.editor@gmail.com" }));
+  });
+
   it("sem remetente → false", () => {
     assert.ok(!looksLikeSubscriberReply({ subject: "Re: x", from: "" }));
     assert.ok(!looksLikeSubscriberReply({ subject: "Re: x" }));

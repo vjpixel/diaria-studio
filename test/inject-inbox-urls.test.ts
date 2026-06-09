@@ -98,6 +98,19 @@ describe("filterEditorBlocks", () => {
     assert.equal(filterEditorBlocks(blocks, "diariaeditor@gmail.com").length, 0);
     assert.equal(filterEditorBlocks(blocks, "vjpixel@gmail.com").length, 2);
   });
+
+  it("#1969: variante Gmail com ponto/+tag casa o mesmo editor", () => {
+    // Gmail ignora pontos e +tag: vj.pixel@ e vjpixel@ são a MESMA caixa.
+    const blocks = parseInboxMd(sampleInbox); // from: <vjpixel@gmail.com>
+    assert.equal(filterEditorBlocks(blocks, "vj.pixel@gmail.com").length, 2);
+    assert.equal(filterEditorBlocks(blocks, "vjpixel+diaria@googlemail.com").length, 2);
+    // E o inverso: bloco From com ponto casa o editor sem ponto no config.
+    const dotted = parseInboxMd(
+      "# H\n## 2026-01-01\n- **from:** Pixel <vj.pixel@gmail.com>\n- **urls:**\n  - https://x.com/a",
+    );
+    assert.equal(filterEditorBlocks(dotted, "vjpixel@gmail.com").length, 1);
+    assert.equal(filterNewsletterBlocks(dotted, "vjpixel@gmail.com").length, 0);
+  });
 });
 
 describe("isTrackingUrl", () => {
