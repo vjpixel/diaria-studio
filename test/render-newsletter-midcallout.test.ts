@@ -82,6 +82,31 @@ describe("midCallout — box entre D1 e D2", () => {
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
   });
 
+  it("callout multi-parágrafo (ex: Clarice) renderiza título serif em 26px (DS h4)", () => {
+    // #DS callout/É IA? title h4: o 1º parágrafo vira título serif; antes 22px (h5), agora 26px (h4).
+    const html = renderMidCallout(
+      "📣 Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa textos.\n\n[Acesse](https://clarice.ai/precos-planos?via=diaria).",
+      null,
+    );
+    const titleMatch = html.match(/<p style="([^"]+)">Escreva melhor com a Clarice\.ai<\/p>/);
+    assert.ok(titleMatch, "título do callout multi-parágrafo deve sair num <p> próprio (marcador 📣 removido)");
+    assert.match(titleMatch![1], /font-size:26px/, "título do callout é 26px (DS h4)");
+    assert.doesNotMatch(titleMatch![1], /font-size:22px/, "não deve mais ser 22px (h5)");
+  });
+
+  it("callout multi-parágrafo COM imagem também renderiza título em 26px (DS h4)", () => {
+    // O caminho com imagem (renderMidCallout, paras.length>1) espelha o sem imagem (#1938)
+    // — o título serif deve sair em 26px igual, não 22px.
+    const html = renderMidCallout(
+      "📚 Curadoria de livros sobre IA\n\nPágina nova com filtros. [Confira](https://livros.diaria.workers.dev).",
+      "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg",
+    );
+    const titleMatch = html.match(/<p style="([^"]+)">Curadoria de livros sobre IA<\/p>/);
+    assert.ok(titleMatch, "título serif do callout com imagem deve sair num <p> próprio (marcador 📚 removido)");
+    assert.match(titleMatch![1], /font-size:26px/, "título do callout com imagem é 26px (DS h4)");
+    assert.doesNotMatch(titleMatch![1], /font-size:22px/, "não deve mais ser 22px (h5)");
+  });
+
   // ── Regressão dos achados de code-review do PR #1807 ──────────────────
 
   it("link com parênteses na URL não trunca (#1634-safe, #3I)", () => {
