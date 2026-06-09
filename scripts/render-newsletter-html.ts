@@ -1541,7 +1541,7 @@ export interface RenderOpts {
 // #1936 (DS): media query + hover do template de email. Progressive enhancement
 // (Gmail/Apple Mail honram); o design carrega nos estilos inline.
 const DS_STYLE_BLOCK = `<style>
-  body { margin:0; padding:0; width:100% !important; }
+  body { margin:0; padding:0; width:100% !important; background:${PAGE_BG}; }
   img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
   table { border-collapse:collapse; }
   a.headline:hover { color:${TEAL} !important; }
