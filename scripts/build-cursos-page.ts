@@ -22,6 +22,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { slugify } from "./lib/slug.ts"; // #1989: single source
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_PATH = resolve(ROOT, "seed/courses/cursos-ia.json");
@@ -87,15 +88,9 @@ export function esc(s: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** Slug estável pra value de filtro (plataforma → data-platform). Pure. */
-export function slugify(s: string): string {
-  return s
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
+// #1989: slugify movido pra scripts/lib/slug.ts (single source — cursos page +
+// slug SEO de post). Import local (usado abaixo) + re-export back-compat.
+export { slugify };
 
 /** URL aceita só se http(s) — defense-in-depth. Pure. */
 export function isSafeUrl(u: string | undefined): boolean {
