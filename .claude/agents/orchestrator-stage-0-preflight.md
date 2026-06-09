@@ -95,6 +95,11 @@ Se Gmail MCP estiver indisponível: skip silencioso (logar `info "0b-bis skipped
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
+- **Pre-flight token OAuth Google (#1973) — CONSOLIDADO, rodar PRIMEIRO.** O mesmo refresh token cobre Drive + Gmail (inbox-drain) + upload de imagens sociais; quando expira, os 3 caem juntos e submissões do editor se perdem silenciosamente. Checar a validade ANTES de qualquer passo Drive/Gmail:
+  ```bash
+  npx tsx scripts/check-google-token.ts
+  ```
+  Exit 0 = válido (ou `expiring_soon` — funciona, mas imprime aviso de idade perto do limite de 7d). Exit 1 = expirado/inválido/ausente → o stderr traz **1 banner consolidado** com a ação (`oauth-setup.ts` + `/diaria-inbox` depois). Se exit 1, **alertar o editor com o banner e perguntar** se re-autentica agora (`npx tsx scripts/oauth-setup.ts`) antes de seguir, ou continua sem Drive/Gmail (submissões do editor desta edição não entrarão — ver `docs/google-oauth-production.md` pra causa raiz dos 7d). Isso substitui descobrir a expiração via 3 falhas espalhadas no meio do pipeline.
 - **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true`, rodar:
   ```bash
   npx tsx scripts/drive-sync.ts --health-check
