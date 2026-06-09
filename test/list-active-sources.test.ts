@@ -6,8 +6,13 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { parseSourcesMd } from "../scripts/list-active-sources.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("parseSourcesMd (#1270)", () => {
   it("parsea fonte simples com URL + RSS", () => {
@@ -106,5 +111,38 @@ describe("parseSourcesMd (#1270)", () => {
   it("retorna [] para md sem seções h3", () => {
     const md = "# Title\n\n## Section\n\nText only.";
     assert.deepEqual(parseSourcesMd(md), []);
+  });
+
+  it("#1992: parsea Low cadence: sim e seta low_cadence=true", () => {
+    const md = [
+      "### Hamel Husain",
+      "- URL: https://hamel.dev/",
+      "- RSS: https://hamel.dev/index.xml",
+      "- Use Melhor: sim",
+      "- Low cadence: sim",
+    ].join("\n");
+    const sources = parseSourcesMd(md);
+    assert.equal(sources.length, 1);
+    assert.equal(sources[0].low_cadence, true);
+  });
+
+  it("#1992: fonte sem Low cadence tem low_cadence=undefined", () => {
+    const md = [
+      "### OpenAI",
+      "- RSS: https://openai.com/news/rss.xml",
+    ].join("\n");
+    const sources = parseSourcesMd(md);
+    assert.equal(sources[0].low_cadence, undefined);
+  });
+
+  it("#1992: Hamel e Eugene têm Low cadence no sources.md gerado", () => {
+    const md = readFileSync(resolve(ROOT, "context/sources.md"), "utf8");
+    const sources = parseSourcesMd(md);
+    const hamel = sources.find((s) => s.name === "Hamel Husain");
+    const eugene = sources.find((s) => s.name === "Eugene Yan");
+    assert.ok(hamel, "Hamel Husain deve existir");
+    assert.ok(eugene, "Eugene Yan deve existir");
+    assert.equal(hamel!.low_cadence, true, "Hamel deve ser low_cadence");
+    assert.equal(eugene!.low_cadence, true, "Eugene deve ser low_cadence");
   });
 });

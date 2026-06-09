@@ -11,6 +11,49 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { markLowCadenceBypass } from "../scripts/fetch-rss-batch.ts";
+
+describe("markLowCadenceBypass (#1992)", () => {
+  const articles = [
+    { url: "https://hamel.dev/1", title: "Post 1", published_at: "2026-03-01" },
+    { url: "https://hamel.dev/2", title: "Post 2", published_at: "2026-04-15" },
+    { url: "https://hamel.dev/3", title: "Post 3", published_at: "2026-05-10" },
+  ];
+
+  it("marca os top-N mais recentes com bypass_date_window=true", () => {
+    const result = markLowCadenceBypass(articles, 2);
+    const byUrl = Object.fromEntries(result.map((a) => [a.url, a]));
+    assert.equal(byUrl["https://hamel.dev/3"].bypass_date_window, true, "mais recente marcado");
+    assert.equal(byUrl["https://hamel.dev/2"].bypass_date_window, true, "2º mais recente marcado");
+    assert.equal(byUrl["https://hamel.dev/1"].bypass_date_window, undefined, "mais antigo não marcado");
+  });
+
+  it("topN >= articles.length marca todos", () => {
+    const result = markLowCadenceBypass(articles, 5);
+    assert.ok(result.every((a) => a.bypass_date_window === true));
+  });
+
+  it("lista vazia retorna vazia sem crashar", () => {
+    assert.deepEqual(markLowCadenceBypass([], 2), []);
+  });
+
+  it("não muta o array original", () => {
+    const orig = [{ url: "https://a.com/1", published_at: "2026-05-10" }];
+    markLowCadenceBypass(orig, 1);
+    assert.equal((orig[0] as { bypass_date_window?: boolean }).bypass_date_window, undefined);
+  });
+
+  it("artigos sem published_at ficam no final da ordem e ainda são marcados se topN alcança", () => {
+    const arts = [
+      { url: "https://a.com/1", published_at: "2026-05-10" },
+      { url: "https://a.com/2", published_at: undefined },
+    ];
+    const result = markLowCadenceBypass(arts, 1);
+    const byUrl = Object.fromEntries(result.map((a) => [a.url, a]));
+    assert.equal(byUrl["https://a.com/1"].bypass_date_window, true, "com data marcado primeiro");
+    assert.equal(byUrl["https://a.com/2"].bypass_date_window, undefined, "sem data não fica no top-1");
+  });
+});
 
 describe("fetch-rss-batch CLI (#1209)", () => {
   function runCli(args: string[]) {

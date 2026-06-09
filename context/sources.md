@@ -223,12 +223,14 @@
 - Site query: `site:hamel.dev`
 - RSS: https://hamel.dev/index.xml
 - Use Melhor: sim
+- Low cadence: sim
 
 ### Eugene Yan
 - URL: https://eugeneyan.com/
 - Site query: `site:eugeneyan.com`
 - RSS: https://eugeneyan.com/rss/
 - Use Melhor: sim
+- Low cadence: sim
 
 ### Asimov Academy
 - URL: https://hub.asimov.academy/
