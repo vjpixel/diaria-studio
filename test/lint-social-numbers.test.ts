@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   normalizeMagnitude,
   normalizeDigits,
@@ -404,5 +408,173 @@ Post Facebook d1.
     // "mais 9 destaques" encontrado mas esperado 0 → finding
     assert.equal(findings.length, 3);
     assert.equal(findings[0].expected, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2044 — lint deve usar 01-approved-capped.json (não uncapped)
+// ---------------------------------------------------------------------------
+
+describe("computeOutrosCount (#2044) — capped vs uncapped divergência", () => {
+  it("capped (após applyStage2Caps cortar lançamentos) retorna count menor que uncapped", () => {
+    // Simula o caso onde applyStage2Caps cortou 7 → 5 lançamentos.
+    // uncapped: lancamento=7 + radar=5 = 12
+    // capped:   lancamento=5 + radar=5 = 10
+    const uncapped = {
+      highlights: [
+        { article: { title: "D1", summary: "s1" } },
+        { article: { title: "D2", summary: "s2" } },
+        { article: { title: "D3", summary: "s3" } },
+      ],
+      lancamento: [{ title: "L1" }, { title: "L2" }, { title: "L3" }, { title: "L4" }, { title: "L5" }, { title: "L6" }, { title: "L7" }],
+      radar: [{ title: "R1" }, { title: "R2" }, { title: "R3" }, { title: "R4" }, { title: "R5" }],
+      use_melhor: [],
+      video: [],
+    };
+    const capped = {
+      ...uncapped,
+      lancamento: uncapped.lancamento.slice(0, 5), // cap de 5 lançamentos
+    };
+
+    const uncappedCount = computeOutrosCount(uncapped);
+    const cappedCount = computeOutrosCount(capped);
+
+    assert.equal(uncappedCount, 12, "uncapped deve contar os 7 lançamentos originais");
+    assert.equal(cappedCount, 10, "capped deve contar apenas os 5 lançamentos após cap");
+    assert.ok(cappedCount < uncappedCount, "capped < uncapped quando caps cortam");
+  });
+
+  it("lintCommentDiariaCount com capped: número certo no social, sem findings", () => {
+    // O social foi escrito com outros_count=10 (do capped). O lint também usa capped.
+    // → zero findings (correto).
+    const capped = {
+      highlights: [
+        { article: { title: "D1", summary: "s1" } },
+        { article: { title: "D2", summary: "s2" } },
+        { article: { title: "D3", summary: "s3" } },
+      ],
+      lancamento: [{ title: "L1" }, { title: "L2" }, { title: "L3" }, { title: "L4" }, { title: "L5" }],
+      radar: [{ title: "R1" }, { title: "R2" }, { title: "R3" }, { title: "R4" }, { title: "R5" }],
+      use_melhor: [],
+      video: [],
+    };
+    // Social usa "mais 10 destaques" (capped conta 5+5=10)
+    const socialWith10 = SOCIAL_WITH_COMMENTS.replace(/mais 9 destaques/g, "mais 10 destaques");
+    const { findings } = lintCommentDiariaCount(socialWith10, capped);
+    assert.equal(findings.length, 0, "sem findings quando social usa o número do capped");
+  });
+
+  it("lintCommentDiariaCount com uncapped: flagaria o número errado (#2044 root cause)", () => {
+    // Se o lint usasse uncapped (bug original), o social com "mais 10 destaques"
+    // (número correto do capped) seria flagado como errado — e o --fix substituiria
+    // pelo número errado (12 do uncapped).
+    const uncapped = {
+      highlights: [
+        { article: { title: "D1", summary: "s1" } },
+        { article: { title: "D2", summary: "s2" } },
+        { article: { title: "D3", summary: "s3" } },
+      ],
+      lancamento: [{ title: "L1" }, { title: "L2" }, { title: "L3" }, { title: "L4" }, { title: "L5" }, { title: "L6" }, { title: "L7" }],
+      radar: [{ title: "R1" }, { title: "R2" }, { title: "R3" }, { title: "R4" }, { title: "R5" }],
+      use_melhor: [],
+      video: [],
+    };
+    // Social correto usa "mais 10 destaques" (do capped)
+    const socialWithCorrectCappedNumber = SOCIAL_WITH_COMMENTS.replace(/mais 9 destaques/g, "mais 10 destaques");
+    // Lint contra uncapped: esperaria 12, encontrou 10 → falso finding
+    const { findings } = lintCommentDiariaCount(socialWithCorrectCappedNumber, uncapped);
+    assert.equal(findings.length, 3, "uncapped lint flaga o número correto como errado (bug #2044)");
+    assert.equal(findings[0].found, 10, "encontrou o número certo do capped (10)");
+    assert.equal(findings[0].expected, 12, "mas esperava o número errado do uncapped (12)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2044 — regressão: --fix com unresolved_placeholder NÃO imprime "corrigido"
+//          e sai com exit não-zero
+// ---------------------------------------------------------------------------
+
+describe("lint-social-numbers CLI (#2044) — unresolved_placeholder com --fix", () => {
+  function runLintCli(socialPath: string, approvedPath: string, extraArgs: string[] = []) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-social-numbers.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--social", socialPath, "--approved", approvedPath, ...extraArgs],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  it("--fix com unresolved_placeholder: NÃO imprime 'corrigido automaticamente', sai exit 1 (#2044)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-2044-"));
+    try {
+      // Social com placeholder literal não-resolvido
+      const socialContent = SOCIAL_WITH_COMMENTS.replace(
+        /mais 9 destaques de IA do dia/g,
+        "mais {outros_count} destaques de IA do dia",
+      );
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      writeFileSync(socialPath, socialContent, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCli(socialPath, approvedPath, ["--fix"]);
+
+      // Deve sair com exit 1 (blocker — placeholder literal)
+      assert.equal(result.status, 1, `expected exit 1, got ${result.status}\nstderr: ${result.stderr}`);
+
+      // NÃO deve imprimir "corrigido automaticamente"
+      assert.doesNotMatch(
+        result.stderr,
+        /corrigido automaticamente/i,
+        "não deve imprimir 'corrigido automaticamente' para placeholder não-resolvível",
+      );
+
+      // Deve imprimir mensagem clara de blocker
+      assert.match(
+        result.stderr,
+        /\{outros_count\}/,
+        "deve mencionar o placeholder literal no stderr",
+      );
+
+      // O arquivo NÃO deve ter sido modificado (placeholder ainda lá)
+      const contentAfter = readFileSync(socialPath, "utf8");
+      assert.match(contentAfter, /\{outros_count\}/, "arquivo não deve ter sido modificado");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--fix com número errado (não placeholder): imprime 'corrigido automaticamente' e sai exit 0 (#2044)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-2044b-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      // Social com número errado (9, esperado 10 pelo APPROVED_13_ITEMS)
+      writeFileSync(socialPath, SOCIAL_WITH_COMMENTS, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCli(socialPath, approvedPath, ["--fix"]);
+
+      // Deve sair exit 0 (número errado é corrigível, não é blocker)
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr: ${result.stderr}`);
+
+      // Deve imprimir "corrigido automaticamente"
+      assert.match(
+        result.stderr,
+        /corrigido automaticamente/i,
+        "deve imprimir 'corrigido automaticamente' quando a correção é aplicável",
+      );
+
+      // NÃO deve mencionar "IMPOSSÍVEL" (que é mensagem do placeholder)
+      assert.doesNotMatch(result.stderr, /IMPOSSÍVEL/i);
+
+      // Verificar que o arquivo foi de fato atualizado com o número correto
+      const contentAfter = readFileSync(socialPath, "utf8");
+      assert.match(contentAfter, /mais 10 destaques de IA do dia/, "arquivo deve conter o número correto após --fix");
+      assert.doesNotMatch(contentAfter, /mais 9 destaques de IA do dia/, "número errado não deve mais constar após --fix");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
