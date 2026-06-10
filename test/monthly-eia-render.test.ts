@@ -47,14 +47,14 @@ describe("renderEia creditOverride (#1914)", () => {
     const html = renderEia(chunk, "2605", "https://x/A.jpg", "https://x/B.jpg", "Legenda real.");
     assert.ok(html.includes("Legenda real."), "deve usar a legenda override");
     assert.ok(!html.includes("placeholder a ser ignorado"), "não deve usar o placeholder");
-    assert.ok(html.includes("🤔 É IA?"), "deve renderizar o card");
+    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "deve renderizar o card");
     assert.ok(html.includes("brand=clarice"), "voto vai pro leaderboard da Clarice");
   });
   it("descarta corpo que é só placeholder [...] mesmo sem override (#1915 review)", () => {
     const chunk = "É IA? — DESTAQUE DO MÊS\n[Selecionar manualmente a edição...]";
     const html = renderEia(chunk, "2605", "https://x/A.jpg", "https://x/B.jpg");
     assert.ok(!html.includes("Selecionar manualmente"), "placeholder não pode vazar como crédito");
-    assert.ok(html.includes("🤔 É IA?"), "card ainda renderiza");
+    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "card ainda renderiza");
   });
 });
 
@@ -108,7 +108,7 @@ describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
       "https://x/B.jpg",
       "Legenda do É IA?.",
     );
-    assert.ok(html.includes("🤔 É IA?"), "card do É IA? deve aparecer");
+    assert.ok(html.includes("&#9679;&nbsp;É IA?"), "card do É IA? deve aparecer");
     assert.ok(html.includes("Legenda do É IA?."), "legenda do 01-eia.md deve aparecer");
     assert.ok(
       !html.includes("Selecionar manualmente"),
