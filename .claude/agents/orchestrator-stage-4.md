@@ -314,14 +314,14 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
   2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (30s × 2^(N-1), até 10 tentativas de reconexão). Após reconexão, re-disparar `review-test-email` (não `publish-newsletter`).
   3. **Se retornar `status: "inconclusive"` (#1212 — fail-closed)**: logar warn `"review-test-email: inconclusive — email não chegou em 30s, review NÃO foi feito"` e **sair do loop**. **NÃO marcar `review_completed: true`** — gravar `review_status: "inconclusive"` em vez. Editor deve verificar visualmente no gate. Pre-#1212 o status era `email_not_found` que o orchestrator tratava como "review limpo" — falso negativo estrutural.
   4. Se `issues` estiver vazio E `status: "ok"`: **sair do loop** — email aprovado automaticamente.
-  4.5. **Filtrar falso-positivos (#1421, #2013)**: o `review-test-email` em Haiku tem viés conhecido (vê acentos em URL slugs ou entities HTML-encoded como corruption, lê email truncado, etc). Antes de disparar fix-mode, cross-check determinístico:
+  4.5. **Filtrar falso-positivos (#1421, #2013, #2047)**: o `review-test-email` em Haiku tem viés conhecido (vê acentos em URL slugs ou entities HTML-encoded como corruption, lê email truncado, etc). Antes de disparar fix-mode, cross-check determinístico:
      ```typescript
      import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
      const htmlLocal = readFileSync(`{edition_dir}/_internal/newsletter-final.html`, "utf8");
-     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch); // fetch re-verifica link_dead (#2013)
+     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch, linkCheckCache); // #2047: linkCheckCache = new Map() declarado UMA vez ANTES do loop (5º arg) — evita re-fetch entre iterações
      for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
      ```
-     Tipos cobertos (#1421 + #2013): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing`, `italic_missing`, `section_missing` (grep no HTML local), `link_dead` (fetch real; 403 *.beehiiv.com = bot-block).
+     Tipos cobertos (#1421 + #2013 + #2047): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing`, `italic_missing`, `section_missing` (grep no HTML local), `link_dead` (fetch paralelo via Promise.all; cache entre iterações; 403 *.beehiiv.com = bot-block).
      Se `kept.length === 0` E `dropped.length > 0`: todos eram FPs verificáveis — logar info `"all {N} issues filtered as FPs"` e **sair do loop** sem fix-mode. Senão: passar `kept` (não `issues`) pro step 5; issues não-validáveis (unexpected_content, formatting) preservam.
   5. Se `kept` (issues pós-filtro) não estiver vazio:
      - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10 (após filtro de FPs)"`.
