@@ -9,7 +9,7 @@
  *  2. lint intentional-error-flagged passa com `none`
  *  3. sync-intentional-error grava entry com no_error=true
  *  4. list-month-errors agrega edição `none` como "sem erro"
- *  5. runLints (lint-test-email) bypassa body checks com no_error entry
+ *  5. runLints (lint-test-email) Checks 8/9 sempre rodam mesmo com no_error (#2016/#2043)
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -363,11 +363,15 @@ describe("list-month-errors extractError logic com none (#2016) — direto", () 
 });
 
 // ---------------------------------------------------------------------------
-// 5. runLints (lint-test-email) bypassa body checks com no_error entry
+// 5. runLints (lint-test-email) Checks 8/9 sempre rodam (#2016/#2043)
+// #2043: o bypass de `intentional_error: none` (#2016) suprime APENAS a
+// confirmação do erro intencional — Checks 8/9 (version/semantic) sempre rodam.
 // ---------------------------------------------------------------------------
 
-describe("runLints — bypass body checks com no_error (#2016)", () => {
-  it("com no_error entry: version_inconsistency no email NÃO vira blocker", () => {
+describe("runLints — Checks 8/9 sempre rodam com no_error (#2016/#2043)", () => {
+  it("com no_error entry: version_inconsistency AINDA vira blocker (#2043)", () => {
+    // #2043: inconsistência real V4/V5 deve ser detectada mesmo com no_error=true.
+    // O bypass suprime apenas a confirmação de erro intencional, não o check estrutural.
     const email = `DESTAQUE 2 | TENDÊNCIA\n\nV4 da IA lança hoje.\n\nA versão V5 superou tudo.`;
     const source = `DESTAQUE 2 | TENDÊNCIA\n\nV4 da IA lança hoje.\n\nA versão V4 superou tudo.`;
     const intentional: IntentionalError[] = [
@@ -381,12 +385,18 @@ describe("runLints — bypass body checks com no_error (#2016)", () => {
       },
     ];
     const result = runLints(email, source, "260610", intentional);
-    const blockers = result.issues.filter((i) => i.type === "blocker");
-    assert.equal(blockers.length, 0, "não deve ter blockers quando no_error=true");
-    assert.equal(result.summary.blockers, 0);
+    const blockers = result.issues.filter(
+      (i) => i.type === "blocker" && i.category === "version_inconsistency",
+    );
+    assert.equal(
+      blockers.length,
+      1,
+      "version_inconsistency deve ser blocker mesmo com no_error=true (#2043)",
+    );
   });
 
-  it("com no_error entry: semantic drift NÃO vira warning", () => {
+  it("com no_error entry: semantic drift AINDA vira warning (#2043)", () => {
+    // #2043: drift semântico é um check estrutural independente do erro intencional.
     const email = `DESTAQUE 1 | X\n\nempresa cresceu 220% este ano.`;
     const source = `DESTAQUE 1 | X\n\nempresa cresceu 22% este ano.`;
     const intentional: IntentionalError[] = [
@@ -399,8 +409,10 @@ describe("runLints — bypass body checks com no_error (#2016)", () => {
     ];
     const result = runLints(email, source, "260610", intentional);
     const warnings = result.issues.filter((i) => i.type === "warning");
-    assert.equal(warnings.length, 0, "não deve ter warnings quando no_error=true");
-    assert.equal(result.summary.warnings, 0);
+    assert.ok(
+      warnings.length >= 1,
+      "semantic_drift deve ser warning mesmo com no_error=true (#2043)",
+    );
   });
 
   it("com no_error entry: subject mismatch AINDA é blocker (subject check não bypassa)", () => {

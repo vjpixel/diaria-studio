@@ -15,11 +15,11 @@
  *
  * Uso:
  *   npx tsx scripts/lint-test-email.ts \
- *     --email-file /tmp/test-email.txt \
+ *     --email-file data/editions/260506/_internal/test-email-260506.txt \
  *     --source-md data/editions/260506/02-reviewed.md \
  *     --edition 260506 \
  *     [--intentional-errors data/intentional-errors.jsonl] \
- *     [--out /tmp/lint-result.json]
+ *     [--out data/editions/260506/_internal/lint-result-260506.json]
  *
  * Output (JSON em stdout ou no arquivo --out):
  *   {
@@ -167,25 +167,20 @@ export function runLints(
     if (subjectIssue) issues.push(subjectIssue);
   }
 
-  // #2016: skip body checks when editor declared no intentional error
-  if (editionHasNoError) {
-    const summary = {
-      blockers: issues.filter((i) => i.type === "blocker").length,
-      warnings: issues.filter((i) => i.type === "warning").length,
-      infos: issues.filter((i) => i.type === "info").length,
-    };
-    return { issues, summary };
-  }
-
   // Check 8: version consistency intra-destaque (no email).
   // Detectamos no email — divergência V4 vs V5 dentro do mesmo destaque é o caso.
+  // #2043: Checks 8/9 SEMPRE rodam — não têm relação com o erro intencional.
+  // O bypass de `intentional_error: none` (#2016) suprime apenas o critério de
+  // confirmação do erro intencional (abaixo), nunca os checks estruturais.
   const emailMentions = extractVersionMentions(emailText);
   const inconsistencies = detectInconsistencies(emailMentions);
 
   for (const group of inconsistencies) {
     const versions = [...new Set(group.mentions.map((m) => m.version))].sort();
     const detail = `Versões inconsistentes em ${group.destaque}: ${versions.join(" / ")}`;
-    const isIntentional = isIntentionalError(
+    // #2043: se editor declarou `intentional_error: none`, não há erro intencional
+    // pra confirmar — tratar qualquer inconsistência como blocker real.
+    const isIntentional = !editionHasNoError && isIntentionalError(
       { error_type: "version_inconsistency", destaque: group.destaque },
       edition,
       intentionalErrors,
@@ -215,6 +210,7 @@ export function runLints(
 
   // Check 9: semantic drift (email vs source).
   // Detecções cross-referenciadas com `numeric` / `factual` intentional errors.
+  // #2043: também sempre roda — independente de `intentional_error: none`.
   const drifts = detectDrift(emailText, sourceMd);
   // Agrupa drifts por destaque pra gerar 1 issue por destaque (em vez de 1 por valor).
   const driftsByDestaque = new Map<string, typeof drifts>();
@@ -239,7 +235,8 @@ export function runLints(
     const detail = `Drift em ${destaque}: ${parts.join(" / ")}`;
 
     // Cross-ref: numeric intentional ou factual coberto?
-    const isIntentional =
+    // #2043: se editor declarou `intentional_error: none`, drift nunca é intencional.
+    const isIntentional = !editionHasNoError && (
       isIntentionalError(
         { error_type: "numeric", destaque },
         edition,
@@ -249,7 +246,8 @@ export function runLints(
         { error_type: "factual", destaque },
         edition,
         intentionalErrors,
-      );
+      )
+    );
 
     if (isIntentional) {
       issues.push({
