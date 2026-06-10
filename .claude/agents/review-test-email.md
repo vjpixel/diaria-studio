@@ -146,24 +146,24 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
    ```bash
    # 1. Salvar conteúdo bruto do email (do MCP) em arquivo temp
-   echo "$EMAIL_CONTENT" > /tmp/test-email-{AAMMDD}.txt
+   echo "$EMAIL_CONTENT" > {edition_dir}/_internal/test-email-{AAMMDD}.txt
 
    # 2. Rodar lint determinístico (#1645: inclui o subject check — passar o
    #    Subject recebido + o título esperado + o título da edição anterior)
    npx tsx scripts/lint-test-email.ts \
-     --email-file /tmp/test-email-{AAMMDD}.txt \
+     --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
      --source-md {edition_dir}/02-reviewed.md \
      --edition {AAMMDD} \
      --subject-received "{SUBJECT_RECEBIDO_DO_GMAIL}" \
      --subject-expected "{edition_title}" \
      --prev-title "{titulo_da_edicao_anterior_se_conhecido}" \
-     --out /tmp/lint-result-{AAMMDD}.json
+     --out {edition_dir}/_internal/lint-result-{AAMMDD}.json
    # Exit 0 = sem blockers; exit 1 = pelo menos 1 blocker; exit 2 = erro de uso
    # Omitir --prev-title se desconhecido; --subject-* são opcionais mas
    # recomendados (sem eles o subject não é checado).
    ```
 
-   3. Ler `/tmp/lint-result-{AAMMDD}.json` — formato:
+   3. Ler `{edition_dir}/_internal/lint-result-{AAMMDD}.json` (#2020 — antes `/tmp/`, que não resolve em PowerShell/Windows e deixava o arquivo cair na raiz do repo; `_internal/` é o padrão de artefato por edição) — formato:
       ```json
       {
         "issues": [

@@ -17,3 +17,7 @@ data/
 .tmp/
 # Cloudflare Wrangler local build/cache state (root + workers/*/.wrangler)
 .wrangler/
+# #2020: artefatos de lint/review por edição — destino canônico é data/editions/{AAMMDD}/_internal/;
+# padrões aqui são rede de segurança caso um agente escreva na raiz por engano
+lint-result-*.json
+review-result-*.json

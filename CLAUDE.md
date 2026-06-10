@@ -134,6 +134,7 @@ Model mix (definido no frontmatter de cada agente):
 - **Sonnet 4.6** — `writer`, `publish-social`, `social-linkedin`, `social-facebook`. (`publish-newsletter` migrou pra playbook lido pelo top-level em #1054; movido pra `context/publishers/beehiiv-playbook.md` em #1114.)
 - **Haiku 4.5 (shorthand `haiku`, auto-tracks latest stable)** — `source-researcher`, `discovery-searcher`. Dedup, Clarice, geração de imagem, link-verifier, categorizer, drive-sync, inbox-drain e eia-composer (#1111) foram migrados para scripts TS — não são mais agentes LLM.
 - **Haiku 4.5 (pinned `claude-haiku-4-5-20251001`)** — `research-reviewer` (lógica de raciocínio estruturado; re-avaliar pin a cada release).
+- **Subagentes ad-hoc (`general-purpose`) SEMPRE com `model` explícito (#2019)** — sessões em modelo que só aceita thinking enabled/adaptive (ex: `claude-fable-5`) quebram com `400 'thinking.type.disabled' is not supported` quando o launcher herda o modelo sem override. Vale principalmente pra finders/verifiers de `/code-review` e subagentes de skills (overnight usa `sonnet`). Se o erro aparecer: retry com `model: "sonnet"` explícito.
 
 ---
 
