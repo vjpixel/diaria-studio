@@ -51,7 +51,13 @@ export function stripBackslashEscapes(s: string): string {
 function renderTextInline(s: string): string {
   return escHtml(s)
     .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>');
+    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>')
+    // Anti auto-linkify: "Clarice.ai" em TEXTO PURO vira link azul default no
+    // Gmail/clients (sem ?via=diaria, fora do padrão visual). WORD JOINER
+    // U+2060 invisível entre "." e "ai" quebra o pattern-match de domínio —
+    // visual idêntico. Links markdown reais não passam por aqui (renderInline
+    // trata o label separado), então continuam linkando normalmente.
+    .replace(/\b([Cc]larice)\.ai\b/g, "$1.&#8288;ai");
 }
 
 /**
@@ -95,13 +101,26 @@ export function renderInline(text: string): string {
     }
     if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">${escHtml(m[1])}</a>`,
+      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`,
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
   }
   if (lastIdx < input.length) parts.push(renderTextInline(input.substring(lastIdx)));
   return parts.join("");
+}
+
+/**
+ * Kicker de seção no padrão DS/diária: ● teal + label + régua hairline bege à
+ * direita (espelha renderKicker da diária). letter-spacing 2px, Geist 12px bold.
+ */
+export function renderKicker(label: string): string {
+  return (
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px 0;"><tr>` +
+    `<td style="white-space:nowrap;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};padding:0 12px 0 0;">&#9679;&nbsp;${escHtml(label)}</td>` +
+    `<td width="100%" style="border-bottom:1px solid ${BEGE};font-size:0;line-height:0;">&nbsp;</td>` +
+    `</tr></table>`
+  );
 }
 
 /**
@@ -190,35 +209,37 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
 
   // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
-  const label = tema
-    ? `<p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;color:${TEAL};text-transform:uppercase;font-family:${FONT_SANS};">${escHtml(tema)}</p>`
-    : "";
+  const label = tema ? renderKicker(tema) : "";
   const titleHtml = title
-    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
+    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONT_SERIF};line-height:1.2;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${renderInline(title)}</h2>`
     : "";
   // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
   // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
   // NÃO há "O fio condutor:" — que já carrega a régua como pull-quote italic.
-  const mainHtml = mainParas
-    .map((p, idx) => {
-      const isLast = idx === mainParas.length - 1;
-      const style = isLast && !conductorText
-        ? `margin:20px 0 0 0;border-left:3px solid ${BEGE};padding-left:16px;`
-        : "margin:0 0 16px 0;";
-      return `<p style="${style}">${renderInline(p.replace(/\n/g, " "))}</p>`;
-    })
-    .join("\n");
-  const conductorHtml = conductorText
-    ? `<p style="margin:20px 0 0 0;font-style:italic;color:${INK};border-left:3px solid ${BEGE};padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
-    : "";
+  // #DS: o fecho do destaque (fio condutor explícito OU último parágrafo) vai
+  // numa caixa "Por que isso importa" (fundo branco + borda bege), como na diária.
+  const boxFor = (text: string): string =>
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
+    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">O fio condutor</p>` +
+    `<p style="margin:0;">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
+  let mainHtml = "";
+  let conductorHtml = "";
+  if (conductorText) {
+    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    conductorHtml = boxFor(conductorText);
+  } else if (mainParas.length) {
+    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    conductorHtml = boxFor(mainParas[mainParas.length - 1]);
+  }
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
   const imageHtml = imageUrl
-    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:8px;margin:0 0 20px 0;" />`
+    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;" />` +
+      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">Criada com Gemini</p>`
     : "";
 
-  return imageHtml + label + titleHtml + mainHtml + conductorHtml;
+  return label + titleHtml + imageHtml + mainHtml + conductorHtml;
 }
 
 /**
@@ -226,15 +247,36 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
  * Estrutura: label teal "RESUMO DO MÊS" + parágrafo italic com border-left teal.
  */
 export function renderIntro(body: string): string {
-  const labelHtml = `<p style="margin:0 0 10px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">Resumo do mês</p>`;
   const paras = body.split(/\n\n+/).filter((p) => p.trim());
   const bodyHtml = paras
     .map((p) => {
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;font-size:22px;font-style:italic;color:${INK};line-height:1.6;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-size:16px;color:${INK};line-height:1.62;">${inline}</p>`;
     })
     .join("\n");
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${BEGE};">${labelHtml}${bodyHtml}</td></tr></table>`;
+  return renderKicker("Resumo do mês") + bodyHtml;
+}
+
+/**
+ * CTA "→ ..." dentro dos boxes Clarice/Laboratório → botão teal (fundo #00A0A0,
+ * texto branco bold), como o CTA da diária. O label é o texto visível da linha
+ * (sem o "→" e sem o link quando o texto do link é uma URL); href = URL do link.
+ */
+export function renderCtaButton(line: string): string {
+  const text = line.replace(/^→\s*/, "").trim();
+  const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
+  if (!linkM) return `<p style="margin:16px 0 0 0;color:${INK};">${renderInline(text)}</p>`;
+  const idx = linkM.index ?? 0;
+  const url = linkM[2];
+  const linkText = linkM[1];
+  const pre = text.slice(0, idx).trim().replace(/[:：]\s*$/, "").trim();
+  const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
+  const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
+  const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
+  // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
+  // paper #FBFAF6 + borda 1px bege, radius 999px, texto INK bold 16px (tamanho
+  // do corpo). Centralizado.
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;"><a href="${escHtml(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
 }
 
 /**
@@ -303,21 +345,22 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
       renderedBlocks.push(
         `<ol style="margin:0 0 16px 0;padding-left:24px;color:${INK};">${items}</ol>`
       );
+    } else if (/^→/.test(block.trim())) {
+      renderedBlocks.push(renderCtaButton(block.trim().replace(/\n/g, " ")));
     } else {
       const inline = renderInline(block.trim().replace(/\n/g, " "));
       renderedBlocks.push(`<p style="margin:0 0 16px 0;color:${INK};">${inline}</p>`);
     }
   }
 
-  const headerLabel = `<p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(headerLabelText)}</p>`;
   const subtitleHtml = subtitle
     ? `<h3 style="margin:0 0 16px 0;font-size:22px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
     : "";
 
   return [
-    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed ${INK};border-radius:4px;background:${PAPER};">`,
+    renderKicker(headerLabelText),
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-radius:12px;background:${BEGE};">`,
     `<tr><td style="padding:24px 28px;">`,
-    headerLabel,
     subtitleHtml,
     renderedBlocks.join("\n"),
     `</td></tr></table>`,
@@ -341,7 +384,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(displayTitle)}</p>`;
+  const header = renderKicker(displayTitle);
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -370,12 +413,15 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   }
 
   const itemsHtml = parsed
-    .map(({ title, desc }) =>
-      `<p style="margin:0 0 4px 0;font-weight:bold;">${renderInline(title)}</p>` +
-      (desc
+    .map(({ title, desc }) => {
+      const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
+      const titleHtml = tm
+        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(tm[2])}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
+        : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
+      return titleHtml + (desc
         ? `<p style="margin:0 0 20px 0;color:${INK};">${renderInline(desc)}</p>`
-        : `<div style="margin-bottom:20px;"></div>`)
-    )
+        : `<div style="margin-bottom:20px;"></div>`);
+    })
     .join("\n");
 
   return header + itemsHtml;
@@ -384,6 +430,53 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
 /** @deprecated back-compat: use renderLinkListSection. */
 export function renderOutrasNoticias(chunk: string): string {
   return renderLinkListSection(chunk, "Outras Notícias do Mês");
+}
+
+/**
+ * Encerramento no padrão da diária (#DS Tier 3): kicker "Para encerrar" + texto
+ * de fechamento numa caixa bege; curadorias (bullets `- [texto](url)`) viram
+ * pills outline. Degrada pra só kicker + caixa bege quando o conteúdo é simples.
+ */
+export function renderEncerramento(body: string): string {
+  const blocks = body.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
+  const proseBlocks: string[] = [];
+  const pills: string[] = [];
+  for (const block of blocks) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    const nonLink: string[] = [];
+    let hadPill = false;
+    for (const line of lines) {
+      const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
+      if (m) {
+        pills.push(
+          `<a href="${escHtml(m[2])}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;padding:12px 22px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
+        );
+        hadPill = true;
+      } else {
+        nonLink.push(line);
+      }
+    }
+    // "Acesse:" e afins (linhas não-link de um bloco de pills) são descartadas —
+    // o label das pills vem fixo abaixo. Blocos sem pills viram prose.
+    if (!hadPill && nonLink.length) proseBlocks.push(nonLink.join(" "));
+  }
+
+  const parts: string[] = [renderKicker("Para encerrar")];
+  const head = proseBlocks.slice(0, -1);
+  const last = proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "";
+  for (const p of head) parts.push(`<p style="margin:0 0 16px 0;">${renderInline(p)}</p>`);
+  if (pills.length) {
+    parts.push(
+      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
+    );
+    parts.push(`<div>${pills.join("")}</div>`);
+  }
+  if (last) {
+    parts.push(
+      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;">${renderInline(last)}</p></td></tr></table>`,
+    );
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -452,19 +545,12 @@ export function renderEia(
     return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">${inner}</td>`;
   };
 
-  return `
-<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:10px;margin:0;">
+  return renderKicker("É IA?") + `
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:0;">
   <tr><td style="padding:24px 28px 20px;">
 
-    <!-- Cabeçalho -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px;">
-      <tr>
-        <td style="font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
-      </tr>
-      <tr>
-        <td align="center" style="font-family:${FONT_SANS};font-size:22px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
-      </tr>
-    </table>
+    <!-- Título -->
+    <p style="margin:0 0 16px;font-family:${FONT_SERIF};font-size:26px;line-height:1.2;color:${INK};">Clique na imagem que foi gerada por IA.</p>
 
     <!-- Imagens A / B lado a lado (clicáveis, sem botão) -->
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 4px;">
@@ -475,11 +561,11 @@ export function renderEia(
     </table>
 
     <!-- Crédito -->
-    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;font-style:italic;color:${INK};">${renderInline(content)}</p>
+    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">${renderInline(content)}</p>
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${workerUrl}/leaderboard?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${workerUrl}/leaderboard/20${yymm.slice(0, 2)}-${yymm.slice(2, 4)}?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>
@@ -556,7 +642,9 @@ export function parseHeaderChunk(chunk: string): {
 /** Wraps rendered HTML parts in a full email document. */
 export function wrapEmail(subject: string, bodyParts: string[]): string {
   // #1935: régua entre seções no teal da marca (era cinza #e0e0e0).
-  const divider = `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:28px 0;"><tr><td><hr style="border:none;border-top:1px solid ${BEGE};" /></td></tr></table>`;
+  // #DS: sem <hr> entre seções — a régua vive ao lado do kicker (renderKicker),
+  // como na diária. Aqui só um respiro vertical entre os blocos.
+  const divider = `<div style="line-height:28px;font-size:0;">&nbsp;</div>`;
   const body = bodyParts.join(divider);
 
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -578,7 +666,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
       <td align="center" style="padding:20px 10px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
-            <td style="padding:36px 44px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.7;">
+            <td style="padding:36px 32px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.62;">
               ${body}
             </td>
           </tr>
@@ -752,7 +840,7 @@ export function draftToEmail(
     // ENCERRAMENTO antigo + PARA ENCERRAR (renomeado pelo editor).
     if (label === "ENCERRAMENTO" || label === "PARA ENCERRAR") {
       const body = chunkBody(chunk);
-      if (body) bodyParts.push(renderParagraphs(body));
+      if (body) bodyParts.push(renderEncerramento(body));
       continue;
     }
 

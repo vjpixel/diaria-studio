@@ -230,9 +230,14 @@ export function brandKvPrefix(brand: Brand): string {
 /**
  * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).
  * `slug` opcional → `/leaderboard/{slug}`.
+ *
+ * #2006: pra `clarice` (mensal — 1 voto/leitor/mês), o ranking é ANUAL: um slug
+ * mensal `YYYY-MM` vira o slug do ano `YYYY`. Choke-point único — conserta a
+ * página de voto e todo caller sem mexer neles. Diária inalterada.
  */
 export function leaderboardHref(brand: Brand, slug?: string | null): string {
-  const base = slug ? `/leaderboard/${slug}` : "/leaderboard";
+  const effSlug = brand === "clarice" && slug && /^\d{4}-\d{2}$/.test(slug) ? slug.slice(0, 4) : slug;
+  const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
 }
 

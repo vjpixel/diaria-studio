@@ -123,16 +123,21 @@ describe("mensal — monthly-render aplica os tokens canônicos", () => {
   it("serif Georgia em título + corpo sans Geist + card branco (#1955) + ink + teal acento", () => {
     assert.match(html, /Georgia, 'Times New Roman', serif/); // h2/h3 títulos
     assert.match(html, /'Geist',/); // corpo + labels sans
-    // #1955: e-mail mensal branco (era #FBFAF6); --paper segue só na web.
-    assert.match(html, /#FFFFFF/);
-    assert.doesNotMatch(html, /#FBFAF6/);
+    // #1955: e-mail mensal branco (era #FBFAF6) na PÁGINA/card; --paper na web.
+    // Pills/CTAs usam fundo paper #FBFAF6 (decisão do editor 2026-06-10) — por
+    // isso o doesNotMatch global virou um check específico do body/card.
+    assert.match(html, /background:#FFFFFF;">/); // body branco
+    assert.doesNotMatch(html, /body style="[^"]*#FBFAF6/);
     assert.match(html, /#171411/);
     assert.match(html, /#00A0A0/); // kickers/links
   });
 
-  it("divider entre seções é bege #EBE5D0, não teal", () => {
-    assert.match(html, /border-top:1px solid #EBE5D0/);
-    assert.doesNotMatch(html, /border-top:1px solid #00A0A0/);
+  it("régua de seção é bege #EBE5D0 (no kicker; sem <hr> entre seções), não teal", () => {
+    // Design atual (como a diária): sem <hr> divider — a régua hairline vive ao
+    // lado do kicker (renderKicker, border-bottom bege).
+    assert.match(html, /border-bottom:1px solid #EBE5D0/);
+    assert.doesNotMatch(html, /<hr/);
+    assert.doesNotMatch(html, /border-(top|bottom):1px solid #00A0A0/);
   });
 
   it("não vaza valores ad-hoc (ink #1a1a1a, cinzas, Arial, shell #f2f2f2)", () => {

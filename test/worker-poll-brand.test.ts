@@ -68,7 +68,8 @@ describe("brand helpers (#1905)", () => {
     assert.equal(leaderboardHref("diaria"), "/leaderboard");
     assert.equal(leaderboardHref("clarice"), "/leaderboard?brand=clarice");
     assert.equal(leaderboardHref("diaria", "2026-05"), "/leaderboard/2026-05");
-    assert.equal(leaderboardHref("clarice", "2026-05"), "/leaderboard/2026-05?brand=clarice");
+    // #2006: clarice ranqueia por ANO — slug mensal vira o ano
+    assert.equal(leaderboardHref("clarice", "2026-05"), "/leaderboard/2026?brand=clarice");
   });
 
   it("BRAND_INFO tem nome + site das duas marcas", () => {
@@ -181,8 +182,8 @@ describe("votePageHtml propaga brand no form de set-name (code-review #1907)", (
     const html = votePageHtml("ok", true, form, null, "2026-05", "clarice");
     assert.match(html, /name="brand"\s+value="clarice"/);
     assert.match(html, /<title>É IA\? \| Clarice News<\/title>/);
-    // o link do leaderboard também carrega o brand
-    assert.match(html, /\/leaderboard\/2026-05\?brand=clarice/);
+    // o link do leaderboard carrega o brand e aponta pro ANO (#2006)
+    assert.match(html, /\/leaderboard\/2026\?brand=clarice/);
   });
 
   it("brand=diaria: SEM input hidden brand (back-compat) + título Diar.ia", () => {
