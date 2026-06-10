@@ -267,7 +267,7 @@ Se o agendamento era crítico, editor pode deletar o post no LinkedIn e re-rodar
 
 ### 4d. Retry chrome_disconnected (só playbook newsletter)
 
-Apenas o playbook newsletter usa Chrome em Etapa 4. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser — falhas viram exit code do script, não `chrome_disconnected`.
+Apenas o playbook newsletter usa Chrome em Etapa 4. LinkedIn (publish-linkedin.ts) e Facebook (publish-facebook.ts) são scripts shell sem browser — falhas viram exit code do script, não `chrome_disconnected`. **Antes de passos com clique real, rodar o preflight de visibilidade da aba (#2015 — ver "Preflight de visibilidade" no beehiiv-playbook.md): `visibilityState === "hidden"` → halt banner, nunca clicar às cegas.**
 
 Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_disconnected` (ou erro similar — "not connected", "extension", "disconnected", "no tab", "connection refused"):
 1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, 3 = 120s, 4 = 240s, 5 = 480s, 6 = 960s, 7 = 1920s, 8 = 3840s, 9 = 7680s, 10 = 15360s). Via `Bash("node -e \"process.stdout.write(String(30 * Math.pow(2, {N}-1)))\"")`.
@@ -425,7 +425,7 @@ Falha não bloqueia o gate — editor pode revisar o `03-social.md` diretamente.
 
 
 - **Sync push antes do gate (#507):**
-  1. Lista base: `03-social.md,_internal/05-published.json,06-social-published.json`. **#1828: `03-social.md` é re-pushado aqui** — sem isso o Drive fica congelado na versão do Stage 2 quando os destaques mudam depois (o editor revisa/posta o social a partir do Drive). O `--on-conflict force` não é usado aqui (push normal); se houver edição no Drive, o drive-sync resolve por conflito.
+  1. Lista base: `03-social.md,_internal/05-published.json,_internal/06-social-published.json` (#2017 — o arquivo mora em `_internal/` desde #918; o path antigo na raiz gerava 1 sync warning por edição). **#1828: `03-social.md` é re-pushado aqui** — sem isso o Drive fica congelado na versão do Stage 2 quando os destaques mudam depois (o editor revisa/posta o social a partir do Drive). O `--on-conflict force` não é usado aqui (push normal); se houver edição no Drive, o drive-sync resolve por conflito.
   2. Se `data/editions/{AAMMDD}/error.md` existir, append `,error.md` à lista.
   3. Rodar:
      ```bash
