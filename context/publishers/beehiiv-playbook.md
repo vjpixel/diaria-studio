@@ -186,9 +186,9 @@ Resume-aware: re-execução pula imagens já no cache, **respeitando target**. S
 **Modo single-file (atual — #1054 validation):** newsletter inteira (16KB) cabe num único `node-htmlSnippet` do template HTML do Beehiiv. Merge tags `{{poll_a_url}}/{{poll_b_url}}` são preservadas pelo htmlSnippet (raw HTML por design — não normaliza hrefs). Mesmo arquivo serve agent automation + paste manual via `prep-manual-publish.ts`:
 
 ```bash
-npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out /tmp/newsletter.html
+npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html --out {edition_dir}/_internal/newsletter-draft.html
 npx tsx scripts/substitute-image-urls.ts \
-  --html /tmp/newsletter.html \
+  --html {edition_dir}/_internal/newsletter-draft.html \
   --images {edition_dir}/06-public-images.json \
   --out {edition_dir}/_internal/newsletter-final.html
 ```

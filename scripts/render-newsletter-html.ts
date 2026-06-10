@@ -149,7 +149,7 @@ function main(): void {
           `O ${outputLabel} será escrito no stdout — se estiver redirecionando para /dev/null ou ` +
           "similar, o arquivo em disco NÃO será atualizado. " +
           "Use --out <path> para gravar explicitamente (ex: --out " +
-          `/tmp/newsletter.html).\n`,
+          `{edition_dir}/_internal/newsletter-draft.html).\n`,
       );
     }
     process.stdout.write(output);
