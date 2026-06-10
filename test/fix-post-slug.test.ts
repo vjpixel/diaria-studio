@@ -118,13 +118,45 @@ describe("validateSlug (#2011)", () => {
     assert.match(err!, /leading|trailing/i);
   });
 
-  it("#2011 regressão: detecta acentos manglados (a-o, a-nico)", () => {
+  it("#2011 regressão: detecta acentos manglados (a-o, p-nico)", () => {
     // Beehiiv Schedule re-deriva: 'automação' → 'automa-o', 'pânico' → 'p-nico'
     const err1 = validateSlug("automa-o");
     assert.ok(err1 !== null, "automa-o deve ser rejeitado (acento manglado)");
 
     const err2 = validateSlug("p-nico");
     assert.ok(err2 !== null, "p-nico deve ser rejeitado (acento manglado)");
+  });
+
+  it("warning check 1 (consoante-única): falsos-positivos legítimos passam com force=true", () => {
+    // x-ray, b-side, n-gram, f-score são slugs intencionais — não mangling PT-BR
+    assert.equal(validateSlug("x-ray", true), null, "x-ray deve passar com force");
+    assert.equal(validateSlug("b-side", true), null, "b-side deve passar com force");
+    assert.equal(validateSlug("n-gram", true), null, "n-gram deve passar com force");
+    assert.equal(validateSlug("f-score", true), null, "f-score deve passar com force");
+  });
+
+  it("warning check 1 (consoante-única): sem force ainda rejeita os mesmos slugs", () => {
+    assert.ok(validateSlug("x-ray") !== null, "x-ray sem force deve ser rejeitado (heurística PT-BR)");
+    assert.ok(validateSlug("b-side") !== null, "b-side sem force deve ser rejeitado");
+  });
+
+  it("warning check 2 (vogal-final): falsos-positivos legítimos passam com force=true", () => {
+    // versao-a, parte-i, opcao-b são slugs A/B intencionais — não mangling PT-BR
+    assert.equal(validateSlug("versao-a", true), null, "versao-a deve passar com force");
+    assert.equal(validateSlug("parte-i", true), null, "parte-i deve passar com force");
+    assert.equal(validateSlug("opcao-b", true), null, "opcao-b deve passar com force");
+  });
+
+  it("warning check 2 (vogal-final): sem force ainda rejeita os mesmos slugs", () => {
+    assert.ok(validateSlug("versao-a") !== null, "versao-a sem force deve ser rejeitado (heurística PT-BR)");
+    assert.ok(validateSlug("parte-i") !== null, "parte-i sem force deve ser rejeitado");
+  });
+
+  it("force=true não bypassa erros estruturais (vazio, maiúsculas, acentos)", () => {
+    // Hard errors are never bypassed by force
+    assert.ok(validateSlug("", true) !== null, "vazio ainda é erro com force");
+    assert.ok(validateSlug("AI-Launch", true) !== null, "maiúsculas ainda é erro com force");
+    assert.ok(validateSlug("automação", true) !== null, "acentos ainda são erro com force");
   });
 
   it("rejeita maiúsculas", () => {
@@ -164,6 +196,19 @@ describe("fetchPost (#2011)", () => {
       /404/,
     );
   });
+
+  // Regressão #633: crashava com TypeError em vez de erro descritivo
+  it("lança erro descritivo quando GET retorna 200 mas data é null", async () => {
+    const mockFetch: typeof fetch = async () =>
+      new Response(JSON.stringify({ data: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    await assert.rejects(
+      () => fetchPost(MOCK_CFG, "post_abc", mockFetch),
+      /sem objeto data/i,
+    );
+  });
 });
 
 // ── patchSlug ─────────────────────────────────────────────────────────────────
@@ -198,6 +243,28 @@ describe("patchSlug (#2011)", () => {
     await assert.rejects(
       () => patchSlug(MOCK_CFG, "post_abc", "new-slug", mockFetch),
       /422/,
+    );
+  });
+
+  // Regressão #633: crashava com TypeError e deixava updated=true em estado inconsistente
+  it("lança erro descritivo quando PATCH retorna 200 mas data é null", async () => {
+    const mockFetch: typeof fetch = async (_url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "PATCH") {
+        return new Response(JSON.stringify({ data: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // GET fallback (shouldn't be reached in this test)
+      return new Response(
+        JSON.stringify({ data: { id: "post_abc", web_settings: { slug: "old" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    await assert.rejects(
+      () => patchSlug(MOCK_CFG, "post_abc", "new-slug", mockFetch),
+      /sem objeto data/i,
     );
   });
 });
