@@ -252,6 +252,25 @@ export function renderIntro(body: string): string {
 }
 
 /**
+ * CTA "→ ..." dentro dos boxes Clarice/Laboratório → botão teal (fundo #00A0A0,
+ * texto branco bold), como o CTA da diária. O label é o texto visível da linha
+ * (sem o "→" e sem o link quando o texto do link é uma URL); href = URL do link.
+ */
+export function renderCtaButton(line: string): string {
+  const text = line.replace(/^→\s*/, "").trim();
+  const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
+  if (!linkM) return `<p style="margin:16px 0 0 0;color:${INK};">${renderInline(text)}</p>`;
+  const idx = linkM.index ?? 0;
+  const url = linkM[2];
+  const linkText = linkM[1];
+  const pre = text.slice(0, idx).trim().replace(/[:：]\s*$/, "").trim();
+  const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
+  const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
+  const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:20px 0 0;"><tr><td style="background:${TEAL};border-radius:4px;"><a href="${escHtml(url)}" style="display:inline-block;padding:13px 24px;font-family:${FONT_SANS};font-size:15px;font-weight:bold;color:#FFFFFF;text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
+}
+
+/**
  * Renders a LABORATÓRIO CLARICE section como caixa similar ao CLARICE
  * mas com formatação rica (h3 título, parágrafos, lista numerada).
  *
@@ -317,6 +336,8 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
       renderedBlocks.push(
         `<ol style="margin:0 0 16px 0;padding-left:24px;color:${INK};">${items}</ol>`
       );
+    } else if (/^→/.test(block.trim())) {
+      renderedBlocks.push(renderCtaButton(block.trim().replace(/\n/g, " ")));
     } else {
       const inline = renderInline(block.trim().replace(/\n/g, " "));
       renderedBlocks.push(`<p style="margin:0 0 16px 0;color:${INK};">${inline}</p>`);
