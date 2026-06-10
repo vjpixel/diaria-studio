@@ -10,6 +10,8 @@
  *
  * Fases (cada uma exige flag explícita; default = dry-run que só imprime o plano):
  *   --create       cria as 21 campanhas como RASCUNHO (nada é enviado)
+ *   --update-html  re-aplica o HTML render atual em TODAS as campanhas criadas
+ *                  (pra propagar fix de render pós-create; só em draft)
  *   --send-test    manda test email das células d01-A/B/C pro test_email
  *   --schedule     agenda TODAS as campanhas criadas (06:00 BRT nas datas do plano)
  *
@@ -69,6 +71,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
   const doCreate = argv.includes("--create");
+  const doUpdateHtml = argv.includes("--update-html");
   const doTest = argv.includes("--send-test");
   const doSchedule = argv.includes("--schedule");
 
@@ -109,7 +112,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       );
     }
   }
-  if (!doCreate && !doTest && !doSchedule) {
+  if (!doCreate && !doUpdateHtml && !doTest && !doSchedule) {
     console.error(`\ndry-run — use --create, depois --send-test, depois --schedule.`);
     return;
   }
@@ -156,6 +159,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2)); // persiste a cada criação (crash-safe)
         console.error(`✓ ${key} → campanha #${resp.id} (rascunho)`);
       }
+    }
+  }
+
+  // --- update-html (propaga fix de render pras campanhas em draft) ---
+  if (doUpdateHtml) {
+    for (const c of campaigns) {
+      if (c.status === "scheduled") {
+        console.error(`⚠️  ${c.key} já agendada — html NÃO atualizado (desagende primeiro)`);
+        continue;
+      }
+      await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { htmlContent: html });
+      console.error(`✓ ${c.key} html atualizado (campanha #${c.campaignId})`);
     }
   }
 

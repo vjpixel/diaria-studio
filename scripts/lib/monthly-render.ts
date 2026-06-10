@@ -559,7 +559,7 @@ export function renderEia(
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${workerUrl}/leaderboard?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${workerUrl}/leaderboard/20${yymm.slice(0, 2)}-${yymm.slice(2, 4)}?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>
