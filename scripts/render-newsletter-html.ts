@@ -138,6 +138,20 @@ function main(): void {
     writeFileSync(resolve(ROOT, outPath), output + "\n");
     console.error(`Written to ${outPath}`);
   } else {
+    // #2012: quando stdout não é TTY (pipe / redirect) e --out está ausente,
+    // o HTML pode ir silenciosamente pro /dev/null — exatamente o que causou
+    // 260610 (newsletter-draft.html nunca foi regenerado, upload subiu stale).
+    // Avisar no stderr sem quebrar quem usa pipe legitimamente (ex: jq, diff).
+    if (!process.stdout.isTTY) {
+      const outputLabel = format === "json" ? "JSON" : "HTML";
+      process.stderr.write(
+        `[render-newsletter-html] AVISO: stdout não é TTY e --out está ausente. ` +
+          `O ${outputLabel} será escrito no stdout — se estiver redirecionando para /dev/null ou ` +
+          "similar, o arquivo em disco NÃO será atualizado. " +
+          "Use --out <path> para gravar explicitamente (ex: --out " +
+          `/tmp/newsletter.html).\n`,
+      );
+    }
     process.stdout.write(output);
   }
 }

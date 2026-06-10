@@ -37,7 +37,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, statSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
@@ -139,6 +139,96 @@ export function findUnresolvedImgPlaceholders(html: string): string[] {
   return Array.from(new Set(matches));
 }
 
+/**
+ * Pure (#2012): verifica que `draftHtmlPath` (render output, antes do substitute)
+ * não é mais antigo que `reviewedMdPath` (02-reviewed.md), e que `finalHtmlPath`
+ * (output do substitute-image-urls) não é mais antigo que `draftHtmlPath` quando
+ * ambos existirem.
+ *
+ * Cadeia de freshness esperada:
+ *   02-reviewed.md ≤ newsletter-draft.html ≤ newsletter-final.html
+ *
+ * Nota: comparar apenas final.html vs 02-reviewed.md é ineficaz porque
+ * substitute-image-urls sempre reescreve final.html (mtime fresco), então o
+ * final.html sempre pareceria ok mesmo quando draft.html está stale.
+ *
+ * Retorna `null` quando tudo está ok, ou uma string de erro quando stale.
+ * Caller deve lançar/logar conforme necessário.
+ *
+ * Casos especiais:
+ * - `reviewedMdPath` ausente: retorna `null` (re-render fora de uma edição
+ *   completa; não bloquear nesses casos).
+ * - arquivo ausente: retorna `null` (tratado como ENOENT via try/catch).
+ *
+ * @param finalHtmlPath  Path do newsletter-final.html (output do substitute).
+ * @param reviewedMdPath Path do 02-reviewed.md.
+ * @param draftHtmlPath  Path do newsletter-draft.html (output do render, antes
+ *                       do substitute). Quando ausente, usa `finalHtmlPath` como
+ *                       proxy (compatibilidade com chamadas externas sem draft).
+ * @param editionDir     Diretório da edição (para mensagem de erro copy-pasteable).
+ */
+export function checkHtmlFreshness(
+  finalHtmlPath: string,
+  reviewedMdPath: string,
+  draftHtmlPath?: string,
+  editionDir?: string,
+): string | null {
+  // Lê mtime via try/catch — ENOENT → tratar como ausente (TOCTOU-safe).
+  function mtimeMs(p: string): number | null {
+    try {
+      return statSync(p).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  const mdMtime = mtimeMs(reviewedMdPath);
+  if (mdMtime === null) return null; // 02-reviewed.md ausente — sem verificação.
+
+  // Interpola paths reais na mensagem de erro (P3: sem {edition_dir} literal).
+  const edDir = editionDir ?? dirname(dirname(finalHtmlPath));
+  const renderCmd =
+    `npx tsx scripts/render-newsletter-html.ts ${edDir} --format html --out /tmp/newsletter.html`;
+  const subCmd =
+    `npx tsx scripts/substitute-image-urls.ts --html /tmp/newsletter.html ` +
+    `--images ${edDir}/06-public-images.json --out ${edDir}/_internal/newsletter-final.html`;
+
+  // Verificação primária: draft deve ser mais novo que 02-reviewed.md.
+  // Se draftHtmlPath foi passado e existe, usa-o (cadeia de freshness real da
+  // pipeline). Se não existe (draft em /tmp/ ou não gerado), cai em final vs
+  // reviewed como proxy.
+  const draftMtime = draftHtmlPath !== undefined ? mtimeMs(draftHtmlPath) : null;
+  const primaryPath = draftMtime !== null ? draftHtmlPath! : finalHtmlPath;
+  const primaryMtime = draftMtime !== null ? draftMtime : mtimeMs(finalHtmlPath);
+  if (primaryMtime === null) return null; // arquivo ausente — sem verificação.
+
+  if (primaryMtime < mdMtime) {
+    const checkLabel = draftMtime !== null ? "newsletter-draft.html" : "newsletter-final.html";
+    return (
+      `${checkLabel} está desatualizado: ` +
+      `mtime(${checkLabel})=${new Date(primaryMtime).toISOString()} < ` +
+      `mtime(02-reviewed.md)=${new Date(mdMtime).toISOString()}. ` +
+      `Re-render o HTML antes de fazer upload: ` +
+      `${renderCmd} && ${subCmd}`
+    );
+  }
+
+  // Verificação secundária: se draft existe, final também deve ser mais novo que draft.
+  if (draftMtime !== null) {
+    const finalMtime = mtimeMs(finalHtmlPath);
+    if (finalMtime !== null && finalMtime < draftMtime) {
+      return (
+        `newsletter-final.html está desatualizado em relação a newsletter-draft.html: ` +
+        `mtime(final)=${new Date(finalMtime).toISOString()} < ` +
+        `mtime(draft)=${new Date(draftMtime).toISOString()}. ` +
+        `Re-rode substitute-image-urls antes de fazer upload: ${subCmd}`
+      );
+    }
+  }
+
+  return null;
+}
+
 export function wrapForPreview(body: string): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -206,6 +296,13 @@ export async function uploadHtml(args: {
    * dentro de outro.
    */
   wrap?: boolean;
+  /**
+   * #2012: path pro `02-reviewed.md` da edição. Quando fornecido, verifica que
+   * o HTML foi gerado DEPOIS da última edição do MD (freshness guard). Ausente
+   * = sem verificação (mantém compatibilidade com chamadas externas e previews
+   * mensais que não têm um 02-reviewed.md correspondente).
+   */
+  reviewedMdPath?: string;
 }): Promise<UploadHtmlResult> {
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
   const rawHtml = readFileSync(args.htmlPath, "utf8");
@@ -225,6 +322,31 @@ export async function uploadHtml(args: {
     throw new Error(
       `HTML tem ${unresolved.length} placeholder(s) {{IMG:...}} não-resolvida(s): ${unresolved.slice(0, 5).join(", ")}${unresolved.length > 5 ? ` (+${unresolved.length - 5} mais)` : ""}. Rode 'npx tsx scripts/substitute-image-urls.ts --html ${args.htmlPath} --images data/editions/${args.edition}/06-public-images.json --out ${args.htmlPath}' antes de re-upload. Se o cache de imagens não está populado, rode primeiro 'npx tsx scripts/upload-images-public.ts --edition-dir data/editions/${args.edition}/ --mode all'.`,
     );
+  }
+
+  // #2012: freshness guard — HTML stale (render rodou antes da última edição
+  // de 02-reviewed.md) sobe conteúdo desatualizado pro Worker silenciosamente.
+  // dry-run: emite warning mas não aborta (dry-run é operação segura/diagnóstico).
+  if (args.reviewedMdPath) {
+    const editionDir = args.reviewedMdPath
+      ? dirname(args.reviewedMdPath)
+      : undefined;
+    const draftHtmlPath = editionDir
+      ? resolve(editionDir, "_internal", "newsletter-draft.html")
+      : undefined;
+    const stalenessError = checkHtmlFreshness(
+      args.htmlPath,
+      args.reviewedMdPath,
+      draftHtmlPath,
+      editionDir,
+    );
+    if (stalenessError) {
+      if (args.dryRun) {
+        process.stderr.write(`[upload-html-public] WARN (dry-run): ${stalenessError}\n`);
+      } else {
+        throw new Error(stalenessError);
+      }
+    }
   }
 
   if (args.dryRun) {
@@ -297,12 +419,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #2012: freshness guard — só ativa quando usando o path padrão da pipeline
+  // (newsletter diária). Com --html override o caller conhece o contexto e
+  // pode não ter 02-reviewed.md associado (preview mensal, re-render manual).
+  const reviewedMdPath = htmlPathOverride
+    ? undefined
+    : resolve(ROOT, "data", "editions", edition, "02-reviewed.md");
+
   const result = await uploadHtml({
     edition,
     htmlPath,
     secret,
     dryRun,
     wrap: !noWrap,
+    reviewedMdPath,
   });
 
   // #1734: persiste a URL só após upload REAL — dry-run não sobe nada, então
