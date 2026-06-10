@@ -30,13 +30,14 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 ## Input
 
-- `approved_json_path`: `_internal/01-approved.json`
+- `approved_json_path`: `_internal/01-approved-capped.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
+- `outros_count`: **número inteiro** = total de itens não-destaque da edição (`lancamento + radar + use_melhor + video`), calculado pelo orchestrator e injetado no prompt. **NUNCA estime — use EXATAMENTE o número recebido neste parâmetro** (#2014).
 
 ## Processo
 
 1. Ler `context/templates/social-linkedin.md` e `context/editorial-rules.md`.
-2. Ler `{out_dir}/_internal/01-approved.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
+2. Ler `{out_dir}/_internal/01-approved-capped.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
 3. Para **cada destaque**, compor 3 textos:
 
    ### 3a. Post principal (`## d{N}`)
@@ -58,9 +59,9 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    - Tom: curto, CTA claro.
    - Inclui CTA + **URL da edição completa Diar.ia**: leitor abre a edição inteira (não o artigo source).
-   - Formato:
+   - Formato (**usar o `outros_count` injetado pelo orchestrator — NUNCA estime**):
      ```
-     Edição completa com mais 9 destaques de IA do dia em {edition_url}
+     Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
      Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
      ```

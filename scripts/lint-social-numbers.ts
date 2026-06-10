@@ -20,10 +20,10 @@
  *     --social data/editions/260602/03-social.md \
  *     --approved data/editions/260602/_internal/01-approved.json
  *
- * Output (stdout JSON): { ok, unsourced: [{figure, context}], checked }
+ * Output (stdout JSON): { ok: boolean, num_findings: DestaqueFinding[], count_findings: CommentCountFinding[] }
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -155,6 +155,10 @@ export function findUnsourcedFigures(
 
 interface ApprovedShape {
   highlights?: Array<{ article?: { title?: string; summary?: string } }>;
+  lancamento?: unknown[];
+  radar?: unknown[];
+  use_melhor?: unknown[];
+  video?: unknown[];
 }
 
 /**
@@ -217,12 +221,159 @@ export function lintSocialNumbers(socialMd: string, approved: ApprovedShape): De
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// comment_diaria count lint (#2014)
+// ---------------------------------------------------------------------------
+
+/**
+ * Calcula o total de itens não-destaque da edição:
+ *   lancamento + radar + use_melhor + video
+ * Esse é o número correto pra "mais N destaques" no comment_diaria.
+ * NUNCA deve ser estimado pelo LLM — derivado deterministicamente do approved.json.
+ */
+export function computeOutrosCount(approved: ApprovedShape): number {
+  return (
+    (approved.lancamento?.length ?? 0) +
+    (approved.radar?.length ?? 0) +
+    (approved.use_melhor?.length ?? 0) +
+    (approved.video?.length ?? 0)
+  );
+}
+
+/** Regex que casa "mais N destaques" no comment_diaria (N = inteiro >= 0). */
+const COMMENT_COUNT_RE = /mais\s+(\d+)\s+destaques/gi;
+
+export interface CommentCountFinding {
+  /** Destaque (1, 2, 3) onde o count_diaria foi encontrado e está errado. */
+  destaque: number;
+  /** Número encontrado no texto do comment_diaria (NaN quando placeholder não-resolvido). */
+  found: number;
+  /** Número esperado (calculado de approved.json). */
+  expected: number;
+  /** true quando o placeholder literal `{outros_count}` não foi resolvido pelo LLM. */
+  unresolved_placeholder?: true;
+}
+
+/**
+ * Extrai os textos de `### comment_diaria` de cada destaque no 03-social.md
+ * (LinkedIn only — Facebook não tem comment_diaria). Exportada pra teste.
+ */
+export function parseCommentDiariaByDestaque(socialMd: string): Map<number, string> {
+  const map = new Map<number, string>();
+  // Trabalha apenas na seção # LinkedIn (antes de # Facebook)
+  const linkedinSection = socialMd.split(/^#\s+Facebook\b/im)[0] ?? socialMd;
+
+  let currentDestaque: number | null = null;
+  let inCommentDiaria = false;
+  let buffer = "";
+
+  for (const line of linkedinSection.split("\n")) {
+    const dHeader = line.match(/^##\s+d(\d)\b/i);
+    if (dHeader) {
+      // Flush anterior
+      if (inCommentDiaria && currentDestaque !== null) {
+        map.set(currentDestaque, buffer);
+      }
+      currentDestaque = parseInt(dHeader[1], 10);
+      inCommentDiaria = false;
+      buffer = "";
+      continue;
+    }
+    // Detectar início da subseção ### comment_diaria
+    if (/^###\s+comment_diaria\b/i.test(line)) {
+      if (inCommentDiaria && currentDestaque !== null) {
+        map.set(currentDestaque, buffer);
+      }
+      inCommentDiaria = true;
+      buffer = "";
+      continue;
+    }
+    // Qualquer outro ### ou ## encerra o comment_diaria atual
+    if (/^#{2,3}\s/.test(line) && inCommentDiaria) {
+      if (currentDestaque !== null) {
+        map.set(currentDestaque, buffer);
+      }
+      inCommentDiaria = false;
+      buffer = "";
+      // Não continuar — processar o header na próxima iteração implicitamente
+      continue;
+    }
+    if (inCommentDiaria) {
+      buffer += line + "\n";
+    }
+  }
+  // Flush final
+  if (inCommentDiaria && currentDestaque !== null) {
+    map.set(currentDestaque, buffer);
+  }
+  return map;
+}
+
+/**
+ * Valida a contagem "mais N destaques" nos `### comment_diaria` do social.
+ * Retorna findings pra cada destaque onde a contagem diverge do approved.json,
+ * incluindo o caso de placeholder não-resolvido `{outros_count}` literal.
+ *
+ * Se `fix = true`, retorna também o `socialMd` corrigido (substituição inline).
+ * A correção é ancorada à frase canônica do CTA ("mais N destaques de IA do dia")
+ * para não afetar seções como `## post_pixel` que podem conter frases semelhantes.
+ */
+export function lintCommentDiariaCount(
+  socialMd: string,
+  approved: ApprovedShape,
+  opts: { fix?: boolean } = {},
+): { findings: CommentCountFinding[]; fixed: string } {
+  const expected = computeOutrosCount(approved);
+  const commentsByDestaque = parseCommentDiariaByDestaque(socialMd);
+  const findings: CommentCountFinding[] = [];
+
+  for (const [destaque, text] of [...commentsByDestaque.entries()].sort((a, b) => a[0] - b[0])) {
+    // Detectar placeholder literal não-resolvido pelo LLM (#2033)
+    if (/\{outros_count\}/.test(text)) {
+      findings.push({ destaque, found: NaN, expected, unresolved_placeholder: true });
+      continue; // um finding por destaque basta
+    }
+    const matches = [...text.matchAll(COMMENT_COUNT_RE)];
+    for (const m of matches) {
+      const found = parseInt(m[1], 10);
+      if (found !== expected) {
+        findings.push({ destaque, found, expected });
+        break; // um finding por destaque basta
+      }
+    }
+  }
+
+  let fixed = socialMd;
+  if (opts.fix && findings.length > 0) {
+    // Substituição ancorada à frase canônica do CTA ("mais N destaques de IA do dia")
+    // para não afetar seções como `## post_pixel` que podem conter texto semelhante.
+    // Usamos um Set de valores 'found' (excluindo NaN = placeholder) pra não
+    // substituir o mesmo número duas vezes (caso raro de dois destaques com o mesmo
+    // número errado).
+    const toReplace = new Set(findings.map((f) => f.found).filter((n) => !isNaN(n)));
+    for (const wrongN of toReplace) {
+      fixed = fixed.replace(
+        new RegExp(`(mais\\s+)${wrongN}(\\s+destaques\\s+de\\s+IA\\s+do\\s+dia)`, "gi"),
+        `$1${expected}$2`,
+      );
+    }
+  }
+
+  return { findings, fixed };
+}
+
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && i + 1 < argv.length) {
-      out[argv[i].slice(2)] = argv[i + 1];
-      i++;
+    if (argv[i].startsWith("--")) {
+      const key = argv[i].slice(2);
+      // Suporta flags boolean (--fix) e flags com valor (--social path)
+      if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+        out[key] = argv[i + 1];
+        i++;
+      } else {
+        out[key] = "true";
+      }
     }
   }
   return out;
@@ -232,29 +383,54 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args.social || !args.approved) {
     console.error(
-      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved.json>",
+      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved.json> [--fix]",
     );
     process.exit(1);
   }
-  const socialMd = readFileSync(resolve(process.cwd(), args.social), "utf8");
+  const doFix = args.fix === "true";
+  const socialPath = resolve(process.cwd(), args.social);
+  let socialMd = readFileSync(socialPath, "utf8");
   const approved = JSON.parse(readFileSync(resolve(process.cwd(), args.approved), "utf8")) as ApprovedShape;
 
-  const findings = lintSocialNumbers(socialMd, approved);
-  const total = findings.reduce((acc, f) => acc + f.unsourced.length, 0);
+  // --- lint 1: cifras financeiras alucinadas (#1711) ---
+  const numFindings = lintSocialNumbers(socialMd, approved);
+  const totalNums = numFindings.reduce((acc, f) => acc + f.unsourced.length, 0);
 
-  if (total > 0) {
+  if (totalNums > 0) {
     console.error(
-      `\n⚠️  lint-social-numbers: ${total} cifra(s) financeira(s) no social NÃO encontrada(s) na fonte do destaque correspondente — possível alucinação, confira no gate:`,
+      `\n⚠️  lint-social-numbers: ${totalNums} cifra(s) financeira(s) no social NÃO encontrada(s) na fonte do destaque correspondente — possível alucinação, confira no gate:`,
     );
-    for (const f of findings) {
+    for (const f of numFindings) {
       for (const fig of f.unsourced) {
         console.error(`  - d${f.destaque}: "${fig.raw}" (normalizado: ${fig.key})`);
       }
     }
   }
 
+  // --- lint 2: contagem comment_diaria (#2014) ---
+  const { findings: countFindings, fixed } = lintCommentDiariaCount(socialMd, approved, { fix: doFix });
+
+  if (countFindings.length > 0) {
+    const action = doFix ? "→ corrigido automaticamente" : "→ confira no gate ou rode com --fix";
+    console.error(
+      `\n⚠️  lint-social-numbers: contagem "mais N destaques" errada no comment_diaria ${action}:`,
+    );
+    for (const f of countFindings) {
+      console.error(`  - d${f.destaque}: encontrou ${f.found}, esperado ${f.expected}`);
+    }
+    if (doFix) {
+      const tmpPath = socialPath + ".tmp";
+      writeFileSync(tmpPath, fixed, "utf8");
+      renameSync(tmpPath, socialPath);
+      console.error(`  [fix] ${socialPath} atualizado.`);
+      socialMd = fixed;
+    }
+  }
+
   // WARN-only: nunca bloqueia (exit 0). O editor decide no gate.
-  console.log(JSON.stringify({ ok: total === 0, findings }, null, 2));
+  console.log(
+    JSON.stringify({ ok: totalNums === 0 && countFindings.length === 0, num_findings: numFindings, count_findings: countFindings }, null, 2),
+  );
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

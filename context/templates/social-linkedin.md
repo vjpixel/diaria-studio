@@ -64,7 +64,7 @@ Postado **3 min após** o main post pela própria conta Diar.ia. Driver de tráf
 ### Estrutura
 
 ```
-Edição completa com mais 9 destaques de IA do dia em {edition_url}
+Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
 Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
 ```
