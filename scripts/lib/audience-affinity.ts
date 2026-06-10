@@ -95,8 +95,8 @@ export const KNOWN_TOOLS: readonly string[] = [
   "notion", "figma", "midjourney", "stable diffusion", "runway",
   "perplexity", "replit", "bolt", "v0",
   // Termos genéricos de IA aplicada
-  "prompt", "fine-tuning", "finetuning", "training", "treinamento",
-  "inference", "inferência", "deployment", "deploy",
+  "prompt", "fine-tuning", "training", "treinamento",
+  "inference", "inferência", "deployment",
 ];
 
 /**
@@ -138,8 +138,15 @@ export function extractSurveyTools(
     }
   }
 
-  // Fallback: sempre incluir os termos base se survey não retornou nada
+  // Fallback: sempre incluir os termos base se survey não retornou nada.
+  // Emite warning para alertar que o sinal de survey é fraco — o caller pode
+  // usar essa informação para decidir se quer usar o surveyScore com menos peso.
   if (tools.size === 0) {
+    console.error(
+      "[audience-affinity] WARN: survey não contém respostas de ferramentas" +
+      " — usando KNOWN_TOOLS como fallback. Execute /diaria-atualiza-audiencia" +
+      " para recalibrar o survey.",
+    );
     for (const k of KNOWN_TOOLS) tools.add(normalizeTool(k));
   }
 
@@ -269,26 +276,12 @@ export function annotateAudienceAffinity(
   let bestCtrRatio = 0;
 
   for (const [cat, relCtr] of signals.ctrByCategory) {
-    // Match flexible: category name (lowercase, normalized) in article text
+    // Match com word-boundary: categoria deve aparecer como palavra, não substring interna
     const catNorm = normalizeTool(cat);
     if (catNorm.length < 3) continue;
-    if (hay.includes(catNorm)) {
+    if (wordMatch(hay, catNorm)) {
       matched.push(`categoria:${cat}`);
       if (relCtr > bestCtrRatio) bestCtrRatio = relCtr;
-    }
-  }
-
-  // Also check URL slug for category keywords
-  const slug = extractSlug(article.url ?? "");
-  if (slug) {
-    for (const [cat, relCtr] of signals.ctrByCategory) {
-      const catNorm = normalizeTool(cat);
-      if (catNorm.length < 3) continue;
-      const key = `categoria:${cat}`;
-      if (!matched.includes(key) && slug.includes(catNorm)) {
-        matched.push(key);
-        if (relCtr > bestCtrRatio) bestCtrRatio = relCtr;
-      }
     }
   }
 
@@ -299,7 +292,7 @@ export function annotateAudienceAffinity(
 
   for (const tool of signals.surveyTools) {
     if (tool.length < 3) continue;
-    if (hay.includes(tool)) {
+    if (wordMatch(hay, tool)) {
       matched.push(`tool:${tool}`);
       toolMatches++;
     }
@@ -367,6 +360,18 @@ function buildHaystack(
     extractSlug(article.url ?? ""),
   ];
   return normalizeTool(parts.join(" "));
+}
+
+/**
+ * Word-boundary match: `needle` deve aparecer como palavra completa no `hay`
+ * (não como substring interna de outra palavra). Usa lookbehind/lookahead
+ * negativos sobre o alfabeto a-z0-9 e hífen para evitar falsos positivos
+ * como "rag" em "storage", "prompt" em "promptly", "deploy" em "deployment".
+ */
+function wordMatch(hay: string, needle: string): boolean {
+  // Escapar caracteres especiais de regex no needle (ex: "fine-tuning")
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, "i").test(hay);
 }
 
 function extractSlug(url: string): string {

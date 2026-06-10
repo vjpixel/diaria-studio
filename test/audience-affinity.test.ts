@@ -118,6 +118,29 @@ describe("annotateAudienceAffinity — match por ferramenta", () => {
     assert.ok(result !== null);
     assert.ok(result.matched.length > 1, "múltiplas ferramentas devem aparecer em matched");
   });
+
+  it("word-boundary: 'rag' NÃO deve dar match em 'storage' (regressão #2063)", () => {
+    // Antes do fix, hay.includes('rag') retornava true para 'storage' (sto-rag-e).
+    // Com wordMatch, 'rag' precisa aparecer como token separado.
+    const withRag = makeSignals({ surveyTools: new Set(["rag", "chatgpt"]) });
+    const storageArticle = { url: "https://aws.amazon.com/s3", title: "Cloud storage optimization", summary: "object storage guide" };
+    const result = annotateAudienceAffinity(storageArticle, withRag);
+    assert.ok(result !== null);
+    assert.ok(!result.matched.some(m => m === "tool:rag"), "'rag' não deve matchear em 'storage'");
+  });
+
+  it("word-boundary: 'deploy' NÃO deve dar match duplo em artigo com 'deployment' (regressão #2063)", () => {
+    // Antes do fix, KNOWN_TOOLS tinha 'deploy' e 'deployment', causando 2 matches
+    // de um único conceito. 'deploy' como substring de 'deployment'.
+    const withBoth = makeSignals({ surveyTools: new Set(["deploy", "deployment"]) });
+    const deployArticle = { url: "https://ex.com/k8s", title: "Kubernetes deployment guide", summary: "production deployment" };
+    const result = annotateAudienceAffinity(deployArticle, withBoth);
+    assert.ok(result !== null);
+    // Com wordMatch: 'deployment' como palavra completa → 1 match (deployment)
+    // 'deploy' não aparece como palavra separada no texto → 0 matches para deploy
+    const deployMatches = result.matched.filter(m => m.startsWith("tool:deploy"));
+    assert.ok(deployMatches.length <= 1, "deployment deve contar como 1 match, não 2");
+  });
 });
 
 describe("annotateAudienceAffinity — match por categoria CTR", () => {
