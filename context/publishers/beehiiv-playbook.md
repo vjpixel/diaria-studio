@@ -581,6 +581,53 @@ recordSend(edition_dir, true);
 
 `unfixed_issues[]` agrega problemas detectados no passo 5.3 (Verificação pós-paste) que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
+### 9. Verificar slug pós-Schedule (#2011)
+
+**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a-bis (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug via API.
+
+**Trigger**: após receber confirmação do editor que agendou (ou ao montar o relatório final), verificar o slug via MCP e corrigir se necessário.
+
+```bash
+# 1. Verificar slug atual via MCP (GET — read-only, sempre seguro)
+# mcp__claude_ai_Beehiiv__get_post({ post_id: "{post_id}" })
+# → inspecionar post.web_settings.slug
+
+# 2. Computar o slug correto
+npx tsx -e "
+  import { seoSlug } from './scripts/lib/slug.ts';
+  console.log(seoSlug('{title}'));
+"
+
+# 3. Se slugs divergirem: corrigir via API (não requer browser — PATCH direto)
+npx tsx scripts/fix-post-slug.ts \
+  --post-id {post_id} \
+  --slug {slug_correto} \
+  --execute
+```
+
+O script `fix-post-slug.ts` (#2011):
+- Valida o slug alvo (detecta acentos manglados antes de enviar ao Beehiiv)
+- Faz `PATCH /publications/{pubId}/posts/{postId}` com `{ web_settings: { slug } }`
+- GET-verify pós-update (#573) — confirma que o slug persistiu
+- Dry-run por default; `--execute` pra valer
+
+**Saída esperada (JSON):**
+```json
+{
+  "post_id": "post_...",
+  "slug_before": "anthropic-lanc-a-fable-5-com-bloqueios-embutidos",
+  "slug_after": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
+  "slug_target": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
+  "updated": true,
+  "verified": true,
+  "dry_run": false
+}
+```
+
+**Se `fix-post-slug.ts` falhar** (API não suportou o campo, ou slug não persistiu após update): aba visível com o post já agendado (step=web), clicar no campo `#text-input-slug`, selecionar tudo, digitar o slug correto via teclado real (validado em 260610 que keystrokes reais persistem mesmo com status `scheduled` — `scheduled_at` não é alterado pela edição do slug).
+
+**Hipótese a validar (próxima edição):** setar o slug DEPOIS do título estabilizar (após confirmação da API pós-autosave) e apenas ANTES do clique de Schedule pode evitar a re-derivação. Documentar resultado em #2011.
+
 ## Output
 
 ```json
