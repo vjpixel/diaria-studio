@@ -267,10 +267,10 @@ export function renderCtaButton(line: string): string {
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
   const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
   const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
-  // Botão CTA (decisão do editor 2026-06-09): pill no formato das curadorias da
-  // diária — borda 1px bege, radius 999px, texto INK bold (renderEncerrar da
-  // diária). Centralizado.
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="border:1px solid ${BEGE};border-radius:999px;"><a href="${escHtml(url)}" style="display:inline-block;padding:10px 18px;font-family:${FONT_SANS};font-size:12px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
+  // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
+  // paper #FBFAF6 + borda 1px bege, radius 999px, texto INK bold 16px (tamanho
+  // do corpo). Centralizado.
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;"><a href="${escHtml(url)}" style="display:inline-block;padding:12px 22px;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
 }
 
 /**
