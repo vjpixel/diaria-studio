@@ -451,10 +451,11 @@ describe("fixPostSlug execute (#2011)", () => {
   // ANTES do PATCH — previne mandar slug incorreto pro Beehiiv.
   it("#2048 regressão: fixPostSlug rejeita slug que diverge de seoSlug(title) após GET", async () => {
     // GET retorna title "Automação e futuro" — seoSlug = "automacao-e-futuro"
+    // Current slug (before) é mangled "automa-o-e-futuro", então slugBefore !== slug (no short-circuit).
     // Caller passa "automacao-e-futuro-extra" (estruturalmente válido + passa heurísticas)
-    // mas diverge de seoSlug(title) → rejeitado após GET.
+    // mas diverge de seoSlug(title) → rejeitado pelo title check (step 2b) ANTES do PATCH.
     const mockFetch = makeMockFetch({
-      slugBefore: "automacao-e-futuro-extra",
+      slugBefore: "automa-o-e-futuro", // mangled — different from target, so no-op check doesn't fire
       postTitle: "Automação e futuro",
     });
 
@@ -493,5 +494,31 @@ describe("fixPostSlug execute (#2011)", () => {
     assert.equal(result.updated, true);
     assert.equal(result.verified, true);
     assert.equal(result.slug_after, targetSlug);
+  });
+
+  // #2058 code-review: re-run idempotency — step 3 (no-op) runs before step 2b (title check)
+  // so a slug already set correctly doesn't need --force even if it differs from seoSlug(title).
+  it("#2058 idempotência: re-run com slug custom já setado não lança sem --force", async () => {
+    // slug "ia-2026" already set on post with title "Inteligência Artificial 2026"
+    // seoSlug(title) = "inteligencia-artificial-2026" ≠ "ia-2026"
+    // But since slugBefore === slug, step 3 short-circuits before title check.
+    const slug = "ia-2026";
+    const mockFetch = makeMockFetch({
+      slugBefore: slug, // already correct
+      postTitle: "Inteligência Artificial 2026",
+    });
+
+    const result = await fixPostSlug({
+      postId: "post_abc",
+      slug,
+      execute: true,
+      cfg: MOCK_CFG,
+      fetchFn: mockFetch,
+      // NO force: true — idempotent re-run should work without it
+    });
+
+    assert.equal(result.updated, false, "já estava correto — no PATCH");
+    assert.equal(result.verified, true);
+    assert.equal(result.slug_after, slug);
   });
 });

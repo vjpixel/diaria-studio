@@ -68,8 +68,8 @@ export function isValidYymm(s: string | undefined | null): s is string {
  * Deriva o ciclo `{YYMM}-{MM+1}` a partir do formato legado `YYMM`.
  * Ex: `"2605"` → `"2605-06"`, `"2612"` → `"2612-01"`.
  *
- * Nome correto: `yymmToCycle` (dois y). O alias `yyymmToCycle` (três y, typo)
- * é mantido por compat com testes e callers existentes (#2048 item 1).
+ * Nome correto: `yymmToCycle` (dois y). O nome antigo `yyymmToCycle` (três y, typo)
+ * foi removido em #2048 item 1 — todos os callers e testes foram atualizados.
  */
 export function yymmToCycle(yymm: string): string {
   const contentMonth = Number(yymm.slice(2, 4));

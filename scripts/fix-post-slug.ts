@@ -289,15 +289,6 @@ export async function fixPostSlug(opts: {
     `[fix-post-slug] slug atual: ${slugBefore ?? "(ausente)"} | status: ${before.status ?? "?"} | title: ${title ?? "?"}\n`,
   );
 
-  // 2b. Re-validate with title (if available) — #2048 item 5: seoSlug(title) comparison
-  // replaces the consonant/vowel heuristics with the definitive canonical check.
-  if (title) {
-    const titleError = validateSlug(slug, force, title);
-    if (titleError) {
-      throw new Error(`Slug inválido (vs título): ${titleError}`);
-    }
-  }
-
   const result: FixSlugResult = {
     post_id: postId,
     publication_id: cfg.publicationId,
@@ -309,7 +300,9 @@ export async function fixPostSlug(opts: {
     verified: false,
   };
 
-  // 3. Short-circuit if slug already correct
+  // 3. Short-circuit if slug already correct — checked BEFORE title validation so that
+  // idempotent re-runs succeed without --force even when the slug differs from seoSlug(title).
+  // (User already asserted correctness when they first set the slug, possibly with --force.)
   if (slugBefore === slug) {
     process.stderr.write(
       `[fix-post-slug] Slug já está correto ("${slug}") — nada a fazer.\n`,
@@ -317,6 +310,16 @@ export async function fixPostSlug(opts: {
     result.slug_after = slug;
     result.verified = true;
     return result;
+  }
+
+  // 2b. Re-validate with title (if available) — #2048 item 5: seoSlug(title) comparison
+  // replaces the consonant/vowel heuristics with the definitive canonical check.
+  // Runs after the no-op short-circuit (step 3) so idempotent re-runs are not blocked.
+  if (title) {
+    const titleError = validateSlug(slug, force, title);
+    if (titleError) {
+      throw new Error(`Slug inválido (vs título): ${titleError}`);
+    }
   }
 
   // 4. Dry-run gate

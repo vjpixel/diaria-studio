@@ -233,19 +233,19 @@ export function planWeeks(sizes: Record<Tier, number>, weeks: number[] = [1, 2, 
  * Computa quantas linhas de cada tier foram consumidas pelas `skippedWeeks`
  * usando APENAS aritmética pura — SEM os throws de validação do `planWeeks`.
  *
- * Destinado ao cálculo de cursor de tier em `main()`: se o operador roda
- * `--weeks 3` depois dos CSVs de T3 já terem sido aparados pós-S2, os tamanhos
- * reportados podem ser menores que o necessário para as semanas puladas (T3=0
- * após consumo). Chamar `planWeeks(sizes, skippedWeeks)` nesse caso lançaria
- * `T3 insuficiente` mesmo que `--weeks 3` seja um pedido legítimo.
+ * Destinado ao cálculo de cursor de tier em `main()`: ao calcular quais linhas
+ * das semanas PULADAS (skippedWeeks) já foram consumidas, `planWeeks` valida os
+ * tamanhos dos tiers — o que lança quando T3 < t3InS2 mesmo que a semana pedida
+ * seja legítima. `advanceCursors` computa o mesmo `consumed` sem essas validações.
  *
- * `advanceCursors` computa o mesmo `consumed` mas sem lançar: usa a aritmética
- * idêntica ao `planWeeks` para derivar os consumos esperados, mas ignora as
- * guarda-chuvas de validação. Caller (`main`) já carregou os pools necessários
- * e vai detectar discrepâncias no `slice.length !== seg.count` mais tarde.
+ * **Escopo:** corrige APENAS o cursor das semanas puladas (skippedWeeks).
+ * A chamada `planWeeks(sizes, weeks)` para as semanas PEDIDAS em `main()` ainda
+ * valida os tamanhos — se os pools das semanas pedidas forem insuficientes,
+ * `planWeeks` ainda lança normalmente. O operador deve garantir pools adequados
+ * para as semanas efetivamente enviadas; `advanceCursors` só elimina o throw
+ * espúrio do cursor de semanas puladas.
  *
- * #2048 item 4b — extraído para eliminar throw de validação em `--weeks 3`
- * com CSVs aparados pós-S2.
+ * #2048 item 4b — extraído para eliminar throw de validação no cursor de skippedWeeks.
  */
 export function advanceCursors(
   sizes: Record<Tier, number>,
