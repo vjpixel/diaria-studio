@@ -20,8 +20,15 @@ export const COLORS = {
   brand: "#00A0A0",
   /** --ink · todo o texto, rodapé, botões cheios. */
   ink: "#171411",
-  /** --paper · fundo principal / cards — quase-branco quente. */
+  /** --paper · fundo principal / cards — quase-branco quente. WEB (site, páginas
+   *  É IA?, cursos/livros). NÃO usar em e-mail — ver paperEmail abaixo. */
   paper: "#FBFAF6",
+  /** --paper-email · fundo do card e da página dos E-MAILS (diária + mensal) =
+   *  #FFFFFF branco puro. Clientes de e-mail renderizam branco de forma previsível;
+   *  #FBFAF6 (~cream) pode virar cinza em modo escuro/inversão. --paper (#FBFAF6)
+   *  segue como token WEB (site, É IA?, cursos/livros) — são contextos distintos.
+   *  Decisão editorial confirmada em 2026-06-09 (#2005 / #1943 diária / #1955 mensal). */
+  paperEmail: "#FFFFFF",
   /** --paper-alt / --brand-tint · molduras, boxes cheios, seções recuadas, shell (bege). */
   paperAlt: "#EBE5D0",
   /** --rule · fios e bordas hairline (bege). */

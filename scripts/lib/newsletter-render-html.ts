@@ -522,6 +522,14 @@ export function renderSection(section: Section): string {
  * em HTML. Cobre o que aparece em SORTEIO/PARA ENCERRAR. Não é parser
  * markdown completo — só o subset necessário pros 2 blocos.
  */
+/** #2008: aplica WORD JOINER U+2060 entre "." e "ai" em texto puro —
+ * anti auto-linkify de "Clarice.ai" nos clientes de email (Gmail etc.).
+ * Usado em segmentos de texto fora de `<a>`, análogo ao monthly-render.ts
+ * renderTextInline. Recebe texto já HTML-escapado ou raw (&#8288; é entity segura). */
+function applyWordJoiner(s: string): string {
+  return s.replace(/\b([Cc]larice)\.ai\b/g, "$1.&#8288;ai");
+}
+
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.
   const input = unescapeMd(s);
@@ -537,13 +545,15 @@ export function mdInlineToHtml(s: string): string {
     if (!url) continue;
     const labelEnd = input.indexOf("]", start + 1);
     const label = input.slice(start + 1, labelEnd);
-    parts.push(input.slice(lastIdx, start));
+    // #2008: word-joiner aplicado nos segmentos de TEXTO (não no href da URL
+    // nem no label do link — label já tem href explícito, sem risco de linkify).
+    parts.push(applyWordJoiner(input.slice(lastIdx, start)));
     parts.push(
       `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(label)}</a>`,
     );
     lastIdx = end;
   }
-  parts.push(input.slice(lastIdx));
+  parts.push(applyWordJoiner(input.slice(lastIdx)));
   let out = parts.join("");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   return out;
@@ -806,13 +816,16 @@ export function processInlineItalics(s: string): string {
 
 /**
  * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
- * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`).
- * Ordem: unescape → esc → italics. Italics roda por último pra que as tags
- * `<em>` não sejam HTML-escapadas. Usar em conteúdo editorial; NÃO usar em
- * URLs (backslash em URL é literal, raro mas legítimo).
+ * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`)
+ * + word-joiner anti-linkify (#2008 — "Clarice.ai" em texto puro).
+ * Ordem: unescape → esc → italics → word-joiner. Word-joiner roda por último
+ * pra não ser consumido pelo esc (já pós-escape). Usar em conteúdo editorial;
+ * NÃO usar em URLs (backslash em URL é literal, raro mas legítimo).
  */
 function escText(s: string): string {
-  return processInlineItalics(esc(unescapeMd(s)));
+  // #2008: word-joiner aplicado via applyWordJoiner (declarado acima) — análogo
+  // ao monthly-render.ts renderTextInline (commit 1ec81b0).
+  return applyWordJoiner(processInlineItalics(esc(unescapeMd(s))));
 }
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.
@@ -857,8 +870,9 @@ export function processInlineLinks(s: string): string {
       continue;
     }
     if (m.index > lastIdx) parts.push(esc(input.substring(lastIdx, m.index)));
+    // #2004: sem font-weight:bold — link inline fica só underline teal (decisão 2026-06-09).
     parts.push(
-      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;font-weight:bold;" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
+      `<a href="${esc(url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(m[1])}</a>`
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
