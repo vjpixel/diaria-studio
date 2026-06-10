@@ -73,6 +73,19 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 - Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
+### Preflight de visibilidade da aba (#2015)
+
+**Antes de QUALQUER passo que dependa de clique real** (`computer`) — criar post
+do template, send test email, clicar Schedule — verificar via `javascript_tool`:
+`document.visibilityState`. Se `"hidden"` (janela minimizada/coberta):
+**NÃO tentar clicar** — renderizar halt banner (`render-halt-banner.ts --stage "4"
+--reason "aba Beehiiv oculta (visibilityState=hidden)" --action "traga a janela
+do Chrome pra frente e responda 'retry'"`) e aguardar. Sintomas quando se ignora
+(incidente 260610, ~10 min de debug): cliques via `computer` chegam como no-op
+(zero pointerdown/click na página) e screenshots dão timeout no CDP ("renderer
+may be frozen"). Workaround pra screenshot em página pesada: esconder
+`img/iframe/video` via JS antes de capturar, restaurar depois.
+
 ### Config 1x da publicação — rodapé branco (#1944)
 
 O **rodapé que a Beehiiv anexa** ao e-mail (endereço, unsubscribe, "powered by
