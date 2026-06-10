@@ -30,6 +30,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -155,6 +156,19 @@ export function main(): void {
   const raw = JSON.parse(readFileSync(resolve(ROOT, categorizedPath), "utf8"));
   // Aceita tanto { categorized: {...} } (tmp-dates-reviewed) quanto {...} direto.
   const categorized: Categorized = raw.categorized ?? raw;
+
+  // #2063: anotar artigos use_melhor com audience_affinity antes de distribuir
+  // nos chunks. Fallback gracioso: se data/ ausente (CI, worktree fresco),
+  // signals.loaded === false e annotateUseMelhorBucket retorna 0 sem anotação.
+  try {
+    const signals = loadAudienceSignals(ROOT);
+    const annotated = annotateUseMelhorBucket(categorized, signals);
+    if (annotated > 0) {
+      console.error(`[split-articles-for-scoring] audience_affinity anotada em ${annotated} artigo(s) use_melhor`);
+    }
+  } catch (e) {
+    console.error(`[split-articles-for-scoring] WARN: audience_affinity falhou (${(e as Error).message}) — seguindo sem anotação`);
+  }
 
   const chunks = buildChunks(categorized, chunkSize);
   const absOutDir = resolve(ROOT, outDir);

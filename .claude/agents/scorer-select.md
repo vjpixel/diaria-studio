@@ -20,7 +20,7 @@ Releia antes de selecionar:
 
 ## Processo
 
-1. Os finalistas **já estão pontuados** — use os `score` como vieram (não recalcule).
+1. Os finalistas **já estão pontuados** — use os `score` como vieram (não recalcule). Os scores de `use_melhor` já incorporam o bônus/penalidade de `audience_affinity` (#2063) quando o campo estava presente. Se um finalista `use_melhor` tiver `audience_affinity.matched` não-vazio, mencionar os sinais na `reason` para explicar a priorização.
 2. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6). Em caso de empate ou concentração temática, desempatar favorecendo:
    - **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa);
    - **diversidade de bucket** (evitar 6 do mesmo bucket, sem cota mínima).
