@@ -257,9 +257,39 @@ describe("#2013 — isEncodingDropSectionEmojiByDesign", () => {
     assert.equal(r.falsePositive, true);
   });
 
+  it("FP: emoji 🚀 ausente no 'título da seção'", () => {
+    // Gate de header com frase 'título da seção' → FP
+    const issue = "email:encoding_drop: '🚀' não aparece no título da seção LANÇAMENTOS";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
   it("NÃO é FP: emoji ausente em CORPO do email (não em header)", () => {
     // Contexto sem menção de header/seção → mantém (pode ser emoji real em corpo)
     const issue = "email:encoding_drop: '🚀' ausente no parágrafo de abertura";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, false);
+  });
+
+  it("#2047 — NÃO é FP: emoji 💼 em link inline (só menciona nome da seção, não header)", () => {
+    // 💼 é emoji multi-propósito — aparece em links inline, não só em headers.
+    // Se a issue menciona o nome da seção mas NÃO menciona header/kicker/seção/título da seção,
+    // não é by-design (pode ser emoji real quebrado num link).
+    const issue = "email:encoding_drop: '💼' ausente no link do destaque USE MELHOR";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, false,
+      "💼 em link inline não deve ser dropado mesmo mencionando USE MELHOR sem contexto de header");
+  });
+
+  it("#2047 — NÃO é FP: emoji 🌐 em link inline (só menciona nome da seção)", () => {
+    const issue = "email:encoding_drop: '🌐' ausente no link de notícia RADAR";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, false,
+      "🌐 em link inline (sem header/kicker/seção) não deve ser dropado");
+  });
+
+  it("#2047 — NÃO é FP: emoji 📺 ausente sem contexto de header", () => {
+    const issue = "email:encoding_drop: '📺' ausente no parágrafo VÍDEOS";
     const r = isEncodingDropSectionEmojiByDesign(issue);
     assert.equal(r.falsePositive, false);
   });
@@ -492,5 +522,165 @@ describe("#2013 — filterAgentIssues integração completa (caso 260610)", () =
     const r = await filterAgentIssues(issues, htmlWith260610, "260610");
     assert.ok(r.kept.some((i) => /link_dead/.test(i)), "link_dead conservado sem fetchFn");
     assert.ok(r.dropped.some((d) => /section_missing/.test(d.issue)), "section_missing dropado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2047 — paralelismo, cache, ordem preservada
+// ---------------------------------------------------------------------------
+
+describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
+  /**
+   * Mock de fetch com delay configurável — verifica que os fetches de múltiplos
+   * link_dead correm em paralelo. Com N fetches de delay D ms cada:
+   * - Sequencial: tempo total ≈ N × D
+   * - Paralelo:   tempo total ≈ D  (independentemente de N)
+   */
+  function delayedFetch(statusByUrl: Record<string, number>, delayMs: number): FetchFn {
+    return async (url) => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const s = statusByUrl[url as string] ?? 200;
+      return { status: s, headers: new Headers() } as Response;
+    };
+  }
+
+  it("N fetches paralelos: tempo total ≈ 1 fetch (não N fetches sequenciais)", async () => {
+    const DELAY = 50; // ms por fetch
+    const N = 5;      // 5 URLs distintas
+    const statusMap: Record<string, number> = {};
+    const issues: string[] = [];
+    for (let i = 1; i <= N; i++) {
+      const url = `https://example.com/link-${i}`;
+      statusMap[url] = 404; // todos mortos → mantém
+      issues.push(`email:link_dead: ${url} → HTTP 404`);
+    }
+    const fetchFn = delayedFetch(statusMap, DELAY);
+
+    const start = Date.now();
+    await filterAgentIssues(issues, "<p>x</p>", "260611", fetchFn);
+    const elapsed = Date.now() - start;
+
+    // Paralelo: deve terminar em < 2× DELAY (não N × DELAY)
+    // Damos 2× margem pra overhead do runtime; N × DELAY seria 250ms
+    assert.ok(
+      elapsed < DELAY * 2 + 50,
+      `fetches devem ser paralelos: elapsed ${elapsed}ms, esperado < ${DELAY * 2 + 50}ms (N×DELAY seria ${N * DELAY}ms)`,
+    );
+  });
+
+  it("N fetches paralelos: contagem de chamadas ao fetchFn = N (sem cache)", async () => {
+    let callCount = 0;
+    const urls = [
+      "https://example.com/a → HTTP 404",
+      "https://example.com/b → HTTP 404",
+      "https://example.com/c → HTTP 404",
+    ];
+    const issues = urls.map((u) => `email:link_dead: ${u}`);
+    const fetchFn: FetchFn = async () => {
+      callCount++;
+      return { status: 404, headers: new Headers() } as Response;
+    };
+    await filterAgentIssues(issues, "<p>x</p>", "260611", fetchFn);
+    // Sem cache: cada URL chama fetchFn 1x (HEAD) — nenhum repetido
+    assert.equal(callCount, urls.length, `fetchFn deve ser chamado ${urls.length}×, foi ${callCount}×`);
+  });
+});
+
+describe("#2047 — filterAgentIssues: cache por URL entre iterações", () => {
+  it("2ª chamada com mesmo URL não re-fetcha (cache hit)", async () => {
+    let fetchCallCount = 0;
+    const url = "https://example.com/always-dead";
+    const issue = `email:link_dead: ${url} → HTTP 404`;
+    const fetchFn: FetchFn = async () => {
+      fetchCallCount++;
+      return { status: 404, headers: new Headers() } as Response;
+    };
+
+    const cache = new Map<string, boolean | null>();
+    const html = "<p>x</p>";
+
+    // 1ª iteração: fetch acontece, cache é populado com false (link morto)
+    await filterAgentIssues([issue], html, "260611", fetchFn, cache);
+    assert.equal(fetchCallCount, 1, "1ª chamada deve fazer 1 fetch");
+    assert.equal(cache.get(url), false, "cache deve ser false (link morto)");
+
+    // 2ª iteração: cache hit — fetchFn NÃO é chamado novamente
+    await filterAgentIssues([issue], html, "260611", fetchFn, cache);
+    assert.equal(fetchCallCount, 1, "2ª chamada NÃO deve re-fetchar (cache hit)");
+  });
+
+  it("cache hit positivo (link vivo): 2ª chamada dropa sem re-fetch", async () => {
+    let fetchCallCount = 0;
+    const url = "https://example.com/alive";
+    const issue = `email:link_dead: ${url} → HTTP 404`;
+    const fetchFn: FetchFn = async () => {
+      fetchCallCount++;
+      return { status: 200, headers: new Headers() } as Response;
+    };
+
+    const cache = new Map<string, boolean | null>();
+    const html = "<p>x</p>";
+
+    // 1ª iteração: fetch → vivo (FP) → dropa, cache = true
+    const r1 = await filterAgentIssues([issue], html, "260611", fetchFn, cache);
+    assert.equal(r1.dropped.length, 1, "1ª iteração: link vivo → dropa");
+    assert.equal(fetchCallCount, 1);
+    assert.equal(cache.get(url), true, "cache deve ser true (link vivo)");
+
+    // 2ª iteração: cache hit (true) → dropa SEM fetch
+    const r2 = await filterAgentIssues([issue], html, "260611", fetchFn, cache);
+    assert.equal(r2.dropped.length, 1, "2ª iteração: cache hit → dropa");
+    assert.equal(fetchCallCount, 1, "fetchFn não deve ser chamado na 2ª iteração");
+  });
+
+  it("sem cache passado: URLs distintas em 2 chamadas são re-fetchadas normalmente", async () => {
+    let fetchCallCount = 0;
+    const url = "https://example.com/no-cache";
+    const issue = `email:link_dead: ${url} → HTTP 404`;
+    const fetchFn: FetchFn = async () => {
+      fetchCallCount++;
+      return { status: 404, headers: new Headers() } as Response;
+    };
+
+    const html = "<p>x</p>";
+    await filterAgentIssues([issue], html, "260611", fetchFn);
+    await filterAgentIssues([issue], html, "260611", fetchFn);
+    // Sem cache compartilhado, cada chamada fetcha independentemente
+    assert.equal(fetchCallCount, 2, "sem cache: cada chamada re-fetcha");
+  });
+});
+
+describe("#2047 — filterAgentIssues: ordem preservada", () => {
+  it("ordem de kept preservada independente de fetches", async () => {
+    // Mix de issues: link_dead (async), sync FP e keep — ordem original deve ser mantida
+    const fetchFn: FetchFn = async (url) => {
+      // Link A é vivo (→ FP → dropa), Link B é morto (→ mantém)
+      const s = (url as string).includes("/a") ? 200 : 404;
+      return { status: s, headers: new Headers() } as Response;
+    };
+
+    const issues = [
+      "email:encoding_drop: 'pré-treino' corrompido",                  // 0: sync drop (FP)
+      "email:link_dead: https://example.com/a → HTTP 404",              // 1: async drop (vivo)
+      "email:unexpected_content: seção extra",                           // 2: sync keep
+      "email:link_dead: https://example.com/b → HTTP 404",              // 3: async keep (morto)
+      "email:formatting: D1 título sem negrito",                         // 4: sync drop (DS FP)
+      "email:subject_mismatch: subject errado",                          // 5: sync keep
+    ];
+
+    const html = "<p>pré-treino</p>"; // pré-treino presente → issue[0] é FP
+    const r = await filterAgentIssues(issues, html, "260611", fetchFn);
+
+    // kept deve ter, em ordem: unexpected_content, link_dead/b, subject_mismatch
+    assert.equal(r.kept.length, 3, `kept deve ter 3: ${JSON.stringify(r.kept)}`);
+    assert.match(r.kept[0], /unexpected_content/, "kept[0] deve ser unexpected_content");
+    assert.match(r.kept[1], /example\.com\/b/, "kept[1] deve ser link_dead/b (morto)");
+    assert.match(r.kept[2], /subject_mismatch/, "kept[2] deve ser subject_mismatch");
+
+    // dropped deve ter, em ordem: encoding_drop, link_dead/a, formatting
+    assert.equal(r.dropped.length, 3, `dropped deve ter 3: ${JSON.stringify(r.dropped.map((d) => d.issue))}`);
+    assert.match(r.dropped[0].issue, /encoding_drop/, "dropped[0] deve ser encoding_drop");
+    assert.match(r.dropped[1].issue, /example\.com\/a/, "dropped[1] deve ser link_dead/a (vivo → FP)");
+    assert.match(r.dropped[2].issue, /sem negrito/, "dropped[2] deve ser formatting/bold");
   });
 });

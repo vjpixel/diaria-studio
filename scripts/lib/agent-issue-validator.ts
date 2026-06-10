@@ -225,11 +225,15 @@ export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
  * é falso-positivo porque o DS #1936 remove emojis de headers por design.
  *
  * Critério: o issue cita exatamente 1 termo entre aspas que é um dos emojis
- * de section header canônicos (SECTION_HEADER_EMOJIS) E o contexto menciona
- * "header", "seção", "section", "kicker" ou o nome de uma seção conhecida.
+ * de section header canônicos (SECTION_HEADER_EMOJIS) E a frase menciona
+ * explicitamente "header", "seção", "section", "kicker", "título da seção"
+ * ou "título" — indicando que a reclamação é sobre um HEADER de seção.
  *
- * Sem o gate de contexto, um emoji GENUINAMENTE ausente no corpo do email
- * (fora de um header) também seria dropado por engano.
+ * Sem o gate de header na frase: emojis multi-propósito (📺, 💼, 🌐) são
+ * usados também em links inline e no corpo do email. Um emoji genuinamente
+ * corrompido nesse contexto cuja issue mencione o nome da seção (ex: "💼 link
+ * quebrado na seção USE MELHOR") seria dropado incorretamente. O gate de
+ * header garante que só issues sobre o título/kicker da seção são dropadas.
  *
  * Code-review: NÃO dropa quando há múltiplos termos (um deles pode ser
  * texto real com encoding real, não só o emoji) — nesse caso volta pra
@@ -249,10 +253,13 @@ export function isEncodingDropSectionEmojiByDesign(
   const isHeaderEmoji = SECTION_HEADER_EMOJIS.has(term) ||
     [...SECTION_HEADER_EMOJIS].some((e) => term.startsWith(e) || e.startsWith(term));
   if (!isHeaderEmoji) return { falsePositive: false };
-  // Gate de contexto: precisa mencionar header/seção OU nome canônico de seção.
-  const hasHeaderContext =
-    /header|kicker|se[çc][ãa]o|section|la[nç][çc]amento|radar|use\s+melhor|sorteio|encerrar|v[íi]deos?/i.test(issue);
-  if (!hasHeaderContext) return { falsePositive: false };
+  // Gate de header: a frase precisa mencionar que a reclamação é sobre um
+  // HEADER/kicker de seção — não apenas mencionar o nome da seção em qualquer
+  // contexto. Sem isso, emojis multi-propósito (📺, 💼, 🌐) em links inline
+  // seriam dropados indevidamente quando o nome da seção aparece na frase.
+  const hasHeaderInPhrase =
+    /header|kicker|se[çc][ãa]o|section|t[íi]tulo\s+da\s+se[çc][ãa]o|t[íi]tulo\s+da\s+sec|t[íi]tulo\s+de\s+se[çc][ãa]o/i.test(issue);
+  if (!hasHeaderInPhrase) return { falsePositive: false };
   return {
     falsePositive: true,
     reason: `DS #1936: emoji '${term}' é removido de headers por renderKicker/stripKickerEmoji — ausência by-design (#2013)`,
@@ -491,70 +498,92 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
  * links reportados como mortos. Se omitida, o check `link_dead` é pulado
  * (comportamento síncrono compatível com v1421).
  *
+ * #2047: os fetches de `link_dead` são independentes entre si e rodados em
+ * paralelo via `Promise.all`. A ordem dos issues em `kept`/`dropped` é
+ * preservada — `Promise.all` mantém a posição original.
+ *
+ * #2047: `linkCheckCache` (opcional) — Map<url, boolean|null> reutilizado
+ * entre iterações do loop verify→fix do orchestrator-stage-4. O caller
+ * cria o Map UMA vez fora do loop e passa em cada chamada. Evita re-fetch
+ * do mesmo URL em iterações posteriores (link genuinamente morto continua
+ * morto; link vivo continua vivo). `null` = inconclusivo (re-fetcha).
+ *
  * Tipos cobertos:
  *   Síncronos: encoding_drop, poll_sig_missing, vote_edition_malformed,
  *              merge_tag_unexpanded, bold_missing, italic_missing,
  *              encoding_drop (emoji de header — DS by-design), section_missing.
  *   Assíncrono (requer fetchFn): link_dead re-verificação.
  *
- * @param issues      array de strings no formato `email:tipo: detalhe`
- * @param htmlLocal   HTML renderizado localmente — fonte de verdade
- * @param editionDate AAMMDD da edição (necessário pra vote_edition validation)
- * @param fetchFn     (opcional) função de fetch injetável pro check link_dead.
- *                    Testes NUNCA usam fetch real — passar mock ou omitir pra
- *                    pular o check de rede.
+ * @param issues          array de strings no formato `email:tipo: detalhe`
+ * @param htmlLocal       HTML renderizado localmente — fonte de verdade
+ * @param editionDate     AAMMDD da edição (necessário pra vote_edition validation)
+ * @param fetchFn         (opcional) função de fetch injetável pro check link_dead.
+ *                        Testes NUNCA usam fetch real — passar mock ou omitir pra
+ *                        pular o check de rede.
+ * @param linkCheckCache  (opcional) Map<url, boolean> — consulta antes do fetch,
+ *                        popula depois. Caller mantém o Map vivo entre iterações
+ *                        do loop verify→fix pra evitar re-fetches redundantes.
  */
 export async function filterAgentIssues(
   issues: string[],
   htmlLocal: string,
   editionDate: string,
   fetchFn?: FetchFn,
+  linkCheckCache?: Map<string, boolean | null>,
 ): Promise<FilterResult> {
-  const kept: string[] = [];
-  const dropped: Array<{ issue: string; reason: string }> = [];
+  // ---------------------------------------------------------------------------
+  // Fase 1: verificações síncronas (encoding, poll_sig, section, DS checks, etc)
+  // ---------------------------------------------------------------------------
+  // Para cada issue, calcula o resultado síncrono. Para link_dead com fetchFn,
+  // marca como "pendente" para processar em paralelo na Fase 2.
+  // ---------------------------------------------------------------------------
 
-  for (const issue of issues) {
+  type SyncResult =
+    | { kind: "drop"; reason: string }
+    | { kind: "keep" }
+    | { kind: "link_dead_pending"; issue: string; url: string };
+
+  const syncResults: SyncResult[] = issues.map((issue) => {
     if (issue.startsWith("email:encoding_drop")) {
       // #2013: verificar primeiro se é emoji de header (by-design) — antes do
       // check de encoding genérico, pois o emoji não vai estar no HTML local.
       const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
-      if (emojiCheck.falsePositive) {
-        dropped.push({ issue, reason: emojiCheck.reason });
-        continue;
-      }
+      if (emojiCheck.falsePositive) return { kind: "drop", reason: emojiCheck.reason };
       const r = isEncodingDropFalsePositive(issue, htmlLocal);
-      if (r.falsePositive) {
-        dropped.push({ issue, reason: r.reason });
-        continue;
-      }
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
     } else if (issue.startsWith("email:poll_sig_missing")) {
       const r = isPollSigMissingFalsePositive(htmlLocal);
-      if (r.falsePositive) {
-        dropped.push({ issue, reason: r.reason });
-        continue;
-      }
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
     } else if (issue.startsWith("email:vote_edition_malformed")) {
       const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
-      if (r.falsePositive) {
-        dropped.push({ issue, reason: r.reason });
-        continue;
-      }
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
     } else if (issue.startsWith("email:section_missing")) {
       // #2013: grep da section label no HTML local — presente = FP de truncamento.
       const r = isSectionMissingFalsePositive(issue, htmlLocal);
-      if (r.falsePositive) {
-        dropped.push({ issue, reason: r.reason });
-        continue;
-      }
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
     } else if (issue.startsWith("email:link_dead") && fetchFn) {
-      // #2013: re-verificação de link com fetch real (injetável, só quando fetchFn
-      // disponível — sem fetchFn, o check é pulado e o issue passa pra kept).
-      const r = await isLinkDeadFalsePositive(issue, fetchFn);
-      if (r.falsePositive) {
-        dropped.push({ issue, reason: r.reason });
-        continue;
+      // #2047: re-verificação de link com fetch real — paralelo na Fase 2.
+      // Verificar cache primeiro; se há hit definitivo (true/false), resolver aqui.
+      const url = extractLinkDeadUrl(issue);
+      if (url && linkCheckCache) {
+        const cached = linkCheckCache.get(url);
+        if (cached === true) {
+          // Cache: link vivo confirmado anteriormente → FP
+          return { kind: "drop", reason: `link_dead falso-positivo (cache): ${url} já verificado como vivo (#2047)` };
+        }
+        if (cached === false) {
+          // Cache: link morto confirmado anteriormente → mantém
+          return { kind: "keep" };
+        }
+        // cached === undefined → URL nova, ou null → inconclusivo → vai pro fetch paralelo
       }
+      if (url) {
+        return { kind: "link_dead_pending", issue, url };
+      }
+      // URL não extraível → conservador (mantém)
+      return { kind: "keep" };
     }
+
     // #1949: classes de FP do novo DS / merge tags — baseadas só na string do
     // issue (a reclamação inteira é FP), independem do HTML.
     const dsChecks = [
@@ -563,12 +592,62 @@ export async function filterAgentIssues(
       isItalicMissingFalsePositive(issue),
     ];
     const fp = dsChecks.find((r) => r.falsePositive);
-    if (fp && fp.falsePositive) {
-      dropped.push({ issue, reason: fp.reason });
-      continue;
-    }
+    if (fp && fp.falsePositive) return { kind: "drop", reason: fp.reason };
+
     // Tipos não validáveis (unexpected_content, etc) passam.
-    kept.push(issue);
+    return { kind: "keep" };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fase 2: resolução paralela dos link_dead pendentes (#2047)
+  // ---------------------------------------------------------------------------
+  // Coletar todos os link_dead_pending, fazer os fetches em paralelo (Promise.all),
+  // depois substituir cada resultado pendente pelo seu resultado real.
+  // ---------------------------------------------------------------------------
+
+  const pendingIndices: number[] = [];
+  const pendingFetches: Promise<{ falsePositive: true; reason: string } | { falsePositive: false }>[] = [];
+
+  for (let i = 0; i < syncResults.length; i++) {
+    const sr = syncResults[i];
+    if (sr.kind === "link_dead_pending") {
+      pendingIndices.push(i);
+      pendingFetches.push(isLinkDeadFalsePositive(sr.issue, fetchFn!));
+    }
+  }
+
+  if (pendingFetches.length > 0) {
+    const fetchResults = await Promise.all(pendingFetches);
+    for (let j = 0; j < pendingIndices.length; j++) {
+      const i = pendingIndices[j];
+      const pending = syncResults[i] as { kind: "link_dead_pending"; issue: string; url: string };
+      const result = fetchResults[j];
+      if (result.falsePositive) {
+        // Populat cache com hit positivo (link vivo)
+        if (linkCheckCache) linkCheckCache.set(pending.url, true);
+        syncResults[i] = { kind: "drop", reason: result.reason };
+      } else {
+        // Populat cache com hit negativo (link morto)
+        if (linkCheckCache) linkCheckCache.set(pending.url, false);
+        syncResults[i] = { kind: "keep" };
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fase 3: montar kept/dropped preservando a ordem original dos issues
+  // ---------------------------------------------------------------------------
+
+  const kept: string[] = [];
+  const dropped: Array<{ issue: string; reason: string }> = [];
+
+  for (let i = 0; i < issues.length; i++) {
+    const sr = syncResults[i];
+    if (sr.kind === "drop") {
+      dropped.push({ issue: issues[i], reason: sr.reason });
+    } else {
+      kept.push(issues[i]);
+    }
   }
 
   return { kept, dropped };
