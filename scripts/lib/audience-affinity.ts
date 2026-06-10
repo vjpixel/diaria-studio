@@ -305,7 +305,8 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
     avgCtr,
     surveyTools,
     source,
-    loaded: source !== "none",
+    // O early-return acima garante que source nunca é "none" aqui (TS2367 se comparar).
+    loaded: true,
   };
 }
 
