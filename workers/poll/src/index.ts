@@ -243,7 +243,14 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   const existing = await env.POLL.get(voteKey);
   if (existing) {
     const prev = JSON.parse(existing);
-    return voteHtmlResponse(votePageHtml(`Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`, false, null, null, editionToMonthSlug(edition), brand), 200);
+    // #2006: na mensal (clarice) a data do código da edição é o mês do CONTEÚDO
+    // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
+    // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
+    // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
+    const jaVotouMsg = brand === "clarice"
+      ? `Você já votou nesta edição (escolha: ${prev.choice}).`
+      : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
+    return voteHtmlResponse(votePageHtml(jaVotouMsg, false, null, null, editionToMonthSlug(edition), brand), 200);
   }
 
   // Gravar voto
