@@ -37,7 +37,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
@@ -139,6 +139,46 @@ export function findUnresolvedImgPlaceholders(html: string): string[] {
   return Array.from(new Set(matches));
 }
 
+/**
+ * Pure (#2012): verifica que `htmlPath` não é mais antigo que `reviewedMdPath`.
+ *
+ * Guarda que o HTML foi gerado DEPOIS da última edição de `02-reviewed.md`.
+ * Se `mtime(newsletter-final.html) < mtime(02-reviewed.md)`, o HTML está stale
+ * (render rodou antes da última edição editorial) e o upload subiria conteúdo
+ * desatualizado pro Worker sem nenhum aviso — exatamente o que aconteceu em
+ * 260610 quando `render-newsletter-html.ts` foi invocado sem `--out`.
+ *
+ * Retorna `null` quando tudo está ok, ou uma string de erro quando stale.
+ * Caller deve lançar/logar conforme necessário.
+ *
+ * Casos especiais:
+ * - `reviewedMdPath` ausente: retorna `null` (pode estar num re-render
+ *   fora de uma edição completa; não bloquear nesses casos).
+ * - `htmlPath` ausente: retorna `null` (existsSync já falha antes se necessário).
+ */
+export function checkHtmlFreshness(
+  htmlPath: string,
+  reviewedMdPath: string,
+): string | null {
+  if (!existsSync(reviewedMdPath)) return null;
+  if (!existsSync(htmlPath)) return null;
+  const htmlMtime = statSync(htmlPath).mtimeMs;
+  const mdMtime = statSync(reviewedMdPath).mtimeMs;
+  if (htmlMtime < mdMtime) {
+    return (
+      `newsletter-final.html está desatualizado: ` +
+      `mtime(html)=${new Date(htmlMtime).toISOString()} < ` +
+      `mtime(02-reviewed.md)=${new Date(mdMtime).toISOString()}. ` +
+      `Re-render o HTML antes de fazer upload: ` +
+      `npx tsx scripts/render-newsletter-html.ts {edition_dir} --format html ` +
+      `--out {edition_dir}/_internal/newsletter-draft.html && ` +
+      `npx tsx scripts/substitute-image-urls.ts --html {edition_dir}/_internal/newsletter-draft.html ` +
+      `--images {edition_dir}/06-public-images.json --out {edition_dir}/_internal/newsletter-final.html`
+    );
+  }
+  return null;
+}
+
 export function wrapForPreview(body: string): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -206,7 +246,23 @@ export async function uploadHtml(args: {
    * dentro de outro.
    */
   wrap?: boolean;
+  /**
+   * #2012: path pro `02-reviewed.md` da edição. Quando fornecido, verifica que
+   * o HTML foi gerado DEPOIS da última edição do MD (freshness guard). Ausente
+   * = sem verificação (mantém compatibilidade com chamadas externas e previews
+   * mensais que não têm um 02-reviewed.md correspondente).
+   */
+  reviewedMdPath?: string;
 }): Promise<UploadHtmlResult> {
+  // #2012: freshness guard — HTML stale (render rodou antes da última edição
+  // de 02-reviewed.md) sobe conteúdo desatualizado pro Worker silenciosamente.
+  if (args.reviewedMdPath) {
+    const stalenessError = checkHtmlFreshness(args.htmlPath, args.reviewedMdPath);
+    if (stalenessError) {
+      throw new Error(stalenessError);
+    }
+  }
+
   const workerUrl = (args.workerUrl ?? DRAFT_WORKER_URL).replace(/\/+$/, "");
   const rawHtml = readFileSync(args.htmlPath, "utf8");
   const html = args.wrap === false ? rawHtml : wrapForPreview(rawHtml);
@@ -297,12 +353,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #2012: freshness guard — só ativa quando usando o path padrão da pipeline
+  // (newsletter diária). Com --html override o caller conhece o contexto e
+  // pode não ter 02-reviewed.md associado (preview mensal, re-render manual).
+  const reviewedMdPath = htmlPathOverride
+    ? undefined
+    : resolve(ROOT, "data", "editions", edition, "02-reviewed.md");
+
   const result = await uploadHtml({
     edition,
     htmlPath,
     secret,
     dryRun,
     wrap: !noWrap,
+    reviewedMdPath,
   });
 
   // #1734: persiste a URL só após upload REAL — dry-run não sobe nada, então
