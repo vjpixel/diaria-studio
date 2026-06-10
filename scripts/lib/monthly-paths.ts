@@ -25,8 +25,9 @@
  * (transição suave; escrita sempre usa o formato novo).
  *
  * Worker KV key: `m{YYMM}-{MM}` (ex: `m2605-06`). Retrocompat de leitura:
- * tentar key nova, fallback `m{YYMM}` (lógica no caller — o Worker KV aceita
- * qualquer string ≤512 bytes, hífens são válidos em keys KV do Cloudflare).
+ * tentar key nova, fallback `m{YYMM}` — lógica implementada **no Worker** (#2046,
+ * `workers/draft/src/index.ts` `legacyKeyFromNew`). Callers NÃO precisam fazer
+ * fallback — o Worker KV aceita qualquer string ≤512 bytes, hífens são válidos.
  */
 
 import { existsSync, mkdirSync } from "node:fs";

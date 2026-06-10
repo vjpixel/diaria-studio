@@ -71,12 +71,42 @@ function extractKey(path: string): string {
   return decodeURIComponent(path.slice(1));
 }
 
+/**
+ * Deriva a key legada `m{YYMM}` a partir de uma key no formato novo
+ * `m{YYMM}-{MM}` (ex: `"m2605-06"` → `"m2605"`).
+ *
+ * Retorna null se a key pedida não corresponde ao formato novo (não é
+ * elegível para fallback — evitamos tentar fallback em keys de diárias
+ * ou keys arbitrárias).
+ *
+ * Regex: `^m\d{4}-\d{2}$` — prefixo m, 4 dígitos YYMM, hífen, 2 dígitos MM.
+ */
+export function legacyKeyFromNew(key: string): string | null {
+  if (!/^m\d{4}-\d{2}$/.test(key)) return null;
+  // key = "m2605-06" → legada = "m2605" (corta o "-MM" do final)
+  return key.slice(0, 5); // "m" + 4 dígitos
+}
+
 export async function handleGet(path: string, env: Env): Promise<Response> {
   const key = extractKey(path);
   if (!key) {
     return new Response("not found", { status: 404, headers: CORS_HEADERS });
   }
-  const value = await env.DRAFT.get(KV_PREFIX + key, "text");
+  let value = await env.DRAFT.get(KV_PREFIX + key, "text");
+
+  // Retrocompat de leitura (#2046): se a key nova (m{YYMM}-{MM}) não existe,
+  // tenta a key legada m{YYMM}. Isso garante que previews publicados antes
+  // da migração para o formato com sufixo ainda são acessíveis via URL nova.
+  //
+  // Sentido único: novo → legado apenas. Legado → novo NÃO (links antigos
+  // devem continuar funcionando sem incentivar uso da URL velha).
+  if (!value) {
+    const legacyKey = legacyKeyFromNew(key);
+    if (legacyKey) {
+      value = await env.DRAFT.get(KV_PREFIX + legacyKey, "text");
+    }
+  }
+
   if (!value) {
     return new Response("not found", { status: 404, headers: CORS_HEADERS });
   }

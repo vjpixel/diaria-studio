@@ -50,11 +50,14 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
- * Pure (#1914, #1962): key da URL do preview mensal.
+ * Pure (#1914, #1962, #2046): key da URL do preview mensal.
  *
  * Formato novo: `m{YYMM}-{MM}` (ex: `m2605-06`) — identifica unicamente o
  * ciclo de conteúdo + envio, não colide com diárias (AAMMDD sem prefixo m).
- * Retrocompat de leitura: o Worker tenta a key nova, fallback `m{YYMM}` (legada).
+ * Retrocompat de leitura: o Worker implementa fallback novo→legado (#2046):
+ *   GET /m2605-06 → tenta key nova; se null, tenta key legada m2605.
+ * Sentido único — legado→novo NÃO é tentado (links antigos continuam
+ * funcionando; o Worker não incentiva uso da URL velha).
  *
  * Hífens são válidos em keys KV do Cloudflare (qualquer string ≤512 bytes).
  *
@@ -188,7 +191,8 @@ async function main(): Promise<void> {
   const htmlPath = resolve(internalDir, "cloudflare-preview.html");
   writeFileSync(htmlPath, html);
 
-  // Key nova: m{YYMM}-{MM} (ex: m2605-06). Retrocompat: fallback m{YYMM} no Worker.
+  // Key nova: m{YYMM}-{MM} (ex: m2605-06). Retrocompat de leitura implementada
+  // no Worker (#2046): GET /m2605-06 → tenta key nova; fallback m{YYMM} se null.
   const result = await uploadHtml({
     edition: monthlyPreviewKey(cycle),
     htmlPath,
