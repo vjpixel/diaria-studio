@@ -217,6 +217,7 @@ export function planWeeks(sizes: Record<Tier, number>, weeks: number[] = [1, 2, 
     if (t2InS1 > sizes["T2"]) throw new Error(`T2 insuficiente p/ S1: precisa ${t2InS1}, tem ${sizes["T2"]}`);
   }
   if (weeks.includes(2)) {
+    if (t2InS2 < 0) throw new Error(`T2 insuficiente: apenas ${sizes["T2"]} disponíveis, mas S1 consome ${t2InS1} (${-t2InS2} a menos p/ S2)`);
     if (t3InS2 < 0) throw new Error(`T2 restante (${t2InS2}) já passa de ${S2} na S2`);
     if (t3InS2 > sizes["T3"]) throw new Error(`T3 insuficiente p/ S2: precisa ${t3InS2}, tem ${sizes["T3"]}`);
   }
@@ -235,11 +236,21 @@ export function planWeeks(sizes: Record<Tier, number>, weeks: number[] = [1, 2, 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = requireCycleArg(argv);
   const dryRun = argv.includes("--dry-run");
-  const weeksArg = argv[argv.indexOf("--weeks") + 1];
-  const weeks =
-    argv.includes("--weeks") && weeksArg
-      ? weeksArg.split(",").map((x) => Number(x.trim())).filter((x) => [1, 2, 3].includes(x))
-      : [1, 2, 3];
+  const weeksIdx = argv.indexOf("--weeks");
+  const weeksArg = weeksIdx !== -1 ? argv[weeksIdx + 1] : undefined;
+  // --weeks sem valor ou valor inválido (ex: --weeks --dry-run) → erro explícito
+  if (argv.includes("--weeks")) {
+    if (!weeksArg || weeksArg.startsWith("-")) {
+      throw new Error(`--weeks requer um valor (ex: --weeks 1 ou --weeks 2,3). Recebido: ${weeksArg ?? "(nada)"}`);
+    }
+  }
+  const weeksRaw = weeksArg
+    ? weeksArg.split(",").map((x) => Number(x.trim())).filter((x) => [1, 2, 3].includes(x))
+    : [1, 2, 3];
+  if (argv.includes("--weeks") && weeksRaw.length === 0) {
+    throw new Error(`--weeks "${weeksArg}" não contém semanas válidas (use 1, 2 e/ou 3).`);
+  }
+  const weeks = weeksRaw;
 
   const cycleDir = clariceCycleDir(cycle);
   const wavesDir = clariceWavesDir(cycle);
@@ -252,14 +263,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     T4: resolve(cycleDir, "mv-export-t04-leads-2025H2-verified.csv"),
   };
 
-  // Carrega só os tiers necessários para as semanas pedidas.
+  // planWeeks precisa do tamanho de TODOS os tiers que afetam o fill das semanas pedidas,
+  // incluindo tiers de semanas anteriores (cursor de T2 depende do tamanho consumido pela S1).
   const neededTiers = new Set<Tier>();
   if (weeks.includes(1)) ["T1-abriu", "T1-nao-abriu", "maio", "T2"].forEach((t) => neededTiers.add(t as Tier));
-  if (weeks.includes(2)) ["T2", "T3"].forEach((t) => neededTiers.add(t as Tier));
-  if (weeks.includes(3)) ["T3", "T4"].forEach((t) => neededTiers.add(t as Tier));
-  // planWeeks precisa do tamanho de TODOS os tiers que afetam o fill das semanas pedidas.
-  if (weeks.includes(1)) ["T1-abriu", "T1-nao-abriu", "maio", "T2"].forEach((t) => neededTiers.add(t as Tier));
-  if (weeks.includes(2) || weeks.includes(3)) ["T2", "T3", "T4"].forEach((t) => neededTiers.add(t as Tier));
+  if (weeks.includes(2) || weeks.includes(3)) ["T2", "T3"].forEach((t) => neededTiers.add(t as Tier));
+  if (weeks.includes(3)) neededTiers.add("T4");
+  // S2/S3 sem S1: precisa do T1+maio p/ calcular quanto do T2 foi consumido na S1 (cursor)
+  if ((weeks.includes(2) || weeks.includes(3)) && !weeks.includes(1)) {
+    ["T1-abriu", "T1-nao-abriu", "maio"].forEach((t) => neededTiers.add(t as Tier));
+  }
 
   const pool: Partial<Record<Tier, TierRows>> = {};
   const sizes = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 } as Record<Tier, number>;
@@ -304,8 +317,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const summary: any = { cycle, total: 0, perTier: {}, sends: [] };
   for (const t of TIERS) summary.perTier[t] = 0;
 
-  // cursor por tier: quantas linhas já consumidas (S1 pega o topo, S2 o resto, etc.)
+  // cursor por tier: quantas linhas já consumidas por semanas ANTERIORES às pedidas.
+  // Inicializar a 0 e avançar as semanas não pedidas que precedem as pedidas evita o
+  // bug de duplo-envio: --weeks 2 sem esse ajuste começaria o T2 do início, enviando
+  // as mesmas linhas que a S1 já recebeu. (#2007 / #2018)
   const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
+  const minWeek = Math.min(...weeks);
+  if (minWeek > 1) {
+    // Recalcula o plano completo apenas p/ avançar os cursores das semanas anteriores.
+    const priorWeeks = [1, 2, 3].filter((w) => w < minWeek) as number[];
+    const priorPlans = planWeeks(sizes, priorWeeks);
+    for (const pp of priorPlans) {
+      for (const seg of pp.segments) consumed[seg.tier] += seg.count;
+    }
+  }
 
   for (const plan of plans) {
     const daySends = SENDS.filter((s) => s.week === plan.week);

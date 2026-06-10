@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apportion, stratify, planWeeks, SENDS, type Tier } from "../scripts/clarice-build-edition-sends.ts";
+import { apportion, stratify, planWeeks, SENDS, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
 
 describe("SENDS (plano dos 21 envios)", () => {
   it("21 envios, 7 por semana, totais por semana corretos", () => {
@@ -123,5 +123,46 @@ describe("planWeeks (fill morno->frio data-driven)", () => {
     const plans = planWeeks({ ...sizes, T3: 0, T4: 0 }, [1]);
     assert.equal(plans.length, 1);
     assert.equal(plans[0].week, 1);
+  });
+
+  // Regressão #2007/#2018: t2InS2 < 0 deve lançar erro explícito
+  it("explode se t2InS2 < 0 (T2 insuficiente para cobrir o que a S1 consome)", () => {
+    // T2 pequeno demais: S1 precisa de 894 de T2, mas só há 500
+    assert.throws(
+      () => planWeeks({ ...sizes, T2: 500 }, [2]),
+      /T2 insuficiente/,
+    );
+  });
+});
+
+describe("main --weeks validação (#2007/#2018)", () => {
+  // --weeks sem valor seguido de outra flag deve lançar erro, não weeks=[] silencioso
+  it("--weeks --dry-run (sem valor) lança erro explícito em vez de weeks=[] silencioso", async () => {
+    await assert.rejects(
+      () => main(["--cycle", "2605-06", "--weeks", "--dry-run"]),
+      /--weeks requer um valor/,
+    );
+  });
+
+  it("--weeks com valor inválido lança erro explícito", async () => {
+    await assert.rejects(
+      () => main(["--cycle", "2605-06", "--weeks", "abc"]),
+      /não contém semanas válidas/,
+    );
+  });
+});
+
+// Regressão #2007: --weeks 2 sem S1 não deve causar duplo-envio (cursor T2 = t2InS1)
+describe("cursor de tier em --weeks parcial (anti-duplo-envio #2007)", () => {
+  // planWeeks com [2] deve retornar t2InS2 e t3InS2 corretos (não depende do cursor em main,
+  // mas a aritmética deve ser idêntica à de [1,2,3]).
+  it("planWeeks([2]) retorna os mesmos segmentos de S2 que planWeeks([1,2,3])", () => {
+    const sizes: Record<Tier, number> = {
+      "T1-abriu": 176, "T1-nao-abriu": 911, maio: 3619, T2: 6840, T3: 11903, T4: 19494,
+    };
+    const [full] = planWeeks(sizes, [1, 2, 3]).filter((p) => p.week === 2);
+    const [partial] = planWeeks(sizes, [2]);
+    assert.deepEqual(full.segments, partial.segments);
+    assert.equal(full.total, partial.total);
   });
 });

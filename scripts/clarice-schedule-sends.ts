@@ -1,25 +1,38 @@
 #!/usr/bin/env node
 /**
- * clarice-schedule-sends.ts (Edição Maio, ciclo 2605-06 — Semana 1 com A/B/C)
+ * clarice-schedule-sends.ts (ciclo 2605-06 — S1 A/B/C + S2/S3 assunto único)
  *
- * Cria e agenda as campanhas Brevo da SEMANA 1 do plano de envio: 3 campanhas
- * por dia (células A/B/C, teste de assunto same-time), 06:00 BRT, d01=10/jun …
- * d07=16/jun. Mira as listas-célula criadas por clarice-split-cells.ts
- * (cells-summary.json). HTML = render aprovado (_internal/cloudflare-preview.html,
- * mesmo draftToEmail do publish-monthly, com merge tags Brevo).
+ * Cria e agenda as campanhas Brevo do plano de envio da Edição Maio:
+ *   - S1 (d01–d07, 10–16/jun): 3 campanhas/dia (células A/B/C, teste de assunto)
+ *   - S2 (d08–d14, 17–23/jun): 1 campanha/dia (assunto único = vencedor A/B/C)
+ *   - S3 (d15–d21, 24–30/jun): 1 campanha/dia (assunto único = vencedor A/B/C)
+ *
+ * Horário de envio: 06:00 BRT (-03:00) em todos os dias.
+ * Listas: S1 usa listas-célula do cells-summary.json; S2/S3 usam d08…d21 do
+ * sends-summary.json (IDs Brevo já importados via clarice-import-sends).
  *
  * Fases (cada uma exige flag explícita; default = dry-run que só imprime o plano):
- *   --create       cria as 21 campanhas como RASCUNHO (nada é enviado)
- *   --update-html  re-aplica o HTML render atual em TODAS as campanhas criadas
- *                  (pra propagar fix de render pós-create; só em draft)
- *   --send-test    manda test email das células d01-A/B/C pro test_email
+ *   --create       cria as campanhas como RASCUNHO (nada é enviado)
+ *   --update-html  re-aplica o HTML render atual nas campanhas em draft
+ *                  (pra propagar fix de render pós-create)
+ *   --send-test    manda test email das células d01-A/B/C (S1) ou d08 (S2/S3) pro test_email
  *   --schedule     agenda TODAS as campanhas criadas (06:00 BRT nas datas do plano)
  *
- * Uso típico:
- *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06                 # plano
+ * Flags de escopo:
+ *   --weeks 1,2,3  quais semanas processar (default: 1; semanas 2-3 exigem --subject)
+ *   --subject "…"  assunto único pra S2/S3 (obrigatório quando --weeks inclui 2 ou 3)
+ *
+ * Uso típico S1:
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06                 # plano S1
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --create
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --send-test
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --schedule
+ *
+ * Uso típico S2/S3 (após checkpoint 17/jun):
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" # plano
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --create
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --send-test
+ *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --schedule
  *
  * Estado em {ciclo}/sends/cells/campaigns-summary.json (idempotência: --create
  * pula campanhas já criadas; --schedule usa os IDs gravados).
@@ -39,7 +52,7 @@ loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Assuntos do teste A/B/C (decisão do editor 2026-06-09; A corrigido — a lei NÃO foi aprovada). */
+/** Assuntos do teste A/B/C da S1 (decisão do editor 2026-06-09; A corrigido — a lei NÃO foi aprovada). */
 export const SUBJECTS: Record<string, string> = {
   A: "Notícias do mês sobre IA: marco da IA vai a voto e Brasil ganha unicórnio",
   B: "Notícias do mês sobre IA: Google retoma a liderança na corrida",
@@ -48,20 +61,66 @@ export const SUBJECTS: Record<string, string> = {
 export const PREVIEW_TEXT =
   "Marco legal, unicórnio de IA e agentes substituindo equipes: maio foi o mês das decisões.";
 
-/** d01=10/jun/2026 … d07=16/jun — 06:00 BRT (-03:00). */
+/** Ciclo 2605-06: d01=10/jun/2026 … d21=30/jun — 06:00 BRT (-03:00).
+ *
+ * Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada).
+ * (#2007 / #2018)
+ */
 export function scheduledAtFor(n: number): string {
-  const day = 9 + n; // d01 -> 10
+  if (n < 1 || n > 21 || !Number.isInteger(n)) {
+    throw new Error(`scheduledAtFor: n deve ser inteiro 1..21, recebido: ${n}`);
+  }
+  const day = 9 + n; // d01 -> dia 10, d21 -> dia 30
   return `2026-06-${String(day).padStart(2, "0")}T06:00:00-03:00`;
 }
 
 interface CellEntry { list: string; listId: number; count: number }
+// Entrada no campaigns-summary.json; listId é o ID Brevo da lista que recebe a campanha.
 interface CampaignEntry {
-  key: string; // "d01-A"
+  key: string; // "d01-A" (S1) ou "d08" (S2/S3)
   campaignId: number;
   listId: number;
   subject: string;
   scheduledAt: string;
   status: "draft" | "scheduled";
+}
+
+// Entrada do sends-summary.json gerado por clarice-build-edition-sends (S2/S3)
+interface SendSummaryEntry {
+  n: number;
+  file: string;
+  day: string;
+  week: number;
+  planned: number;
+  actual: number;
+  // listId é injetado por clarice-import-sends após importação no Brevo
+  listId?: number;
+}
+
+/** Parseia --weeks e valida: retorna array com 1,2,3 ou subconjunto. */
+export function parseWeeksArg(argv: string[]): number[] {
+  const idx = argv.indexOf("--weeks");
+  if (idx === -1) return [1]; // default: só S1
+  const val = argv[idx + 1];
+  if (!val || val.startsWith("-")) {
+    throw new Error(`--weeks requer um valor (ex: --weeks 1 ou --weeks 2,3). Recebido: ${val ?? "(nada)"}`);
+  }
+  const parsed = val.split(",").map((x) => Number(x.trim())).filter((x) => [1, 2, 3].includes(x));
+  if (parsed.length === 0) {
+    throw new Error(`--weeks "${val}" não contém semanas válidas (use 1, 2 e/ou 3).`);
+  }
+  return parsed;
+}
+
+/** Parseia --subject: retorna o valor ou undefined. */
+function parseSubjectArg(argv: string[]): string | undefined {
+  const idx = argv.indexOf("--subject");
+  if (idx === -1) return undefined;
+  const val = argv[idx + 1];
+  if (!val || val.startsWith("-")) {
+    throw new Error(`--subject requer um valor (ex: --subject "Assunto vencedor").`);
+  }
+  return val;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -75,18 +134,52 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doTest = argv.includes("--send-test");
   const doSchedule = argv.includes("--schedule");
 
-  const cellsDir = resolve(clariceCycleDir(cycle), "sends", "cells");
-  const cellsSummaryPath = resolve(cellsDir, "cells-summary.json");
-  if (!existsSync(cellsSummaryPath)) {
-    throw new Error(`cells-summary.json não existe — rode clarice-split-cells.ts --execute antes.`);
-  }
-  const cells: { label: string; results: CellEntry[] } = JSON.parse(readFileSync(cellsSummaryPath, "utf8"));
-  const listByKey = new Map<string, CellEntry>();
-  for (const r of cells.results) {
-    const m = r.list.match(/d(\d{2})-([ABC])/);
-    if (m) listByKey.set(`d${m[1]}-${m[2]}`, r);
+  const weeks = parseWeeksArg(argv);
+  const subject = parseSubjectArg(argv);
+
+  // S2/S3 exige --subject (o vencedor do A/B/C ainda não é conhecido em S1)
+  if ((weeks.includes(2) || weeks.includes(3)) && !subject) {
+    throw new Error(`--weeks ${weeks.join(",")} inclui S2/S3: --subject "Assunto vencedor" é obrigatório.`);
   }
 
+  const cycleDir = clariceCycleDir(cycle);
+  const cellsDir = resolve(cycleDir, "sends", "cells");
+
+  // Carrega cells-summary.json (necessário para S1)
+  const cellsSummaryPath = resolve(cellsDir, "cells-summary.json");
+  const hasCells = existsSync(cellsSummaryPath);
+  const listByKey = new Map<string, CellEntry>();
+  if (weeks.includes(1)) {
+    if (!hasCells) {
+      throw new Error(`cells-summary.json não existe — rode clarice-split-cells.ts --execute antes.`);
+    }
+    const cells: { label: string; results: CellEntry[] } = JSON.parse(readFileSync(cellsSummaryPath, "utf8"));
+    for (const r of cells.results) {
+      const m = r.list.match(/d(\d{2})-([ABC])/);
+      if (m) listByKey.set(`d${m[1]}-${m[2]}`, r);
+    }
+  }
+
+  // Carrega sends-summary.json (necessário para S2/S3; injeta listId por envio)
+  const sendsSummaryPath = resolve(cycleDir, "sends", "sends-summary.json");
+  const listByDay = new Map<number, number>(); // n -> listId Brevo
+  if (weeks.includes(2) || weeks.includes(3)) {
+    if (!existsSync(sendsSummaryPath)) {
+      throw new Error(`sends-summary.json não existe — rode clarice-build-edition-sends e clarice-import-sends antes.`);
+    }
+    const sendsSummary: { sends: SendSummaryEntry[] } = JSON.parse(readFileSync(sendsSummaryPath, "utf8"));
+    for (const s of sendsSummary.sends) {
+      if (s.listId != null) listByDay.set(s.n, s.listId);
+    }
+    // Valida que os dias das semanas pedidas têm listId
+    const missingSends = SENDS.filter((s) => weeks.includes(s.week) && s.week !== 1 && !listByDay.has(s.n));
+    if (missingSends.length > 0) {
+      const missing = missingSends.map((s) => `d${String(s.n).padStart(2, "0")}`).join(", ");
+      throw new Error(`listId ausente p/ ${missing} — rode clarice-import-sends antes (sends-summary.json deve conter listId).`);
+    }
+  }
+
+  // HTML render para todas as campanhas
   const htmlPath = resolve(ROOT, "data", "monthly", "2605", "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   const html = readFileSync(htmlPath, "utf8");
@@ -97,17 +190,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     : [];
   const byKey = new Map(campaigns.map((c) => [c.key, c]));
 
-  const week1 = SENDS.filter((s) => s.week === 1);
+  // Monta lista de envios a processar nesta invocação
+  const sendsToProcess = SENDS.filter((s) => weeks.includes(s.week));
 
   // --- Plano (sempre imprime) ---
-  console.error(`\n📋 Campanhas S1 — ${week1.length} dias × ${CELLS.length} células = ${week1.length * CELLS.length} campanhas`);
-  for (const s of week1) {
-    for (const cell of CELLS) {
-      const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
-      const entry = listByKey.get(key);
+  const s1Count = sendsToProcess.filter((s) => s.week === 1).length * CELLS.length;
+  const s23Count = sendsToProcess.filter((s) => s.week !== 1).length;
+  const totalCampaigns = s1Count + s23Count;
+  console.error(`\n📋 Campanhas semanas ${weeks.join("+")} — ${totalCampaigns} campanhas`);
+  for (const s of sendsToProcess) {
+    if (s.week === 1) {
+      for (const cell of CELLS) {
+        const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
+        const entry = listByKey.get(key);
+        const existing = byKey.get(key);
+        console.error(
+          `  ${key} (${s.day} ${scheduledAtFor(s.n)})  lista #${entry?.listId ?? "?"}  assunto ${cell}` +
+            (existing ? `  [campanha #${existing.campaignId} ${existing.status}]` : ""),
+        );
+      }
+    } else {
+      const key = `d${String(s.n).padStart(2, "0")}`;
+      const listId = listByDay.get(s.n);
       const existing = byKey.get(key);
       console.error(
-        `  ${key} (${s.day} ${scheduledAtFor(s.n)})  lista #${entry?.listId ?? "?"} (${entry?.count ?? "?"})  assunto ${cell}` +
+        `  ${key} (${s.day} ${scheduledAtFor(s.n)})  lista #${listId ?? "?"}  assunto único` +
           (existing ? `  [campanha #${existing.campaignId} ${existing.status}]` : ""),
       );
     }
@@ -128,35 +235,68 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // --- create (rascunhos; idempotente) ---
   if (doCreate) {
-    for (const s of week1) {
-      for (const cell of CELLS) {
-        const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
+    for (const s of sendsToProcess) {
+      if (s.week === 1) {
+        // S1: 3 campanhas por dia (células A/B/C)
+        for (const cell of CELLS) {
+          const key = `d${String(s.n).padStart(2, "0")}-${cell}`;
+          if (byKey.has(key)) {
+            console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
+            continue;
+          }
+          const entry = listByKey.get(key);
+          if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
+          const resp = (await brevoPost(apiKey, "/emailCampaigns", {
+            name: `Clarice News 2605 ${key} (${s.day})`,
+            subject: SUBJECTS[cell],
+            previewText: PREVIEW_TEXT,
+            sender: { name: brevo.sender_name, email: brevo.sender_email },
+            recipients: { listIds: [entry.listId] },
+            htmlContent: html,
+          })) as { id?: number };
+          if (typeof resp?.id !== "number") throw new Error(`/emailCampaigns shape inesperado: ${JSON.stringify(resp)}`);
+          const c: CampaignEntry = {
+            key,
+            campaignId: resp.id,
+            listId: entry.listId,
+            subject: SUBJECTS[cell],
+            scheduledAt: scheduledAtFor(s.n),
+            status: "draft",
+          };
+          campaigns.push(c);
+          byKey.set(key, c);
+          writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
+          console.error(`✓ ${key} → campanha #${resp.id} (rascunho)`);
+        }
+      } else {
+        // S2/S3: 1 campanha por dia (assunto único = vencedor)
+        const key = `d${String(s.n).padStart(2, "0")}`;
         if (byKey.has(key)) {
           console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
           continue;
         }
-        const entry = listByKey.get(key);
-        if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
+        const listId = listByDay.get(s.n);
+        if (listId == null) throw new Error(`listId não encontrado pra ${key}`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
           name: `Clarice News 2605 ${key} (${s.day})`,
-          subject: SUBJECTS[cell],
+          subject: subject!,
           previewText: PREVIEW_TEXT,
           sender: { name: brevo.sender_name, email: brevo.sender_email },
-          recipients: { listIds: [entry.listId] },
+          recipients: { listIds: [listId] },
           htmlContent: html,
         })) as { id?: number };
         if (typeof resp?.id !== "number") throw new Error(`/emailCampaigns shape inesperado: ${JSON.stringify(resp)}`);
         const c: CampaignEntry = {
           key,
           campaignId: resp.id,
-          listId: entry.listId,
-          subject: SUBJECTS[cell],
+          listId,
+          subject: subject!,
           scheduledAt: scheduledAtFor(s.n),
           status: "draft",
         };
         campaigns.push(c);
         byKey.set(key, c);
-        writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2)); // persiste a cada criação (crash-safe)
+        writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
         console.error(`✓ ${key} → campanha #${resp.id} (rascunho)`);
       }
     }
@@ -174,19 +314,41 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // --- send-test (d01-A/B/C → test_email) ---
+  // --- send-test (d01-A/B/C para S1; d08 para S2/S3) ---
   if (doTest) {
-    for (const cell of CELLS) {
-      const c = byKey.get(`d01-${cell}`);
-      if (!c) throw new Error(`campanha d01-${cell} não criada — rode --create antes.`);
+    if (weeks.includes(1)) {
+      for (const cell of CELLS) {
+        const c = byKey.get(`d01-${cell}`);
+        if (!c) throw new Error(`campanha d01-${cell} não criada — rode --create antes.`);
+        await brevoPost(apiKey, `/emailCampaigns/${c.campaignId}/sendTest`, { emailTo: [brevo.test_email] });
+        console.error(`✓ test email d01-${cell} (campanha #${c.campaignId}) → ${brevo.test_email}`);
+      }
+    }
+    // S2/S3: manda test do primeiro dia de cada semana pedida
+    for (const w of [2, 3]) {
+      if (!weeks.includes(w)) continue;
+      const firstSend = SENDS.find((s) => s.week === w);
+      if (!firstSend) continue;
+      const key = `d${String(firstSend.n).padStart(2, "0")}`;
+      const c = byKey.get(key);
+      if (!c) throw new Error(`campanha ${key} não criada — rode --create antes.`);
       await brevoPost(apiKey, `/emailCampaigns/${c.campaignId}/sendTest`, { emailTo: [brevo.test_email] });
-      console.error(`✓ test email d01-${cell} (campanha #${c.campaignId}) → ${brevo.test_email}`);
+      console.error(`✓ test email ${key} (campanha #${c.campaignId}) → ${brevo.test_email}`);
     }
   }
 
-  // --- schedule (todas as criadas) ---
+  // --- schedule (todas as criadas nas semanas pedidas) ---
   if (doSchedule) {
+    const keysInScope = new Set<string>();
+    for (const s of sendsToProcess) {
+      if (s.week === 1) {
+        for (const cell of CELLS) keysInScope.add(`d${String(s.n).padStart(2, "0")}-${cell}`);
+      } else {
+        keysInScope.add(`d${String(s.n).padStart(2, "0")}`);
+      }
+    }
     for (const c of campaigns) {
+      if (!keysInScope.has(c.key)) continue;
       if (c.status === "scheduled") {
         console.error(`↷ ${c.key} já agendada — pulando`);
         continue;
