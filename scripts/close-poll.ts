@@ -74,8 +74,14 @@ async function main(): Promise<void> {
     }
   }
 
+  // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
+  // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
+  // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
+  const brand = values["brand"] === "clarice" ? "clarice" : null;
+  const brandQ = brand ? `&brand=${brand}` : "";
+
   const sig = adminSig(secret, edition, answer);
-  const url = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${sig}`;
+  const url = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${sig}${brandQ}`;
 
   const res = await dohFetch(url, { method: "POST" });
   const data = await res.json() as { ok?: boolean; updated_votes?: number; error?: string };
@@ -88,7 +94,7 @@ async function main(): Promise<void> {
   // #1367: sanity check pós-close — confirmar que /stats retorna correct_answer
   // não-null. Sem isso, exit 0 não garante que o gabarito ficou registrado
   // (caso real 260518: close-poll falhou silencioso, total=3 mas correct_answer=null).
-  const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}`);
+  const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}${brandQ}`);
   const stats = await statsRes.json() as { correct_answer?: string | null };
   if (!statsRes.ok || stats.correct_answer !== answer) {
     console.error(
@@ -98,7 +104,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // #1367: marker de sucesso pra Stage 5 invariant checar
+  // #1367: marker de sucesso pra Stage 5 invariant checar.
+  // #2006: brand não-default (mensal) não tem edição diária — pular o marker
+  // (criaria data/editions/{AAMMDD}/ fantasma; o invariant é só da diária).
+  if (brand) {
+    console.log(`[close-poll] gabarito ${answer} setado pra edition=${edition} brand=${brand} (marker da diária pulado)`);
+    return;
+  }
   const markerDir = resolve(ROOT, "data", "editions", edition, "_internal");
   mkdirSync(markerDir, { recursive: true });
   const markerPath = resolve(markerDir, ".close-poll-done.json");
