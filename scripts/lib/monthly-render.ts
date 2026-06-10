@@ -51,7 +51,13 @@ export function stripBackslashEscapes(s: string): string {
 function renderTextInline(s: string): string {
   return escHtml(s)
     .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>');
+    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>')
+    // Anti auto-linkify: "Clarice.ai" em TEXTO PURO vira link azul default no
+    // Gmail/clients (sem ?via=diaria, fora do padrão visual). WORD JOINER
+    // U+2060 invisível entre "." e "ai" quebra o pattern-match de domínio —
+    // visual idêntico. Links markdown reais não passam por aqui (renderInline
+    // trata o label separado), então continuam linkando normalmente.
+    .replace(/\b([Cc]larice)\.ai\b/g, "$1.&#8288;ai");
 }
 
 /**
