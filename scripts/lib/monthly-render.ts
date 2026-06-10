@@ -95,7 +95,7 @@ export function renderInline(text: string): string {
     }
     if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">${escHtml(m[1])}</a>`,
+      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;font-weight:bold;">${escHtml(m[1])}</a>`,
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
@@ -205,7 +205,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
   const label = tema ? renderKicker(tema) : "";
   const titleHtml = title
-    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
+    ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-family:${FONT_SERIF};line-height:1.2;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${renderInline(title)}</h2>`
     : "";
   // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
   // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
@@ -226,7 +226,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
   const imageHtml = imageUrl
-    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:8px;margin:0 0 20px 0;" />`
+    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 20px 0;" />`
     : "";
 
   return imageHtml + label + titleHtml + mainHtml + conductorHtml;
@@ -241,7 +241,7 @@ export function renderIntro(body: string): string {
   const bodyHtml = paras
     .map((p) => {
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;font-size:16px;color:${INK};line-height:1.7;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-size:16px;color:${INK};line-height:1.62;">${inline}</p>`;
     })
     .join("\n");
   return renderKicker("Resumo do mês") + bodyHtml;
@@ -582,7 +582,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
       <td align="center" style="padding:20px 10px;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;background:${PAPER};">
           <tr>
-            <td style="padding:36px 44px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.7;">
+            <td style="padding:36px 32px;font-family:${FONT_SANS};color:${INK};font-size:16px;line-height:1.62;">
               ${body}
             </td>
           </tr>
