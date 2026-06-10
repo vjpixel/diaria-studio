@@ -28,7 +28,6 @@ import { spawnSync } from "node:child_process";
 
 import {
   checkIntentionalError,
-  extractFrontmatter,
 } from "../scripts/lib/lint-checks/intentional-error.ts";
 import { runLints } from "../scripts/lint-test-email.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
@@ -202,6 +201,42 @@ describe("sync-intentional-error com none (#2016)", () => {
     const stdout = JSON.parse(r.stdout.trim());
     assert.equal(stdout.added, true);
     assert.equal(stdout.no_error, true);
+  });
+
+  it("entry pré-existente sem no_error → re-sync com none → sobrescreve com no_error=true (#2037)", () => {
+    // Cenário: editor usou sentinela 4-campos antes do #2016, gerou entry sem
+    // no_error. Depois adicionou `intentional_error: none` no frontmatter.
+    // Re-sync deve sobrescrever, não bloquear (guard de idempotência estava
+    // largo demais — só deve ser no-op quando already no_error=true).
+    const mdPath = join(tmpDir, "02-reviewed.md");
+    const jsonlPath = join(tmpDir, "intentional-errors.jsonl");
+    // Entry pré-existente (sentinela pré-#2016 sem no_error)
+    writeFileSync(
+      jsonlPath,
+      JSON.stringify({
+        edition: "260610",
+        error_type: "none",
+        is_feature: true,
+        source: "frontmatter_02_reviewed",
+        // sem campo no_error
+      }) + "\n",
+      "utf8",
+    );
+    writeFileSync(
+      mdPath,
+      "---\nintentional_error: none\n---\n\nConteúdo.\n",
+      "utf8",
+    );
+    const r = runSync(mdPath, "260610", jsonlPath);
+    assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
+    const lines = readFileSync(jsonlPath, "utf8").trim().split("\n").filter(Boolean);
+    assert.equal(lines.length, 1, "deve ter exatamente 1 entry (sobrescrita, não duplicada)");
+    const entry = JSON.parse(lines[0]);
+    assert.equal(entry.no_error, true, "entry deve ter no_error=true após re-sync");
+    assert.equal(entry.edition, "260610");
+    const stdout = JSON.parse(r.stdout.trim());
+    assert.equal(stdout.no_error, true);
+    assert.equal(stdout.updated, true, "deve reportar updated=true (não added)");
   });
 
   it("idempotente: segunda chamada → added=false, no_error=true no output", () => {
