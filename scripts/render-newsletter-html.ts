@@ -143,12 +143,13 @@ function main(): void {
     // 260610 (newsletter-draft.html nunca foi regenerado, upload subiu stale).
     // Avisar no stderr sem quebrar quem usa pipe legitimamente (ex: jq, diff).
     if (!process.stdout.isTTY) {
+      const outputLabel = format === "json" ? "JSON" : "HTML";
       process.stderr.write(
-        "[render-newsletter-html] AVISO: stdout não é TTY e --out está ausente. " +
-          "O HTML será escrito no stdout — se estiver redirecionando para /dev/null ou " +
+        `[render-newsletter-html] AVISO: stdout não é TTY e --out está ausente. ` +
+          `O ${outputLabel} será escrito no stdout — se estiver redirecionando para /dev/null ou ` +
           "similar, o arquivo em disco NÃO será atualizado. " +
           "Use --out <path> para gravar explicitamente (ex: --out " +
-          `${editionDir}/_internal/newsletter-draft.html).\n`,
+          `/tmp/newsletter.html).\n`,
       );
     }
     process.stdout.write(output);

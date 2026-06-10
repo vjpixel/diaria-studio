@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createHmac } from "node:crypto";
@@ -399,7 +399,7 @@ describe("uploadHtml — fail-loud em placeholders {{IMG:...}} (#1277)", () => {
 });
 
 describe("checkHtmlFreshness (#2012)", () => {
-  it("retorna null quando HTML é mais novo que 02-reviewed.md (caso ok)", () => {
+  it("retorna null quando HTML é mais novo que 02-reviewed.md (caso ok — sem draft)", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "freshness-"));
     const mdPath = resolve(dir, "02-reviewed.md");
     const htmlPath = resolve(dir, "newsletter-final.html");
@@ -412,7 +412,7 @@ describe("checkHtmlFreshness (#2012)", () => {
     assert.equal(checkHtmlFreshness(htmlPath, mdPath), null);
   });
 
-  it("retorna mensagem de erro quando HTML é mais antigo que 02-reviewed.md (stale)", () => {
+  it("retorna mensagem de erro quando HTML é mais antigo que 02-reviewed.md (stale — sem draft)", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "freshness-"));
     const mdPath = resolve(dir, "02-reviewed.md");
     const htmlPath = resolve(dir, "newsletter-final.html");
@@ -437,19 +437,124 @@ describe("checkHtmlFreshness (#2012)", () => {
     assert.equal(checkHtmlFreshness(htmlPath, mdPath), null);
   });
 
-  it("retorna null quando htmlPath não existe", () => {
+  it("retorna null quando htmlPath não existe (TOCTOU-safe: try/catch no statSync)", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "freshness-"));
     const mdPath = resolve(dir, "02-reviewed.md");
     const htmlPath = resolve(dir, "newsletter-final.html"); // não criado
     writeFileSync(mdPath, "# reviewed", "utf8");
     assert.equal(checkHtmlFreshness(htmlPath, mdPath), null);
   });
+
+  it("mensagem de erro interpola paths reais (sem {edition_dir} literal) (#2012 P3)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-interp-"));
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const htmlPath = resolve(dir, "newsletter-final.html");
+    const past = new Date(Date.now() - 60_000);
+    const now = new Date();
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(htmlPath, "<p>html</p>", "utf8");
+    utimesSync(htmlPath, past, past);
+    utimesSync(mdPath, now, now);
+    const msg = checkHtmlFreshness(htmlPath, mdPath);
+    assert.ok(msg !== null);
+    assert.doesNotMatch(msg!, /\{edition_dir\}/, "não deve conter {edition_dir} literal");
+    assert.match(msg!, /render-newsletter-html/, "deve mencionar o script de render");
+  });
+
+  it("mensagem de erro usa /tmp/newsletter.html como intermediate (alinhado ao playbook) (#2012 P4)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-playbook-"));
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const internalDir = resolve(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const htmlPath = resolve(internalDir, "newsletter-final.html");
+    const past = new Date(Date.now() - 60_000);
+    const now = new Date();
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(htmlPath, "<p>html</p>", "utf8");
+    utimesSync(htmlPath, past, past);
+    utimesSync(mdPath, now, now);
+    const msg = checkHtmlFreshness(htmlPath, mdPath);
+    assert.ok(msg !== null);
+    assert.match(msg!, /\/tmp\/newsletter\.html/, "deve referenciar /tmp/newsletter.html como intermediate");
+  });
+
+  it("CENÁRIO REAL #2012: render → editar md → substitute escreve final (mtime fresco) → guard dispara via draft.html", () => {
+    // Este é o cenário que o guard original NÃO pegava:
+    // substitute-image-urls sempre reescreve final.html (mtime=NOW).
+    // Então comparar final vs reviewed sempre passava — mesmo com draft stale.
+    // Fix: comparar draft vs reviewed (o draft é escrito pelo render, antes do substitute).
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-real-"));
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const draftPath = resolve(dir, "newsletter-draft.html");
+    const finalPath = resolve(dir, "newsletter-final.html");
+
+    const t0 = Date.now();
+    const renderTime = new Date(t0 - 120_000);  // render rodou 2min atrás
+    const editTime   = new Date(t0 - 60_000);   // editor editou 1min atrás
+    const subTime    = new Date(t0);             // substitute rodou agora (final.html fresco)
+
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(draftPath, "<p>draft</p>", "utf8");
+    writeFileSync(finalPath, "<p>final</p>", "utf8");
+
+    utimesSync(draftPath, renderTime, renderTime); // draft: render rodou ANTES da edição
+    utimesSync(mdPath, editTime, editTime);         // md: editado DEPOIS do render
+    utimesSync(finalPath, subTime, subTime);        // final: substitute rodou AGORA (fresco)
+
+    // Sem draft: comparar apenas final vs reviewed → passa (false negative — bug original)
+    const msgNoDraft = checkHtmlFreshness(finalPath, mdPath);
+    assert.equal(msgNoDraft, null, "sem draft: final fresco mascara o stale (comportamento legado — gap conhecido)");
+
+    // Com draft: detecta que draft < reviewed → ABORTA corretamente
+    const msgWithDraft = checkHtmlFreshness(finalPath, mdPath, draftPath);
+    assert.ok(msgWithDraft !== null, "com draft: deve detectar que draft está stale");
+    assert.match(msgWithDraft!, /newsletter-draft\.html está desatualizado/);
+    assert.doesNotMatch(msgWithDraft!, /\{edition_dir\}/, "sem placeholders literais");
+    assert.match(msgWithDraft!, /\/tmp\/newsletter\.html/, "usa /tmp/newsletter.html do playbook");
+  });
+
+  it("retorna null quando draft é mais novo que reviewed E final é mais novo que draft (cadeia ok)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-chain-ok-"));
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const draftPath = resolve(dir, "newsletter-draft.html");
+    const finalPath = resolve(dir, "newsletter-final.html");
+
+    const t0 = Date.now();
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(draftPath, "<p>draft</p>", "utf8");
+    writeFileSync(finalPath, "<p>final</p>", "utf8");
+    utimesSync(mdPath,    new Date(t0 - 120_000), new Date(t0 - 120_000));
+    utimesSync(draftPath, new Date(t0 - 60_000),  new Date(t0 - 60_000));
+    utimesSync(finalPath, new Date(t0),            new Date(t0));
+
+    assert.equal(checkHtmlFreshness(finalPath, mdPath, draftPath), null);
+  });
+
+  it("retorna erro quando final é mais antigo que draft (substitute não rodou depois do render)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-sub-stale-"));
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const draftPath = resolve(dir, "newsletter-draft.html");
+    const finalPath = resolve(dir, "newsletter-final.html");
+
+    const t0 = Date.now();
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(draftPath, "<p>draft</p>", "utf8");
+    writeFileSync(finalPath, "<p>final</p>", "utf8");
+    utimesSync(mdPath,    new Date(t0 - 180_000), new Date(t0 - 180_000));
+    utimesSync(finalPath, new Date(t0 - 60_000),  new Date(t0 - 60_000));  // final: mais antigo
+    utimesSync(draftPath, new Date(t0),            new Date(t0));            // draft: mais novo (re-render ocorreu, mas substitute não)
+
+    const msg = checkHtmlFreshness(finalPath, mdPath, draftPath);
+    assert.ok(msg !== null, "deve detectar final mais antigo que draft");
+    assert.match(msg!, /newsletter-final\.html está desatualizado em relação a newsletter-draft\.html/);
+  });
 });
 
 describe("uploadHtml — freshness guard integração (#2012)", () => {
-  it("aborta com erro quando HTML está stale (mtime < 02-reviewed.md)", async () => {
+  it("aborta com erro quando HTML está stale (mtime < 02-reviewed.md) — sem newsletter-draft.html", async () => {
     // Regressão: edição 260610 — render sem --out; newsletter-draft.html nunca
     // regenerou; upload subiu stale sem aviso. Guard deve impedir isso.
+    // Quando draft não existe em _internal/, cai em final vs reviewed.
     const dir = mkdtempSync(resolve(tmpdir(), "freshness-upload-"));
     const mdPath = resolve(dir, "02-reviewed.md");
     const htmlPath = resolve(dir, "newsletter-final.html");
@@ -474,6 +579,83 @@ describe("uploadHtml — freshness guard integração (#2012)", () => {
         }),
       /newsletter-final\.html está desatualizado/,
     );
+  });
+
+  it("CENÁRIO REAL #2012: draft stale + final fresco (substitute rodou) → upload ABORTA", async () => {
+    // Cenário exato da issue: render rodou, editor editou md, substitute reescreveu
+    // final.html (mtime=NOW). Guard deve pegar o draft stale, não ser enganado pelo
+    // final fresco.
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-real-upload-"));
+    const internalDir = resolve(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const draftPath = resolve(internalDir, "newsletter-draft.html");
+    const finalPath = resolve(internalDir, "newsletter-final.html");
+
+    const t0 = Date.now();
+    const renderTime = new Date(t0 - 120_000);
+    const editTime   = new Date(t0 - 60_000);
+    const subTime    = new Date(t0);
+
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(draftPath, "<p>draft</p>", "utf8");
+    writeFileSync(finalPath, "<p>final</p>", "utf8");
+    utimesSync(draftPath, renderTime, renderTime);
+    utimesSync(mdPath, editTime, editTime);
+    utimesSync(finalPath, subTime, subTime); // final fresco (substitute rodou)
+
+    const fetchStub = (): Promise<Response> => {
+      throw new Error("fetch should not be called: draft is stale");
+    };
+
+    // uploadHtml detecta _internal/newsletter-draft.html e checa via draft path
+    await assert.rejects(
+      () =>
+        uploadHtml({
+          edition: "260610",
+          htmlPath: finalPath,
+          secret: "test-secret",
+          reviewedMdPath: mdPath,
+          fetchImpl: fetchStub as unknown as typeof fetch,
+        }),
+      /newsletter-draft\.html está desatualizado/,
+      "deve abortar detectando draft stale, não ser enganado pelo final fresco",
+    );
+  });
+
+  it("--dry-run com HTML stale: emite warning no stderr mas NÃO aborta (#2012 P2)", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "freshness-dryrun-"));
+    const internalDir = resolve(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+
+    const mdPath = resolve(dir, "02-reviewed.md");
+    const draftPath = resolve(internalDir, "newsletter-draft.html");
+    const finalPath = resolve(internalDir, "newsletter-final.html");
+
+    const t0 = Date.now();
+    writeFileSync(mdPath, "# reviewed", "utf8");
+    writeFileSync(draftPath, "<p>draft</p>", "utf8");
+    writeFileSync(finalPath, "<p>final</p>", "utf8");
+    utimesSync(draftPath, new Date(t0 - 120_000), new Date(t0 - 120_000));
+    utimesSync(mdPath,    new Date(t0 - 60_000),  new Date(t0 - 60_000));
+    utimesSync(finalPath, new Date(t0),            new Date(t0));
+
+    const fetchStub = (): Promise<Response> => {
+      throw new Error("fetch should not be called in dry-run");
+    };
+
+    // dry-run deve retornar resultado, não lançar
+    const r = await uploadHtml({
+      edition: "260610",
+      htmlPath: finalPath,
+      secret: "test-secret",
+      reviewedMdPath: mdPath,
+      dryRun: true,
+      fetchImpl: fetchStub as unknown as typeof fetch,
+    });
+    assert.equal(r.dry_run, true, "deve retornar dry_run: true mesmo com HTML stale");
+    assert.ok(r.bytes > 0);
   });
 
   it("sucesso quando HTML é mais novo que 02-reviewed.md", async () => {
