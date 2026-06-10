@@ -19,6 +19,7 @@ import {
   isItalicMissingFalsePositive,
   isMergeTagUnexpandedFalsePositive,
   isEncodingDropSectionEmojiByDesign,
+  isEncodingDropCalloutMarkerByDesign,
   isSectionMissingFalsePositive,
   isLinkDeadFalsePositive,
   extractLinkDeadUrl,
@@ -234,6 +235,51 @@ describe("filterAgentIssues — orchestrator integration (#1421)", () => {
 // ---------------------------------------------------------------------------
 // #2013 — 3 classes novas de FP
 // ---------------------------------------------------------------------------
+
+describe("#2066 — isEncodingDropCalloutMarkerByDesign", () => {
+  it("FP: marcador 📚 do box de livros — stripCalloutMarker remove por design", () => {
+    const issue = "email:encoding_drop: '📚' ausente no email (U+1F4DA presente no source)";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, true);
+    if (r.falsePositive) assert.match(r.reason, /stripCalloutMarker|by-design/i);
+  });
+
+  it("FP: marcador 📣 do callout patrocinado", () => {
+    const issue = "email:encoding_drop: '📣' não aparece no email";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
+  it("FP: marcador 🎉 de CTA editorial", () => {
+    const issue = "email:encoding_drop: '🎉' ausente no email de teste";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
+  it("NÃO é FP: múltiplos termos citados (pode haver texto real corrompido junto)", () => {
+    const issue = "email:encoding_drop: '📚' e 'pré-treino' corrompidos";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, false);
+  });
+
+  it("NÃO é FP: emoji que não é marcador de callout", () => {
+    const issue = "email:encoding_drop: '🚀' ausente no email";
+    const r = isEncodingDropCalloutMarkerByDesign(issue);
+    assert.equal(r.falsePositive, false);
+  });
+
+  it("filterAgentIssues dropa o encoding_drop do 📚 mesmo sem o emoji no HTML local", async () => {
+    const html = "<html><body><p>Curadoria de livros.</p></body></html>";
+    const { kept, dropped } = await filterAgentIssues(
+      ["email:encoding_drop: '📚' ausente no email"],
+      html,
+      "260611",
+    );
+    assert.equal(kept.length, 0);
+    assert.equal(dropped.length, 1);
+    assert.match(dropped[0].reason, /stripCalloutMarker/);
+  });
+});
 
 describe("#2013 — isEncodingDropSectionEmojiByDesign", () => {
   it("FP: emoji 🚀 de LANÇAMENTOS em header — DS remove por design", () => {

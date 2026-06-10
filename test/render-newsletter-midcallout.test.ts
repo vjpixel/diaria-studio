@@ -84,6 +84,34 @@ describe("midCallout — box entre D1 e D2", () => {
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
   });
 
+  it("single-parágrafo COM imagem: marcador 📚 removido e corpo em peso normal/1.62 (DS body, 260611)", () => {
+    const html = renderMidCallout(
+      "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
+      "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg",
+    );
+    assert.ok(!html.includes("📚"), "emoji do marcador não deve renderizar no box com imagem");
+    assert.ok(!/font-weight:600/.test(html.split("Ver os livros")[0]), "corpo não usa bold 600 (CTA pill pode ser bold)");
+    assert.match(html, /line-height:1\.62/);
+  });
+
+  it("review #2066: corpo que é só marcador+link não emite <p> fantasma", () => {
+    const html = renderMidCallout(
+      "📚 [Confira a nova página](https://livros.diaria.workers.dev).",
+      "https://img.example/p.jpg",
+    );
+    assert.ok(!/<p[^>]*>\s*<\/p>/.test(html), "sem parágrafo vazio entre imagem e CTA");
+    assert.ok(html.includes("Ver os livros"), "CTA preservado");
+  });
+
+  it("review #2066: stripCalloutMarker consome VS15 (U+FE0E) além do VS16", () => {
+    const html = renderMidCallout(
+      "📚︎ Promo da página. [Confira](https://livros.diaria.workers.dev).",
+      "https://img.example/p.jpg",
+    );
+    assert.ok(!html.includes("︎"), "variation selector não vaza pro HTML");
+    assert.ok(html.includes("Promo da página"), "corpo preservado");
+  });
+
   it("callout multi-parágrafo (ex: Clarice) renderiza título serif em 26px (DS h4)", () => {
     // #DS callout/É IA? title h4: o 1º parágrafo vira título serif; antes 22px (h5), agora 26px (h4).
     const html = renderMidCallout(

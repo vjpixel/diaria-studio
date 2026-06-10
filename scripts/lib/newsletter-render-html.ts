@@ -105,7 +105,9 @@ export function stripKickerEmoji(s: string): string {
  * (#1942 review #4).
  */
 export function stripCalloutMarker(s: string): string {
-  return s.replace(/^\s*(?:📣|📚|🎉)️?\s*/u, "").trim();
+  // [︎️]? — consome VS15 (texto) além do VS16 (emoji); VS15 órfão
+  // viraria char invisível líder no <p> (review #2066).
+  return s.replace(/^\s*(?:📣|📚|🎉)[︎️]?\s*/u, "").trim();
 }
 
 /**
@@ -311,8 +313,13 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
   // título serif (marcador removido) + demais peso normal, igual ao caminho
-  // sem imagem (#1938). 1 parágrafo mantém o estilo atual (peso 600, emoji preservado).
+  // sem imagem (#1938). 1 parágrafo: a imagem já identifica a promo — marcador
+  // (📣/📚/🎉) removido e corpo no estilo de texto do DS (peso normal, 1.62),
+  // não o bold 600 herdado do box texto-puro (pedido do editor, 260611).
   const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  // review #2066: corpo que era só marcador+link fica vazio pós-strip — sem o
+  // guard, sairia um <p> fantasma com 12px de margem entre a imagem e o CTA.
+  const singleBody = stripCalloutMarker(body);
   const bodyHtml =
     bodyParas.length > 1
       ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
@@ -323,7 +330,9 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
               `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
           )
           .join("\n      ")
-      : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
+      : singleBody
+        ? `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(singleBody)}</p>`
+        : "";
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">

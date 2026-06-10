@@ -221,6 +221,43 @@ export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * #2066: Marcadores de callout (midCallout/introCallout) — `**📣/📚/🎉 …**`.
+ * `stripCalloutMarker` (newsletter-render-html.ts) remove o marcador do HTML
+ * renderizado nos caminhos de callout (multi-parágrafo desde #1938/#1942;
+ * single-parágrafo com imagem desde #2066). O emoji existe só no MD source
+ * (`02-reviewed.md`), então `lint-test-email-encoding` o reporta como
+ * `char_dropped` — falso-positivo by-design, análogo ao #2013.
+ */
+export const CALLOUT_MARKER_EMOJIS: ReadonlySet<string> = new Set([
+  "📣", // patrocinado (Clarice) — separador "Divulgação" rotula no lugar
+  "📚", // promo interna (página de livros)
+  "🎉", // CTA editorial / sorteio
+]);
+
+/**
+ * #2066: Pure — decide se um `email:encoding_drop` citando um marcador de
+ * callout (📣/📚/🎉) é falso-positivo porque `stripCalloutMarker` o remove
+ * do HTML por design. Mesmo shape do #2013: só dropa quando o ÚNICO termo
+ * citado é o marcador — múltiplos termos voltam pra checagem normal (pode
+ * haver texto real corrompido junto). Sem gate de frase: diferente dos emojis
+ * de header (multi-propósito), os 3 marcadores só entram no MD como prefixo
+ * de callout (`**📣 …**`), então a citação isolada é inequívoca.
+ */
+export function isEncodingDropCalloutMarkerByDesign(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:encoding_drop/i.test(issue)) return { falsePositive: false };
+  const terms = extractQuotedTerms(issue);
+  if (terms.length !== 1) return { falsePositive: false };
+  const [term] = terms;
+  if (!CALLOUT_MARKER_EMOJIS.has(term)) return { falsePositive: false };
+  return {
+    falsePositive: true,
+    reason: `#2066: marcador de callout '${term}' é removido do HTML por stripCalloutMarker — ausência by-design`,
+  };
+}
+
+/**
  * #2013: Pure — decide se um `email:encoding_drop` reportando emoji ausente
  * é falso-positivo porque o DS #1936 remove emojis de headers por design.
  *
@@ -557,6 +594,9 @@ export async function filterAgentIssues(
       // check de encoding genérico, pois o emoji não vai estar no HTML local.
       const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
       if (emojiCheck.falsePositive) return { kind: "drop", reason: emojiCheck.reason };
+      // #2066: marcador de callout (📣/📚/🎉) stripped por design — idem.
+      const markerCheck = isEncodingDropCalloutMarkerByDesign(issue);
+      if (markerCheck.falsePositive) return { kind: "drop", reason: markerCheck.reason };
       const r = isEncodingDropFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
     } else if (issue.startsWith("email:poll_sig_missing")) {
