@@ -19,14 +19,18 @@ const CHUNK = [
 ].join("\n");
 
 describe("renderDestaque imageUrl (#1916)", () => {
-  it("embute <img> 2x1 no topo quando recebe imageUrl", () => {
+  it("embute <img> 2x1 abaixo do título quando recebe imageUrl (pedido do editor 2026-06-09)", () => {
     const html = renderDestaque(CHUNK, undefined, "https://x/img/04-d1-2x1.jpg");
     assert.ok(html.includes('<img src="https://x/img/04-d1-2x1.jpg"'), "deve ter a imagem");
     assert.ok(html.includes("width:100%"), "imagem full-width responsiva");
-    // a imagem vem ANTES do título
+    // ordem: kicker → título → IMAGEM → corpo (era imagem-no-topo)
     assert.ok(
-      html.indexOf("04-d1-2x1.jpg") < html.indexOf("Brasil entra no mapa"),
-      "imagem deve vir no topo, antes do título",
+      html.indexOf("Brasil entra no mapa") < html.indexOf("04-d1-2x1.jpg"),
+      "imagem deve vir DEPOIS do título",
+    );
+    assert.ok(
+      html.indexOf("04-d1-2x1.jpg") < html.indexOf("Primeiro parágrafo"),
+      "imagem deve vir antes do corpo",
     );
   });
   it("não embute imagem quando imageUrl é ausente", () => {

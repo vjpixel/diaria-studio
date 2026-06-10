@@ -308,7 +308,8 @@ describe("renderDestaque", () => {
   it("formato antigo `DESTAQUE 1 | ANTHROPIC` extrai tema", () => {
     const chunk = "DESTAQUE 1 | ANTHROPIC\n\n**Título do destaque**\n\nParágrafo 1.";
     const out = renderDestaque(chunk);
-    assert.match(out, />ANTHROPIC</);
+    // tema vira kicker ● + régua (DS, como a diária)
+    assert.match(out, /&#9679;&nbsp;ANTHROPIC</);
     assert.match(out, /Título do destaque/);
     assert.doesNotMatch(out, /\*\*/, "não deve ter ** literal");
   });
@@ -316,20 +317,21 @@ describe("renderDestaque", () => {
   it("formato Drive `\\[DESTAQUE 1\\] ANTHROPIC` extrai tema", () => {
     const chunk = "**\\[DESTAQUE 2\\] BRASIL**\n\n**Título**\n\nBody.";
     const out = renderDestaque(chunk);
-    assert.match(out, />BRASIL</);
+    assert.match(out, /&#9679;&nbsp;BRASIL</);
   });
 
-  it("renderiza `O fio condutor:` como pull-quote separado", () => {
+  it("renderiza `O fio condutor:` na caixa de fecho (contorno paper + borda bege)", () => {
     const chunk = "DESTAQUE 1 | TEMA\n\nTitle\n\nMain para.\n\nO fio condutor: Insight final.";
     const out = renderDestaque(chunk);
     assert.match(out, /Insight final\./);
-    assert.match(out, /font-style:italic/, "fio condutor deve ter estilo italic");
+    assert.match(out, /O fio condutor/, "label da caixa de fecho");
+    assert.match(out, /border:1px solid #EBE5D0/, "caixa contorno bege");
   });
 
   it("override de tema funciona (uso em LABORATÓRIO CLARICE)", () => {
     const chunk = "WHATEVER\n\nTitle\n\nBody.";
     const out = renderDestaque(chunk, "OVERRIDE LABEL");
-    assert.match(out, />OVERRIDE LABEL</);
+    assert.match(out, /&#9679;&nbsp;OVERRIDE LABEL</);
   });
 });
 
@@ -342,26 +344,28 @@ describe("renderIntro", () => {
     assert.match(out, /#00A0A0/, "label deve ser teal");
   });
 
-  it("renderiza body em italic 22px (#1955: type-scale snap 19→22)", () => {
+  it("renderiza body no tamanho do corpo (16px, sem italic — pedido do editor 2026-06-09)", () => {
     const out = renderIntro("Sumário.");
-    assert.match(out, /font-style:italic/);
-    assert.match(out, /font-size:22px/);
+    assert.match(out, /font-size:16px/);
+    assert.doesNotMatch(out, /font-style:italic/);
   });
 
-  it("renderiza com border-left bege (DS #1936: teal não é estrutura)", () => {
+  it("régua bege no kicker (DS: sem moldura border-left; teal não é estrutura)", () => {
     const out = renderIntro("Sumário.");
-    assert.match(out, /border-left:4px solid #EBE5D0/);
-    assert.doesNotMatch(out, /border-left:[0-9]px solid #00A0A0/);
+    assert.match(out, /border-bottom:1px solid #EBE5D0/); // régua do kicker
+    assert.doesNotMatch(out, /border-left/);
+    assert.doesNotMatch(out, /solid #00A0A0/);
   });
 });
 
 // ─── renderLaboratorio ─────────────────────────────────────────────────────
 
 describe("renderLaboratorio", () => {
-  it("renderiza caixa com border dashed", () => {
+  it("renderiza painel bege (DS: sem border dashed)", () => {
     const chunk = "LABORATÓRIO CLARICE\n\n**Subtítulo**\n\nPara.\n\n1. Item 1\n2. Item 2\n\nFim.";
     const out = renderLaboratorio(chunk);
-    assert.match(out, /border:2px dashed/);
+    assert.match(out, /background:#EBE5D0/);
+    assert.doesNotMatch(out, /dashed/);
     assert.match(out, /LABORATÓRIO CLARICE/);
   });
 
@@ -399,9 +403,9 @@ describe("renderClarice (DIVULGAÇÃO)", () => {
     "→ [Acesse](https://clarice.ai/precos-planos?via=diaria)",
   ].join("\n");
 
-  it("usa o mesmo box do laboratório (border dashed) com header 'Desconto exclusivo'", () => {
+  it("usa o mesmo box do laboratório (painel bege) com header 'Desconto exclusivo'", () => {
     const out = renderClarice(chunk);
-    assert.match(out, /border:2px dashed/);
+    assert.match(out, /background:#EBE5D0/);
     assert.match(out, /Desconto exclusivo/);
   });
   it("NÃO mostra o rótulo interno 'CLARICE — DIVULGAÇÃO'", () => {
@@ -411,7 +415,8 @@ describe("renderClarice (DIVULGAÇÃO)", () => {
   });
   it("renderiza o subtítulo como h3 e mantém o CTA com via=diaria", () => {
     const out = renderClarice(chunk);
-    assert.match(out, /<h3[^>]*>Escreva melhor em português com a Clarice\.ai<\/h3>/);
+    // "Clarice.ai" em texto puro ganha o word-joiner anti auto-linkify (&#8288;)
+    assert.match(out, /<h3[^>]*>Escreva melhor em português com a Clarice\.&#8288;ai<\/h3>/);
     assert.match(out, /clarice\.ai\/precos-planos\?via=diaria/);
   });
 });
@@ -597,9 +602,10 @@ describe("wrapEmail", () => {
     const out = wrapEmail("S", ["<p>parte 1</p>", "<p>parte 2</p>"]);
     assert.match(out, /<p>parte 1<\/p>/);
     assert.match(out, /<p>parte 2<\/p>/);
-    // Divider tem hr inside
-    const dividerMatches = out.match(/<hr style="border:none;border-top:1px solid #EBE5D0;"/g);
-    assert.equal(dividerMatches?.length, 1, "Esperava 1 divider bege entre 2 parts");
+    // DS: sem <hr> — divider é só respiro vertical (régua vive no kicker)
+    const dividerMatches = out.match(/<div style="line-height:28px;font-size:0;">/g);
+    assert.equal(dividerMatches?.length, 1, "Esperava 1 spacer entre 2 parts");
+    assert.doesNotMatch(out, /<hr/);
   });
 
   it("zero bodyParts produz HTML válido (só wrapper, sem body)", () => {
@@ -671,7 +677,7 @@ P
 Texto do lab.`);
     const r = draftToEmail(draft, null, "2604");
     assert.match(r.html, /<h3[^>]*>Tutorial sub<\/h3>/);
-    assert.match(r.html, /border:2px dashed/);
+    assert.match(r.html, /background:#EBE5D0/); // painel bege (era dashed)
   });
 
   it("INTRO renderiza com label 'Resumo do mês'", () => {
