@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -97,6 +97,30 @@ describe("render-newsletter-html CLI — aviso stdout não-TTY (#2012)", () => {
         /AVISO.*stdout.*n.o.*TTY/i,
         "não deve avisar quando --out especificado",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--out cria _internal/ se ainda não existir (mkdirSync guard #2042)", () => {
+    // Regressão: antes do fix, writeFileSync(outPath) lançava ENOENT quando
+    // _internal/ não existia. Simula invocação standalone sem Stage 0.
+    // makeEditionDir() cria _internal/; removemos antes de chamar o script
+    // pra simular o caso edge onde o diretório não existe.
+    const dir = makeEditionDir();
+    const internalDir = join(dir, "_internal");
+    const outPath = join(internalDir, "newsletter-draft.html");
+    // Remover _internal/ criado por makeEditionDir() — simula standalone sem Stage 0.
+    rmSync(internalDir, { recursive: true, force: true });
+    assert.ok(!existsSync(internalDir), "pré-condição: _internal/ deve não existir");
+    try {
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, dir, "--out", outPath],
+        { encoding: "utf8", cwd: PROJECT_ROOT },
+      );
+      assert.equal(r.status, 0, `script deve sair 0 (criou _internal/); stderr: ${r.stderr}`);
+      assert.ok(existsSync(outPath), "_internal/newsletter-draft.html deve existir após --out");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

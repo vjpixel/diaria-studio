@@ -135,7 +135,9 @@ function main(): void {
   }
 
   if (outPath) {
-    writeFileSync(resolve(ROOT, outPath), output + "\n");
+    const resolvedOut = resolve(ROOT, outPath);
+    mkdirSync(dirname(resolvedOut), { recursive: true }); // garantir que _internal/ existe (#2042)
+    writeFileSync(resolvedOut, output + "\n");
     console.error(`Written to ${outPath}`);
   } else {
     // #2012: quando stdout não é TTY (pipe / redirect) e --out está ausente,
@@ -149,7 +151,7 @@ function main(): void {
           `O ${outputLabel} será escrito no stdout — se estiver redirecionando para /dev/null ou ` +
           "similar, o arquivo em disco NÃO será atualizado. " +
           "Use --out <path> para gravar explicitamente (ex: --out " +
-          `{edition_dir}/_internal/newsletter-draft.html).\n`,
+          `${resolvedDir}/_internal/newsletter-draft.html).\n`,
       );
     }
     process.stdout.write(output);

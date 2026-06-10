@@ -196,10 +196,9 @@ export function checkHtmlFreshness(
 
   // Verificação primária: draft deve ser mais novo que 02-reviewed.md.
   // Se draftHtmlPath foi passado e existe, usa-o (cadeia de freshness real da
-  // pipeline). Se não existe (draft em /tmp/ ou não gerado), cai em final vs
-  // reviewed como proxy.
+  // pipeline). Se não existe em _internal/ (ex: chamada sem render prévia),
+  // cai em final vs reviewed como proxy.
   const draftMtime = draftHtmlPath !== undefined ? mtimeMs(draftHtmlPath) : null;
-  const primaryPath = draftMtime !== null ? draftHtmlPath! : finalHtmlPath;
   const primaryMtime = draftMtime !== null ? draftMtime : mtimeMs(finalHtmlPath);
   if (primaryMtime === null) return null; // arquivo ausente — sem verificação.
 
