@@ -1,5 +1,5 @@
 /**
- * agent-issue-validator.ts (#1421)
+ * agent-issue-validator.ts (#1421, #2013)
  *
  * Cross-check determinístico dos issues retornados por `review-test-email`
  * agent (Haiku). O agent tem viés de encoding em ambientes WSL/locale —
@@ -17,6 +17,13 @@
  *     no HTML local.
  *   - `email:vote_edition_malformed` — checa se `&edition={AAMMDD}` ou
  *     `?edition={AAMMDD}` aparecem corretamente no HTML.
+ *   - `email:link_dead` (#2013) — re-verifica o link com HEAD (fallback GET)
+ *     e UA de browser; 2xx/3xx = FP. 403 em *.beehiiv.com = FP de bot-block.
+ *   - `email:section_missing` (#2013) — grep da section label no HTML local
+ *     (byte-idêntico ao corpo enviado); label presente = FP de truncamento.
+ *   - `email:encoding_drop` de emoji em header de seção (#2013) — DS #1936
+ *     renderiza headers SEM emoji (stripKickerEmoji); emoji de seção ausente
+ *     no header é by-design, não corruption.
  *
  * Outros tipos passam através (caller decide o que fazer).
  *
@@ -182,25 +189,339 @@ export function isMergeTagUnexpandedFalsePositive(
   return { falsePositive: false };
 }
 
+// ---------------------------------------------------------------------------
+// #2013 — 3 classes novas de FP (link_dead falso, section_missing por
+// truncamento, encoding_drop de emoji em header de seção)
+// ---------------------------------------------------------------------------
+
+/**
+ * #2013: Emojis de header de seção da newsletter.
+ *
+ * O DS #1936 renderiza headers via `renderKicker(label)` que chama
+ * `stripKickerEmoji(label)` — o emoji é REMOVIDO na saída HTML. Existe
+ * apenas no MD source. Se o agent reporta `encoding_drop` citando um
+ * desses emojis como ausente num header, é falso-positivo by-design.
+ *
+ * Lista derivada de `context/templates/newsletter.md` + `section-naming.ts`.
+ */
+export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
+  "🚀", // LANÇAMENTOS
+  "📡", // RADAR
+  "🛠️", // USE MELHOR (inclui variation selector U+FE0F)
+  "🎁", // SORTEIO
+  "🙋", // PARA ENCERRAR (base — variantes com skin-tone são prefixadas com este)
+  "🙋🏼‍♀️", // PARA ENCERRAR (sequência completa com skin-tone)
+  "💼", // categoria de negócios (usado em DESTAQUE labels)
+  "🌐", // categoria global/internacional
+  "📺", // VÍDEOS
+  "🔬", // PESQUISAS (legacy)
+  "📰", // OUTRAS NOTÍCIAS (legacy)
+  "⚖️", // categoria jurídico/regulação
+  "🇧🇷", // Brasil
+]);
+
+/**
+ * #2013: Pure — decide se um `email:encoding_drop` reportando emoji ausente
+ * é falso-positivo porque o DS #1936 remove emojis de headers por design.
+ *
+ * Critério: o issue cita exatamente 1 termo entre aspas que é um dos emojis
+ * de section header canônicos (SECTION_HEADER_EMOJIS) E o contexto menciona
+ * "header", "seção", "section", "kicker" ou o nome de uma seção conhecida.
+ *
+ * Sem o gate de contexto, um emoji GENUINAMENTE ausente no corpo do email
+ * (fora de um header) também seria dropado por engano.
+ *
+ * Code-review: NÃO dropa quando há múltiplos termos (um deles pode ser
+ * texto real com encoding real, não só o emoji) — nesse caso volta pra
+ * checagem normal de `isEncodingDropFalsePositive`.
+ */
+export function isEncodingDropSectionEmojiByDesign(
+  issue: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:encoding_drop/i.test(issue)) return { falsePositive: false };
+  const terms = extractQuotedTerms(issue);
+  // Só casa quando o único termo citado é um emoji de header — múltiplos termos
+  // passam pra verificação normal (pode ter texto real + emoji misturados).
+  if (terms.length !== 1) return { falsePositive: false };
+  const [term] = terms;
+  // Verifica se o termo é um emoji de section header (ou começa com um deles —
+  // sequências com skin-tone podem ter substring da lista).
+  const isHeaderEmoji = SECTION_HEADER_EMOJIS.has(term) ||
+    [...SECTION_HEADER_EMOJIS].some((e) => term.startsWith(e) || e.startsWith(term));
+  if (!isHeaderEmoji) return { falsePositive: false };
+  // Gate de contexto: precisa mencionar header/seção OU nome canônico de seção.
+  const hasHeaderContext =
+    /header|kicker|se[çc][ãa]o|section|la[nç][çc]amento|radar|use\s+melhor|sorteio|encerrar|v[íi]deos?/i.test(issue);
+  if (!hasHeaderContext) return { falsePositive: false };
+  return {
+    falsePositive: true,
+    reason: `DS #1936: emoji '${term}' é removido de headers por renderKicker/stripKickerEmoji — ausência by-design (#2013)`,
+  };
+}
+
+/**
+ * #2013: Pure — decide se um `email:section_missing` é falso-positivo por
+ * leitura truncada do Gmail, fazendo grep do label da seção no HTML local
+ * (byte-idêntico ao corpo enviado).
+ *
+ * O DS #1936 renderiza seções com `renderKicker(label)` que produz HTML com
+ * `text-transform:uppercase`. O label textual no HTML é o resultado de
+ * `stripKickerEmoji(label)` — sem emoji, mas com o nome original da seção
+ * (ex: "LANÇAMENTOS", "Sorteio", "Para encerrar"). Normalizamos para
+ * comparação case-insensitive para cobrir variações de capitalização.
+ *
+ * Extrai o nome da seção da issue via pattern `'section_name'` (aspas) ou
+ * o sufixo após `email:section_missing:`. Se o nome normalizado aparecer no
+ * HTML local → FP (a seção existe, o agent só leu o email truncado).
+ *
+ * Limitação: match simples por substring — não valida se a seção tem conteúdo.
+ * Mas "seção ausente + encontrada no HTML" é sempre FP de truncamento (se o
+ * HTML local é correto, a seção está lá e o Beehiiv vai renderizar).
+ */
+export function isSectionMissingFalsePositive(
+  issue: string,
+  htmlLocal: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:section_missing/i.test(issue)) return { falsePositive: false };
+
+  // Extrair o nome da seção: primeiro tenta aspas simples, depois o texto após ':'
+  const quotedTerms = extractQuotedTerms(issue);
+  const candidates: string[] = [];
+
+  if (quotedTerms.length > 0) {
+    candidates.push(...quotedTerms);
+  } else {
+    // Fallback: pega o texto após o último ':' e extrai o nome da seção.
+    // O formato é "email:section_missing: SECTION_NAME resto_do_texto".
+    // Nomes de seção conhecidos são multi-palavra (ex: "OUTRAS NOTÍCIAS", "USE MELHOR",
+    // "PARA ENCERRAR") — testar do mais longo para o mais curto. Se nenhum casar,
+    // pegar o primeiro token antes do primeiro espaço (heurística simples).
+    const colonIdx = issue.lastIndexOf(":");
+    if (colonIdx >= 0) {
+      const suffix = issue.slice(colonIdx + 1).trim();
+      if (suffix.length > 0) {
+        // Nomes canônicos em ordem de especificidade (mais longo primeiro).
+        const knownSectionNames = [
+          "OUTRAS NOTÍCIAS", "OUTRA NOTÍCIA", "USE MELHOR",
+          "PARA ENCERRAR", "LANÇAMENTOS", "LANÇAMENTO",
+          "RADAR", "SORTEIO", "VÍDEOS", "VÍDEO", "PESQUISAS", "PESQUISA",
+          "É IA?", "DESTAQUE",
+        ];
+        let matched = false;
+        for (const name of knownSectionNames) {
+          if (suffix.toUpperCase().startsWith(name)) {
+            candidates.push(name);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          // Heurística: primeiro token separado por espaço ou pontuação
+          const firstToken = suffix.split(/\s+/)[0].replace(/[,;:.]$/, "");
+          if (firstToken.length > 0) candidates.push(firstToken);
+        }
+      }
+    }
+  }
+
+  if (candidates.length === 0) return { falsePositive: false };
+
+  // Normaliza o HTML para comparação: strip de emojis de seção e lowercase
+  const htmlNorm = htmlLocal.toLowerCase();
+
+  for (const candidate of candidates) {
+    // Remove emojis do início do candidate (o agent pode incluir o emoji do MD)
+    const stripped = candidate
+      .replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s*/u, "")
+      .trim();
+    if (stripped.length === 0) continue;
+
+    const norm = stripped.toLowerCase();
+    if (htmlNorm.includes(norm)) {
+      return {
+        falsePositive: true,
+        reason: `section_missing falso-positivo: '${stripped}' encontrada no HTML local — agent leu email truncado (#2013)`,
+      };
+    }
+  }
+
+  return { falsePositive: false };
+}
+
+// ---------------------------------------------------------------------------
+// #2013: re-verificação de link_dead com fetch real
+// ---------------------------------------------------------------------------
+
+/** Tipo de fetch injetável (testabilidade — testes NUNCA fazem fetch real). */
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** User-Agent de browser pra evitar bot-block em HEAD simples. */
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+/** Timeout curto para re-verificação (não queremos stall o loop). */
+const REVERIFY_TIMEOUT_MS = 8000;
+
+/**
+ * Extrai a URL de uma string de issue `email:link_dead: {url} → ...`.
+ * Retorna null se não houver URL reconhecível.
+ */
+export function extractLinkDeadUrl(issue: string): string | null {
+  // Padrão: "email:link_dead: https://... → HTTP NNN" ou variações
+  const m = issue.match(/email:link_dead[^:]*:\s*(https?:\/\/[^\s→>]+)/i);
+  if (m) return m[1].trim();
+  return null;
+}
+
+/**
+ * #2013: Pure (async) — decide se um `email:link_dead` é falso-positivo
+ * fazendo fetch real (HEAD, fallback GET) com UA de browser.
+ *
+ * Regras:
+ *   - HTTP 2xx ou 3xx → FP (link vivo, bot-block na primeira tentativa do agent)
+ *   - HTTP 403 em domínio *.beehiiv.com → FP (bot-protection conhecida)
+ *   - Qualquer outro 4xx/5xx ou timeout → verdadeiro positivo (mantém issue)
+ *
+ * A `fetchFn` é injetável para testabilidade — testes NUNCA usam o fetch global.
+ * Em produção, passar `globalThis.fetch` ou omitir.
+ *
+ * Code-review: só casa `email:link_dead`. Outros prefixos (link_timeout,
+ * link_redirect_chain_long) não são re-verificados — têm semântica diferente.
+ */
+export async function isLinkDeadFalsePositive(
+  issue: string,
+  fetchFn: FetchFn,
+): Promise<{ falsePositive: true; reason: string } | { falsePositive: false }> {
+  if (!/^email:link_dead/i.test(issue)) return { falsePositive: false };
+
+  const url = extractLinkDeadUrl(issue);
+  if (!url) return { falsePositive: false };
+
+  // FP known: 403 em *.beehiiv.com (bot-protection — página existe pra humanos)
+  try {
+    const hostname = new URL(url).hostname;
+    if (hostname.endsWith(".beehiiv.com") || hostname === "beehiiv.com") {
+      // Fazer o request pra confirmar o 403 (não assumir só pelo hostname)
+      const status = await headOrGet(url, fetchFn);
+      if (status === 403) {
+        return {
+          falsePositive: true,
+          reason: `link_dead falso-positivo: ${url} → HTTP 403 em *.beehiiv.com (bot-protection conhecida, página existe pra humanos — #2013)`,
+        };
+      }
+      if (status !== null && status >= 200 && status < 400) {
+        return {
+          falsePositive: true,
+          reason: `link_dead falso-positivo: ${url} → HTTP ${status} na re-verificação (link vivo — #2013)`,
+        };
+      }
+      return { falsePositive: false };
+    }
+  } catch {
+    // URL mal-formada — não dá pra re-verificar
+    return { falsePositive: false };
+  }
+
+  // Re-verificação geral: HEAD, fallback GET
+  const status = await headOrGet(url, fetchFn);
+  if (status !== null && status >= 200 && status < 400) {
+    return {
+      falsePositive: true,
+      reason: `link_dead falso-positivo: ${url} → HTTP ${status} na re-verificação (link vivo — #2013)`,
+    };
+  }
+
+  return { falsePositive: false };
+}
+
+/**
+ * Faz HEAD, com fallback GET se o servidor rejeitar HEAD (alguns CDNs retornam
+ * 405 Method Not Allowed). Retorna o status final ou null em caso de timeout/erro.
+ *
+ * Interno — não exportado.
+ */
+async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> {
+  const headers = { "User-Agent": BROWSER_UA };
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), REVERIFY_TIMEOUT_MS);
+  try {
+    const res = await fetchFn(url, {
+      method: "HEAD",
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (res.status === 405) {
+      // HEAD rejeitado — tentar GET
+      clearTimeout(t);
+      const controller2 = new AbortController();
+      const t2 = setTimeout(() => controller2.abort(), REVERIFY_TIMEOUT_MS);
+      try {
+        const res2 = await fetchFn(url, {
+          method: "GET",
+          headers,
+          redirect: "follow",
+          signal: controller2.signal,
+        });
+        return res2.status;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(t2);
+      }
+    }
+    return res.status;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// filterAgentIssues — integração de todas as classes
+// ---------------------------------------------------------------------------
+
 /**
  * Cross-check de uma lista de issues contra o HTML local. Drop os que são
  * falso-positivos verificáveis; mantém os outros (incluindo tipos não
  * conhecidos — caller decide).
  *
- * @param issues   array de strings no formato `email:tipo: detalhe`
- * @param htmlLocal HTML renderizado localmente — fonte de verdade
+ * Versão assíncrona (#2013): aceita `fetchFn` opcional para re-verificar
+ * links reportados como mortos. Se omitida, o check `link_dead` é pulado
+ * (comportamento síncrono compatível com v1421).
+ *
+ * Tipos cobertos:
+ *   Síncronos: encoding_drop, poll_sig_missing, vote_edition_malformed,
+ *              merge_tag_unexpanded, bold_missing, italic_missing,
+ *              encoding_drop (emoji de header — DS by-design), section_missing.
+ *   Assíncrono (requer fetchFn): link_dead re-verificação.
+ *
+ * @param issues      array de strings no formato `email:tipo: detalhe`
+ * @param htmlLocal   HTML renderizado localmente — fonte de verdade
  * @param editionDate AAMMDD da edição (necessário pra vote_edition validation)
+ * @param fetchFn     (opcional) função de fetch injetável pro check link_dead.
+ *                    Testes NUNCA usam fetch real — passar mock ou omitir pra
+ *                    pular o check de rede.
  */
-export function filterAgentIssues(
+export async function filterAgentIssues(
   issues: string[],
   htmlLocal: string,
   editionDate: string,
-): FilterResult {
+  fetchFn?: FetchFn,
+): Promise<FilterResult> {
   const kept: string[] = [];
   const dropped: Array<{ issue: string; reason: string }> = [];
 
   for (const issue of issues) {
     if (issue.startsWith("email:encoding_drop")) {
+      // #2013: verificar primeiro se é emoji de header (by-design) — antes do
+      // check de encoding genérico, pois o emoji não vai estar no HTML local.
+      const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
+      if (emojiCheck.falsePositive) {
+        dropped.push({ issue, reason: emojiCheck.reason });
+        continue;
+      }
       const r = isEncodingDropFalsePositive(issue, htmlLocal);
       if (r.falsePositive) {
         dropped.push({ issue, reason: r.reason });
@@ -214,6 +535,21 @@ export function filterAgentIssues(
       }
     } else if (issue.startsWith("email:vote_edition_malformed")) {
       const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
+      if (r.falsePositive) {
+        dropped.push({ issue, reason: r.reason });
+        continue;
+      }
+    } else if (issue.startsWith("email:section_missing")) {
+      // #2013: grep da section label no HTML local — presente = FP de truncamento.
+      const r = isSectionMissingFalsePositive(issue, htmlLocal);
+      if (r.falsePositive) {
+        dropped.push({ issue, reason: r.reason });
+        continue;
+      }
+    } else if (issue.startsWith("email:link_dead") && fetchFn) {
+      // #2013: re-verificação de link com fetch real (injetável, só quando fetchFn
+      // disponível — sem fetchFn, o check é pulado e o issue passa pra kept).
+      const r = await isLinkDeadFalsePositive(issue, fetchFn);
       if (r.falsePositive) {
         dropped.push({ issue, reason: r.reason });
         continue;
