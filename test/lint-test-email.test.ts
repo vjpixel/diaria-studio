@@ -176,7 +176,7 @@ describe("runLints (#2043) — intentional_error:none não bypassa Checks 8/9", 
   const noErrorIntentional: IntentionalError[] = [
     {
       edition: NO_ERROR_EDITION,
-      error_type: "no_error" as ReturnType<typeof String>,
+      error_type: "no_error",
       is_feature: false,
       no_error: true,
     },
@@ -237,14 +237,15 @@ empresa cresceu 10% em 2 anos.`;
     assert.equal(blockers.length, 1, "subject_mismatch deve ser blocker mesmo com intentional_error:none");
   });
 
-  it("edição sem no_error + versão consistente → nenhum blocker", () => {
+  it("no_error=true + email consistente → nenhum blocker (#2043)", () => {
     const email = `DESTAQUE 1 | X
 
 V4 lança.
 
 V4 superou.`;
     const source = email;
-    const result = runLints(email, source, "260506", NO_INTENTIONAL);
-    assert.equal(result.summary.blockers, 0);
+    const result = runLints(email, source, NO_ERROR_EDITION, noErrorIntentional);
+    assert.equal(result.summary.blockers, 0,
+      "no_error=true + email consistente não deve gerar blocker");
   });
 });

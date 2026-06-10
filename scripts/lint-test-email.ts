@@ -15,11 +15,11 @@
  *
  * Uso:
  *   npx tsx scripts/lint-test-email.ts \
- *     --email-file /tmp/test-email.txt \
+ *     --email-file data/editions/260506/_internal/test-email-260506.txt \
  *     --source-md data/editions/260506/02-reviewed.md \
  *     --edition 260506 \
  *     [--intentional-errors data/intentional-errors.jsonl] \
- *     [--out /tmp/lint-result.json]
+ *     [--out data/editions/260506/_internal/lint-result-260506.json]
  *
  * Output (JSON em stdout ou no arquivo --out):
  *   {

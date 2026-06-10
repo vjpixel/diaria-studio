@@ -9,7 +9,7 @@
  *  2. lint intentional-error-flagged passa com `none`
  *  3. sync-intentional-error grava entry com no_error=true
  *  4. list-month-errors agrega edição `none` como "sem erro"
- *  5. runLints (lint-test-email) bypassa body checks com no_error entry
+ *  5. runLints (lint-test-email) Checks 8/9 sempre rodam mesmo com no_error (#2016/#2043)
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
