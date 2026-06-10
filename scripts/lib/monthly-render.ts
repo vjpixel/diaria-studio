@@ -105,6 +105,19 @@ export function renderInline(text: string): string {
 }
 
 /**
+ * Kicker de seção no padrão DS/diária: ● teal + label + régua hairline bege à
+ * direita (espelha renderKicker da diária). letter-spacing 2px, Geist 12px bold.
+ */
+export function renderKicker(label: string): string {
+  return (
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px 0;"><tr>` +
+    `<td style="white-space:nowrap;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:${TEAL};padding:0 12px 0 0;">&#9679;&nbsp;${escHtml(label)}</td>` +
+    `<td width="100%" style="border-bottom:1px solid ${BEGE};font-size:0;line-height:0;">&nbsp;</td>` +
+    `</tr></table>`
+  );
+}
+
+/**
  * Renders blank-line-separated blocks. Cada bloco é renderizado como `<p>`
  * por padrão, ou como `<ul>` / `<ol>` se todas as linhas forem itens de lista.
  *
@@ -190,9 +203,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
 
   // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
-  const label = tema
-    ? `<p style="margin:0 0 4px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;color:${TEAL};text-transform:uppercase;font-family:${FONT_SANS};">${escHtml(tema)}</p>`
-    : "";
+  const label = tema ? renderKicker(tema) : "";
   const titleHtml = title
     ? `<h2 style="margin:0 0 20px 0;font-size:26px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;">${renderInline(title)}</h2>`
     : "";
@@ -226,15 +237,14 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
  * Estrutura: label teal "RESUMO DO MÊS" + parágrafo italic com border-left teal.
  */
 export function renderIntro(body: string): string {
-  const labelHtml = `<p style="margin:0 0 10px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">Resumo do mês</p>`;
   const paras = body.split(/\n\n+/).filter((p) => p.trim());
   const bodyHtml = paras
     .map((p) => {
       const inline = renderInline(p.trim().replace(/\n/g, " "));
-      return `<p style="margin:0 0 16px 0;font-size:22px;font-style:italic;color:${INK};line-height:1.6;">${inline}</p>`;
+      return `<p style="margin:0 0 16px 0;font-size:16px;color:${INK};line-height:1.7;">${inline}</p>`;
     })
     .join("\n");
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0;"><tr><td style="padding:8px 0 8px 20px;border-left:4px solid ${BEGE};">${labelHtml}${bodyHtml}</td></tr></table>`;
+  return renderKicker("Resumo do mês") + bodyHtml;
 }
 
 /**
@@ -309,15 +319,14 @@ export function renderClariceBox(chunk: string, headerLabelText: string): string
     }
   }
 
-  const headerLabel = `<p style="margin:0 0 8px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(headerLabelText)}</p>`;
   const subtitleHtml = subtitle
     ? `<h3 style="margin:0 0 16px 0;font-size:22px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
     : "";
 
   return [
-    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:2px dashed ${INK};border-radius:4px;background:${PAPER};">`,
+    renderKicker(headerLabelText),
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-radius:12px;background:${BEGE};">`,
     `<tr><td style="padding:24px 28px;">`,
-    headerLabel,
     subtitleHtml,
     renderedBlocks.join("\n"),
     `</td></tr></table>`,
@@ -341,7 +350,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   const lines = chunk.split("\n");
   const content = lines.slice(1).join("\n").trim();
 
-  const header = `<p style="margin:0 0 24px 0;font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};font-family:${FONT_SANS};">${escHtml(displayTitle)}</p>`;
+  const header = renderKicker(displayTitle);
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -452,19 +461,12 @@ export function renderEia(
     return `<td width="50%" valign="top" style="padding:0 6px 12px 6px;" class="mob-stack">${inner}</td>`;
   };
 
-  return `
-<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:10px;margin:0;">
+  return renderKicker("É IA?") + `
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:0;">
   <tr><td style="padding:24px 28px 20px;">
 
-    <!-- Cabeçalho -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 16px;">
-      <tr>
-        <td style="font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:0.12em;text-transform:uppercase;color:${TEAL};">🤔 É IA?</td>
-      </tr>
-      <tr>
-        <td align="center" style="font-family:${FONT_SANS};font-size:22px;color:${INK};padding:8px 0 0;">Clique na imagem que foi gerada por IA.</td>
-      </tr>
-    </table>
+    <!-- Título -->
+    <p style="margin:0 0 16px;font-family:${FONT_SERIF};font-size:26px;line-height:1.2;color:${INK};">Clique na imagem que foi gerada por IA.</p>
 
     <!-- Imagens A / B lado a lado (clicáveis, sem botão) -->
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 4px;">
@@ -475,7 +477,7 @@ export function renderEia(
     </table>
 
     <!-- Crédito -->
-    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;font-style:italic;color:${INK};">${renderInline(content)}</p>
+    <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">${renderInline(content)}</p>
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
@@ -556,7 +558,9 @@ export function parseHeaderChunk(chunk: string): {
 /** Wraps rendered HTML parts in a full email document. */
 export function wrapEmail(subject: string, bodyParts: string[]): string {
   // #1935: régua entre seções no teal da marca (era cinza #e0e0e0).
-  const divider = `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:28px 0;"><tr><td><hr style="border:none;border-top:1px solid ${BEGE};" /></td></tr></table>`;
+  // #DS: sem <hr> entre seções — a régua vive ao lado do kicker (renderKicker),
+  // como na diária. Aqui só um respiro vertical entre os blocos.
+  const divider = `<div style="line-height:28px;font-size:0;">&nbsp;</div>`;
   const body = bodyParts.join(divider);
 
   return `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
