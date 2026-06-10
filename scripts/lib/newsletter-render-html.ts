@@ -311,7 +311,9 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
   // título serif (marcador removido) + demais peso normal, igual ao caminho
-  // sem imagem (#1938). 1 parágrafo mantém o estilo atual (peso 600, emoji preservado).
+  // sem imagem (#1938). 1 parágrafo: a imagem já identifica a promo — marcador
+  // (📚/🎉) removido e corpo no estilo de texto do DS (peso normal, 1.62),
+  // não o bold 600 herdado do box texto-puro (pedido do editor, 260611).
   const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const bodyHtml =
     bodyParas.length > 1
@@ -323,7 +325,7 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
               `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
           )
           .join("\n      ")
-      : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(body)}</p>`;
+      : `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(body))}</p>`;
   return `<!-- mid callout com imagem (promo página de livros) -->
 <tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
