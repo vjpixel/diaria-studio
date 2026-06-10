@@ -344,6 +344,59 @@ describe("lintCommentDiariaCount (#2014)", () => {
     assert.match(fixed, /{edition_url}/);
   });
 
+  it("modo fix (#2033): NÃO altera 'mais N destaques' em ## post_pixel ou main post", () => {
+    // post_pixel pode conter frases como "confira os mais 9 destaques curados" — o fix
+    // só deve corrigir a frase canônica do CTA ("mais N destaques de IA do dia").
+    // Construímos um fixture que contém ## post_pixel explicitamente, pois
+    // SOCIAL_WITH_COMMENTS não tem essa seção.
+    const socialWithPixelSection = `# LinkedIn
+
+## d1
+
+Post principal d1. Confira os mais 9 destaques curados nesta edição.
+
+### comment_diaria
+
+Edição completa com mais 9 destaques de IA do dia em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Opinião do Pixel sobre d1.
+
+## post_pixel
+
+Confira os mais 9 destaques curados desta edição — seleção cuidadosa de IA.
+
+# Facebook
+
+## d1
+
+Post Facebook d1.
+`;
+    const { fixed } = lintCommentDiariaCount(socialWithPixelSection, APPROVED_13_ITEMS, { fix: true });
+    // O número 9 na frase sem "de IA do dia" (post_pixel e main post) deve permanecer
+    assert.match(fixed, /mais 9 destaques curados/, "post_pixel não deve ser alterado pelo --fix");
+    assert.match(fixed, /Post principal d1. Confira os mais 9 destaques curados/, "main post não deve ser alterado pelo --fix");
+    // O número 9 no comment_diaria deve ser corrigido para 10
+    assert.doesNotMatch(fixed, /mais 9 destaques de IA do dia/, "comment_diaria deve ser corrigido");
+    assert.match(fixed, /mais 10 destaques de IA do dia/, "comment_diaria deve ter o número correto");
+  });
+
+  it("placeholder {outros_count} literal → finding com unresolved_placeholder=true (#2033)", () => {
+    // Se o LLM escreve o placeholder literal em vez do número resolvido,
+    // o texto "mais {outros_count} destaques de IA do dia" publica broken.
+    const socialWithPlaceholder = SOCIAL_WITH_COMMENTS.replace(
+      /mais 9 destaques de IA do dia/g,
+      "mais {outros_count} destaques de IA do dia",
+    );
+    const { findings } = lintCommentDiariaCount(socialWithPlaceholder, APPROVED_13_ITEMS);
+    assert.equal(findings.length, 3, "deve ter finding pra cada destaque com placeholder literal");
+    assert.ok(findings[0].unresolved_placeholder, "finding deve indicar unresolved_placeholder");
+    assert.ok(isNaN(findings[0].found), "found deve ser NaN para placeholder não-resolvido");
+  });
+
   it("approved sem 01-approved.json (buckets ausentes) → comportamento gracioso", () => {
     // Se approved.json não tem campos de bucket, computeOutrosCount retorna 0
     const approvedMinimal = { highlights: [{ article: { title: "D1", summary: "s" } }] };

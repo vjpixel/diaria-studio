@@ -20,10 +20,10 @@
  *     --social data/editions/260602/03-social.md \
  *     --approved data/editions/260602/_internal/01-approved.json
  *
- * Output (stdout JSON): { ok, unsourced: [{figure, context}], checked }
+ * Output (stdout JSON): { ok: boolean, num_findings: DestaqueFinding[], count_findings: CommentCountFinding[] }
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -246,10 +246,12 @@ const COMMENT_COUNT_RE = /mais\s+(\d+)\s+destaques/gi;
 export interface CommentCountFinding {
   /** Destaque (1, 2, 3) onde o count_diaria foi encontrado e está errado. */
   destaque: number;
-  /** Número encontrado no texto do comment_diaria. */
+  /** Número encontrado no texto do comment_diaria (NaN quando placeholder não-resolvido). */
   found: number;
   /** Número esperado (calculado de approved.json). */
   expected: number;
+  /** true quando o placeholder literal `{outros_count}` não foi resolvido pelo LLM. */
+  unresolved_placeholder?: true;
 }
 
 /**
@@ -309,12 +311,12 @@ export function parseCommentDiariaByDestaque(socialMd: string): Map<number, stri
 
 /**
  * Valida a contagem "mais N destaques" nos `### comment_diaria` do social.
- * Retorna findings pra cada destaque onde a contagem diverge do approved.json.
+ * Retorna findings pra cada destaque onde a contagem diverge do approved.json,
+ * incluindo o caso de placeholder não-resolvido `{outros_count}` literal.
  *
  * Se `fix = true`, retorna também o `socialMd` corrigido (substituição inline).
- * A correção é aplicada globalmente no texto (todas as ocorrências de
- * "mais {found} destaques" → "mais {expected} destaques") — seguro porque
- * o pattern é exclusivo do comment_diaria e não aparece nos main posts.
+ * A correção é ancorada à frase canônica do CTA ("mais N destaques de IA do dia")
+ * para não afetar seções como `## post_pixel` que podem conter frases semelhantes.
  */
 export function lintCommentDiariaCount(
   socialMd: string,
@@ -326,6 +328,11 @@ export function lintCommentDiariaCount(
   const findings: CommentCountFinding[] = [];
 
   for (const [destaque, text] of [...commentsByDestaque.entries()].sort((a, b) => a[0] - b[0])) {
+    // Detectar placeholder literal não-resolvido pelo LLM (#2033)
+    if (/\{outros_count\}/.test(text)) {
+      findings.push({ destaque, found: NaN, expected, unresolved_placeholder: true });
+      continue; // um finding por destaque basta
+    }
     const matches = [...text.matchAll(COMMENT_COUNT_RE)];
     for (const m of matches) {
       const found = parseInt(m[1], 10);
@@ -338,14 +345,16 @@ export function lintCommentDiariaCount(
 
   let fixed = socialMd;
   if (opts.fix && findings.length > 0) {
-    // Para cada finding, substituir globalmente a ocorrência errada.
-    // Usamos um Set de valores 'found' pra não substituir o mesmo número duas vezes
-    // (caso raro de dois destaques com o mesmo número errado).
-    const toReplace = new Set(findings.map((f) => f.found));
+    // Substituição ancorada à frase canônica do CTA ("mais N destaques de IA do dia")
+    // para não afetar seções como `## post_pixel` que podem conter texto semelhante.
+    // Usamos um Set de valores 'found' (excluindo NaN = placeholder) pra não
+    // substituir o mesmo número duas vezes (caso raro de dois destaques com o mesmo
+    // número errado).
+    const toReplace = new Set(findings.map((f) => f.found).filter((n) => !isNaN(n)));
     for (const wrongN of toReplace) {
       fixed = fixed.replace(
-        new RegExp(`mais\\s+${wrongN}\\s+destaques`, "gi"),
-        `mais ${expected} destaques`,
+        new RegExp(`(mais\\s+)${wrongN}(\\s+destaques\\s+de\\s+IA\\s+do\\s+dia)`, "gi"),
+        `$1${expected}$2`,
       );
     }
   }
@@ -410,7 +419,9 @@ function main(): void {
       console.error(`  - d${f.destaque}: encontrou ${f.found}, esperado ${f.expected}`);
     }
     if (doFix) {
-      writeFileSync(socialPath, fixed, "utf8");
+      const tmpPath = socialPath + ".tmp";
+      writeFileSync(tmpPath, fixed, "utf8");
+      renameSync(tmpPath, socialPath);
       console.error(`  [fix] ${socialPath} atualizado.`);
       socialMd = fixed;
     }
