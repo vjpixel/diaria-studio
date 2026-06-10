@@ -568,6 +568,11 @@ describe("lint-social-numbers CLI (#2044) — unresolved_placeholder com --fix",
 
       // NÃO deve mencionar "IMPOSSÍVEL" (que é mensagem do placeholder)
       assert.doesNotMatch(result.stderr, /IMPOSSÍVEL/i);
+
+      // Verificar que o arquivo foi de fato atualizado com o número correto
+      const contentAfter = readFileSync(socialPath, "utf8");
+      assert.match(contentAfter, /mais 10 destaques de IA do dia/, "arquivo deve conter o número correto após --fix");
+      assert.doesNotMatch(contentAfter, /mais 9 destaques de IA do dia/, "número errado não deve mais constar após --fix");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

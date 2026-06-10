@@ -18,7 +18,7 @@
  * Uso:
  *   npx tsx scripts/lint-social-numbers.ts \
  *     --social data/editions/260602/03-social.md \
- *     --approved data/editions/260602/_internal/01-approved.json
+ *     --approved data/editions/260602/_internal/01-approved-capped.json
  *
  * Output (stdout JSON): { ok: boolean, num_findings: DestaqueFinding[], count_findings: CommentCountFinding[] }
  */
@@ -383,7 +383,7 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (!args.social || !args.approved) {
     console.error(
-      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved.json> [--fix]",
+      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved-capped.json> [--fix]",
     );
     process.exit(1);
   }
@@ -415,14 +415,19 @@ function main(): void {
   const wrongNumberFindings = countFindings.filter((f) => !f.unresolved_placeholder);
 
   if (wrongNumberFindings.length > 0) {
-    const action = doFix ? "→ corrigido automaticamente" : "→ confira no gate ou rode com --fix";
+    const didFix = doFix && fixed !== socialMd;
+    const action = didFix
+      ? "→ corrigido automaticamente"
+      : doFix
+        ? "→ não foi possível corrigir automaticamente, confira no gate"
+        : "→ confira no gate ou rode com --fix";
     console.error(
       `\n⚠️  lint-social-numbers: contagem "mais N destaques" errada no comment_diaria ${action}:`,
     );
     for (const f of wrongNumberFindings) {
       console.error(`  - d${f.destaque}: encontrou ${f.found}, esperado ${f.expected}`);
     }
-    if (doFix && fixed !== socialMd) {
+    if (didFix) {
       const tmpPath = socialPath + ".tmp";
       writeFileSync(tmpPath, fixed, "utf8");
       renameSync(tmpPath, socialPath);
