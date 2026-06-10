@@ -318,14 +318,11 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
      ```typescript
      import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
      const htmlLocal = readFileSync(`{edition_dir}/_internal/newsletter-final.html`, "utf8");
-     // #2013: passar fetchFn pra re-verificar link_dead com fetch real (HEAD/GET + UA browser).
-     // Sem fetchFn, link_dead não é re-verificado (comportamento conservador — mantém).
-     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch);
+     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch); // fetch re-verifica link_dead (#2013)
      for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
      ```
-     Tipos cobertos (#1421 + #2013): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing` (DS serif), `italic_missing` (DS sans), `section_missing` (grep no HTML local), `link_dead` (re-verificação com fetch + 403 *.beehiiv.com = bot-block).
-     Se `kept.length === 0` E `dropped.length > 0`: todos os issues eram FPs verificáveis. Logar info `"all {N} issues filtered as FPs, sair do loop com status=ok"` e **sair do loop**. Não disparar fix-mode.
-     Senão: passar `kept` (não `issues`) pra step 5 abaixo. Issues não-validáveis (unexpected_content, formatting) preservam — caller decide via fix-mode.
+     Tipos cobertos (#1421 + #2013): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing`, `italic_missing`, `section_missing` (grep no HTML local), `link_dead` (fetch real; 403 *.beehiiv.com = bot-block).
+     Se `kept.length === 0` E `dropped.length > 0`: todos eram FPs verificáveis — logar info `"all {N} issues filtered as FPs"` e **sair do loop** sem fix-mode. Senão: passar `kept` (não `issues`) pro step 5; issues não-validáveis (unexpected_content, formatting) preservam.
   5. Se `kept` (issues pós-filtro) não estiver vazio:
      - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10 (após filtro de FPs)"`.
      - Disparar `publish-newsletter` em **modo fix** passando:
