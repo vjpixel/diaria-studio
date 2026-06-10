@@ -20,6 +20,8 @@ import {
   wrapEmail,
   // CLI
   parseArgs,
+  // main (para teste de deprecação #2009)
+  main as publishMonthlyMain,
 } from "../scripts/publish-monthly.ts";
 
 /**
@@ -709,5 +711,58 @@ Texto do lab.`);
     const draft = mkDraft(`**ASSUNTO**\nS\n**PREVIEW**\nP\n**PARA ENCERRAR**\n\nFim da edição.`);
     const r = draftToEmail(draft, null, "2604");
     assert.match(r.html, /Fim da edição/);
+  });
+});
+
+// ─── Deprecação runtime (#2009) ─────────────────────────────────────────────
+
+describe("publish-monthly main() warning de deprecação (#2009)", () => {
+  it("emite DEPRECATED no stderr ao ser chamada (antes de qualquer validação de args)", async () => {
+    // Intercepitar stderr.write e process.exit para capturar o aviso de deprecação
+    // sem deixar o processo terminar. main() emite o warning antes de parseArgs(),
+    // então mesmo sem args válidos ele deve aparecer primeiro.
+    let stderrOutput = "";
+    const origWrite = process.stderr.write.bind(process.stderr);
+    const origArgv = process.argv;
+    const savedExit = process.exit;
+
+    (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (
+      _code?: number,
+    ): never => {
+      throw Object.assign(new Error("__mock_exit__"), { __mockExit: true });
+    };
+    process.stderr.write = (chunk: string | Uint8Array): boolean => {
+      stderrOutput += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      return true;
+    };
+    // Fornecer args inválidos (sem --yymm/--cycle) pra main() sair cedo após o warning
+    process.argv = ["node", "publish-monthly.ts"];
+
+    try {
+      await publishMonthlyMain();
+    } catch (e: unknown) {
+      // Esperado: process.exit(1) lançado pelo mock após imprimir o aviso de uso
+      if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) {
+        // Erro real (não o mock) — relançar para falha do teste
+        throw e;
+      }
+    } finally {
+      process.exit = savedExit;
+      process.stderr.write = origWrite;
+      process.argv = origArgv;
+    }
+
+    assert.ok(
+      stderrOutput.includes("DEPRECATED"),
+      `stderr deve conter 'DEPRECATED', obtido: ${stderrOutput}`,
+    );
+    assert.ok(
+      stderrOutput.includes("clarice-build-edition-sends"),
+      `stderr deve mencionar 'clarice-build-edition-sends', obtido: ${stderrOutput}`,
+    );
+    assert.ok(
+      stderrOutput.includes("clarice-schedule-sends"),
+      `stderr deve mencionar 'clarice-schedule-sends', obtido: ${stderrOutput}`,
+    );
   });
 });

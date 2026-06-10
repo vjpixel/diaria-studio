@@ -12,11 +12,15 @@
  * sends-summary.json (IDs Brevo já importados via clarice-import-sends).
  *
  * Fases (cada uma exige flag explícita; default = dry-run que só imprime o plano):
- *   --create       cria as campanhas como RASCUNHO (nada é enviado)
- *   --update-html  re-aplica o HTML render atual nas campanhas em draft
- *                  (pra propagar fix de render pós-create)
- *   --send-test    manda test email das células d01-A/B/C (S1) ou d08 (S2/S3) pro test_email
- *   --schedule     agenda TODAS as campanhas criadas (06:00 BRT nas datas do plano)
+ *   --create         cria as campanhas como RASCUNHO (nada é enviado)
+ *   --update-html    re-aplica o HTML render atual nas campanhas em draft
+ *                    (pra propagar fix de render pós-create)
+ *   --send-test      manda test email das células d01-A/B/C (S1) ou d08 (S2/S3) pro test_email
+ *   --schedule       agenda TODAS as campanhas criadas (06:00 BRT nas datas do plano)
+ *                    REQUER que o gabarito É IA? tenha sido setado antes via:
+ *                      npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
+ *                    Use --skip-eia-guard para pular esta verificação (não recomendado).
+ *   --skip-eia-guard pula a verificação de gabarito É IA? no --schedule (ex: após setado manualmente)
  *
  * Flags de escopo:
  *   --weeks 1,2,3  quais semanas processar (default: 1; semanas 2-3 exigem --subject)
@@ -26,12 +30,15 @@
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06                 # plano S1
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --create
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --send-test
+ *   # ANTES do --schedule: setar gabarito É IA? (#2009)
+ *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2605-06 --edition {AAMMDD} [--answer A|B]
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --schedule
  *
  * Uso típico S2/S3 (após checkpoint 17/jun):
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" # plano
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --create
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --send-test
+ *   # close-poll já executado na S1 — marker reutilizado automaticamente
  *   npx tsx scripts/clarice-schedule-sends.ts --cycle 2605-06 --weeks 2,3 --subject "Assunto vencedor" --schedule
  *
  * Estado em {ciclo}/sends/cells/campaigns-summary.json (idempotência: --create
@@ -137,6 +144,51 @@ export function parseWeeksArg(argv: string[]): number[] {
   return parsed;
 }
 
+/**
+ * #2009: verifica se o gabarito É IA? foi setado para o ciclo via close-poll
+ * --brand clarice. Pura (testável sem rede): só verifica existência do marker.
+ *
+ * @param cycle           Ciclo no formato {conteúdo}-{envio} (ex: 2605-06)
+ * @param skip            Se true, ignora a verificação (--skip-eia-guard)
+ * @param markerPathOverride Caminho explícito do marker (para testes)
+ *
+ * @returns `{ ok: true }` se marker existe ou guard ignorado (skip=true)
+ * @returns `{ ok: false; message: string }` se marker ausente e guard ativo
+ */
+export function checkEiaGuard(
+  cycle: string,
+  skip: boolean,
+  markerPathOverride?: string,
+): { ok: true } | { ok: false; message: string } {
+  if (skip) return { ok: true };
+  let eiaMarkerPath: string;
+  if (markerPathOverride !== undefined) {
+    eiaMarkerPath = markerPathOverride;
+  } else {
+    try {
+      eiaMarkerPath = resolve(resolveMonthlyDir(cycle), "_internal", ".close-poll-clarice.json");
+    } catch (e) {
+      return {
+        ok: false,
+        message: `\n❌  ERRO: ciclo inválido ('${cycle}'): ${(e as Error).message}\n   Formato esperado: YYMM-MM (ex: 2605-06)\n`,
+      };
+    }
+  }
+  if (!existsSync(eiaMarkerPath)) {
+    return {
+      ok: false,
+      message:
+        `\n❌  ERRO: gabarito É IA? não setado para o ciclo ${cycle}.\n` +
+        `   O marker esperado não existe: ${eiaMarkerPath}\n\n` +
+        `   Execute ANTES de agendar:\n` +
+        `     npx tsx scripts/close-poll.ts --brand clarice --cycle ${cycle} --edition {AAMMDD} [--answer A|B]\n\n` +
+        `   (Onde {AAMMDD} é a data do É IA? selecionado para a edição mensal — ex: 260531)\n\n` +
+        `   Se o gabarito já foi setado por outro meio, use --skip-eia-guard para pular.\n`,
+    };
+  }
+  return { ok: true };
+}
+
 /** Parseia --subject: retorna o valor ou undefined. */
 function parseSubjectArg(argv: string[]): string | undefined {
   const idx = argv.indexOf("--subject");
@@ -158,6 +210,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doUpdateHtml = argv.includes("--update-html");
   const doTest = argv.includes("--send-test");
   const doSchedule = argv.includes("--schedule");
+  const skipEiaGuard = argv.includes("--skip-eia-guard");
 
   const weeks = parseWeeksArg(argv);
   const subject = parseSubjectArg(argv);
@@ -379,6 +432,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // --- schedule (todas as criadas nas semanas pedidas) ---
   if (doSchedule) {
+    // #2009: guard — gabarito É IA? deve ser setado antes de agendar os envios.
+    // checkEiaGuard verifica marker gravado por close-poll --brand clarice --cycle {cycle}.
+    const eiaCheck = checkEiaGuard(cycle, skipEiaGuard, /* markerPathOverride */ undefined);
+    if (!eiaCheck.ok) {
+      console.error(eiaCheck.message);
+      process.exit(1);
+    }
+    if (!skipEiaGuard) {
+      console.error(`✓ Gabarito É IA? verificado`);
+    } else {
+      console.error(`⚠  --skip-eia-guard ativo — verificação de gabarito É IA? ignorada.`);
+    }
+
     const keysInScope = buildKeysInScope(weeks);
     for (const c of campaigns) {
       if (!keysInScope.has(c.key)) continue;

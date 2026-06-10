@@ -1,6 +1,11 @@
 /**
  * publish-monthly.ts
  *
+ * @deprecated (#2009) Fluxo legado de campanha única. O fluxo canônico
+ * multi-campanha usa: clarice-build-edition-sends → clarice-split-cells →
+ * clarice-schedule-sends (com close-poll --brand clarice --cycle {cycle}
+ * ANTES do --schedule). Este script será removido em release futuro.
+ *
  * Cria uma campanha de email Brevo para o digest mensal e envia email de teste.
  *
  * Uso:
@@ -334,6 +339,16 @@ function uploadMonthlyImage(filePath: string, edition: string): Promise<string> 
  *                           pra evitar tocar dados reais (#1029).
  */
 export async function main(monthlyDirOverride?: string): Promise<void> {
+  // #2009: aviso de deprecação em runtime — fluxo canônico é multi-campanha.
+  process.stderr.write(
+    `\n⚠️  DEPRECATED (#2009): publish-monthly.ts é o fluxo legado de campanha única.\n` +
+    `   O fluxo canônico é:\n` +
+    `     clarice-build-edition-sends → clarice-split-cells → clarice-schedule-sends\n` +
+    `   + npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]\n` +
+    `     (ANTES do clarice-schedule-sends --schedule)\n` +
+    `   Este script será removido em release futuro.\n\n`,
+  );
+
   const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
 
   // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.

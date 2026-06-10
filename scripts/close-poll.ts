@@ -10,6 +10,13 @@
  *   npx tsx scripts/close-poll.ts --edition 260502
  *   npx tsx scripts/close-poll.ts --edition 260502 --answer A  # override manual
  *
+ * Para o É IA? mensal (fluxo multi-campanha Clarice):
+ *   npx tsx scripts/close-poll.ts --edition 260531 --brand clarice --cycle 2605-06
+ *
+ * O --cycle é obrigatório quando --brand clarice para gravar o marker de gabarito
+ * em data/monthly/{cycle}/_internal/.close-poll-clarice.json. Este marker é
+ * verificado pelo clarice-schedule-sends --schedule antes de agendar os envios.
+ *
  * Se --answer não for passado, lê ai_side de _internal/01-eia-meta.json da edição.
  *
  * Variáveis de ambiente:
@@ -28,6 +35,7 @@ import { createHmac } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
+import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/monthly-paths.ts"; // #2009 — marker mensal
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
@@ -56,8 +64,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
+  // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
+  // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
+  // #2009: parsed early so the answer-resolution block can emit a clear error for
+  // the monthly flow (01-eia-meta.json lives in data/editions/, irrelevant here).
+  const brand = values["brand"] === "clarice" ? "clarice" : null;
+
   // Ler ai_side de 01-eia-meta.json se não foi passado manualmente
   if (!answer) {
+    if (brand === "clarice") {
+      console.error("[close-poll] --brand clarice requer --answer A|B explícito (fluxo mensal não usa 01-eia-meta.json da edição diária). Use --answer A ou --answer B.");
+      process.exit(1);
+    }
     const metaPath = resolve(ROOT, "data", "editions", edition, "_internal", "01-eia-meta.json");
     if (!existsSync(metaPath)) {
       console.error(`[close-poll] 01-eia-meta.json não encontrado em ${metaPath}. Use --answer A|B.`);
@@ -73,11 +92,6 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-
-  // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
-  // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
-  // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
-  const brand = values["brand"] === "clarice" ? "clarice" : null;
   const brandQ = brand ? `&brand=${brand}` : "";
 
   const sig = adminSig(secret, edition, answer);
@@ -105,10 +119,48 @@ async function main(): Promise<void> {
   }
 
   // #1367: marker de sucesso pra Stage 5 invariant checar.
-  // #2006: brand não-default (mensal) não tem edição diária — pular o marker
-  // (criaria data/editions/{AAMMDD}/ fantasma; o invariant é só da diária).
+  // #2006: brand não-default (mensal) não tem edição diária — não criar pasta em
+  // data/editions/{AAMMDD}/ (seria fantasma; invariant é só da diária).
+  // #2009: brand=clarice grava marker na pasta mensal para que clarice-schedule-sends
+  // --schedule possa verificar que o gabarito foi setado antes de agendar os envios.
+  if (brand === "clarice") {
+    const cycle = values["cycle"];
+    if (!cycle || !isValidMonthlyCycle(cycle)) {
+      console.error(
+        `[close-poll] --cycle é obrigatório com --brand clarice (ex: --cycle 2605-06). ` +
+        `Sem ele, o marker de gabarito não pode ser gravado e clarice-schedule-sends --schedule irá falhar.`,
+      );
+      process.exit(1);
+    }
+    const monthlyDirPath = resolveMonthlyDir(cycle);
+    const markerDir = resolve(monthlyDirPath, "_internal");
+    mkdirSync(markerDir, { recursive: true });
+    const markerPath = resolve(markerDir, ".close-poll-clarice.json");
+    writeFileSync(
+      markerPath,
+      JSON.stringify(
+        {
+          cycle,
+          edition,
+          answer,
+          brand: "clarice",
+          updated_votes: data.updated_votes ?? 0,
+          closed_at: new Date().toISOString(),
+          sanity_check: { correct_answer: stats.correct_answer },
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(
+      `[close-poll] gabarito É IA? ${answer} setado para edition=${edition} brand=clarice cycle=${cycle}. ` +
+      `Marker: ${markerPath}`,
+    );
+    return;
+  }
   if (brand) {
-    console.log(`[close-poll] gabarito ${answer} setado pra edition=${edition} brand=${brand} (marker da diária pulado)`);
+    // brand não-clarice futuro: log e retornar (sem marker de diária nem mensal)
+    console.log(`[close-poll] gabarito ${answer} setado pra edition=${edition} brand=${brand} (marker pulado)`);
     return;
   }
   const markerDir = resolve(ROOT, "data", "editions", edition, "_internal");
