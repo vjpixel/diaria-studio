@@ -51,11 +51,12 @@ describe("monthly-render extraído (#1844)", () => {
   });
 
   it("#2018: draftToEmail propaga destaqueImageCaption para renderDestaque", () => {
+    // isSectionLabel exige **LABEL** (bold markdown) — formato do export do Drive.
     const draft = [
-      "REMETENTE",
+      "**REMETENTE**",
       "Clarice News",
       "",
-      "DESTAQUE 1 | TECH",
+      "**DESTAQUE 1 | TECH**",
       "Título tech",
       "Parágrafo de análise.",
       "",

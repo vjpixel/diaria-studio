@@ -32,9 +32,15 @@ export const GUARDED_DOMAINS = ["ai"] as const;
  * - Lookbehind negativo `(?<!\/|\w)` evita tocar URLs cruas (http://..., https://...)
  *   e domínios já dentro de uma sequência de palavras/hifens.
  *
- * O lookbehind `(?<!\/)` protege contra `/clarice.ai` (URLs cruas sem scheme
- * que ainda começam com `/`). O lookbehind `(?<![a-zA-Z0-9\-])` protege
- * `sub.clarice.ai` (subdomínio real — não é auto-linkify do cliente).
+ * O lookbehind `(?<!\/)` protege contra `https://clarice.ai` e `/clarice.ai`
+ * (URLs com scheme ou path — o "/" antes do domínio está na classe negada).
+ *
+ * Nota: `sub.clarice.ai` em texto puro NÃO é protegido — o "." antes de "clarice"
+ * não está na classe negada, então "clarice.ai" ainda recebe word-joiner.
+ * Isso é correto para texto editorial (previne auto-linkify do substring),
+ * mas chamadores NUNCA devem passar strings com href atributos (o "/" de
+ * `https://` protege URLs cruas completas, mas `href="clarice.ai"` sem scheme
+ * seria corrompido — ver docstring de applyWordJoiner).
  *
  * Nota: a entidade `&#8288;` (WORD JOINER) é usada em vez do char U+2060
  * direto para compatibilidade com parsers HTML — ambos são invisíveis ao leitor.

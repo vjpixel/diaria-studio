@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     try {
       const meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8")));
       answer = meta.ai_side;
-      console.log(`[close-poll] Leu ai_side="${answer}" de ${metaPath}`);
+      console.error(`[close-poll] Leu ai_side="${answer}" de ${metaPath}`); // #2018-fix: stderr (não polui stdout JSON)
     } catch (e) {
       console.error(`[close-poll] schema inválido em ${metaPath}: ${(e as Error).message}`);
       process.exit(1);

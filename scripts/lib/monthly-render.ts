@@ -163,6 +163,24 @@ export function renderParagraphs(text: string): string {
 }
 
 /**
+ * #2018: mapa gerador → legenda da imagem. Centralizado aqui (único lugar)
+ * para que publish-monthly.ts e monthly-preview-cloudflare.ts importem em vez
+ * de duplicar. Adicionando um novo gerador, basta atualizar este mapa.
+ */
+export const GENERATOR_LABELS: Record<string, string> = {
+  gemini: "Criada com Gemini",
+  comfyui: "Criada com ComfyUI",
+  cloudflare: "Criada com Cloudflare AI",
+  openai: "Criada com DALL-E",
+};
+
+/** Deriva a legenda de imagem a partir do slug do gerador configurado.
+ * Fallback: "Criada com IA" (genérico, seguro para qualquer gerador). */
+export function captionForGenerator(imageGenerator: string): string {
+  return GENERATOR_LABELS[imageGenerator] ?? "Criada com IA";
+}
+
+/**
  * Renders a DESTAQUE section block. Aceita override de tema (usado pra
  * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
  * `imageUrl` (#1916): imagem 2x1 do destaque, embutida no topo do bloco.
