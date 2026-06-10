@@ -97,6 +97,26 @@ interface SendSummaryEntry {
   listId?: number;
 }
 
+/**
+ * Calcula o conjunto de chaves de campanha em escopo para as semanas pedidas.
+ * Exportado pra testabilidade: --update-html e --schedule devem usar o mesmo conjunto.
+ *
+ * S1 → chaves "dNN-A", "dNN-B", "dNN-C" (3 campanhas/dia)
+ * S2/S3 → chaves "dNN" (1 campanha/dia)
+ */
+export function buildKeysInScope(weeks: number[]): Set<string> {
+  const sendsToProcess = SENDS.filter((s) => weeks.includes(s.week));
+  const keys = new Set<string>();
+  for (const s of sendsToProcess) {
+    if (s.week === 1) {
+      for (const cell of CELLS) keys.add(`d${String(s.n).padStart(2, "0")}-${cell}`);
+    } else {
+      keys.add(`d${String(s.n).padStart(2, "0")}`);
+    }
+  }
+  return keys;
+}
+
 /** Parseia --weeks e valida: retorna array com 1,2,3 ou subconjunto. */
 export function parseWeeksArg(argv: string[]): number[] {
   const idx = argv.indexOf("--weeks");
@@ -302,9 +322,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // --- update-html (propaga fix de render pras campanhas em draft) ---
+  // --- update-html (propaga fix de render pras campanhas em draft das semanas pedidas) ---
   if (doUpdateHtml) {
+    // Aplica o mesmo filtro buildKeysInScope do --schedule: respeita --weeks.
+    const updateKeysInScope = buildKeysInScope(weeks);
     for (const c of campaigns) {
+      if (!updateKeysInScope.has(c.key)) continue;
       if (c.status === "scheduled") {
         console.error(`⚠️  ${c.key} já agendada — html NÃO atualizado (desagende primeiro)`);
         continue;
@@ -339,14 +362,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // --- schedule (todas as criadas nas semanas pedidas) ---
   if (doSchedule) {
-    const keysInScope = new Set<string>();
-    for (const s of sendsToProcess) {
-      if (s.week === 1) {
-        for (const cell of CELLS) keysInScope.add(`d${String(s.n).padStart(2, "0")}-${cell}`);
-      } else {
-        keysInScope.add(`d${String(s.n).padStart(2, "0")}`);
-      }
-    }
+    const keysInScope = buildKeysInScope(weeks);
     for (const c of campaigns) {
       if (!keysInScope.has(c.key)) continue;
       if (c.status === "scheduled") {

@@ -28,6 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
@@ -45,6 +46,30 @@ type Row = Record<string, string>;
  *  PLANEJADO (sem data de calendário) → import independente do slip da edição. */
 export function sendListName(n: number, day: string, label: string): string {
   return `Clarice ${label} d${String(n).padStart(2, "0")} (${day})`;
+}
+
+/**
+ * Merge de `{n → listId}` no objeto `sends-summary.json`.
+ *
+ * Pure: recebe o objeto parsed e o mapa de resultados; devolve cópia com
+ * `listId` injetado em cada entry cujo `n` consta nos resultados.
+ * Cirúrgico: preserva todos os campos existentes de cada send (file, day, week, comp…).
+ *
+ * Exportado pra testabilidade (#633): o roundtrip import→summary→schedule
+ * depende desta função; se ela for revertida, os testes de roundtrip quebram.
+ */
+export function mergeSendsSummaryWithListIds(
+  summary: { sends: ({ n: number } & Record<string, unknown>)[] },
+  results: { n: number; listId: number }[],
+): { sends: ({ n: number } & Record<string, unknown>)[] } {
+  const listIdByN = new Map(results.map((r) => [r.n, r.listId]));
+  return {
+    ...summary,
+    sends: summary.sends.map((s) => ({
+      ...s,
+      ...(listIdByN.has(s.n) ? { listId: listIdByN.get(s.n) } : {}),
+    })),
+  };
 }
 
 /** Reduz o CSV do envio a email + NOME (descarta TIER — é metadado de análise
@@ -200,6 +225,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   console.error(`\n✅ ${results.length} listas criadas + imports disparados (assíncronos na Brevo).`);
+
+  // Persiste {n → listId} em sends-summary.json para que clarice-schedule-sends
+  // possa ler os IDs Brevo das listas S2/S3 sem depender do stdout desta invocação.
+  const summaryPath = resolve(clariceCycleDir(args.cycle), "sends", "sends-summary.json");
+  if (existsSync(summaryPath)) {
+    const summary = JSON.parse(readFileSync(summaryPath, "utf-8")) as { sends: ({ n: number } & Record<string, unknown>)[] };
+    const merged = mergeSendsSummaryWithListIds(summary, results);
+    writeFileAtomic(summaryPath, JSON.stringify(merged, null, 2));
+    console.error(`↳ listId gravado em sends-summary.json para ${results.length} envio(s).`);
+  } else {
+    console.error(`⚠️  sends-summary.json não encontrado — listId não persistido. Rode clarice-build-edition-sends.ts antes.`);
+  }
+
   console.log(JSON.stringify({ mode: "execute", folder_id: args.folderId, label: args.label, results }, null, 2));
 }
 

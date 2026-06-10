@@ -322,11 +322,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // bug de duplo-envio: --weeks 2 sem esse ajuste começaria o T2 do início, enviando
   // as mesmas linhas que a S1 já recebeu. (#2007 / #2018)
   const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
-  const minWeek = Math.min(...weeks);
-  if (minWeek > 1) {
-    // Recalcula o plano completo apenas p/ avançar os cursores das semanas anteriores.
-    const priorWeeks = [1, 2, 3].filter((w) => w < minWeek) as number[];
-    const priorPlans = planWeeks(sizes, priorWeeks);
+  // Avança cursores para TODAS as semanas omitidas que precedem alguma semana pedida.
+  // Exemplo: --weeks 1,3 tem S2 omitida (não é < minWeek mas está antes do max=3);
+  // sem avançar o cursor de T3 pela S2, a S3 re-enviaria as rows que a S2 deveria ter
+  // recebido — duplo-envio silencioso. (#2007 / #2018)
+  const skippedWeeks = ([1, 2, 3] as number[]).filter((w) => !weeks.includes(w) && w < Math.max(...weeks));
+  if (skippedWeeks.length > 0) {
+    const priorPlans = planWeeks(sizes, skippedWeeks);
     for (const pp of priorPlans) {
       for (const seg of pp.segments) consumed[seg.tier] += seg.count;
     }
