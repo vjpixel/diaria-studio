@@ -395,3 +395,25 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - **Apenas manual** — sem agendamento automático.
 - **Publicação final é responsabilidade da Clarice** — o pipeline cria o rascunho, eles preenchem as seções de divulgação e enviam para a lista deles.
 - **Brevo list_id e sender_email** precisam estar configurados em `platform.config.json → brevo_monthly` (#653). Se nulos, Etapa 4 exibe instruções e encerra sem bloquear.
+
+## Fluxo multi-campanha Clarice (canônico — #2009)
+
+O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedule-sends` é o caminho **canônico** para ciclos com múltiplos envios (S1 A/B/C + S2/S3). O `publish-monthly.ts` (Etapa 4 acima) é o fluxo legado e será removido em release futuro.
+
+**Passo obrigatório antes do `clarice-schedule-sends --schedule`**: setar o gabarito do É IA?:
+
+```bash
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD} [--answer A|B]
+```
+
+Onde `{AAMMDD}` é a data da edição diária selecionada pelo É IA? mensal (ex: `260531`). Se `--answer` for omitido, lê `ai_side` de `data/editions/{AAMMDD}/_internal/01-eia-meta.json`.
+
+Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem ele, `clarice-schedule-sends --schedule` falhará com:
+
+```
+❌  ERRO: gabarito É IA? não setado para o ciclo {cycle}.
+```
+
+Para pular a verificação (não recomendado): `clarice-schedule-sends --schedule --skip-eia-guard`.
+
+**Test-loop no fluxo multi-campanha**: usar `clarice-schedule-sends --send-test` antes do `--schedule`. Envia test email das células `d01-A/B/C` (S1) ou `d08` (S2/S3) para `brevo_monthly.test_email`. Disparar `review-test-email` via Agent após (mesmo fluxo da Etapa 4d acima).

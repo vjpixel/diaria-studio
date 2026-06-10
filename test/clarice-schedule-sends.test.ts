@@ -2,7 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { scheduledAtFor, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope } from "../scripts/clarice-schedule-sends.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scheduledAtFor, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard } from "../scripts/clarice-schedule-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
 
 // 06:00 BRT = 09:00 UTC (#2041 item 4: normalizado pra UTC Z via .toISOString())
@@ -266,5 +269,45 @@ describe("robustez JSON.parse campaigns-summary / sends-summary (#2041 item 3)",
   it("JSON válido em sends-summary não lança erro", () => {
     const valid = JSON.stringify({ sends: [{ n: 1, file: "d01.csv", day: "qua", week: 1, planned: 100, actual: 95, listId: 42 }] });
     assert.doesNotThrow(() => JSON.parse(valid));
+  });
+});
+
+// Regressão #2009: gabarito-guard de É IA? em --schedule
+describe("checkEiaGuard (#2009 — guard gabarito É IA? antes do --schedule)", () => {
+  it("skip=true → ok sem checar existência do marker", () => {
+    // qualquer path inexistente — deve ser ignorado quando skip=true
+    const result = checkEiaGuard("2605-06", true, "/caminho/inexistente/.close-poll-clarice.json");
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("skip=false + marker ausente → not ok com mensagem de erro", () => {
+    const result = checkEiaGuard("2605-06", false, "/caminho/inexistente/.close-poll-clarice.json");
+    assert.ok(!result.ok, "deve retornar ok=false quando marker ausente");
+    assert.ok("message" in result, "deve ter campo message");
+    assert.ok(result.message.includes("gabarito É IA?"), "mensagem deve mencionar 'gabarito É IA?'");
+    assert.ok(result.message.includes("close-poll"), "mensagem deve mencionar 'close-poll'");
+    assert.ok(result.message.includes("--brand clarice"), "mensagem deve mencionar '--brand clarice'");
+    assert.ok(result.message.includes("--skip-eia-guard"), "mensagem deve mencionar '--skip-eia-guard'");
+    assert.ok(result.message.includes("2605-06"), "mensagem deve mencionar o ciclo");
+  });
+
+  it("skip=false + marker presente → ok", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-eia-guard-"));
+    const markerPath = join(tmpDir, ".close-poll-clarice.json");
+    writeFileSync(markerPath, JSON.stringify({ cycle: "2605-06", answer: "A" }));
+    try {
+      const result = checkEiaGuard("2605-06", false, markerPath);
+      assert.deepEqual(result, { ok: true });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("mensagem de erro menciona o cycle passado (não hardcoded)", () => {
+    const result = checkEiaGuard("2606-07", false, "/caminho/inexistente/.close-poll-clarice.json");
+    assert.ok(!result.ok);
+    assert.ok("message" in result);
+    assert.ok(result.message.includes("2606-07"), "mensagem deve mencionar o ciclo '2606-07'");
+    assert.ok(!result.message.includes("2605-06"), "mensagem NÃO deve mencionar o ciclo errado '2605-06'");
   });
 });
