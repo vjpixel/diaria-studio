@@ -57,6 +57,20 @@ export interface AudienceAffinity {
 }
 
 /**
+ * Descreve a origem dos sinais carregados em `AudienceSignals`.
+ *
+ * - `"ctr+survey"` — CTR comportamental + respostas reais de survey.
+ * - `"ctr"`        — Só CTR; survey ausente ou sem respostas de ferramenta.
+ * - `"survey"`     — Só survey; CTR ausente ou vazio.
+ * - `"fallback"`   — Survey presente mas sem respostas de ferramenta →
+ *                    `surveyTools` usa KNOWN_TOOLS como substituto. O survey
+ *                    score NÃO é usado no cálculo de affinity neste caso
+ *                    (ver `annotateAudienceAffinity`).
+ * - `"none"`       — Nenhuma fonte disponível; `loaded === false`.
+ */
+export type AudienceSignalsSource = "ctr+survey" | "ctr" | "survey" | "fallback" | "none";
+
+/**
  * Sinais de audiência pré-carregados — reutilizáveis por múltiplos artigos
  * sem I/O por artigo.
  */
@@ -67,7 +81,16 @@ export interface AudienceSignals {
   avgCtr: number;
   /** Ferramentas / tópicos declarados no survey (lowercase, normalizado). */
   surveyTools: Set<string>;
-  /** Sinaliza que os dados foram carregados com sucesso. */
+  /**
+   * Origem dos dados. Derivar comportamento de scoring a partir daqui:
+   * - `"fallback"` → surveyTools é KNOWN_TOOLS estático, não usar para score.
+   * - `"none"`     → loaded === false, annotateAudienceAffinity retorna null.
+   */
+  source: AudienceSignalsSource;
+  /**
+   * Atalho: `source !== "none"`. Mantido por retrocompatibilidade com callers
+   * que checam `signals.loaded` diretamente.
+   */
   loaded: boolean;
 }
 
@@ -117,30 +140,51 @@ export function normalizeTool(s: string): string {
  * Extrai ferramentas mencionadas em respostas de survey.
  *
  * O survey Beehiiv tem perguntas abertas ("Quais ferramentas de IA você usa?").
- * Esta função extrai tokens plausíveis das respostas, intersection com
- * `KNOWN_TOOLS` para evitar ruído.
+ * Esta função extrai tokens plausíveis das respostas, filtrando por KNOWN_TOOLS
+ * para evitar ruído.
+ *
+ * Regra de admissão: um token `tok` é aceito se:
+ *   (a) é exatamente igual a um KNOWN_TOOL normalizado, OU
+ *   (b) CONTÉM um KNOWN_TOOL normalizado como palavra completa (ex: "chatgpt4"
+ *       contém "chatgpt" como prefixo intacto).
+ *
+ * A check anterior (`KNOWN_TOOLS.some(k => normalizeTool(k).includes(tok))`)
+ * estava invertida — admitia tokens curtos como "not" porque "notion".includes("not")
+ * é true, gerando falsos positivos em artigos com negação ou palavras comuns.
+ *
+ * @returns `{ tools, wasFallback }` — `wasFallback: true` quando survey não
+ *   tinha respostas e KNOWN_TOOLS foi usado como substituto.
  */
 export function extractSurveyTools(
   responses: Array<{ answers: Array<{ question_prompt: string; answer: string }> }>,
 ): Set<string> {
   const tools = new Set<string>();
   const toolQuestion = /ferramenta|ferramentas|tool|usa|utiliza/i;
+  // Pré-computar normalized KNOWN_TOOLS uma vez para eficiência.
+  const normalizedKnown = KNOWN_TOOLS.map(normalizeTool);
 
   for (const r of responses) {
     for (const a of r.answers) {
       if (!toolQuestion.test(a.question_prompt)) continue;
       const tokens = normalizeTool(a.answer).split(/[\s,;/]+/);
       for (const tok of tokens) {
-        if (tok.length >= 3 && KNOWN_TOOLS.some(k => normalizeTool(k) === tok || normalizeTool(k).includes(tok))) {
-          tools.add(tok);
-        }
+        if (tok.length < 3) continue;
+        // Admite tok se:
+        //   (a) tok === algum known tool (igualdade exata), OU
+        //   (b) tok contém algum known tool como palavra completa.
+        // Nunca: known_tool.includes(tok) — isso admite substrings de tools
+        // como "not" (de "notion") ou "rag" (de qualquer tool que contivesse).
+        const admitted = normalizedKnown.some(
+          k => k === tok || (tok.length > k.length && wordMatchIn(tok, k)),
+        );
+        if (admitted) tools.add(tok);
       }
     }
   }
 
   // Fallback: sempre incluir os termos base se survey não retornou nada.
-  // Emite warning para alertar que o sinal de survey é fraco — o caller pode
-  // usar essa informação para decidir se quer usar o surveyScore com menos peso.
+  // Emite warning para alertar que o sinal de survey é fraco — source será
+  // "fallback" no AudienceSignals e o survey score NÃO será usado no cálculo.
   if (tools.size === 0) {
     console.error(
       "[audience-affinity] WARN: survey não contém respostas de ferramentas" +
@@ -170,6 +214,7 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
     ctrByCategory: new Map(),
     avgCtr: 0,
     surveyTools: new Set(),
+    source: "none",
     loaded: false,
   };
 
@@ -183,6 +228,7 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
   // ─── CTR (primary) ─────────────────────────────────────────────────────────
   let ctrByCategory = new Map<string, number>();
   let avgCtr = 0;
+  let hasCtr = false;
 
   if (existsSync(ctrPath)) {
     try {
@@ -203,6 +249,7 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
           const catCtr = agg.opens > 0 ? agg.clicks / agg.opens : 0;
           ctrByCategory.set(cat, avgCtr > 0 ? catCtr / avgCtr : 1);
         }
+        hasCtr = ctrByCategory.size > 0;
       }
     } catch (e) {
       console.error(`[audience-affinity] WARN: falha ao ler CTR CSV (${(e as Error).message}) — sem sinal de CTR`);
@@ -211,6 +258,7 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
 
   // ─── Survey (secondary) ────────────────────────────────────────────────────
   let surveyTools = new Set<string>();
+  let surveySource: "survey" | "fallback" | "none" = "none";
 
   if (existsSync(surveyPath)) {
     try {
@@ -219,22 +267,45 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
         answers: Array<{ question_prompt: string; answer: string }>;
       }>;
       const active = all.filter((r) => !r.status || r.status === "active");
+      // Detectar se há respostas de ferramenta antes de chamar extractSurveyTools,
+      // para distinguir "survey real" de "fallback KNOWN_TOOLS".
+      const toolQuestion = /ferramenta|ferramentas|tool|usa|utiliza/i;
+      const hasToolAnswers = active.some(r =>
+        r.answers.some(a => toolQuestion.test(a.question_prompt) && a.answer.trim().length > 0),
+      );
       surveyTools = extractSurveyTools(active);
+      surveySource = hasToolAnswers ? "survey" : "fallback";
     } catch (e) {
       console.error(`[audience-affinity] WARN: falha ao ler survey JSON (${(e as Error).message}) — sem sinal de survey`);
     }
   }
 
   // Se nenhuma fonte carregou, retornar empty
-  if (ctrByCategory.size === 0 && surveyTools.size === 0) {
+  if (!hasCtr && surveySource === "none") {
     return empty;
+  }
+
+  // Derivar source combinada
+  let source: AudienceSignalsSource;
+  if (hasCtr && surveySource === "survey") {
+    source = "ctr+survey";
+  } else if (hasCtr && surveySource === "fallback") {
+    source = "fallback"; // CTR existe mas survey é fallback — ainda não usar survey para score
+  } else if (hasCtr) {
+    source = "ctr";
+  } else if (surveySource === "survey") {
+    source = "survey";
+  } else {
+    // surveySource === "fallback", sem CTR
+    source = "fallback";
   }
 
   return {
     ctrByCategory,
     avgCtr,
     surveyTools,
-    loaded: true,
+    source,
+    loaded: source !== "none",
   };
 }
 
@@ -255,6 +326,10 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
  *   2. **Survey tool signal** (40% do peso):
  *      - Encontra ferramentas do survey que aparecem no texto do artigo.
  *      - Score = `min(matches / MAX_TOOL_MATCHES, 1)` onde MAX_TOOL_MATCHES = 3.
+ *      - **Zerado quando `signals.source === "fallback"`**: surveyTools foi
+ *        populado com KNOWN_TOOLS estático (sem respostas reais), não com o
+ *        perfil real de ferramentas. Usar esse sinal inflaria artificialmente a
+ *        affinity de qualquer artigo que mencione um dos ~40 termos genéricos.
  *
  *   affinity = (ctr_score × 0.6) + (survey_score × 0.4)
  *
@@ -288,17 +363,22 @@ export function annotateAudienceAffinity(
   const ctrScore = Math.min(bestCtrRatio / MAX_CTR_RATIO, 1);
 
   // ─── 2. Survey tool signal ─────────────────────────────────────────────────
-  let toolMatches = 0;
+  // Quando source === "fallback", surveyTools = KNOWN_TOOLS estático — não usa
+  // para score (evita inflar affinity com falsos positivos genéricos).
+  let surveyScore = 0;
+  const useSurvey = signals.source !== "fallback";
 
-  for (const tool of signals.surveyTools) {
-    if (tool.length < 3) continue;
-    if (wordMatch(hay, tool)) {
-      matched.push(`tool:${tool}`);
-      toolMatches++;
+  if (useSurvey) {
+    let toolMatches = 0;
+    for (const tool of signals.surveyTools) {
+      if (tool.length < 3) continue;
+      if (wordMatch(hay, tool)) {
+        matched.push(`tool:${tool}`);
+        toolMatches++;
+      }
     }
+    surveyScore = Math.min(toolMatches / MAX_TOOL_MATCHES, 1);
   }
-
-  const surveyScore = Math.min(toolMatches / MAX_TOOL_MATCHES, 1);
 
   // ─── Composite ─────────────────────────────────────────────────────────────
   const affinity = parseFloat(((ctrScore * 0.6) + (surveyScore * 0.4)).toFixed(3));
@@ -372,6 +452,16 @@ function wordMatch(hay: string, needle: string): boolean {
   // Escapar caracteres especiais de regex no needle (ex: "fine-tuning")
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, "i").test(hay);
+}
+
+/**
+ * Variante de wordMatch para verificar se `hay` CONTÉM `needle` como
+ * palavra completa (usada em extractSurveyTools para a check de admissão).
+ * Equivalente a `wordMatch(hay, needle)` mas com nomes mais explícitos para
+ * o sentido "needle aparece como palavra dentro de hay".
+ */
+function wordMatchIn(hay: string, needle: string): boolean {
+  return wordMatch(hay, needle);
 }
 
 function extractSlug(url: string): string {
