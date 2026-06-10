@@ -37,12 +37,13 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { readFileSync, statSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { mtimeMs } from "./lib/mtime.ts"; // #2048 item 10: helper compartilhado (catch→null)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DRAFT_WORKER_URL =
@@ -173,15 +174,7 @@ export function checkHtmlFreshness(
   draftHtmlPath?: string,
   editionDir?: string,
 ): string | null {
-  // Lê mtime via try/catch — ENOENT → tratar como ausente (TOCTOU-safe).
-  function mtimeMs(p: string): number | null {
-    try {
-      return statSync(p).mtimeMs;
-    } catch {
-      return null;
-    }
-  }
-
+  // mtimeMs importado de lib/mtime.ts (#2048 item 10) — catch→null.
   const mdMtime = mtimeMs(reviewedMdPath);
   if (mdMtime === null) return null; // 02-reviewed.md ausente — sem verificação.
 

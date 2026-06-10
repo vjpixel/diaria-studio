@@ -43,7 +43,7 @@ import { fileURLToPath } from "node:url";
 import {
   parseMonthlyCycleArg,
   isValidMonthlyCycle,
-  yyymmToCycle,
+  yymmToCycle,
   cycleToYymm,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/monthly-paths.ts";
@@ -215,7 +215,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
     cycle = cycleRaw;
     if (!yymm) yymm = cycleToYymm(cycle);
   } else if (yymm && /^\d{4}$/.test(yymm)) {
-    cycle = yyymmToCycle(yymm);
+    cycle = yymmToCycle(yymm);
     process.stderr.write(
       `[publish-monthly] warn: --yymm "${yymm}" é formato legado — ` +
       `derivando ciclo "${cycle}". Use --cycle ${cycle} para suprimir.\n`,
@@ -419,8 +419,9 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   const apiKey = apiKeyRaw ?? "";
 
   // Load draft (#1029: monthlyDirOverride permite injetar fixture em testes;
-  // #1962: usar resolveMonthlyDir com ciclo pra suportar o novo formato de pasta)
-  const monthlyDir = monthlyDirOverride ?? resolveMonthlyDir(cycle);
+  // #1962: usar resolveMonthlyDir com ciclo pra suportar o novo formato de pasta;
+  // #2048 item 2: escrita usa allowLegacyFallback=false — contrato explícito.)
+  const monthlyDir = monthlyDirOverride ?? resolveMonthlyDir(cycle, { allowLegacyFallback: false });
   const draftPath = resolve(monthlyDir, "draft.md");
 
   if (!existsSync(draftPath)) {

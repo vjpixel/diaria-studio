@@ -154,8 +154,12 @@ export function runLints(
   // #2016: se editor declarou `intentional_error: none`, não procurar erros no
   // corpo — não há erro intencional pra confirmar, e false-positives não têm
   // safety net. Subject check ainda roda (título correto é independente do erro).
+  //
+  // #2048 item 6: o bypass exige `source` preenchido (gravado por sync-intentional-error).
+  // Entry corrompida sem `source` (ex: criada manualmente sem o script) não ativa o bypass —
+  // previne que `{ edition: "X", no_error: true }` injected à mão silencia o lint indefinidamente.
   const editionEntries = intentionalErrorsForEdition(intentionalErrors, edition);
-  const editionHasNoError = editionEntries.some((e) => e.no_error === true);
+  const editionHasNoError = editionEntries.some((e) => e.no_error === true && !!e.source);
 
   // Check 0 (#1645): subject do email recebido vs título esperado.
   if (subject) {

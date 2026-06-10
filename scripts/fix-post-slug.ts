@@ -42,6 +42,7 @@ import { parseArgs } from "./lib/cli-args.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { seoSlug } from "./lib/slug.ts";
 
 loadProjectEnv();
 
@@ -180,25 +181,21 @@ export async function patchSlug(
  * - non-empty
  * - lowercase kebab (no accents, no special chars beyond hyphens)
  * - no leading/trailing hyphens
- * - no mangling signatures (heuristic checks, bypassable with force)
- * - no Beehiiv mangling signature: single-vowel segments (`-a`, `-o`, etc.)
- *   at segment boundaries strongly indicate a stripped accent PT-BR
- *   (ex: `automação` → `automa-o`, `pânico` → `p-nico`).
+ * - no mangling signatures (bypassable with force)
  *
- * The mangling heuristics (checks 1 & 2) have known false-positive cases for
- * legitimate slugs: single-consonant prefixes like `x-ray`, `b-side`, `n-gram`
- * and single-vowel suffixes like `versao-a`, `parte-i`, `opcao-b`. Pass
- * `force: true` to bypass these two checks and allow such slugs through.
+ * #2048 item 5: primary mangling detection is `slug !== seoSlug(title)` when
+ * `title` is provided (the GET post already brings the title). This replaces the
+ * consonant/vowel heuristics that had known false-positives (`x-ray`, `versao-a`,
+ * range `v-z` includes `y`, etc.) with a definitive comparison against the
+ * canonical PT-BR slug. Pass `force: true` to bypass the mangling check.
+ *
+ * When `title` is absent (pre-GET call for structural checks), falls back to the
+ * original consonant/vowel heuristics for a lightweight pre-flight guard.
  * Hard errors (empty, non-kebab) are never bypassed by `force`.
- *
- * Trade-off: with `force: false` (default) the checks catch the most common
- * PT-BR mangling patterns with near-zero false positives for newsletter slugs.
- * With `force: true`, the user asserts the slug is intentional — the check is
- * skipped entirely and only structural validity is enforced.
  *
  * Returns null if valid, or an error message string if invalid.
  */
-export function validateSlug(slug: string, force = false): string | null {
+export function validateSlug(slug: string, force = false, title?: string): string | null {
   if (!slug || slug.trim() === "") return "slug vazio";
   if (slug !== slug.trim()) return "slug com espaços leading/trailing";
 
@@ -207,50 +204,44 @@ export function validateSlug(slug: string, force = false): string | null {
     return `slug inválido: "${slug}" deve ser lowercase kebab (a-z, 0-9, hífens internos). Acentos, letras maiúsculas e caracteres especiais não são permitidos.`;
   }
 
-  // #2011: detectar assinatura de mangling Beehiiv — acento PT-BR deletado pelo
-  // wizard de Schedule.
-  //
-  // Padrão observado:
-  //   `automação`  → `automa-o`  (ç+ã stripped → remainder "-o" no final)
-  //   `pânico`     → `p-nico`   (â stripped → "p" sozinho no início)
-  //
-  // Heurísticas (low false-positive para slugs PT-BR de newsletter):
-  //   1. Primeiro segmento = 1 consoante → inicial de palavra perdeu vogal acentuada
-  //      (ex: "p" de "pânico", "c" de "câmbio"). Note: vogais únicas no início
-  //      ("a", "o", "e") são válidas em PT (ex: "a-festa", "o-estado").
-  //      ATENÇÃO — falsos-positivos conhecidos: `x-ray`, `b-side`, `n-gram`,
-  //      `f-score`, `r-kelly`. Use `--force` para esses casos intencionais.
-  //   2. Último segmento = 1 vogal → final de palavra perdeu consoante+vogal
-  //      (ex: "o" de "automação"). Note: não bloqueia vogais internas, que são
-  //      válidas como preposições PT (ex: "e", "a" em meio de slug).
-  //      ATENÇÃO — falsos-positivos conhecidos: `versao-a`, `parte-i`, `opcao-b`
-  //      (nomenclatura de variante A/B). Use `--force` para esses casos.
-  //
-  // Ambas as heurísticas são non-blocking com `--force` / `force: true`.
-  // Não tentamos detectar todos os patterns — seoSlug() gera corretamente; esta
-  // validação é só pra rejeitar o mais óbvio antes de mandar pro Beehiiv.
   if (!force) {
-    const segments = slug.split("-");
-    const vowels = new Set(["a", "e", "i", "o", "u"]);
-    const consonants = /^[b-df-hj-np-tv-z]$/; // single consonant (excludes vowels)
+    if (title) {
+      // #2048 item 5: primary check — comparar com seoSlug(title) é O sinal de
+      // mangling. Heurísticas anteriores (consoante/vogal) tinham FP documentados
+      // (x-ray, versao-a, y-* pelo range v-z). seoSlug é determinístico e exato.
+      const canonical = seoSlug(title);
+      if (slug !== canonical) {
+        return (
+          `slug "${slug}" diverge do slug canônico "${canonical}" derivado do título ` +
+          `"${title}" (#2048, via seoSlug). Provável mangling Beehiiv (ex: "pânico" → "p-nico", ` +
+          `"automação" → "automa-o"). Use --force se o slug é intencional.`
+        );
+      }
+    } else {
+      // Fallback pré-GET: heurísticas de consoante/vogal quando título não disponível.
+      // Serve apenas como pre-flight estrutural antes do GET do post.
+      const segments = slug.split("-");
+      const vowels = new Set(["a", "e", "i", "o", "u"]);
+      const consonants = /^[b-df-hj-np-tv-z]$/; // single consonant (excludes vowels)
 
-    // Check 1: first segment is a single consonant
-    if (segments.length > 1 && segments[0].length === 1 && consonants.test(segments[0])) {
-      return (
-        `slug "${slug}" começa com segmento de consoante única "${segments[0]}" — ` +
-        `provável assinatura de mangling Beehiiv (vogal acentuada deletada, ex: "pânico" → "p-nico", #2011). ` +
-        `Use seoSlug(title) pra gerar o slug correto, ou passe --force se o slug é intencional (ex: "x-ray", "b-side").`
-      );
-    }
+      // Check 1: first segment is a single consonant
+      if (segments.length > 1 && segments[0].length === 1 && consonants.test(segments[0])) {
+        return (
+          `slug "${slug}" começa com segmento de consoante única "${segments[0]}" — ` +
+          `provável assinatura de mangling Beehiiv (vogal acentuada deletada, ex: "pânico" → "p-nico", #2011). ` +
+          `Use seoSlug(title) pra gerar o slug correto, ou passe --force se o slug é intencional (ex: "x-ray", "b-side").`
+        );
+      }
 
-    // Check 2: last segment is a single vowel
-    const lastSegment = segments[segments.length - 1];
-    if (segments.length > 1 && lastSegment.length === 1 && vowels.has(lastSegment)) {
-      return (
-        `slug "${slug}" termina com segmento de vogal única "${lastSegment}" — ` +
-        `provável assinatura de mangling Beehiiv (ex: "automação" → "automa-o", #2011). ` +
-        `Use seoSlug(title) pra gerar o slug correto, ou passe --force se o slug é intencional (ex: "versao-a", "parte-i").`
-      );
+      // Check 2: last segment is a single vowel
+      const lastSegment = segments[segments.length - 1];
+      if (segments.length > 1 && lastSegment.length === 1 && vowels.has(lastSegment)) {
+        return (
+          `slug "${slug}" termina com segmento de vogal única "${lastSegment}" — ` +
+          `provável assinatura de mangling Beehiiv (ex: "automação" → "automa-o", #2011). ` +
+          `Use seoSlug(title) pra gerar o slug correto, ou passe --force se o slug é intencional (ex: "versao-a", "parte-i").`
+        );
+      }
     }
   }
 
@@ -282,20 +273,30 @@ export async function fixPostSlug(opts: {
   const force = opts.force ?? false;
   const fetchFn = opts.fetchFn ?? fetch;
 
-  // 1. Validate slug before any network call
-  const validationError = validateSlug(slug, force);
-  if (validationError) {
-    throw new Error(`Slug inválido: ${validationError}`);
+  // 1. Validate slug structure before any network call (no title yet — structural only).
+  const structuralError = validateSlug(slug, force);
+  if (structuralError) {
+    throw new Error(`Slug inválido: ${structuralError}`);
   }
 
   // 2. GET current state
   process.stderr.write(`[fix-post-slug] GET post ${postId}…\n`);
   const before = await fetchPost(cfg, postId, fetchFn);
   const slugBefore = (before.web_settings?.slug as string | undefined) ?? null;
+  const title = (before.title as string | undefined) ?? undefined;
 
   process.stderr.write(
-    `[fix-post-slug] slug atual: ${slugBefore ?? "(ausente)"} | status: ${before.status ?? "?"} | title: ${before.title ?? "?"}\n`,
+    `[fix-post-slug] slug atual: ${slugBefore ?? "(ausente)"} | status: ${before.status ?? "?"} | title: ${title ?? "?"}\n`,
   );
+
+  // 2b. Re-validate with title (if available) — #2048 item 5: seoSlug(title) comparison
+  // replaces the consonant/vowel heuristics with the definitive canonical check.
+  if (title) {
+    const titleError = validateSlug(slug, force, title);
+    if (titleError) {
+      throw new Error(`Slug inválido (vs título): ${titleError}`);
+    }
+  }
 
   const result: FixSlugResult = {
     post_id: postId,

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apportion, stratify, planWeeks, SENDS, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
+import { apportion, stratify, planWeeks, advanceCursors, ALL_WEEKS, SENDS, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
 
 describe("SENDS (plano dos 21 envios)", () => {
   it("21 envios, 7 por semana, totais por semana corretos", () => {
@@ -240,5 +240,54 @@ describe("cursor de tier em --weeks parcial (anti-duplo-envio #2007/#2018)", () 
     }
     assert.equal(consumed["T3"], 7354, "cursor T3 para --weeks 3 deve ser 7354");
     assert.equal(consumed["T2"], 894 + 5946, "cursor T2 para --weeks 3 deve ser 6840 (S1+S2 inteiros)");
+  });
+});
+
+// #2048 item 4b: advanceCursors — puro, sem throws de validação
+describe("advanceCursors (#2048 item 4b)", () => {
+  const sizes: Record<Tier, number> = {
+    "T1-abriu": 176, "T1-nao-abriu": 911, maio: 3619, T2: 6840, T3: 11903, T4: 19494,
+  };
+
+  it("semanas vazias retorna zeros", () => {
+    const c = advanceCursors(sizes, []);
+    assert.equal(c["T2"], 0);
+    assert.equal(c["T3"], 0);
+    assert.equal(c["T4"], 0);
+  });
+
+  it("skippedWeeks=[1] → cursor T2 = 894 (mesmo que planWeeks([1]))", () => {
+    const c = advanceCursors(sizes, [1]);
+    assert.equal(c["T2"], 894);
+    assert.equal(c["T3"], 0);
+  });
+
+  it("skippedWeeks=[1,2] → cursor T2=6840, T3=7354", () => {
+    const c = advanceCursors(sizes, [1, 2]);
+    assert.equal(c["T2"], 6840);
+    assert.equal(c["T3"], 7354);
+  });
+
+  // Regressão #2048 item 4b: CSVs aparados pós-S2 (T3=0) + --weeks 3 NÃO lança.
+  // planWeeks(sizes, [1,2]) com T3=0 lança `T3 insuficiente p/ S2`.
+  // advanceCursors NÃO lança — calcula cursores puramente sem validação.
+  it("CSVs aparados pós-S2 (T3=0): --weeks 3 via advanceCursors NÃO lança", () => {
+    const trimmedSizes = { ...sizes, T3: 0, T4: 0 };
+    // planWeeks lançaria aqui:
+    assert.throws(() => planWeeks(trimmedSizes, [1, 2]), /T3 insuficiente/);
+    // advanceCursors não lança:
+    assert.doesNotThrow(() => advanceCursors(trimmedSizes, [1, 2]));
+  });
+});
+
+// #2048 item 4c: ALL_WEEKS derivado de SENDS
+describe("ALL_WEEKS (#2048 item 4c)", () => {
+  it("ALL_WEEKS contém exatamente as semanas únicas do SENDS, ordenadas", () => {
+    const expected = [...new Set(SENDS.map((s) => s.week))].sort((a, b) => a - b);
+    assert.deepEqual(ALL_WEEKS, expected);
+  });
+
+  it("ALL_WEEKS é [1,2,3] para o plano atual", () => {
+    assert.deepEqual(ALL_WEEKS, [1, 2, 3]);
   });
 });

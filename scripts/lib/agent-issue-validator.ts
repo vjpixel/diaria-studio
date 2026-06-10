@@ -446,6 +446,14 @@ export async function isLinkDeadFalsePositive(
  * 405 Method Not Allowed). Retorna o status final ou null em caso de timeout/erro.
  *
  * Interno — não exportado.
+ *
+ * #2048 item 9: divergência intencional vs `verify-accessibility.ts`:
+ *   - Aqui: timeout fixo `REVERIFY_TIMEOUT_MS = 8000ms` (re-verificação rápida,
+ *     pós-issue-validator; context = validação de issue de email, não pipeline).
+ *   - verify-accessibility: `CONFIG.timeouts.verify` (configurável, pipeline Stage 1).
+ * Os dois contextos têm requisitos de latência distintos — extrair para lib
+ * forçaria um timeout unificado ou um parâmetro extra, aumentando o acoplamento
+ * sem ganho real. Mantidos separados; documentada a divergência aqui.
  */
 async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> {
   const headers = { "User-Agent": BROWSER_UA };

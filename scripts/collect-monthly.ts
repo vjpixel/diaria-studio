@@ -289,7 +289,8 @@ function main() {
 
   // yymm é o mês do conteúdo (campo legado no output JSON)
   const yymm = cycleToYymm(cycle);
-  const editionDir = resolveMonthlyDir(cycle);
+  // #2048 item 2: escrita sempre usa o formato novo — sem fallback legado.
+  const editionDir = resolveMonthlyDir(cycle, { allowLegacyFallback: false });
 
   const files = listRawPosts(editionDir);
   if (files.length === 0) {
