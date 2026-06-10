@@ -410,15 +410,19 @@ function main(): void {
   // --- lint 2: contagem comment_diaria (#2014) ---
   const { findings: countFindings, fixed } = lintCommentDiariaCount(socialMd, approved, { fix: doFix });
 
-  if (countFindings.length > 0) {
+  // Separar findings resolvíveis (número errado) dos não-resolvíveis (placeholder literal)
+  const unresolvedFindings = countFindings.filter((f) => f.unresolved_placeholder);
+  const wrongNumberFindings = countFindings.filter((f) => !f.unresolved_placeholder);
+
+  if (wrongNumberFindings.length > 0) {
     const action = doFix ? "→ corrigido automaticamente" : "→ confira no gate ou rode com --fix";
     console.error(
       `\n⚠️  lint-social-numbers: contagem "mais N destaques" errada no comment_diaria ${action}:`,
     );
-    for (const f of countFindings) {
+    for (const f of wrongNumberFindings) {
       console.error(`  - d${f.destaque}: encontrou ${f.found}, esperado ${f.expected}`);
     }
-    if (doFix) {
+    if (doFix && fixed !== socialMd) {
       const tmpPath = socialPath + ".tmp";
       writeFileSync(tmpPath, fixed, "utf8");
       renameSync(tmpPath, socialPath);
@@ -427,10 +431,31 @@ function main(): void {
     }
   }
 
-  // WARN-only: nunca bloqueia (exit 0). O editor decide no gate.
+  // Placeholders não-resolvidos: --fix não consegue substituir (NaN) → blocker, exit 1
+  let hasUnresolved = false;
+  if (unresolvedFindings.length > 0) {
+    hasUnresolved = true;
+    console.error(
+      `\n🚨  lint-social-numbers: placeholder literal {outros_count} não-resolvido pelo LLM — blocker, não pode ir pro LinkedIn:`,
+    );
+    for (const f of unresolvedFindings) {
+      console.error(`  - d${f.destaque}: "{outros_count}" literal no comment_diaria (esperado: ${f.expected})`);
+    }
+    if (doFix) {
+      console.error(
+        `  [fix] IMPOSSÍVEL substituir automaticamente — o LLM não resolveu o placeholder. Re-disparar o social-linkedin agent para regenerar os comment_diaria.`,
+      );
+    }
+  }
+
+  // Cifras financeiras: WARN-only (exit 0). Contagem errada: WARN-only (exit 0).
+  // Placeholder não-resolvido: blocker (exit 1) — literal no LinkedIn é inaceitável.
   console.log(
     JSON.stringify({ ok: totalNums === 0 && countFindings.length === 0, num_findings: numFindings, count_findings: countFindings }, null, 2),
   );
+  if (hasUnresolved) {
+    process.exit(1);
+  }
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";

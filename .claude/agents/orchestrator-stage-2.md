@@ -149,7 +149,7 @@ Fallback dispatch:
    - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
    - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
 
-2. `Agent` → `social-linkedin` (mesmo input do writer + `outros_count` calculado igual ao modo padrão).
+2. `Agent` → `social-linkedin` (mesmo input do writer + `outros_count` = `lancamento.length + radar.length + use_melhor.length + video.length` de `_internal/01-approved-capped.json` — idêntico ao modo padrão, explicitamente do capped para consistência com a newsletter publicada).
 3. `Agent` → `social-facebook` (mesmo input do writer).
 
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
@@ -347,7 +347,7 @@ Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês
 
 **Lint anti-alucinação de cifras pré-gate (#1711):** após humanizar+Clarice, rodar:
 ```bash
-npx tsx scripts/lint-social-numbers.ts --social data/editions/{AAMMDD}/03-social.md --approved data/editions/{AAMMDD}/_internal/01-approved.json
+npx tsx scripts/lint-social-numbers.ts --social data/editions/{AAMMDD}/03-social.md --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
 ```
 Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0 sempre). **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Não bloqueia (heurística conservadora, mas pode ter falso-positivo se a fonte usa formato muito diferente).
 
