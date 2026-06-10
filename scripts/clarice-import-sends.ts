@@ -29,7 +29,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost } from "./lib/brevo-client.ts";
+import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
 import { SENDS } from "./clarice-build-edition-sends.ts";
@@ -73,12 +73,21 @@ export function mergeSendsSummaryWithListIds(
 }
 
 /** Reduz o CSV do envio a email + NOME (descarta TIER — é metadado de análise
- *  local, não vira atributo Brevo) e normaliza o header de email -> EMAIL. */
+ *  local, não vira atributo Brevo) e normaliza o header de email -> EMAIL.
+ *
+ *  #2018: detecta coluna NOME por regex case-insensitive (/^nome$/i) — antes
+ *  era literal "NOME". Um export do Drive com header "Nome" (capitalized)
+ *  zerava silenciosamente todos os nomes (r["NOME"] era undefined → "").
+ *  Prioridade: "NOME" primeiro (exato), depois match regex — fallback "" se ausente.
+ */
 export function toImportCsv(raw: string): { csv: string; count: number } {
   const parsed = Papa.parse<Row>(raw, { header: true, skipEmptyLines: true });
   const rows = parsed.data;
-  const emailKey = (parsed.meta.fields ?? []).find((f) => /e-?mail/i.test(f.trim())) ?? "email";
-  const data = rows.map((r) => ({ email: (r[emailKey] ?? "").trim(), NOME: r["NOME"] ?? "" }));
+  const fields = parsed.meta.fields ?? [];
+  const emailKey = fields.find((f) => /e-?mail/i.test(f.trim())) ?? "email";
+  // #2018: NOME column detection via regex — aceita "NOME", "Nome", "nome", etc.
+  const nomeKey = fields.find((f) => /^nome$/i.test(f.trim())) ?? "NOME";
+  const data = rows.map((r) => ({ email: (r[emailKey] ?? "").trim(), NOME: (r[nomeKey] ?? "").trim() }));
   const csv = normalizeImportCsv(Papa.unparse({ fields: ["email", "NOME"], data }));
   return { csv, count: data.length };
 }
@@ -140,23 +149,9 @@ export function buildPlan(label: string, cycle: string, only: number[] | null): 
   return plans;
 }
 
-/** Lista todas as listas Brevo (paginado) — id + nome, pro check de duplicata. */
-async function fetchExistingLists(apiKey: string): Promise<{ id: number; name: string }[]> {
-  const out: { id: number; name: string }[] = [];
-  let offset = 0;
-  for (;;) {
-    const res = await fetch(`https://api.brevo.com/v3/contacts/lists?limit=50&offset=${offset}`, {
-      headers: { "api-key": apiKey, Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`Brevo GET /contacts/lists falhou (${res.status})`);
-    const body = (await res.json()) as { lists?: { id: number; name: string }[] };
-    const lists = body.lists ?? [];
-    out.push(...lists.map((l) => ({ id: l.id, name: l.name })));
-    if (lists.length < 50) break;
-    offset += 50;
-  }
-  return out;
-}
+// #2018: fetchExistingLists triplicada → lib/brevo-client.brevoListAllLists.
+// Alias local pra manter a chamada interna legível sem renomear os call-sites.
+const fetchExistingLists = brevoListAllLists;
 
 // ---------------------------------------------------------------------------
 // Main

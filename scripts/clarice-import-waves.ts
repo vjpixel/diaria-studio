@@ -28,7 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoPost } from "./lib/brevo-client.ts";
+import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
 import { clariceWavesDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961
 
 loadProjectEnv();
@@ -108,23 +108,9 @@ export function findExistingConflicts(
   return out;
 }
 
-/** Lista todas as listas Brevo (paginado) — só id + nome, pro check de duplicata. */
-async function fetchExistingLists(apiKey: string): Promise<{ id: number; name: string }[]> {
-  const out: { id: number; name: string }[] = [];
-  let offset = 0;
-  for (;;) {
-    const res = await fetch(`https://api.brevo.com/v3/contacts/lists?limit=50&offset=${offset}`, {
-      headers: { "api-key": apiKey, Accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`Brevo GET /contacts/lists falhou (${res.status})`);
-    const body = (await res.json()) as { lists?: { id: number; name: string }[] };
-    const lists = body.lists ?? [];
-    out.push(...lists.map((l) => ({ id: l.id, name: l.name })));
-    if (lists.length < 50) break;
-    offset += 50;
-  }
-  return out;
-}
+// #2018: fetchExistingLists triplicada → lib/brevo-client.brevoListAllLists.
+// Alias local pra manter a chamada interna legível sem renomear os call-sites.
+const fetchExistingLists = brevoListAllLists;
 
 // ---------------------------------------------------------------------------
 // CLI

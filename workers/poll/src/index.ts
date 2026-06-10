@@ -210,6 +210,14 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
   // #1083 / #1086: gate de edições válidas. Se key `valid_editions` setada e
   // edition não estiver no set, rejeita. Vazia/ausente/corrupted → aceita
   // qualquer (compat + fail-open). Corrupted loga console.error.
+  //
+  // #2018 (nota operacional): a key `clarice:valid_editions` NUNCA foi
+  // populada no KV — o brand=clarice opera em fail-open permanente (aceita
+  // qualquer edition). Isso é intencional para o ciclo de lançamento: o
+  // fluxo mensal não tem pipeline de add-valid-edition.ts análogo ao diário.
+  // Se no futuro for necessário restringir o gate: usar scripts/add-valid-edition.ts
+  // com --brand clarice, que grava `clarice:valid_editions` via brandedNamespace.
+  // Enquanto a key não for populada, parseValidEditions retorna null → fail-open.
   const validSet = parseValidEditions(await env.POLL.get("valid_editions"));
   if (!isValidEdition(validSet, edition)) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
@@ -892,7 +900,11 @@ export function mergeYearEntries(perMonth: SnapshotEntry[][]): SnapshotEntry[] {
       const key = e.email.toLowerCase();
       const prev = byEmail.get(key);
       if (!prev) {
-        byEmail.set(key, { ...e });
+        // #2018: armazenar email lowercase — case divergente entre meses
+        // (ex: "A@X.com" em jan, "a@x.com" em fev) resultava em entrada
+        // com email original (mixed-case) na saída, quebrando exibição e
+        // lookups subsequentes. Normalizar aqui garante consistência.
+        byEmail.set(key, { ...e, email: key });
       } else {
         prev.correct += e.correct;
         prev.total += e.total;
@@ -927,11 +939,11 @@ async function handleLeaderboardByYear(
   // Meses a agregar: ano passado = 12; ano corrente = até o mês atual (não
   // materializa snapshot de mês futuro — #1666); ano futuro = nenhum.
   const lastMonth = year < currentYear ? 12 : year === currentYear ? currentMonth : 0;
-  const perMonth: SnapshotEntry[][] = [];
-  for (let m = 1; m <= lastMonth; m++) {
-    const slug = `${yearStr}-${String(m).padStart(2, "0")}`;
-    perMonth.push(await getOrComputeSnapshot(env, slug));
-  }
+  // #2018: Promise.all em paralelo — subrequest budget free-tier permite N
+  // concorrentes em paralelo (cada getOrComputeSnapshot é 1 KV get no hot
+  // path, N≤12). Serial tinha latência O(N×RTT); agora é O(1×RTT) no hot path.
+  const slugs = Array.from({ length: lastMonth }, (_, i) => `${yearStr}-${String(i + 1).padStart(2, "0")}`);
+  const perMonth: SnapshotEntry[][] = await Promise.all(slugs.map((slug) => getOrComputeSnapshot(env, slug)));
   const entries = mergeYearEntries(perMonth);
 
   if (year > currentYear && entries.length === 0) {
@@ -1413,17 +1425,23 @@ export default {
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv);
     if (path === "/leaderboard" && request.method === "GET") {
-      // #2006: Clarice News (mensal) ranqueia por ANO — 1 voto/leitor/mês.
-      if (brand === "clarice") return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand);
+      // #2006/#2018: período canônico do leaderboard vem de BRAND_INFO.leaderboardPeriod.
+      // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
+      // "month" → visão mensal (diária: votos diários, ranking mês corrente).
+      if (BRAND_INFO[brand].leaderboardPeriod === "year") {
+        return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand);
+      }
       return handleLeaderboard(bEnv, brand);
     }
     if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
-      // #2006 auto-heal: links mensais já enviados com brand=clarice rendem a
-      // visão do ANO daquele slug — emails antigos se corrigem sozinhos.
-      if (monthMatch && brand === "clarice") return handleLeaderboardByYear(monthMatch[1].slice(0, 4), bEnv, brand);
+      // #2006/#2018: auto-heal: links mensais já enviados com leaderboardPeriod="year"
+      // rendem visão do ANO — emails antigos se corrigem sozinhos.
+      if (monthMatch && BRAND_INFO[brand].leaderboardPeriod === "year") {
+        return handleLeaderboardByYear(monthMatch[1].slice(0, 4), bEnv, brand);
+      }
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
       if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);

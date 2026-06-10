@@ -77,6 +77,21 @@ describe("brand helpers (#1905)", () => {
     assert.equal(BRAND_INFO.clarice.name, "Clarice News");
     assert.ok(BRAND_INFO.clarice.siteUrl.startsWith("https://"));
   });
+
+  // #2018: leaderboardPeriod centralizado em BRAND_INFO — antes espalhado em
+  // 5+ checagens `brand === "clarice"` no handler do leaderboard.
+  it("#2018: BRAND_INFO.leaderboardPeriod está definido para todas as marcas", () => {
+    assert.ok("leaderboardPeriod" in BRAND_INFO.diaria, "diaria deve ter leaderboardPeriod");
+    assert.ok("leaderboardPeriod" in BRAND_INFO.clarice, "clarice deve ter leaderboardPeriod");
+  });
+
+  it("#2018: clarice.leaderboardPeriod é 'year' (ranking anual — 1 voto/mês)", () => {
+    assert.equal(BRAND_INFO.clarice.leaderboardPeriod, "year");
+  });
+
+  it("#2018: diaria.leaderboardPeriod é 'month' (ranking mensal — votos diários)", () => {
+    assert.equal(BRAND_INFO.diaria.leaderboardPeriod, "month");
+  });
 });
 
 describe("brandedNamespace (#1905)", () => {

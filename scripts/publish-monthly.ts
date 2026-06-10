@@ -56,6 +56,7 @@ import {
   eiaEditionFromYymm,
   draftToEmail,
   parseEiaLegend,
+  captionForGenerator, // #2018-fix: extraído pra evitar duplicação com monthly-preview-cloudflare
 } from "./lib/monthly-render.ts";
 // #1844: cliente HTTP Brevo (transporte) — wrappers que main() usa pra campanha.
 import {
@@ -101,6 +102,7 @@ interface BrevoConfig {
 interface PlatformConfig {
   newsletter_monthly?: string;
   brevo_monthly?: BrevoConfig;
+  image_generator?: string; // #2018: "gemini" | "comfyui" | "cloudflare" | etc.
 }
 
 interface MonthlyPublished {
@@ -490,8 +492,11 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     ? parseEiaLegend(readFileSync(eiaMdPath, "utf8"))
     : undefined;
 
+  // #2018-fix: legenda via helper centralizado (evita duplicação com monthly-preview-cloudflare).
+  const destaqueImageCaption = captionForGenerator(platformConfig.image_generator ?? "gemini");
+
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption);
 
   if (!subject) {
     process.stderr.write(

@@ -202,11 +202,23 @@ export function classify403Reason(sig: string): Vote403Reason {
  */
 export type Brand = "diaria" | "clarice";
 
-export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string }> = {
-  diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br" },
+/**
+ * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
+ * "month" = diária (votos diários, ranking mensal); "year" = clarice (1 voto/mês,
+ * ranking anual faz mais sentido). Antes estava espalhado em 5+ pontos do código
+ * como `periodKind === "year"` checado ad-hoc. Centralizar aqui garante que
+ * adicionar um brand novo só precisa de 1 linha.
+ *
+ * Consumido em: handleLeaderboardByYear (dispatch pra "year" só pra clarice),
+ * leaderboardHref (slug mensal→anual só pra clarice), renderLeaderboardHtml
+ * (título/copy por período).
+ */
+export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderboardPeriod: "month" | "year" }> = {
+  diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
   // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
   // Clarice voltado ao leitor precisa carregar.
-  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria" },
+  // #2018: leaderboardPeriod: "year" — mensal vota 1×/mês, ranking anual até 12 chances.
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year" },
 };
 
 /**

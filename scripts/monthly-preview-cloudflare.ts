@@ -34,7 +34,7 @@ loadProjectEnv();
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { draftToEmail, eiaEditionFromYymm, parseEiaLegend } from "./lib/monthly-render.ts";
+import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
 import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
 import {
@@ -182,8 +182,15 @@ async function main(): Promise<void> {
     ? parseEiaLegend(readFileSync(eiaMdPath, "utf8"))
     : undefined;
 
+  // #2018-fix: legenda via helper centralizado (evita duplicação com publish-monthly).
+  const platformConfigPath = resolve(ROOT, "platform.config.json");
+  const imageGenerator: string = existsSync(platformConfigPath)
+    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini"
+    : "gemini";
+  const destaqueImageCaption = captionForGenerator(imageGenerator);
+
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages);
+  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption);
 
   // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
   const internalDir = resolve(monthlyDir, "_internal");

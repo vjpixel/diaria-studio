@@ -17,6 +17,7 @@
 import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
 export { escHtml } from "./html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "./html-escape.ts"; // #1990: local usage
+import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper (refs #2048)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
 const BRAND = COLORS.brand; // --brand #00A0A0
@@ -49,15 +50,13 @@ export function stripBackslashEscapes(s: string): string {
  * O flanco não-espaço preserva o caso real (`*Canis aureus*`) e ignora esses.
  */
 function renderTextInline(s: string): string {
-  return escHtml(s)
-    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>')
-    // Anti auto-linkify: "Clarice.ai" em TEXTO PURO vira link azul default no
-    // Gmail/clients (sem ?via=diaria, fora do padrão visual). WORD JOINER
-    // U+2060 invisível entre "." e "ai" quebra o pattern-match de domínio —
-    // visual idêntico. Links markdown reais não passam por aqui (renderInline
-    // trata o label separado), então continuam linkando normalmente.
-    .replace(/\b([Cc]larice)\.ai\b/g, "$1.&#8288;ai");
+  // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
+  // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
+  return applyWordJoiner(
+    escHtml(s)
+      .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
+  );
 }
 
 /**
@@ -164,6 +163,24 @@ export function renderParagraphs(text: string): string {
 }
 
 /**
+ * #2018: mapa gerador → legenda da imagem. Centralizado aqui (único lugar)
+ * para que publish-monthly.ts e monthly-preview-cloudflare.ts importem em vez
+ * de duplicar. Adicionando um novo gerador, basta atualizar este mapa.
+ */
+export const GENERATOR_LABELS: Record<string, string> = {
+  gemini: "Criada com Gemini",
+  comfyui: "Criada com ComfyUI",
+  cloudflare: "Criada com Cloudflare AI",
+  openai: "Criada com DALL-E",
+};
+
+/** Deriva a legenda de imagem a partir do slug do gerador configurado.
+ * Fallback: "Criada com IA" (genérico, seguro para qualquer gerador). */
+export function captionForGenerator(imageGenerator: string): string {
+  return GENERATOR_LABELS[imageGenerator] ?? "Criada com IA";
+}
+
+/**
  * Renders a DESTAQUE section block. Aceita override de tema (usado pra
  * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
  * `imageUrl` (#1916): imagem 2x1 do destaque, embutida no topo do bloco.
@@ -173,7 +190,13 @@ export function renderParagraphs(text: string): string {
  *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
  *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
  */
-export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string): string {
+/**
+ * #2018: imageCaption parametriza a legenda da imagem gerada — antes era
+ * hardcoded "Criada com Gemini", mas o gerador configurado pode ser
+ * ComfyUI, Cloudflare, etc. Caller (draftToEmail) lê platform.config.json
+ * e passa a legenda correta. Default: "Criada com IA" (genérico, seguro).
+ */
+export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string, imageCaption?: string): string {
   const lines = chunk.split("\n");
   // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
   const cleaned = normalizeLabel(lines[0])
@@ -234,9 +257,11 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
+  // #2018: legenda parametrizada (imageCaption) — antes hardcoded "Criada com Gemini".
+  const caption = imageCaption ?? "Criada com IA";
   const imageHtml = imageUrl
     ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;" />` +
-      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">Criada com Gemini</p>`
+      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">${escHtml(caption)}</p>`
     : "";
 
   return label + titleHtml + imageHtml + mainHtml + conductorHtml;
@@ -726,7 +751,11 @@ export function splitByLabels(text: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Converts draft.md content + optional chosen subject to { subject, previewText, html }. */
+/** Converts draft.md content + optional chosen subject to { subject, previewText, html }.
+ *
+ * @param destaqueImageCaption #2018 — legenda das imagens geradas (ex: "Criada com Gemini",
+ *   "Criada com ComfyUI"). Default: "Criada com IA". Lida de platform.config.json pelo caller.
+ */
 export function draftToEmail(
   draft: string,
   chosenSubject: string | null,
@@ -735,6 +764,7 @@ export function draftToEmail(
   eiaImageUrlB?: string,
   eiaCredit?: string,
   destaqueImageUrls?: Record<number, string>, // #1916: {1: url, 2: url, 3: url}
+  destaqueImageCaption?: string, // #2018: legenda parametrizada do gerador
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -795,7 +825,8 @@ export function draftToEmail(
     const destaqueMatch = label.match(/^DESTAQUE\s+(\d+)/);
     if (destaqueMatch) {
       const n = Number(destaqueMatch[1]); // #1916: imagem 2x1 por destaque
-      bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[n]));
+      // #2018: repassa a legenda parametrizada do gerador configurado
+      bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[n], destaqueImageCaption));
       continue;
     }
 
