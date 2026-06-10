@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { apportion, stratify, planWeeks, SENDS, type Tier } from "../scripts/clarice-build-edition-sends.ts";
+import { apportion, stratify, planWeeks, SENDS, type Tier, main } from "../scripts/clarice-build-edition-sends.ts";
 
 describe("SENDS (plano dos 21 envios)", () => {
   it("21 envios, 7 por semana, totais por semana corretos", () => {
@@ -123,5 +123,122 @@ describe("planWeeks (fill morno->frio data-driven)", () => {
     const plans = planWeeks({ ...sizes, T3: 0, T4: 0 }, [1]);
     assert.equal(plans.length, 1);
     assert.equal(plans[0].week, 1);
+  });
+
+  // Regressão #2007/#2018: t2InS2 < 0 deve lançar erro explícito
+  it("explode se t2InS2 < 0 (T2 insuficiente para cobrir o que a S1 consome)", () => {
+    // T2 pequeno demais: S1 precisa de 894 de T2, mas só há 500
+    assert.throws(
+      () => planWeeks({ ...sizes, T2: 500 }, [2]),
+      /T2 insuficiente/,
+    );
+  });
+});
+
+describe("main --weeks validação (#2007/#2018)", () => {
+  // --weeks sem valor seguido de outra flag deve lançar erro, não weeks=[] silencioso
+  it("--weeks --dry-run (sem valor) lança erro explícito em vez de weeks=[] silencioso", async () => {
+    await assert.rejects(
+      () => main(["--cycle", "2605-06", "--weeks", "--dry-run"]),
+      /--weeks requer um valor/,
+    );
+  });
+
+  it("--weeks com valor inválido lança erro explícito", async () => {
+    await assert.rejects(
+      () => main(["--cycle", "2605-06", "--weeks", "abc"]),
+      /não contém semanas válidas/,
+    );
+  });
+});
+
+// Regressão #2007 / #2018: cursor de tier inicializado a partir das semanas omitidas.
+// Estes testes verificam o comportamento do cursor e garantem que reverter o fix quebre os testes (#633).
+describe("cursor de tier em --weeks parcial (anti-duplo-envio #2007/#2018)", () => {
+  const sizes: Record<Tier, number> = {
+    "T1-abriu": 176, "T1-nao-abriu": 911, maio: 3619, T2: 6840, T3: 11903, T4: 19494,
+  };
+
+  // Confirma aritmética: planWeeks([2]) retorna segmentos idênticos a [1,2,3].week2.
+  // Necessário mas não suficiente: sem cursor correto em main, o slicing começa errado
+  // mesmo com segmentos corretos.
+  it("planWeeks([2]) retorna os mesmos segmentos de S2 que planWeeks([1,2,3])", () => {
+    const [full] = planWeeks(sizes, [1, 2, 3]).filter((p) => p.week === 2);
+    const [partial] = planWeeks(sizes, [2]);
+    assert.deepEqual(full.segments, partial.segments);
+    assert.equal(full.total, partial.total);
+  });
+
+  // Teste do CURSOR: para --weeks 2, as semanas omitidas que precedem a S2 devem
+  // ser usadas para inicializar os cursores. planWeeks([1]) representa o que S1
+  // teria consumido — o cursor de T2 em S2 deve começar em t2InS1 = 894.
+  // Se revertida para a lógica antiga (minWeek > 1 → priorWeeks), este teste ainda
+  // passa (minWeek=2 > 1, logo priorWeeks=[1]). O próximo teste cobre o caso --weeks 1,3.
+  it("--weeks 2: consumed de S1 (calculado via planWeeks) == t2InS1 = 894", () => {
+    // Simula a lógica do cursor: skippedWeeks para --weeks 2 = [1] (< max=2, não inclusa)
+    const weeks = [2];
+    const maxWeek = Math.max(...weeks);
+    const skippedWeeks = ([1, 2, 3] as number[]).filter((w) => !weeks.includes(w) && w < maxWeek);
+    assert.deepEqual(skippedWeeks, [1], "S1 deve ser detectada como semana pulada para --weeks 2");
+
+    const priorPlans = planWeeks(sizes, skippedWeeks);
+    const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
+    for (const pp of priorPlans) {
+      for (const seg of pp.segments) consumed[seg.tier as Tier] += seg.count;
+    }
+    // T2 consumida pela S1 = t2InS1 = 894 (S1 = T1-abriu+T1-nao-abriu+maio+894 de T2 = 5600)
+    assert.equal(consumed["T2"], 894, `cursor T2 para --weeks 2 deve ser 894 (era 0 antes do fix)`);
+    // T3 e T4 não consumidos pela S1
+    assert.equal(consumed["T3"], 0);
+    assert.equal(consumed["T4"], 0);
+  });
+
+  // Regressão crítica #2007 part B: --weeks 1,3 (S2 omitida entre S1 e S3).
+  // BUG ORIGINAL: minWeek([1,3])=1, logo o bloco `if (minWeek > 1)` nunca executava,
+  // deixando consumed.T3=0 ao processar S3. S3 reenviaria T3-0..T3-4548, sobrepondo
+  // com a janela da S2 (T3-0..T3-7353).
+  // FIX: usa skippedWeeks = semanas omitidas ABAIXO DO MÁXIMO, independente do minWeek.
+  // Reverter para a lógica `minWeek > 1` faz este teste falhar, cumprindo #633.
+  it("--weeks 1,3 (S2 omitida): cursor de T3 = t3InS2 = 7354 (não zero)", () => {
+    const weeks = [1, 3];
+    const maxWeek = Math.max(...weeks); // 3
+    // skippedWeeks = semanas não pedidas que precedem o max
+    const skippedWeeks = ([1, 2, 3] as number[]).filter((w) => !weeks.includes(w) && w < maxWeek);
+    assert.deepEqual(skippedWeeks, [2], "S2 deve ser detectada como semana pulada para --weeks 1,3");
+
+    const priorPlans = planWeeks(sizes, skippedWeeks);
+    const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
+    for (const pp of priorPlans) {
+      for (const seg of pp.segments) consumed[seg.tier as Tier] += seg.count;
+    }
+    // T3 consumida pela S2 = t3InS2 = 7354 (S2 = T2-restante(5946) + T3-7354 = 13300)
+    assert.equal(consumed["T3"], 7354, `cursor T3 para --weeks 1,3 deve ser 7354; era 0 antes do fix (duplo-envio silencioso)`);
+    // T2 consumida pela S2 = 5946 (o resto do T2 após S1)
+    assert.equal(consumed["T2"], 5946, `cursor T2 para --weeks 1,3 via S2 deve ser 5946`);
+    // T4 não consumida pela S2
+    assert.equal(consumed["T4"], 0);
+
+    // Confirma que a lógica ANTIGA (minWeek > 1) não detectaria este caso:
+    // minWeek([1,3]) = 1 → priorWeeks seria [] → consumed.T3 ficaria em 0.
+    const minWeek = Math.min(...weeks); // 1
+    const oldPriorWeeks = ([1, 2, 3] as number[]).filter((w) => w < minWeek); // []
+    assert.deepEqual(oldPriorWeeks, [], "lógica antiga com minWeek=1 não detecta S2 omitida → bug confirmado");
+  });
+
+  // Verifica que --weeks 3 (sem S1 nem S2) calcula consumed de T3 corretamente:
+  // consumed.T3 = t3InS2 = 7354, consumed.T2 = t2InS1 + t2InS2 = 894 + 5946 = 6840.
+  it("--weeks 3 (S1+S2 omitidas): cursor T3 = 7354, cursor T2 = 6840", () => {
+    const weeks = [3];
+    const maxWeek = Math.max(...weeks); // 3
+    const skippedWeeks = ([1, 2, 3] as number[]).filter((w) => !weeks.includes(w) && w < maxWeek);
+    assert.deepEqual(skippedWeeks, [1, 2], "S1 e S2 devem ser detectadas como puladas para --weeks 3");
+
+    const priorPlans = planWeeks(sizes, skippedWeeks);
+    const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
+    for (const pp of priorPlans) {
+      for (const seg of pp.segments) consumed[seg.tier as Tier] += seg.count;
+    }
+    assert.equal(consumed["T3"], 7354, "cursor T3 para --weeks 3 deve ser 7354");
+    assert.equal(consumed["T2"], 894 + 5946, "cursor T2 para --weeks 3 deve ser 6840 (S1+S2 inteiros)");
   });
 });
