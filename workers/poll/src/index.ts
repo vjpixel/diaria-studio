@@ -871,6 +871,74 @@ async function handleLeaderboardByMonth(
   return renderLeaderboardHtml(scores, periodLabel, parsed.year, cacheControl, brand);
 }
 
+// ── /leaderboard/{YYYY} (#2006 — visão ANUAL; default da Clarice News) ───────
+
+/**
+ * Pure (#2006): merge dos snapshots mensais de um ano em entries anuais —
+ * soma (correct, total) por email; nickname = último não-nulo na ordem dos
+ * meses (mês mais recente vence, espelhando a propagação de nickname mensal).
+ */
+export function mergeYearEntries(perMonth: SnapshotEntry[][]): SnapshotEntry[] {
+  const byEmail = new Map<string, SnapshotEntry>();
+  for (const month of perMonth) {
+    for (const e of month) {
+      const key = e.email.toLowerCase();
+      const prev = byEmail.get(key);
+      if (!prev) {
+        byEmail.set(key, { ...e });
+      } else {
+        prev.correct += e.correct;
+        prev.total += e.total;
+        if (e.nickname) prev.nickname = e.nickname;
+      }
+    }
+  }
+  return [...byEmail.values()];
+}
+
+/**
+ * Handler `/leaderboard/{YYYY}` — agrega os 12 meses do ano (snapshots mensais,
+ * reusando o cache do #1348) e renderiza com título anual. É o período padrão
+ * da Clarice News (#2006): cada leitor da mensal vota 1×/mês, então o ranking
+ * mensal é degenerado (0/1 ou 1/1); o ano dá até 12 chances.
+ */
+async function handleLeaderboardByYear(
+  yearStr: string,
+  env: Env,
+  brand: Brand = "diaria",
+): Promise<Response> {
+  const year = parseInt(yearStr, 10);
+  if (!/^\d{4}$/.test(yearStr) || year < 2000 || year > 2099) {
+    return new Response(votePageHtml("Ano inválido. Use formato YYYY (ex: 2026).", false, null, null, null, brand), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+  const currentSlug = currentMonthSlugBrt(new Date());
+  const currentYear = parseInt(currentSlug.slice(0, 4), 10);
+  const currentMonth = parseInt(currentSlug.slice(5, 7), 10);
+
+  // Meses a agregar: ano passado = 12; ano corrente = até o mês atual (não
+  // materializa snapshot de mês futuro — #1666); ano futuro = nenhum.
+  const lastMonth = year < currentYear ? 12 : year === currentYear ? currentMonth : 0;
+  const perMonth: SnapshotEntry[][] = [];
+  for (let m = 1; m <= lastMonth; m++) {
+    const slug = `${yearStr}-${String(m).padStart(2, "0")}`;
+    perMonth.push(await getOrComputeSnapshot(env, slug));
+  }
+  const entries = mergeYearEntries(perMonth);
+
+  if (year > currentYear && entries.length === 0) {
+    return new Response(votePageHtml(`O leaderboard de ${year} ainda não começou.`, false, null, null, null, brand), {
+      status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
+    });
+  }
+  const scores = scoreByMonthEntriesToLeaderboard(entries);
+  const cacheControl = year < currentYear
+    ? "public, max-age=2592000, immutable" // ano fechado nunca muda
+    : "public, max-age=60"; // corrente: real-time-ish (igual ao mensal)
+  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year");
+}
+
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
 function renderLeaderboardHtml(
   scores: LeaderboardEntry[],
@@ -878,9 +946,13 @@ function renderLeaderboardHtml(
   year: number,
   cacheControl: string,
   brand: Brand = "diaria",
+  periodKind: "month" | "year" = "month", // #2006: visão anual (Clarice News)
 ): Response {
   // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
+  // #2006: "Leaderboard de 2026" (ano) vs "Leaderboard de Maio de 2026" (mês).
+  const heading = periodKind === "year" ? `Leaderboard de ${year}` : `Leaderboard de ${periodLabel} de ${year}`;
+  const periodNoun = periodKind === "year" ? "este ano" : "esse mês";
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
   const ranked = rankEntries(scores).slice(0, 50);
@@ -901,7 +973,7 @@ function renderLeaderboardHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Leaderboard de ${periodLabel} de ${year} | ${info.name}</title>
+<title>${heading} | ${info.name}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
 <style>
@@ -918,9 +990,9 @@ function renderLeaderboardHtml(
 </style>
 </head>
 <body>
-<h1>Leaderboard de ${periodLabel} de ${year}</h1>
+<h1>${heading}</h1>
 <p class="kicker">É IA?</p>
-<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>
+<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || "<tr><td colspan=3 style='color:rgba(23,20,17,0.45);text-align:center;padding:20px'>Ainda sem votos.</td></tr>"}</tbody>
@@ -1333,12 +1405,21 @@ export default {
 
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv);
-    if (path === "/leaderboard" && request.method === "GET") return handleLeaderboard(bEnv, brand);
+    if (path === "/leaderboard" && request.method === "GET") {
+      // #2006: Clarice News (mensal) ranqueia por ANO — 1 voto/leitor/mês.
+      if (brand === "clarice") return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand);
+      return handleLeaderboard(bEnv, brand);
+    }
     if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
+      // #2006 auto-heal: links mensais já enviados com brand=clarice rendem a
+      // visão do ANO daquele slug — emails antigos se corrigem sozinhos.
+      if (monthMatch && brand === "clarice") return handleLeaderboardByYear(monthMatch[1].slice(0, 4), bEnv, brand);
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
+      const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
+      if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv);
