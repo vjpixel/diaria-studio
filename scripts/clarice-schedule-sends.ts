@@ -45,6 +45,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
+import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/monthly-paths.ts";
 import { SENDS } from "./clarice-build-edition-sends.ts";
 import { CELLS } from "./clarice-split-cells.ts";
 
@@ -61,17 +62,21 @@ export const SUBJECTS: Record<string, string> = {
 export const PREVIEW_TEXT =
   "Marco legal, unicórnio de IA e agentes substituindo equipes: maio foi o mês das decisões.";
 
-/** Ciclo 2605-06: d01=10/jun/2026 … d21=30/jun — 06:00 BRT (-03:00).
+/** Ciclo 2605-06: d01=10/jun/2026 … d21=30/jun — 06:00 BRT = 09:00 UTC.
  *
  * Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada).
  * (#2007 / #2018)
+ *
+ * Normalizado pra UTC Z via .toISOString(), consistente com publish-monthly.ts
+ * (padrão pré-existente do repo). Equivalência horária: 06:00 BRT (-03:00) = 09:00Z.
  */
 export function scheduledAtFor(n: number): string {
   if (n < 1 || n > 21 || !Number.isInteger(n)) {
     throw new Error(`scheduledAtFor: n deve ser inteiro 1..21, recebido: ${n}`);
   }
   const day = 9 + n; // d01 -> dia 10, d21 -> dia 30
-  return `2026-06-${String(day).padStart(2, "0")}T06:00:00-03:00`;
+  // 06:00 BRT = 09:00 UTC; usar UTC Z (formato .toISOString()) para consistência com Brevo
+  return new Date(`2026-06-${String(day).padStart(2, "0")}T09:00:00Z`).toISOString();
 }
 
 interface CellEntry { list: string; listId: number; count: number }
@@ -187,7 +192,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!existsSync(sendsSummaryPath)) {
       throw new Error(`sends-summary.json não existe — rode clarice-build-edition-sends e clarice-import-sends antes.`);
     }
-    const sendsSummary: { sends: SendSummaryEntry[] } = JSON.parse(readFileSync(sendsSummaryPath, "utf8"));
+    let sendsSummary: { sends: SendSummaryEntry[] };
+    const rawSendsSummary = readFileSync(sendsSummaryPath, "utf8");
+    try {
+      sendsSummary = JSON.parse(rawSendsSummary);
+    } catch (e) {
+      throw new Error(`sends-summary.json corrompido (JSON inválido): ${sendsSummaryPath}\n${String(e)}`);
+    }
     for (const s of sendsSummary.sends) {
       if (s.listId != null) listByDay.set(s.n, s.listId);
     }
@@ -200,14 +211,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // HTML render para todas as campanhas
-  const htmlPath = resolve(ROOT, "data", "monthly", "2605", "_internal", "cloudflare-preview.html");
+  const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   const html = readFileSync(htmlPath, "utf8");
 
   const campaignsPath = resolve(cellsDir, "campaigns-summary.json");
-  const campaigns: CampaignEntry[] = existsSync(campaignsPath)
-    ? JSON.parse(readFileSync(campaignsPath, "utf8"))
-    : [];
+  let campaigns: CampaignEntry[] = [];
+  if (existsSync(campaignsPath)) {
+    const raw = readFileSync(campaignsPath, "utf8");
+    try {
+      campaigns = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`campaigns-summary.json corrompido (JSON inválido): ${campaignsPath}\n${String(e)}`);
+    }
+  }
   const byKey = new Map(campaigns.map((c) => [c.key, c]));
 
   // Monta lista de envios a processar nesta invocação
@@ -267,7 +284,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           const entry = listByKey.get(key);
           if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
           const resp = (await brevoPost(apiKey, "/emailCampaigns", {
-            name: `Clarice News 2605 ${key} (${s.day})`,
+            name: `Clarice News ${cycleToYymm(cycle)} ${key} (${s.day})`,
             subject: SUBJECTS[cell],
             previewText: PREVIEW_TEXT,
             sender: { name: brevo.sender_name, email: brevo.sender_email },
@@ -298,7 +315,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         const listId = listByDay.get(s.n);
         if (listId == null) throw new Error(`listId não encontrado pra ${key}`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
-          name: `Clarice News 2605 ${key} (${s.day})`,
+          name: `Clarice News ${cycleToYymm(cycle)} ${key} (${s.day})`,
           subject: subject!,
           previewText: PREVIEW_TEXT,
           sender: { name: brevo.sender_name, email: brevo.sender_email },
