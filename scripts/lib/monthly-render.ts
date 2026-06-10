@@ -95,7 +95,7 @@ export function renderInline(text: string): string {
     }
     if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};font-weight:bold;">${escHtml(m[1])}</a>`,
+      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`,
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
