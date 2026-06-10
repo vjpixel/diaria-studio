@@ -214,7 +214,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // numa caixa "Por que isso importa" (fundo branco + borda bege), como na diária.
   const boxFor = (text: string): string =>
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
-    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>` +
+    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">O fio condutor</p>` +
     `<p style="margin:0;">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
   let mainHtml = "";
   let conductorHtml = "";
@@ -267,7 +267,8 @@ export function renderCtaButton(line: string): string {
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
   const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
   const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:20px 0 0;"><tr><td style="background:${TEAL};border-radius:4px;"><a href="${escHtml(url)}" style="display:inline-block;padding:13px 24px;font-family:${FONT_SANS};font-size:15px;font-weight:bold;color:#FFFFFF;text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
+  // DS: botão cheio usa INK (#171411), não teal (teal é só texto). Centralizado.
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${INK};border-radius:4px;"><a href="${escHtml(url)}" style="display:inline-block;padding:13px 24px;font-family:${FONT_SANS};font-size:15px;font-weight:bold;color:#FBFAF6;text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
 }
 
 /**
