@@ -94,9 +94,12 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
    - `out_path = data/editions/{AAMMDD}/_internal/02-d{N}-draft.md`
    - `image_prompt_out_path = data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md`
 
-2. `Agent` → `social-linkedin` passando `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved.json` e `out_dir = data/editions/{AAMMDD}/`.
+2. `Agent` → `social-linkedin` passando:
+   - `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved-capped.json`
+   - `out_dir = data/editions/{AAMMDD}/`
+   - `outros_count = {N}` onde N = `lancamento.length + radar.length + use_melhor.length + video.length` do `01-approved-capped.json` lido no passo anterior (#2014 — contagem derivada, nunca estimada pelo LLM).
 
-3. `Agent` → `social-facebook` (mesmo input).
+3. `Agent` → `social-facebook` (mesmo input que social-linkedin, exceto `outros_count` que não se aplica ao Facebook).
 
 **Aguardar os 3 writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
@@ -146,8 +149,8 @@ Fallback dispatch:
    - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
    - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
 
-2. `Agent` → `social-linkedin` (mesmo input).
-3. `Agent` → `social-facebook` (mesmo input).
+2. `Agent` → `social-linkedin` (mesmo input do writer + `outros_count` calculado igual ao modo padrão).
+3. `Agent` → `social-facebook` (mesmo input do writer).
 
 Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 

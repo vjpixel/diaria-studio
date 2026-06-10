@@ -9,6 +9,9 @@ import {
   highlightSourceText,
   parseSocialByDestaque,
   lintSocialNumbers,
+  computeOutrosCount,
+  parseCommentDiariaByDestaque,
+  lintCommentDiariaCount,
 } from "../scripts/lint-social-numbers.ts";
 
 describe("normalizeMagnitude (#1711)", () => {
@@ -193,5 +196,160 @@ A startup foi avaliada em US$ 10B.`;
       highlights: [{ article: { title: "Startup X", summary: "Atingiu valuation de 10 bilhões de dólares." } }],
     };
     assert.deepEqual(lintSocialNumbers(social, approved), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2014 — comment_diaria count lint
+// ---------------------------------------------------------------------------
+
+const SOCIAL_WITH_COMMENTS = `# LinkedIn
+
+## d1
+
+Post principal d1.
+
+### comment_diaria
+
+Edição completa com mais 9 destaques de IA do dia em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Opinião do Pixel sobre d1.
+
+## d2
+
+Post principal d2.
+
+### comment_diaria
+
+Edição completa com mais 9 destaques de IA do dia em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Opinião do Pixel sobre d2.
+
+## d3
+
+Post principal d3.
+
+### comment_diaria
+
+Edição completa com mais 9 destaques de IA do dia em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Opinião do Pixel sobre d3.
+
+# Facebook
+
+## d1
+
+Post Facebook d1.
+
+## d2
+
+Post Facebook d2.
+
+## d3
+
+Post Facebook d3.
+`;
+
+const APPROVED_13_ITEMS = {
+  highlights: [
+    { article: { title: "D1", summary: "s1" } },
+    { article: { title: "D2", summary: "s2" } },
+    { article: { title: "D3", summary: "s3" } },
+  ],
+  lancamento: [{ title: "L1" }, { title: "L2" }],
+  radar: [{ title: "R1" }, { title: "R2" }, { title: "R3" }, { title: "R4" }, { title: "R5" }, { title: "R6" }, { title: "R7" }, { title: "R8" }],
+  use_melhor: [],
+  video: [],
+};
+// highlights=3, lancamento=2, radar=8 → total=13, outros=10
+
+describe("computeOutrosCount (#2014)", () => {
+  it("calcula lancamento + radar + use_melhor + video", () => {
+    assert.equal(computeOutrosCount(APPROVED_13_ITEMS), 10);
+  });
+
+  it("approved sem buckets secundários → 0", () => {
+    assert.equal(computeOutrosCount({ highlights: [] }), 0);
+  });
+
+  it("use_melhor e video contribuem", () => {
+    assert.equal(
+      computeOutrosCount({ lancamento: [{}], radar: [{}], use_melhor: [{}], video: [{}] }),
+      4,
+    );
+  });
+});
+
+describe("parseCommentDiariaByDestaque (#2014)", () => {
+  it("extrai textos comment_diaria de d1, d2, d3", () => {
+    const map = parseCommentDiariaByDestaque(SOCIAL_WITH_COMMENTS);
+    assert.ok(map.has(1), "deve ter d1");
+    assert.ok(map.has(2), "deve ter d2");
+    assert.ok(map.has(3), "deve ter d3");
+    assert.match(map.get(1) ?? "", /mais 9 destaques/);
+  });
+
+  it("NÃO inclui conteúdo do # Facebook", () => {
+    const map = parseCommentDiariaByDestaque(SOCIAL_WITH_COMMENTS);
+    // d1 do Facebook não tem comment_diaria — o parseador não deve confundir
+    for (const [, text] of map) {
+      assert.doesNotMatch(text, /Post Facebook/);
+    }
+  });
+});
+
+describe("lintCommentDiariaCount (#2014)", () => {
+  it("contagem certa (9 == 9) → zero findings", () => {
+    const approvedWith9 = {
+      ...APPROVED_13_ITEMS,
+      lancamento: [{}],
+      radar: [{}, {}, {}, {}, {}, {}, {}, {}],
+    };
+    // outros = 1+8 = 9 → bate com "mais 9 destaques"
+    const { findings } = lintCommentDiariaCount(SOCIAL_WITH_COMMENTS, approvedWith9);
+    assert.equal(findings.length, 0, "não deve ter findings quando contagem está certa");
+  });
+
+  it("contagem errada (9 encontrado, 10 esperado) → findings em d1/d2/d3", () => {
+    const { findings } = lintCommentDiariaCount(SOCIAL_WITH_COMMENTS, APPROVED_13_ITEMS);
+    assert.equal(findings.length, 3, "deve ter 1 finding por destaque (d1, d2, d3)");
+    assert.equal(findings[0].found, 9);
+    assert.equal(findings[0].expected, 10);
+  });
+
+  it("modo fix: corrige o número no texto retornado", () => {
+    const { findings, fixed } = lintCommentDiariaCount(SOCIAL_WITH_COMMENTS, APPROVED_13_ITEMS, { fix: true });
+    assert.equal(findings.length, 3);
+    assert.doesNotMatch(fixed, /mais 9 destaques/, "número errado não deve estar no texto fixado");
+    assert.match(fixed, /mais 10 destaques/, "número correto deve estar no texto fixado");
+  });
+
+  it("modo fix preserva o resto do texto intacto", () => {
+    const { fixed } = lintCommentDiariaCount(SOCIAL_WITH_COMMENTS, APPROVED_13_ITEMS, { fix: true });
+    assert.match(fixed, /Post principal d1/);
+    assert.match(fixed, /Opinião do Pixel/);
+    assert.match(fixed, /Post Facebook d1/);
+    assert.match(fixed, /{edition_url}/);
+  });
+
+  it("approved sem 01-approved.json (buckets ausentes) → comportamento gracioso", () => {
+    // Se approved.json não tem campos de bucket, computeOutrosCount retorna 0
+    const approvedMinimal = { highlights: [{ article: { title: "D1", summary: "s" } }] };
+    const { findings } = lintCommentDiariaCount(SOCIAL_WITH_COMMENTS, approvedMinimal);
+    // "mais 9 destaques" encontrado mas esperado 0 → finding
+    assert.equal(findings.length, 3);
+    assert.equal(findings[0].expected, 0);
   });
 });
