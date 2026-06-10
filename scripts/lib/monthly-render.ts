@@ -226,7 +226,8 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
   const imageHtml = imageUrl
-    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 20px 0;" />`
+    ? `<img src="${escHtml(imageUrl)}" alt="${escHtml(title || tema)}" style="display:block;width:100%;height:auto;border-radius:6px;margin:0 0 10px 0;" />` +
+      `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">Criada com Gemini</p>`
     : "";
 
   return imageHtml + label + titleHtml + mainHtml + conductorHtml;
@@ -393,6 +394,53 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
 /** @deprecated back-compat: use renderLinkListSection. */
 export function renderOutrasNoticias(chunk: string): string {
   return renderLinkListSection(chunk, "Outras Notícias do Mês");
+}
+
+/**
+ * Encerramento no padrão da diária (#DS Tier 3): kicker "Para encerrar" + texto
+ * de fechamento numa caixa bege; curadorias (bullets `- [texto](url)`) viram
+ * pills outline. Degrada pra só kicker + caixa bege quando o conteúdo é simples.
+ */
+export function renderEncerramento(body: string): string {
+  const blocks = body.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
+  const proseBlocks: string[] = [];
+  const pills: string[] = [];
+  for (const block of blocks) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    const nonLink: string[] = [];
+    let hadPill = false;
+    for (const line of lines) {
+      const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
+      if (m) {
+        pills.push(
+          `<a href="${escHtml(m[2])}" style="display:inline-block;border:1px solid ${BEGE};border-radius:999px;padding:10px 18px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
+        );
+        hadPill = true;
+      } else {
+        nonLink.push(line);
+      }
+    }
+    // "Acesse:" e afins (linhas não-link de um bloco de pills) são descartadas —
+    // o label das pills vem fixo abaixo. Blocos sem pills viram prose.
+    if (!hadPill && nonLink.length) proseBlocks.push(nonLink.join(" "));
+  }
+
+  const parts: string[] = [renderKicker("Para encerrar")];
+  const head = proseBlocks.slice(0, -1);
+  const last = proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "";
+  for (const p of head) parts.push(`<p style="margin:0 0 16px 0;">${renderInline(p)}</p>`);
+  if (pills.length) {
+    parts.push(
+      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
+    );
+    parts.push(`<div>${pills.join("")}</div>`);
+  }
+  if (last) {
+    parts.push(
+      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;">${renderInline(last)}</p></td></tr></table>`,
+    );
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -756,7 +804,7 @@ export function draftToEmail(
     // ENCERRAMENTO antigo + PARA ENCERRAR (renomeado pelo editor).
     if (label === "ENCERRAMENTO" || label === "PARA ENCERRAR") {
       const body = chunkBody(chunk);
-      if (body) bodyParts.push(renderParagraphs(body));
+      if (body) bodyParts.push(renderEncerramento(body));
       continue;
     }
 
