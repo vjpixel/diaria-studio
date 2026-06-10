@@ -34,6 +34,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, parseArgs } from "./cli-args.ts";
+import { isValidCycle } from "./clarice-paths.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -46,18 +47,11 @@ export const MONTHLY_BASE = resolve(REPO_ROOT, "data/monthly");
  * Pure: valida o rótulo de ciclo `{conteúdo}-{envio}` = `YYMM-MM`
  * (ex: `2605-06`).
  *
- * Mesmas regras do `isValidCycle` de `clarice-paths.ts` (#1961):
- *   - mês do conteúdo e mês do envio ∈ 01..12;
- *   - envio = conteúdo + 1 (rollover dez→jan).
+ * #2048 item 8: alias direto de `isValidCycle` de `clarice-paths.ts` (#1961) —
+ * as duas funções tinham implementação idêntica. Ao importar do mesmo helper,
+ * a semântica é garantidamente consistente se a regra do ciclo mudar.
  */
-export function isValidMonthlyCycle(c: string | undefined | null): c is string {
-  if (!c || !/^\d{4}-\d{2}$/.test(c)) return false;
-  const contentMonth = Number(c.slice(2, 4)); // MM do {YYMM}
-  const sendMonth = Number(c.slice(5, 7));
-  if (contentMonth < 1 || contentMonth > 12) return false;
-  if (sendMonth < 1 || sendMonth > 12) return false;
-  return sendMonth === (contentMonth % 12) + 1;
-}
+export const isValidMonthlyCycle = isValidCycle;
 
 /**
  * Pure: valida o formato legado `YYMM` (ex: `2605`).
@@ -73,12 +67,16 @@ export function isValidYymm(s: string | undefined | null): s is string {
 /**
  * Deriva o ciclo `{YYMM}-{MM+1}` a partir do formato legado `YYMM`.
  * Ex: `"2605"` → `"2605-06"`, `"2612"` → `"2612-01"`.
+ *
+ * Nome correto: `yymmToCycle` (dois y). O nome antigo `yyymmToCycle` (três y, typo)
+ * foi removido em #2048 item 1 — todos os callers e testes foram atualizados.
  */
-export function yyymmToCycle(yymm: string): string {
+export function yymmToCycle(yymm: string): string {
   const contentMonth = Number(yymm.slice(2, 4));
   const sendMonth = (contentMonth % 12) + 1;
   return `${yymm}-${String(sendMonth).padStart(2, "0")}`;
 }
+
 
 /**
  * Extrai o `YYMM` (mês do conteúdo) a partir do rótulo de ciclo.
@@ -116,7 +114,7 @@ export function monthlyDir(
   if (isValidMonthlyCycle(identifier)) {
     cycle = identifier;
   } else if (isValidYymm(identifier)) {
-    cycle = yyymmToCycle(identifier);
+    cycle = yymmToCycle(identifier);
     console.warn(
       `[monthly-paths] warn: "${identifier}" é formato legado YYMM — ` +
       `derive automaticamente como ciclo "${cycle}". ` +
@@ -204,7 +202,7 @@ export function parseMonthlyCycleArg(argv: string[]): string {
 
   // Compat: --cycle com YYMM legado (ex: --cycle 2605 → 2605-06 + warn)
   if (isValidYymm(cycleVal)) {
-    const derived = yyymmToCycle(cycleVal);
+    const derived = yymmToCycle(cycleVal);
     console.warn(
       `[monthly-paths] warn: --cycle "${cycleVal}" é YYMM legado — ` +
       `derivando ciclo "${derived}". Use --cycle ${derived} para suprimir.`,
@@ -217,7 +215,7 @@ export function parseMonthlyCycleArg(argv: string[]): string {
   // Usa parseArgs para não capturar valores de outras flags (ex: --list-id 2605).
   const pos = parseArgs(argv).positional.find((a) => isValidYymm(a));
   if (pos) {
-    const derived = yyymmToCycle(pos);
+    const derived = yymmToCycle(pos);
     console.warn(
       `[monthly-paths] warn: argumento posicional "${pos}" é YYMM legado — ` +
       `derivando ciclo "${derived}". Use --cycle ${derived} para suprimir.`,

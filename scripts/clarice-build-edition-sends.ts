@@ -229,6 +229,73 @@ export function planWeeks(sizes: Record<Tier, number>, weeks: number[] = [1, 2, 
   return all.filter((p) => weeks.includes(p.week));
 }
 
+/**
+ * Computa quantas linhas de cada tier foram consumidas pelas `skippedWeeks`
+ * usando APENAS aritmética pura — SEM os throws de validação do `planWeeks`.
+ *
+ * Destinado ao cálculo de cursor de tier em `main()`: ao calcular quais linhas
+ * das semanas PULADAS (skippedWeeks) já foram consumidas, `planWeeks` valida os
+ * tamanhos dos tiers — o que lança quando T3 < t3InS2 mesmo que a semana pedida
+ * seja legítima. `advanceCursors` computa o mesmo `consumed` sem essas validações.
+ *
+ * **Escopo:** corrige APENAS o cursor das semanas puladas (skippedWeeks).
+ * A chamada `planWeeks(sizes, weeks)` para as semanas PEDIDAS em `main()` ainda
+ * valida os tamanhos — se os pools das semanas pedidas forem insuficientes,
+ * `planWeeks` ainda lança normalmente. O operador deve garantir pools adequados
+ * para as semanas efetivamente enviadas; `advanceCursors` só elimina o throw
+ * espúrio do cursor de semanas puladas.
+ *
+ * #2048 item 4b — extraído para eliminar throw de validação no cursor de skippedWeeks.
+ */
+export function advanceCursors(
+  sizes: Record<Tier, number>,
+  skippedWeeks: number[],
+): Record<Tier, number> {
+  const consumed: Record<Tier, number> = {
+    "T1-abriu": 0,
+    "T1-nao-abriu": 0,
+    maio: 0,
+    T2: 0,
+    T3: 0,
+    T4: 0,
+  };
+
+  if (skippedWeeks.length === 0) return consumed;
+
+  const wk = (w: 1 | 2 | 3): number =>
+    SENDS.filter((s) => s.week === w).reduce((a, s) => a + s.volume, 0);
+  const [S1, S2, S3] = [wk(1), wk(2), wk(3)];
+
+  const t2InS1 = S1 - (sizes["T1-abriu"] + sizes["T1-nao-abriu"] + sizes["maio"]);
+  const t2InS2 = sizes["T2"] - t2InS1;
+  const t3InS2 = S2 - t2InS2;
+  const t3InS3 = sizes["T3"] - t3InS2;
+  const t4InS3 = S3 - t3InS3;
+
+  if (skippedWeeks.includes(1)) {
+    consumed["T1-abriu"] += sizes["T1-abriu"];
+    consumed["T1-nao-abriu"] += sizes["T1-nao-abriu"];
+    consumed["maio"] += sizes["maio"];
+    consumed["T2"] += t2InS1;
+  }
+  if (skippedWeeks.includes(2)) {
+    consumed["T2"] += t2InS2;
+    consumed["T3"] += t3InS2;
+  }
+  if (skippedWeeks.includes(3)) {
+    consumed["T3"] += t3InS3;
+    consumed["T4"] += t4InS3;
+  }
+
+  return consumed;
+}
+
+// #2048 item 4c: conjunto de semanas derivado de SENDS em vez de literal [1,2,3].
+// Garante que se SENDS ganhar uma semana 4, o cursor avança corretamente.
+export const ALL_WEEKS: number[] = [...new Set(SENDS.map((s) => s.week))].sort(
+  (a, b) => a - b,
+);
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -244,11 +311,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       throw new Error(`--weeks requer um valor (ex: --weeks 1 ou --weeks 2,3). Recebido: ${weeksArg ?? "(nada)"}`);
     }
   }
+  // #2048 item 4c: semanas válidas derivadas de SENDS em vez de literal [1,2,3].
   const weeksRaw = weeksArg
-    ? weeksArg.split(",").map((x) => Number(x.trim())).filter((x) => [1, 2, 3].includes(x))
-    : [1, 2, 3];
+    ? weeksArg.split(",").map((x) => Number(x.trim())).filter((x) => ALL_WEEKS.includes(x))
+    : [...ALL_WEEKS];
   if (argv.includes("--weeks") && weeksRaw.length === 0) {
-    throw new Error(`--weeks "${weeksArg}" não contém semanas válidas (use 1, 2 e/ou 3).`);
+    throw new Error(`--weeks "${weeksArg}" não contém semanas válidas (use ${ALL_WEEKS.join(", ")}).`);
   }
   const weeks = weeksRaw;
 
@@ -265,14 +333,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // planWeeks precisa do tamanho de TODOS os tiers que afetam o fill das semanas pedidas,
   // incluindo tiers de semanas anteriores (cursor de T2 depende do tamanho consumido pela S1).
+  // #2048 item 4a: bloco único — T1+maio+T2 sempre necessários para cálculo de cursores;
+  // T3 para semanas 2/3; T4 só para semana 3. Eliminados os dois blocos sobrepostos anteriores.
   const neededTiers = new Set<Tier>();
-  if (weeks.includes(1)) ["T1-abriu", "T1-nao-abriu", "maio", "T2"].forEach((t) => neededTiers.add(t as Tier));
-  if (weeks.includes(2) || weeks.includes(3)) ["T2", "T3"].forEach((t) => neededTiers.add(t as Tier));
+  (["T1-abriu", "T1-nao-abriu", "maio", "T2"] as Tier[]).forEach((t) => neededTiers.add(t));
+  if (weeks.includes(2) || weeks.includes(3)) neededTiers.add("T3");
   if (weeks.includes(3)) neededTiers.add("T4");
-  // S2/S3 sem S1: precisa do T1+maio p/ calcular quanto do T2 foi consumido na S1 (cursor)
-  if ((weeks.includes(2) || weeks.includes(3)) && !weeks.includes(1)) {
-    ["T1-abriu", "T1-nao-abriu", "maio"].forEach((t) => neededTiers.add(t as Tier));
-  }
 
   const pool: Partial<Record<Tier, TierRows>> = {};
   const sizes = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 } as Record<Tier, number>;
@@ -321,18 +387,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // Inicializar a 0 e avançar as semanas não pedidas que precedem as pedidas evita o
   // bug de duplo-envio: --weeks 2 sem esse ajuste começaria o T2 do início, enviando
   // as mesmas linhas que a S1 já recebeu. (#2007 / #2018)
-  const consumed: Record<Tier, number> = { "T1-abriu": 0, "T1-nao-abriu": 0, maio: 0, T2: 0, T3: 0, T4: 0 };
-  // Avança cursores para TODAS as semanas omitidas que precedem alguma semana pedida.
-  // Exemplo: --weeks 1,3 tem S2 omitida (não é < minWeek mas está antes do max=3);
-  // sem avançar o cursor de T3 pela S2, a S3 re-enviaria as rows que a S2 deveria ter
-  // recebido — duplo-envio silencioso. (#2007 / #2018)
-  const skippedWeeks = ([1, 2, 3] as number[]).filter((w) => !weeks.includes(w) && w < Math.max(...weeks));
-  if (skippedWeeks.length > 0) {
-    const priorPlans = planWeeks(sizes, skippedWeeks);
-    for (const pp of priorPlans) {
-      for (const seg of pp.segments) consumed[seg.tier] += seg.count;
-    }
-  }
+  //
+  // #2048 item 4b: usa `advanceCursors` (puro, sem throws de validação) em vez de
+  // `planWeeks(sizes, skippedWeeks)`. Isso permite rodar `--weeks 3` após os CSVs de
+  // T3 já terem sido aparados pós-S2 (T3=0), sem lançar `T3 insuficiente p/ S2`.
+  // #2048 item 4c: `ALL_WEEKS` derivado de `SENDS` em vez do literal [1,2,3].
+  const skippedWeeks = ALL_WEEKS.filter((w) => !weeks.includes(w) && w < Math.max(...weeks));
+  const consumed = advanceCursors(sizes, skippedWeeks);
 
   for (const plan of plans) {
     const daySends = SENDS.filter((s) => s.week === plan.week);

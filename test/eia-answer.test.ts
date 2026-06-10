@@ -404,6 +404,41 @@ describe("readEiaAnswer log estruturado em corrompido (#942)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #2048 item 3: normalizar ciclo mensal {YYMM}-{MM} → {YYMM} para compat /diaria-log
+  it("editionFromDir normaliza ciclo mensal 2605-06 → '2605' (#2048 item 3)", () => {
+    const dir = makeDir();
+    try {
+      // Simula data/monthly/2605-06/ como editionDir
+      const monthlyDir = join(dir, "data/monthly/2605-06");
+      mkdirSync(join(monthlyDir, "_internal"), { recursive: true });
+      // Sidecar corrompido força warn (que registra edition no log)
+      writeFileSync(eiaAnswerSidecarPath(monthlyDir), "{bad json", "utf8");
+      readEiaAnswerSidecar(monthlyDir, dir);
+      const events = readLogEvents(dir);
+      assert.equal(
+        events[0].edition as unknown,
+        "2605",
+        "ciclo '2605-06' normalizado para '2605' (4 dígitos, compat /diaria-log)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("editionFromDir não altera edição diária AAMMDD (#2048 item 3)", () => {
+    const dir = makeDir();
+    try {
+      const editionDir = join(dir, "data/editions/260611");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(eiaAnswerSidecarPath(editionDir), "{bad", "utf8");
+      readEiaAnswerSidecar(editionDir, dir);
+      const events = readLogEvents(dir);
+      assert.equal(events[0].edition as unknown, "260611", "edição diária: basename mantido");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("writeEiaAnswerSidecar atomic write (#927)", () => {

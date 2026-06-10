@@ -22,6 +22,11 @@
  * NOTA: este script NÃO toca em `data/clarice-subscribers/` — essa pasta já
  * foi migrada pelo #1961. Aqui só `data/monthly/`.
  *
+ * NOTA OPERACIONAL (#2048 item 11): `--execute` pode falhar com EPERM transiente
+ * se o OneDrive estiver sincronizando o diretório no momento do `renameSync`.
+ * O script é **idempotente** — pastas já no formato novo são puladas. Re-rodar
+ * depois que o OneDrive terminar a sincronização resolve sem side-effects.
+ *
  * O coordenador executa este script após o merge do PR do #1962.
  */
 
@@ -31,7 +36,7 @@ import { fileURLToPath } from "node:url";
 import {
   isValidYymm,
   isValidMonthlyCycle,
-  yyymmToCycle,
+  yymmToCycle,
   MONTHLY_BASE,
 } from "./lib/monthly-paths.ts";
 
@@ -76,7 +81,7 @@ function planMigration(): MigrationEntry[] {
 
     // Formato legado YYMM → migrar
     if (isValidYymm(name)) {
-      const newName = yyymmToCycle(name);
+      const newName = yymmToCycle(name);
       const toPath = join(MONTHLY_BASE, newName);
 
       // Destino já existe (migração parcial?) → skip com aviso

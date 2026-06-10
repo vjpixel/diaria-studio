@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import {
   isValidMonthlyCycle,
   isValidYymm,
-  yyymmToCycle,
+  yymmToCycle,
   cycleToYymm,
   monthlyDir,
   ensureMonthlyDir,
@@ -88,15 +88,15 @@ describe("isValidYymm (#1962)", () => {
   });
 });
 
-describe("yyymmToCycle e cycleToYymm (#1962)", () => {
-  it("yyymmToCycle deriva o ciclo correto (envio = conteúdo+1)", () => {
-    assert.equal(yyymmToCycle("2605"), "2605-06");
-    assert.equal(yyymmToCycle("2604"), "2604-05");
-    assert.equal(yyymmToCycle("2601"), "2601-02");
+describe("yymmToCycle e cycleToYymm (#1962)", () => {
+  it("yymmToCycle deriva o ciclo correto (envio = conteúdo+1)", () => {
+    assert.equal(yymmToCycle("2605"), "2605-06");
+    assert.equal(yymmToCycle("2604"), "2604-05");
+    assert.equal(yymmToCycle("2601"), "2601-02");
   });
 
   it("rollover dez→jan no sufixo", () => {
-    assert.equal(yyymmToCycle("2612"), "2612-01");
+    assert.equal(yymmToCycle("2612"), "2612-01");
   });
 
   it("cycleToYymm extrai o mês do conteúdo", () => {
@@ -105,9 +105,9 @@ describe("yyymmToCycle e cycleToYymm (#1962)", () => {
     assert.equal(cycleToYymm("2604-05"), "2604");
   });
 
-  it("round-trip: yyymmToCycle → cycleToYymm = identidade", () => {
+  it("round-trip: yymmToCycle → cycleToYymm = identidade", () => {
     for (const yymm of ["2601", "2605", "2612"]) {
-      assert.equal(cycleToYymm(yyymmToCycle(yymm)), yymm);
+      assert.equal(cycleToYymm(yymmToCycle(yymm)), yymm);
     }
   });
 });
@@ -294,10 +294,10 @@ describe("migrate-monthly-cycle-dirs plan logic (#1962)", () => {
     assert.equal(isValidMonthlyCycle("README"), false);
   });
 
-  it("yyymmToCycle gera o destino correto da migração", () => {
-    assert.equal(yyymmToCycle("2604"), "2604-05");
-    assert.equal(yyymmToCycle("2605"), "2605-06");
-    assert.equal(yyymmToCycle("2612"), "2612-01"); // rollover dez→jan
+  it("yymmToCycle gera o destino correto da migração", () => {
+    assert.equal(yymmToCycle("2604"), "2604-05");
+    assert.equal(yymmToCycle("2605"), "2605-06");
+    assert.equal(yymmToCycle("2612"), "2612-01"); // rollover dez→jan
   });
 });
 
@@ -333,7 +333,7 @@ describe("migrate-monthly-cycle-dirs com tmpdir (#1962)", () => {
 
       // Executar renomear
       for (const name of toMigrate) {
-        const newName = yyymmToCycle(name);
+        const newName = yymmToCycle(name);
         renameSync(join(root, name), join(root, newName));
       }
 
@@ -361,7 +361,7 @@ describe("migrate-monthly-cycle-dirs com tmpdir (#1962)", () => {
       mkdirSync(existing);
 
       // Plano: 2605 é YYMM mas destino existe → skip
-      const destino = yyymmToCycle("2605"); // "2605-06"
+      const destino = yymmToCycle("2605"); // "2605-06"
       assert.ok(existsSync(join(root, destino)), "destino já existe");
       // Script real pula neste caso — aqui só verificamos a classificação
       assert.equal(destino, "2605-06");

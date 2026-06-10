@@ -179,6 +179,48 @@ describe("validateSlug (#2011)", () => {
   });
 });
 
+// ── validateSlug com title (#2048 item 5 — seoSlug comparison) ───────────────
+
+describe("validateSlug com title — seoSlug comparison (#2048 item 5)", () => {
+  it("aceita slug == seoSlug(title) — slug correto derivado do título", () => {
+    // seoSlug("Automação e futuro") → "automacao-e-futuro"
+    assert.equal(validateSlug("automacao-e-futuro", false, "Automação e futuro"), null);
+    // seoSlug("Pânico no mercado") → "panico-no-mercado"
+    assert.equal(validateSlug("panico-no-mercado", false, "Pânico no mercado"), null);
+  });
+
+  it("rejeita slug manglado (automa-o vs title 'Automação...')", () => {
+    const err = validateSlug("automa-o", false, "Automação e futuro");
+    assert.ok(err !== null, "automa-o vs título deve ser rejeitado");
+    assert.match(err!, /canônico/i);
+  });
+
+  it("rejeita p-nico vs title 'Pânico'", () => {
+    const err = validateSlug("p-nico", false, "Pânico no mercado");
+    assert.ok(err !== null, "p-nico vs título deve ser rejeitado");
+  });
+
+  it("force=true bypassa o check de título (slug intencional diferente do canônico)", () => {
+    // Editor quer usar slug mais curto que seoSlug gera — --force override
+    assert.equal(validateSlug("automacao", true, "Automação e futuro do trabalho"), null);
+  });
+
+  it("force=true não bypassa erros estruturais com título", () => {
+    // Acento no slug → erro estrutural independente de force ou título
+    assert.ok(validateSlug("automação", true, "Automação") !== null);
+    assert.ok(validateSlug("", true, "Algum título") !== null);
+  });
+
+  it("sem title: fallback para heurísticas de consoante/vogal (compat pré-GET)", () => {
+    // automa-o sem título ainda é rejeitado pelo check de vogal-final
+    assert.ok(validateSlug("automa-o") !== null);
+    // p-nico sem título rejeitado pelo check de consoante-única
+    assert.ok(validateSlug("p-nico") !== null);
+    // Slug válido sem título: não rejeita
+    assert.equal(validateSlug("automacao-e-futuro"), null);
+  });
+});
+
 // ── fetchPost ─────────────────────────────────────────────────────────────────
 
 describe("fetchPost (#2011)", () => {
@@ -311,7 +353,7 @@ describe("fixPostSlug execute (#2011)", () => {
       slugBefore: "anthropic-lanc-a-fable-5-com-bloqueios-embutidos", // mangled
       slugAfterPatch: targetSlug, // PATCH returns corrected slug
       slugVerified: targetSlug,   // GET-verify also returns corrected slug
-      postTitle: "Anthropic lança Fable 5",
+      postTitle: "Anthropic lança Fable 5 com bloqueios embutidos",
       postStatus: "confirmed",
     });
 
@@ -362,6 +404,7 @@ describe("fixPostSlug execute (#2011)", () => {
       slugBefore: "automa-o-e-futuro-do-trabalho", // mangled
       slugAfterPatch: targetSlug, // PATCH response says OK...
       slugVerified: "automa-o-e-futuro-do-trabalho", // ...but GET-verify shows old value (not persisted)
+      postTitle: "Automação e futuro do trabalho", // title so seoSlug(title) = targetSlug → passes 2b
     });
 
     await assert.rejects(
@@ -401,5 +444,81 @@ describe("fixPostSlug execute (#2011)", () => {
     );
 
     assert.equal(fetchCalled, false, "fetch não deve ser chamado com slug inválido");
+  });
+
+  // #2048 item 5: fixPostSlug revalida com seoSlug(title) após GET.
+  // Se o slug passado pelo caller não coincide com seoSlug(title), lança erro
+  // ANTES do PATCH — previne mandar slug incorreto pro Beehiiv.
+  it("#2048 regressão: fixPostSlug rejeita slug que diverge de seoSlug(title) após GET", async () => {
+    // GET retorna title "Automação e futuro" — seoSlug = "automacao-e-futuro"
+    // Current slug (before) é mangled "automa-o-e-futuro", então slugBefore !== slug (no short-circuit).
+    // Caller passa "automacao-e-futuro-extra" (estruturalmente válido + passa heurísticas)
+    // mas diverge de seoSlug(title) → rejeitado pelo title check (step 2b) ANTES do PATCH.
+    const mockFetch = makeMockFetch({
+      slugBefore: "automa-o-e-futuro", // mangled — different from target, so no-op check doesn't fire
+      postTitle: "Automação e futuro",
+    });
+
+    await assert.rejects(
+      () =>
+        fixPostSlug({
+          postId: "post_abc",
+          slug: "automacao-e-futuro-extra", // passa pré-validação, falha vs seoSlug(title)
+          execute: true,
+          cfg: MOCK_CFG,
+          fetchFn: mockFetch,
+        }),
+      /inválido.*título|vs título/i,
+    );
+  });
+
+  it("#2048 force bypassa a validação de seoSlug(title)", async () => {
+    // Caller quer usar slug diferente do canônico (ex: slug mais curto) — --force
+    const targetSlug = "automacao";
+    const mockFetch = makeMockFetch({
+      slugBefore: "automa-o",
+      postTitle: "Automação e futuro do trabalho",
+      slugAfterPatch: targetSlug,
+      slugVerified: targetSlug,
+    });
+
+    const result = await fixPostSlug({
+      postId: "post_abc",
+      slug: targetSlug,
+      execute: true,
+      force: true, // bypassa seoSlug check
+      cfg: MOCK_CFG,
+      fetchFn: mockFetch,
+    });
+
+    assert.equal(result.updated, true);
+    assert.equal(result.verified, true);
+    assert.equal(result.slug_after, targetSlug);
+  });
+
+  // #2058 code-review: re-run idempotency — step 3 (no-op) runs before step 2b (title check)
+  // so a slug already set correctly doesn't need --force even if it differs from seoSlug(title).
+  it("#2058 idempotência: re-run com slug custom já setado não lança sem --force", async () => {
+    // slug "ia-2026" already set on post with title "Inteligência Artificial 2026"
+    // seoSlug(title) = "inteligencia-artificial-2026" ≠ "ia-2026"
+    // But since slugBefore === slug, step 3 short-circuits before title check.
+    const slug = "ia-2026";
+    const mockFetch = makeMockFetch({
+      slugBefore: slug, // already correct
+      postTitle: "Inteligência Artificial 2026",
+    });
+
+    const result = await fixPostSlug({
+      postId: "post_abc",
+      slug,
+      execute: true,
+      cfg: MOCK_CFG,
+      fetchFn: mockFetch,
+      // NO force: true — idempotent re-run should work without it
+    });
+
+    assert.equal(result.updated, false, "já estava correto — no PATCH");
+    assert.equal(result.verified, true);
+    assert.equal(result.slug_after, slug);
   });
 });

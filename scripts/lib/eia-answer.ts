@@ -28,14 +28,22 @@ import { logEvent } from "./run-log.ts";
 /**
  * #942: deriva edition AAMMDD/YYMM do path do editionDir. Convenções aceitas:
  *   - data/editions/{AAMMDD}/ → "260507"
- *   - data/monthly/{YYMM}/ → "2605"
+ *   - data/monthly/{YYMM}/ → "2605"  (legado)
+ *   - data/monthly/{YYMM}-{MM}/ → "2605" (#2048 item 3: normaliza ciclo para YYMM
+ *     pra manter compatibilidade com filtros do /diaria-log que esperam 4 dígitos.
+ *     O ciclo completo "2605-06" fica registrado implicitamente no path do log.)
  *   - tmpdir arbitrário (tests) → basename qualquer (não-fatal, edition fica lixo)
  *
  * `null` se basename for vazio (não deveria acontecer com path absoluto).
  */
 function editionFromDir(editionDir: string): string | null {
   const base = basename(resolve(editionDir));
-  return base.length > 0 ? base : null;
+  if (!base.length) return null;
+  // Normaliza ciclo mensal {YYMM}-{MM} → {YYMM} para compatibilidade com /diaria-log.
+  // Ex: "2605-06" → "2605". Padrão: 4 dígitos + hífen + 2 dígitos.
+  const cycleMatch = base.match(/^(\d{4})-\d{2}$/);
+  if (cycleMatch) return cycleMatch[1];
+  return base;
 }
 
 export interface EiaAnswer {
