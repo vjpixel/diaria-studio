@@ -443,7 +443,7 @@ export function renderEncerramento(body: string): string {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
         pills.push(
-          `<a href="${escHtml(m[2])}" style="display:inline-block;border:1px solid ${BEGE};border-radius:999px;padding:10px 18px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
+          `<a href="${escHtml(m[2])}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${BEGE};border-radius:999px;padding:12px 22px;margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(m[1])}</a>`,
         );
         hadPill = true;
       } else {
