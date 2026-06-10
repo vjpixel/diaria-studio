@@ -38,4 +38,12 @@ describe("monthlyPreviewKey (#1914, #1962)", () => {
     // Por design: compat de leitura. Worker tenta nova key, fallback legada.
     assert.match(monthlyPreviewKey("2605"), /^m\d{4}$/);
   });
+
+  it("ciclo inválido lança erro claro (P3 — usa isValidYymm em vez de /^\\d{4}$/)", () => {
+    // isValidYymm("2600") = false (mês 00 inválido), divergia de /^\d{4}$/ que retornava true
+    assert.throws(() => monthlyPreviewKey("2600"), /ciclo inválido/);
+    assert.throws(() => monthlyPreviewKey("lixo"), /ciclo inválido/);
+    assert.throws(() => monthlyPreviewKey(""), /ciclo inválido/);
+    assert.throws(() => monthlyPreviewKey("260501"), /ciclo inválido/); // AAMMDD
+  });
 });

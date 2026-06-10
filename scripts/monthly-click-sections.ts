@@ -535,7 +535,7 @@ function main() {
   const outPath = join(outDir, "monthly-clicks.json");
   writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
 
-  const patched = patchPrioritized(yymm, result);
+  const patched = patchPrioritized(cycle, result);
 
   console.log(`OK: Use Melhor ${result.use_melhor.length} | Radar ${result.radar.length} → ${outPath}`);
   console.log(`prioritized.md ${patched ? "atualizado (Outras Notícias → Use Melhor + Radar)" : "NÃO atualizado (seção não encontrada)"}`);

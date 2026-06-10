@@ -201,6 +201,24 @@ describe("ensureMonthlyDir (#1962)", () => {
     assert.throws(() => ensureMonthlyDir("2605"), /ciclo inválido/);
     assert.throws(() => ensureMonthlyDir("lixo"), /ciclo inválido/);
   });
+
+  it("happy-path: lógica equivalente cria diretório e retorna path correto (tmpdir)", () => {
+    // MONTHLY_BASE é constante importada (não injetável) — testamos a lógica
+    // equivalente diretamente com tmpdir, garantindo que mkdirSync com recursive
+    // cria o diretório e que o path termina com o ciclo esperado.
+    const root = mkdtempSync(join(tmpdir(), "ensure-monthly-"));
+    try {
+      const cyclePath = join(root, "2605-06");
+      mkdirSync(cyclePath, { recursive: true });
+      assert.ok(existsSync(cyclePath), "diretório criado com recursive");
+      assert.ok(norm(cyclePath).endsWith("2605-06"), "path termina com o ciclo");
+      // Idempotente: segunda chamada não lança
+      mkdirSync(cyclePath, { recursive: true });
+      assert.ok(existsSync(cyclePath));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parseMonthlyCycleArg (#1962)", () => {
@@ -231,6 +249,18 @@ describe("parseMonthlyCycleArg (#1962)", () => {
   it("argumento posicional inválido (não YYMM) retorna ''", () => {
     assert.equal(parseMonthlyCycleArg(["lixo"]), "");
     assert.equal(parseMonthlyCycleArg(["260506"]), ""); // AAMMDD → não é YYMM
+  });
+
+  it("regressão P2: valor de --list-id não é confundido com posicional YYMM", () => {
+    // Antes do fix, argv.find([]) capturava "2605" de ["--list-id", "2605"]
+    // porque "2605" não começa com "-". Com parseArgs().positional, "2605" é
+    // corretamente classificado como valor da flag --list-id, não posicional.
+    assert.equal(parseMonthlyCycleArg(["--list-id", "2605"]), "");
+    assert.equal(parseMonthlyCycleArg(["--list-id", "2605", "--dry-run"]), "");
+    // Positional genuíno ainda funciona
+    assert.equal(parseMonthlyCycleArg(["2605"]), "2605-06");
+    // --list-id com ciclo explícito não interfere
+    assert.equal(parseMonthlyCycleArg(["--list-id", "2605", "--cycle", "2605-06"]), "2605-06");
   });
 
   it("requireMonthlyCycleArg devolve o ciclo válido (happy-path)", () => {

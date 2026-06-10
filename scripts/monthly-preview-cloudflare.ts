@@ -43,6 +43,8 @@ import {
   monthlyDir as resolveMonthlyDir,
   monthlyWorkerKey,
   monthlyWorkerKeyLegacy,
+  isValidMonthlyCycle,
+  isValidYymm,
 } from "./lib/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,13 +65,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export function monthlyPreviewKey(cycle: string): string {
   // Delegamos para os helpers centralizados em monthly-paths.ts (#1962)
   // para manter a lógica em um único lugar.
-  // Se receber YYMM legado (4 dígitos), deriva o ciclo com aviso.
-  if (/^\d{4}$/.test(cycle)) {
+  if (isValidMonthlyCycle(cycle)) return monthlyWorkerKey(cycle);
+  if (isValidYymm(cycle)) {
     // Compat: yymm legado → key legada m{YYMM} (não deriva — evita silently
     // emitir key nova pra código que ainda não migrou o path de disco).
     return monthlyWorkerKeyLegacy(cycle);
   }
-  return monthlyWorkerKey(cycle);
+  throw new Error(`ciclo inválido para previewKey: "${cycle}"`);
 }
 
 /**

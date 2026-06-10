@@ -32,7 +32,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg } from "./cli-args.ts";
+import { getArg, parseArgs } from "./cli-args.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -213,7 +213,8 @@ export function parseMonthlyCycleArg(argv: string[]): string {
 
   // Compat: argumento posicional YYMM (ex: collect-monthly.ts 2605)
   // Detectado por: nenhum --cycle, mas tem positional[0] com formato YYMM
-  const pos = argv.find((a) => !a.startsWith("-") && isValidYymm(a));
+  // Usa parseArgs para não capturar valores de outras flags (ex: --list-id 2605).
+  const pos = parseArgs(argv).positional.find((a) => isValidYymm(a));
   if (pos) {
     const derived = yyymmToCycle(pos);
     console.warn(
