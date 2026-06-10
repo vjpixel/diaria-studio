@@ -161,7 +161,19 @@ export function checkEiaGuard(
   markerPathOverride?: string,
 ): { ok: true } | { ok: false; message: string } {
   if (skip) return { ok: true };
-  const eiaMarkerPath = markerPathOverride ?? resolve(resolveMonthlyDir(cycle), "_internal", ".close-poll-clarice.json");
+  let eiaMarkerPath: string;
+  if (markerPathOverride !== undefined) {
+    eiaMarkerPath = markerPathOverride;
+  } else {
+    try {
+      eiaMarkerPath = resolve(resolveMonthlyDir(cycle), "_internal", ".close-poll-clarice.json");
+    } catch (e) {
+      return {
+        ok: false,
+        message: `\n❌  ERRO: ciclo inválido ('${cycle}'): ${(e as Error).message}\n   Formato esperado: YYMM-MM (ex: 2605-06)\n`,
+      };
+    }
+  }
   if (!existsSync(eiaMarkerPath)) {
     return {
       ok: false,

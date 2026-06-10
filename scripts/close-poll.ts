@@ -64,8 +64,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
+  // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
+  // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
+  // #2009: parsed early so the answer-resolution block can emit a clear error for
+  // the monthly flow (01-eia-meta.json lives in data/editions/, irrelevant here).
+  const brand = values["brand"] === "clarice" ? "clarice" : null;
+
   // Ler ai_side de 01-eia-meta.json se não foi passado manualmente
   if (!answer) {
+    if (brand === "clarice") {
+      console.error("[close-poll] --brand clarice requer --answer A|B explícito (fluxo mensal não usa 01-eia-meta.json da edição diária). Use --answer A ou --answer B.");
+      process.exit(1);
+    }
     const metaPath = resolve(ROOT, "data", "editions", edition, "_internal", "01-eia-meta.json");
     if (!existsSync(metaPath)) {
       console.error(`[close-poll] 01-eia-meta.json não encontrado em ${metaPath}. Use --answer A|B.`);
@@ -81,11 +92,6 @@ async function main(): Promise<void> {
       process.exit(1);
     }
   }
-
-  // #2006: brand opcional (clarice = É IA? da mensal). Sem isso, o gabarito da
-  // mensal escreveria a key da DIÁRIA `correct:{edition}` (colisão real: 260531
-  // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
-  const brand = values["brand"] === "clarice" ? "clarice" : null;
   const brandQ = brand ? `&brand=${brand}` : "";
 
   const sig = adminSig(secret, edition, answer);
