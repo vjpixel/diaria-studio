@@ -50,7 +50,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/monthly-paths.ts";
 import { SENDS } from "./clarice-build-edition-sends.ts";
@@ -127,6 +127,18 @@ export function buildKeysInScope(weeks: number[]): Set<string> {
     }
   }
   return keys;
+}
+
+/**
+ * #2018 / regra #573: verifica se o status de campanha retornado pelo GET pós-schedule
+ * é "aceito" (agendado de fato no Brevo). Exportado pra testabilidade — o loop
+ * de --schedule usa esta lógica, testes mockam o status sem rede.
+ *
+ * Status aceitos: "queued" (entrou na fila de envio) ou "scheduled" (Brevo usa
+ * ambos dependendo da versão de API e do timing do PUT).
+ */
+export function isScheduledStatus(status: string): boolean {
+  return status === "queued" || status === "scheduled";
 }
 
 /** Parseia --weeks e valida: retorna array com 1,2,3 ou subconjunto. */
@@ -453,9 +465,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         continue;
       }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
+
+      // #2018 / regra #573: GET-verify pós --schedule — confirma que o Brevo
+      // realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
+      // Brevo pode aceitar o PUT 204 mas não persistir o agendamento em estados
+      // de rate-limit ou edge cases — a verificação impede marcar como agendado
+      // quando o estado real é ainda "draft". Divergência logada e a flag local
+      // NÃO é atualizada (próximo --schedule re-tenta).
+      const verified = await brevoGetCampaign(apiKey, c.campaignId);
+      if (!isScheduledStatus(verified.status)) {
+        console.error(
+          `⚠ GET-verify ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
+          `(esperado "queued"/"scheduled" após PUT scheduledAt="${c.scheduledAt}"). ` +
+          `Status local NÃO atualizado — re-tente --schedule após checar o Brevo.`,
+        );
+        continue; // não atualiza c.status nem escreve no disco
+      }
+
       c.status = "scheduled";
       writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
-      console.error(`✓ ${c.key} agendada → ${c.scheduledAt}`);
+      console.error(`✓ ${c.key} agendada → ${c.scheduledAt} (GET-verify: status=${verified.status})`);
     }
   }
 

@@ -152,15 +152,30 @@ async function main(): Promise<void> {
         2,
       ),
     );
-    console.log(
+    console.error(
       `[close-poll] gabarito É IA? ${answer} setado para edition=${edition} brand=clarice cycle=${cycle}. ` +
       `Marker: ${markerPath}`,
+    );
+    // #2018: stdout JSON — contrato idêntico ao da diária (abaixo), parseable
+    // por orchestrators/skills que capturam stdout do script.
+    console.log(
+      JSON.stringify({
+        ok: true,
+        brand: "clarice",
+        cycle,
+        edition,
+        answer,
+        updated_votes: data.updated_votes ?? 0,
+        marker_path: markerPath,
+        sanity_check: { correct_answer: stats.correct_answer },
+      }),
     );
     return;
   }
   if (brand) {
     // brand não-clarice futuro: log e retornar (sem marker de diária nem mensal)
-    console.log(`[close-poll] gabarito ${answer} setado pra edition=${edition} brand=${brand} (marker pulado)`);
+    console.error(`[close-poll] gabarito ${answer} setado pra edition=${edition} brand=${brand} (marker pulado)`);
+    console.log(JSON.stringify({ ok: true, brand, edition, answer, updated_votes: data.updated_votes ?? 0 }));
     return;
   }
   const markerDir = resolve(ROOT, "data", "editions", edition, "_internal");
@@ -181,8 +196,20 @@ async function main(): Promise<void> {
     ),
   );
 
-  console.log(`[close-poll] Poll da edição ${edition} fechado. Resposta correta: ${answer}. Scores atualizados: ${data.updated_votes ?? 0}`);
-  console.log(`[close-poll] Sanity check OK: /stats retornou correct_answer="${stats.correct_answer}". Marker: ${markerPath}`);
+  console.error(`[close-poll] Poll da edição ${edition} fechado. Resposta correta: ${answer}. Scores atualizados: ${data.updated_votes ?? 0}`);
+  console.error(`[close-poll] Sanity check OK: /stats retornou correct_answer="${stats.correct_answer}". Marker: ${markerPath}`);
+  // #2018: stdout JSON — contrato parseable por orchestrators/scripts que capturam stdout.
+  console.log(
+    JSON.stringify({
+      ok: true,
+      brand: "diaria",
+      edition,
+      answer,
+      updated_votes: data.updated_votes ?? 0,
+      marker_path: markerPath,
+      sanity_check: { correct_answer: stats.correct_answer },
+    }),
+  );
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

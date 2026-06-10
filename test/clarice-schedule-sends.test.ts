@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scheduledAtFor, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard } from "../scripts/clarice-schedule-sends.ts";
+import { scheduledAtFor, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus } from "../scripts/clarice-schedule-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
 
 // 06:00 BRT = 09:00 UTC (#2041 item 4: normalizado pra UTC Z via .toISOString())
@@ -309,5 +309,35 @@ describe("checkEiaGuard (#2009 — guard gabarito É IA? antes do --schedule)", 
     assert.ok("message" in result);
     assert.ok(result.message.includes("2606-07"), "mensagem deve mencionar o ciclo '2606-07'");
     assert.ok(!result.message.includes("2605-06"), "mensagem NÃO deve mencionar o ciclo errado '2605-06'");
+  });
+});
+
+// #2018 / regra #573: GET-verify pós --schedule — isScheduledStatus puro,
+// mockável sem rede (o loop de --schedule usa esta função; testes aqui cobrem
+// os casos sem fazer chamada real à Brevo API).
+describe("isScheduledStatus (#2018 GET-verify pós --schedule)", () => {
+  it("'queued' é aceito como agendado", () => {
+    assert.equal(isScheduledStatus("queued"), true);
+  });
+
+  it("'scheduled' é aceito como agendado", () => {
+    assert.equal(isScheduledStatus("scheduled"), true);
+  });
+
+  it("'draft' NÃO é aceito (agendamento não persistiu)", () => {
+    assert.equal(isScheduledStatus("draft"), false);
+  });
+
+  it("'sent' NÃO é aceito (já saiu, mas não via --schedule)", () => {
+    assert.equal(isScheduledStatus("sent"), false);
+  });
+
+  it("string vazia NÃO é aceita", () => {
+    assert.equal(isScheduledStatus(""), false);
+  });
+
+  it("status desconhecido NÃO é aceito (fail-safe)", () => {
+    assert.equal(isScheduledStatus("pending"), false);
+    assert.equal(isScheduledStatus("in_queue"), false);
   });
 });

@@ -36,6 +36,20 @@ describe("mergeYearEntries (#2006)", () => {
     assert.equal(out[0].total, 2);
   });
 
+  // #2018: email armazenado SEMPRE em lowercase — antes byEmail.set(key, { ...e })
+  // mantinha o email original (mixed-case) na entrada; lookups subsequentes e
+  // exibição no leaderboard ficavam com casing inconsistente.
+  it("#2018: email na saída é sempre lowercase (não mixed-case da entrada)", () => {
+    const out = mergeYearEntries([[e("USER@Example.COM", 1, 1)]]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].email, "user@example.com", "email deve ser lowercase mesmo na 1ª entrada");
+  });
+
+  it("#2018: email lowercase quando entrada mista de meses com casing diferente", () => {
+    const out = mergeYearEntries([[e("A@X.com", 1, 1)], [e("a@x.com", 0, 1)]]);
+    assert.equal(out[0].email, "a@x.com", "email merged deve ser lowercase");
+  });
+
   it("nickname: o do mês mais recente (não-nulo) vence; nulo não apaga", () => {
     const out = mergeYearEntries([
       [e("a@x.com", 1, 1, "Ana Jan")],

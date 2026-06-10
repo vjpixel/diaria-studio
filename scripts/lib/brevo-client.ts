@@ -107,3 +107,31 @@ export async function brevoPut(
   }
   return {};
 }
+
+/**
+ * #2018: lista TODAS as listas Brevo (paginado, limit=50) — só id + nome.
+ * Extraído de clarice-import-waves.ts / clarice-import-sends.ts /
+ * clarice-split-cells.ts onde estava triplicado com corpo idêntico.
+ * Usado pelo check de duplicata antes de criar listas novas.
+ */
+export async function brevoListAllLists(
+  apiKey: string,
+): Promise<{ id: number; name: string }[]> {
+  const out: { id: number; name: string }[] = [];
+  let offset = 0;
+  for (;;) {
+    const res = await fetch(`https://api.brevo.com/v3/contacts/lists?limit=50&offset=${offset}`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Brevo API GET /contacts/lists falhou (${res.status}): ${text}`);
+    }
+    const body = (await res.json()) as { lists?: { id: number; name: string }[] };
+    const lists = body.lists ?? [];
+    out.push(...lists.map((l) => ({ id: l.id, name: l.name })));
+    if (lists.length < 50) break;
+    offset += 50;
+  }
+  return out;
+}

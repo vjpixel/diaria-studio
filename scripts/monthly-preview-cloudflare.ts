@@ -182,8 +182,21 @@ async function main(): Promise<void> {
     ? parseEiaLegend(readFileSync(eiaMdPath, "utf8"))
     : undefined;
 
+  // #2018: legenda das imagens derivada do gerador configurado em platform.config.json.
+  const platformConfigPath = resolve(ROOT, "platform.config.json");
+  const imageGenerator: string = existsSync(platformConfigPath)
+    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini"
+    : "gemini";
+  const generatorLabels: Record<string, string> = {
+    gemini: "Criada com Gemini",
+    comfyui: "Criada com ComfyUI",
+    cloudflare: "Criada com Cloudflare AI",
+    openai: "Criada com DALL-E",
+  };
+  const destaqueImageCaption = generatorLabels[imageGenerator] ?? "Criada com IA";
+
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages);
+  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption);
 
   // Persiste o HTML local (artefato + input do uploadHtml, que lê de arquivo).
   const internalDir = resolve(monthlyDir, "_internal");

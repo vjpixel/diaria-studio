@@ -101,6 +101,7 @@ interface BrevoConfig {
 interface PlatformConfig {
   newsletter_monthly?: string;
   brevo_monthly?: BrevoConfig;
+  image_generator?: string; // #2018: "gemini" | "comfyui" | "cloudflare" | etc.
 }
 
 interface MonthlyPublished {
@@ -490,8 +491,18 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
     ? parseEiaLegend(readFileSync(eiaMdPath, "utf8"))
     : undefined;
 
+  // #2018: legenda das imagens de destaque derivada do gerador configurado.
+  const imageGenerator = platformConfig.image_generator ?? "gemini";
+  const generatorLabels: Record<string, string> = {
+    gemini: "Criada com Gemini",
+    comfyui: "Criada com ComfyUI",
+    cloudflare: "Criada com Cloudflare AI",
+    openai: "Criada com DALL-E",
+  };
+  const destaqueImageCaption = generatorLabels[imageGenerator] ?? `Criada com IA`;
+
   // Convert draft to email
-  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls);
+  let { subject, previewText, html } = draftToEmail(draft, chosenSubject, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, destaqueImageUrls, destaqueImageCaption);
 
   if (!subject) {
     process.stderr.write(

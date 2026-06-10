@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./design-tokens.ts"; // #1936
+import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
 import {
   displaySectionName,
 } from "./section-naming.ts";
@@ -522,13 +523,8 @@ export function renderSection(section: Section): string {
  * em HTML. Cobre o que aparece em SORTEIO/PARA ENCERRAR. Não é parser
  * markdown completo — só o subset necessário pros 2 blocos.
  */
-/** #2008: aplica WORD JOINER U+2060 entre "." e "ai" em texto puro —
- * anti auto-linkify de "Clarice.ai" nos clientes de email (Gmail etc.).
- * Usado em segmentos de texto fora de `<a>`, análogo ao monthly-render.ts
- * renderTextInline. Recebe texto já HTML-escapado ou raw (&#8288; é entity segura). */
-function applyWordJoiner(s: string): string {
-  return s.replace(/\b([Cc]larice)\.ai\b/g, "$1.&#8288;ai");
-}
+// #2008/#2018: applyWordJoiner importado de ./word-joiner.ts (shared helper).
+// Ver scripts/lib/word-joiner.ts para documentação completa e GUARDED_DOMAINS.
 
 export function mdInlineToHtml(s: string): string {
   // #1117: normalizar backslash escapes ASCII antes de qualquer parsing.

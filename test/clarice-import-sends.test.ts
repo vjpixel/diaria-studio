@@ -24,6 +24,28 @@ describe("toImportCsv", () => {
     assert.ok(csv.includes("x@y.com"));
     assert.equal(count, 1);
   });
+
+  // #2018: coluna NOME detectada por regex (/^nome$/i) — antes era literal "NOME".
+  // Export do Drive com header "Nome" (capitalized) zerava silenciosamente todos
+  // os nomes (r["NOME"] era undefined → ""). Regressão: este teste quebra se a
+  // detecção voltar pra literal.
+  it("#2018: 'Nome' (capitalized) é reconhecido como coluna NOME", () => {
+    const { csv } = toImportCsv("E-mail,Nome,TIER\na@b.com,Pedro,T1\n");
+    assert.ok(csv.includes("Pedro"), `NOME deve ser 'Pedro', mas csv='${csv}'`);
+  });
+
+  it("#2018: 'nome' (lowercase) é reconhecido como coluna NOME", () => {
+    const { csv } = toImportCsv("email,nome\na@b.com,Luiza\n");
+    assert.ok(csv.includes("Luiza"), `NOME deve ser 'Luiza', mas csv='${csv}'`);
+  });
+
+  it("#2018: NOME ausente resulta em string vazia, não undefined visível", () => {
+    // Sem coluna NOME reconhecível — não deve lançar, só deixar vazio
+    const { csv } = toImportCsv("email,OUTRA\na@b.com,X\n");
+    // Linha deve ter email + campo vazio (não undefined/null literal)
+    assert.ok(csv.includes("a@b.com,"), `linha deve ter email e campo vazio: '${csv}'`);
+    assert.ok(!/undefined/.test(csv), "csv não deve conter 'undefined'");
+  });
 });
 
 describe("parseArgs", () => {
