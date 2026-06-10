@@ -318,11 +318,7 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
      ```typescript
      import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
      const htmlLocal = readFileSync(`{edition_dir}/_internal/newsletter-final.html`, "utf8");
-     // #2047: criar o Map UMA vez FORA do loop — reutilizado entre iterações para
-     // evitar re-fetch do mesmo URL (link morto continua morto; link vivo continua vivo).
-     // Declarar antes do `for (attempt de 1 a 10)`:
-     //   const linkCheckCache = new Map<string, boolean | null>();
-     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch, linkCheckCache);
+     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch, linkCheckCache); // #2047: linkCheckCache = new Map() declarado UMA vez ANTES do loop (5º arg) — evita re-fetch entre iterações
      for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
      ```
      Tipos cobertos (#1421 + #2013 + #2047): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing`, `italic_missing`, `section_missing` (grep no HTML local), `link_dead` (fetch paralelo via Promise.all; cache entre iterações; 403 *.beehiiv.com = bot-block).
