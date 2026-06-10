@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal YYMM [--no-gate]`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
+description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. 4 etapas com gate ao final de cada uma; publicação Beehiiv é follow-up (#188).
 ---
 
 # /diaria-mensal
@@ -9,11 +9,17 @@ Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados n
 
 ## Argumentos
 
-- `$1` = mês no formato `YYMM` (ex: `2604` = abril 2026). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir mês atual / mês anterior como atalhos mas exigir confirmação:
+- `--cycle {conteúdo}-{envio}` = ciclo no formato `YYMM-MM` (ex: `--cycle 2605-06` = conteúdo de maio, enviado em junho). **Formato preferido** (#1962 — elimina ambiguidade entre mês do conteúdo e mês do envio).
 
-  > "Você não passou o mês da edição mensal. Qual mês quer processar? mês atual ({YYMM_atual}) / mês anterior ({YYMM_anterior}) / outro (informe YYMM)"
+  Compat: `$1` = mês no formato `YYMM` (ex: `2605`). O ciclo é derivado automaticamente com aviso (envio = conteúdo + 1). Manter a compat enquanto pastas históricas ainda existirem no formato antigo.
+
+  **Se não passar nenhum dos dois, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir ciclo atual / anterior como atalhos mas exigir confirmação:
+
+  > "Você não passou o ciclo da edição mensal. Qual ciclo quer processar? atual ({ciclo_atual}, ex: 2605-06) / anterior ({ciclo_anterior}) / outro (informe --cycle YYMM-MM)"
 
 - `--no-gate` (opcional) = pular todos os gates humanos. Auto-aprova cada etapa e prossegue direto ao final.
+
+**Variável interna `$CYCLE`:** após resolver o ciclo (pelo `--cycle` passado ou pela derivação do `YYMM` legado), usar `$CYCLE` como o rótulo do ciclo em todos os comandos abaixo. Ex: `CYCLE=2605-06`. O `$1` legado (YYMM) mapeia a `YYMM=${CYCLE:0:4}` quando necessário.
 
 ## Pré-requisitos
 
@@ -40,22 +46,25 @@ Antes de iniciar, verificar o estado do disco (de baixo para cima):
 
 **Resume check (#400):**
 ```bash
-RAW_POSTS=$(ls data/monthly/$1/raw-posts/*.txt 2>/dev/null | wc -l)
-RAW_DESTAQUES=$(test -f data/monthly/$1/_internal/raw-destaques.json && echo "yes" || echo "no")
+RAW_POSTS=$(ls data/monthly/$CYCLE/raw-posts/*.txt 2>/dev/null | wc -l)
+# Compat: se pasta nova ausente, tentar legada YYMM=${CYCLE:0:4}
+[ "$RAW_POSTS" = "0" ] && RAW_POSTS=$(ls data/monthly/${CYCLE:0:4}/raw-posts/*.txt 2>/dev/null | wc -l)
+RAW_DESTAQUES=$(test -f data/monthly/$CYCLE/_internal/raw-destaques.json && echo "yes" || \
+                test -f data/monthly/${CYCLE:0:4}/_internal/raw-destaques.json && echo "yes" || echo "no")
 ```
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = yes` → pular 1a e 1b.
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
 - `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
 **Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
-1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[$1]`.
-2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$1/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
+1. `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[${CYCLE:0:4}]` (mês do conteúdo = YYMM).
+2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$CYCLE/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
 
 Se `posts_found = 0`, abortar.
 
 **Parse:**
 ```bash
-npx tsx scripts/collect-monthly.ts $1
+npx tsx scripts/collect-monthly.ts --cycle $CYCLE
 ```
 Se `destaques_count < 3`, abortar.
 
@@ -64,35 +73,36 @@ Se `destaques_count < 3`, abortar.
 **Resume check:** verificar se todos os destaques em `_internal/raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.
 
 ```bash
-node -e "const d=JSON.parse(require('fs').readFileSync('data/monthly/$1/_internal/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
+MONTHLY_INTERNAL=$(npx tsx -e "import { monthlyDir as d } from './scripts/lib/monthly-paths.ts'; console.log(d('$CYCLE') + '/_internal')" 2>/dev/null || echo "data/monthly/$CYCLE/_internal")
+node -e "const d=JSON.parse(require('fs').readFileSync('$MONTHLY_INTERNAL/raw-destaques.json','utf8')); const missing=d.destaques.filter(x=>x.score==null).length; console.log(missing===0?'scored':'missing:'+missing)"
 ```
 
 Se `missing > 0`, disparar `scorer-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
-- `out_path = data/monthly/$1/_internal/raw-destaques.json`
+- `raw_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
+- `out_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
 
 O scorer sobrescreve o arquivo adicionando `score` a cada destaque.
 
 ### 1c. Análise temática
 
 Disparar `analyst-monthly` via `Agent`:
-- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
-- `out_path = data/monthly/$1/prioritized.md`
-- `yymm = $1`
+- `raw_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
+- `out_path = data/monthly/$CYCLE/prioritized.md`
+- `yymm = ${CYCLE:0:4}`
 
 ### 1d. Seções por cliques (Use Melhor + Radar) — #1901/#1902
 
 Após o analista, rodar o ranking determinístico por cliques, que substitui o bloco `## Outras Notícias` do `prioritized.md` por `## Use Melhor` (3 tutoriais mais clicados) + `## Radar` (7 links mais clicados, fora dos Destaques e do Use Melhor):
 
 ```bash
-npx tsx scripts/monthly-click-sections.ts $1
+npx tsx scripts/monthly-click-sections.ts --cycle $CYCLE
 ```
 
 Fontes: per-link click data em `data/beehiiv-cache/posts/*.json` (enriquecido via `beehiiv-clicks-enricher`) + seções publicadas em `data/editions/{AAMMDD}/02-reviewed.md`.
 
-**Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Garantir que essas edições estejam enriquecidas com clicks antes (rodar `beehiiv-clicks-enricher` nelas). Ex. para o digest de maio:
+**Use Melhor emprestado (#1568):** se as edições diárias do mês forem anteriores à criação da seção Use Melhor (ex.: meses até ~maio/2026), não há tutoriais-fonte no próprio mês. Nesse caso, emprestar a 1ª semana do mês seguinte (que já tem a seção) via `--use-melhor-source AAMMDD:prefix,...` (o `prefix` é o id curto do post no Beehiiv). Garantir que essas edições estejam enriquecidas com clicks antes (rodar `beehiiv-clicks-enricher` nelas). Ex. para o digest de maio (ciclo 2605-06):
 ```bash
-npx tsx scripts/monthly-click-sections.ts 2605 \
+npx tsx scripts/monthly-click-sections.ts --cycle 2605-06 \
   --use-melhor-source 260601:32c6c918,260602:d7adab86,260603:e8b02883,260604:a2fe05de
 ```
 
@@ -100,7 +110,7 @@ Output: `_internal/monthly-clicks.json` + patch em `prioritized.md`. Warning (n�
 
 ### Gate Etapa 1 (pulado com `--no-gate`)
 
-Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 1 --files prioritized.md` (warning se falhar, nunca bloqueia).
 
 Apresentar ao editor:
 ```
@@ -120,17 +130,17 @@ Aprovar? sim / editar / retry
 ## Etapa 2 — Escrita
 
 Disparar `writer-monthly` via `Agent`:
-- `prioritized_path = data/monthly/$1/prioritized.md`
-- `raw_path = data/monthly/$1/_internal/raw-destaques.json`
-- `out_path = data/monthly/$1/draft.md`
-- `yymm = $1`
+- `prioritized_path = data/monthly/$CYCLE/prioritized.md`
+- `raw_path = data/monthly/$CYCLE/_internal/raw-destaques.json`
+- `out_path = data/monthly/$CYCLE/draft.md`
+- `yymm = ${CYCLE:0:4}`
 
 O agente escreve `draft.md` + gera `_internal/02-d1-prompt.md` (prompt Van Gogh impasto do D1 para Etapa 3).
 
 ### 2b. Lint de chars
 
 ```bash
-npx tsx scripts/lint-monthly-draft.ts $1
+npx tsx scripts/lint-monthly-draft.ts --cycle $CYCLE
 ```
 
 Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars.
@@ -140,30 +150,30 @@ Emite warnings (não bloqueia) se D1 > 1.500 ou D2/D3 > 1.200 chars.
 Invocar skill humanizador in-place no `draft.md`:
 
 ```
-Skill("humanizador", "Leia data/monthly/$1/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
+Skill("humanizador", "Leia data/monthly/$CYCLE/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
 ```
 
 Se falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### 2d. Clarice
 
-1. Ler `data/monthly/$1/draft.md`.
+1. Ler `data/monthly/$CYCLE/draft.md`.
 2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `data/monthly/$1/_internal/02-clarice-suggestions.json`.
+3. Salvar sugestões: `data/monthly/$CYCLE/_internal/02-clarice-suggestions.json`.
 4. Aplicar:
 ```bash
 npx tsx scripts/clarice-apply.ts \
-  --text-file data/monthly/$1/draft.md \
-  --suggestions data/monthly/$1/_internal/02-clarice-suggestions.json \
-  --out data/monthly/$1/draft.md \
-  --report data/monthly/$1/_internal/02-clarice-report.json
+  --text-file data/monthly/$CYCLE/draft.md \
+  --suggestions data/monthly/$CYCLE/_internal/02-clarice-suggestions.json \
+  --out data/monthly/$CYCLE/draft.md \
+  --report data/monthly/$CYCLE/_internal/02-clarice-report.json
 ```
 
 Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### Gate Etapa 2 (pulado com `--no-gate`)
 
-Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$1/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se o editor tiver escolhido o subject no gate; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
+Drive sync push: `npx tsx scripts/drive-sync.ts --mode push --edition-dir data/monthly/$CYCLE/ --stage 2 --files draft.md,_internal/02-d1-prompt.md,_internal/02-chosen-subject.txt` — **warning se falhar, nunca bloqueia**. (`02-chosen-subject.txt` só existe se o editor tiver escolhido o subject no gate; `02-d1-prompt.md` só existe se o writer tiver gerado o prompt de imagem.)
 
 Drive sync pull antes de apresentar ao editor (ele pode ter editado no Drive após o push): `--mode pull --files draft.md` — idem, warning se falhar.
 
@@ -178,13 +188,14 @@ Opções de subject:
 Aprovar? sim [+ número do subject escolhido] / editar / retry
 ```
 
-**Após aprovação (#421):** se o editor informar o número do subject escolhido (ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$1/_internal/02-chosen-subject.txt`:
+**Após aprovação (#421):** se o editor informar o número do subject escolhido (ex: "2"), extrair a linha completa do draft e salvar em `data/monthly/$CYCLE/_internal/02-chosen-subject.txt`:
 ```bash
 CHOICE=2  # número informado pelo editor
+MONTHLY_DIR="data/monthly/$CYCLE"
 node -e "
-  const t = require('fs').readFileSync('data/monthly/$1/draft.md','utf8');
+  const t = require('fs').readFileSync('$MONTHLY_DIR/draft.md','utf8');
   const m = t.match(/^ASSUNTO[\s\S]*?\n${CHOICE}\. (.+)/m);
-  if (m) require('fs').writeFileSync('data/monthly/$1/_internal/02-chosen-subject.txt', m[1].trim());
+  if (m) require('fs').writeFileSync('$MONTHLY_DIR/_internal/02-chosen-subject.txt', m[1].trim());
 "
 ```
 Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empregos em risco`), não só o número. Qualquer reescrita posterior restaura exatamente essa linha no ASSUNTO.
@@ -203,9 +214,9 @@ Disparar **em paralelo** (mesma mensagem):
 prompt. `--ratio 2x1` força o formato wide pra todos (≠ da diária):
 ```bash
 for D in d1 d2 d3; do
-  P="data/monthly/$1/_internal/02-$D-prompt.md"
+  P="data/monthly/$CYCLE/_internal/02-$D-prompt.md"
   [ -f "$P" ] && npx tsx scripts/image-generate.ts \
-    --editorial "$P" --out-dir data/monthly/$1/ --destaque $D --ratio 2x1
+    --editorial "$P" --out-dir data/monthly/$CYCLE/ --destaque $D --ratio 2x1
 done
 ```
 Se um `02-d{N}-prompt.md` não existir, pular esse destaque (aviso, não bloquear).
@@ -216,8 +227,8 @@ taxa de acerto **mais próxima de 50%** (o É IA? que mais dividiu os leitores �
 melhor pro recap mensal). Fallback automático ao último dia se nenhum poll for
 elegível (gabarito + ≥5 votos). A tabela de candidatos vai pro stderr (auditoria).
 ```bash
-EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month $1)
-npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$1/
+EAI_EDITION=$(npx tsx scripts/select-eia-edition.ts --month ${CYCLE:0:4})
+npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CYCLE/
 ```
 Se falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional.
 
@@ -228,9 +239,9 @@ diária) — o editor revisa o render real no celular antes do Brevo. Usa o desi
 da mensal (`draftToEmail`), sobe as imagens do É IA? pro KV e mescla a legenda
 do `01-eia.md`:
 ```bash
-npx tsx scripts/monthly-preview-cloudflare.ts --yymm $1
+npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
 ```
-Imprime a URL `https://draft.diaria.workers.dev/m{YYMM}-{hash}`. Falha = warning,
+Imprime a URL `https://draft.diaria.workers.dev/m{YYMM}-{MM}`. Falha = warning,
 não bloqueia. Requer `ADMIN_SECRET` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`.
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
@@ -239,10 +250,10 @@ Drive sync push: `04-d1-2x1.jpg,04-d1-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg`.
 
 Apresentar:
 ```
-📸 D1: data/monthly/$1/04-d1-2x1.jpg
-🤔 É IA? A: data/monthly/$1/01-eia-A.jpg
-🤔 É IA? B: data/monthly/$1/01-eia-B.jpg
-🌐 Preview: https://draft.diaria.workers.dev/m{YYMM}-{hash}
+📸 D1: data/monthly/$CYCLE/04-d1-2x1.jpg
+🤔 É IA? A: data/monthly/$CYCLE/01-eia-A.jpg
+🤔 É IA? B: data/monthly/$CYCLE/01-eia-B.jpg
+🌐 Preview: https://draft.diaria.workers.dev/m{YYMM}-{MM}
 
 Aprovar? sim / regenerar-d1 / regenerar-eia
 ```
@@ -258,7 +269,7 @@ Aprovar? sim / regenerar-d1 / regenerar-eia
 Pull do `draft.md` antes de converter (editor pode ter editado no Drive após Etapa 2):
 
 ```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$1/ --stage 4 --files draft.md
+npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/monthly/$CYCLE/ --stage 4 --files draft.md
 ```
 
 Warning se falhar, nunca bloqueia.
@@ -301,7 +312,7 @@ Encerrar Etapa 4 (não é bloqueio de pipeline — editor pode publicar manualme
 ### 4c. Criar campanha e enviar email de teste
 
 ```bash
-npx tsx scripts/publish-monthly.ts --yymm $1 --send-test
+npx tsx scripts/publish-monthly.ts --cycle $CYCLE --send-test
 ```
 
 O script:
@@ -326,7 +337,7 @@ Agent({
   prompt: "
     test_email: {brevo_monthly.test_email de platform.config.json}
     edition_title: {subject de _internal/05-published.json}
-    edition_dir: data/monthly/$1/
+    edition_dir: data/monthly/$CYCLE/
     attempt: 1
     platform: brevo
   "
@@ -368,7 +379,7 @@ Aprovado? sim / retry (regenerar campanha)
 
 ## Outputs
 
-Todos em `data/monthly/{YYMM}/`:
+Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 
 - `_internal/raw-destaques.json` — coleta bruta (Etapa 1)
 - `_internal/monthly-clicks.json` — ranking por cliques Use Melhor + Radar (Etapa 1d)

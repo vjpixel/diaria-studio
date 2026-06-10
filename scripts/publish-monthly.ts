@@ -35,6 +35,13 @@ dotenvConfig({ override: true });
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  parseMonthlyCycleArg,
+  isValidMonthlyCycle,
+  yyymmToCycle,
+  cycleToYymm,
+  monthlyDir as resolveMonthlyDir,
+} from "./lib/monthly-paths.ts";
 import { readEiaAnswerSidecar, aiSideFromAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1012
 import { uploadMonthlyImage as uploadMonthlyImageLib, uploadDestaqueImages } from "./lib/monthly-image-upload.ts"; // #1914 #1916
@@ -114,6 +121,7 @@ interface MonthlyPublished {
 
 interface ParsedArgs {
   yymm: string;
+  cycle: string;        // ciclo {conteúdo}-{envio} (ex: 2605-06), derivado de yymm se necessário
   sendTest: boolean;
   sendNow: boolean;
   dryRun: boolean;
@@ -132,6 +140,7 @@ interface ParsedArgs {
  */
 export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   let yymm = "";
+  let cycleRaw = "";
   let sendTest = false;
   let sendNow = false;
   let dryRun = false;
@@ -143,6 +152,8 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--yymm" && i + 1 < argv.length) {
       yymm = argv[++i];
+    } else if (argv[i] === "--cycle" && i + 1 < argv.length) {
+      cycleRaw = argv[++i];
     } else if (argv[i] === "--send-test") {
       sendTest = true;
     } else if (argv[i] === "--send-now") {
@@ -190,18 +201,40 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
     }
   }
 
-  if (!yymm || !/^\d{4}$/.test(yymm)) {
+  // Aceita --cycle 2605-06 (novo) ou --yymm 2605 (legado).
+  // --cycle tem prioridade; --yymm deriva o ciclo com aviso.
+  let cycle = "";
+  if (cycleRaw && isValidMonthlyCycle(cycleRaw)) {
+    cycle = cycleRaw;
+    if (!yymm) yymm = cycleToYymm(cycle);
+  } else if (yymm && /^\d{4}$/.test(yymm)) {
+    cycle = yyymmToCycle(yymm);
     process.stderr.write(
-      "Uso: publish-monthly.ts --yymm YYMM [--list-id N]\n" +
+      `[publish-monthly] warn: --yymm "${yymm}" é formato legado — ` +
+      `derivando ciclo "${cycle}". Use --cycle ${cycle} para suprimir.\n`,
+    );
+  } else if (!yymm && !cycleRaw) {
+    // Nenhum dos dois: tenta parseMonthlyCycleArg com argumento posicional
+    const derived = parseMonthlyCycleArg(argv);
+    if (derived) {
+      cycle = derived;
+      yymm = cycleToYymm(cycle);
+    }
+  }
+
+  if (!yymm || !cycle) {
+    process.stderr.write(
+      "Uso: publish-monthly.ts --cycle YYMM-MM [--list-id N]\n" +
       "                         [--send-test [--send-test-to <email>]]\n" +
       "                         [--send-now] [--schedule-at <ISO>]\n" +
       "                         [--update-existing <campaign_id>] [--dry-run]\n" +
-      "Exemplo: --yymm 2604 --list-id 9 --send-test --send-test-to felipe@clarice.ai\n",
+      "Legado: --yymm YYMM (deriva ciclo automaticamente)\n" +
+      "Exemplo: --cycle 2605-06 --list-id 9 --send-test --send-test-to felipe@clarice.ai\n",
     );
     process.exit(1);
   }
 
-  return { yymm, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
+  return { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
 }
 
 // #1844: camada de render (escHtml/render*/draftToEmail/parse) → scripts/lib/monthly-render.ts. Re-export no topo; main() importa.
@@ -301,7 +334,7 @@ function uploadMonthlyImage(filePath: string, edition: string): Promise<string> 
  *                           pra evitar tocar dados reais (#1029).
  */
 export async function main(monthlyDirOverride?: string): Promise<void> {
-  const { yymm, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
+  const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
 
   // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.
   const actions = [sendTest && "--send-test", sendNow && "--send-now", scheduleAt && "--schedule-at"].filter(Boolean);
@@ -368,8 +401,9 @@ export async function main(monthlyDirOverride?: string): Promise<void> {
   // After this point we're either dry-run (apiKey unused) or apiKeyRaw is non-empty.
   const apiKey = apiKeyRaw ?? "";
 
-  // Load draft (#1029: monthlyDirOverride permite injetar fixture em testes)
-  const monthlyDir = monthlyDirOverride ?? resolve(ROOT, `data/monthly/${yymm}`);
+  // Load draft (#1029: monthlyDirOverride permite injetar fixture em testes;
+  // #1962: usar resolveMonthlyDir com ciclo pra suportar o novo formato de pasta)
+  const monthlyDir = monthlyDirOverride ?? resolveMonthlyDir(cycle);
   const draftPath = resolve(monthlyDir, "draft.md");
 
   if (!existsSync(draftPath)) {

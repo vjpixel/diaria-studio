@@ -492,12 +492,31 @@ describe("parseArgs", () => {
     return { exitCode, stderr };
   }
 
-  it("básico: --yymm 2604", () => {
+  it("básico: --yymm 2604 (legado compat — deriva ciclo automaticamente)", () => {
     const r = parseArgs(["--yymm", "2604"]);
     assert.equal(r.yymm, "2604");
+    assert.equal(r.cycle, "2604-05"); // derivado automaticamente
     assert.equal(r.sendTest, false);
     assert.equal(r.sendNow, false);
     assert.equal(r.dryRun, false);
+  });
+
+  it("novo: --cycle 2605-06 (formato preferido #1962)", () => {
+    const r = parseArgs(["--cycle", "2605-06"]);
+    assert.equal(r.cycle, "2605-06");
+    assert.equal(r.yymm, "2605"); // extraído do ciclo
+  });
+
+  it("--cycle tem prioridade sobre --yymm", () => {
+    const r = parseArgs(["--cycle", "2605-06", "--yymm", "2605"]);
+    assert.equal(r.cycle, "2605-06");
+    assert.equal(r.yymm, "2605");
+  });
+
+  it("rollover dez→jan: --cycle 2612-01", () => {
+    const r = parseArgs(["--cycle", "2612-01"]);
+    assert.equal(r.cycle, "2612-01");
+    assert.equal(r.yymm, "2612");
   });
 
   it("--list-id N", () => {

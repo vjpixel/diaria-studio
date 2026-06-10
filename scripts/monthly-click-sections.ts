@@ -39,6 +39,10 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEditorial } from "./build-link-ctr.ts";
+import {
+  parseMonthlyCycleArg,
+  monthlyDir as resolveMonthlyDir,
+} from "./lib/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -207,8 +211,13 @@ function loadClicks(prefix: string): Map<string, number> {
 }
 
 // ── Edições do mês (a partir dos raw-posts) ─────────────────────────
+/**
+ * Lista edições a partir do diretório mensal (aceita ciclo ou yymm via
+ * monthlyDir). Exposto como `listEditions(yymm)` para compat com `compute()`.
+ */
 function listEditions(yymm: string): { edition: string; prefix: string }[] {
-  const dir = join(ROOT, "data/monthly", yymm, "raw-posts");
+  // monthlyDir resolve ciclo ou yymm, com fallback pra pasta legada
+  const dir = join(resolveMonthlyDir(yymm), "raw-posts");
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .map((n) => n.match(/^post_([a-f0-9]+)_(\d{6})\.txt$/i))
@@ -219,7 +228,7 @@ function listEditions(yymm: string): { edition: string; prefix: string }[] {
 
 // ── URLs de Destaque (temas) do prioritized.md ──────────────────────
 function themeUrls(yymm: string): Set<string> {
-  const p = join(ROOT, "data/monthly", yymm, "prioritized.md");
+  const p = join(resolveMonthlyDir(yymm), "prioritized.md");
   const set = new Set<string>();
   if (!existsSync(p)) return set;
   const md = readFileSync(p, "utf8");
@@ -280,8 +289,9 @@ export interface ComputeOpts {
 export function compute(yymm: string, opts: ComputeOpts = {}) {
   const editions = listEditions(yymm);
   if (editions.length === 0) {
+    const dir = resolveMonthlyDir(yymm);
     throw new Error(
-      `Nenhum raw-post em data/monthly/${yymm}/raw-posts/. Rode a coleta (Etapa 1a) antes.`,
+      `Nenhum raw-post em ${dir}/raw-posts/. Rode a coleta (Etapa 1a) antes.`,
     );
   }
 
@@ -474,7 +484,7 @@ export function replaceSectionsBlock(md: string, newBlock: string): string | nul
 }
 
 function patchPrioritized(yymm: string, result: ReturnType<typeof compute>): boolean {
-  const p = join(ROOT, "data/monthly", yymm, "prioritized.md");
+  const p = join(resolveMonthlyDir(yymm), "prioritized.md");
   if (!existsSync(p)) return false;
   const md = readFileSync(p, "utf8");
   const next = replaceSectionsBlock(md, buildSectionsBlock(result));
@@ -504,21 +514,28 @@ export function parseUseMelhorSource(argv: string[]): { edition: string; prefix:
 }
 
 function main() {
-  const yymm = process.argv[2];
-  if (!yymm || !/^\d{4}$/.test(yymm)) {
-    console.error("Usage: npx tsx scripts/monthly-click-sections.ts <YYMM> [--use-melhor-source AAMMDD:prefix,...]");
+  // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
+  const cycle = parseMonthlyCycleArg(process.argv.slice(2));
+  if (!cycle) {
+    console.error(
+      "Usage: npx tsx scripts/monthly-click-sections.ts --cycle YYMM-MM [--use-melhor-source AAMMDD:prefix,...]\n" +
+      "Compat: npx tsx scripts/monthly-click-sections.ts <YYMM>",
+    );
     process.exit(2);
   }
-  const useMelhorSource = parseUseMelhorSource(process.argv.slice(3));
-  const result = compute(yymm, { useMelhorSource });
+  // compute() e helpers internos ainda usam yymm como chave de coleção
+  // (via monthlyDir que aceita yymm com fallback). Passamos o ciclo completo
+  // para que monthlyDir resolva corretamente o path {conteúdo}-{envio}.
+  const useMelhorSource = parseUseMelhorSource(process.argv.slice(2));
+  const result = compute(cycle, { useMelhorSource });
   if (useMelhorSource.length)
     console.log(`Use Melhor emprestado de: ${useMelhorSource.map((x) => x.edition).join(", ")}`);
 
-  const outDir = join(ROOT, "data/monthly", yymm, "_internal");
+  const outDir = join(resolveMonthlyDir(cycle), "_internal");
   const outPath = join(outDir, "monthly-clicks.json");
   writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
 
-  const patched = patchPrioritized(yymm, result);
+  const patched = patchPrioritized(cycle, result);
 
   console.log(`OK: Use Melhor ${result.use_melhor.length} | Radar ${result.radar.length} → ${outPath}`);
   console.log(`prioritized.md ${patched ? "atualizado (Outras Notícias → Use Melhor + Radar)" : "NÃO atualizado (seção não encontrada)"}`);

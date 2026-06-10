@@ -18,6 +18,11 @@
  */
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  parseMonthlyCycleArg,
+  monthlyDir as resolveMonthlyDir,
+} from "./lib/monthly-paths.ts";
 
 const LIMITS: Record<string, number> = { D1: 1500, D2: 1200, D3: 1200 };
 
@@ -48,13 +53,17 @@ function extractBody(section: string): string {
 }
 
 function main(): void {
-  const yymm = process.argv[2];
-  if (!yymm) {
-    console.error("Uso: npx tsx scripts/lint-monthly-draft.ts <YYMM>");
+  // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
+  const cycle = parseMonthlyCycleArg(process.argv.slice(2));
+  if (!cycle) {
+    console.error(
+      "Uso: npx tsx scripts/lint-monthly-draft.ts --cycle YYMM-MM\n" +
+      "Compat: npx tsx scripts/lint-monthly-draft.ts <YYMM>",
+    );
     process.exit(2);
   }
 
-  const path = `data/monthly/${yymm}/draft.md`;
+  const path = join(resolveMonthlyDir(cycle), "draft.md");
   let text: string;
   try {
     text = readFileSync(path, "utf8");

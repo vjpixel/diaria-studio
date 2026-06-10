@@ -5,16 +5,19 @@
  * que usa a API REST do Beehiiv diretamente. Elimina dependência de MCP em
  * subagente (MCPs nativos do Claude.ai não são repassados a subagentes).
  *
- * Busca todos os posts publicados no mês YYMM e grava o markdown bruto em
- * `data/monthly/{YYMM}/raw-posts/post_{id8}_{AAMMDD}.txt`.
+ * Busca todos os posts publicados no mês e grava o markdown bruto em
+ * `data/monthly/{ciclo}/raw-posts/post_{id8}_{AAMMDD}.txt`.
  *
- * Uso:
+ * Uso (#1962 — novo):
+ *   npx tsx scripts/fetch-monthly-posts.ts --cycle 2605-06
+ *
+ * Compat (legado — ainda aceito com aviso):
  *   npx tsx scripts/fetch-monthly-posts.ts 2604
  *
  * Variáveis de ambiente (dotenv carregado automaticamente):
  *   BEEHIIV_API_KEY — obrigatório
  *
- * Output (stdout): JSON { yymm, posts_found, downloaded, skipped_existing,
+ * Output (stdout): JSON { yymm, cycle, posts_found, downloaded, skipped_existing,
  *                         posts_with_html_fallback, out_dir, warnings }
  */
 
@@ -22,6 +25,11 @@ import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  parseMonthlyCycleArg,
+  cycleToYymm,
+  monthlyDir as resolveMonthlyDir,
+} from "./lib/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BEEHIIV_API = "https://api.beehiiv.com/v2";
@@ -154,12 +162,18 @@ async function fetchContent(
 }
 
 async function main() {
-  const yymm = process.argv[2];
-  if (!yymm || !/^\d{4}$/.test(yymm)) {
-    console.error("Uso: npx tsx scripts/fetch-monthly-posts.ts YYMM");
-    console.error("  Ex: npx tsx scripts/fetch-monthly-posts.ts 2604");
+  // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
+  const cycle = parseMonthlyCycleArg(process.argv.slice(2));
+  if (!cycle) {
+    console.error(
+      "Uso: npx tsx scripts/fetch-monthly-posts.ts --cycle YYMM-MM\n" +
+      "  Ex: npx tsx scripts/fetch-monthly-posts.ts --cycle 2605-06\n" +
+      "Compat (com aviso): npx tsx scripts/fetch-monthly-posts.ts 2604",
+    );
     process.exit(2);
   }
+
+  const yymm = cycleToYymm(cycle);
 
   const apiKey = process.env.BEEHIIV_API_KEY;
   if (!apiKey) {
@@ -175,11 +189,13 @@ async function main() {
   }
 
   const win = yyymmToWindow(yymm);
-  const outDir = resolve(ROOT, `data/monthly/${yymm}/raw-posts`);
+  // Usar monthlyDir com allowLegacyFallback: false — escrita SEMPRE no formato novo
+  const editionDir = resolveMonthlyDir(cycle, { allowLegacyFallback: false });
+  const outDir = resolve(editionDir, "raw-posts");
   mkdirSync(outDir, { recursive: true });
 
   process.stderr.write(
-    `[fetch-monthly-posts] ${yymm}: ${win.start.toISOString().slice(0, 10)} → ${win.end.toISOString().slice(0, 10)}\n`,
+    `[fetch-monthly-posts] ${cycle}: ${win.start.toISOString().slice(0, 10)} → ${win.end.toISOString().slice(0, 10)}\n`,
   );
 
   const posts = await fetchPostsForMonth(pubId, apiKey, win);
@@ -225,11 +241,12 @@ async function main() {
   console.log(
     JSON.stringify({
       yymm,
+      cycle,
       posts_found: posts.length,
       downloaded,
       skipped_existing: skipped,
       posts_with_html_fallback: htmlFallback,
-      out_dir: `data/monthly/${yymm}/raw-posts/`,
+      out_dir: `data/monthly/${cycle}/raw-posts/`,
       warnings,
     }),
   );
