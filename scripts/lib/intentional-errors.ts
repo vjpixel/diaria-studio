@@ -49,6 +49,10 @@ export interface IntentionalError {
   source?: string;
   detected_by?: string;
   resolution?: string;
+  /** #2016: true when editor explicitly declared no intentional error for this edition.
+   * Valid reader answer is "não há erro". list-month-errors shows this as "sem erro
+   * intencional (resposta válida: 'não há erro')". lint-test-email skips body checks. */
+  no_error?: boolean;
 }
 
 /**

@@ -49,6 +49,7 @@ import { detectDrift } from "./lib/semantic-drift.ts";
 import {
   loadIntentionalErrors,
   isIntentionalError,
+  intentionalErrorsForEdition,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 
@@ -150,6 +151,12 @@ export function runLints(
 ): LintResult {
   const issues: LintIssue[] = [];
 
+  // #2016: se editor declarou `intentional_error: none`, não procurar erros no
+  // corpo — não há erro intencional pra confirmar, e false-positives não têm
+  // safety net. Subject check ainda roda (título correto é independente do erro).
+  const editionEntries = intentionalErrorsForEdition(intentionalErrors, edition);
+  const editionHasNoError = editionEntries.some((e) => e.no_error === true);
+
   // Check 0 (#1645): subject do email recebido vs título esperado.
   if (subject) {
     const subjectIssue = checkSubject(
@@ -158,6 +165,16 @@ export function runLints(
       subject.prevTitle,
     );
     if (subjectIssue) issues.push(subjectIssue);
+  }
+
+  // #2016: skip body checks when editor declared no intentional error
+  if (editionHasNoError) {
+    const summary = {
+      blockers: issues.filter((i) => i.type === "blocker").length,
+      warnings: issues.filter((i) => i.type === "warning").length,
+      infos: issues.filter((i) => i.type === "info").length,
+    };
+    return { issues, summary };
   }
 
   // Check 8: version consistency intra-destaque (no email).

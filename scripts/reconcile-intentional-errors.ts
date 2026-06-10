@@ -90,7 +90,33 @@ function scan(args: CliArgs): {
     if (!existsSync(mdPath)) continue;
     totalScanned++;
     const lint = checkIntentionalError(mdPath);
-    if (!lint.ok || !lint.parsed) continue; // frontmatter ausente — skip
+    if (!lint.ok) continue; // frontmatter ausente/inválido — skip
+
+    // #2037 fix 3: `intentional_error: none` → lint.ok=true, lint.parsed=undefined.
+    // Antes deste fix, `!lint.parsed` causava `continue` silencioso, deixando
+    // entries sentinela pré-#2016 sem remediar. Agora: se JSONL não tem entry
+    // no_error=true pra esta edição → detectar drift e (com --fix) sobrescrever
+    // com entry no_error.
+    if (lint.no_error) {
+      const jsonlEntry = byEdition.get(editionId);
+      if (jsonlEntry && !jsonlEntry.no_error) {
+        const noErrorEntry: IntentionalError = {
+          edition: editionId,
+          error_type: "none",
+          is_feature: false,
+          no_error: true,
+          source: "frontmatter_02_reviewed",
+          detected_by: "reconcile-intentional-errors.ts no_error (#2037)",
+          resolution: "no_error_declared",
+        };
+        drift.push({ edition: editionId, jsonlEntry, frontmatterEntry: noErrorEntry });
+      }
+      // no entry in JSONL at all → não há drift estruturado a corrigir aqui
+      // (sync-intentional-error deve ser rodado explicitamente)
+      continue;
+    }
+
+    if (!lint.parsed) continue; // não deveria acontecer, mas guarda contra shapes futuras
     const fmEntry = frontmatterToEntry(lint.parsed, editionId);
     const jsonlEntry = byEdition.get(editionId);
     if (!jsonlEntry) {

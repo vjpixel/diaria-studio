@@ -68,15 +68,23 @@ const PARA_ENCERRAR_HEADER_RE = new RegExp(
 
 /**
  * Pure: dado o conjunto de erros e a edição corrente (`AAMMDD`), retorna
- * o erro mais recente (por edição lexicográfica) anterior à corrente
- * com `is_feature: true`. Retorna `null` quando não existir.
+ * a entry mais recente (por edição lexicográfica) anterior à corrente
+ * que seja relevante para o reveal. Inclui entradas com `is_feature: true`
+ * (erros reais) e entradas com `no_error: true` (#2037 fix 2 — edição sem
+ * erro intencional, que deve revelar "não havia erro" em vez de silenciosamente
+ * pular pra 2 edições atrás). Retorna `null` quando não existir nenhuma.
  */
 export function findPreviousIntentionalError(
   errors: IntentionalError[],
   currentEdition: string,
 ): IntentionalError | null {
   const candidates = errors
-    .filter((e) => e.is_feature && typeof e.edition === "string" && e.edition < currentEdition)
+    .filter(
+      (e) =>
+        typeof e.edition === "string" &&
+        e.edition < currentEdition &&
+        (e.is_feature === true || e.no_error === true),
+    )
     .sort((a, b) => (a.edition < b.edition ? 1 : -1));
   return candidates[0] ?? null;
 }
@@ -644,7 +652,14 @@ function main(): void {
     );
   }
   if (prev) {
-    reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
+    if (prev.no_error) {
+      // #2037 fix 2: edição anterior declarou explicitamente que não havia erro
+      // intencional. reveal=null faz renderSection usar a frase padrão
+      // "A edição anterior não trazia erro intencional declarado."
+      reveal = null;
+    } else {
+      reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
+    }
   }
 
   const md = readFileSync(mdPath, "utf8");

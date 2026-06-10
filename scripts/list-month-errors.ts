@@ -17,10 +17,13 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { checkIntentionalError } from "./lint-newsletter-md.ts";
+import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
 
 interface MonthError {
   edition: string;
   declared: boolean;
+  /** #2016: true when editor explicitly declared no intentional error */
+  no_error?: boolean;
   category?: string;
   location?: string;
   description?: string;
@@ -41,9 +44,20 @@ function listEditionsForMonth(monthYYMM: string): string[] {
 function extractError(editionDir: string, edition: string): MonthError {
   const mdPath = join(editionDir, "02-reviewed.md");
   if (!existsSync(mdPath)) {
+    // #2016: fallback to JSONL when MD is absent (e.g., post-archive)
+    const jsonlPath = resolve(process.cwd(), "data/intentional-errors.jsonl");
+    const entries = loadIntentionalErrors(jsonlPath);
+    const entry = entries.find((e) => e.edition === edition);
+    if (entry?.no_error) {
+      return { edition, declared: true, no_error: true };
+    }
     return { edition, declared: false, reason: "02-reviewed.md ausente" };
   }
   const result = checkIntentionalError(mdPath);
+  // #2016: `intentional_error: none` — editor declared no error this edition.
+  if (result.ok && result.no_error) {
+    return { edition, declared: true, no_error: true };
+  }
   if (!result.ok) {
     return { edition, declared: false, reason: result.label };
   }
@@ -59,7 +73,9 @@ function extractError(editionDir: string, edition: string): MonthError {
 }
 
 function formatMarkdown(month: string, errors: MonthError[]): string {
-  const declared = errors.filter((e) => e.declared);
+  // #2016: separate "no_error" editions from regular declared errors
+  const noErrorEditions = errors.filter((e) => e.declared && e.no_error);
+  const declared = errors.filter((e) => e.declared && !e.no_error);
   const undeclared = errors.filter((e) => !e.declared);
 
   const lines: string[] = [];
@@ -78,6 +94,17 @@ function formatMarkdown(month: string, errors: MonthError[]): string {
     lines.push("");
   }
 
+  // #2016: editions without intentional error (valid reader answer: "não há erro")
+  if (noErrorEditions.length > 0) {
+    lines.push(`## Edições sem erro intencional (${noErrorEditions.length})`);
+    lines.push(`> Resposta válida do leitor: **"não há erro"**`);
+    lines.push("");
+    for (const e of noErrorEditions) {
+      lines.push(`- **${e.edition}**: sem erro intencional (resposta válida: 'não há erro')`);
+    }
+    lines.push("");
+  }
+
   if (undeclared.length > 0) {
     lines.push(`## Edições sem declaração (${undeclared.length})`);
     for (const e of undeclared) {
@@ -86,7 +113,7 @@ function formatMarkdown(month: string, errors: MonthError[]): string {
     lines.push("");
   }
 
-  // Estatísticas por categoria
+  // Estatísticas por categoria (exclude no_error editions)
   if (declared.length > 0) {
     const counts: Record<string, number> = {};
     for (const e of declared) {

@@ -27,6 +27,8 @@ import { existsSync, readFileSync } from "node:fs";
 export interface IntentionalErrorCheckResult {
   ok: boolean;
   label?: string;
+  /** `no_error: true` when frontmatter is `intentional_error: none` (#2016) */
+  no_error?: boolean;
   parsed?: {
     description?: string;
     location?: string;
@@ -111,6 +113,14 @@ export function checkIntentionalError(
       label:
         "intentional_error_missing: frontmatter sem chave intentional_error — adicione description/location/category/correct_value",
     };
+  }
+
+  // #2016: aceitar escalar `intentional_error: none` — editor declara
+  // explicitamente que a edição não tem erro intencional (resposta válida do
+  // leitor: "não há erro"). Lint passa; sync grava entry com no_error=true.
+  const noneScalarMatch = fmBody.match(/intentional_error\s*:\s*(none|null)\s*(\n|$)/i);
+  if (noneScalarMatch) {
+    return { ok: true, no_error: true };
   }
 
   // Parse simple YAML — intentional_error is a mapping with 4 string fields.

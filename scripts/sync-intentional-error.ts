@@ -94,6 +94,56 @@ function main(): number {
   const jsonlPath = resolve(process.cwd(), flags.jsonl);
 
   const lintResult = checkIntentionalError(mdPath);
+
+  // #2016: escalar `intentional_error: none` — editor declarou explicitamente
+  // que esta edição não tem erro intencional. Gravamos entry com no_error=true
+  // pra manter o registro da decisão (list-month-errors mostra "sem erro").
+  if (lintResult.ok && lintResult.no_error) {
+    const existing = loadIntentionalErrors(jsonlPath);
+    // Guard de idempotência tightened (#2037 fix 1): só é no-op se já existe
+    // entry com no_error=true. Entry pré-existente sem no_error (ex: sentinela
+    // 4-campos da era pré-#2016) é sobrescrita, não bloqueada.
+    if (existing.some((e) => e.edition === flags.edition && e.no_error === true)) {
+      process.stderr.write(
+        `[sync-intentional-error] edição ${flags.edition} já tem entry no_error=true — no-op\n`,
+      );
+      process.stdout.write(
+        JSON.stringify({ added: false, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
+      );
+      return 0;
+    }
+    const entry: IntentionalError = {
+      edition: flags.edition,
+      error_type: "none",
+      is_feature: false,
+      no_error: true,
+      source: "frontmatter_02_reviewed",
+      detected_by: "sync-intentional-error.ts none scalar (#2016)",
+      resolution: "no_error_declared",
+    };
+    const idx = existing.findIndex((e) => e.edition === flags.edition);
+    if (idx !== -1) {
+      // Sobrescrever entry pré-existente (ex: sentinela 4-campos)
+      existing[idx] = entry;
+      rewriteJsonl(jsonlPath, existing);
+      process.stderr.write(
+        `[sync-intentional-error] #2016/#2037: edição ${flags.edition} — entry pré-existente sobrescrita com no_error=true\n`,
+      );
+      process.stdout.write(
+        JSON.stringify({ added: false, updated: true, edition: flags.edition, no_error: true }, null, 2) + "\n",
+      );
+    } else {
+      appendJsonl(jsonlPath, entry);
+      process.stderr.write(
+        `[sync-intentional-error] #2016: edição ${flags.edition} declarada sem erro intencional (intentional_error: none)\n`,
+      );
+      process.stdout.write(
+        JSON.stringify({ added: true, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
+      );
+    }
+    return 0;
+  }
+
   if (!lintResult.ok || !lintResult.parsed) {
     // #1860: frontmatter ausente/incompleto (publicação manual, ou erro
     // declarado só na prosa "Nessa edição, …"). Em vez de falhar — o que
