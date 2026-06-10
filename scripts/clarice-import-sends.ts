@@ -230,7 +230,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // possa ler os IDs Brevo das listas S2/S3 sem depender do stdout desta invocação.
   const summaryPath = resolve(clariceCycleDir(args.cycle), "sends", "sends-summary.json");
   if (existsSync(summaryPath)) {
-    const summary = JSON.parse(readFileSync(summaryPath, "utf-8")) as { sends: ({ n: number } & Record<string, unknown>)[] };
+    const rawSummary = readFileSync(summaryPath, "utf-8");
+    let summary: { sends: ({ n: number } & Record<string, unknown>)[] };
+    try {
+      summary = JSON.parse(rawSummary);
+    } catch (e) {
+      throw new Error(`sends-summary.json corrompido (JSON inválido): ${summaryPath}\n${String(e)}`);
+    }
     const merged = mergeSendsSummaryWithListIds(summary, results);
     writeFileAtomic(summaryPath, JSON.stringify(merged, null, 2));
     console.error(`↳ listId gravado em sends-summary.json para ${results.length} envio(s).`);
