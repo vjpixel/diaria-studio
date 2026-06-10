@@ -267,8 +267,10 @@ export function renderCtaButton(line: string): string {
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
   const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
   const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
-  // DS: botão cheio usa INK (#171411), não teal (teal é só texto). Centralizado.
-  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${INK};border-radius:4px;"><a href="${escHtml(url)}" style="display:inline-block;padding:13px 24px;font-family:${FONT_SANS};font-size:15px;font-weight:bold;color:#FBFAF6;text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
+  // Botão CTA (decisão do editor 2026-06-09): variante "contorno" do DS — fundo
+  // paper + borda 1px bege, texto INK bold — no formato do botão da diária
+  // (padding 10px 20px, radius 4px, 16px; newsletter-render-html.ts). Centralizado.
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:20px auto 0;"><tr><td style="background:${COLORS.paper};border:1px solid ${BEGE};border-radius:4px;"><a href="${escHtml(url)}" style="display:inline-block;padding:10px 20px;font-family:${FONT_SANS};font-size:16px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a></td></tr></table>`;
 }
 
 /**
