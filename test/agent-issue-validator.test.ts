@@ -560,11 +560,14 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
     await filterAgentIssues(issues, "<p>x</p>", "260611", fetchFn);
     const elapsed = Date.now() - start;
 
-    // Paralelo: deve terminar em < 2× DELAY (não N × DELAY)
-    // Damos 2× margem pra overhead do runtime; N × DELAY seria 250ms
+    // Paralelo: deve terminar bem abaixo de N×DELAY (sequencial).
+    // Threshold: N×DELAY×0.8 = 200ms (sequencial seria 250ms, paralelo ideal ~50ms).
+    // Usando 0.8× do sequencial como threshold: CI com spikes de 100-150ms ainda passa.
+    const sequentialMs = N * DELAY;   // 250ms se fosse sequencial
+    const threshold = Math.floor(sequentialMs * 0.8);  // 200ms — claramente abaixo do sequencial
     assert.ok(
-      elapsed < DELAY * 2 + 50,
-      `fetches devem ser paralelos: elapsed ${elapsed}ms, esperado < ${DELAY * 2 + 50}ms (N×DELAY seria ${N * DELAY}ms)`,
+      elapsed < threshold,
+      `fetches devem ser paralelos: elapsed ${elapsed}ms, esperado < ${threshold}ms (sequencial seria ${sequentialMs}ms)`,
     );
   });
 

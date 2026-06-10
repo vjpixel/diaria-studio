@@ -227,7 +227,7 @@ export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
  * Critério: o issue cita exatamente 1 termo entre aspas que é um dos emojis
  * de section header canônicos (SECTION_HEADER_EMOJIS) E a frase menciona
  * explicitamente "header", "seção", "section", "kicker", "título da seção"
- * ou "título" — indicando que a reclamação é sobre um HEADER de seção.
+ * ou "título de seção" — indicando que a reclamação é sobre um HEADER de seção.
  *
  * Sem o gate de header na frase: emojis multi-propósito (📺, 💼, 🌐) são
  * usados também em links inline e no corpo do email. Um emoji genuinamente
@@ -258,7 +258,7 @@ export function isEncodingDropSectionEmojiByDesign(
   // contexto. Sem isso, emojis multi-propósito (📺, 💼, 🌐) em links inline
   // seriam dropados indevidamente quando o nome da seção aparece na frase.
   const hasHeaderInPhrase =
-    /header|kicker|se[çc][ãa]o|section|t[íi]tulo\s+da\s+se[çc][ãa]o|t[íi]tulo\s+da\s+sec|t[íi]tulo\s+de\s+se[çc][ãa]o/i.test(issue);
+    /header|kicker|se[çc][ãa]o|section|t[íi]tulo\s+da\s+se[çc][ãa]o|t[íi]tulo\s+de\s+se[çc][ãa]o/i.test(issue);
   if (!hasHeaderInPhrase) return { falsePositive: false };
   return {
     falsePositive: true,
