@@ -94,6 +94,40 @@ function main(): number {
   const jsonlPath = resolve(process.cwd(), flags.jsonl);
 
   const lintResult = checkIntentionalError(mdPath);
+
+  // #2016: escalar `intentional_error: none` — editor declarou explicitamente
+  // que esta edição não tem erro intencional. Gravamos entry com no_error=true
+  // pra manter o registro da decisão (list-month-errors mostra "sem erro").
+  if (lintResult.ok && lintResult.no_error) {
+    const existing = loadIntentionalErrors(jsonlPath);
+    if (existing.some((e) => e.edition === flags.edition)) {
+      process.stderr.write(
+        `[sync-intentional-error] edição ${flags.edition} já tem entry — no-op (no_error)\n`,
+      );
+      process.stdout.write(
+        JSON.stringify({ added: false, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
+      );
+      return 0;
+    }
+    const entry: IntentionalError = {
+      edition: flags.edition,
+      error_type: "none",
+      is_feature: false,
+      no_error: true,
+      source: "frontmatter_02_reviewed",
+      detected_by: "sync-intentional-error.ts none scalar (#2016)",
+      resolution: "no_error_declared",
+    };
+    appendJsonl(jsonlPath, entry);
+    process.stderr.write(
+      `[sync-intentional-error] #2016: edição ${flags.edition} declarada sem erro intencional (intentional_error: none)\n`,
+    );
+    process.stdout.write(
+      JSON.stringify({ added: true, updated: false, edition: flags.edition, no_error: true }, null, 2) + "\n",
+    );
+    return 0;
+  }
+
   if (!lintResult.ok || !lintResult.parsed) {
     // #1860: frontmatter ausente/incompleto (publicação manual, ou erro
     // declarado só na prosa "Nessa edição, …"). Em vez de falhar — o que
