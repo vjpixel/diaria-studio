@@ -461,7 +461,9 @@ describe("checkHtmlFreshness (#2012)", () => {
     assert.match(msg!, /render-newsletter-html/, "deve mencionar o script de render");
   });
 
-  it("mensagem de erro usa /tmp/newsletter.html como intermediate (alinhado ao playbook) (#2012 P4)", () => {
+  it("mensagem de erro usa {edition_dir}/_internal/newsletter-draft.html como intermediate (alinhado ao playbook #2042)", () => {
+    // #2042: após migrar o playbook de /tmp/newsletter.html → _internal/newsletter-draft.html,
+    // a mensagem de erro reproduzível deve referenciar o path canônico novo.
     const dir = mkdtempSync(resolve(tmpdir(), "freshness-playbook-"));
     const mdPath = resolve(dir, "02-reviewed.md");
     const internalDir = resolve(dir, "_internal");
@@ -475,7 +477,8 @@ describe("checkHtmlFreshness (#2012)", () => {
     utimesSync(mdPath, now, now);
     const msg = checkHtmlFreshness(htmlPath, mdPath);
     assert.ok(msg !== null);
-    assert.match(msg!, /\/tmp\/newsletter\.html/, "deve referenciar /tmp/newsletter.html como intermediate");
+    assert.match(msg!, /newsletter-draft\.html/, "deve referenciar newsletter-draft.html como intermediate");
+    assert.doesNotMatch(msg!, /\/tmp\/newsletter/, "não deve referenciar /tmp/newsletter (path legado removido em #2042)");
   });
 
   it("CENÁRIO REAL #2012: render → editar md → substitute escreve final (mtime fresco) → guard dispara via draft.html", () => {
@@ -510,7 +513,8 @@ describe("checkHtmlFreshness (#2012)", () => {
     assert.ok(msgWithDraft !== null, "com draft: deve detectar que draft está stale");
     assert.match(msgWithDraft!, /newsletter-draft\.html está desatualizado/);
     assert.doesNotMatch(msgWithDraft!, /\{edition_dir\}/, "sem placeholders literais");
-    assert.match(msgWithDraft!, /\/tmp\/newsletter\.html/, "usa /tmp/newsletter.html do playbook");
+    assert.match(msgWithDraft!, /newsletter-draft\.html/, "usa newsletter-draft.html do path canônico (#2042)");
+    assert.doesNotMatch(msgWithDraft!, /\/tmp\/newsletter/, "não usa mais /tmp/newsletter (#2042)");
   });
 
   it("retorna null quando draft é mais novo que reviewed E final é mais novo que draft (cadeia ok)", () => {

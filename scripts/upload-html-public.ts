@@ -187,18 +187,18 @@ export function checkHtmlFreshness(
 
   // Interpola paths reais na mensagem de erro (P3: sem {edition_dir} literal).
   const edDir = editionDir ?? dirname(dirname(finalHtmlPath));
+  const draftCanonical = `${edDir}/_internal/newsletter-draft.html`;
   const renderCmd =
-    `npx tsx scripts/render-newsletter-html.ts ${edDir} --format html --out /tmp/newsletter.html`;
+    `npx tsx scripts/render-newsletter-html.ts ${edDir} --format html --out ${draftCanonical}`;
   const subCmd =
-    `npx tsx scripts/substitute-image-urls.ts --html /tmp/newsletter.html ` +
+    `npx tsx scripts/substitute-image-urls.ts --html ${draftCanonical} ` +
     `--images ${edDir}/06-public-images.json --out ${edDir}/_internal/newsletter-final.html`;
 
   // Verificação primária: draft deve ser mais novo que 02-reviewed.md.
   // Se draftHtmlPath foi passado e existe, usa-o (cadeia de freshness real da
-  // pipeline). Se não existe (draft em /tmp/ ou não gerado), cai em final vs
-  // reviewed como proxy.
+  // pipeline). Se não existe em _internal/ (ex: chamada sem render prévia),
+  // cai em final vs reviewed como proxy.
   const draftMtime = draftHtmlPath !== undefined ? mtimeMs(draftHtmlPath) : null;
-  const primaryPath = draftMtime !== null ? draftHtmlPath! : finalHtmlPath;
   const primaryMtime = draftMtime !== null ? draftMtime : mtimeMs(finalHtmlPath);
   if (primaryMtime === null) return null; // arquivo ausente — sem verificação.
 
