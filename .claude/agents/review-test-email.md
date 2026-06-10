@@ -264,8 +264,8 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 
 ```bash
 npx tsx scripts/lint-test-email-link-tracking.ts \
-  --email-file /tmp/test-email-{AAMMDD}.txt \
-  --out /tmp/lint-link-tracking-{AAMMDD}.json
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
+  --out {edition_dir}/_internal/lint-link-tracking-{AAMMDD}.json
 # Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required/merge_tag não contam, #1949).
 # Exit 1 = ao menos 1 blocker (link_dead OU link_redirect_chain_long).
 ```
@@ -294,9 +294,9 @@ pra não saturar rede; timeout 5s por URL.
 
 ```bash
 npx tsx scripts/lint-test-email-structure.ts \
-  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --source-md {edition_dir}/02-reviewed.md \
-  --out /tmp/lint-structure-{AAMMDD}.json
+  --out {edition_dir}/_internal/lint-structure-{AAMMDD}.json
 # Exit 0 = estrutura bate. Exit 1 = ao menos 1 mismatch.
 ```
 
@@ -312,9 +312,9 @@ revisa visualmente quando lint apita.
 
 ```bash
 npx tsx scripts/lint-test-email-encoding.ts \
-  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --source-md {edition_dir}/02-reviewed.md \
-  --out /tmp/lint-encoding-{AAMMDD}.json
+  --out {edition_dir}/_internal/lint-encoding-{AAMMDD}.json
 # Exit 0 = sem char_dropped (warnings de char_substituted são ok).
 # Exit 1 = char_dropped detectado (acentos/emojis sumiram sem substituto ASCII).
 ```
@@ -332,18 +332,17 @@ charset mismatch (latin1 vs UTF-8) no template.
 **Procedimento (passo 16):**
 
 ```bash
-# 1. Salvar conteúdo do email em arquivo temp (já feito em passo 8-9 se rodou)
-echo "$EMAIL_CONTENT" > /tmp/test-email-{AAMMDD}.txt
+# 1. Arquivo já foi salvo em {edition_dir}/_internal/test-email-{AAMMDD}.txt no passo 1 (#2045).
 
 # 2. Rodar lint de freshness
 npx tsx scripts/lint-test-email-image-freshness.ts \
-  --email-file /tmp/test-email-{AAMMDD}.txt \
+  --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --edition-dir {edition_dir} \
-  --out /tmp/lint-image-freshness-{AAMMDD}.json
+  --out {edition_dir}/_internal/lint-image-freshness-{AAMMDD}.json
 # Exit 0 = todas as imagens batem com arquivo local. Exit 1 = ao menos 1 stale.
 ```
 
-3. Ler `/tmp/lint-image-freshness-{AAMMDD}.json` — formato:
+3. Ler `{edition_dir}/_internal/lint-image-freshness-{AAMMDD}.json` — formato:
    ```json
    {
      "edition_dir": "...",

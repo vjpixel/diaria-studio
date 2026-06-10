@@ -170,3 +170,81 @@ cresceu 10%.`;
     assert.equal(result.summary.infos, 0);
   });
 });
+
+describe("runLints (#2043) — intentional_error:none não bypassa Checks 8/9", () => {
+  const NO_ERROR_EDITION = "260610";
+  const noErrorIntentional: IntentionalError[] = [
+    {
+      edition: NO_ERROR_EDITION,
+      error_type: "no_error" as ReturnType<typeof String>,
+      is_feature: false,
+      no_error: true,
+    },
+  ];
+
+  it("regressão: version_inconsistency flagrada mesmo com intentional_error:none", () => {
+    // Cenário real: editor declarou no_error=true mas há inconsistência V4/V5 real.
+    // Antes do fix (#2043) esse blocker era silenciado pelo early-return.
+    const email = `DESTAQUE 1 | TENDÊNCIA
+
+V4 da DeepSeek lança.
+
+A versão V5 superou benchmarks anteriores.`;
+    const source = `DESTAQUE 1 | TENDÊNCIA
+
+V4 da DeepSeek lança.
+
+A versão V4 superou benchmarks anteriores.`;
+    const result = runLints(email, source, NO_ERROR_EDITION, noErrorIntentional);
+    const blockers = result.issues.filter(
+      (i) => i.type === "blocker" && i.category === "version_inconsistency",
+    );
+    assert.equal(
+      blockers.length,
+      1,
+      "version_inconsistency deve ser blocker mesmo com intentional_error:none",
+    );
+    assert.equal(blockers[0].destaque, "DESTAQUE 1");
+  });
+
+  it("regressão: semantic_drift flagrado mesmo com intentional_error:none", () => {
+    const email = `DESTAQUE 2 | PESQUISA
+
+empresa cresceu 12% em 2 anos.`;
+    const source = `DESTAQUE 2 | PESQUISA
+
+empresa cresceu 10% em 2 anos.`;
+    const result = runLints(email, source, NO_ERROR_EDITION, noErrorIntentional);
+    const warnings = result.issues.filter(
+      (i) => i.type === "warning" && i.category === "semantic_drift",
+    );
+    assert.ok(
+      warnings.length >= 1,
+      "semantic_drift deve ser warning mesmo com intentional_error:none",
+    );
+  });
+
+  it("regressão: subject check ainda roda com intentional_error:none", () => {
+    const email = "";
+    const source = "";
+    const result = runLints(email, source, NO_ERROR_EDITION, noErrorIntentional, {
+      received: "[TEST] Título errado",
+      expected: "Título certo",
+    });
+    const blockers = result.issues.filter(
+      (i) => i.type === "blocker" && i.category === "subject_mismatch",
+    );
+    assert.equal(blockers.length, 1, "subject_mismatch deve ser blocker mesmo com intentional_error:none");
+  });
+
+  it("edição sem no_error + versão consistente → nenhum blocker", () => {
+    const email = `DESTAQUE 1 | X
+
+V4 lança.
+
+V4 superou.`;
+    const source = email;
+    const result = runLints(email, source, "260506", NO_INTENTIONAL);
+    assert.equal(result.summary.blockers, 0);
+  });
+});
