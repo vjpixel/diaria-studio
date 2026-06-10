@@ -95,7 +95,7 @@ export function renderInline(text: string): string {
     }
     if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
     parts.push(
-      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;font-weight:bold;">${escHtml(m[1])}</a>`,
+      `<a href="${escHtml(url)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};font-weight:bold;">${escHtml(m[1])}</a>`,
     );
     lastIdx = j + 1;
     linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
@@ -210,18 +210,21 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   // #1936: o ÚLTIMO parágrafo de cada destaque fecha com uma régua bege
   // (border-left no --rule #EBE5D0; o DS não usa teal em estrutura). Só quando
   // NÃO há "O fio condutor:" — que já carrega a régua como pull-quote italic.
-  const mainHtml = mainParas
-    .map((p, idx) => {
-      const isLast = idx === mainParas.length - 1;
-      const style = isLast && !conductorText
-        ? `margin:20px 0 0 0;border-left:3px solid ${BEGE};padding-left:16px;`
-        : "margin:0 0 16px 0;";
-      return `<p style="${style}">${renderInline(p.replace(/\n/g, " "))}</p>`;
-    })
-    .join("\n");
-  const conductorHtml = conductorText
-    ? `<p style="margin:20px 0 0 0;font-style:italic;color:${INK};border-left:3px solid ${BEGE};padding-left:16px;">${renderInline(conductorText.replace(/\n/g, " "))}</p>`
-    : "";
+  // #DS: o fecho do destaque (fio condutor explícito OU último parágrafo) vai
+  // numa caixa "Por que isso importa" (fundo branco + borda bege), como na diária.
+  const boxFor = (text: string): string =>
+    `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:22px 26px;">` +
+    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>` +
+    `<p style="margin:0;">${renderInline(text.replace(/\n/g, " "))}</p></td></tr></table>`;
+  let mainHtml = "";
+  let conductorHtml = "";
+  if (conductorText) {
+    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    conductorHtml = boxFor(conductorText);
+  } else if (mainParas.length) {
+    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    conductorHtml = boxFor(mainParas[mainParas.length - 1]);
+  }
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
@@ -230,7 +233,7 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
       `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};font-size:12px;letter-spacing:1px;text-transform:uppercase;color:${INK};">Criada com Gemini</p>`
     : "";
 
-  return imageHtml + label + titleHtml + mainHtml + conductorHtml;
+  return label + titleHtml + imageHtml + mainHtml + conductorHtml;
 }
 
 /**
@@ -380,12 +383,15 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   }
 
   const itemsHtml = parsed
-    .map(({ title, desc }) =>
-      `<p style="margin:0 0 4px 0;font-weight:bold;">${renderInline(title)}</p>` +
-      (desc
+    .map(({ title, desc }) => {
+      const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
+      const titleHtml = tm
+        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(tm[2])}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
+        : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
+      return titleHtml + (desc
         ? `<p style="margin:0 0 20px 0;color:${INK};">${renderInline(desc)}</p>`
-        : `<div style="margin-bottom:20px;"></div>`)
-    )
+        : `<div style="margin-bottom:20px;"></div>`);
+    })
     .join("\n");
 
   return header + itemsHtml;
