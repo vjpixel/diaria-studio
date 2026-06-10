@@ -1,32 +1,38 @@
 /**
  * Coleta os ~90 destaques de todas as edições publicadas em um mês.
  *
- * Entrada: arquivos `.txt` em `data/monthly/{YYMM}/raw-posts/`, gerados pelo
- * agent `collect-monthly-runner` que busca via Beehiiv MCP. Cada arquivo
+ * Entrada: arquivos `.txt` em `data/monthly/{ciclo}/raw-posts/`, gerados pelo
+ * script `fetch-monthly-posts.ts` (ou via MCP Beehiiv). Cada arquivo
  * contém o markdown bruto de uma edição publicada (formato `get_post_content`):
  * seções separadas por linhas de traços (`-` repetidos), com `##### CATEGORIA`
  * + `# [Título](url)` por destaque.
  *
- * Output: `data/monthly/{YYMM}/raw-destaques.json` com todos os destaques do
- * mês + metadata estruturada pro `analyst-monthly` agrupar por tema.
+ * Output: `data/monthly/{ciclo}/_internal/raw-destaques.json` com todos os
+ * destaques do mês + metadata estruturada pro `analyst-monthly` agrupar por tema.
  *
  * Brasil detection: `category === "BRASIL"` é sinal forte (decisão editorial
  * do scorer diário). Reforçado por host (`.br` + lista BR_HOSTS) e palavras-
  * chave no título/body com word boundary (evita false-positives de tokens
  * curtos como `stf`, `cade` casando dentro de palavras maiores).
  *
- * Uso:
- *   npx tsx scripts/collect-monthly.ts <YYMM>
+ * Uso (#1962 — novo):
+ *   npx tsx scripts/collect-monthly.ts --cycle 2605-06
  *
- * Ex: `npx tsx scripts/collect-monthly.ts 2604` para abril 2026.
+ * Compat (legado — ainda aceito com aviso):
+ *   npx tsx scripts/collect-monthly.ts 2604
  */
 
 import { readFileSync, existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import {
+  MONTHLY_BASE,
+  monthlyDir as resolveMonthlyDir,
+  cycleToYymm,
+  parseMonthlyCycleArg,
+} from "./lib/monthly-paths.ts";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const MONTHLY_DIR = resolve(ROOT, "data/monthly");
+// Alias para compat com usos internos (path join na MONTHLY_BASE).
+const MONTHLY_DIR = MONTHLY_BASE;
 
 interface MonthlyDestaque {
   edition: string;          // AAMMDD (extraída do nome do arquivo)
@@ -152,8 +158,17 @@ interface RawPostFile {
   edition: string; // AAMMDD
 }
 
-function listRawPosts(yymm: string): RawPostFile[] {
-  const dir = join(MONTHLY_DIR, yymm, "raw-posts");
+/**
+ * Lista os raw-posts de um diretório mensal.
+ * @param dirOrCycle path absoluto do diretório, ou identificador (ciclo/yymm)
+ */
+function listRawPosts(dirOrCycle: string): RawPostFile[] {
+  // Se for um path absoluto (começa com drive letter ou /), usar direto.
+  // Caso contrário, resolver via monthlyDir (aceita ciclo ou yymm).
+  const dir = join(
+    dirOrCycle.match(/^([a-zA-Z]:\\|\/|\\\\)/) ? dirOrCycle : resolveMonthlyDir(dirOrCycle),
+    "raw-posts",
+  );
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((name) => /^post_[a-f0-9]+_\d{6}\.txt$/i.test(name))
@@ -261,22 +276,26 @@ export function parsePost(file: RawPostFile, raw: string, warnings: string[]): M
 // ── Main ────────────────────────────────────────────────────────────
 
 function main() {
-  const yymm = process.argv[2];
-  if (!yymm) {
-    console.error("Usage: npx tsx scripts/collect-monthly.ts <YYMM>");
-    console.error("  Ex: npx tsx scripts/collect-monthly.ts 2604");
-    process.exit(2);
-  }
-  if (!/^\d{4}$/.test(yymm)) {
-    console.error(`YYMM inválido: ${yymm}. Formato esperado: YYMM (ex: 2604).`);
+  // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
+  const cycle = parseMonthlyCycleArg(process.argv.slice(2));
+  if (!cycle) {
+    console.error(
+      "Usage: npx tsx scripts/collect-monthly.ts --cycle YYMM-MM\n" +
+      "  Ex:  npx tsx scripts/collect-monthly.ts --cycle 2605-06\n" +
+      "Compat (com aviso): npx tsx scripts/collect-monthly.ts 2604",
+    );
     process.exit(2);
   }
 
-  const files = listRawPosts(yymm);
+  // yymm é o mês do conteúdo (campo legado no output JSON)
+  const yymm = cycleToYymm(cycle);
+  const editionDir = resolveMonthlyDir(cycle);
+
+  const files = listRawPosts(editionDir);
   if (files.length === 0) {
     console.error(
-      `Nenhum raw-post encontrado em data/monthly/${yymm}/raw-posts/. ` +
-        `Rode o agent collect-monthly-runner antes do script (ver SKILL.md Stage 1a).`,
+      `Nenhum raw-post encontrado em ${editionDir}/raw-posts/. ` +
+        `Rode fetch-monthly-posts.ts antes do script (ver SKILL.md Stage 1a).`,
     );
     process.exit(1);
   }
@@ -299,10 +318,9 @@ function main() {
     warnings,
   };
 
-  const outDir = join(MONTHLY_DIR, yymm);
-  mkdirSync(outDir, { recursive: true });
-  mkdirSync(join(outDir, "_internal"), { recursive: true });
-  const outPath = join(outDir, "_internal", "raw-destaques.json");
+  mkdirSync(editionDir, { recursive: true });
+  mkdirSync(join(editionDir, "_internal"), { recursive: true });
+  const outPath = join(editionDir, "_internal", "raw-destaques.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
   const brCount = allDestaques.filter((d) => d.is_brazil).length;

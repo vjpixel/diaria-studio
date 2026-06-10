@@ -37,12 +37,39 @@ import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend } from "./lib/monthly-render.ts";
 import { uploadMonthlyImage, uploadDestaqueImages } from "./lib/monthly-image-upload.ts";
 import { uploadHtml } from "./upload-html-public.ts";
+import {
+  parseMonthlyCycleArg,
+  cycleToYymm,
+  monthlyDir as resolveMonthlyDir,
+  monthlyWorkerKey,
+  monthlyWorkerKeyLegacy,
+} from "./lib/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Pure (#1914): key da URL do preview mensal — `m{YYMM}`, distinta da diária. */
-export function monthlyPreviewKey(yymm: string): string {
-  return `m${yymm}`;
+/**
+ * Pure (#1914, #1962): key da URL do preview mensal.
+ *
+ * Formato novo: `m{YYMM}-{MM}` (ex: `m2605-06`) — identifica unicamente o
+ * ciclo de conteúdo + envio, não colide com diárias (AAMMDD sem prefixo m).
+ * Retrocompat de leitura: o Worker tenta a key nova, fallback `m{YYMM}` (legada).
+ *
+ * Hífens são válidos em keys KV do Cloudflare (qualquer string ≤512 bytes).
+ *
+ * @param cycle ciclo `{YYMM}-{MM}` (ex: `2605-06`) OU legado `YYMM` (ex: `2605`,
+ *              compat — retorna o formato legado `m{YYMM}` com aviso implícito
+ *              de que a key nova exige o ciclo completo).
+ */
+export function monthlyPreviewKey(cycle: string): string {
+  // Delegamos para os helpers centralizados em monthly-paths.ts (#1962)
+  // para manter a lógica em um único lugar.
+  // Se receber YYMM legado (4 dígitos), deriva o ciclo com aviso.
+  if (/^\d{4}$/.test(cycle)) {
+    // Compat: yymm legado → key legada m{YYMM} (não deriva — evita silently
+    // emitir key nova pra código que ainda não migrou o path de disco).
+    return monthlyWorkerKeyLegacy(cycle);
+  }
+  return monthlyWorkerKey(cycle);
 }
 
 /**
@@ -75,19 +102,33 @@ async function uploadEiaImages(
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const get = (flag: string): string | undefined => {
-    const i = argv.indexOf(flag);
-    return i >= 0 ? argv[i + 1] : undefined;
-  };
-  const yymm = get("--yymm");
   const dryRun = argv.includes("--dry-run");
 
-  if (!yymm || !/^\d{4}$/.test(yymm)) {
-    console.error("Uso: monthly-preview-cloudflare.ts --yymm YYMM [--dry-run]");
+  // Aceita --cycle 2605-06 (novo) ou --yymm 2605 (legado compat).
+  // --yymm é convertido para ciclo via parseMonthlyCycleArg (que trata
+  // argumento posicional e --cycle; para --yymm, injetamos como posicional).
+  let cycle = parseMonthlyCycleArg(argv);
+  if (!cycle) {
+    // Fallback: --yymm para compat com callers antigos
+    const get = (flag: string): string | undefined => {
+      const i = argv.indexOf(flag);
+      return i >= 0 ? argv[i + 1] : undefined;
+    };
+    const yymm = get("--yymm");
+    if (yymm) {
+      cycle = parseMonthlyCycleArg([yymm]); // trata como posicional legado
+    }
+  }
+  if (!cycle) {
+    console.error(
+      "Uso: monthly-preview-cloudflare.ts --cycle YYMM-MM [--dry-run]\n" +
+      "Compat: monthly-preview-cloudflare.ts --yymm YYMM [--dry-run]",
+    );
     process.exit(2);
   }
 
-  const monthlyDir = resolve(ROOT, "data", "monthly", yymm);
+  const yymm = cycleToYymm(cycle);
+  const monthlyDir = resolveMonthlyDir(cycle);
   const draftPath = resolve(monthlyDir, "draft.md");
   if (!existsSync(draftPath)) {
     console.error(`draft.md não encontrado: ${draftPath}. Rode a Etapa 2 do /diaria-mensal primeiro.`);
@@ -145,15 +186,16 @@ async function main(): Promise<void> {
   const htmlPath = resolve(internalDir, "cloudflare-preview.html");
   writeFileSync(htmlPath, html);
 
+  // Key nova: m{YYMM}-{MM} (ex: m2605-06). Retrocompat: fallback m{YYMM} no Worker.
   const result = await uploadHtml({
-    edition: monthlyPreviewKey(yymm),
+    edition: monthlyPreviewKey(cycle),
     htmlPath,
     secret,
     dryRun,
     wrap: false, // HTML mensal já é documento completo
   });
 
-  console.log(JSON.stringify({ yymm, ...result }, null, 2));
+  console.log(JSON.stringify({ yymm, cycle, ...result }, null, 2));
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
