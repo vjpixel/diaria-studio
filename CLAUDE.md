@@ -45,7 +45,7 @@ O fluxo editorial é modelado como 4 etapas com gate humano em cada uma. A execu
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
    - `/diaria-log [edition] [level]` — lê `data/run-log.jsonl`; use quando algo der errado e quiser que eu investigue. Ex: `/diaria-log 260418 error`.
    - `/diaria-source-health [fonte]` — visão geral ou auditoria individual da saúde das fontes (successes, failures, timeouts, duração, últimas execuções). `data/sources/{slug}.jsonl` é o log append-only por fonte.
-4. Fim do dia: `/diaria-overnight [--limite HH:MM] [--dry-run]` — varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente durante a noite (PR → CI → auto-merge, 1 por vez), com relatório por email ao final (#2021).
+**Fim do dia:** `/diaria-overnight [--limite HH:MM] [--dry-run]` — fora do fluxo de edição. Varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente durante a noite (PR → CI → auto-merge, 1 por vez). Ao final, deixa rascunho de relatório no Gmail + resumo no terminal (#2021).
 
 **Retomar edição interrompida:** se você sair do Claude no meio de uma edição, basta rodar `/diaria-edicao {mesmo-AAMMDD}` de novo. O orchestrator detecta quais stages já completaram (via arquivos em `data/editions/{AAMMDD}/`) e retoma de onde parou. Se um stage foi interrompido no meio (antes de gravar seu output), ele só re-executa aquele stage, não o pipeline inteiro.
 
