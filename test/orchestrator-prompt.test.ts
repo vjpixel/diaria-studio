@@ -30,6 +30,7 @@ const ORCHESTRATOR_FILES = [
   "orchestrator-stage-2.md",
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
+  "orchestrator-stage-5.md",
 ];
 
 /** Invariants that must be present in the combined orchestrator content. */
@@ -42,6 +43,7 @@ const REQUIRED_INVARIANTS = [
   "Etapa 2",
   "Etapa 3",
   "Etapa 4",
+  "Etapa 5",
   // Critical operational invariants
   "GATE HUMANO",
   "drive-sync.ts",
@@ -50,17 +52,18 @@ const REQUIRED_INVARIANTS = [
   // Anti-skip guards
   "validate-pool",                         // inject-inbox-urls sentinel
   "drive_sync",                            // Stage 1w anti-skip
-  // Stage 4 publication safety
+  // Stage 5 publication safety
   "confirmação explícita",
   // Smoke-compatible sections
   "inbox-drain",
   "scorer",
   "render-categorized-md",
-  // #1783: marks de status que fecham a duração de S0/S4 no relatório
+  // #1783: marks de status que fecham a duração de S0/S4/S5 no relatório
   "--stage 0 --status running",
   "--stage 0 --status done",
   "--stage 4 --status running",
-  "mark-done canônico do Stage 4 é o §4i",
+  "--stage 5 --status running",
+  "mark-done canônico do Stage 5 é o §5i",
 ];
 
 function readOrchestratorFiles(): Record<string, string> {
@@ -131,6 +134,9 @@ describe("orchestrator-prompt (#634)", () => {
     // (mark-done canônico no §4i, fora do §4g que é pulado em pre-gate).
     // 715→745 quando #2073 adicionou step 1w-quint-b (check-highlight-themes)
     // + item 4 no gate de repeat-de-tema.
+    // #1694: split Stage 4 (Publicação) → Stage 4 (Revisão) + Stage 5 (Publicação).
+    // stage-5.md herda o conteúdo pesado do antigo stage-4.md. Budget mantido
+    // em 745 por arquivo — stage-4.md (Revisão) é muito menor (~130 linhas).
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
         lines[file] <= 745,
@@ -179,6 +185,7 @@ describe("orchestrator-prompt (#634)", () => {
     assert.ok(root.includes("orchestrator-stage-1-research.md"), "orchestrator.md não referencia stage-1-research");
     assert.ok(root.includes("orchestrator-stage-2.md"), "orchestrator.md não referencia stage-2");
     assert.ok(root.includes("orchestrator-stage-4.md"), "orchestrator.md não referencia stage-4");
+    assert.ok(root.includes("orchestrator-stage-5.md"), "orchestrator.md não referencia stage-5");
   });
 
   it("snapshot hash — detecta mudanças não-intencionais", () => {
