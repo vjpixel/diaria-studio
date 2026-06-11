@@ -71,7 +71,7 @@ Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
 
 ### Placeholder `{edition_url}` (#595)
 
-Stage 2 (writer) gera o texto com o placeholder literal `{edition_url}`. Stage 4 (publish-linkedin) substitui pelo URL Beehiiv real da edição (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`) antes de enfileirar no Worker.
+Stage 2 (writer) gera o texto com o placeholder literal `{edition_url}`. Stage 5 (publish-linkedin) substitui pelo URL Beehiiv real da edição (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`) antes de enfileirar no Worker.
 
 Em Stage 2, NÃO inventar URL — sempre `{edition_url}`. Lint detecta se placeholder vaza pra produção.
 

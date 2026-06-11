@@ -92,7 +92,7 @@ Verifique no LinkedIn company page que o rascunho apareceu.
 
 ## Como funciona no pipeline
 
-`scripts/publish-linkedin.ts` é chamado pelo orchestrator no Stage 4 (em paralelo com `publish-facebook.ts`). O script:
+`scripts/publish-linkedin.ts` é chamado pelo orchestrator no Stage 5 (Publicação, em paralelo com `publish-facebook.ts`). O script:
 
 1. Lê os 3 posts de `03-social.md` (seção `# LinkedIn`)
 2. Carrega a imagem pública de `06-public-images.json` (gerado por `upload-images-public.ts`)
@@ -144,7 +144,7 @@ A URL do webhook Make é versionada (`platform.config.json`) e pode aparecer em 
 | `Make webhook HTTP 404` | URL errada ou scenario desativado | Verificar URL + toggle ON no Make.com |
 | `Make webhook HTTP 429` | Rate limit Make.com | Aguardar 1min e re-rodar |
 | Post aparece no perfil pessoal | OAuth conectou perfil, não company page | Reconectar LinkedIn no Make.com selecionando Company Page |
-| `06-public-images.json não existe` | `upload-images-public.ts` não rodou | Rodar Stage 4a.0 antes do dispatch |
+| `06-public-images.json não existe` | `upload-images-public.ts` não rodou | Rodar Stage 5a upload-images-public antes do dispatch |
 
 ---
 

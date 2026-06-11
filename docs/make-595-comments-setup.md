@@ -161,7 +161,7 @@ Esperar: comment do **vjpixel personal** no último post Diar.ia.
 
 Após Parte 1 + 2 + Worker secret, num run da Diar.ia próximo:
 
-1. Etapa 4 dispatch (`/diaria-4-publicar AAMMDD`) → 9 LinkedIn items enfileirados.
+1. Etapa 5 dispatch (`/diaria-5-publicar AAMMDD`) → 9 LinkedIn items enfileirados.
 2. Worker `diaria-linkedin-cron` cron tick (cada 5min) consome:
    - 3 main → webhook Diar.ia, action=post → cria company post
    - 3 comment_diaria → webhook Diar.ia, action=comment → comenta no último post Diar.ia

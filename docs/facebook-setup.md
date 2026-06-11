@@ -1,6 +1,6 @@
-# Facebook Graph API Setup (Stage 4)
+# Facebook Graph API Setup (Stage 5)
 
-Setup do publisher Facebook do Stage 4 (`scripts/publish-facebook.ts`) para agendar/publicar posts via Graph API.
+Setup do publisher Facebook do Stage 5 (Publicação, #1694) (`scripts/publish-facebook.ts`) para agendar/publicar posts via Graph API.
 
 ## Variáveis de ambiente
 
