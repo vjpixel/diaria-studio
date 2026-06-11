@@ -139,7 +139,7 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
  */
 async function fetchRecentCampaigns(
   env: Env,
-  limit = 20,
+  limit = 50, // #2134 follow-up: weekday agrega todos os envios — cobrir ciclos anteriores
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
   const data = await brevoFetch<{ campaigns: BrevoCampaign[] }>(
     `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
@@ -346,8 +346,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   // não implementada — custo de render zero pois os dados já estão em memória,
   // mas optamos por manter UI simples: 1 tabela por view. Revisitar se editor
   // pedir comparação cross-ciclo explícita.
-  const weekdayScopeLabel = activeCycle ? `ciclo ${activeCycle}` : "todas as campanhas";
-  const weekdayRows = aggregateByWeekday(campaigns, activeCycle);
+  const weekdayScopeLabel = "todos os envios"; // #2134 follow-up: editor pediu histórico completo, não só o ciclo ativo
+  const weekdayRows = aggregateByWeekday(campaigns, null);
   const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel) : "";
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
@@ -393,7 +393,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
   .volume-note { font-family: monospace; font-size: 0.82rem; margin-top: 10px; }
-  .spark-bar { display: inline-block; letter-spacing: -1px; color: var(--brand); }
+  .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
