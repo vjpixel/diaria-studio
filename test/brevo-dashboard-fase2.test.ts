@@ -533,6 +533,14 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.match(html, /Resumo A\/B\/C/, "deve ter título 'Resumo A/B/C'");
   });
 
+  test("volume-ciclo vem ANTES de abc-summary (editor 2026-06-11)", () => {
+    const html = renderDashboardHtml(cycle2605Campaigns);
+    const posVolume = html.indexOf('id="volume-ciclo"');
+    const posAbc = html.indexOf('id="abc-summary"');
+    assert.ok(posVolume > -1, "deve conter a seção de volume");
+    assert.ok(posVolume < posAbc, "volume deve vir antes do resumo A/B/C");
+  });
+
   test("seção wave-trend aparece com campanhas", () => {
     const html = renderDashboardHtml(allCampaigns);
     assert.match(html, /wave-trend/, "deve conter a seção wave-trend");

@@ -522,7 +522,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .phase2-section { margin: 32px 0 8px 0; }
   .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
-  .volume-note { font-family: monospace; font-size: 0.82rem; margin-top: 10px; }
+  .volume-note { font-size: 0.95rem; margin-top: 10px; } /* número no font do DS; só a spark-bar é monospace */
   .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; white-space: nowrap; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
   @media (max-width: 700px) {
@@ -865,7 +865,12 @@ export function renderWeekdaySection(
     : null;
 
   // #2134 follow-up (editor 2026-06-11): exibir do melhor open rate pro pior.
-  const orderedRows = [...rows].sort((a, b) => b.openRate - a.openRate);
+  const orderedRows = [...rows].sort((a, b) => {
+    if (a.count === 0 && b.count === 0) return 0;
+    if (a.count === 0) return 1;
+    if (b.count === 0) return -1;
+    return b.openRate - a.openRate;
+  });
 
   const tableRows = orderedRows
     .map((r) => {
@@ -1106,7 +1111,7 @@ export function renderTrendSection(rows: WaveTrendRow[]): string {
   return `
 <section class="phase2-section" id="wave-trend">
   <h2 class="section-title">Tendência entre waves</h2>
-  <p class="section-note">Open rate e bounce rate em ordem cronológica — do mais antigo ao mais recente.</p>
+  <p class="section-note">Open rate e bounce rate por envio — do mais recente (topo) ao mais antigo.</p>
   <div class="table-wrap">
   <table>
     <thead>
