@@ -569,6 +569,18 @@ describe("#2013 — filterAgentIssues integração completa (caso 260610)", () =
     assert.ok(r.kept.some((i) => /link_dead/.test(i)), "link_dead conservado sem fetchFn");
     assert.ok(r.dropped.some((d) => /section_missing/.test(d.issue)), "section_missing dropado");
   });
+
+  it("#2082 regressão: link_dead com {{poll_sig}} na URL sem fetchFn NÃO é dropado como merge-tag FP", async () => {
+    // Bug: antes do fix, a condição `else if (link_dead) && fetchFn` falhava sem fetchFn,
+    // caindo nos genéricos de DS onde isMergeTagUnexpandedFalsePositive casava o
+    // prefixo `link_` + `{{poll_sig}}` e dropava o issue silenciosamente.
+    // Após o fix: link_dead sai sempre pelo branch específico (com ou sem fetchFn) → kept.
+    const issue = "email:link_dead: https://poll.diaria.workers.dev/vote?sig={{poll_sig}}&edition=260611 → HTTP 404";
+    const r = await filterAgentIssues([issue], "<p>html qualquer</p>", "260611");
+    assert.equal(r.kept.length, 1, "link_dead com {{poll_sig}} deve ser mantido (não dropado como merge-tag FP)");
+    assert.equal(r.dropped.length, 0, `não deve dropar: got ${JSON.stringify(r.dropped)}`);
+    assert.match(r.kept[0], /link_dead/, "issue mantido deve ser o link_dead");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -731,5 +743,70 @@ describe("#2047 — filterAgentIssues: ordem preservada", () => {
     assert.match(r.dropped[0].issue, /encoding_drop/, "dropped[0] deve ser encoding_drop");
     assert.match(r.dropped[1].issue, /example\.com\/a/, "dropped[1] deve ser link_dead/a (vivo → FP)");
     assert.match(r.dropped[2].issue, /sem negrito/, "dropped[2] deve ser formatting/bold");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2059 — dispatch exclusivo no filterAgentIssues (anti-fall-through)
+// ---------------------------------------------------------------------------
+
+describe("#2059 — filterAgentIssues: dispatch exclusivo por tipo (sem fall-through)", () => {
+  /**
+   * Cenário concreto da issue: `email:encoding_drop` citando uma merge tag
+   * `{{subscriber.first_name}}` que NÃO está no HTML local (corruption real).
+   *
+   * Bug pré-fix: o checker de encoding retornava falsePositive=false (correto)
+   * e o código caía no `isMergeTagUnexpandedFalsePositive` que casava o padrão
+   * `{{...}}` e dropava — silenciando um erro real de merge tag.
+   *
+   * Fix: quando o checker específico de encoding_drop se declara competente e
+   * diz "não é FP", o issue é `kept` SEM passar pelos genéricos de DS.
+   */
+  it("encoding_drop com {{subscriber.first_name}} ausente no HTML → KEPT (erro real, não FP)", async () => {
+    // HTML sem a merge tag — a tag não foi expandida nem está presente
+    const html = "<p>Olá, bem-vindo à newsletter!</p>";
+    const issue = "email:encoding_drop: merge tag '{{subscriber.first_name}}' aparece não-expandida no email";
+
+    const r = await filterAgentIssues([issue], html, "260611");
+
+    // Deve ser mantido (erro real) — NÃO dropado por isMergeTagUnexpandedFalsePositive
+    assert.equal(r.kept.length, 1, `issue deve ser mantida como erro real: ${JSON.stringify(r.kept)}`);
+    assert.equal(r.dropped.length, 0, `issue não deve ser dropada: ${JSON.stringify(r.dropped)}`);
+    assert.match(r.kept[0], /subscriber\.first_name/, "a issue de encoding_drop deve estar em kept");
+  });
+
+  it("encoding_drop com {{email}} ausente no HTML → KEPT (tag faltando de verdade)", async () => {
+    // {{email}} presente no HTML → seria FP de isEncodingDropFalsePositive normalmente,
+    // mas aqui está AUSENTE → encoding_drop checker diz "não é FP" → kept SEM checar merge-tag generic
+    const html = "<p>Conteúdo sem link de unsubscribe.</p>";
+    const issue = "email:encoding_drop: '{{email}}' não encontrado no email renderizado";
+
+    const r = await filterAgentIssues([issue], html, "260611");
+
+    // Ausente no HTML → erro real → kept
+    assert.equal(r.kept.length, 1, "encoding_drop com {{email}} ausente deve ser mantido");
+    assert.equal(r.dropped.length, 0, "encoding_drop com {{email}} ausente NÃO deve ser dropado pelo genérico de merge-tag");
+  });
+
+  it("encoding_drop com {{email}} PRESENTE no HTML → DROPPED (FP de encoding, não de merge-tag)", async () => {
+    // {{email}} presente no HTML → isEncodingDropFalsePositive → FP → dropa pelo checker específico
+    const html = '<a href="https://unsub.example.com?email={{email}}">unsub</a>';
+    const issue = "email:encoding_drop: '{{email}}' corrompido no email";
+
+    const r = await filterAgentIssues([issue], html, "260611");
+
+    // Presente no HTML → FP de encoding (DS by-design: merge tag inline) → dropa
+    assert.equal(r.dropped.length, 1, "encoding_drop com {{email}} presente deve ser dropado como FP");
+    assert.match(r.dropped[0].reason, /encoding_drop falso-positivo/, "motivo deve ser do checker de encoding_drop");
+  });
+
+  it("email:poll_sig_missing sem sig no HTML → KEPT (não cai em genérico de merge-tag)", async () => {
+    // poll_sig_missing checker diz "não é FP" (sig ausente) → kept SEM genéricos
+    const html = "<p>Corpo sem nenhum link de votação.</p>";
+    const issue = "email:poll_sig_missing: link de votação não contém sig=";
+
+    const r = await filterAgentIssues([issue], html, "260611");
+    assert.equal(r.kept.length, 1, "poll_sig_missing real deve ser mantido");
+    assert.equal(r.dropped.length, 0);
   });
 });
