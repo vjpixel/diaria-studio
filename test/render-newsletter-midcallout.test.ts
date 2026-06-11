@@ -66,7 +66,8 @@ describe("midCallout — box entre D1 e D2", () => {
   it("renderMidCallout sem imagem cai no box só-texto (sem <img> nem botão)", () => {
     const html = renderMidCallout("📚 Promo. [Confira](https://livros.diaria.workers.dev).", null);
     assert.ok(!html.includes("<img"), "não deve ter imagem");
-    assert.ok(!html.includes("Ver os livros"), "não deve ter botão CTA");
+    // #2067: sem imagem, não há CTA pill (border-radius:999px é o marcador do pill)
+    assert.ok(!html.includes("border-radius:999px"), "não deve ter botão CTA pill");
     // ainda deve renderizar o texto + link inline
     assert.ok(html.includes("Confira") || html.includes("livros.diaria.workers.dev"));
   });
@@ -78,7 +79,8 @@ describe("midCallout — box entre D1 e D2", () => {
       url,
     );
     assert.match(html, new RegExp(`<img[^>]+src="${url.replace(/[.?*+^$()[\]{}|\\/]/g, "\\$&")}"`));
-    assert.ok(html.includes("Ver os livros"), "deve ter o botão CTA");
+    // #2067: CTA label derivado do anchor text do 1º link
+    assert.ok(html.includes("Confira a nova página"), "deve ter o botão CTA com o texto do link");
     assert.ok(html.includes("https://livros.diaria.workers.dev"), "imagem/botão linkam pro destino do box");
     // o texto do body não deve mais conter o markdown-link cru
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
@@ -90,7 +92,9 @@ describe("midCallout — box entre D1 e D2", () => {
       "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg",
     );
     assert.ok(!html.includes("📚"), "emoji do marcador não deve renderizar no box com imagem");
-    assert.ok(!/font-weight:600/.test(html.split("Ver os livros")[0]), "corpo não usa bold 600 (CTA pill pode ser bold)");
+    // #2067: corpo (parágrafo antes do CTA) não usa bold 600 — checa no bloco inteiro
+    // excluindo o CTA pill (que pode ser bold). Nenhum <p> de 16px deve ter font-weight:600.
+    assert.ok(!/font-size:16px[^"]*font-weight:600/.test(html), "corpo não usa bold 600 nos parágrafos");
     assert.match(html, /line-height:1\.62/);
   });
 
@@ -100,7 +104,8 @@ describe("midCallout — box entre D1 e D2", () => {
       "https://img.example/p.jpg",
     );
     assert.ok(!/<p[^>]*>\s*<\/p>/.test(html), "sem parágrafo vazio entre imagem e CTA");
-    assert.ok(html.includes("Ver os livros"), "CTA preservado");
+    // #2067: CTA derivado do anchor text; "Confira a nova página" é o label do link
+    assert.ok(html.includes("Confira a nova página"), "CTA preservado com label do link");
   });
 
   it("review #2066: stripCalloutMarker consome VS15 (U+FE0E) além do VS16", () => {
@@ -178,7 +183,8 @@ describe("midCallout — box entre D1 e D2", () => {
         url,
       );
       assert.match(html, /<img[^>]+src="[^"]*livros-promo/, "box deve emitir <img> da promo");
-      assert.ok(html.includes("Ver os livros"), "box deve ter o botão CTA");
+      // #2067: CTA label derivado do anchor text do link no texto do box
+      assert.ok(html.includes("Ver a página"), "box deve ter o botão CTA com label do link");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

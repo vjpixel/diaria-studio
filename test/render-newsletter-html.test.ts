@@ -1093,6 +1093,23 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
     assert.match(html, /<b>Responda<\/b>/);
   });
 
+  it("#2080 — SORTEIO: kicker fora do box, corpo dentro de painel bege (DS)", () => {
+    const html = renderHTML(fixt({
+      sorteio: "Participe e ganhe uma caneca.\n\nResponda a esta edição.",
+    }));
+    // kicker "Sorteio" presente (DS ● sem emoji)
+    assert.match(html, /Sorteio/);
+    // conteúdo está presente
+    assert.match(html, /Participe e ganhe uma caneca/);
+    assert.match(html, /Responda a esta edição/);
+    // box painel DS: fundo SURFACE (#EBE5D0) + border-radius:12px (inline style email)
+    assert.match(html, /background:#EBE5D0.*border-radius:12px|border-radius:12px.*background:#EBE5D0/, "caixa painel bege");
+    // conteúdo do sorteio está DENTRO do box (vem depois do background #EBE5D0)
+    const boxIdx = html.indexOf("background:#EBE5D0");
+    assert.ok(boxIdx > -1, "box markup presente");
+    assert.ok(html.indexOf("Participe e ganhe uma caneca") > boxIdx, "texto dentro do box");
+  });
+
   it("inclui PARA ENCERRAR com pills no HTML quando presente", () => {
     const html = renderHTML(fixt({
       encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.

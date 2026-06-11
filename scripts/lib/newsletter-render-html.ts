@@ -58,6 +58,24 @@ const FONT_LABEL = FONTS.sans;
 // (validado contra docs oficiais 2026-05-11).
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 
+/**
+ * #2067: helper DS body — sans 16px line-height 1.62 ink. `margin` aceita
+ * qualquer shorthand CSS (ex: "18px 0 0", "12px 0 0", "0 0 12px", "0").
+ *
+ * DECISÃO line-height: canônico é 1.62 (DS body). As duas ocorrências de 1.6
+ * em renderCoverage e renderSectionItem eram drift silencioso — unificadas aqui.
+ *
+ * DECISÃO margin inconsistência multi vs single (midCallout):
+ *   - single-parágrafo: `margin:0 0 12px` (espaço de 12px ABAIXO do texto,
+ *     antes do botão CTA — intencional, cria respiro entre corpo e pill).
+ *   - multi-parágrafo: corpo usa `margin:0` / `margin:12px 0 0` entre parágrafos
+ *     (empilha sem margem-inferior — o espaço já vem do padding do container).
+ *   Não unificamos: os contextos são distintos (single tem CTA depois; multi não).
+ */
+function bodyP(margin: string, content: string): string {
+  return `<p style="margin:${margin};font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${content}</p>`;
+}
+
 // #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com
 // padding lateral de 32px (mobile → 24px via .pad). Os helpers abaixo retornam
 // HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
@@ -183,7 +201,7 @@ export function renderBodyParasInner(text: string): string {
     .filter((p) => p.trim())
     .map(
       (p, i) =>
-        `<p style="margin:${i === 0 ? "18px" : "16px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${escText(p.trim())}</p>`,
+        bodyP(`${i === 0 ? "18px" : "16px"} 0 0`, escText(p.trim())),
     )
     .join("\n  ");
 }
@@ -194,7 +212,7 @@ export function renderWhyBoxInner(text: string): string {
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:23px 27px;">
       <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEAL};">Por que isso importa</p>
-      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${body}</p>
+      ${bodyP("0", body)}
     </td>
   </tr></table>`;
 }
@@ -210,7 +228,7 @@ export function renderCoverage(text: string): string {
   // seção, padding 44px 32px 8px.
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
-  <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${escText(text)}</p>
+  ${bodyP("0", escText(text))}
 </td></tr>`;
 }
 
@@ -235,7 +253,7 @@ export function renderIntroCallout(text: string): string {
       .slice(1)
       .map(
         (p, i) =>
-          `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+          bodyP(`${i === 0 ? "0" : "12px"} 0 0`, processInlineLinks(p))
       )
       .join("\n      ");
     inner = `${titleHtml}\n      ${bodyHtml}`;
@@ -296,8 +314,15 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   if (!imageUrl) return renderIntroCallout(text);
   // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
   // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
+  // #2067: anchor text do 1º link → alt da imagem + label do CTA (genérico).
   const links = findMarkdownLinks(text);
-  const link = links.length ? links[0].url : null;
+  const firstLink = links.length ? links[0] : null;
+  const link = firstLink ? firstLink.url : null;
+  // Extrai o label do 1º markdown-link: entre `[` e `](`. findMarkdownLinks já
+  // garantiu que o `[` começa em firstLink.start — procura o `]` logo antes de `(`.
+  const firstLinkLabel = firstLink
+    ? text.slice(firstLink.start + 1, text.indexOf("](", firstLink.start))
+    : "";
   let body = text;
   for (let i = links.length - 1; i >= 0; i--) {
     let { start, end } = links[i];
@@ -310,10 +335,14 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   // `"`/`<`/`>`/`&` evita quebrar o atributo HTML (#code-review 1807).
   const safeImg = esc(imageUrl);
   const safeLink = link ? esc(link) : null;
-  const imgTag = `<img src="${safeImg}" width="100%" alt="Nova página de livros sobre IA da Diar.ia" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  // #2067: alt e label do CTA derivados do anchor text do 1º link no texto do box.
+  // Fallback: alt vazio (imagem decorativa), label genérico "Acesse →".
+  const ctaLabel = firstLinkLabel ? `${esc(firstLinkLabel)} →` : "Acesse →";
+  const imgAlt = firstLinkLabel ? esc(firstLinkLabel) : "";
+  const imgTag = `<img src="${safeImg}" width="100%" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
   const cta = safeLink
-    ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">Ver os livros &rarr;</a>`
+    ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${ctaLabel}</a>`
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
   // título serif (marcador removido) + demais peso normal, igual ao caminho
@@ -331,13 +360,13 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
           .slice(1)
           .map(
             (p, i) =>
-              `<p style="margin:${i === 0 ? "0" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(p)}</p>`
+              bodyP(`${i === 0 ? "0" : "12px"} 0 0`, processInlineLinks(p))
           )
           .join("\n      ")
       : singleBody
-        ? `<p style="margin:0 0 12px;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${processInlineLinks(singleBody)}</p>`
+        ? bodyP("0 0 12px", processInlineLinks(singleBody))
         : "";
-  return `<!-- mid callout com imagem (promo página de livros) -->
+  return `<!-- mid callout com imagem -->
 <tr><td class="pad" style="padding:8px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
@@ -504,7 +533,7 @@ export function renderSectionItem(item: SectionItem, first: boolean): string {
     : `<span style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};">${esc(item.title)}</span>`;
   const spacer = first ? "" : `<div style="height:22px;line-height:22px;font-size:0;">&nbsp;</div>`;
   const desc = item.description
-    ? `\n      <p style="margin:7px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.6;color:${TEXT_COLOR};">${esc(item.description)}</p>`
+    ? `\n      ${bodyP("7px 0 0", esc(item.description))}`
     : "";
   return `<tr><td style="padding:22px 0 0;">
       ${spacer}${titleHtml}${desc}
@@ -584,25 +613,36 @@ export function renderErroIntencionalReveal(text: string): string {
 <tr><td class="pad" style="padding:14px 32px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:24px 28px;">
-      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(reveal)}</p>
+      ${bodyP("0", mdInlineToHtml(reveal))}
     </td>
   </tr></table>
 </td></tr>`;
 }
 
 /**
- * Pure (#1076): bloco SORTEIO no padrão DS — kicker (●+régua) + parágrafos sans.
- * O reveal "Na última edição…" vai num box painel separado (renderErroIntencionalReveal).
+ * Pure (#1076, #2080): bloco SORTEIO no padrão DS.
+ *
+ * #2080: kicker "🎁 SORTEIO" (●+régua) FORA do box (padrão de seção), corpo
+ * DENTRO de um box "painel" do DS (fundo SURFACE bege #EBE5D0, sem borda,
+ * border-radius 12px, padding 24px 28px) — análogo ao box do É IA?. Segue o
+ * mesmo markup de painel usado em renderEIA e no CTA de renderEncerrar.
+ *
+ * O reveal "Na última edição…" vai num box contorno separado
+ * (renderErroIntencionalReveal), que renderiza logo abaixo.
  */
 export function renderSorteio(text: string): string {
   const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
-  const html = paragraphs.map((p, i) =>
-    `<p style="margin:${i === 0 ? "22px" : "12px"} 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(p.trim())}</p>`
-  ).join("\n  ");
+  const innerHtml = paragraphs.map((p, i) =>
+    bodyP(`${i === 0 ? "0" : "12px"} 0 0`, mdInlineToHtml(p.trim()))
+  ).join("\n      ");
   return `<!-- Sorteio -->
 <tr><td class="pad" style="padding:${PAD_SECTION};">
   ${renderKicker("Sorteio")}
-  ${html}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      ${innerHtml}
+    </td>
+  </tr></table>
 </td></tr>`;
 }
 
@@ -669,7 +709,7 @@ export function renderEncerrar(text: string): string {
       return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
   <table role="presentation" cellpadding="0" cellspacing="0"><tr>${cells}</tr></table>`;
     }
-    return `<p style="margin:22px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(b.content.join(" "))}</p>`;
+    return bodyP("22px 0 0", mdInlineToHtml(b.content.join(" ")));
   };
 
   const html = mainBlocks.map(renderBlock).join("\n  ");
@@ -679,7 +719,7 @@ export function renderEncerrar(text: string): string {
     ? `
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
-      <p style="margin:0;font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${mdInlineToHtml(ctaBlock.content.join(" "))}</p>
+      ${bodyP("0", mdInlineToHtml(ctaBlock.content.join(" ")))}
     </td>
   </tr></table>`
     : "";
