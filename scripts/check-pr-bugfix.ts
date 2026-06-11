@@ -1,5 +1,5 @@
 /**
- * check-pr-bugfix.ts (#970)
+ * check-pr-bugfix.ts (#970, #2060)
  *
  * Roda em GH Action `pr-checks.yml` pra cada PR. Detecta se o PR é bugfix
  * (heurística por título "fix:" / closes label `bug` / etc) e, se for,
@@ -7,6 +7,16 @@
  * + justificativa explícita no body.
  *
  * Implementa o invariante #633: "PR de bugfix exige teste de regressão".
+ *
+ * #2060: 3 melhorias de resiliência:
+ *   1. `getPrLabels` (e qualquer chamada `gh`) tem retry+backoff (3 tentativas,
+ *      10–30s) pra 401/5xx/timeout transitórios — 401 intermitente da API do
+ *      GitHub virava exit 2 (infra), indistinguível de "bugfix sem teste".
+ *   2. REORDENAÇÃO: checar o diff PRIMEIRO — se já tem teste novo, o gate passa
+ *      sem precisar da API (a API só é necessária pra exceção via label). Isso
+ *      elimina a dependência da API quando ela não é necessária.
+ *   3. Erro de infra após N tentativas emite mensagem distinta:
+ *      "[#970] INFRA: não foi possível consultar a API após N tentativas".
  *
  * Env vars (passados pelo GH Action):
  *   GH_TOKEN     — auth pra gh CLI
@@ -19,18 +29,10 @@
  * Exit codes:
  *   0 — passa (não é bugfix, OU é bugfix com teste novo, OU é bugfix com label de exceção)
  *   1 — falha (é bugfix sem teste novo e sem label de exceção)
- *   2 — input inválido / erro de gh CLI
+ *   2 — input inválido / erro de gh CLI irrecuperável
  */
 
 import { spawnSync } from "node:child_process";
-
-interface PrLabel {
-  name: string;
-}
-
-interface PrInfo {
-  labels: PrLabel[];
-}
 
 export function isBugfixPr(title: string, body: string, labels: string[]): boolean {
   // Heurísticas pra detectar bug fix:
@@ -72,19 +74,58 @@ export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
   );
 }
 
-function getPrLabels(prNumber: string): string[] {
-  const r = spawnSync(
-    "gh",
-    ["pr", "view", prNumber, "--json", "labels", "--jq", ".labels[].name"],
-    { encoding: "utf8" },
-  );
-  if (r.status !== 0) {
-    throw new Error(`gh pr view failed: ${r.stderr}`);
+/**
+ * #2060: Tipo do spawner injetável — aceita os mesmos args do spawnSync mas
+ * retorna só o que o teste precisa mockar. Produção usa spawnSync diretamente.
+ */
+export type SpawnFn = (
+  cmd: string,
+  args: string[],
+  opts: { encoding: "utf8" },
+) => { status: number | null; stdout: string; stderr: string };
+
+/** Delay real entre tentativas (produção). Em testes, substituído por mock. */
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * #2060: getPrLabels com retry+backoff (3 tentativas, 10–30s).
+ * Considera transitórios: status !== 0 (inclui 401, 5xx, timeout).
+ * Lança após esgotar tentativas com mensagem distinta "[#970] INFRA:...".
+ */
+export async function getPrLabels(
+  prNumber: string,
+  spawnFn: SpawnFn = spawnSync as SpawnFn,
+  sleepFn: (ms: number) => Promise<void> = sleepMs,
+  maxAttempts = 3,
+): Promise<string[]> {
+  const backoffMs = [10_000, 20_000, 30_000];
+  let lastError = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const r = spawnFn(
+      "gh",
+      ["pr", "view", prNumber, "--json", "labels", "--jq", ".labels[].name"],
+      { encoding: "utf8" },
+    );
+    if (r.status === 0) {
+      return r.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    }
+    lastError = r.stderr || `exit ${r.status}`;
+    if (attempt < maxAttempts) {
+      const delay = backoffMs[attempt - 1] ?? 30_000;
+      console.warn(
+        `[#970] tentativa ${attempt}/${maxAttempts} falhou (${lastError.trim()}). Aguardando ${delay / 1000}s...`,
+      );
+      await sleepFn(delay);
+    }
   }
-  return r.stdout
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  throw new Error(
+    `[#970] INFRA: não foi possível consultar a API após ${maxAttempts} tentativas. Último erro: ${lastError.trim()}`,
+  );
 }
 
 export function justificationInBody(body: string): boolean {
@@ -94,7 +135,7 @@ export function justificationInBody(body: string): boolean {
   return re.test(body);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const prTitle = process.env.PR_TITLE ?? "";
   const prBody = process.env.PR_BODY ?? "";
   const prNumber = process.env.PR_NUMBER ?? "";
@@ -106,18 +147,10 @@ function main(): void {
     process.exit(2);
   }
 
-  let labels: string[];
-  try {
-    labels = getPrLabels(prNumber);
-  } catch (e) {
-    console.error(`[#970] erro ao buscar labels do PR: ${(e as Error).message}`);
-    process.exit(2);
-  }
-
-  if (!isBugfixPr(prTitle, prBody, labels)) {
-    console.log(`[#970] PR não é bugfix (título='${prTitle.slice(0, 60)}', labels=${labels.join(",")}). Skip.`);
-    process.exit(0);
-  }
+  // #2060: checar o diff PRIMEIRO — se o diff JÁ contém teste novo, o gate
+  // passa sem precisar consultar a API (a API só é necessária pra validar a
+  // exceção via label `no-regression-test`). Isso elimina a dependência da API
+  // no caminho feliz (bugfix com teste), onde 401 transitório virava exit 2.
 
   let changedFiles: string[];
   try {
@@ -128,10 +161,31 @@ function main(): void {
   }
 
   if (hasNewOrModifiedTest(changedFiles)) {
+    // Tem teste novo no diff: passa sem precisar da API em nenhum cenário.
+    // (Se não é bugfix, também não precisaria — mas pode ser bugfix não-identificável
+    // sem label, então a presença de teste é suficiente.)
     const testFiles = changedFiles.filter(
       (f) => (f.startsWith("test/") || f.startsWith("tests/")) && (f.endsWith(".test.ts") || f.endsWith(".test.js")),
     );
-    console.log(`[#970] Bugfix com teste(s) modificado(s)/novo(s): ${testFiles.join(", ")}. Pass.`);
+    console.log(`[#970] Diff contém teste(s) novo(s)/modificado(s): ${testFiles.join(", ")}. Pass.`);
+    process.exit(0);
+  }
+
+  // Sem teste no diff: agora precisamos das labels para:
+  //   (a) detectar label `bug` (isBugfixPr depende das labels)
+  //   (b) detectar exceção `no-regression-test`
+  // #2060: retry+backoff em getPrLabels — 401/5xx transitórios são recuperáveis.
+  let labels: string[];
+  try {
+    labels = await getPrLabels(prNumber);
+  } catch (e) {
+    // Esgotadas as tentativas: INFRA — não indistinguível de "bugfix sem teste".
+    console.error(`[#970] ${(e as Error).message}`);
+    process.exit(2);
+  }
+
+  if (!isBugfixPr(prTitle, prBody, labels)) {
+    console.log(`[#970] PR não é bugfix (título='${prTitle.slice(0, 60)}', labels=${labels.join(",")}). Skip.`);
     process.exit(0);
   }
 
@@ -169,5 +223,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
-  main();
+  main().catch((e) => {
+    console.error(`[#970] erro não-tratado: ${(e as Error).message}`);
+    process.exit(2);
+  });
 }

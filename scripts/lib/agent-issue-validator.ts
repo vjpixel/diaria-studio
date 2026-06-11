@@ -589,6 +589,14 @@ export async function filterAgentIssues(
     | { kind: "link_dead_pending"; issue: string; url: string };
 
   const syncResults: SyncResult[] = issues.map((issue) => {
+    // #2059: dispatch EXCLUSIVO por tipo — quando um checker específico reconhece
+    // o tipo do issue e conclui "não é FP", o issue é `kept` IMEDIATAMENTE sem
+    // cair nos genéricos de DS. Os genéricos (merge_tag_unexpanded, bold_missing,
+    // italic_missing) só avaliam issues de tipos que NENHUM checker específico
+    // cobriu. Sem isso, `email:encoding_drop: merge tag {{...}}` era reconhecido
+    // pelo checker de encoding (not FP) e depois dropado por isMergeTagUnexpanded
+    // — silenciando um erro real de merge tag.
+
     if (issue.startsWith("email:encoding_drop")) {
       // #2013: verificar primeiro se é emoji de header (by-design) — antes do
       // check de encoding genérico, pois o emoji não vai estar no HTML local.
@@ -599,16 +607,21 @@ export async function filterAgentIssues(
       if (markerCheck.falsePositive) return { kind: "drop", reason: markerCheck.reason };
       const r = isEncodingDropFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      // #2059: checker específico competente, não é FP → kept SEM passar pelos genéricos.
+      return { kind: "keep" };
     } else if (issue.startsWith("email:poll_sig_missing")) {
       const r = isPollSigMissingFalsePositive(htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
     } else if (issue.startsWith("email:vote_edition_malformed")) {
       const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
     } else if (issue.startsWith("email:section_missing")) {
       // #2013: grep da section label no HTML local — presente = FP de truncamento.
       const r = isSectionMissingFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
     } else if (issue.startsWith("email:link_dead") && fetchFn) {
       // #2047: re-verificação de link com fetch real — paralelo na Fase 2.
       // Verificar cache primeiro; se há hit definitivo (true/false), resolver aqui.
@@ -634,6 +647,10 @@ export async function filterAgentIssues(
 
     // #1949: classes de FP do novo DS / merge tags — baseadas só na string do
     // issue (a reclamação inteira é FP), independem do HTML.
+    // #2059: só chegam aqui issues cujo tipo NÃO foi coberto por nenhum checker
+    // específico acima (encoding_drop, poll_sig_missing, vote_edition_malformed,
+    // section_missing, link_dead). Tipos não-específicos (formatting, link_broken,
+    // subject_mismatch, unexpected_content, etc.) são elegíveis para esses genéricos.
     const dsChecks = [
       isMergeTagUnexpandedFalsePositive(issue),
       isBoldMissingFalsePositive(issue),

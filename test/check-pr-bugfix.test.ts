@@ -1,8 +1,10 @@
 /**
- * test/check-pr-bugfix.test.ts (#970)
+ * test/check-pr-bugfix.test.ts (#970, #2060)
  *
  * Cobre helpers puros do guard CI #970. Não testa main() (depende de gh CLI
  * + git diff externos — testado via integração no GH Action real).
+ *
+ * #2060: adiciona testes do retry de getPrLabels (mock de spawnSync).
  */
 
 import { describe, it } from "node:test";
@@ -12,6 +14,8 @@ import {
   hasExceptionLabel,
   hasNewOrModifiedTest,
   justificationInBody,
+  getPrLabels,
+  type SpawnFn,
 } from "../scripts/check-pr-bugfix.ts";
 
 describe("isBugfixPr (#970)", () => {
@@ -94,5 +98,78 @@ describe("justificationInBody (#970)", () => {
   it("aceita variantes de capitalização", () => {
     const body = `No-Regression-Test agent prompt change não pode ser testado em TS unitário.`;
     assert.equal(justificationInBody(body), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2060 — getPrLabels: retry com backoff em 401/5xx transitórios
+// ---------------------------------------------------------------------------
+
+describe("#2060 — getPrLabels: retry+backoff em falhas transitórias da API", () => {
+  /** sleepFn instantânea para testes (sem delay real). */
+  const noopSleep = async (_ms: number): Promise<void> => {};
+
+  it("retry 2×fail→pass: retorna labels na 3ª tentativa sem lançar", async () => {
+    let callCount = 0;
+    // spawnFn mockado: falha nas 2 primeiras chamadas (status 1 = gh auth error),
+    // passa na 3ª (status 0 + labels).
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      callCount++;
+      if (callCount < 3) {
+        return { status: 1, stdout: "", stderr: "HTTP 401: Requires authentication" };
+      }
+      return { status: 0, stdout: "bug\nP2\n", stderr: "" };
+    };
+
+    const labels = await getPrLabels("42", mockSpawn, noopSleep, 3);
+
+    assert.equal(callCount, 3, `deve ter sido chamado 3 vezes, foi ${callCount}×`);
+    assert.deepEqual(labels, ["bug", "P2"], `labels retornadas incorretas: ${JSON.stringify(labels)}`);
+  });
+
+  it("3×fail: lança com mensagem INFRA distinta (não genérica)", async () => {
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      return { status: 1, stdout: "", stderr: "HTTP 401: Requires authentication" };
+    };
+
+    await assert.rejects(
+      () => getPrLabels("42", mockSpawn, noopSleep, 3),
+      (err: Error) => {
+        assert.match(
+          err.message,
+          /\[#970\] INFRA: não foi possível consultar a API após 3 tentativas/,
+          `mensagem de erro deve ser distinta (INFRA), foi: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it("1ª tentativa bem-sucedida: retorna imediatamente (sem retry desnecessário)", async () => {
+    let callCount = 0;
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      callCount++;
+      return { status: 0, stdout: "enhancement\n", stderr: "" };
+    };
+
+    const labels = await getPrLabels("99", mockSpawn, noopSleep, 3);
+
+    assert.equal(callCount, 1, "não deve retenttar quando a 1ª chamada passa");
+    assert.deepEqual(labels, ["enhancement"]);
+  });
+
+  it("spawnFn 401 exato é tratado como transitório (status ≠ 0)", async () => {
+    // Na prática, gh CLI retorna status 1 em 401 — mas o teste garante que qualquer
+    // status ≠ 0 é retentado (o critério é status !== 0, não o stderr).
+    let callCount = 0;
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      callCount++;
+      if (callCount === 1) return { status: 2, stdout: "", stderr: "timeout" };
+      return { status: 0, stdout: "bug\n", stderr: "" };
+    };
+
+    const labels = await getPrLabels("7", mockSpawn, noopSleep, 3);
+    assert.equal(callCount, 2);
+    assert.deepEqual(labels, ["bug"]);
   });
 });
