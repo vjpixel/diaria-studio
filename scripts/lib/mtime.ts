@@ -4,7 +4,12 @@
  * Helper para leitura de `mtimeMs` de arquivo com catch→null.
  *
  * Semantica do default:
- *   - `null` = arquivo ausente (ENOENT) ou erro de stat — caller trata como "não existe".
+ *   - `null` = arquivo ausente (ENOENT) OU qualquer outro erro de stat (EACCES,
+ *     ETIMEDOUT, etc. — ex: OneDrive junction offline em Windows). Caller não
+ *     distingue o motivo — trata como "arquivo não acessível agora".
+ *   - Consumidores que usam `null` como skip de freshness guard são **fail-open**:
+ *     OneDrive offline silencia o guard e o pipeline prossegue sem staleness check.
+ *     Isso é intencional (preferimos publicar que stall por indisponibilidade de sync).
  *   - NÃO usar `catch → 0` (sempre-stale): 0 faz o arquivo parecer stale mesmo quando
  *     ausente, podendo ocultar problemas ou forçar re-processamento desnecessário.
  *     Se o caller precisa "tratar ausente como stale", deve comparar `null` explicitamente.

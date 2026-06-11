@@ -76,12 +76,19 @@ export const PREVIEW_TEXT =
  *
  * Normalizado pra UTC Z via .toISOString(), consistente com publish-monthly.ts
  * (padrão pré-existente do repo). Equivalência horária: 06:00 BRT (-03:00) = 09:00Z.
+ *
+ * ⚠️  HARDCODED pra ciclo 2605-06 (#2061): mês, datas de início (9+n) e horário UTC são
+ * específicos deste ciclo. Ao copiar pra próximo ciclo (ex: 2606-07), ATUALIZAR:
+ *   1. Mês: "2026-06" → "2026-07" (e ano se necessário)
+ *   2. Offset: `9 + n` depende da data do 1º envio do ciclo (d01 = qual dia do mês?)
+ *   3. Horário UTC: 09:00Z = 06:00 BRT; confirmar se horário alvo do próximo ciclo é o mesmo.
+ *   4. Limite de range: 1..21 se o plano tem 21 envios; ajustar se número mudar.
  */
 export function scheduledAtFor(n: number): string {
   if (n < 1 || n > 21 || !Number.isInteger(n)) {
     throw new Error(`scheduledAtFor: n deve ser inteiro 1..21, recebido: ${n}`);
   }
-  const day = 9 + n; // d01 -> dia 10, d21 -> dia 30
+  const day = 9 + n; // d01 -> dia 10, d21 -> dia 30 (base: ciclo 2605-06 começa 10/jun)
   // 06:00 BRT = 09:00 UTC; usar UTC Z (formato .toISOString()) para consistência com Brevo
   return new Date(`2026-06-${String(day).padStart(2, "0")}T09:00:00Z`).toISOString();
 }
@@ -458,6 +465,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
 
     const keysInScope = buildKeysInScope(weeks);
+    // #2061: PUTs sequenciais (ordem importa — Brevo pode ter rate-limit por
+    // rajada, e a escrita atômica do campaigns-summary após cada verify precisa
+    // do resultado individual). GETs de verify independentes → Promise.all.
+    const toVerify: CampaignEntry[] = [];
     for (const c of campaigns) {
       if (!keysInScope.has(c.key)) continue;
       if (c.status === "scheduled") {
@@ -465,14 +476,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         continue;
       }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
+      toVerify.push(c);
+    }
 
-      // #2018 / regra #573: GET-verify pós --schedule — confirma que o Brevo
-      // realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
-      // Brevo pode aceitar o PUT 204 mas não persistir o agendamento em estados
-      // de rate-limit ou edge cases — a verificação impede marcar como agendado
-      // quando o estado real é ainda "draft". Divergência logada e a flag local
-      // NÃO é atualizada (próximo --schedule re-tenta).
-      const verified = await brevoGetCampaign(apiKey, c.campaignId);
+    // #2018 / regra #573 / #2061: GET-verify em paralelo pós-PUTs — confirma que
+    // o Brevo realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
+    // 21 campanhas × GET ~200ms sequencial ≈ 4s; paralelo ≈ 200ms.
+    // Brevo pode aceitar PUT 204 mas não persistir em edge cases — divergência logada
+    // e flag local NÃO atualizada (próximo --schedule re-tenta).
+    const verifyResults = await Promise.all(
+      toVerify.map((c) => brevoGetCampaign(apiKey, c.campaignId)),
+    );
+
+    for (let i = 0; i < toVerify.length; i++) {
+      const c = toVerify[i];
+      const verified = verifyResults[i];
       if (!isScheduledStatus(verified.status)) {
         console.error(
           `⚠ GET-verify ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +

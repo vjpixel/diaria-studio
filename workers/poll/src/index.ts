@@ -255,7 +255,9 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
     // (260531 = digest de maio), mas o leitor recebe no mês SEGUINTE — "edição
     // de 31 de maio" confunde quem votou em junho. Sem data resolve sem mexer
     // no código da edição (gabarito/imagens/URLs intactos). Diária mantém a data.
-    const jaVotouMsg = brand === "clarice"
+    // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
+    // — um 3º brand anual herdaria o comportamento correto sem alterar este bloco.
+    const jaVotouMsg = BRAND_INFO[brand].leaderboardPeriod === "year"
       ? `Você já votou nesta edição (escolha: ${prev.choice}).`
       : `Você já votou na edição de ${formatEditionDate(edition)} (escolha: ${prev.choice}).`;
     return voteHtmlResponse(votePageHtml(jaVotouMsg, false, null, null, editionToMonthSlug(edition), brand), 200);

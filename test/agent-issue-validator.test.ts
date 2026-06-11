@@ -657,7 +657,7 @@ describe("#2047 — filterAgentIssues: cache por URL entre iterações", () => {
       return { status: 404, headers: new Headers() } as Response;
     };
 
-    const cache = new Map<string, boolean | null>();
+    const cache = new Map<string, boolean>(); // #2061: boolean (não boolean|null) após narrowing
     const html = "<p>x</p>";
 
     // 1ª iteração: fetch acontece, cache é populado com false (link morto)
@@ -679,7 +679,7 @@ describe("#2047 — filterAgentIssues: cache por URL entre iterações", () => {
       return { status: 200, headers: new Headers() } as Response;
     };
 
-    const cache = new Map<string, boolean | null>();
+    const cache = new Map<string, boolean>(); // #2061: boolean (não boolean|null) após narrowing
     const html = "<p>x</p>";
 
     // 1ª iteração: fetch → vivo (FP) → dropa, cache = true

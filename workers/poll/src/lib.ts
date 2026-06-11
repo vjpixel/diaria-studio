@@ -248,7 +248,11 @@ export function brandKvPrefix(brand: Brand): string {
  * página de voto e todo caller sem mexer neles. Diária inalterada.
  */
 export function leaderboardHref(brand: Brand, slug?: string | null): string {
-  const effSlug = brand === "clarice" && slug && /^\d{4}-\d{2}$/.test(slug) ? slug.slice(0, 4) : slug;
+  // #2061: usa BRAND_INFO.leaderboardPeriod em vez de brand === "clarice" hardcoded
+  // — um 3º brand anual herdaria a conversão mensal→anual sem alterar esta função.
+  const effSlug = BRAND_INFO[brand].leaderboardPeriod === "year" && slug && /^\d{4}-\d{2}$/.test(slug)
+    ? slug.slice(0, 4)
+    : slug;
   const base = effSlug ? `/leaderboard/${effSlug}` : "/leaderboard";
   return brand === "diaria" ? base : `${base}?brand=${brand}`;
 }

@@ -578,3 +578,64 @@ describe("lint-social-numbers CLI (#2044) — unresolved_placeholder com --fix",
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2061 — fallback pra 01-approved.json quando 01-approved-capped.json ausente
+// ---------------------------------------------------------------------------
+
+describe("lint-social-numbers CLI (#2061) — fallback pra edição pré-#2053", () => {
+  function runLintCli(socialPath: string, approvedPath: string, extraArgs: string[] = []) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-social-numbers.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--social", socialPath, "--approved", approvedPath, ...extraArgs],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  it("usa 01-approved.json como fallback quando 01-approved-capped.json ausente, com warning", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-2061-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      // Aponta pra capped (não existe) — fallback deve usar uncapped
+      const cappedPath = join(tmp, "01-approved-capped.json");
+      const uncappedPath = join(tmp, "01-approved.json");
+
+      writeFileSync(socialPath, SOCIAL_WITH_COMMENTS, "utf8");
+      // Só escreve o uncapped (simula edição pré-#2053)
+      writeFileSync(uncappedPath, JSON.stringify(APPROVED_13_ITEMS), "utf8");
+
+      const result = runLintCli(socialPath, cappedPath);
+
+      // Deve sair com exit 0 (fallback funcionou)
+      assert.equal(result.status, 0, `expected exit 0 (fallback), got ${result.status}\nstderr: ${result.stderr}`);
+
+      // Deve imprimir warning de fallback
+      assert.match(
+        result.stderr,
+        /pré-#2053.*usando 01-approved\.json|01-approved-capped\.json.*ausente/i,
+        "deve imprimir warning de fallback no stderr",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("falha com ENOENT quando ambos 01-approved-capped.json e 01-approved.json ausentes", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-2061b-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const cappedPath = join(tmp, "01-approved-capped.json");
+      writeFileSync(socialPath, SOCIAL_WITH_COMMENTS, "utf8");
+      // Nenhum approved.json existe
+
+      const result = runLintCli(socialPath, cappedPath);
+
+      // Deve sair com exit != 0 (nenhum arquivo encontrado)
+      assert.notEqual(result.status, 0, "deve falhar quando nenhum approved.json existe");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

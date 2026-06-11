@@ -291,7 +291,11 @@ export function advanceCursors(
 }
 
 // #2048 item 4c: conjunto de semanas derivado de SENDS em vez de literal [1,2,3].
-// Garante que se SENDS ganhar uma semana 4, o cursor avança corretamente.
+// NOTA (#2061): ALL_WEEKS captura todas as semanas presentes em SENDS, MAS
+// advanceCursors tem blocos hardcoded pra semanas 1/2/3 — se SENDS ganhar uma
+// semana 4, ALL_WEEKS a incluirá corretamente, mas advanceCursors precisará de
+// um bloco `if (skippedWeeks.includes(4)) { ... }` correspondente (semana 4 em
+// skippedWeeks seria ignorada em silêncio sem ele). Estender juntos.
 export const ALL_WEEKS: number[] = [...new Set(SENDS.map((s) => s.week))].sort(
   (a, b) => a - b,
 );
