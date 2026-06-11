@@ -622,26 +622,34 @@ export async function filterAgentIssues(
       const r = isSectionMissingFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
       return { kind: "keep" };
-    } else if (issue.startsWith("email:link_dead") && fetchFn) {
+    } else if (issue.startsWith("email:link_dead")) {
       // #2047: re-verificação de link com fetch real — paralelo na Fase 2.
-      // Verificar cache primeiro; se há hit definitivo (true/false), resolver aqui.
-      const url = extractLinkDeadUrl(issue);
-      if (url && linkCheckCache) {
-        const cached = linkCheckCache.get(url);
-        if (cached === true) {
-          // Cache: link vivo confirmado anteriormente → FP
-          return { kind: "drop", reason: `link_dead falso-positivo (cache): ${url} já verificado como vivo (#2047)` };
+      // IMPORTANTE (#2082): o guard de tipo (link_dead) fica aqui, FORA da condição
+      // de fetchFn, para que todo issue link_dead saia por este branch — impedindo
+      // que issues cujo tipo o checker reconhece como "competente" caiam nos
+      // genéricos de DS abaixo (onde isMergeTagUnexpandedFalsePositive casaria o
+      // prefixo `link_` e droparia silenciosamente um link morto com {{poll_sig}}
+      // na URL, ex: vote?sig={{poll_sig}} → HTTP 404 — era FP falso até este fix).
+      if (fetchFn) {
+        // Verificar cache primeiro; se há hit definitivo (true/false), resolver aqui.
+        const url = extractLinkDeadUrl(issue);
+        if (url && linkCheckCache) {
+          const cached = linkCheckCache.get(url);
+          if (cached === true) {
+            // Cache: link vivo confirmado anteriormente → FP
+            return { kind: "drop", reason: `link_dead falso-positivo (cache): ${url} já verificado como vivo (#2047)` };
+          }
+          if (cached === false) {
+            // Cache: link morto confirmado anteriormente → mantém
+            return { kind: "keep" };
+          }
+          // cached === undefined → URL nova, ou null → inconclusivo → vai pro fetch paralelo
         }
-        if (cached === false) {
-          // Cache: link morto confirmado anteriormente → mantém
-          return { kind: "keep" };
+        if (url) {
+          return { kind: "link_dead_pending", issue, url };
         }
-        // cached === undefined → URL nova, ou null → inconclusivo → vai pro fetch paralelo
       }
-      if (url) {
-        return { kind: "link_dead_pending", issue, url };
-      }
-      // URL não extraível → conservador (mantém)
+      // Sem fetchFn (ou URL não extraível) → conservador (mantém sem re-verificar).
       return { kind: "keep" };
     }
 
@@ -651,6 +659,9 @@ export async function filterAgentIssues(
     // específico acima (encoding_drop, poll_sig_missing, vote_edition_malformed,
     // section_missing, link_dead). Tipos não-específicos (formatting, link_broken,
     // subject_mismatch, unexpected_content, etc.) são elegíveis para esses genéricos.
+    // NOTA (#2082): link_dead está explicitamente excluído — sai sempre pelo branch
+    // acima, inclusive sem fetchFn, evitando que isMergeTagUnexpandedFalsePositive
+    // case o prefixo `link_` e drope silenciosamente issues com {{...}} na URL.
     const dsChecks = [
       isMergeTagUnexpandedFalsePositive(issue),
       isBoldMissingFalsePositive(issue),

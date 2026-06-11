@@ -55,15 +55,21 @@ function getChangedFiles(baseSha: string, headSha: string): string[] {
   if (r.status !== 0) {
     throw new Error(`git diff failed: ${r.stderr}`);
   }
-  return r.stdout
-    .split("\n")
-    .filter((l) => l.trim().length > 0)
-    .map((l) => {
-      const parts = l.split("\t");
-      return { status: parts[0], path: parts[1] };
-    })
-    .filter((f) => f.status === "A" || f.status === "M")
-    .map((f) => f.path);
+  const paths: string[] = [];
+  for (const line of r.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    const status = parts[0];
+    if (status === "A" || status === "M") {
+      paths.push(parts[1]);
+    } else if (status?.startsWith("R")) {
+      // #2082: rename — git diff --name-status emite "R{score}\t{old}\t{new}".
+      // O path relevante é o novo nome (parts[2]), não o antigo.
+      // Um teste renomeado conta como "modificado" para fins do invariante #633.
+      paths.push(parts[2] ?? parts[1]);
+    }
+  }
+  return paths;
 }
 
 export function hasNewOrModifiedTest(changedFiles: string[]): boolean {
@@ -84,15 +90,18 @@ export type SpawnFn = (
   opts: { encoding: "utf8" },
 ) => { status: number | null; stdout: string; stderr: string };
 
-/** Delay real entre tentativas (produção). Em testes, substituído por mock. */
+/** Delay real entre tentativas (produção). Em testes, substituído por mock via sleepFn. */
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * #2060: getPrLabels com retry+backoff (3 tentativas, 10–30s).
+ * #2060: getPrLabels com retry+backoff (3 tentativas, 10–20s).
  * Considera transitórios: status !== 0 (inclui 401, 5xx, timeout).
  * Lança após esgotar tentativas com mensagem distinta "[#970] INFRA:...".
+ *
+ * Delays: tentativa 1→2: 10s, tentativa 2→3: 20s. A 3ª tentativa não dorme
+ * (último attempt não tem sleep), então o array tem 2 elementos (#2082).
  */
 export async function getPrLabels(
   prNumber: string,
@@ -100,7 +109,12 @@ export async function getPrLabels(
   sleepFn: (ms: number) => Promise<void> = sleepMs,
   maxAttempts = 3,
 ): Promise<string[]> {
-  const backoffMs = [10_000, 20_000, 30_000];
+  if (maxAttempts < 1) {
+    // #2082: maxAttempts=0 geraria loop vazio e lançaria mensagem incoerente
+    // "após 0 tentativas". Guard trivial.
+    throw new Error(`[#970] INFRA: maxAttempts deve ser ≥ 1, recebido ${maxAttempts}`);
+  }
+  const backoffMs = [10_000, 20_000];
   let lastError = "";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const r = spawnFn(
@@ -180,7 +194,9 @@ async function main(): Promise<void> {
     labels = await getPrLabels(prNumber);
   } catch (e) {
     // Esgotadas as tentativas: INFRA — não indistinguível de "bugfix sem teste".
-    console.error(`[#970] ${(e as Error).message}`);
+    // NOTA (#2082): (e as Error).message já começa com "[#970] INFRA:" — não
+    // prefixar novamente ou geraria "[#970] [#970] INFRA:..." no log do GH Action.
+    console.error((e as Error).message);
     process.exit(2);
   }
 

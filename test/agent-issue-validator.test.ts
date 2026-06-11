@@ -569,6 +569,18 @@ describe("#2013 — filterAgentIssues integração completa (caso 260610)", () =
     assert.ok(r.kept.some((i) => /link_dead/.test(i)), "link_dead conservado sem fetchFn");
     assert.ok(r.dropped.some((d) => /section_missing/.test(d.issue)), "section_missing dropado");
   });
+
+  it("#2082 regressão: link_dead com {{poll_sig}} na URL sem fetchFn NÃO é dropado como merge-tag FP", async () => {
+    // Bug: antes do fix, a condição `else if (link_dead) && fetchFn` falhava sem fetchFn,
+    // caindo nos genéricos de DS onde isMergeTagUnexpandedFalsePositive casava o
+    // prefixo `link_` + `{{poll_sig}}` e dropava o issue silenciosamente.
+    // Após o fix: link_dead sai sempre pelo branch específico (com ou sem fetchFn) → kept.
+    const issue = "email:link_dead: https://poll.diaria.workers.dev/vote?sig={{poll_sig}}&edition=260611 → HTTP 404";
+    const r = await filterAgentIssues([issue], "<p>html qualquer</p>", "260611");
+    assert.equal(r.kept.length, 1, "link_dead com {{poll_sig}} deve ser mantido (não dropado como merge-tag FP)");
+    assert.equal(r.dropped.length, 0, `não deve dropar: got ${JSON.stringify(r.dropped)}`);
+    assert.match(r.kept[0], /link_dead/, "issue mantido deve ser o link_dead");
+  });
 });
 
 // ---------------------------------------------------------------------------

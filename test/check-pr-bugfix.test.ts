@@ -127,6 +127,29 @@ describe("#2060 — getPrLabels: retry+backoff em falhas transitórias da API", 
     assert.deepEqual(labels, ["bug", "P2"], `labels retornadas incorretas: ${JSON.stringify(labels)}`);
   });
 
+  it("#2082 regressão: backoff schedule correto — 1ª falha dorme 10s, 2ª falha dorme 20s, 3ª não dorme", async () => {
+    // Garante que schedule errado de backoff (ex: 30s para 2ª falha, ou 3ª tentativa dorme)
+    // seria detectado por este teste.
+    const delays: number[] = [];
+    const trackingSleep = async (ms: number): Promise<void> => { delays.push(ms); };
+    let callCount = 0;
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      callCount++;
+      // Todas as 3 tentativas falham para garantir que lançará no final
+      return { status: 1, stdout: "", stderr: "err" };
+    };
+
+    await assert.rejects(
+      () => getPrLabels("1", mockSpawn, trackingSleep, 3),
+      /INFRA/,
+    );
+
+    assert.equal(callCount, 3, "deve ter 3 tentativas");
+    assert.equal(delays.length, 2, `deve dormir 2× (entre tentativas), não ${delays.length}×`);
+    assert.equal(delays[0], 10_000, `1ª pausa deve ser 10s, foi ${delays[0]}ms`);
+    assert.equal(delays[1], 20_000, `2ª pausa deve ser 20s, foi ${delays[1]}ms`);
+  });
+
   it("3×fail: lança com mensagem INFRA distinta (não genérica)", async () => {
     const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
       return { status: 1, stdout: "", stderr: "HTTP 401: Requires authentication" };
@@ -171,5 +194,37 @@ describe("#2060 — getPrLabels: retry+backoff em falhas transitórias da API", 
     const labels = await getPrLabels("7", mockSpawn, noopSleep, 3);
     assert.equal(callCount, 2);
     assert.deepEqual(labels, ["bug"]);
+  });
+
+  it("#2082: maxAttempts=0 lança com mensagem coerente (não loop vazio)", async () => {
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => ({ status: 0, stdout: "bug\n", stderr: "" });
+    await assert.rejects(
+      () => getPrLabels("1", mockSpawn, noopSleep, 0),
+      (err: Error) => {
+        assert.match(err.message, /maxAttempts deve ser/, `mensagem deve explicar o erro, foi: ${err.message}`);
+        return true;
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2082 — hasNewOrModifiedTest: detecta rename de teste (status R*)
+// ---------------------------------------------------------------------------
+
+describe("#2082 — hasNewOrModifiedTest: arquivos renomeados (status R*)", () => {
+  it("detecta teste renomeado (R100) como modificado", () => {
+    assert.equal(
+      hasNewOrModifiedTest(["test/new-name.test.ts"]),
+      true,
+      "caminho novo de rename em test/ deve ser detectado",
+    );
+  });
+
+  it("não detecta se o caminho novo não é test/*.test.ts (ex: só scripts renomeados)", () => {
+    assert.equal(
+      hasNewOrModifiedTest(["scripts/new-name.ts"]),
+      false,
+    );
   });
 });
