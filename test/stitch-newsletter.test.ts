@@ -428,7 +428,9 @@ Foto descrição.
       assert.match(result, /\{placeholder, script render-erro-intencional/);
       assert.match(result, /SORTEIO/);
       assert.match(result, /PARA ENCERRAR/);
-      assert.match(result, /diaria\.beehiiv\.com\/cursos-gratuitos-de-ia/);
+      // 260611: páginas Beehiiv extintas → links fixos apontam pros Workers
+      assert.match(result, /cursos\.diaria\.workers\.dev/);
+      assert.match(result, /livros\.diaria\.workers\.dev/);
     } finally {
       cleanup();
     }

@@ -105,8 +105,8 @@ Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesqui
 
 **Acesse:**
 
-- [Melhores cursos grátis de IA](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)
-- [Curadoria de livros sobre IA](https://diaria.beehiiv.com/livros-sobre-ia)
+- [Melhores cursos grátis de IA](https://cursos.diaria.workers.dev)
+- [Curadoria de livros sobre IA](https://livros.diaria.workers.dev)
 
 Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](https://www.linkedin.com/company/diaria/) ou no [Facebook](https://www.facebook.com/diar.ia.br)? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!
 ```
