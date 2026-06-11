@@ -434,11 +434,14 @@ async function updateScoreByMonth(
   // Race entre votos concorrentes: OK — snapshot é cache, recompute corrige.
   // Em vez de só invalidar, ler + upsert + regravar garante que o próximo
   // GET /leaderboard já veja o voto sem precisar recomputar.
+  // #2123: passa last_vote_ts pra que o tiebreaker de dense-rank funcione
+  // também via snapshot (sem o campo, `rankEntries` caía em displayKey).
   await upsertOwnEntryInSnapshot(env, monthSlug, {
     email,
     nickname: entry.nickname ?? null,
     correct: entry.correct,
     total: entry.total,
+    last_vote_ts: entry.last_vote_ts,
   });
 }
 
@@ -681,12 +684,20 @@ async function handleLeaderboardTop1(url: URL, env: Env): Promise<Response> {
  * Entry shape no snapshot — mesma estrutura usada em handlers e em
  * scoreByMonthEntriesToLeaderboard. Persistido como JSON em
  * `leaderboard-snapshot:{slug}`.
+ *
+ * #2123: `last_vote_ts` incluído pra que o dense-rank use o tiebreaker
+ * real (voto mais recente) também no caminho snapshot — sem o campo, o
+ * `rankEntries` caia no fallback de displayKey para TODOS os empates.
+ * Back-compat: snapshots antigos sem o campo são tratados como undefined
+ * (fallback de displayKey) — sem migração necessária.
  */
 export interface SnapshotEntry {
   email: string;
   nickname: string | null;
   correct: number;
   total: number;
+  /** #2123: ISO 8601 timestamp do voto mais recente — tiebreaker em `rankEntries`. */
+  last_vote_ts?: string;
 }
 
 interface SnapshotPayload {
@@ -784,7 +795,19 @@ export async function upsertOwnEntryInSnapshot(
     entries.push({ ...own, email: emailLower });
   }
   const payload = { entries, computed_at: new Date().toISOString() };
-  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 86400 });
+  // #2123: TTL curto (5 min) pós-upsert — distinguido do TTL longo do compute
+  // path (24h). Racional:
+  //   (a) read-your-own-write: leitor que vota e abre o leaderboard imediatamente
+  //       vê o próprio voto (satisfaz o objetivo de #2113b).
+  //   (b) autocorreção rápida: races entre votantes concorrentes são corrigidos
+  //       no próximo compute após expiração em 5 min, sem esperar 24h.
+  //   (c) write amplification reduzida: com TTL longo no upsert, o snapshot
+  //       pós-upsert expirava quase no mesmo momento que o compute (24h), e o
+  //       primeiro GET após expiração do upsert recomputava mesmo se o compute
+  //       ainda seria válido. Com 5 min, o compute (3600s ou 86400s) dura mais
+  //       e absorve o tráfego do leaderboard sem recompute frequente.
+  // Sem TTL (fallback eterno): inaceitável — KV eterno para races silenciosos.
+  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 300 }); // 5 min
 }
 
 /**
@@ -815,19 +838,25 @@ export async function computeSnapshotEntries(
       if (!raw) continue;
       // #1349 review fix A: try/catch evita que 1 entry corrompida derrube
       // o compute inteiro. Entry malformada é skipada e logada.
-      let entry: { nickname?: string | null; correct?: number; total?: number };
+      let entry: { nickname?: string | null; correct?: number; total?: number; last_vote_ts?: string };
       try {
         entry = JSON.parse(raw);
       } catch {
         console.error(`[snapshot] skip corrupted entry: ${batch[j]}`);
         continue;
       }
-      entries.push({
+      // #2123: propaga last_vote_ts pra SnapshotEntry — tiebreaker de dense-rank
+      // via snapshot (rankEntries usa o campo; sem ele cai em displayKey).
+      // undefined quando a entry foi gravada antes de #1383 ou na migração de
+      // backfill — fallback de displayKey preservado sem migração.
+      const snapshotEntry: SnapshotEntry = {
         email: batch[j].replace(prefix, ""),
         nickname: entry.nickname ?? null,
         correct: entry.correct ?? 0,
         total: entry.total ?? 0,
-      });
+      };
+      if (entry.last_vote_ts !== undefined) snapshotEntry.last_vote_ts = entry.last_vote_ts;
+      entries.push(snapshotEntry);
     }
   }
   return entries;
@@ -1506,14 +1535,21 @@ export default {
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
       // #2114(b): auto-heal: links mensais já enviados com leaderboardPeriod="year"
-      // redirecionam 301 pra URL canônica anual. Antes renderizava in-place
+      // redirecionam pra URL canônica anual. Antes renderizava in-place
       // (barra de endereço mostrava /leaderboard/2026-05 com título "Leaderboard
-      // de 2026" — inconsistente). Com 301, emails antigos também ficam corrigidos.
+      // de 2026" — inconsistente). Com redirect, emails antigos também ficam corrigidos.
+      // #2123: 302 (não 301) — leaderboardPeriod pode mudar em brands futuros e
+      // a URL canônica do mês não é permanentemente inválida, apenas não-canônica
+      // para brands com period="year". Um 301 é cacheado permanentemente pelos
+      // navegadores; se o brand mudar de "year" pra "month", leitores com cache
+      // 301 ficariam presos na URL anual indefinidamente sem nenhuma forma de
+      // autocorreção. 302 (temporário) permite que o Worker altere o redirect
+      // futuramente sem quebrar leitores já cacheados.
       if (monthMatch && BRAND_INFO[brand].leaderboardPeriod === "year") {
         const yearStr = monthMatch[1].slice(0, 4);
         const target = new URL(request.url);
         target.pathname = `/leaderboard/${yearStr}`;
-        return Response.redirect(target.toString(), 301);
+        return Response.redirect(target.toString(), 302);
       }
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)

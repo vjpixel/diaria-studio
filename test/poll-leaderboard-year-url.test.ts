@@ -56,7 +56,11 @@ describe("renderEia — link do leaderboard usa URL anual (#2114a)", () => {
   });
 });
 
-// ── (b) Worker poll — 301 redirect para YYYY-MM com brand=clarice ──────────
+// ── (b) Worker poll — 302 redirect para YYYY-MM com brand=clarice ──────────
+// #2123: alterado de 301 para 302. 301 é cacheável permanentemente pelos
+// browsers; se leaderboardPeriod mudar no futuro, leitores com cache de 301
+// ficariam presos na URL anual sem autocorreção. 302 (temporário) preserva
+// a flexibilidade de alterar o redirect futuramente.
 // Usa o fetch handler do worker diretamente (sem wrangler unstable_dev).
 
 import workerDefault from "../workers/poll/src/index.ts";
@@ -87,12 +91,12 @@ function makeEnv(): import("../workers/poll/src/index.ts").Env {
   };
 }
 
-describe("worker /leaderboard/{YYYY-MM} com brand=clarice → 301 (#2114b)", () => {
-  it("URL mensal com brand=clarice → 301 para URL anual", async () => {
+describe("worker /leaderboard/{YYYY-MM} com brand=clarice → 302 (#2114b, #2123)", () => {
+  it("URL mensal com brand=clarice → 302 para URL anual (#2123: era 301)", async () => {
     const req = new Request("https://poll.diaria.workers.dev/leaderboard/2026-05?brand=clarice");
     const env = makeEnv();
     const resp = await workerDefault.fetch(req, env, {} as ExecutionContext);
-    assert.equal(resp.status, 301, "deve retornar 301 redirect");
+    assert.equal(resp.status, 302, "deve retornar 302 redirect (temporário — não cacheável permanentemente)");
     const location = resp.headers.get("Location");
     assert.ok(location, "deve ter header Location");
     assert.match(location!, /\/leaderboard\/2026(\?|$)/,
@@ -106,19 +110,21 @@ describe("worker /leaderboard/{YYYY-MM} com brand=clarice → 301 (#2114b)", () 
     const env = makeEnv();
     const resp = await workerDefault.fetch(req, env, {} as ExecutionContext);
     // Para diaria, leaderboardPeriod="month" → renderiza in-place (não redireciona)
-    assert.notEqual(resp.status, 301, "diaria NÃO deve redirecionar");
+    assert.notEqual(resp.status, 302, "diaria NÃO deve redirecionar");
+    assert.notEqual(resp.status, 301, "diaria NÃO deve redirecionar com 301 também");
   });
 
   it("URL anual com brand=clarice → NÃO redireciona (já é canônica)", async () => {
     const req = new Request("https://poll.diaria.workers.dev/leaderboard/2026?brand=clarice");
     const env = makeEnv();
     const resp = await workerDefault.fetch(req, env, {} as ExecutionContext);
-    // URL já é canônica — deve renderizar (200), não redirecionar (301)
-    assert.notEqual(resp.status, 301, "URL anual não deve redirecionar");
+    // URL já é canônica — deve renderizar (200), não redirecionar
+    assert.notEqual(resp.status, 302, "URL anual não deve redirecionar");
+    assert.notEqual(resp.status, 301, "URL anual não deve redirecionar com 301 também");
     assert.equal(resp.status, 200, "deve renderizar o leaderboard anual");
   });
 
-  it("redirect 301 preserva o host", async () => {
+  it("redirect 302 preserva o host", async () => {
     const req = new Request("https://poll.diaria.workers.dev/leaderboard/2026-05?brand=clarice");
     const env = makeEnv();
     const resp = await workerDefault.fetch(req, env, {} as ExecutionContext);
