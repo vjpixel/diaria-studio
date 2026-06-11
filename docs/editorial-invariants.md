@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 35 invariants.
+**Total**: 36 invariants.
 
 ## Static (estrutura do repo)
 
@@ -56,12 +56,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
-| `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente | #facebook |
-| `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente | #facebook |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
-| `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
-| `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971) | #971 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 
@@ -71,10 +67,15 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 |---|---|---|
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
 | `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
+| `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch) | #facebook |
+| `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch) | #facebook |
+| `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
+| `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971) | #971 |
 | `social-published-complete` | 06-social-published.json não-vazio, sem failed (#272) | #272 |
-| `stage-4-review-completed` | review-test-email loop rodou + terminou (#1577) | #1577 |
-| `stage-4-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |
+| `stage-5-review-completed` | review-test-email loop rodou + terminou (#1577) | #1577 |
+| `stage-5-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |
 | `step-4-sentinel-exists` | _internal/.step-4-done.json escrito (#780) | #780 |
+| `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
 
 ---
 

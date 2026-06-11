@@ -41,26 +41,26 @@ describe("review-test-email Tier A (#1212)", () => {
       "review-test-email.md deve proibir explicitamente review_completed=true em email_not_found");
   });
 
-  it("orchestrator-stage-4 trata status 'inconclusive' separadamente", () => {
+  it("orchestrator-stage-5 trata status 'inconclusive' separadamente", () => {
     // #1694: publication loop moved to stage-5.md — check that file now
     assert.match(orchestrator, /status.*inconclusive/i,
       "orchestrator-stage-5.md deve documentar tratamento de status: inconclusive");
   });
 
-  it("orchestrator-stage-4 gate display mostra AMBOS review_final_issues + unfixed_issues", () => {
+  it("orchestrator-stage-5 gate display mostra AMBOS review_final_issues + unfixed_issues", () => {
     // Pre-#1212: gate só mostrava review_final_issues
     // #1694: gate is in stage-5.md now
     assert.match(orchestrator, /unfixed_issues.*review_final_issues|review_final_issues.*unfixed_issues/s,
       "gate deve exibir tanto unfixed_issues quanto review_final_issues (stage-5.md)");
   });
 
-  it("orchestrator-stage-4 introduz review_status field", () => {
+  it("orchestrator-stage-5 introduz review_status field", () => {
     // #1694: review loop is in stage-5.md
     assert.match(orchestrator, /review_status/,
       "orchestrator-stage-5.md deve introduzir review_status field em 05-published.json");
   });
 
-  it("#1434: orchestrator-stage-4 chama filterAgentIssues antes de fix-mode", () => {
+  it("#1434: orchestrator-stage-5 chama filterAgentIssues antes de fix-mode", () => {
     // Sem wire, lib `scripts/lib/agent-issue-validator.ts` fica órfã e
     // bugs do #1421 continuam runtime via fix-mode disparado pra
     // "corrigir" falso-positivos. Esse test guarda contra revert silencioso.

@@ -141,7 +141,9 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 5 (Publicação #1694): requires _internal/.step-4-done.json as prereq, output is _internal/05-published.json", () => {
+  it("Stage 5 (Publicação #1694): requires _internal/.step-4-done.json as prereq, output is _internal/06-social-published.json", () => {
+    // #1694 finding 3: output marker is 06-social-published.json (written after social
+    // dispatch). 05-published.json is mid-stage and would cause false-done.
     const { root, cleanup } = setupSandbox();
     try {
       // No prereq → not a candidate
@@ -150,8 +152,48 @@ describe("findEditionsInProgress", () => {
       // Add Stage 4 sentinel → now in progress for Stage 5
       makeEdition(root, "260505", ["_internal/.step-4-done.json"]);
       assert.deepEqual(findEditionsInProgress(5, root), ["260505"]);
-      // Add Stage 5 output → done
+      // 05-published.json written mid-stage (newsletter done) → still in progress
       makeEdition(root, "260505", ["_internal/05-published.json"]);
+      assert.deepEqual(findEditionsInProgress(5, root), ["260505"]);
+      // Stage 5 fully done: 06-social-published.json present
+      makeEdition(root, "260505", ["_internal/06-social-published.json"]);
+      assert.deepEqual(findEditionsInProgress(5, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Stage 4: skips pre-#1694 edition that has 05-published.json but no .step-4-done.json", () => {
+    // Regression for #1694 finding 2: pre-split editions have all Stage 4 prereqs
+    // (02-reviewed.md + 03-social.md) but were published before .step-4-done.json existed.
+    // Without the guard, they would be false Stage 4 candidates and Revisão would re-run.
+    const { root, cleanup } = setupSandbox();
+    try {
+      makeEdition(root, "260505", [
+        "02-reviewed.md",
+        "03-social.md",
+        "_internal/05-published.json", // already published — pre-#1694 edition
+      ]);
+      assert.deepEqual(findEditionsInProgress(4, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Stage 5: partial run (newsletter done, social pending) still detected as in-progress", () => {
+    // Regression for #1694 finding 3: 05-published.json is written mid-Stage 5 (newsletter only).
+    // An edition where newsletter dispatched but social failed should still appear as Stage 5
+    // in-progress (no 06-social-published.json yet).
+    const { root, cleanup } = setupSandbox();
+    try {
+      makeEdition(root, "260505", [
+        "_internal/.step-4-done.json",
+        "_internal/05-published.json", // newsletter done — but stage NOT complete
+        // NOTE: 06-social-published.json is absent → social pending → still in progress
+      ]);
+      assert.deepEqual(findEditionsInProgress(5, root), ["260505"]);
+      // Now social completes → fully done
+      makeEdition(root, "260505", ["_internal/06-social-published.json"]);
       assert.deepEqual(findEditionsInProgress(5, root), []);
     } finally {
       cleanup();

@@ -105,7 +105,7 @@ Após todos retornarem, **loop de review-test-email** roda em cima do draft Beeh
 
 1. Coleta sinais da edição (`collect-edition-signals.ts`).
 2. Se `signals_count > 0`: dispara agent `auto-reporter` (gate humano de issues GitHub).
-3. Pula auto-reporter se `auto_approve`.
+3. Gate do auto-reporter é **auto-aprovado** quando `auto_approve = true` (conforme §5b-3 — auto-reporter roda em todos os modos).
 
 ## Output
 

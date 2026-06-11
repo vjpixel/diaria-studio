@@ -12,7 +12,9 @@
  *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md` e `03-social.md`;
  *       output esperado `_internal/.step-4-done.json`.
  *   - Stage 5 (Publicação, #1694): prereq `_internal/.step-4-done.json`;
- *       output esperado `_internal/05-published.json`.
+ *       output esperado `_internal/06-social-published.json` (escrito após social
+ *       dispatch; 05-published.json é escrito mid-stage e causaria falso-done se
+ *       social falhasse — #1694 finding 3).
  *
  * "Em curso" = todos os prereqs presentes E ao menos um output ausente.
  *
@@ -49,8 +51,11 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
   },
   5: {
     // Stage 5 = Publicação (#1694, was Stage 4 before the split)
+    // Output marker is 06-social-published.json (written after social dispatch, end of Stage 5).
+    // 05-published.json is written mid-stage (newsletter only) and would cause false-done
+    // detection if social dispatch fails (#1694 finding 3).
     prereq: ["_internal/.step-4-done.json"],
-    output: ["_internal/05-published.json"],
+    output: ["_internal/06-social-published.json"],
   },
 };
 
@@ -83,6 +88,14 @@ export function findEditionsInProgress(
 
     const outputDone = reqs.output.every((f) => existsSync(join(editionDir, f)));
     if (outputDone) continue;
+
+    // #1694 finding 2: guard against pre-#1694 editions being detected as Stage 4
+    // in-progress. Pre-split editions have 05-published.json (already published) but
+    // lack .step-4-done.json (the new Stage 4 sentinel). Without this guard, they would
+    // be flagged as Stage 4 candidates and Stage 4 Revisão would re-run on a published edition.
+    if (stage === 4 && existsSync(join(editionDir, "_internal", "05-published.json"))) {
+      continue; // already fully published — treat as complete
+    }
 
     candidates.push(entry);
   }

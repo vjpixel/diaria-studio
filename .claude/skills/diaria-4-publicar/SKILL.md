@@ -31,9 +31,19 @@ Ao invocar `/diaria-4-publicar [args] [AAMMDD]`, você (top-level Claude Code) d
 
 ## Resolução de AAMMDD omitido
 
-Se AAMMDD não foi passado, usar `/diaria-4-revisao` sem data — essa skill detecta a edição em curso via `find-current-edition.ts --stage 4` e pede confirmação ao editor antes de qualquer ação.
+Se AAMMDD não foi passado:
+
+1. Verificar se há edição com Stage 4 já concluído mas Stage 5 pendente:
+   ```bash
+   npx tsx scripts/lib/find-current-edition.ts --stage 5
+   ```
+   - Se `candidates.length === 1`: Stage 4 já aprovado para essa edição — pular direto para `/diaria-5-publicar {AAMMDD}`.
+   - Se `candidates.length >= 2`: perguntar qual edição.
+   - Se `candidates.length === 0`: Stage 4 ainda não concluído → seguir para passo 2.
+
+2. Usar `/diaria-4-revisao` sem data — essa skill detecta a edição em curso via `find-current-edition.ts --stage 4` e pede confirmação ao editor antes de qualquer ação.
 
 ## Notas
 
-- **Resume-aware**: se `.step-4-done.json` já existir ao entrar, pular direto para Stage 5.
+- **Resume-aware**: se `.step-4-done.json` já existir ao entrar (detectado no passo 1 acima), pular direto para Stage 5.
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.

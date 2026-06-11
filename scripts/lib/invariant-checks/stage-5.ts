@@ -11,9 +11,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
-// Review #1602: consent-binding pertence ao stage 5 — data verificada
-// (05-published.json, 06-social-published.json) só existe pós-dispatch.
-import { checkConsentBinding } from "./stage-4.ts";
+// #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
+// cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
+// 06-social-published.json) que só existem no Stage 5 (Publicação).
+// #1694 finding 8: env-var checks de publicação (facebook, linkedin) importadas
+// de stage-4.ts onde as funções ainda residem (stage-4 as their origin is fine).
+import {
+  checkFbPageIdSet,
+  checkFbTokenSet,
+  checkLinkedinWorkerUrlSet,
+  checkCloudflareTokenSet,
+} from "./stage-4.ts";
 
 interface SocialPublishedJson {
   posts?: Array<{ platform?: string; status?: string }>;
@@ -147,12 +155,12 @@ function checkStage4ReviewCompleted(editionDir: string): InvariantViolation[] {
   if (data.review_completed || explicitTerminal) return [];
   return [
     {
-      rule: "stage-4-review-completed",
+      rule: "stage-5-review-completed",
       message:
         `05-published.json marca review_completed=${data.review_completed ?? "missing"} ` +
         `+ review_status=${data.review_status ?? "missing"}. ` +
         `Loop verify→fix do test email não rodou (ou não terminou). ` +
-        `Run Agent(review-test-email) ANTES de fechar stage 4 / escrever sentinel.`,
+        `Run Agent(review-test-email) ANTES de fechar stage 5 (Publicação) / escrever sentinel.`,
       source_issue: "#1577",
       severity: "error",
       file: path,
@@ -178,7 +186,7 @@ function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
     // 06-social-published.json, file diferente).
     return [
       {
-        rule: "stage-4-review-loop-parseable",
+        rule: "stage-5-review-loop-parseable",
         message: `05-published.json não parseável: ${(e as Error).message}`,
         source_issue: "#1410",
         severity: "error",
@@ -192,7 +200,7 @@ function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
   if (attempts < 2) {
     return [
       {
-        rule: "stage-4-review-loop-enforced",
+        rule: "stage-5-review-loop-enforced",
         message:
           `05-published.json marca review_status="issues_unfixable" mas review_attempts=${attempts} ` +
           `(esperado >= 2 — 1 review + ao menos 1 fix-mode dispatch). ` +
@@ -277,6 +285,194 @@ function checkClosePollMarker(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * `_internal/.step-5-done.json` deve existir após Stage 5 completo. Sem isso,
+ * orchestrator Stage 0 resume não detecta Stage 5 como concluído e
+ * stage-status.md fica em `running` indefinidamente.
+ *
+ * §5j promete validar esse sentinel — este check é o guard que sustenta
+ * essa promessa (#1694).
+ */
+function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", ".step-5-done.json");
+  if (!existsSync(path)) {
+    return [
+      {
+        rule: "step-5-sentinel-exists",
+        message:
+          `_internal/.step-5-done.json ausente — pipeline-sentinel.ts não foi chamado. ` +
+          `Stage-status.md fica em 'running' e resume futuro pode re-publicar.`,
+        source_issue: "#1694",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * #1575: garante que canais com consent=auto realmente dispatcharam (não
+ * foram silenciosamente skipados pra manual paste). Caso 260529: editor
+ * respondeu "Tudo automático" no consent gate, mas orchestrator bypassou
+ * Chrome MCP do Beehiiv e apresentou instruções de paste manual.
+ *
+ * Roda apenas se 05-publish-consent.json existe. Compara cada canal
+ * (newsletter, linkedin, facebook) contra evidência de dispatch:
+ *   - newsletter consent=auto → 05-published.json deve ter draft_url ou
+ *     post_id (status != pending_manual)
+ *   - linkedin consent=auto → 06-social-published.json deve ter posts[]
+ *     da plataforma linkedin com url ou status != pending_manual
+ *   - facebook consent=auto → idem para facebook
+ */
+function checkConsentBinding(editionDir: string): InvariantViolation[] {
+  const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
+  if (!existsSync(consentPath)) return [];
+  let consent: { newsletter?: string; linkedin?: string; facebook?: string };
+  try {
+    consent = JSON.parse(readFileSync(consentPath, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "consent-binding-parseable",
+        message: `05-publish-consent.json não parseável: ${(e as Error).message}`,
+        source_issue: "#1575",
+        severity: "error",
+        file: consentPath,
+      },
+    ];
+  }
+  const violations: InvariantViolation[] = [];
+
+  // Newsletter check
+  if (consent.newsletter === "auto") {
+    const publishedPath = resolve(editionDir, "_internal", "05-published.json");
+    if (!existsSync(publishedPath)) {
+      violations.push({
+        rule: "consent-binding-newsletter",
+        message:
+          `consent.newsletter="auto" mas 05-published.json ausente — dispatch ` +
+          `Beehiiv (Chrome MCP) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
+        source_issue: "#1575",
+        severity: "error",
+        file: publishedPath,
+      });
+    } else {
+      try {
+        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
+          status?: string;
+          draft_url?: string;
+          post_id?: string;
+        };
+        if (pub.status === "pending_manual" || (!pub.draft_url && !pub.post_id)) {
+          violations.push({
+            rule: "consent-binding-newsletter",
+            message:
+              `consent.newsletter="auto" mas 05-published.json tem status="${pub.status ?? "?"}" ` +
+              `sem draft_url/post_id — dispatch automático não aconteceu.`,
+            source_issue: "#1575",
+            severity: "error",
+            file: publishedPath,
+          });
+        }
+      } catch (e) {
+        violations.push({
+          rule: "consent-binding-newsletter",
+          message: `05-published.json não parseável: ${(e as Error).message}`,
+          source_issue: "#1575",
+          severity: "error",
+          file: publishedPath,
+        });
+      }
+    }
+  }
+
+  // Social check (linkedin + facebook)
+  const socialPath = resolve(editionDir, "_internal", "06-social-published.json");
+  if (consent.linkedin === "auto" || consent.facebook === "auto") {
+    if (!existsSync(socialPath)) {
+      const channels = [
+        consent.linkedin === "auto" ? "linkedin" : null,
+        consent.facebook === "auto" ? "facebook" : null,
+      ].filter(Boolean);
+      violations.push({
+        rule: "consent-binding-social",
+        message:
+          `consent.{${channels.join(",")}}=auto mas 06-social-published.json ausente — dispatch social não rodou.`,
+        source_issue: "#1575",
+        severity: "error",
+        file: socialPath,
+      });
+    } else {
+      try {
+        const social = JSON.parse(readFileSync(socialPath, "utf8")) as {
+          posts?: Array<{ platform?: string; status?: string; url?: string }>;
+        };
+        const posts = social.posts ?? [];
+        for (const platform of ["linkedin", "facebook"] as const) {
+          if (consent[platform] !== "auto") continue;
+          const platformPosts = posts.filter(
+            (p) => p.platform === platform,
+          );
+          if (platformPosts.length === 0) {
+            violations.push({
+              rule: `consent-binding-${platform}`,
+              message:
+                `consent.${platform}="auto" mas posts[platform="${platform}"] ` +
+                `vazio em 06-social-published.json.`,
+              source_issue: "#1575",
+              severity: "error",
+              file: socialPath,
+            });
+            continue;
+          }
+          // #1664/#1682: existir não basta — dispatch real exige um status de
+          // dispatch RECONHECIDO. NÃO usar url como sinal: o LinkedIn auto-dispatch
+          // (route worker_queue) grava url=null no write — a URL só existe depois
+          // que o Worker dispara o agendado, então !url dava false-positive em
+          // TODA edição real (260525-260601).
+          //
+          // #1682: ALLOWLIST (não blacklist). O blacklist anterior
+          // (`every(p => !p.status || p.status === "pending_manual")`) tinha 2
+          // frestas: (a) bypass PARCIAL passava — dispatcha 1 de 3 e deixa 2
+          // pending_manual → `.every` false → nenhuma violation (o exato
+          // silent-bypass que o #1575 pega); (b) status off-enum ("skipped") é
+          // truthy != pending_manual → tratado como dispatched. Agora: viola se
+          // QUALQUER post não tem status de dispatch reconhecido. `failed` fica no
+          // allowlist (foi tentado; o sibling social-published-no-failed em stage-5
+          // cobre a falha).
+          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed"]);
+          const notFullyDispatched = !platformPosts.every(
+            (p) => p.status != null && DISPATCH_STATUSES.has(p.status),
+          );
+          if (notFullyDispatched) {
+            violations.push({
+              rule: `consent-binding-${platform}`,
+              message:
+                `consent.${platform}="auto" mas nem todos os posts[platform="${platform}"] ` +
+                `têm status de dispatch (scheduled/draft/published/failed) — ` +
+                `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
+              source_issue: "#1575",
+              severity: "error",
+              file: socialPath,
+            });
+          }
+        }
+      } catch (e) {
+        violations.push({
+          rule: "consent-binding-social",
+          message: `06-social-published.json não parseável: ${(e as Error).message}`,
+          source_issue: "#1575",
+          severity: "error",
+          file: socialPath,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -293,7 +489,7 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkSocialPublishedComplete,
   },
   {
-    id: "stage-4-review-loop-enforced",
+    id: "stage-5-review-loop-enforced",
     description:
       "review_status=issues_unfixable exige review_attempts>=2 (#1410)",
     source_issue: "#1410",
@@ -301,7 +497,7 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkStage4ReviewLoop,
   },
   {
-    id: "stage-4-review-completed",
+    id: "stage-5-review-completed",
     description: "review-test-email loop rodou + terminou (#1577)",
     source_issue: "#1577",
     stage: 5,
@@ -313,6 +509,41 @@ export const STAGE_5_RULES: InvariantRule[] = [
     source_issue: "#1367",
     stage: 5,
     run: checkClosePollMarker,
+  },
+  {
+    id: "facebook-page-id-set",
+    description: "FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch)",
+    source_issue: "#facebook",
+    stage: 5,
+    run: () => checkFbPageIdSet(),
+  },
+  {
+    id: "facebook-token-set",
+    description: "FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch)",
+    source_issue: "#facebook",
+    stage: 5,
+    run: () => checkFbTokenSet(),
+  },
+  {
+    id: "linkedin-worker-url-set",
+    description: "DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971)",
+    source_issue: "#971",
+    stage: 5,
+    run: () => checkLinkedinWorkerUrlSet(),
+  },
+  {
+    id: "linkedin-worker-token-set",
+    description: "DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971)",
+    source_issue: "#971",
+    stage: 5,
+    run: () => checkCloudflareTokenSet(),
+  },
+  {
+    id: "step-5-sentinel-exists",
+    description: "_internal/.step-5-done.json escrito pelo pipeline-sentinel (#1694)",
+    source_issue: "#1694",
+    stage: 5,
+    run: checkStep5Sentinel,
   },
   {
     id: "consent-binding",
