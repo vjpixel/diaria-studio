@@ -300,7 +300,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 
       // #2086 B2: trackableViewsRate = trackableViews / delivered
       // Indica emails com rastreamento real (exclui MPP/bots que não carregam pixel).
-      const trackableRate = pct(s.trackableViews, s.delivered);
+      // ?? 0 defensivo: campo pode estar ausente no shape real da Brevo (latente em campaignStats).
+      const trackableRate = pct(s.trackableViews ?? 0, s.delivered);
 
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
@@ -314,7 +315,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
         <td${cellClass("metric", openAlert && "alert")}>${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td${cellClass("metric")}>${ctr}<br><small>${s.uniqueClicks}</small></td>
-        <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews}</small></td>
+        <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews ?? 0}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
@@ -469,9 +470,9 @@ export function parseClariceCampaignKey(campaignName: string): {
   dayNum: number;
   cell: "A" | "B" | "C";
 } | null {
-  const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})-([ABC])\s/i);
+  const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})-([ABC])(?=\s|$)/i);
   if (!m) return null;
-  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell: m[3] as "A" | "B" | "C" };
+  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell: m[3].toUpperCase() as "A" | "B" | "C" };
 }
 
 export interface CellSummary {
@@ -674,7 +675,12 @@ export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number)
     })
     .join("\n");
 
-  const statusNote = isTied
+  // Quando todas as células amostradas têm openRate 0 (primeiras horas pós-envio,
+  // antes de qualquer abertura registrada), evitar "Empate...0.0%" — informação enganosa.
+  const allZero = isTied && maxRate === 0;
+  const statusNote = allZero
+    ? `Aguardando dados de abertura — primeiras horas pós-envio.`
+    : isTied
     ? `Empate entre células com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
     : allSampled && winnerCell
     ? `Vencedor provisório: <strong style="color:${DS.brand}">Célula ${winnerCell}</strong> — aguardar checkpoint de análise para decisão final.`

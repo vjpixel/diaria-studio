@@ -107,7 +107,8 @@ export function extractPastEditionTitles(
   const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
   // Captura até a ÚLTIMA aspas da linha para suportar títulos com aspas internas
   // Ex: ## 2026-06-10 — "O modelo "melhor" do mercado" → captura 'O modelo "melhor" do mercado'
-  const sectionRe = /^## (\d{4}-\d{2}-\d{2})[^"]*"(.+)"$/m;
+  // \r? antes do $ para tolerância CRLF (hardening de portabilidade Windows).
+  const sectionRe = /^## (\d{4}-\d{2}-\d{2})[^"]*"(.+)"\r?$/m;
 
   for (const part of parts) {
     if (entries.length >= window) break;

@@ -139,15 +139,12 @@ export interface TimelineRow {
  * Uma única passagem sobre plan.issues (agrupamento via Map por batch).
  */
 export function buildTimelineRows(plan: Plan): TimelineRow[] {
-  // ── Passo único: agrupar em solo vs. Map<batch, issues[]> ───────────────────
-  const soloIssues: PlanIssue[] = [];
+  // ── Passo 1: agrupar issues por batch (manter Set de batches já emitidos) ──
   const batchMap = new Map<string, PlanIssue[]>();
 
   for (const issue of plan.issues) {
     const batch = issue.batch;
-    if (!batch || batch === "null") {
-      soloIssues.push(issue);
-    } else {
+    if (batch && batch !== "null") {
       const list = batchMap.get(batch);
       if (list) {
         list.push(issue);
@@ -185,27 +182,37 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
     };
   }
 
-  // ── Issues solo ─────────────────────────────────────────────────────────────
-  for (const issue of soloIssues) {
-    rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline)));
-  }
+  // ── Passo 2: percorrer plan.issues em ordem, emitindo cada unidade na
+  //    posição da sua PRIMEIRA aparição (lotes: emitir na posição da 1ª issue
+  //    do lote, ignorar as demais). Preserva ordem cronológica do plano. ───────
+  const emittedBatches = new Set<string>();
 
-  // ── Lotes ───────────────────────────────────────────────────────────────────
-  for (const [batch, batchIssues] of batchMap) {
-    const numbers = batchIssues.map((i) => `#${i.number}`).join(", ");
-    const label = `lote ${batch} (${numbers})`;
+  for (const issue of plan.issues) {
+    const batch = issue.batch;
 
-    // Representante: 1ª com dispatch, ou a 1ª do lote
-    const representative =
-      batchIssues.find((i) => i.timeline?.dispatch) ?? batchIssues[0];
+    if (!batch || batch === "null") {
+      // Solo: emitir imediatamente
+      rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline)));
+    } else if (!emittedBatches.has(batch)) {
+      // Primeiro aparecimento do lote: emitir a row do lote aqui
+      emittedBatches.add(batch);
+      const batchIssues = batchMap.get(batch)!;
+      const numbers = batchIssues.map((i) => `#${i.number}`).join(", ");
+      const label = `lote ${batch} (${numbers})`;
 
-    // fix-iterations: máximo entre as issues do lote (por conservadorismo)
-    const maxFix = batchIssues.reduce(
-      (max, i) => Math.max(max, countFixIterations(i.timeline)),
-      0,
-    );
+      // Representante: 1ª com dispatch, ou a 1ª do lote
+      const representative =
+        batchIssues.find((i) => i.timeline?.dispatch) ?? batchIssues[0];
 
-    rows.push(makeRow(label, representative?.timeline, maxFix));
+      // fix-iterations: máximo entre as issues do lote (por conservadorismo)
+      const maxFix = batchIssues.reduce(
+        (max, i) => Math.max(max, countFixIterations(i.timeline)),
+        0,
+      );
+
+      rows.push(makeRow(label, representative?.timeline, maxFix));
+    }
+    // Se batch já foi emitido: ignorar (é uma issue subsequente do mesmo lote)
   }
 
   return rows;
