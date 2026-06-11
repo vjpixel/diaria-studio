@@ -5,56 +5,102 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scheduledAtFor, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus } from "../scripts/clarice-schedule-sends.ts";
+import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
+
+// nowOverride fixado antes do ciclo 2605-06 para isolar testes de datas do clock real
+// (#2101: guard de runtime foi adicionado — scheduledAtFor lança se date <= now)
+const BEFORE_CYCLE = new Date("2026-06-09T00:00:00Z"); // 1 dia antes de d01
 
 // 06:00 BRT = 09:00 UTC (#2041 item 4: normalizado pra UTC Z via .toISOString())
 describe("scheduledAtFor (guard de range #2007/#2018)", () => {
   it("d01 → 10/jun/2026 09:00 UTC (= 06:00 BRT)", () => {
-    assert.equal(scheduledAtFor(1), "2026-06-10T09:00:00.000Z");
+    assert.equal(scheduledAtFor(1, BEFORE_CYCLE), "2026-06-10T09:00:00.000Z");
   });
 
   it("d07 → 16/jun/2026 09:00 UTC (= 06:00 BRT, último dia S1)", () => {
-    assert.equal(scheduledAtFor(7), "2026-06-16T09:00:00.000Z");
+    assert.equal(scheduledAtFor(7, BEFORE_CYCLE), "2026-06-16T09:00:00.000Z");
   });
 
   it("d08 → 17/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S2)", () => {
-    assert.equal(scheduledAtFor(8), "2026-06-17T09:00:00.000Z");
+    assert.equal(scheduledAtFor(8, BEFORE_CYCLE), "2026-06-17T09:00:00.000Z");
   });
 
   it("d14 → 23/jun/2026 09:00 UTC (= 06:00 BRT, último dia S2)", () => {
-    assert.equal(scheduledAtFor(14), "2026-06-23T09:00:00.000Z");
+    assert.equal(scheduledAtFor(14, BEFORE_CYCLE), "2026-06-23T09:00:00.000Z");
   });
 
   it("d15 → 24/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S3)", () => {
-    assert.equal(scheduledAtFor(15), "2026-06-24T09:00:00.000Z");
+    assert.equal(scheduledAtFor(15, BEFORE_CYCLE), "2026-06-24T09:00:00.000Z");
   });
 
   it("d21 → 30/jun/2026 09:00 UTC (= 06:00 BRT, último dia S3)", () => {
-    assert.equal(scheduledAtFor(21), "2026-06-30T09:00:00.000Z");
+    assert.equal(scheduledAtFor(21, BEFORE_CYCLE), "2026-06-30T09:00:00.000Z");
   });
 
   // Regressão #2041 item 4: saída deve ser UTC Z, não offset BRT
   it("formato de saída é UTC Z (termina em Z)", () => {
-    assert.ok(scheduledAtFor(1).endsWith("Z"), "deve terminar em Z (UTC)");
+    assert.ok(scheduledAtFor(1, BEFORE_CYCLE).endsWith("Z"), "deve terminar em Z (UTC)");
   });
 
   it("horário UTC é 09:00 (= 06:00 BRT)", () => {
-    const iso = scheduledAtFor(1);
+    const iso = scheduledAtFor(1, BEFORE_CYCLE);
     assert.ok(iso.includes("T09:00:00"), `esperado T09:00:00 no ISO, obtido: ${iso}`);
   });
 
   // Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada)
   it("n=0 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(0), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(0, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
   });
 
   it("n=22 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(22), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(22, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
   });
 
   it("n=1.5 lança erro (não-inteiro)", () => {
-    assert.throws(() => scheduledAtFor(1.5), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(1.5, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+  });
+
+  // scheduledAtFor apenas computa a data (sem guard); assertScheduledAtFuture faz o guard
+  it("retorna data passada sem lançar (guard separado em assertScheduledAtFuture)", () => {
+    // d01 (10/jun/2026) já é passado no clock real — scheduledAtFor não deve lançar
+    assert.doesNotThrow(() => scheduledAtFor(1)); // sem nowOverride = clock real
+  });
+});
+
+// Regressão #2101: assertScheduledAtFuture — guard de data futura separado de scheduledAtFor
+describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--schedule)", () => {
+  it("não lança quando data computada é no futuro (1ms antes)", () => {
+    const justBeforeD01 = new Date("2026-06-10T08:59:59.999Z");
+    assert.doesNotThrow(() => assertScheduledAtFuture(1, justBeforeD01));
+  });
+
+  it("lança quando data computada é igual a now (date <= now)", () => {
+    const exactlyD01 = new Date("2026-06-10T09:00:00Z");
+    assert.throws(
+      () => assertScheduledAtFuture(1, exactlyD01),
+      /data computada.*é passado ou presente/,
+    );
+  });
+
+  it("lança quando ciclo desatualizado (clock em julho, mês hardcoded ainda junho)", () => {
+    const afterCycle = new Date("2026-07-01T00:00:00Z");
+    assert.throws(
+      () => assertScheduledAtFuture(1, afterCycle),
+      /Mês hardcoded "2026-06" está desatualizado/,
+    );
+  });
+
+  it("lança para d21 também (último dia do ciclo) quando clock está em julho", () => {
+    const afterCycle = new Date("2026-07-01T00:00:00Z");
+    assert.throws(
+      () => assertScheduledAtFuture(21, afterCycle),
+      /Mês hardcoded "2026-06" está desatualizado/,
+    );
+  });
+
+  it("n=0 lança erro de range (delegado a scheduledAtFor)", () => {
+    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
   });
 });
 
@@ -339,5 +385,102 @@ describe("isScheduledStatus (#2018 GET-verify pós --schedule)", () => {
   it("status desconhecido NÃO é aceito (fail-safe)", () => {
     assert.equal(isScheduledStatus("pending"), false);
     assert.equal(isScheduledStatus("in_queue"), false);
+  });
+});
+
+// Regressão #2101: applyVerifyResults com Promise.allSettled — sucesso parcial
+// (era Promise.all: 1 rejected → todos perdiam status; agora: fulfilled → escrito,
+// rejected → warn + fica pra retry, sem throw global)
+describe("applyVerifyResults (#2101 — sucesso parcial no GET-verify)", () => {
+  /** Monta um CampaignEntry mínimo para testes. */
+  function makeCampaign(key: string, id: number): { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: "draft" | "scheduled" } {
+    return { key, campaignId: id, listId: 1, subject: "X", scheduledAt: "2026-06-10T09:00:00.000Z", status: "draft" };
+  }
+
+  it("1 de 3 GETs rejeitado → 2 fulfilled têm status=scheduled escrito, rejeitado permanece draft", () => {
+    const c1 = makeCampaign("d01-A", 1);
+    const c2 = makeCampaign("d01-B", 2); // este vai rejeitar
+    const c3 = makeCampaign("d01-C", 3);
+    const campaigns = [c1, c2, c3];
+    const toVerify = [c1, c2, c3];
+
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: "fulfilled", value: { status: "queued" } },
+      { status: "rejected", reason: new Error("500 Internal Server Error") },
+      { status: "fulfilled", value: { status: "scheduled" } },
+    ];
+
+    const writeCalls: string[] = [];
+    const logs: string[] = [];
+
+    applyVerifyResults(
+      settled,
+      toVerify,
+      campaigns,
+      "/fake/campaigns-summary.json",
+      (_path, content) => { writeCalls.push(content); },
+      (msg) => { logs.push(msg); },
+    );
+
+    // c1 e c3 devem estar scheduled
+    assert.equal(c1.status, "scheduled", "c1 (fulfilled queued) deve estar scheduled");
+    assert.equal(c3.status, "scheduled", "c3 (fulfilled scheduled) deve estar scheduled");
+    // c2 deve permanecer draft
+    assert.equal(c2.status, "draft", "c2 (rejected) deve permanecer draft");
+
+    // 2 escritas no disco (uma por campanha bem-sucedida)
+    assert.equal(writeCalls.length, 2, "deve escrever 2× no disco (c1 + c3)");
+
+    // warn para o rejeitado
+    const warnLogs = logs.filter((m) => m.includes("d01-B") && m.includes("⚠"));
+    assert.equal(warnLogs.length, 1, "deve haver 1 warn para d01-B");
+    assert.ok(warnLogs[0].includes("re-tente --schedule"), "warn deve mencionar retry");
+
+    // sem throw global (test chegou aqui)
+  });
+
+  it("todos fulfilled com status aceito → todos scheduled, N escritas", () => {
+    const c1 = makeCampaign("d02-A", 10);
+    const c2 = makeCampaign("d02-B", 11);
+    const campaigns = [c1, c2];
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: "fulfilled", value: { status: "queued" } },
+      { status: "fulfilled", value: { status: "queued" } },
+    ];
+    const writeCalls: string[] = [];
+    applyVerifyResults(settled, [c1, c2], campaigns, "/fake/path", (_p, c) => { writeCalls.push(c); }, () => {});
+
+    assert.equal(c1.status, "scheduled");
+    assert.equal(c2.status, "scheduled");
+    assert.equal(writeCalls.length, 2);
+  });
+
+  it("todos rejeitados → todos permanecem draft, nenhuma escrita no disco", () => {
+    const c1 = makeCampaign("d03-A", 20);
+    const campaigns = [c1];
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: "rejected", reason: new Error("timeout") },
+    ];
+    const writeCalls: string[] = [];
+    applyVerifyResults(settled, [c1], campaigns, "/fake/path", (_p, c) => { writeCalls.push(c); }, () => {});
+
+    assert.equal(c1.status, "draft", "deve permanecer draft");
+    assert.equal(writeCalls.length, 0, "nenhuma escrita no disco");
+  });
+
+  it("fulfilled mas status não aceito (draft) → permanece draft, sem escrita, com warn", () => {
+    const c1 = makeCampaign("d04-A", 30);
+    const campaigns = [c1];
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: "fulfilled", value: { status: "draft" } }, // PUT não persistiu
+    ];
+    const writeCalls: string[] = [];
+    const logs: string[] = [];
+    applyVerifyResults(settled, [c1], campaigns, "/fake/path", (_p, c) => { writeCalls.push(c); }, (m) => { logs.push(m); });
+
+    assert.equal(c1.status, "draft", "deve permanecer draft");
+    assert.equal(writeCalls.length, 0, "nenhuma escrita no disco");
+    const warn = logs.find((m) => m.includes(`status="draft"`));
+    assert.ok(warn, "deve haver warn mencionando status draft");
   });
 });
