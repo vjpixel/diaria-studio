@@ -46,7 +46,7 @@
  * `DS.alert` permanece local — é uma cor semântica de ferramenta interna
  * (circuit breaker threshold), sem token canônico no DS de marca.
  */
-import { DS_COLORS, DS_FONTS as _DSF } from "./ds-tokens.generated.ts";
+import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
 
 const DS = {
   ...DS_COLORS,
@@ -56,7 +56,6 @@ const DS = {
   alert:    "#C00000",  // vermelho de alerta (circuit breaker threshold)
 } as const;
 
-const DSF = _DSF;
 
 /** Exportado para o teste de drift (test/brevo-dashboard-ds-drift.test.ts). */
 export const DS_TOKENS = DS_COLORS;

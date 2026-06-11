@@ -9,7 +9,15 @@
  * (ou simplesmente: npm test / wrangler deploy — ambos disparam o build step)
  */
 
-/** Tokens de cor do DS (espelho de COLORS em design-tokens.ts). */
+/**
+ * Tokens de cor do DS (espelho de COLORS em design-tokens.ts).
+ *
+ * Exclusão intencional: paperEmail, ruleStrong e onInk existem em COLORS mas
+ * NÃO são gerados — o dashboard não os usa. Se o dashboard passar a usar um
+ * deles, adicione-o no template de scripts/generate-worker-tokens.ts e
+ * regenere (senão fica undefined em runtime sem
+ * erro de tipo).
+ */
 export const DS_COLORS = {
   brand:    "#00A0A0",
   ink:      "#171411",
