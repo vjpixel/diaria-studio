@@ -1,47 +1,62 @@
 /**
- * test/brevo-dashboard-ds-drift.test.ts (#2084)
+ * test/brevo-dashboard-ds-drift.test.ts (#2084, refatorado #2107)
  *
- * Garante que os tokens DS embutidos no worker (DS_TOKENS / DS_FONTS em
- * workers/brevo-dashboard/src/index.ts) não driftem dos valores canônicos
- * em scripts/lib/design-tokens.ts.
+ * Garante que os tokens DS no worker não driftem dos valores canônicos em
+ * scripts/lib/design-tokens.ts.
  *
- * O Worker tem bundle Cloudflare separado e não pode importar de scripts/lib/
- * em runtime — por isso os tokens são duplicados localmente. Este teste é o
- * guard de paridade: qualquer atualização em design-tokens.ts que não seja
- * espelhada no worker falha aqui.
+ * Arquitetura pós-#2107: o arquivo `workers/brevo-dashboard/src/ds-tokens.generated.ts`
+ * é GERADO por `scripts/generate-worker-tokens.ts` a partir de design-tokens.ts.
+ * O Worker importa desse arquivo gerado em vez de duplicar valores manualmente.
+ *
+ * Este teste valida o arquivo gerado contra a fonte canônica — é a rede de CI
+ * que falha se alguém esqueceu de regenerar após atualizar design-tokens.ts.
+ * (O `pretest` e o `wrangler.toml [build]` garantem geração automática, mas o
+ * teste continua como guard explícito para o caso de regeneração manual esquecida
+ * num commit que inclui apenas a mudança de design-tokens.ts sem o generated.)
  *
  * Também testa o formato da coluna "Enviado" com dia da semana (#2085).
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { COLORS, FONTS } from "../scripts/lib/design-tokens.ts";
-import { DS_TOKENS, DS_FONTS, renderDashboardHtml } from "../workers/brevo-dashboard/src/index.ts";
+import { DS_COLORS, DS_FONTS } from "../workers/brevo-dashboard/src/ds-tokens.generated.ts";
+import { DS_TOKENS, DS_FONTS as DS_FONTS_INDEX, renderDashboardHtml } from "../workers/brevo-dashboard/src/index.ts";
 
-describe("brevo-dashboard DS_TOKENS — paridade com design-tokens.ts (#2084)", () => {
-  test("DS_TOKENS.brand espelha COLORS.brand (teal)", () => {
-    assert.equal(DS_TOKENS.brand, COLORS.brand);
+describe("ds-tokens.generated.ts — paridade com design-tokens.ts (#2084, #2107)", () => {
+  test("DS_COLORS.brand espelha COLORS.brand (teal)", () => {
+    assert.equal(DS_COLORS.brand, COLORS.brand);
   });
 
-  test("DS_TOKENS.ink espelha COLORS.ink", () => {
-    assert.equal(DS_TOKENS.ink, COLORS.ink);
+  test("DS_COLORS.ink espelha COLORS.ink", () => {
+    assert.equal(DS_COLORS.ink, COLORS.ink);
   });
 
-  test("DS_TOKENS.paper espelha COLORS.paper (fundo web)", () => {
-    assert.equal(DS_TOKENS.paper, COLORS.paper);
+  test("DS_COLORS.paper espelha COLORS.paper (fundo web)", () => {
+    assert.equal(DS_COLORS.paper, COLORS.paper);
   });
 
-  test("DS_TOKENS.paperAlt espelha COLORS.paperAlt (bege shell)", () => {
-    assert.equal(DS_TOKENS.paperAlt, COLORS.paperAlt);
+  test("DS_COLORS.paperAlt espelha COLORS.paperAlt (bege shell)", () => {
+    assert.equal(DS_COLORS.paperAlt, COLORS.paperAlt);
   });
 
-  test("DS_TOKENS.rule espelha COLORS.rule (hairline bege)", () => {
-    assert.equal(DS_TOKENS.rule, COLORS.rule);
+  test("DS_COLORS.rule espelha COLORS.rule (hairline bege)", () => {
+    assert.equal(DS_COLORS.rule, COLORS.rule);
   });
 });
 
-describe("brevo-dashboard DS_FONTS — paridade com design-tokens.ts (#2084)", () => {
+describe("ds-tokens.generated.ts DS_FONTS — paridade com design-tokens.ts (#2084, #2107)", () => {
   test("DS_FONTS.sans espelha FONTS.sans (Geist → system sans)", () => {
     assert.equal(DS_FONTS.sans, FONTS.sans);
+  });
+});
+
+describe("index.ts re-exporta tokens gerados sem drift (#2107)", () => {
+  test("DS_TOKENS (re-export do index) é idêntico a DS_COLORS do generated", () => {
+    assert.deepEqual(DS_TOKENS, DS_COLORS);
+  });
+
+  test("DS_FONTS do index é idêntico ao DS_FONTS do generated", () => {
+    assert.deepEqual(DS_FONTS_INDEX, DS_FONTS);
   });
 });
 

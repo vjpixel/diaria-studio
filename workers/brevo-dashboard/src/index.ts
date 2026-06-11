@@ -30,34 +30,35 @@
  */
 
 /**
- * Design System tokens (#2084) — espelho local dos valores canônicos de
- * `scripts/lib/design-tokens.ts` (vjpixel/diaria-design). O Worker tem
- * bundle Cloudflare separado e não pode importar de `scripts/lib/` em
- * runtime. Mantidos em sync por `test/brevo-dashboard-ds-drift.test.ts`
- * (compare automático com os tokens canônicos — falha se driftar).
+ * Design System tokens (#2107) — importados de `ds-tokens.generated.ts`,
+ * gerado automaticamente por `scripts/generate-worker-tokens.ts` a partir
+ * da fonte canônica `scripts/lib/design-tokens.ts`.
  *
- * NUNCA editar esses valores ad-hoc: alterar só se `design-tokens.ts`
- * mudar, e atualizar ambos atomicamente no mesmo commit.
+ * O Worker tem bundle Cloudflare separado e não pode importar de
+ * `scripts/lib/` em runtime. O arquivo gerado resolve isso: é produzido
+ * antes do deploy (via `[build]` no wrangler.toml) e antes dos testes
+ * (via `pretest` no package.json raiz).
+ *
+ * Para atualizar tokens: editar `scripts/lib/design-tokens.ts` e rodar
+ * `npx tsx scripts/generate-worker-tokens.ts` (ou qualquer path que
+ * acione o build step).
+ *
+ * `DS.alert` permanece local — é uma cor semântica de ferramenta interna
+ * (circuit breaker threshold), sem token canônico no DS de marca.
  */
+import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
+
 const DS = {
-  brand:    "#00A0A0",  // --brand · teal · links, kickers, acentos
-  ink:      "#171411",  // --ink · todo o texto
-  paper:    "#FBFAF6",  // --paper · fundo web (não-email)
-  paperAlt: "#EBE5D0",  // --paper-alt · molduras, boxes cheios, shell bege
-  rule:     "#EBE5D0",  // --rule · fios e bordas hairline
+  ...DS_COLORS,
   // Alerta de circuit breaker: sem cor canônica no DS — red semântico de
   // ferramenta interna. Não é uma cor de marca, portanto não entra no DS.
   // Valor mantido como constante local explícita para evitar magic string.
   alert:    "#C00000",  // vermelho de alerta (circuit breaker threshold)
 } as const;
 
-const DSF = {
-  // --font-sans · corpo + UI. Geist = web font; cai pra system sans.
-  sans: "'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-} as const;
 
 /** Exportado para o teste de drift (test/brevo-dashboard-ds-drift.test.ts). */
-export const DS_TOKENS = DS;
+export const DS_TOKENS = DS_COLORS;
 export const DS_FONTS = DSF;
 
 export interface Env {
