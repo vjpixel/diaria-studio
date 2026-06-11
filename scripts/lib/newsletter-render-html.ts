@@ -121,18 +121,13 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
   return !!text && /^\s*📣/u.test(text);
 }
 
-/** Linha do separador "Divulgação" (disclosure de patrocínio, #1940). */
+/**
+ * Linha do separador "● DIVULGAÇÃO" (kicker com régua, #1940). Desde 260611
+ * (pedido do editor, supersede a régua nua do #2069) TODO midCallout — 📣
+ * patrocinado, 📚 promo interna, 🎉 CTA — recebe este kicker antes do box.
+ */
 export function renderDivulgacaoSeparator(): string {
   return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker("Divulgação")}</td></tr>`;
-}
-
-/**
- * Régua bege full-width SEM label — separador antes do midCallout
- * não-patrocinado (📚/🎉; pedido do editor, 260611). O caso patrocinado (📣)
- * já recebe o kicker "Divulgação", que embute a própria régua.
- */
-export function renderRuleRow(): string {
-  return `<tr><td class="pad" style="padding:32px 32px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td></tr></table></td></tr>`;
 }
 
 /**
@@ -724,11 +719,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Box entre D1 e D2 (ex: promo da página de livros). Reusa o estilo teal
     // do introCallout. Posicionado após o 1º destaque.
     if (i === 0 && content.midCallout) {
-      // #1940: separador "Divulgação" antes de bloco PATROCINADO (📣). Promo
-      // interna (📚) e sorteio (🎉) não recebem disclosure — ver isSponsoredCallout —
-      // mas ganham régua simples antes do box (pedido do editor, 260611).
-      if (isSponsoredCallout(content.midCallout)) parts.push(renderDivulgacaoSeparator());
-      else parts.push(renderRuleRow());
+      // 260611 (supersede #1940/#2069): TODO midCallout — patrocinado (📣) ou
+      // promo interna (📚/🎉) — recebe o kicker "● DIVULGAÇÃO" antes do box.
+      parts.push(renderDivulgacaoSeparator());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
     if (includeEia && !eiaInserted && i === 1) {

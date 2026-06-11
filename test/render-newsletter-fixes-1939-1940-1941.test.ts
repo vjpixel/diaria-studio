@@ -124,11 +124,12 @@ describe("#1940 — separador Divulgação antes de bloco patrocinado", () => {
     }
   });
 
-  it("NÃO emite 'Divulgação' para promo interna (📚)", () => {
+  it("promo interna (📚) no mid TAMBÉM recebe '● Divulgação' (260611, supersede #1940)", () => {
     const dir = buildEdition("**📚 Nossa curadoria de livros. [Confira](https://livros.diaria.workers.dev).**");
     try {
       const html = renderHTML(extractContent(dir));
-      assert.ok(!html.includes("Divulgação"), "promo interna não é anúncio — sem separador");
+      assert.ok(html.includes("Divulgação"), "todo midCallout ganha o kicker Divulgação");
+      assert.ok(html.indexOf("Divulgação") < html.indexOf("curadoria de livros"), "kicker antes do box");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -168,16 +169,14 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     assert.equal(isSponsoredCallout(undefined), false);
   });
 
-  it("régua simples antes do midCallout NÃO-patrocinado (📚) — pedido 260611", () => {
+  it("kicker '● DIVULGAÇÃO' antes do midCallout não-patrocinado (📚) — 260611 v2", () => {
     const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
     try {
       const html = renderHTML(extractContent(dir));
       const boxIdx = html.indexOf("Promo interna");
       assert.ok(boxIdx > -1, "box renderizado");
-      const before = html.slice(0, boxIdx);
-      const ruleIdx = before.lastIndexOf("border-bottom:1px solid");
-      assert.ok(ruleIdx > -1, "deve haver régua bege antes do box");
-      assert.ok(!before.slice(ruleIdx - 600).includes("Divulgação"), "promo interna não ganha kicker Divulgação");
+      const kickerIdx = html.lastIndexOf("Divulgação", boxIdx);
+      assert.ok(kickerIdx > -1 && kickerIdx > html.indexOf("Importa por isso."), "kicker Divulgação entre D1 e o box");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
