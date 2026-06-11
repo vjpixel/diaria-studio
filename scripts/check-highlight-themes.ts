@@ -105,7 +105,9 @@ export function extractPastEditionTitles(
   if (!md.trim()) return entries;
 
   const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
-  const sectionRe = /^## (\d{4}-\d{2}-\d{2})[^"]*"([^"]+)"/m;
+  // Captura até a ÚLTIMA aspas da linha para suportar títulos com aspas internas
+  // Ex: ## 2026-06-10 — "O modelo "melhor" do mercado" → captura 'O modelo "melhor" do mercado'
+  const sectionRe = /^## (\d{4}-\d{2}-\d{2})[^"]*"(.+)"$/m;
 
   for (const part of parts) {
     if (entries.length >= window) break;
@@ -204,13 +206,37 @@ function extractHighlightEntities(title: string): Set<string> {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Pre-computed index for past editions (tokens + entities computed once)
+// ---------------------------------------------------------------------------
+
+interface PastEditionIndex {
+  entry: PastEditionEntry;
+  tokens: Set<string>;
+  entities: Set<string>;
+}
+
 /**
- * Compara um candidato a destaque contra as edições passadas.
+ * Pré-computa tokens e entidades de cada edição passada UMA vez.
+ * Evita recomputar janela × candidatos (padrão de dedup.ts ~900).
+ */
+function buildPastIndex(pastEditions: PastEditionEntry[]): PastEditionIndex[] {
+  return pastEditions
+    .map((entry) => ({
+      entry,
+      tokens: tokenizeForJaccard(entry.title),
+      entities: extractHighlightEntities(entry.title),
+    }))
+    .filter((idx) => idx.tokens.size > 0);
+}
+
+/**
+ * Compara um candidato a destaque contra o índice pré-computado de edições passadas.
  * Retorna o melhor match (se acima do threshold) ou null.
  */
 function findThemeMatch(
   candidate: HighlightCandidate,
-  pastEditions: PastEditionEntry[],
+  pastIndex: PastEditionIndex[],
 ): HighlightThemeWarning | null {
   const candidateTokens = tokenizeForJaccard(candidate.title);
   if (candidateTokens.size === 0) return null;
@@ -219,12 +245,8 @@ function findThemeMatch(
 
   let bestMatch: HighlightThemeWarning | null = null;
 
-  for (const past of pastEditions) {
-    const pastTokens = tokenizeForJaccard(past.title);
-    if (pastTokens.size === 0) continue;
-
+  for (const { entry: past, tokens: pastTokens, entities: pastEntities } of pastIndex) {
     // Compute shared entities
-    const pastEntities = extractHighlightEntities(past.title);
     const sharedEntities: string[] = [];
     for (const e of candidateEntities) {
       if (pastEntities.has(e)) sharedEntities.push(e);
@@ -266,8 +288,11 @@ export function checkHighlightThemes(
 ): CheckHighlightThemesResult {
   const warnings: HighlightThemeWarning[] = [];
 
+  // Pré-computar tokens/entidades das edições passadas uma única vez
+  const pastIndex = buildPastIndex(pastEditions);
+
   for (const candidate of candidates) {
-    const match = findThemeMatch(candidate, pastEditions);
+    const match = findThemeMatch(candidate, pastIndex);
     if (match) warnings.push(match);
   }
 

@@ -368,3 +368,136 @@ describe("renderOvernightTimeline — mais lenta usa duração da tabela (#2099 
     assert.ok(maisLenta.includes("1h30m"), `mais lenta deve mostrar 1h30m: ${maisLenta}`);
   });
 });
+
+// ─── Regressões #2102 ─────────────────────────────────────────────────────────
+
+describe("fmtHHMM BRT (#2102 — item 1)", () => {
+  it("horários exibidos em BRT fixo (UTC-3), não no TZ do processo", () => {
+    // 2026-06-11T02:30:00Z = 23:30 BRT (UTC-3)
+    const plan = makePlan([
+      {
+        number: 10001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T02:30:00.000Z",
+          merged: "2026-06-11T03:15:00.000Z",
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    // BRT: 02:30 UTC = 23:30 BRT; 03:15 UTC = 00:15 BRT
+    assert.equal(rows[0].inicio, "23:30", `início deve ser 23:30 BRT, got ${rows[0].inicio}`);
+    assert.equal(rows[0].fim, "00:15", `fim deve ser 00:15 BRT, got ${rows[0].fim}`);
+  });
+
+  it("issue sem timestamp exibe '—', não um horário inválido", () => {
+    const plan = makePlan([{ number: 10002, batch: null }]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].inicio, "—");
+    assert.equal(rows[0].fim, "—");
+  });
+});
+
+describe("mais lenta: guard unidade 0m (#2102 — item 2)", () => {
+  it("unidade de 0m não é eleita como mais lenta — retorna '—' quando todas têm 0ms", () => {
+    // Dispatch == merged → durationMs = 0 → não elegível
+    const plan = makePlan([
+      {
+        number: 11001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T22:00:00.000Z",
+          merged: "2026-06-11T22:00:00.000Z", // exatamente 0ms
+        },
+      },
+    ]);
+    const output = renderOvernightTimeline(plan);
+    const maisLenta = output.split("\n").filter((l) => l.includes("mais lenta"))[0];
+    assert.ok(maisLenta.includes("—"), `0m não deve ser eleita mais lenta: ${maisLenta}`);
+    assert.ok(!maisLenta.includes("#11001"), `#11001 (0m) não deve aparecer na mais lenta: ${maisLenta}`);
+  });
+
+  it("com issues mistas 0m e >0m, a mais lenta é a com duração positiva", () => {
+    const plan = makePlan([
+      {
+        number: 11002,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T22:00:00.000Z",
+          merged: "2026-06-11T22:00:00.000Z", // 0m — não elegível
+        },
+      },
+      {
+        number: 11003,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T22:05:00.000Z",
+          merged: "2026-06-11T22:20:00.000Z", // 15m — elegível
+        },
+      },
+    ]);
+    const output = renderOvernightTimeline(plan);
+    const maisLenta = output.split("\n").filter((l) => l.includes("mais lenta"))[0];
+    assert.ok(maisLenta.includes("#11003"), `#11003 (15m) deve ser a mais lenta: ${maisLenta}`);
+    assert.ok(!maisLenta.includes("#11002"), `#11002 (0m) não deve ser a mais lenta: ${maisLenta}`);
+  });
+});
+
+describe("durationMs armazenado na TimelineRow (#2102 — item 3)", () => {
+  it("row com timestamps válidos tem durationMs numérico correto", () => {
+    const plan = makePlan([
+      {
+        number: 12001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          merged: "2026-06-11T21:30:00.000Z", // 5400000ms = 90m
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].durationMs, 5_400_000, `durationMs deve ser 5400000: ${rows[0].durationMs}`);
+  });
+
+  it("row sem timestamp de fim tem durationMs null", () => {
+    const plan = makePlan([
+      {
+        number: 12002,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          // sem merged/draft/pulada
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].durationMs, null);
+  });
+
+  it("row sem timeline tem durationMs null", () => {
+    const plan = makePlan([{ number: 12003, batch: null }]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].durationMs, null);
+  });
+});
+
+describe("countFixIterations dinâmico N (#2102 — item 4)", () => {
+  it("fix_iteration_3 e _4 são contadas (não ignoradas)", () => {
+    const plan = makePlan([
+      {
+        number: 13001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          fix_iteration_1: "2026-06-11T20:15:00.000Z",
+          fix_iteration_2: "2026-06-11T20:30:00.000Z",
+          fix_iteration_3: "2026-06-11T20:45:00.000Z",
+          fix_iteration_4: "2026-06-11T21:00:00.000Z",
+          merged: "2026-06-11T21:30:00.000Z",
+        } as import("../scripts/render-overnight-timeline.ts").IssueTimeline,
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].fixIteracoes, 4, `deveria contar 4 fix-iterations, got ${rows[0].fixIteracoes}`);
+  });
+});
