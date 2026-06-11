@@ -409,3 +409,57 @@ Links usados:
     assert.equal(entries[6].title, "Gemma 4 12B: multimodal que roda no laptop");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regressão #2124 — item 5: tolerância CRLF em extractPastEditionTitles
+// ---------------------------------------------------------------------------
+
+describe("extractPastEditionTitles — tolerância CRLF (#2124)", () => {
+  it("extrai títulos de arquivo com quebra CRLF (\\r\\n)", () => {
+    // Simula past-editions.md com CRLF (ex: checkout no Windows com core.autocrlf=true)
+    const crlfMd = [
+      "# Últimas edições publicadas — para dedup",
+      "",
+      "---",
+      "",
+      `## 2026-06-10 — "AI Act entra em vigor: o que muda para empresas brasileiras"`,
+      "URL: https://diaria.beehiiv.com/p/ai-act",
+      "",
+      "Links usados:",
+      "- https://ec.europa.eu/ai-act",
+      "",
+      "---",
+      "",
+      `## 2026-06-09 — "Gemma 4 12B: multimodal que roda no laptop"`,
+      "URL: https://diaria.beehiiv.com/p/gemma",
+      "",
+      "Links usados:",
+      "- https://blog.google/gemma",
+      "",
+      "---",
+    ].join("\r\n"); // CRLF
+
+    const entries = extractPastEditionTitles(crlfMd, 12);
+    assert.equal(entries.length, 2, `deve extrair 2 entradas do MD com CRLF, got ${entries.length}`);
+    assert.equal(entries[0].date, "2026-06-10");
+    assert.equal(
+      entries[0].title,
+      "AI Act entra em vigor: o que muda para empresas brasileiras",
+      `título não deve conter \\r residual: "${entries[0].title}"`,
+    );
+    assert.equal(entries[1].date, "2026-06-09");
+    assert.equal(
+      entries[1].title,
+      "Gemma 4 12B: multimodal que roda no laptop",
+      `2º título com CRLF: "${entries[1].title}"`,
+    );
+  });
+
+  it("arquivo com LF puro continua funcionando após a mudança CRLF (#2124)", () => {
+    // Garante que a adição de \\r? não quebra o comportamento LF normal
+    const entries = extractPastEditionTitles(PAST_MD_WITH_GEMMA, 12);
+    assert.equal(entries.length, 8, "LF puro: deve extrair 8 entradas");
+    assert.equal(entries[0].title, "AI Act entra em vigor: o que muda para empresas brasileiras");
+    assert.ok(!entries[0].title.includes("\r"), "título LF não deve ter \\r");
+  });
+});

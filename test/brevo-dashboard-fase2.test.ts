@@ -131,6 +131,24 @@ describe("parseClariceCampaignKey", () => {
   test("retorna null para campanha T1", () => {
     assert.equal(parseClariceCampaignKey("Diar.ia Mensal 2604 [list 9 W1] — 2026-05-08"), null);
   });
+
+  // Regressões #2124 — item 1: sufixo pós-célula opcional + normalização uppercase
+  test("parseia nome SEM sufixo de dia-da-semana (sufixo opcional #2124)", () => {
+    // Nome sem espaço+sufixo após [ABC] — antes do fix: retornava null silenciosamente
+    const r = parseClariceCampaignKey("Clarice News 2605 d03-B");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 3, cell: "B" });
+  });
+
+  test("parseia nome com célula em minúscula (flag /i + toUpperCase #2124)", () => {
+    // Flag /i aceita lowercase, mas o cast precisava de normalização
+    const r = parseClariceCampaignKey("Clarice News 2605 d04-a (sex)");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 4, cell: "A" });
+  });
+
+  test("parseia nome com célula lowercase sem sufixo (#2124)", () => {
+    const r = parseClariceCampaignKey("Clarice News 2605 d05-c");
+    assert.deepEqual(r, { cycle: "2605", dayNum: 5, cell: "C" });
+  });
 });
 
 // ─── aggregateAbcSummary ──────────────────────────────────────────────────────
@@ -394,6 +412,37 @@ describe("renderAbcSection", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
     const html = renderAbcSection(rows, 900);
     assert.match(html, /id="abc-summary"/);
+  });
+
+  // Regressão #2124 — item 3: todas as células com openRate 0 → "aguardando dados"
+  test("all-zero openRate exibe 'aguardando dados' (não 'Empate...0.0%') (#2124)", () => {
+    // Cenário: campanhas enviadas mas sem nenhuma abertura registrada ainda
+    // (primeiras horas pós-envio — dados de abertura chegam com delay).
+    const zeroRows = [
+      { cell: "A" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
+      { cell: "B" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
+      { cell: "C" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
+    ];
+    const html = renderAbcSection(zeroRows, 300);
+    // Não deve exibir "Empate...0.0%" — confuso e inútil antes de qualquer abertura
+    assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate...0.0%' quando todos zero");
+    // Deve exibir aviso de aguardando dados
+    assert.match(html, /[Aa]guardando dados/, "deve mostrar 'aguardando dados' quando openRate todo zero");
+    // Nenhuma célula deve receber LÍDER
+    const liderCount = (html.match(/LÍDER/g) ?? []).length;
+    assert.equal(liderCount, 0, "sem LÍDER quando openRate todo zero");
+  });
+
+  test("empate com openRate > 0 continua mostrando 'Empate' (não confunde com zero) (#2124)", () => {
+    // Empate real (taxa igual mas > 0) — deve manter comportamento original
+    const tiedNonZero = [
+      { cell: "A" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, campaignCount: 2 },
+      { cell: "B" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, campaignCount: 2 },
+      { cell: "C" as const, totalViews: 30, totalDelivered: 100, openRate: 30.0, campaignCount: 2 },
+    ];
+    const html = renderAbcSection(tiedNonZero, 3000);
+    assert.match(html, /Empate.*50\.0%/, "empate real deve continuar mostrando 'Empate...50.0%'");
+    assert.doesNotMatch(html, /[Aa]guardando dados/, "não deve mostrar 'aguardando dados' em empate real");
   });
 });
 

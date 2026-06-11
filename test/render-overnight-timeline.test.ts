@@ -144,6 +144,65 @@ describe("buildTimelineRows — lote", () => {
   });
 });
 
+// Regressão #2124 — item 4: ordem cronológica preservada (solo/lote/solo intercalado)
+describe("buildTimelineRows — ordem cronológica preservada (#2124)", () => {
+  it("plano intercalado solo→lote→solo emite na posição da primeira aparição", () => {
+    // Plano: #A001 (solo), #B001+#B002 (lote batch-x), #C001 (solo)
+    // Antes do fix: solos vinham primeiro (A001, C001), lote depois (batch-x)
+    // Após fix: A001, batch-x, C001 — ordem de plan.issues
+    const plan = makePlan([
+      { number: 14001, batch: null,      timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:10:00.000Z" } },
+      { number: 14002, batch: "lote-x",  timeline: { dispatch: "2026-06-11T20:15:00.000Z", merged: "2026-06-11T20:45:00.000Z" } },
+      { number: 14003, batch: "lote-x",  timeline: { dispatch: "2026-06-11T20:15:00.000Z", merged: "2026-06-11T20:45:00.000Z" } },
+      { number: 14004, batch: null,      timeline: { dispatch: "2026-06-11T20:50:00.000Z", merged: "2026-06-11T21:10:00.000Z" } },
+    ]);
+    const rows = buildTimelineRows(plan);
+
+    // 3 rows: solo #14001, lote lote-x (#14002, #14003), solo #14004
+    assert.equal(rows.length, 3, "deve ter 3 linhas (2 solos + 1 lote)");
+    assert.equal(rows[0].unidade, "#14001", "1ª linha deve ser #14001 (solo antes do lote)");
+    assert.ok(rows[1].unidade.startsWith("lote lote-x"), `2ª linha deve ser o lote, got: ${rows[1].unidade}`);
+    assert.ok(rows[1].unidade.includes("#14002"), "lote deve incluir #14002");
+    assert.ok(rows[1].unidade.includes("#14003"), "lote deve incluir #14003");
+    assert.equal(rows[2].unidade, "#14004", "3ª linha deve ser #14004 (solo após o lote)");
+  });
+
+  it("lote→solo→lote2 intercalado: dois lotes distintos na posição de primeira aparição", () => {
+    const plan = makePlan([
+      { number: 15001, batch: "alpha",   timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:20:00.000Z" } },
+      { number: 15002, batch: "alpha",   timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:20:00.000Z" } },
+      { number: 15003, batch: null,      timeline: { dispatch: "2026-06-11T20:25:00.000Z", merged: "2026-06-11T20:35:00.000Z" } },
+      { number: 15004, batch: "beta",    timeline: { dispatch: "2026-06-11T20:40:00.000Z", merged: "2026-06-11T21:00:00.000Z" } },
+      { number: 15005, batch: "beta",    timeline: { dispatch: "2026-06-11T20:40:00.000Z", merged: "2026-06-11T21:00:00.000Z" } },
+    ]);
+    const rows = buildTimelineRows(plan);
+
+    assert.equal(rows.length, 3, "deve ter 3 linhas (alpha, solo, beta)");
+    assert.ok(rows[0].unidade.startsWith("lote alpha"), `1ª linha deve ser lote alpha, got: ${rows[0].unidade}`);
+    assert.equal(rows[1].unidade, "#15003", `2ª linha deve ser solo #15003, got: ${rows[1].unidade}`);
+    assert.ok(rows[2].unidade.startsWith("lote beta"), `3ª linha deve ser lote beta, got: ${rows[2].unidade}`);
+  });
+
+  it("lote com issues intercaladas no plano (mesmo batch não-consecutivo): emite na posição da 1ª", () => {
+    // Caso edge: #A, #B(lote-z), #C(solo), #D(lote-z) — o batch tem issues não-consecutivas
+    // Posição de emissão = 1ª aparição do batch (posição de #B)
+    const plan = makePlan([
+      { number: 16001, batch: null,      timeline: { dispatch: "2026-06-11T20:00:00.000Z", merged: "2026-06-11T20:05:00.000Z" } },
+      { number: 16002, batch: "lote-z",  timeline: { dispatch: "2026-06-11T20:10:00.000Z", merged: "2026-06-11T20:30:00.000Z" } },
+      { number: 16003, batch: null,      timeline: { dispatch: "2026-06-11T20:35:00.000Z", merged: "2026-06-11T20:45:00.000Z" } },
+      { number: 16004, batch: "lote-z",  timeline: { dispatch: "2026-06-11T20:10:00.000Z", merged: "2026-06-11T20:30:00.000Z" } },
+    ]);
+    const rows = buildTimelineRows(plan);
+
+    // Deve ter 3 linhas: #16001, lote-z (#16002, #16004), #16003
+    assert.equal(rows.length, 3, "deve ter 3 linhas");
+    assert.equal(rows[0].unidade, "#16001");
+    assert.ok(rows[1].unidade.startsWith("lote lote-z"), `2ª deve ser lote-z, got: ${rows[1].unidade}`);
+    assert.ok(rows[1].unidade.includes("#16002") && rows[1].unidade.includes("#16004"), "lote deve ter ambas as issues");
+    assert.equal(rows[2].unidade, "#16003");
+  });
+});
+
 describe("buildTimelineRows — timeline parcial (rodada interrompida)", () => {
   it("dispatch sem fim → fim 'em andamento'", () => {
     const plan = makePlan([
