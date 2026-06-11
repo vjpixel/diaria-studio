@@ -452,11 +452,10 @@ export const CLARICE_PLAN_S1 = 5_600;
  * Padrão: "Clarice News {cycle} d{NN}-{cell} ({weekday})"
  * ex: "Clarice News 2605 d01-A (qua)" → cell = "A"
  * Retorna null para campanhas que não seguem o padrão (ex: T1-W1..W7).
+ * Delegado a parseClariceCampaignKey para evitar regex duplicada.
  */
 export function extractClariceCell(campaignName: string): "A" | "B" | "C" | null {
-  const m = campaignName.match(/Clarice News \d{4} d\d{2}-([ABC])\s/i);
-  if (!m) return null;
-  return m[1] as "A" | "B" | "C";
+  return parseClariceCampaignKey(campaignName)?.cell ?? null;
 }
 
 /**
@@ -530,6 +529,9 @@ export function aggregateAbcSummary(
 /**
  * Calcula volume enviado cumulativo de campanhas Clarice News de um ciclo.
  * Soma "sent" de todas as campanhas do ciclo (todos os dias, todas as células).
+ * Usa globalStats como primário (com Apple MPP, bate com Brevo UI); cai pra
+ * campaignStats[0].sent se globalStats fetch falhou — evita subcontagem quando
+ * o fetch individual de stats não funcionou pra alguma campanha.
  * Exportado pra teste unitário.
  */
 export function calcCumulativeSent(
@@ -541,8 +543,11 @@ export function calcCumulativeSent(
     const parsed = parseClariceCampaignKey(c.name);
     if (!parsed || parsed.cycle !== cycle) continue;
     const gs = c.statistics?.globalStats;
-    if (!gs || gs.sent === 0) continue;
-    total += gs.sent;
+    const cs = c.statistics?.campaignStats?.[0];
+    const gsIsReal = gs && gs.sent > 0;
+    const sent = gsIsReal ? gs.sent : (cs?.sent ?? 0);
+    if (!sent) continue;
+    total += sent;
   }
   return total;
 }
@@ -636,10 +641,17 @@ export function buildTrendRows(
 export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number): string {
   if (abcRows.every((r) => r.campaignCount === 0)) return "";
 
-  const winner = abcRows.reduce((best, r) =>
-    r.openRate > best.openRate ? r : best,
-  );
-  const allSampled = abcRows.filter((r) => r.campaignCount > 0).length >= 2;
+  const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
+  const allSampled = sampledRows.length >= 2;
+
+  // Winner: célula com maior open rate entre as que têm dados.
+  // Em empate (taxa idêntica), nenhuma célula recebe tag LÍDER — exibir "EMPATE".
+  const maxRate = sampledRows.reduce((m, r) => Math.max(m, r.openRate), 0);
+  const tiedCount = sampledRows.filter((r) => r.openRate === maxRate).length;
+  const isTied = allSampled && tiedCount > 1;
+  const winnerCell = !isTied && allSampled
+    ? sampledRows.find((r) => r.openRate === maxRate)?.cell ?? null
+    : null;
 
   const pctBar = Math.min(100, (cumulativeSent / CLARICE_PLAN_TOTAL) * 100);
   const pctLabel = pctBar.toFixed(1);
@@ -648,7 +660,7 @@ export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number)
 
   const cellRows = abcRows
     .map((r) => {
-      const isWinner = allSampled && r.openRate === winner.openRate && r.campaignCount > 0;
+      const isWinner = r.cell === winnerCell && r.campaignCount > 0;
       const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
       const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
       return `<tr>
@@ -661,8 +673,10 @@ export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number)
     })
     .join("\n");
 
-  const statusNote = allSampled
-    ? `Vencedor provisório: <strong style="color:${DS.brand}">Célula ${winner.cell}</strong> — aguardar checkpoint 17/jun para decisão final.`
+  const statusNote = isTied
+    ? `Empate entre células com ${maxRate.toFixed(1)}% — aguardar mais dias de envio.`
+    : allSampled && winnerCell
+    ? `Vencedor provisório: <strong style="color:${DS.brand}">Célula ${winnerCell}</strong> — aguardar checkpoint de análise para decisão final.`
     : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
 
   return `

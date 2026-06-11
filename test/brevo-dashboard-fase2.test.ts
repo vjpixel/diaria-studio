@@ -219,6 +219,24 @@ describe("calcCumulativeSent", () => {
     assert.equal(calcCumulativeSent(allCampaigns, "9999"), 0);
   });
 
+  test("usa campaignStats[0].sent quando globalStats fetch falhou (fallback)", () => {
+    // Campanha com campaignStats mas sem globalStats (ex: fetch individual falhou)
+    const csOnlyCampaign = {
+      ...makeCampaign(50, "Clarice News 2605 d03-A (sex)", "2026-06-13T09:00:00Z"),
+      statistics: {
+        campaignStats: [{
+          listId: 150, sent: 200, delivered: 198,
+          hardBounces: 1, softBounces: 1, deferred: 0,
+          uniqueViews: 50, viewed: 60, trackableViews: 30,
+          uniqueClicks: 5, clickers: 5, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: undefined,
+      },
+    };
+    const total = calcCumulativeSent([csOnlyCampaign], "2605");
+    assert.equal(total, 200, "deve somar sent do campaignStats quando globalStats ausente");
+  });
+
   test("CLARICE_PLAN_TOTAL é 40000", () => {
     assert.equal(CLARICE_PLAN_TOTAL, 40_000);
   });
@@ -340,10 +358,36 @@ describe("renderAbcSection", () => {
     assert.match(html, /40\.000/, "deve mostrar meta 40.000");
   });
 
-  test("marca vencedor provisório quando ≥2 células têm dados", () => {
+  test("marca vencedor provisório quando ≥2 células têm dados (e uma lidera)", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
     const html = renderAbcSection(rows, 900);
-    assert.match(html, /LÍDER/, "deve mostrar tag LÍDER no vencedor provisório");
+    // Deve ter exatamente 1 LÍDER (a célula com maior open rate)
+    const liderCount = (html.match(/LÍDER/g) ?? []).length;
+    assert.equal(liderCount, 1, "deve mostrar exatamente 1 tag LÍDER");
+  });
+
+  test("empate: nenhuma célula recebe LÍDER quando duas têm open rate igual", () => {
+    const tiedRows = [
+      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2 },
+    ];
+    const html = renderAbcSection(tiedRows, 5000);
+    const liderCount = (html.match(/LÍDER/g) ?? []).length;
+    assert.equal(liderCount, 0, "empate: nenhum LÍDER deve ser exibido");
+    assert.match(html, /Empate/, "deve mostrar texto de empate");
+  });
+
+  test("3-way tie: nenhuma célula recebe LÍDER", () => {
+    const tiedRows = [
+      { cell: "A" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "C" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+    ];
+    const html = renderAbcSection(tiedRows, 5000);
+    const liderCount = (html.match(/LÍDER/g) ?? []).length;
+    assert.equal(liderCount, 0, "3-way tie: nenhum LÍDER deve ser exibido");
+    assert.match(html, /Empate/, "deve mostrar texto de empate");
   });
 
   test("contém id='abc-summary' para âncora", () => {
@@ -440,8 +484,9 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.doesNotMatch(html, /abc-summary/, "seção abc deve estar ausente sem Clarice News");
   });
 
-  test("colspan da linha 'sem stats' atualizado para 7 (10 colunas - 3 fixas)", () => {
-    // Após adicionar coluna Trackable, colspan deve ser 7 (era 6)
+  test("colspan da linha 'sem stats' atualizado para 7 (11 colunas - 4 fixas)", () => {
+    // Após adicionar coluna Trackable, tabela tem 11 colunas. colspan deve ser 7 (era 6).
+    // Colunas fixas: ID(1) + Lista(2) + Enviado(3) + "—"(4) = 4. Métricas = 7. Total = 11.
     const noStatsCampaign = {
       id: 99,
       name: "No stats",
