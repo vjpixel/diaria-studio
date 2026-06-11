@@ -124,7 +124,10 @@ export async function brevoListAllLists(
       headers: { "api-key": apiKey, Accept: "application/json" },
     });
     if (!res.ok) {
-      const text = await res.text();
+      // #2061: truncar body pra evitar inundar o log com página HTML de erro
+      // (ex: 401 com página HTML de 5KB). 500 chars é suficiente pra diagnóstico.
+      const rawText = await res.text();
+      const text = rawText.length > 500 ? rawText.slice(0, 500) + "… [truncado]" : rawText;
       throw new Error(`Brevo API GET /contacts/lists falhou (${res.status}): ${text}`);
     }
     const body = (await res.json()) as { lists?: { id: number; name: string }[] };

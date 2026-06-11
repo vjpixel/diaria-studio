@@ -23,7 +23,7 @@
  * Output (stdout JSON): { ok: boolean, num_findings: DestaqueFinding[], count_findings: CommentCountFinding[] }
  */
 
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -390,7 +390,21 @@ function main(): void {
   const doFix = args.fix === "true";
   const socialPath = resolve(process.cwd(), args.social);
   let socialMd = readFileSync(socialPath, "utf8");
-  const approved = JSON.parse(readFileSync(resolve(process.cwd(), args.approved), "utf8")) as ApprovedShape;
+  // #2061: fallback pra 01-approved.json quando 01-approved-capped.json ausente
+  // (edição pré-#2053 não tem o arquivo capped — ENOENT sem fallback dá mensagem
+  // inútil ao editor que roda o lint retroativamente).
+  let approvedPath = resolve(process.cwd(), args.approved);
+  if (!existsSync(approvedPath)) {
+    const uncappedPath = approvedPath.replace("01-approved-capped.json", "01-approved.json");
+    if (existsSync(uncappedPath)) {
+      console.error(
+        `⚠️  lint-social-numbers: ${args.approved} ausente — edição pré-#2053, usando 01-approved.json como fallback.`,
+      );
+      approvedPath = uncappedPath;
+    }
+    // Se nem o uncapped existe, deixar o readFileSync lançar ENOENT com path original.
+  }
+  const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedShape;
 
   // --- lint 1: cifras financeiras alucinadas (#1711) ---
   const numFindings = lintSocialNumbers(socialMd, approved);

@@ -547,11 +547,12 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
  * paralelo via `Promise.all`. A ordem dos issues em `kept`/`dropped` é
  * preservada — `Promise.all` mantém a posição original.
  *
- * #2047: `linkCheckCache` (opcional) — Map<url, boolean|null> reutilizado
+ * #2047: `linkCheckCache` (opcional) — Map<url, boolean> reutilizado
  * entre iterações do loop verify→fix do orchestrator-stage-4. O caller
  * cria o Map UMA vez fora do loop e passa em cada chamada. Evita re-fetch
  * do mesmo URL em iterações posteriores (link genuinamente morto continua
- * morto; link vivo continua vivo). `null` = inconclusivo (re-fetcha).
+ * morto; link vivo continua vivo). URL ausente no Map (undefined) = não
+ * verificada ainda → vai pro fetch paralelo (#2061: narrow de boolean|null).
  *
  * Tipos cobertos:
  *   Síncronos: encoding_drop, poll_sig_missing, vote_edition_malformed,
@@ -568,13 +569,15 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
  * @param linkCheckCache  (opcional) Map<url, boolean> — consulta antes do fetch,
  *                        popula depois. Caller mantém o Map vivo entre iterações
  *                        do loop verify→fix pra evitar re-fetches redundantes.
+ *                        Só armazena resultados definitivos (true=vivo, false=morto);
+ *                        URL ausente no Map (undefined) = não verificada ainda → fetch.
  */
 export async function filterAgentIssues(
   issues: string[],
   htmlLocal: string,
   editionDate: string,
   fetchFn?: FetchFn,
-  linkCheckCache?: Map<string, boolean | null>,
+  linkCheckCache?: Map<string, boolean>,
 ): Promise<FilterResult> {
   // ---------------------------------------------------------------------------
   // Fase 1: verificações síncronas (encoding, poll_sig, section, DS checks, etc)
@@ -643,7 +646,7 @@ export async function filterAgentIssues(
             // Cache: link morto confirmado anteriormente → mantém
             return { kind: "keep" };
           }
-          // cached === undefined → URL nova, ou null → inconclusivo → vai pro fetch paralelo
+          // cached === undefined → URL não verificada ainda → vai pro fetch paralelo
         }
         if (url) {
           return { kind: "link_dead_pending", issue, url };

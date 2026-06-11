@@ -311,6 +311,14 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
 - **Loop de verificação e correção (OBRIGATÓRIO — até 10 iterações):**
   > **REGRA CRÍTICA:** Este loop NUNCA deve ser pulado. Ele é parte integral da Etapa 4. A Etapa 4 só está completa quando `review_completed: true` estiver gravado em `05-published.json`. Sem isso, o resume do pipeline re-executa o loop.
 
+  ```typescript
+  // #2047 / #2061: declarar UMA vez ANTES do loop — evita re-fetch do mesmo URL
+  // entre iterações (link morto continua morto; link vivo continua vivo).
+  // Se instanciado dentro do loop, o cache é descartado a cada iteração e URLs
+  // repetidamente verificados gastam rede + tempo desnecessariamente.
+  const linkCheckCache = new Map<string, boolean>();
+  ```
+
   Para `attempt` de 1 a 10:
 
   1. **Verificar email de teste.** Disparar `review-test-email` (Sonnet) passando:
@@ -325,7 +333,7 @@ Se uma chamada `mcp__claude-in-chrome__*` durante o playbook retornar `chrome_di
      ```typescript
      import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
      const htmlLocal = readFileSync(`{edition_dir}/_internal/newsletter-final.html`, "utf8");
-     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch, linkCheckCache); // #2047: linkCheckCache = new Map() declarado UMA vez ANTES do loop (5º arg) — evita re-fetch entre iterações
+     const { kept, dropped } = await filterAgentIssues(issues, htmlLocal, edition_date, fetch, linkCheckCache); // linkCheckCache declarado ANTES do loop (acima)
      for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
      ```
      Tipos cobertos (#1421 + #2013 + #2047): `encoding_drop` (acentos + emoji de header DS), `poll_sig_missing`, `vote_edition_malformed`, `merge_tag_unexpanded`, `bold_missing`, `italic_missing`, `section_missing` (grep no HTML local), `link_dead` (fetch paralelo via Promise.all; cache entre iterações; 403 *.beehiiv.com = bot-block).
