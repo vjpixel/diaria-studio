@@ -211,6 +211,7 @@
 ### LangChain Blog
 - URL: https://www.langchain.com/blog
 - Site query: `site:langchain.com`
+- RSS: https://www.langchain.com/blog/rss.xml
 - Use Melhor: sim
 
 ### Pinecone Learn

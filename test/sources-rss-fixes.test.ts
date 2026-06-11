@@ -118,9 +118,9 @@ describe("sources RSS fixes (#1266)", () => {
 
   // #1862: feeds RSS mortos (404 / HTML React/Webflow) — fonte mantida pra
   // WebSearch `site:`, mas RSS limpo + URL apontando pro domínio atual.
+  // LangChain removida desta lista em #2077: ganhou RSS válido (rss.xml no novo domínio).
   const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [
     { name: "OpenAI Cookbook", url: "https://developers.openai.com/cookbook" }, // migrou de cookbook.openai.com (rss 404)
-    { name: "LangChain Blog", url: "https://www.langchain.com/blog" }, // blog.langchain.dev/rss → 301 → HTML Webflow
     { name: "Weights & Biases", url: "https://wandb.ai/fully-connected" }, // /site/articles/rss.xml 404; fully-connected é React (sem XML)
   ];
   for (const { name, url } of SOURCES_1862_NO_RSS) {
@@ -131,6 +131,15 @@ describe("sources RSS fixes (#1266)", () => {
       assert.equal(s!.url, url, `${name} URL deve apontar pro domínio atual`);
     });
   }
+
+  it("#2077: LangChain Blog ganhou RSS válido no novo domínio", () => {
+    // blog.langchain.dev/rss era morto (HTML Webflow). Novo feed:
+    // www.langchain.com/blog/rss.xml — RSS 2.0 válido com posts de Jun/2026.
+    const s = byName.get("LangChain Blog");
+    assert.ok(s, "LangChain Blog deve existir em sources.md");
+    assert.equal(s!.rss, "https://www.langchain.com/blog/rss.xml", "LangChain Blog deve usar novo RSS válido");
+    assert.equal(s!.url, "https://www.langchain.com/blog", "LangChain Blog URL no domínio atual");
+  });
 
   it("#1862: fontes de baixa cadência mantidas com RSS válido (não eram quebradas)", () => {
     // 0 hard failures, só empties → feed funciona, publica pouco. NÃO mexer.
