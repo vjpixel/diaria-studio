@@ -127,6 +127,15 @@ export function renderDivulgacaoSeparator(): string {
 }
 
 /**
+ * Régua bege full-width SEM label — separador antes do midCallout
+ * não-patrocinado (📚/🎉; pedido do editor, 260611). O caso patrocinado (📣)
+ * já recebe o kicker "Divulgação", que embute a própria régua.
+ */
+export function renderRuleRow(): string {
+  return `<tr><td class="pad" style="padding:32px 32px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-bottom:1px solid ${RULE};font-size:0;line-height:0;">&nbsp;</td></tr></table></td></tr>`;
+}
+
+/**
  * Kicker de seção do DS: ponto ● teal + label teal uppercase + régua bege
  * preenchendo o resto da linha. Retorna HTML interno (sem `<tr>`).
  */
@@ -716,8 +725,10 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // do introCallout. Posicionado após o 1º destaque.
     if (i === 0 && content.midCallout) {
       // #1940: separador "Divulgação" antes de bloco PATROCINADO (📣). Promo
-      // interna (📚) e sorteio (🎉) não recebem disclosure — ver isSponsoredCallout.
+      // interna (📚) e sorteio (🎉) não recebem disclosure — ver isSponsoredCallout —
+      // mas ganham régua simples antes do box (pedido do editor, 260611).
       if (isSponsoredCallout(content.midCallout)) parts.push(renderDivulgacaoSeparator());
+      else parts.push(renderRuleRow());
       parts.push(renderMidCallout(content.midCallout, content.midCalloutImage ?? null));
     }
     if (includeEia && !eiaInserted && i === 1) {
