@@ -18,9 +18,13 @@
  * Secrets:
  *   BREVO_API_KEY          → xkeysib-... da conta Clarice
  *
- * Sem KV — stats são fetch-on-demand a cada page load (sem cache, por
- * preferência do editor 2026-05-12 — refresh manual sempre busca fresh).
- * Volume típico baixo (~5-10 loads/dia), Brevo free tier suporta.
+ * KV bindings:
+ *   STATS_CACHE            → cache de stats imutáveis (campanhas > 7d)
+ *
+ * Cache de borda 5min via Cache API (#2144): rotas / e /api/campaigns
+ * são cacheadas por 5min. Bypass: ?fresh=1. Isso reduz drasticamente
+ * o número de chamadas à Brevo (de ~27/load para ~3-5 com KV quente,
+ * e 0 chamadas adicionais nos 4min seguintes ao primeiro load).
  *
  * #2086 Fase 2 mínima:
  *   - Resumo A/B/C da S1 (checkpoint 17/jun)
@@ -63,6 +67,8 @@ export const DS_FONTS = DSF;
 
 export interface Env {
   BREVO_API_KEY: string;
+  /** KV namespace para cache de stats imutáveis (#2144) */
+  STATS_CACHE: KVNamespace;
 }
 
 interface BrevoCampaignStats {
@@ -120,10 +126,65 @@ interface BrevoList {
 }
 
 
+// ─── #2144: helpers de controle de concorrência e cache ──────────────────────
+
+/**
+ * mapLimit: executa `fn` sobre cada item de `arr` com no máximo `n`
+ * chamadas simultâneas. Preserva a ordem do input no output.
+ * Implementação local — sem dependência nova, ~15 linhas.
+ */
+export async function mapLimit<T, R>(
+  arr: T[],
+  n: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(arr.length);
+  let idx = 0;
+
+  async function worker(): Promise<void> {
+    while (idx < arr.length) {
+      const i = idx++;
+      results[i] = await fn(arr[i]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(n, arr.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * isImmutableCampaign: campanha com `sentDate` há mais de 7 dias tem
+ * stats imutáveis — não muda mais no Brevo. Usada para decidir se devemos
+ * tentar ler/escrever no KV.
+ *
+ * @param sentDate - ISO string da data de envio (null = campanha recente)
+ * @param nowMs    - timestamp de referência (mockável em testes)
+ */
+export function isImmutableCampaign(sentDate: string | null, nowMs = Date.now()): boolean {
+  if (!sentDate) return false;
+  const sent = Date.parse(sentDate);
+  if (isNaN(sent)) return false;
+  const sevenDaysMs = 7 * 24 * 3600 * 1000;
+  return nowMs - sent > sevenDaysMs;
+}
+
+/** Erro especial para 429 — carrega o header Retry-After da Brevo. */
+export class BrevoRateLimitError extends Error {
+  constructor(public readonly retryAfterSecs: number | null) {
+    super(`Brevo rate limit (retry-after: ${retryAfterSecs ?? "?"}s)`);
+    this.name = "BrevoRateLimitError";
+  }
+}
+
 async function brevoFetch<T>(path: string, env: Env): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
     headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
   });
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("x-sib-ratelimit-reset") ?? res.headers.get("retry-after")) || null;
+    throw new BrevoRateLimitError(retryAfter);
+  }
   if (!res.ok) {
     throw new Error(`Brevo API ${path} failed (${res.status}): ${await res.text()}`);
   }
@@ -136,6 +197,11 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
  * **não popula `globalStats`** — vem todo zerado. Pra ter contagem que bate
  * com a Brevo Web UI (que inclui Apple MPP opens), tem que fazer GET
  * individual por campanha com `?statistics=globalStats`.)
+ *
+ * #2144: usa mapLimit(5) em vez de Promise.all ilimitado pra não disparar
+ * todos os GETs de uma vez e estourar a janela de 100 reqs/min da Brevo.
+ * Stats de campanhas com sentDate > 7d são consideradas imutáveis e
+ * cacheadas no KV STATS_CACHE sem TTL. Nomes de lista: KV com TTL 7d.
  */
 async function fetchRecentCampaigns(
   env: Env,
@@ -148,38 +214,65 @@ async function fetchRecentCampaigns(
   const campaigns = data.campaigns ?? [];
 
   // Coleta lista IDs únicas pra fetch em batch (max 1 chamada extra por lista)
-  const listIds = new Set<number>();
-  for (const c of campaigns) {
-    for (const id of c.recipients?.lists ?? []) listIds.add(id);
-  }
+  const listIds = [...new Set(campaigns.flatMap((c) => c.recipients?.lists ?? []))];
 
   const listMap = new Map<number, BrevoList>();
   const globalStatsMap = new Map<number, BrevoGlobalStats>();
 
-  await Promise.all([
-    // Fetch lista names em paralelo
-    ...[...listIds].map(async (id) => {
-      try {
-        const list = await brevoFetch<BrevoList>(`/v3/contacts/lists/${id}`, env);
-        listMap.set(id, list);
-      } catch {
-        // Lista pode ter sido apagada — skip
+  // Fetch nomes de lista com concorrência limitada + KV cache (TTL 7d)
+  await mapLimit(listIds, 5, async (id) => {
+    try {
+      // Tentar KV primeiro
+      const kvKey = `list:${id}`;
+      const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
+      if (cached) {
+        listMap.set(id, cached as BrevoList);
+        return;
       }
-    }),
-    // Fetch globalStats per campaign em paralelo (inclui Apple MPP)
-    ...campaigns.map(async (c) => {
-      try {
-        const detail = await brevoFetch<BrevoCampaign>(
-          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
-          env,
-        );
-        const gs = detail.statistics?.globalStats;
-        if (gs) globalStatsMap.set(c.id, gs);
-      } catch {
-        // Falha individual não bloqueia o resto — campaignStats fica como fallback
+      const list = await brevoFetch<BrevoList>(`/v3/contacts/lists/${id}`, env);
+      listMap.set(id, list);
+      // Gravar no KV com TTL 7 dias (lista pode mudar de nome ou tamanho)
+      if (env.STATS_CACHE) {
+        await env.STATS_CACHE.put(kvKey, JSON.stringify(list), {
+          expirationTtl: 7 * 24 * 3600,
+        }).catch(() => { /* erro de KV nunca bloqueia */ });
       }
-    }),
-  ]);
+    } catch {
+      // Lista pode ter sido apagada — skip
+    }
+  });
+
+  // Fetch globalStats com concorrência limitada + KV cache para imutáveis
+  await mapLimit(campaigns, 5, async (c) => {
+    try {
+      const kvKey = `gstats:${c.id}`;
+      const immutable = isImmutableCampaign(c.sentDate);
+
+      // Para campanhas imutáveis: tentar KV primeiro
+      if (immutable && env.STATS_CACHE) {
+        const cached = await env.STATS_CACHE.get(kvKey, "json").catch(() => null);
+        if (cached) {
+          globalStatsMap.set(c.id, cached as BrevoGlobalStats);
+          return;
+        }
+      }
+
+      const detail = await brevoFetch<BrevoCampaign>(
+        `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+        env,
+      );
+      const gs = detail.statistics?.globalStats;
+      if (gs) {
+        globalStatsMap.set(c.id, gs);
+        // Gravar no KV sem TTL se imutável (stats não mudam mais)
+        if (immutable && env.STATS_CACHE) {
+          await env.STATS_CACHE.put(kvKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+        }
+      }
+    } catch {
+      // Falha individual não bloqueia o resto — campaignStats fica como fallback
+    }
+  });
 
   return campaigns.map((c) => {
     const listId = c.recipients?.lists?.[0];
@@ -433,7 +526,7 @@ ${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity
 </div>
 </section>
 ${trendSection}
-<p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
+<p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
 Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%).</p>
@@ -971,6 +1064,38 @@ export function renderTrendSection(rows: WaveTrendRow[]): string {
 </section>`;
 }
 
+/**
+ * Renderiza resposta de rate limit amigável (#2144).
+ * Retorna 503 + Retry-After quando o listing Brevo responde 429.
+ */
+function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean): Response {
+  const retryMsg = retryAfterSecs != null ? `${retryAfterSecs}s` : "alguns minutos";
+  const headers: Record<string, string> = {
+    "Cache-Control": "no-store",
+  };
+  if (retryAfterSecs != null) headers["Retry-After"] = String(retryAfterSecs);
+
+  if (isHtml) {
+    const body = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Rate limit — Diar.ia Clarice Dashboard</title>
+<style>body{font-family:system-ui,sans-serif;max-width:600px;margin:60px auto;padding:0 20px;text-align:center;}</style>
+</head>
+<body>
+<h1>⏳ Brevo rate limit</h1>
+<p>A API da Brevo retornou 429 (too many requests).<br>
+Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
+<a href="?fresh=1">Tentar agora</a></p>
+</body></html>`;
+    return new Response(body, { status: 503, headers: { ...headers, "Content-Type": "text/html; charset=utf-8" } });
+  }
+
+  return new Response(
+    JSON.stringify({ error: "brevo_rate_limit", retryAfterSecs }),
+    { status: 503, headers: { ...headers, "Content-Type": "application/json" } },
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -980,22 +1105,36 @@ export default {
       return new Response("ok", { headers: { "Content-Type": "text/plain" } });
     }
 
-    // Sem cache (preferência do editor 2026-05-12): cada load fetch fresh
-    // da Brevo. Volume baixo (~5-10 loads/dia), Brevo free tier suporta.
-    // Refresh manual é necessário pra ver updates pós-carga.
-    const noCacheHeaders = "no-store, no-cache, must-revalidate, max-age=0";
+    // #2144: edge cache 5min via Cache API pras rotas cacheáveis.
+    // fresh=1 → bypass completo (nem lê nem escreve no cache).
+    const isFresh = url.searchParams.get("fresh") === "1";
+    const isCacheable = (path === "/" || path === "/index.html" || path === "/api/campaigns");
+    const cache = caches.default;
+
+    if (isCacheable && !isFresh) {
+      const cached = await cache.match(request);
+      if (cached) return cached;
+    }
 
     if (path === "/api/campaigns") {
       try {
         const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
         const campaigns = await fetchRecentCampaigns(env, limit);
-        return new Response(JSON.stringify(campaigns, null, 2), {
+        const response = new Response(JSON.stringify(campaigns, null, 2), {
           headers: {
             "Content-Type": "application/json",
-            "Cache-Control": noCacheHeaders,
+            "Cache-Control": "public, max-age=300",
           },
         });
+        if (!isFresh) {
+          // Clonar antes de armazenar — Response só pode ser lida uma vez
+          await cache.put(request, response.clone());
+        }
+        return response;
       } catch (e) {
+        if (e instanceof BrevoRateLimitError) {
+          return rateLimitResponse(e.retryAfterSecs, false);
+        }
         return new Response(`Brevo fetch error: ${(e as Error).message}`, { status: 502 });
       }
     }
@@ -1004,13 +1143,20 @@ export default {
       try {
         const campaigns = await fetchRecentCampaigns(env, 50); // #2142 review: rota / hardcodava 20 e ignorava o default novo
         const html = renderDashboardHtml(campaigns);
-        return new Response(html, {
+        const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": noCacheHeaders,
+            "Cache-Control": "public, max-age=300",
           },
         });
+        if (!isFresh) {
+          await cache.put(request, response.clone());
+        }
+        return response;
       } catch (e) {
+        if (e instanceof BrevoRateLimitError) {
+          return rateLimitResponse(e.retryAfterSecs, true);
+        }
         return new Response(
           `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
           { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } },

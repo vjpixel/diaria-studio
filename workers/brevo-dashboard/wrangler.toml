@@ -9,6 +9,12 @@ workers_dev = true
 # Dashboard é página pública (sem auth) — preferência do editor 2026-05-12.
 # Cache 5min via Cache API economiza quota Brevo.
 
+# KV namespace para cache de stats imutáveis (#2144).
+# id = namespace criado pelo coordenador via `wrangler kv:namespace create STATS_CACHE`.
+[[kv_namespaces]]
+binding = "STATS_CACHE"
+id = "2f87d65d735c499ab8f465774d0167e2"
+
 # Build step (#2107): gera ds-tokens.generated.ts a partir de design-tokens.ts
 # antes de compilar o Worker. Garante que tokens nunca ficam stale no bundle.
 # `npx tsx ../../scripts/generate-worker-tokens.ts` lê a fonte canônica no
