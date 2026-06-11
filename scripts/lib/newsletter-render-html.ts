@@ -779,7 +779,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
 
   // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
   // Renderer só emite quando o reviewed.md tem o bloco (graceful skip).
-  if (content.sorteio) parts.push(renderSorteio(content.sorteio));
+  if (content.sorteio?.trim()) parts.push(renderSorteio(content.sorteio));
   // #1279: reveal "Na última edição..." renderiza entre SORTEIO e PARA ENCERRAR
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));

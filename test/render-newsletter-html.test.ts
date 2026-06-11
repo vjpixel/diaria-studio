@@ -1110,6 +1110,13 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
     assert.ok(html.indexOf("Participe e ganhe uma caneca") > boxIdx, "texto dentro do box");
   });
 
+  it("#2080 bug fix — sorteio só-whitespace não emite box vazio", () => {
+    // guard: content.sorteio?.trim() — whitespace-only não deve renderizar nada
+    const html = renderHTML(fixt({ sorteio: "   " }));
+    assert.ok(!html.includes("background:#EBE5D0"), "box vazio não deve aparecer");
+    assert.ok(!html.includes("<!-- Sorteio -->"), "bloco sorteio não deve ser emitido");
+  });
+
   it("inclui PARA ENCERRAR com pills no HTML quando presente", () => {
     const html = renderHTML(fixt({
       encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
