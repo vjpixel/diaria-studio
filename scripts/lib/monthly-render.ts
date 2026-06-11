@@ -505,14 +505,20 @@ export function renderEncerramento(body: string): string {
 }
 
 /**
- * Deriva o código de edição AAMMDD do É IA? mensal = último dia do mês.
- * Ex: "2604" → "260430" (30 de abril de 2026).
+ * Deriva o código de edição do É IA? mensal no formato de ciclo `{YYMM}-{MM}`,
+ * onde YYMM é o mês do CONTEÚDO e MM é o mês do ENVIO (conteúdo + 1).
+ * Ex: "2605" → "2605-06" (digest de maio, enviado em junho).
+ *     "2612" → "2612-01" (digest de dezembro, enviado em janeiro do ano seguinte).
+ *
+ * #2115: formato novo ciclo substitui o legado AAMMDD (ex-"260531") que era
+ * confuso pro leitor que recebia em junho e via "edição de 31 de maio".
+ * Back-compat: edition=260531 em links/votos antigos continua funcionando no
+ * Worker — as chaves KV são opacas e cada link lê suas próprias chaves.
  */
 export function eiaEditionFromYymm(yymm: string): string {
-  const yr = 2000 + parseInt(yymm.slice(0, 2), 10);
-  const mo = parseInt(yymm.slice(2, 4), 10);
-  const lastDay = new Date(Date.UTC(yr, mo, 0)).getUTCDate();
-  return `${String(yr).slice(2)}${String(mo).padStart(2, "0")}${String(lastDay).padStart(2, "0")}`;
+  const contentMonth = parseInt(yymm.slice(2, 4), 10);
+  const sendMonth = (contentMonth % 12) + 1;
+  return `${yymm}-${String(sendMonth).padStart(2, "0")}`;
 }
 
 /**

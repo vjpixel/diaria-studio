@@ -23,7 +23,7 @@ describe("monthlyEiaImageKey (#1908)", () => {
     assert.equal(monthlyEiaImageKey("260531", "C:\\monthly\\01-eia-A.jpg"), "img-260531-01-eia-A.jpg");
   });
 
-  it("a key do upload bate com a URL que a result page do voto monta (cross-file)", () => {
+  it("a key do upload bate com a URL que a result page do voto monta (cross-file) — legado 260531", () => {
     const edition = "260531";
     const html = renderResultImagesHtml({ edition, aiSide: "A", clickedSide: "A" });
     // ambas as imagens (A e B) sempre renderizam na result page
@@ -37,5 +37,19 @@ describe("monthlyEiaImageKey (#1908)", () => {
     );
     // e NÃO a key legada img-monthly-*
     assert.equal(html.includes("img-monthly-"), false);
+  });
+
+  // #2115: ciclo 2605-06 — a key do upload também bate com a URL da result page
+  it("a key do upload bate com a URL da result page — ciclo 2605-06", () => {
+    const edition = "2605-06";
+    const html = renderResultImagesHtml({ edition, aiSide: "B", clickedSide: "A" });
+    assert.ok(
+      html.includes(`/img/${monthlyEiaImageKey(edition, "01-eia-A.jpg")}`),
+      "result page usa img-2605-06-01-eia-A.jpg",
+    );
+    assert.ok(
+      html.includes(`/img/${monthlyEiaImageKey(edition, "01-eia-B.jpg")}`),
+      "result page usa img-2605-06-01-eia-B.jpg",
+    );
   });
 });

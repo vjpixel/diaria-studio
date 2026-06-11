@@ -188,6 +188,42 @@ describe("isolamento e2e via router (#1905)", () => {
     assert.ok(env.POLL._map.has("vote:260531:a@x.com"));
     assert.equal([...env.POLL._map.keys()].some((k) => k.startsWith("xyz:")), false);
   });
+
+  // #2115: edition=2605-06 (ciclo novo) → score-by-month cai em MESMO bucket 2026-05
+  it("edition=2605-06 grava em clarice:score-by-month:2026-05 (bucket idêntico ao legado 260531)", async () => {
+    const env = makeEnv();
+    const req = new Request(
+      "https://poll.test/vote?email=a@x.com&edition=2605-06&choice=A&brand=clarice",
+    );
+    const r = await worker.fetch(req, env);
+    assert.equal(r.status, 200);
+    const m = env.POLL._map;
+    // voto gravado com a chave do ciclo novo
+    assert.ok(m.has("clarice:vote:2605-06:a@x.com"), "chave KV usa o ciclo 2605-06");
+    // score-by-month no mesmo bucket do legado 260531 → rankings não fragmentam
+    assert.ok(m.has("clarice:score-by-month:2026-05:a@x.com"), "bucket de leaderboard é 2026-05");
+  });
+
+  it("votos ciclo 2605-06 e legado 260531 ficam em KV DIFERENTES mas no MESMO bucket mensal", async () => {
+    const env = makeEnv();
+    // Voto novo (ciclo)
+    await worker.fetch(
+      new Request("https://poll.test/vote?email=a@x.com&edition=2605-06&choice=A&brand=clarice"),
+      env,
+    );
+    // Voto legado (outro email, para não ter dedup)
+    await worker.fetch(
+      new Request("https://poll.test/vote?email=b@x.com&edition=260531&choice=B&brand=clarice"),
+      env,
+    );
+    const m = env.POLL._map;
+    // Chaves de voto distintas (namespaces separados)
+    assert.ok(m.has("clarice:vote:2605-06:a@x.com"), "ciclo novo tem chave própria");
+    assert.ok(m.has("clarice:vote:260531:b@x.com"), "legado tem chave própria");
+    // Ambos aterram no MESMO bucket score-by-month:2026-05
+    assert.ok(m.has("clarice:score-by-month:2026-05:a@x.com"), "ciclo → bucket 2026-05");
+    assert.ok(m.has("clarice:score-by-month:2026-05:b@x.com"), "legado → bucket 2026-05");
+  });
 });
 
 describe("votePageHtml propaga brand no form de set-name (code-review #1907)", () => {
