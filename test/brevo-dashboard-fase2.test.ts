@@ -23,6 +23,7 @@ import {
   detectActiveCycle,
   buildTrendRows,
   renderAbcSection,
+  renderVolumeSection,
   renderTrendSection,
   renderDashboardHtml,
   CLARICE_PLAN_TOTAL,
@@ -362,28 +363,33 @@ describe("renderAbcSection", () => {
       { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0 },
       { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0 },
     ];
-    assert.equal(renderAbcSection(emptyRows, 0), "");
+    assert.equal(renderAbcSection(emptyRows), "");
   });
 
   test("contém as 3 células no HTML", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
-    const html = renderAbcSection(rows, 900);
+    const html = renderAbcSection(rows);
     assert.match(html, /Célula A/);
     assert.match(html, /Célula B/);
     assert.match(html, /Célula C/);
   });
 
-  test("exibe volume cumulativo vs plano", () => {
-    const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
-    const html = renderAbcSection(rows, 900);
-    // Deve mostrar o volume e o total 40.000
-    assert.match(html, /900/, "deve mostrar 900 enviados");
-    assert.match(html, /40\.000/, "deve mostrar meta 40.000");
+  test("ordena células do melhor pro pior open rate", () => {
+    const ordered = [
+      { cell: "A" as const, totalViews: 60, totalDelivered: 200, openRate: 30.0, campaignCount: 2 },
+      { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
+      { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2 },
+    ];
+    const html = renderAbcSection(ordered);
+    const posB = html.indexOf("Célula B");
+    const posC = html.indexOf("Célula C");
+    const posA = html.indexOf("Célula A");
+    assert.ok(posB < posC && posC < posA, "ordem B(50) > C(40) > A(30)");
   });
 
   test("marca vencedor provisório quando ≥2 células têm dados (e uma lidera)", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
-    const html = renderAbcSection(rows, 900);
+    const html = renderAbcSection(rows);
     // Deve ter exatamente 1 LÍDER (a célula com maior open rate)
     const liderCount = (html.match(/LÍDER/g) ?? []).length;
     assert.equal(liderCount, 1, "deve mostrar exatamente 1 tag LÍDER");
@@ -395,7 +401,7 @@ describe("renderAbcSection", () => {
       { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
       { cell: "C" as const, totalViews: 80, totalDelivered: 200, openRate: 40.0, campaignCount: 2 },
     ];
-    const html = renderAbcSection(tiedRows, 5000);
+    const html = renderAbcSection(tiedRows);
     const liderCount = (html.match(/LÍDER/g) ?? []).length;
     assert.equal(liderCount, 0, "empate: nenhum LÍDER deve ser exibido");
     assert.match(html, /Empate/, "deve mostrar texto de empate");
@@ -407,7 +413,7 @@ describe("renderAbcSection", () => {
       { cell: "B" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
       { cell: "C" as const, totalViews: 100, totalDelivered: 200, openRate: 50.0, campaignCount: 2 },
     ];
-    const html = renderAbcSection(tiedRows, 5000);
+    const html = renderAbcSection(tiedRows);
     const liderCount = (html.match(/LÍDER/g) ?? []).length;
     assert.equal(liderCount, 0, "3-way tie: nenhum LÍDER deve ser exibido");
     assert.match(html, /Empate/, "deve mostrar texto de empate");
@@ -415,7 +421,7 @@ describe("renderAbcSection", () => {
 
   test("contém id='abc-summary' para âncora", () => {
     const rows = aggregateAbcSummary(cycle2605Campaigns, "2605");
-    const html = renderAbcSection(rows, 900);
+    const html = renderAbcSection(rows);
     assert.match(html, /id="abc-summary"/);
   });
 
@@ -428,7 +434,7 @@ describe("renderAbcSection", () => {
       { cell: "B" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
       { cell: "C" as const, totalViews: 0, totalDelivered: 100, openRate: 0, campaignCount: 1 },
     ];
-    const html = renderAbcSection(zeroRows, 300);
+    const html = renderAbcSection(zeroRows);
     // Não deve exibir "Empate...0.0%" — confuso e inútil antes de qualquer abertura
     assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate...0.0%' quando todos zero");
     // Deve exibir aviso de aguardando dados
@@ -445,7 +451,7 @@ describe("renderAbcSection", () => {
       { cell: "B" as const, totalViews: 50, totalDelivered: 100, openRate: 50.0, campaignCount: 2 },
       { cell: "C" as const, totalViews: 30, totalDelivered: 100, openRate: 30.0, campaignCount: 2 },
     ];
-    const html = renderAbcSection(tiedNonZero, 3000);
+    const html = renderAbcSection(tiedNonZero);
     assert.match(html, /Empate.*50\.0%/, "empate real deve continuar mostrando 'Empate...50.0%'");
     assert.doesNotMatch(html, /[Aa]guardando dados/, "não deve mostrar 'aguardando dados' em empate real");
   });
@@ -755,6 +761,16 @@ describe("aggregateByWeekday (#2134)", () => {
 
 // ─── renderWeekdaySection (#2134) ─────────────────────────────────────────────
 
+describe("renderVolumeSection", () => {
+  test("vazio nunca — sempre renderiza com barra e plano", () => {
+    const html = renderVolumeSection(900);
+    assert.match(html, /900/, "deve mostrar 900 enviados");
+    assert.match(html, /40.000/, "deve mostrar meta 40.000");
+    assert.match(html, /id="volume-ciclo"/, "âncora da seção de volume");
+    assert.match(html, /Volume enviado no ciclo/);
+  });
+});
+
 describe("renderWeekdaySection (#2134)", () => {
   function makeRows(overrides: Partial<Parameters<typeof aggregateByWeekday>[0]> = {}) {
     return aggregateByWeekday(cycle2605Campaigns, "2605");
@@ -762,6 +778,19 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("retorna string vazia quando rows está vazio", () => {
     assert.equal(renderWeekdaySection([], "ciclo 2605"), "");
+  });
+
+  test("ordena dias do melhor pro pior open rate", () => {
+    const rows = [
+      { weekday: 0, label: "Seg", count: 2, sent: 100, delivered: 100, openRate: 20, smallSample: false },
+      { weekday: 2, label: "Qua", count: 2, sent: 100, delivered: 100, openRate: 40, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, sent: 100, delivered: 100, openRate: 30, smallSample: false },
+    ];
+    const html = renderWeekdaySection(rows, "todos os envios");
+    const posQua = html.indexOf(">Qua<");
+    const posQui = html.indexOf(">Qui<");
+    const posSeg = html.indexOf(">Seg<");
+    assert.ok(posQua < posQui && posQui < posSeg, "ordem Qua(40) > Qui(30) > Seg(20)");
   });
 
   test("contém id='weekday-openrate' para âncora", () => {

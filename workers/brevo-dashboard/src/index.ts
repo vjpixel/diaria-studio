@@ -466,7 +466,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   const activeCycle = detectActiveCycle(campaigns);
   const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
   const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
-  const abcSection = activeCycle ? renderAbcSection(abcRows, cumSent) : "";
+  const volumeSection = activeCycle ? renderVolumeSection(cumSent) : "";
+  const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
   const trendRows = buildTrendRows(campaigns);
   const trendSection = renderTrendSection(trendRows);
   // #2134: tabela de open rate por dia da semana (ciclo ativo).
@@ -534,6 +535,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+${volumeSection}
 ${abcSection}
 ${weekdaySection}
 <section class="phase2-section" id="campaigns-table">
@@ -862,7 +864,10 @@ export function renderWeekdaySection(
     ? (validRows.find((r) => r.openRate === maxRate)?.weekday ?? null)
     : null;
 
-  const tableRows = rows
+  // #2134 follow-up (editor 2026-06-11): exibir do melhor open rate pro pior.
+  const orderedRows = [...rows].sort((a, b) => b.openRate - a.openRate);
+
+  const tableRows = orderedRows
     .map((r) => {
       const isWinner = r.weekday === winnerWk;
       const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ MELHOR DIA</strong>` : "";
@@ -982,7 +987,7 @@ export function buildTrendRows(
  * Renderiza a seção de resumo A/B/C da S1.
  * Exportado pra teste unitário.
  */
-export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number): string {
+export function renderAbcSection(abcRows: CellSummary[]): string {
   if (abcRows.every((r) => r.campaignCount === 0)) return "";
 
   const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
@@ -997,12 +1002,16 @@ export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number)
     ? sampledRows.find((r) => r.openRate === maxRate)?.cell ?? null
     : null;
 
-  const pctBar = Math.min(100, (cumulativeSent / CLARICE_PLAN_TOTAL) * 100);
-  const pctLabel = pctBar.toFixed(1);
-  const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
-  const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
+  // #2134 follow-up (editor 2026-06-11): ordenar do melhor open rate pro pior;
+  // células sem dados (campaignCount 0) vão pro fim.
+  const orderedRows = [...abcRows].sort((a, b) => {
+    if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
+    if (a.campaignCount === 0) return 1;
+    if (b.campaignCount === 0) return -1;
+    return b.openRate - a.openRate;
+  });
 
-  const cellRows = abcRows
+  const cellRows = orderedRows
     .map((r) => {
       const isWinner = r.cell === winnerCell && r.campaignCount > 0;
       const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
@@ -1046,8 +1055,24 @@ export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number)
     <tbody>${cellRows}</tbody>
   </table>
   </div>
+</section>`;
+}
+
+/**
+ * Renderiza a seção de Volume enviado no ciclo — primeira informação do dashboard
+ * (decisão do editor 2026-06-11: volume vem ANTES do resumo A/B/C).
+ * Exportado pra teste unitário.
+ */
+export function renderVolumeSection(cumulativeSent: number): string {
+  const pctBar = Math.min(100, (cumulativeSent / CLARICE_PLAN_TOTAL) * 100);
+  const pctLabel = pctBar.toFixed(1);
+  const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
+  const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
+  return `
+<section class="phase2-section" id="volume-ciclo">
+  <h2 class="section-title">Volume enviado no ciclo</h2>
   <p class="section-note volume-note">
-    Volume enviado no ciclo: <strong>${cumulativeSent.toLocaleString("pt-BR")}</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
+    <strong>${cumulativeSent.toLocaleString("pt-BR")}</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
     <span class="spark-bar" title="${pctLabel}% do plano total">${bar}</span>
   </p>
 </section>`;
