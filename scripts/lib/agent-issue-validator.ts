@@ -534,6 +534,138 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
 // filterAgentIssues — integração de todas as classes
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// #2105 — tabela declarativa de handlers (substitui if-else-if linear)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resultado síncrono de um único issue durante o dispatch.
+ *
+ * `link_dead_pending` é o variant assíncrono: o handler reconhece o tipo e
+ * delegou o resultado final para a Fase 2 (fetch paralelo). Exposto aqui —
+ * fora da função — para que a tabela de handlers e a Fase 2 compartilhem o
+ * mesmo tipo sem redeclará-lo.
+ */
+type SyncResult =
+  | { kind: "drop"; reason: string }
+  | { kind: "keep" }
+  | { kind: "link_dead_pending"; issue: string; url: string };
+
+/**
+ * Contexto passado a cada handler: parâmetros de `filterAgentIssues` que
+ * os checkers precisam consultar.
+ */
+interface HandlerCtx {
+  htmlLocal: string;
+  editionDate: string;
+  fetchFn?: FetchFn;
+  linkCheckCache?: Map<string, boolean>;
+}
+
+/**
+ * Um entry na tabela de dispatch: `prefix` é o string que o início do issue
+ * deve satisfazer (`issue.startsWith(prefix)`); `handle` é o checker específico.
+ *
+ * Semântica de exclusividade (#2059/#2082): quando `prefix` casa, o resultado
+ * de `handle` é retornado IMEDIATAMENTE — o issue NUNCA alcança os genéricos
+ * de DS (`isMergeTagUnexpandedFalsePositive`, `isBoldMissingFalsePositive`,
+ * `isItalicMissingFalsePositive`), mesmo que o handler retorne `{ kind: "keep" }`.
+ * Isso impede que um tipo específico como `link_dead` com `{{poll_sig}}` na URL
+ * seja silenciado pelo genérico `isMergeTagUnexpandedFalsePositive` (#2082).
+ */
+interface IssueHandler {
+  prefix: string;
+  handle(issue: string, ctx: HandlerCtx): SyncResult;
+}
+
+/**
+ * Tabela de handlers tipo-específicos, em ordem de avaliação.
+ *
+ * O loop de dispatch encontra o PRIMEIRO handler cujo `prefix` casa e retorna
+ * o resultado dele — a busca para ali. Issues cujo tipo NÃO casa com nenhum
+ * handler passam para os genéricos de DS. A ordem só importa para tipos que
+ * compartilham prefixo — não há caso assim hoje, mas mantida explícita por
+ * legibilidade.
+ *
+ * `link_dead` (#2082): o handler é registrado mesmo sem `fetchFn` — o guard
+ * de tipo fica na tabela, FORA da condição de `fetchFn`, garantindo que todo
+ * issue `link_dead` saia por aqui e nunca caia nos genéricos de DS.
+ */
+export const ISSUE_HANDLERS: readonly IssueHandler[] = [
+  {
+    // encoding_drop (#1421, #2013, #2066): verifica emoji de header/callout
+    // por design antes do check genérico de encoding; retorna keep se não é FP
+    // (#2059: checker competente → nunca cai nos genéricos de DS).
+    prefix: "email:encoding_drop",
+    handle(issue, { htmlLocal }) {
+      // #2013: emoji de header removido por DS por design — verificar primeiro.
+      const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
+      if (emojiCheck.falsePositive) return { kind: "drop", reason: emojiCheck.reason };
+      // #2066: marcador de callout (📣/📚/🎉) stripped por design — idem.
+      const markerCheck = isEncodingDropCalloutMarkerByDesign(issue);
+      if (markerCheck.falsePositive) return { kind: "drop", reason: markerCheck.reason };
+      const r = isEncodingDropFalsePositive(issue, htmlLocal);
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
+    },
+  },
+  {
+    // poll_sig_missing (#1421): merge tag ou sig= presentes no HTML local → FP.
+    prefix: "email:poll_sig_missing",
+    handle(_issue, { htmlLocal }) {
+      const r = isPollSigMissingFalsePositive(htmlLocal);
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
+    },
+  },
+  {
+    // vote_edition_malformed (#1421): edition={AAMMDD} correto no HTML local → FP.
+    prefix: "email:vote_edition_malformed",
+    handle(_issue, { htmlLocal, editionDate }) {
+      const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
+    },
+  },
+  {
+    // section_missing (#2013): grep da section label no HTML local — presente = FP.
+    prefix: "email:section_missing",
+    handle(issue, { htmlLocal }) {
+      const r = isSectionMissingFalsePositive(issue, htmlLocal);
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
+    },
+  },
+  {
+    // link_dead (#2013, #2047, #2082): re-verificação via fetch paralelo (Fase 2).
+    // IMPORTANTE (#2082): o guard de tipo está aqui, FORA da condição de fetchFn —
+    // todo issue link_dead sai por este handler. Sem isso, um issue sem fetchFn
+    // cairia nos genéricos de DS onde isMergeTagUnexpandedFalsePositive casaria
+    // o prefixo `link_` e droparia silenciosamente links com {{poll_sig}} na URL.
+    prefix: "email:link_dead",
+    handle(issue, { fetchFn, linkCheckCache }) {
+      if (fetchFn) {
+        const url = extractLinkDeadUrl(issue);
+        if (url && linkCheckCache) {
+          const cached = linkCheckCache.get(url);
+          if (cached === true) {
+            return { kind: "drop", reason: `link_dead falso-positivo (cache): ${url} já verificado como vivo (#2047)` };
+          }
+          if (cached === false) {
+            return { kind: "keep" };
+          }
+          // cached === undefined → URL não verificada ainda → vai pro fetch paralelo
+        }
+        if (url) {
+          return { kind: "link_dead_pending", issue, url };
+        }
+      }
+      // Sem fetchFn (ou URL não extraível) → conservador (mantém sem re-verificar).
+      return { kind: "keep" };
+    },
+  },
+] as const;
+
 /**
  * Cross-check de uma lista de issues contra o HTML local. Drop os que são
  * falso-positivos verificáveis; mantém os outros (incluindo tipos não
@@ -560,6 +692,9 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
  *              encoding_drop (emoji de header — DS by-design), section_missing.
  *   Assíncrono (requer fetchFn): link_dead re-verificação.
  *
+ * #2105: dispatch via tabela declarativa `ISSUE_HANDLERS` — exclusividade
+ * estrutural: tipos cobertos NUNCA alcançam os genéricos por construção.
+ *
  * @param issues          array de strings no formato `email:tipo: detalhe`
  * @param htmlLocal       HTML renderizado localmente — fonte de verdade
  * @param editionDate     AAMMDD da edição (necessário pra vote_edition validation)
@@ -582,88 +717,31 @@ export async function filterAgentIssues(
   // ---------------------------------------------------------------------------
   // Fase 1: verificações síncronas (encoding, poll_sig, section, DS checks, etc)
   // ---------------------------------------------------------------------------
-  // Para cada issue, calcula o resultado síncrono. Para link_dead com fetchFn,
-  // marca como "pendente" para processar em paralelo na Fase 2.
+  // Para cada issue, calcula o resultado síncrono via tabela de handlers (#2105).
+  // Para link_dead com fetchFn, o handler marca como "pendente" (link_dead_pending)
+  // para processar em paralelo na Fase 2.
   // ---------------------------------------------------------------------------
 
-  type SyncResult =
-    | { kind: "drop"; reason: string }
-    | { kind: "keep" }
-    | { kind: "link_dead_pending"; issue: string; url: string };
+  const ctx: HandlerCtx = { htmlLocal, editionDate, fetchFn, linkCheckCache };
 
   const syncResults: SyncResult[] = issues.map((issue) => {
-    // #2059: dispatch EXCLUSIVO por tipo — quando um checker específico reconhece
-    // o tipo do issue e conclui "não é FP", o issue é `kept` IMEDIATAMENTE sem
-    // cair nos genéricos de DS. Os genéricos (merge_tag_unexpanded, bold_missing,
-    // italic_missing) só avaliam issues de tipos que NENHUM checker específico
-    // cobriu. Sem isso, `email:encoding_drop: merge tag {{...}}` era reconhecido
-    // pelo checker de encoding (not FP) e depois dropado por isMergeTagUnexpanded
-    // — silenciando um erro real de merge tag.
-
-    if (issue.startsWith("email:encoding_drop")) {
-      // #2013: verificar primeiro se é emoji de header (by-design) — antes do
-      // check de encoding genérico, pois o emoji não vai estar no HTML local.
-      const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
-      if (emojiCheck.falsePositive) return { kind: "drop", reason: emojiCheck.reason };
-      // #2066: marcador de callout (📣/📚/🎉) stripped por design — idem.
-      const markerCheck = isEncodingDropCalloutMarkerByDesign(issue);
-      if (markerCheck.falsePositive) return { kind: "drop", reason: markerCheck.reason };
-      const r = isEncodingDropFalsePositive(issue, htmlLocal);
-      if (r.falsePositive) return { kind: "drop", reason: r.reason };
-      // #2059: checker específico competente, não é FP → kept SEM passar pelos genéricos.
-      return { kind: "keep" };
-    } else if (issue.startsWith("email:poll_sig_missing")) {
-      const r = isPollSigMissingFalsePositive(htmlLocal);
-      if (r.falsePositive) return { kind: "drop", reason: r.reason };
-      return { kind: "keep" };
-    } else if (issue.startsWith("email:vote_edition_malformed")) {
-      const r = isVoteEditionMalformedFalsePositive(htmlLocal, editionDate);
-      if (r.falsePositive) return { kind: "drop", reason: r.reason };
-      return { kind: "keep" };
-    } else if (issue.startsWith("email:section_missing")) {
-      // #2013: grep da section label no HTML local — presente = FP de truncamento.
-      const r = isSectionMissingFalsePositive(issue, htmlLocal);
-      if (r.falsePositive) return { kind: "drop", reason: r.reason };
-      return { kind: "keep" };
-    } else if (issue.startsWith("email:link_dead")) {
-      // #2047: re-verificação de link com fetch real — paralelo na Fase 2.
-      // IMPORTANTE (#2082): o guard de tipo (link_dead) fica aqui, FORA da condição
-      // de fetchFn, para que todo issue link_dead saia por este branch — impedindo
-      // que issues cujo tipo o checker reconhece como "competente" caiam nos
-      // genéricos de DS abaixo (onde isMergeTagUnexpandedFalsePositive casaria o
-      // prefixo `link_` e droparia silenciosamente um link morto com {{poll_sig}}
-      // na URL, ex: vote?sig={{poll_sig}} → HTTP 404 — era FP falso até este fix).
-      if (fetchFn) {
-        // Verificar cache primeiro; se há hit definitivo (true/false), resolver aqui.
-        const url = extractLinkDeadUrl(issue);
-        if (url && linkCheckCache) {
-          const cached = linkCheckCache.get(url);
-          if (cached === true) {
-            // Cache: link vivo confirmado anteriormente → FP
-            return { kind: "drop", reason: `link_dead falso-positivo (cache): ${url} já verificado como vivo (#2047)` };
-          }
-          if (cached === false) {
-            // Cache: link morto confirmado anteriormente → mantém
-            return { kind: "keep" };
-          }
-          // cached === undefined → URL não verificada ainda → vai pro fetch paralelo
-        }
-        if (url) {
-          return { kind: "link_dead_pending", issue, url };
-        }
-      }
-      // Sem fetchFn (ou URL não extraível) → conservador (mantém sem re-verificar).
-      return { kind: "keep" };
+    // #2105: dispatch via tabela — encontra o PRIMEIRO handler cujo prefix casa.
+    // Quando casa, o resultado do handler é retornado IMEDIATAMENTE; o issue
+    // NUNCA alcança os genéricos de DS abaixo (#2059/#2082: exclusividade estrutural).
+    const handler = ISSUE_HANDLERS.find((h) => issue.startsWith(h.prefix));
+    if (handler !== undefined) {
+      return handler.handle(issue, ctx);
     }
 
     // #1949: classes de FP do novo DS / merge tags — baseadas só na string do
     // issue (a reclamação inteira é FP), independem do HTML.
-    // #2059: só chegam aqui issues cujo tipo NÃO foi coberto por nenhum checker
-    // específico acima (encoding_drop, poll_sig_missing, vote_edition_malformed,
-    // section_missing, link_dead). Tipos não-específicos (formatting, link_broken,
-    // subject_mismatch, unexpected_content, etc.) são elegíveis para esses genéricos.
-    // NOTA (#2082): link_dead está explicitamente excluído — sai sempre pelo branch
-    // acima, inclusive sem fetchFn, evitando que isMergeTagUnexpandedFalsePositive
+    // #2059/#2105: só chegam aqui issues cujo tipo NÃO foi coberto por nenhum
+    // handler específico da tabela (encoding_drop, poll_sig_missing,
+    // vote_edition_malformed, section_missing, link_dead). Tipos não-específicos
+    // (formatting, link_broken, subject_mismatch, unexpected_content, etc.) são
+    // elegíveis para esses genéricos.
+    // NOTA (#2082): link_dead está registrado na tabela — sai sempre pelo seu
+    // handler, inclusive sem fetchFn, evitando que isMergeTagUnexpandedFalsePositive
     // case o prefixo `link_` e drope silenciosamente issues com {{...}} na URL.
     const dsChecks = [
       isMergeTagUnexpandedFalsePositive(issue),

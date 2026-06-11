@@ -24,6 +24,7 @@ import {
   isLinkDeadFalsePositive,
   extractLinkDeadUrl,
   filterAgentIssues,
+  ISSUE_HANDLERS,
   type FetchFn,
 } from "../scripts/lib/agent-issue-validator.ts";
 
@@ -809,4 +810,55 @@ describe("#2059 — filterAgentIssues: dispatch exclusivo por tipo (sem fall-thr
     assert.equal(r.kept.length, 1, "poll_sig_missing real deve ser mantido");
     assert.equal(r.dropped.length, 0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #2105 — tabela declarativa: exclusividade estrutural
+// ---------------------------------------------------------------------------
+
+describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de handlers", () => {
+  /**
+   * Garante duas propriedades invariáveis introduzidas pela tabela #2105:
+   *
+   * 1. Tipo NÃO coberto por nenhum handler → elegível para genéricos de DS.
+   *    Ex: `email:link_x` tem prefixo `link_` que isMergeTagUnexpandedFalsePositive
+   *    casaria — mas sem handler na tabela, o issue chega nos genéricos e pode
+   *    ser dropado se satisfaz a condição do genérico.
+   *
+   * 2. Tipo COBERTO por handler → NUNCA alcança os genéricos, mesmo quando o
+   *    handler retorna `{ kind: "keep" }` (not-FP). Isso é a exclusividade
+   *    estrutural: basta estar na tabela para ser isolado dos genéricos.
+   */
+
+  it("tipo hipotético email:link_x NÃO coberto por handler → vai pros genéricos (pode ser dropado por DS)", async () => {
+    // email:link_x não está na tabela de handlers.
+    // isMergeTagUnexpandedFalsePositive casa `email:link_` + `{{poll_sig}}` → FP → dropa.
+    // Isso demonstra que tipos fora da tabela chegam nos genéricos.
+    // NOTA: o prefixo precisa começar com `email:link_` (exigência do genérico,
+    // agent-issue-validator.ts ~182) — não dá pra usar um prefixo "impossível".
+    const issue = "email:link_x: href contém {{poll_sig}} não expandido";
+
+    // Guard autodiagnóstico: se um handler futuro passar a cobrir email:link_x,
+    // este assert explica a falha em vez de deixar o assert de drop confundir.
+    assert.ok(
+      !ISSUE_HANDLERS.some((h) => issue.startsWith(h.prefix)),
+      "pré-condição: email:link_x não deve ser coberto por nenhum handler da tabela — se você adicionou um handler com esse prefixo, troque o tipo hipotético deste teste",
+    );
+
+    const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
+
+    // Deve ser DROPADO pelos genéricos de DS (isMergeTagUnexpandedFalsePositive)
+    assert.equal(r.dropped.length, 1, "email:link_x com {{poll_sig}} deve ser dropado pelos genéricos de DS");
+    assert.equal(r.kept.length, 0, "não deve ser mantido");
+    assert.match(
+      r.dropped[0].reason,
+      /merge tags inline|poll_sig|expandem no envio/i,
+      "motivo deve vir do genérico isMergeTagUnexpandedFalsePositive",
+    );
+  });
+
+  // A propriedade 2 (tipo coberto NUNCA alcança os genéricos, mesmo not-FP) já é
+  // garantida pelo teste de regressão do #2082 ("link_dead com {{poll_sig}} na URL
+  // sem fetchFn NÃO é dropado como merge-tag FP") — um duplicado aqui foi removido
+  // no review do #2105.
 });
