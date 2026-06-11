@@ -2,7 +2,7 @@
 
 Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068)
 
-O Task Scheduler do Windows roda `/diaria-edicao {AAMMDD}` de domingo a quinta-feira às 14:00 (horário local = BRT), produzindo a edição do dia seguinte (D+1). A pipeline para automaticamente no **pre-gate do Stage 4** — o editor revisa e dispara a publicação manualmente via `/diaria-4-publicar`.
+O Task Scheduler do Windows roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às 14:00 (horário local = BRT), produzindo a edição do dia seguinte (D+1). A run completa Stages 0–3 + pré-render do Stage 4 e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-4-publicar {AAMMDD}` na manhã seguinte.
 
 ---
 
@@ -60,17 +60,22 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 1. Task Scheduler dispara às 14:00.
 2. Runner calcula `AAMMDD = amanhã em BRT` via `scripts/lib/next-edition-date.ts` (fallback puro PowerShell se node falhar).
-3. Invoca: `claude --print --permission-mode acceptEdits --max-turns 120 --output-format text --no-session-persistence /diaria-edicao {AAMMDD}`.
-4. Orchestrator executa Stages 0–3 (pesquisa → escrita → imagens → pré-render) em modo auto-approve.
-5. Ao chegar no pre-gate do Stage 4, o orquestrador emite a pergunta de aprovação — mas em modo headless (`-p`) não há TTY para responder. A run encerra ao atingir `--max-turns 120` ou naturalmente se o Stage 3 completar antes.
-6. Logs gravados em `data/run-log.jsonl` e `data/overnight-schedule.log`.
-7. Editor recebe notificação (ou consulta os logs) e dispara `/diaria-4-publicar` quando pronto.
+3. Invoca: `claude --print --permission-mode acceptEdits --max-turns 120 --output-format text --no-session-persistence /diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook`.
+4. Orchestrator executa Stages 0–3 (pesquisa → escrita → imagens) em modo auto-approve.
+5. No Stage 4, executa o pré-render completo (HTML + imagens + upload Worker + close-poll). `--skip newsletter,linkedin,facebook` faz o orchestrator chamar `build-publish-consent.ts --skip "newsletter,linkedin,facebook"` (path 1 de §4b) — sem gate interativo, sem fallback default-auto (#1326/#2068). Todos os canais ficam `pending_manual` no `_internal/05-publish-consent.json`.
+6. A run termina naturalmente após o pré-render do Stage 4. Não aguarda confirmação nem fica travada no gate.
+7. Logs gravados em `data/run-log.jsonl` e `data/overnight-schedule.log`.
+8. Editor revisa os outputs (Stage 1-3 + pré-render) e dispara `/diaria-4-publicar {AAMMDD}` quando pronto. O gate interativo normal do `/diaria-4-publicar` sobrescreve o consent do scheduled run.
+
+### Por que `--skip` em vez de deixar o pre-gate expirar?
+
+`--skip newsletter,linkedin,facebook` é o mecanismo correto. Sem ele, o Stage 4 chega ao pre-gate interativo e, como não há resposta em modo headless, o default do invariante #1326 é **tudo automático** — disparando os 3 canais sem supervisão. Com `--skip`, o consent é gravado deterministicamente como `pending_manual` em todos os canais, e a run termina limpa.
 
 ### Por que `--max-turns 120`?
 
-O pipeline completo de Stages 0–3 tipicamente usa 40–80 turnos (cada subagente dispatch + resposta = ~2 turnos). `120` dá margem para slowdowns sem bloquear infinitamente.
+O pipeline completo (Stages 0–3 + pré-render Stage 4) tipicamente usa 50–90 turnos. `120` dá margem para slowdowns sem bloquear indefinidamente. É um safety net — a run termina naturalmente antes de atingir o limite na maioria dos casos.
 
-Se o Stage 3 completar normalmente, o orquestrador vai pedir confirmação para Stage 4 — como não há resposta possível, o LLM pode aguardar e a run eventualmente expira pelo `--max-turns`. Isso é comportamento esperado.
+Nota: o auto-reporter ao final do Stage 4 pode apresentar gate humano (issues GitHub). Em headless ele não recebe resposta e a run expira pelo `--max-turns`; isso é benigno — tudo que importa (consent, pré-render) já foi gravado antes do auto-reporter.
 
 ---
 

@@ -1,26 +1,30 @@
-﻿<#
+<#
 .SYNOPSIS
-    Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 até o pre-gate.
+    Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
 
 .DESCRIPTION
     Invocado pelo Task Scheduler (Windows) de dom-qui às 14:00 BRT.
     Calcula AAMMDD = amanhã em America/Sao_Paulo, invoca claude -p com
-    --permission-mode acceptEdits e --max-turns para parar antes que o
-    pre-gate do Stage 4 bloqueie indefinidamente.
+    --permission-mode acceptEdits e --max-turns.
 
-    Em modo headless (-p / print), o claude CLI roda de forma não-interativa:
-    quando o orquestrador chega ao pre-gate do Stage 4 e emite a pergunta
-    aguardando input do editor, não há TTY para responder — a run encerra
-    naturalmente ao atingir --max-turns (sem resposta possível ao gate).
-    O editor recebe os outputs de Stage 1-3 e dispara o Stage 4 manualmente
-    via /diaria-4-publicar quando estiver pronto.
+    Usa --skip newsletter,linkedin,facebook: o Stage 4 executa pré-render completo
+    (HTML + imagens + upload Worker + close-poll) mas NÃO dispatcha nenhum canal.
+    O consent é gravado com todos os canais pending_manual via
+    build-publish-consent.ts --skip (path 1 de §4b) — sem gate interativo,
+    sem fallback default-auto (#1326/#2068).
+
+    A run termina naturalmente após o pré-render. O editor, na manhã seguinte,
+    roda /diaria-4-publicar {AAMMDD} (gate interativo normal, consent novo
+    sobrescreve o do scheduled run) ou publica manualmente.
+
+    --max-turns permanece como safety net para stalls inesperados.
 
     Logs:
       - data/run-log.jsonl  — via scripts/log-event.ts (structured, pipeline-wide)
       - data/overnight-schedule.log  — append-only, resumo linha por linha desta run
 
-    GUARD DE PUBLICAÇÃO: Este script apenas prepara os conteúdos (Stages 0-3).
-    Ele NÃO publica nada — a publicação requer ação explícita do editor.
+    GUARD DE PUBLICAÇÃO: Este script prepara conteúdos (Stages 0-3) e pré-renderiza
+    o Stage 4, mas NÃO dispatcha nenhum canal. A publicação requer ação explícita do editor.
 
 .NOTES
     Issue: #2068
@@ -128,23 +132,24 @@ if (-not $ClaudePath) {
 }
 
 # ---------------------------------------------------------------------------
-# 7. Invocar claude -p /diaria-edicao AAMMDD
+# 7. Invocar claude -p /diaria-edicao AAMMDD --skip newsletter,linkedin,facebook
 #
 #    --permission-mode acceptEdits  → aceita edições de arquivos sem prompt
-#    --max-turns 120                → ~2h de execução máxima a 1 turno/min
-#                                     (o pre-gate Stage 4 aguarda input; em modo
-#                                     headless não há resposta → run encerra ao
-#                                     atingir o limite de turnos ou ao o
-#                                     orquestrador completar Stage 3 normalmente).
+#    --max-turns 120                → safety net; run termina naturalmente após
+#                                     o pré-render do Stage 4 (não aguarda gate)
 #    --output-format text           → saída legível no log
 #    --no-session-persistence       → não salvar sessão headless (economiza disco)
+#
+#    --skip newsletter,linkedin,facebook → Stage 4 grava consent pending_manual
+#    em todos os canais (build-publish-consent.ts --skip, path 1 de §4b) e
+#    encerra sem dispatchar. Elimina o fallback default-auto do pre-gate (#2068).
 #
 #    Nota: MCP servers claude.ai (beehiiv, gmail) são carregados via .mcp.json
 #    do repo + keychain. Em sessão headless eles ficam disponíveis se o
 #    usuário estiver autenticado no Claude (OAuth). Sem MCPs, o orquestrador
 #    faz halt fail-fast (#738) e a run encerra com erro gravado no run-log.
 # ---------------------------------------------------------------------------
-$Prompt = "/diaria-edicao $Aammdd"
+$Prompt = "/diaria-edicao $Aammdd --skip newsletter,linkedin,facebook"
 
 Write-Output "[$RunStart] Iniciando: claude -p '$Prompt'"
 

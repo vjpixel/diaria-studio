@@ -1,6 +1,6 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da Diar.ia (4 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates]`.
+description: Roda a pipeline completa da Diar.ia (4 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
 ---
 
 # /diaria-edicao
@@ -13,6 +13,7 @@ Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — S
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
 - `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
 - `--no-gates` (opcional) = pular TODOS os gates, inclusive o pre-gate do Stage 4. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
+- `--skip {canal[,canal...]}` (opcional, CSV) = encaminha lista de canais ao Stage 4 como `skip_channels`. Canais suportados: `newsletter`, `linkedin`, `facebook`. Canais listados ficam `pending_manual` no consent (`build-publish-consent.ts --skip "{lista}"`, path 1 de §4b); o Stage 4 executa pré-render completo mas NÃO dispatcha esses canais. Sem `--skip`, o comportamento default do Stage 4 (#1326) se aplica — se editor não responder ao pre-gate interativo, tudo é automático. Use `--skip newsletter,linkedin,facebook` em runs headless/automáticas (Task Scheduler) para impedir dispatch sem supervisão (#2068).
 
 ## Pré-requisitos
 
@@ -67,6 +68,7 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `window_days = {valor confirmado no Passo 1}`
 - `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523)
 - `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate antes do dispatch)
+- `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 4 §4b; se não-vazio, Stage 4 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
 
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
