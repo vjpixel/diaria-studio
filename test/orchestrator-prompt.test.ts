@@ -129,10 +129,12 @@ describe("orchestrator-prompt (#634)", () => {
     // 640→700 quando #1571 documentou pre-gate mode + 4a-pre-gate explícito;
     // 700→715 quando #1783 adicionou marks de status S0 (running/done) + S4
     // (mark-done canônico no §4i, fora do §4g que é pulado em pre-gate).
+    // 715→745 quando #2073 adicionou step 1w-quint-b (check-highlight-themes)
+    // + item 4 no gate de repeat-de-tema.
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       assert.ok(
-        lines[file] <= 715,
-        `${file} tem ${lines[file]} linhas (target ≤715)`,
+        lines[file] <= 745,
+        `${file} tem ${lines[file]} linhas (target ≤745)`,
       );
     }
   });
