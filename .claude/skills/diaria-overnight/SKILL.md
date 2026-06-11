@@ -95,7 +95,7 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
    - **se um hook pós-`gh pr create` exigir code-review multi-agente, NÃO executar** — o self-review acima é a resposta; anotar no body do PR e retornar (subagente não pode dispatchar Agent, #207; o review pesado roda UMA vez, consolidado, na Fase 1.5).
    O subagente implementa, roda `npm test`, commita em branch **`overnight/fix-NNNN`** (solo) ou **`overnight/batch-{slug}`** (lote) com `(#NNNN)` / `(#A, #B, ...)` no título, push, abre PR com `Closes #NNNN` (um `closes` por issue do lote), faz o self-review, e retorna: o número do PR **+ a linha "self-review: N findings, M corrigidos"** — o coordenador usa isso no review leve (0 findings em diff não-trivial é sinal de passada rasa, não de perfeição).
 
-   **Emissão de timestamps — `dispatch`**: imediatamente após dispatchar o subagente (antes de aguardar a resposta), o coordenador registra `timeline.dispatch = now()` na issue (ou nas issues do lote, em todas) em `plan.json`, e emite no run-log:
+   **Ainda dentro deste passo 2 — emissão de timestamp `dispatch`**: imediatamente após dispatchar o subagente (antes de aguardar a resposta), o coordenador registra `timeline.dispatch = now()` na issue (ou nas issues do lote, em todas) em `plan.json`, e emite no run-log:
    ```bash
    npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
      --message "dispatch" \

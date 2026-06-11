@@ -303,3 +303,68 @@ describe("renderOvernightTimeline — draft (CI vermelho persistente)", () => {
     assert.equal(rows[0].duracao, "1h05m");
   });
 });
+
+describe("renderOvernightTimeline — mais lenta usa duração da tabela (#2099 fix)", () => {
+  it("batch com representative mais rápido: mais lenta mostra duração da row, não do issue individual", () => {
+    // Issue 1 = representative (tem dispatch), merged em 30m
+    // Issue 2 = não-representative, merged em 2h — sem fix, mais lenta não deveria ser 2h via issue loop
+    // Após fix: mais lenta usa rows, que usa o representative → 30m
+    // (O correto é que a tabela e mais lenta mostrem o mesmo número para o mesmo batch)
+    const plan = makePlan([
+      {
+        number: 8001,
+        batch: "batch-foo",
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          merged: "2026-06-11T20:30:00.000Z",
+        },
+      },
+      {
+        number: 8002,
+        batch: "batch-foo",
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          merged: "2026-06-11T22:00:00.000Z",
+        },
+      },
+    ]);
+    const output = renderOvernightTimeline(plan);
+    const tableRow = output.split("\n").filter((l) => l.startsWith("| lote batch-foo"))[0];
+    const maisLenta = output.split("\n").filter((l) => l.includes("mais lenta"))[0];
+
+    // Table shows 30m (from representative issue 8001)
+    assert.ok(tableRow.includes("30m"), `table row deve mostrar 30m: ${tableRow}`);
+    // mais lenta must show same duration as the table row (30m), not 2h from issue 8002
+    assert.ok(maisLenta.includes("30m"), `mais lenta deve mostrar 30m (mesma duração da tabela): ${maisLenta}`);
+    // The label in mais lenta matches the unidade column
+    assert.ok(
+      maisLenta.includes("lote batch-foo (#8001, #8002)"),
+      `mais lenta label deve incluir números das issues: ${maisLenta}`,
+    );
+  });
+
+  it("solo: mais lenta mostra mesma duração da tabela", () => {
+    const plan = makePlan([
+      {
+        number: 9001,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          merged: "2026-06-11T21:30:00.000Z",
+        },
+      },
+      {
+        number: 9002,
+        batch: null,
+        timeline: {
+          dispatch: "2026-06-11T20:00:00.000Z",
+          merged: "2026-06-11T20:15:00.000Z",
+        },
+      },
+    ]);
+    const output = renderOvernightTimeline(plan);
+    const maisLenta = output.split("\n").filter((l) => l.includes("mais lenta"))[0];
+    assert.ok(maisLenta.includes("#9001"), "mais lenta deve ser #9001 (1h30m)");
+    assert.ok(maisLenta.includes("1h30m"), `mais lenta deve mostrar 1h30m: ${maisLenta}`);
+  });
+});

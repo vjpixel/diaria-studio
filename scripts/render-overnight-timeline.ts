@@ -19,7 +19,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
 }
 
 /** Duração da rodada inteira (started_at → último fim registrado). */
-function buildRodadaTotal(plan: Plan, rows: TimelineRow[]): string {
+function buildRodadaTotal(plan: Plan): string {
   const rodadaStart = parseISO(plan.started_at);
   if (!rodadaStart) return "—";
 
@@ -226,29 +226,27 @@ export function renderOvernightTimeline(plan: Plan): string {
   lines.push("");
 
   // Rodada total
-  const total = buildRodadaTotal(plan, rows);
+  const total = buildRodadaTotal(plan);
   lines.push(`**Total da rodada:** ${total}`);
 
-  // Unidade mais lenta — recalcular de forma simples
+  // Unidade mais lenta — usa rows (mesmas durações da tabela; evita discrepância com batches)
+  let maisLentaRow: TimelineRow | null = null;
   let maxMs = -1;
-  let maisLentaLabel = "—";
-  for (const issue of plan.issues) {
-    const start = parseISO(getStart(issue.timeline));
-    const end = parseISO(getEnd(issue.timeline));
-    if (!start || !end) continue;
-    const ms = end.getTime() - start.getTime();
+  for (const row of rows) {
+    if (row.duracao === "—") continue;
+    // Parse duracao back to ms for comparison ("1h23m" or "45m")
+    const match = row.duracao.match(/^(?:(\d+)h)?(\d+)m$/);
+    if (!match) continue;
+    const h = match[1] ? parseInt(match[1], 10) : 0;
+    const m = parseInt(match[2], 10);
+    const ms = (h * 60 + m) * 60_000;
     if (ms > maxMs) {
       maxMs = ms;
-      const batch = issue.batch && issue.batch !== "null" ? issue.batch : null;
-      maisLentaLabel = batch ? `lote ${batch}` : `#${issue.number}`;
+      maisLentaRow = row;
     }
   }
-  if (maxMs >= 0) {
-    const totalMin = Math.round(maxMs / 60_000);
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    const dur = h > 0 ? `${h}h${String(m).padStart(2, "0")}m` : `${m}m`;
-    lines.push(`**Unidade mais lenta:** ${maisLentaLabel} (${dur})`);
+  if (maisLentaRow) {
+    lines.push(`**Unidade mais lenta:** ${maisLentaRow.unidade} (${maisLentaRow.duracao})`);
   } else {
     lines.push(`**Unidade mais lenta:** —`);
   }
