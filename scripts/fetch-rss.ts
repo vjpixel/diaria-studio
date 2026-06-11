@@ -19,6 +19,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { capArticles, MAX_ARTICLES_PER_SOURCE, type Article } from "./lib/article-cap.ts";
+import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -166,7 +167,7 @@ function normalizeItem(item: Record<string, unknown>, kind: "rss" | "atom"): Art
     kind === "rss"
       ? coerceText(item.description ?? item["content:encoded"] ?? "")
       : coerceText(item.summary ?? item.content ?? "");
-  const summary = stripHtml(rawSummary).slice(0, 500);
+  const summary = truncateAtBoundary(stripHtml(rawSummary), 500);
 
   return { url, title, published_at, summary };
 }
