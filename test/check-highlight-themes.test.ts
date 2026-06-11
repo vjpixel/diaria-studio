@@ -334,3 +334,78 @@ describe("DEFAULT_HIGHLIGHT_WINDOW", () => {
     assert.equal(DEFAULT_HIGHLIGHT_WINDOW, 12);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regressões #2103
+// ---------------------------------------------------------------------------
+
+describe("extractPastEditionTitles — título com aspas internas (#2103)", () => {
+  it("título com aspas duplas internas não é truncado no primeiro par", () => {
+    // Antes do fix: sectionRe=[^"]+ parava em "melhor" e capturava apenas 'O modelo '
+    const md = `
+## 2026-06-10 — "O modelo "melhor" do mercado chegou"
+URL: https://diaria.beehiiv.com/p/modelo-melhor
+
+Links usados:
+- https://example.com/melhor
+`;
+    const entries = extractPastEditionTitles(md, 12);
+    assert.equal(entries.length, 1);
+    // Após fix: captura até a ÚLTIMA aspas da linha
+    assert.equal(
+      entries[0].title,
+      `O modelo "melhor" do mercado chegou`,
+      `título com aspas internas deve ser capturado inteiro: ${entries[0].title}`,
+    );
+  });
+
+  it("título com aspas internas: extração completa garante tokenização correta", () => {
+    // Garante que o bug de truncamento não produz tokenização incompleta do título passado.
+    // Antes do fix: "O modelo 'melhor'" era truncado → "O modelo " → tokens={modelo}
+    // Após o fix: título completo capturado → tokens incluem termos do final do título
+    const mdWithQuotedTitle = `
+## 2026-06-04 — "O "melhor" modelo multimodal: Gemma 4 12B"
+URL: https://diaria.beehiiv.com/p/gemma
+
+Links usados:
+- https://example.com/gemma
+`;
+    const past = extractPastEditionTitles(mdWithQuotedTitle, 12);
+    assert.equal(past.length, 1, "deve extrair 1 entrada");
+    // Após fix: título completo, não truncado
+    assert.ok(
+      past[0].title.includes("Gemma 4 12B"),
+      `título deve incluir 'Gemma 4 12B' (sem truncamento): "${past[0].title}"`,
+    );
+    assert.ok(
+      past[0].title.includes("multimodal"),
+      `título deve incluir 'multimodal' (parte após aspas internas): "${past[0].title}"`,
+    );
+
+    // Com o título completo, candidato de tema idêntico (sem aspas internas)
+    // deve casar via Jaccard — tokens como "multimodal" agora estão disponíveis
+    const candidates = [
+      {
+        rank: 1,
+        title: "Gemma 4 12B: encoder-free multimodal",
+        url: "https://deepmind.google/gemma",
+      },
+    ];
+    const result = checkHighlightThemes(candidates, past);
+    // Com título completo: pastTokens={modelo,melhor,multimodal,gemma,12b}
+    // candidateTokens={gemma,12b,encoder,free,multimodal}
+    // shared={gemma,12b,multimodal} → Jaccard=3/7≈0.43 → acima de 0.35 → warn
+    assert.equal(
+      result.warnings.length,
+      1,
+      `deve detectar repeat com título completo (não truncado): ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("título SEM aspas internas continua funcionando normalmente", () => {
+    const entries = extractPastEditionTitles(PAST_MD_WITH_GEMMA, 12);
+    assert.equal(entries.length, 8, "deve extrair 8 entradas do fixture padrão");
+    // Spot check: sem truncamento nos títulos normais
+    assert.equal(entries[6].title, "Gemma 4 12B: multimodal que roda no laptop");
+  });
+});

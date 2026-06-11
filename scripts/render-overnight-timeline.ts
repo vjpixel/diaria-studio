@@ -20,18 +20,23 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
 export interface IssueTimeline {
   dispatch?: string;        // ISO — subagente lançado
   pr_opened?: string;       // ISO — PR aberto
-  fix_iteration_1?: string; // ISO — 1ª tentativa de fix (CI vermelho)
-  fix_iteration_2?: string; // ISO — 2ª tentativa de fix (CI vermelho)
+  /** fix_iteration_N (N ≥ 1) — ISO — N-ésima tentativa de fix (CI vermelho).
+   *  Campos nomeados fix_iteration_1, fix_iteration_2, ... são suportados
+   *  dinamicamente via index signature — uma 3ª iteração não é mais ignorada. */
+  fix_iteration_1?: string;
+  fix_iteration_2?: string;
   ci_green?: string;        // ISO — CI verde
   merged?: string;          // ISO — PR mergeado
   draft?: string;           // ISO — convertido para draft (CI persistiu vermelho)
   pulada?: string;          // ISO — unidade pulada (bloqueio, sem resposta, etc.)
+  [key: string]: string | undefined; // permite fix_iteration_N dinâmico (N ≥ 3)
 }
 
 export interface PlanIssue {
@@ -59,10 +64,14 @@ function parseISO(s: string | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** Formata HH:MM (hora local). */
+/** Formata HH:MM em BRT fixo (UTC-3). Não depende do TZ do processo. */
 function fmtHHMM(d: Date | null): string {
   if (!d) return "—";
-  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  // BRT = UTC-3 (sem ajuste de horário de verão — Brasil aboliu em 2019)
+  const brt = new Date(d.getTime() - 3 * 3_600_000);
+  const hh = String(brt.getUTCHours()).padStart(2, "0");
+  const mm = String(brt.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 /** Duração legível: "1h23m" ou "45m" ou "—". */
@@ -77,12 +86,13 @@ function fmtDuration(start: Date | null, end: Date | null): string {
   return `${h}h${String(m).padStart(2, "0")}m`;
 }
 
-/** Conta fix-iterations presentes no timeline. */
+/** Conta fix-iterations presentes no timeline (suporta N dinâmico ≥ 1). */
 function countFixIterations(tl: IssueTimeline | undefined): number {
   if (!tl) return 0;
   let n = 0;
-  if (tl.fix_iteration_1) n++;
-  if (tl.fix_iteration_2) n++;
+  for (const key of Object.keys(tl)) {
+    if (/^fix_iteration_\d+$/.test(key) && tl[key]) n++;
+  }
   return n;
 }
 
@@ -113,6 +123,9 @@ export interface TimelineRow {
   inicio: string;           // HH:MM ou "—"
   fim: string;              // HH:MM ou "em andamento"
   duracao: string;          // "1h23m" ou "—"
+  /** Duração em ms — armazenado para evitar re-parse da string formatada.
+   *  null quando duração é indefinida (sem timestamp de fim). */
+  durationMs: number | null;
   fixIteracoes: number;
   endLabel: string;
 }
@@ -122,64 +135,77 @@ export interface TimelineRow {
  * Unidades solo: 1 issue com batch == null.
  * Lotes: N issues com mesmo batch != null → usar o timeline da 1ª issue que
  * tiver dispatch (representante do lote).
+ *
+ * Uma única passagem sobre plan.issues (agrupamento via Map por batch).
  */
 export function buildTimelineRows(plan: Plan): TimelineRow[] {
-  const rows: TimelineRow[] = [];
-  const seenBatches = new Map<string, true>();
+  // ── Passo único: agrupar em solo vs. Map<batch, issues[]> ───────────────────
+  const soloIssues: PlanIssue[] = [];
+  const batchMap = new Map<string, PlanIssue[]>();
 
   for (const issue of plan.issues) {
     const batch = issue.batch;
-
     if (!batch || batch === "null") {
-      // Unidade solo
-      const tl = issue.timeline;
-      const startStr = getStart(tl);
-      const endStr = getEnd(tl);
-      const start = parseISO(startStr);
-      const end = parseISO(endStr);
-      rows.push({
-        unidade: `#${issue.number}`,
-        inicio: fmtHHMM(start),
-        fim: end ? fmtHHMM(end) : getEndLabel(tl) === "em andamento" ? "em andamento" : "—",
-        duracao: fmtDuration(start, end),
-        fixIteracoes: countFixIterations(tl),
-        endLabel: getEndLabel(tl),
-      });
+      soloIssues.push(issue);
     } else {
-      // Lote — emitir apenas 1 linha por batch
-      if (seenBatches.has(batch)) continue;
-      seenBatches.set(batch, true);
-
-      const batchIssues = plan.issues.filter(
-        (i) => i.batch === batch,
-      );
-      const numbers = batchIssues.map((i) => `#${i.number}`).join(", ");
-      const label = `lote ${batch} (${numbers})`;
-
-      // Usar o timeline da issue representante (a que tiver dispatch, ou a primeira)
-      const representative =
-        batchIssues.find((i) => i.timeline?.dispatch) ?? batchIssues[0];
-      const tl = representative?.timeline;
-      const startStr = getStart(tl);
-      const endStr = getEnd(tl);
-      const start = parseISO(startStr);
-      const end = parseISO(endStr);
-
-      // fix-iterations: máximo entre as issues do lote (por conservadorismo)
-      const maxFix = batchIssues.reduce(
-        (max, i) => Math.max(max, countFixIterations(i.timeline)),
-        0,
-      );
-
-      rows.push({
-        unidade: label,
-        inicio: fmtHHMM(start),
-        fim: end ? fmtHHMM(end) : getEndLabel(tl) === "em andamento" ? "em andamento" : "—",
-        duracao: fmtDuration(start, end),
-        fixIteracoes: maxFix,
-        endLabel: getEndLabel(tl),
-      });
+      const list = batchMap.get(batch);
+      if (list) {
+        list.push(issue);
+      } else {
+        batchMap.set(batch, [issue]);
+      }
     }
+  }
+
+  const rows: TimelineRow[] = [];
+
+  // ── Helper local: constrói row com durationMs armazenado ────────────────────
+  function makeRow(
+    unidade: string,
+    tl: IssueTimeline | undefined,
+    fixIteracoes: number,
+  ): TimelineRow {
+    const startStr = getStart(tl);
+    const endStr = getEnd(tl);
+    const start = parseISO(startStr);
+    const end = parseISO(endStr);
+    const endLabel = getEndLabel(tl);
+
+    const durationMs =
+      start && end ? Math.max(0, end.getTime() - start.getTime()) : null;
+
+    return {
+      unidade,
+      inicio: fmtHHMM(start),
+      fim: end ? fmtHHMM(end) : endLabel === "em andamento" ? "em andamento" : "—",
+      duracao: fmtDuration(start, end),
+      durationMs,
+      fixIteracoes,
+      endLabel,
+    };
+  }
+
+  // ── Issues solo ─────────────────────────────────────────────────────────────
+  for (const issue of soloIssues) {
+    rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline)));
+  }
+
+  // ── Lotes ───────────────────────────────────────────────────────────────────
+  for (const [batch, batchIssues] of batchMap) {
+    const numbers = batchIssues.map((i) => `#${i.number}`).join(", ");
+    const label = `lote ${batch} (${numbers})`;
+
+    // Representante: 1ª com dispatch, ou a 1ª do lote
+    const representative =
+      batchIssues.find((i) => i.timeline?.dispatch) ?? batchIssues[0];
+
+    // fix-iterations: máximo entre as issues do lote (por conservadorismo)
+    const maxFix = batchIssues.reduce(
+      (max, i) => Math.max(max, countFixIterations(i.timeline)),
+      0,
+    );
+
+    rows.push(makeRow(label, representative?.timeline, maxFix));
   }
 
   return rows;
@@ -229,19 +255,14 @@ export function renderOvernightTimeline(plan: Plan): string {
   const total = buildRodadaTotal(plan);
   lines.push(`**Total da rodada:** ${total}`);
 
-  // Unidade mais lenta — usa rows (mesmas durações da tabela; evita discrepância com batches)
+  // Unidade mais lenta — usa durationMs armazenado na row (evita re-parse por regex
+  // e o bug maxMs=-1 onde uma unidade de 0m vencia o sentinela).
   let maisLentaRow: TimelineRow | null = null;
-  let maxMs = -1;
+  let maxMs = 0; // guard: só elegível se durationMs > 0
   for (const row of rows) {
-    if (row.duracao === "—") continue;
-    // Parse duracao back to ms for comparison ("1h23m" or "45m")
-    const match = row.duracao.match(/^(?:(\d+)h)?(\d+)m$/);
-    if (!match) continue;
-    const h = match[1] ? parseInt(match[1], 10) : 0;
-    const m = parseInt(match[2], 10);
-    const ms = (h * 60 + m) * 60_000;
-    if (ms > maxMs) {
-      maxMs = ms;
+    if (row.durationMs === null || row.durationMs <= 0) continue;
+    if (row.durationMs > maxMs) {
+      maxMs = row.durationMs;
       maisLentaRow = row;
     }
   }
@@ -257,24 +278,13 @@ export function renderOvernightTimeline(plan: Plan): string {
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]): { plan: string } {
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--") && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-      flags[a.slice(2)] = argv[i + 1];
-      i++;
-    }
-  }
-  if (!flags.plan) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const { values } = parseCliArgs(process.argv.slice(2));
+  const planPath = values["plan"];
+  if (!planPath) {
     process.stderr.write("Usage: render-overnight-timeline.ts --plan <path-to-plan.json>\n");
     process.exit(2);
   }
-  return { plan: flags.plan };
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { plan: planPath } = parseArgs(process.argv.slice(2));
   const absPath = resolve(process.cwd(), planPath);
   if (!existsSync(absPath)) {
     process.stderr.write(`Arquivo não encontrado: ${absPath}\n`);
