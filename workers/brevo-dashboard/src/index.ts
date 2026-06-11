@@ -23,6 +23,37 @@
  * Volume típico baixo (~5-10 loads/dia), Brevo free tier suporta.
  */
 
+/**
+ * Design System tokens (#2084) — espelho local dos valores canônicos de
+ * `scripts/lib/design-tokens.ts` (vjpixel/diaria-design). O Worker tem
+ * bundle Cloudflare separado e não pode importar de `scripts/lib/` em
+ * runtime. Mantidos em sync por `test/brevo-dashboard-ds-drift.test.ts`
+ * (compare automático com os tokens canônicos — falha se driftar).
+ *
+ * NUNCA editar esses valores ad-hoc: alterar só se `design-tokens.ts`
+ * mudar, e atualizar ambos atomicamente no mesmo commit.
+ */
+const DS = {
+  brand:    "#00A0A0",  // --brand · teal · links, kickers, acentos
+  ink:      "#171411",  // --ink · todo o texto
+  paper:    "#FBFAF6",  // --paper · fundo web (não-email)
+  paperAlt: "#EBE5D0",  // --paper-alt · molduras, boxes cheios, shell bege
+  rule:     "#EBE5D0",  // --rule · fios e bordas hairline
+  // Alerta de circuit breaker: sem cor canônica no DS — red semântico de
+  // ferramenta interna. Não é uma cor de marca, portanto não entra no DS.
+  // Valor mantido como constante local explícita para evitar magic string.
+  alert:    "#C00000",  // vermelho de alerta (circuit breaker threshold)
+} as const;
+
+const DSF = {
+  // --font-sans · corpo + UI. Geist = web font; cai pra system sans.
+  sans: "'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+} as const;
+
+/** Exportado para o teste de drift (test/brevo-dashboard-ds-drift.test.ts). */
+export const DS_TOKENS = DS;
+export const DS_FONTS = DSF;
+
 export interface Env {
   BREVO_API_KEY: string;
 }
@@ -194,8 +225,11 @@ function fmtTimeBRT(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
+  // #2085: weekday:"short" acrescenta dia da semana (ex: "qua., 11/06 06:00")
+  // pra facilitar leitura de padrões de engajamento por dia.
   return d.toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
+    weekday: "short",
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",
@@ -216,7 +250,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
       if (!s) {
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:#999;font-style:italic;">sem stats</td></tr>`;
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
@@ -286,6 +320,11 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
     second: "2-digit",
   });
 
+  // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
+  // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
+  // sem token canônico de cinza — DS só tem ink; usamos inline hex aproximado
+  // #666 → substituído por DS.ink para uniformidade, com opacity via class).
+  // --rule-header = DS.rule (bege #EBE5D0); --rule de linhas = DS.rule.
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -293,22 +332,29 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Diar.ia Clarice Dashboard</title>
 <style>
-  :root { --teal: #00A0A0; --text: #1A1A1A; --muted: #666; --rule: #E5E5E5; --alert: #C00000; }
-  body { font-family: -apple-system, BlinkMacSystemFont, Inter, sans-serif; max-width: 1200px; margin: 30px auto; padding: 0 20px; color: var(--text); }
-  h1 { font-size: 1.6rem; margin: 0 0 4px 0; }
-  .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px 0; }
+  :root {
+    --brand: ${DS.brand};
+    --ink: ${DS.ink};
+    --paper: ${DS.paper};
+    --paper-alt: ${DS.paperAlt};
+    --rule: ${DS.rule};
+    --alert: ${DS.alert};
+  }
+  body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
+  h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
+  .sub { color: var(--ink); opacity: 0.6; font-size: 0.9rem; margin: 0 0 24px 0; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: #FAFAFA; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); position: sticky; top: 0; cursor: help; border-bottom: 1px dotted var(--muted); }
-  td.metric { font-weight: 600; color: var(--teal); }
+  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 1px solid var(--rule); }
+  td.metric { font-weight: 600; color: var(--brand); }
   td.alert { font-weight: 600; color: var(--alert); }
-  td.alert small, td.alert .rate-inline { color: var(--alert); }
+  td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
-  td .rate-inline { font-weight: normal; color: var(--text); }
-  td small { color: var(--muted); font-weight: normal; }
-  .footer { color: var(--muted); font-size: 0.75rem; margin-top: 24px; text-align: center; }
-  .footer code { background: #F5F5F5; padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
+  td .rate-inline { font-weight: normal; color: var(--ink); }
+  td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
+  .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 24px; text-align: center; }
+  .footer code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
@@ -336,7 +382,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 </tr>
 </thead>
 <tbody>
-${rows || '<tr><td colspan="10" style="text-align:center;color:#999;padding:24px;">Nenhuma campaign encontrada.</td></tr>'}
+${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
 </tbody>
 </table>
 </div>
