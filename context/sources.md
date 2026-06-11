@@ -197,10 +197,12 @@
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
 - Use Melhor: sim
 
-### OpenAI Cookbook
-- URL: https://developers.openai.com/cookbook
-- Site query: `site:developers.openai.com`
+### Chip Huyen (Blog)
+- URL: https://huyenchip.com/blog
+- Site query: `site:huyenchip.com`
+- RSS: https://huyenchip.com/feed.xml
 - Use Melhor: sim
+- Low cadence: sim
 
 ### Sebastian Raschka (Ahead of AI)
 - URL: https://magazine.sebastianraschka.com/
@@ -238,7 +240,8 @@
 - Site query: `site:hub.asimov.academy`
 - Use Melhor: sim
 
-### Weights & Biases
-- URL: https://wandb.ai/fully-connected
-- Site query: `site:wandb.ai/fully-connected`
+### The Gradient
+- URL: https://thegradient.pub/
+- Site query: `site:thegradient.pub`
+- RSS: https://thegradient.pub/rss/
 - Use Melhor: sim

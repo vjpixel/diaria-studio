@@ -27,16 +27,16 @@ describe("sources RSS fixes (#1266)", () => {
 
   it("#1987: host dedicado-único → site_query host-only (path-scoping sub-retornava)", () => {
     // Hosts dedicados a UMA fonte: dropar o path fixa o under-return do site:.
-    assert.equal(byName.get("OpenAI Cookbook")?.site_query, "site:developers.openai.com");
+    // OpenAI Cookbook substituída em #2077 por Simon Willison's Weblog.
     assert.equal(byName.get("LangChain Blog")?.site_query, "site:langchain.com");
     assert.equal(byName.get("Pinecone Learn")?.site_query, "site:pinecone.io");
   });
 
   it("#1987 code-review: host multi-tenant MANTÉM path (host-only floodaria de terceiros)", () => {
-    // github.com (Anthropic Cookbook) host-only → todo o GitHub; wandb.ai →
-    // projetos de qualquer usuário. SHARED_HOSTS preserva o path.
+    // github.com (Anthropic Cookbook) host-only → todo o GitHub.
+    // SHARED_HOSTS preserva o path.
+    // W&B substituída em #2077 por The Gradient.
     assert.equal(byName.get("Anthropic Cookbook")?.site_query, "site:github.com/anthropics/anthropic-cookbook");
-    assert.equal(byName.get("Weights & Biases")?.site_query, "site:wandb.ai/fully-connected");
   });
 
   it("#1987 code-review: host com >1 fonte MANTÉM path (host-only colidiria as queries)", () => {
@@ -119,10 +119,9 @@ describe("sources RSS fixes (#1266)", () => {
   // #1862: feeds RSS mortos (404 / HTML React/Webflow) — fonte mantida pra
   // WebSearch `site:`, mas RSS limpo + URL apontando pro domínio atual.
   // LangChain removida desta lista em #2077: ganhou RSS válido (rss.xml no novo domínio).
-  const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [
-    { name: "OpenAI Cookbook", url: "https://developers.openai.com/cookbook" }, // migrou de cookbook.openai.com (rss 404)
-    { name: "Weights & Biases", url: "https://wandb.ai/fully-connected" }, // /site/articles/rss.xml 404; fully-connected é React (sem XML)
-  ];
+  // OpenAI Cookbook e Weights & Biases removidas desta lista em #2077: substituídas por
+  // Simon Willison's Weblog e The Gradient (fontes ativas com RSS verificado).
+  const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [];
   for (const { name, url } of SOURCES_1862_NO_RSS) {
     it(`#1862: ${name} sem RSS (feed morto) + URL no domínio atual`, () => {
       const s = byName.get(name);
@@ -131,6 +130,35 @@ describe("sources RSS fixes (#1266)", () => {
       assert.equal(s!.url, url, `${name} URL deve apontar pro domínio atual`);
     });
   }
+
+  it("#2077: OpenAI Cookbook e W&B substituídas por fontes ativas de tutoriais", () => {
+    assert.equal(
+      byName.get("OpenAI Cookbook"),
+      undefined,
+      "OpenAI Cookbook removida de sources.md (#2077)",
+    );
+    assert.equal(
+      byName.get("Weights & Biases"),
+      undefined,
+      "Weights & Biases removida de sources.md (#2077)",
+    );
+  });
+
+  // #2077: Simon Willison estava no editorial-blocklist (#1760) → não pode ser fonte.
+  // Substituição de OpenAI Cookbook: Chip Huyen (feed válido, low_cadence=1).
+  it("#2077: Chip Huyen adicionada com RSS verificado (substitui OpenAI Cookbook)", () => {
+    const s = byName.get("Chip Huyen (Blog)");
+    assert.ok(s, "Chip Huyen deve existir em sources.md");
+    assert.equal(s!.rss, "https://huyenchip.com/feed.xml", "RSS válido verificado");
+    assert.equal(s!.url, "https://huyenchip.com/blog", "URL principal correta");
+  });
+
+  it("#2077: The Gradient adicionada com RSS verificado (substitui W&B)", () => {
+    const s = byName.get("The Gradient");
+    assert.ok(s, "The Gradient deve existir em sources.md");
+    assert.equal(s!.rss, "https://thegradient.pub/rss/", "RSS verificado (post Feb/2026)");
+    assert.equal(s!.url, "https://thegradient.pub/", "URL principal correta");
+  });
 
   it("#2077: LangChain Blog ganhou RSS válido no novo domínio", () => {
     // blog.langchain.dev/rss era morto (HTML Webflow). Novo feed:
