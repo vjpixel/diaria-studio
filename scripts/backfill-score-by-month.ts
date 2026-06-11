@@ -34,6 +34,7 @@
  */
 
 import "dotenv/config";
+import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -120,35 +121,9 @@ async function kvDelete(key: string): Promise<void> {
   }
 }
 
-/**
- * Cópia local de `workers/poll/src/lib.ts#editionToMonthSlug`.
- * #2123: porta o branch de ciclo YYMM-MM (#2115) pra que `--edition 2605-06`
- * não seja silenciosamente ignorado. Fonte canônica: workers/poll/src/lib.ts.
- * Manter sincronizado ao alterar o formato lá.
- *
- * Importar diretamente do Worker seria o ideal, mas o script é Node/tsx e o
- * Worker usa @cloudflare/workers-types como devDep — import direto funciona
- * para módulos puros como lib.ts (sem runtime deps), mas introduz acoplamento
- * de build entre script e worker que requer cuidado extra em CI. Mantemos a
- * cópia com comentário apontando a fonte canônica, conforme decisão de projeto.
- */
-function editionToMonthSlug(edition: string): string | null {
-  // #2115: ciclo Clarice YYMM-MM (ex: "2605-06") → slug do mês do CONTEÚDO
-  if (/^\d{4}-\d{2}$/.test(edition)) {
-    const yy = edition.slice(0, 2);
-    const mm = edition.slice(2, 4);
-    const mmNum = parseInt(mm, 10);
-    if (mmNum < 1 || mmNum > 12) return null;
-    return `20${yy}-${mm}`;
-  }
-  // Formato legado AAMMDD (diária + mensal pre-#2115)
-  if (!/^\d{6}$/.test(edition)) return null;
-  const yy = edition.slice(0, 2);
-  const mm = edition.slice(2, 4);
-  const mmNum = parseInt(mm, 10);
-  if (mmNum < 1 || mmNum > 12) return null;
-  return `20${yy}-${mm}`;
-}
+// #2123: editionToMonthSlug importado da fonte canônica (workers/poll/src/lib.ts —
+// módulo puro, sem deps de runtime do Worker). A cópia local anterior divergiu
+// silenciosamente no #2115; import direto elimina a classe de bug.
 
 async function main(): Promise<void> {
   console.log(`[backfill] mode: ${dryRun ? "DRY-RUN" : "WRITE"}${clearFirst ? " (with --clear-first)" : ""}`);

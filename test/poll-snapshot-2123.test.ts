@@ -18,6 +18,7 @@ import {
   type SnapshotEntry,
   type Env,
 } from "../workers/poll/src/index.ts";
+import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 import { rankEntries } from "../workers/poll/src/leaderboard.ts";
 import worker from "../workers/poll/src/index.ts";
 
@@ -219,21 +220,6 @@ describe("upsertOwnEntryInSnapshot — TTL curto pós-upsert (#2123 fix 2)", () 
     );
   });
 
-  it("TTL do upsert (300s) é bem menor que o TTL do compute path (86400s)", () => {
-    // Regression guard: se alguém mudar o TTL do upsert pro mesmo 86400,
-    // o benefício de autocorreção rápida pra races desaparece.
-    // Este teste documental garante que a diferença é intencional e visível.
-    const UPSERT_TTL = 300;
-    const COMPUTE_TTL = 86400;
-    assert.ok(
-      UPSERT_TTL < COMPUTE_TTL,
-      `TTL do upsert (${UPSERT_TTL}s) deve ser menor que o do compute (${COMPUTE_TTL}s)`,
-    );
-    assert.ok(
-      COMPUTE_TTL / UPSERT_TTL >= 100,
-      "diferença deve ser de pelo menos 100× (300s vs 86400s = 288×)",
-    );
-  });
 });
 
 // ── Fix 3: Redirect 302 (não 301) ───────────────────────────────────────────
@@ -290,62 +276,38 @@ describe("redirect /leaderboard/{YYYY-MM} → anual usa 302, não 301 (#2123 fix
 // ── Fix 4: backfill editionToMonthSlug aceita ciclo YYMM-MM ─────────────────
 
 describe("backfill editionToMonthSlug local aceita ciclo YYMM-MM (#2123 fix 4)", async () => {
-  // Importa a função local do backfill via import dinâmico + extrai via efeitos.
-  // A função local é privada, então testamos indiretamente via comportamento:
-  // chamamos o transformador de keys que o backfill usa ao processar votes.
-  //
-  // Estratégia: replicamos o mesmo regex+lógica da função corrigida e
-  // garantimos que as 3 ramificações (ciclo novo, legado, inválido) produzem
-  // os resultados certos. Isso serve como spec + teste de não-regressão
-  // sem precisar export da função interna.
-
-  function editionToMonthSlugPorted(edition: string): string | null {
-    // #2115: ciclo Clarice YYMM-MM
-    if (/^\d{4}-\d{2}$/.test(edition)) {
-      const yy = edition.slice(0, 2);
-      const mm = edition.slice(2, 4);
-      const mmNum = parseInt(mm, 10);
-      if (mmNum < 1 || mmNum > 12) return null;
-      return `20${yy}-${mm}`;
-    }
-    // Formato legado AAMMDD
-    if (!/^\d{6}$/.test(edition)) return null;
-    const yy = edition.slice(0, 2);
-    const mm = edition.slice(2, 4);
-    const mmNum = parseInt(mm, 10);
-    if (mmNum < 1 || mmNum > 12) return null;
-    return `20${yy}-${mm}`;
-  }
+  // #2123 (review): testa a função CANÔNICA importada — o backfill agora importa
+  // de workers/poll/src/lib.ts, então cobrir a canônica cobre o backfill por construção.
 
   it("ciclo YYMM-MM (2605-06) → bucket 2026-05 (mês do CONTEÚDO)", () => {
-    assert.equal(editionToMonthSlugPorted("2605-06"), "2026-05");
+    assert.equal(editionToMonthSlug("2605-06"), "2026-05");
   });
 
   it("ciclo YYMM-MM com mês inválido → null (não processa silenciosamente)", () => {
-    assert.equal(editionToMonthSlugPorted("2600-01"), null, "mês do conteúdo 0 → null");
-    assert.equal(editionToMonthSlugPorted("2613-02"), null, "mês do conteúdo 13 → null");
+    assert.equal(editionToMonthSlug("2600-01"), null, "mês do conteúdo 0 → null");
+    assert.equal(editionToMonthSlug("2613-02"), null, "mês do conteúdo 13 → null");
   });
 
   it("legado AAMMDD preservado (back-compat)", () => {
-    assert.equal(editionToMonthSlugPorted("260531"), "2026-05");
-    assert.equal(editionToMonthSlugPorted("260101"), "2026-01");
+    assert.equal(editionToMonthSlug("260531"), "2026-05");
+    assert.equal(editionToMonthSlug("260101"), "2026-01");
   });
 
   it("legado e ciclo produzem o MESMO bucket (fragmentação zero)", () => {
     assert.equal(
-      editionToMonthSlugPorted("260531"),
-      editionToMonthSlugPorted("2605-06"),
+      editionToMonthSlug("260531"),
+      editionToMonthSlug("2605-06"),
       "voto legado (260531) e ciclo novo (2605-06) devem cair no mesmo bucket",
     );
   });
 
   it("formato inválido → null (sem processamento silencioso)", () => {
-    assert.equal(editionToMonthSlugPorted("naoehdata"), null);
-    assert.equal(editionToMonthSlugPorted("12345"), null);
-    assert.equal(editionToMonthSlugPorted(""), null);
+    assert.equal(editionToMonthSlug("naoehdata"), null);
+    assert.equal(editionToMonthSlug("12345"), null);
+    assert.equal(editionToMonthSlug(""), null);
   });
 
   it("ciclo YYMM-MM outro exemplo: 2604-05 → 2026-04", () => {
-    assert.equal(editionToMonthSlugPorted("2604-05"), "2026-04");
+    assert.equal(editionToMonthSlug("2604-05"), "2026-04");
   });
 });

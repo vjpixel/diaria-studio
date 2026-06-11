@@ -790,7 +790,10 @@ export async function upsertOwnEntryInSnapshot(
   const emailLower = own.email.toLowerCase();
   const idx = entries.findIndex((e) => e.email.toLowerCase() === emailLower);
   if (idx >= 0) {
-    entries[idx] = { ...entries[idx], ...own, email: emailLower };
+    // #2123 (review): own com last_vote_ts EXPLICITAMENTE undefined apagaria o valor
+    // existente via spread — filtra chaves undefined antes do merge.
+    const ownDefined = Object.fromEntries(Object.entries(own).filter(([, v]) => v !== undefined));
+    entries[idx] = { ...entries[idx], ...ownDefined, email: emailLower } as SnapshotEntry;
   } else {
     entries.push({ ...own, email: emailLower });
   }
