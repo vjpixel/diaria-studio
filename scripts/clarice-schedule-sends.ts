@@ -93,6 +93,31 @@ export function scheduledAtFor(n: number): string {
   return new Date(`2026-06-${String(day).padStart(2, "0")}T09:00:00Z`).toISOString();
 }
 
+/**
+ * #2101: guard de runtime — lança se scheduledAtFor(n) resultar em data passada/presente.
+ * Separa a computação da data (usada no plano informativo, que exibe datas mesmo se passadas)
+ * da validação de negócio (usada em --create e --schedule, onde agendar no passado é erro).
+ *
+ * Caso típico de erro: ciclo copiado para o próximo mês sem atualizar "2026-06" → todas
+ * as 21 datas seriam passadas, Brevo recusaria silenciosamente ou agendaria mal.
+ *
+ * @param n            Número do envio (1..21)
+ * @param nowOverride  Clock injetável para testes (default: new Date())
+ * @throws se a data computada for <= now
+ */
+export function assertScheduledAtFuture(n: number, nowOverride?: Date): void {
+  const iso = scheduledAtFor(n); // range já validado em scheduledAtFor
+  const date = new Date(iso);
+  const now = nowOverride ?? new Date();
+  if (date <= now) {
+    throw new Error(
+      `scheduledAtFor: data computada (${iso}) é passado ou presente ` +
+      `(now=${now.toISOString()}). ` +
+      `Mês hardcoded "2026-06" está desatualizado — atualize ao copiar para o próximo ciclo.`,
+    );
+  }
+}
+
 interface CellEntry { list: string; listId: number; count: number }
 // Entrada no campaigns-summary.json; listId é o ID Brevo da lista que recebe a campanha.
 interface CampaignEntry {
@@ -146,6 +171,65 @@ export function buildKeysInScope(weeks: number[]): Set<string> {
  */
 export function isScheduledStatus(status: string): boolean {
   return status === "queued" || status === "scheduled";
+}
+
+/**
+ * #2101: aplica os resultados do Promise.allSettled do GET-verify ao campaigns array.
+ * Exportado pra testabilidade — main() delega pra cá; testes injetam resultados mockados.
+ *
+ * Para cada resultado:
+ *   - fulfilled + isScheduledStatus → marca c.status="scheduled" e escreve no disco
+ *   - fulfilled + status não aceito → warn, sem escrita (próxima run re-tenta)
+ *   - rejected → warn com motivo, sem escrita (próxima run re-tenta)
+ *
+ * Nunca lança: erros individuais são warns, não exceções globais (sucesso parcial).
+ *
+ * @param settled    Resultado do Promise.allSettled(...GETs...)
+ * @param toVerify   Lista de CampaignEntry na mesma ordem do allSettled
+ * @param campaigns  Array mutável de todos os CampaignEntry (para serialização)
+ * @param campaignsPath  Caminho do campaigns-summary.json (escrita atômica por sucesso)
+ * @param writeFn    Função de escrita (injetável em testes; default: writeFileAtomic)
+ * @param logFn      Função de log (injetável em testes; default: console.error)
+ */
+export function applyVerifyResults(
+  settled: PromiseSettledResult<{ status: string }>[],
+  toVerify: CampaignEntry[],
+  campaigns: CampaignEntry[],
+  campaignsPath: string,
+  writeFn: (path: string, content: string) => void = (p, c) => writeFileAtomic(p, c),
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
+  if (settled.length !== toVerify.length) {
+    throw new Error(
+      `applyVerifyResults: invariante quebrada — settled.length (${settled.length}) !== toVerify.length (${toVerify.length})`,
+    );
+  }
+  for (let i = 0; i < toVerify.length; i++) {
+    const c = toVerify[i];
+    const result = settled[i];
+
+    if (result.status === "rejected") {
+      logFn(
+        `⚠ GET-verify ${c.key} (campanha #${c.campaignId}) falhou: ${String(result.reason)}. ` +
+        `Status local NÃO atualizado — re-tente --schedule.`,
+      );
+      continue;
+    }
+
+    const verified = result.value;
+    if (!isScheduledStatus(verified.status)) {
+      logFn(
+        `⚠ GET-verify ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
+        `(esperado "queued"/"scheduled" após PUT scheduledAt="${c.scheduledAt}"). ` +
+        `Status local NÃO atualizado — re-tente --schedule após checar o Brevo.`,
+      );
+      continue;
+    }
+
+    c.status = "scheduled";
+    writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+    logFn(`✓ ${c.key} agendada → ${c.scheduledAt} (GET-verify: status=${verified.status})`);
+  }
 }
 
 /** Parseia --weeks e valida: retorna array com 1,2,3 ou subconjunto. */
@@ -353,6 +437,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
             continue;
           }
+          assertScheduledAtFuture(s.n); // #2101: data passada = mês hardcoded desatualizado
           const entry = listByKey.get(key);
           if (!entry) throw new Error(`lista-célula não encontrada pra ${key}`);
           const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -384,6 +469,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           console.error(`↷ ${key} já criada (#${byKey.get(key)!.campaignId}) — pulando`);
           continue;
         }
+        assertScheduledAtFuture(s.n); // #2101: data passada = mês hardcoded desatualizado
         const listId = listByDay.get(s.n);
         if (listId == null) throw new Error(`listId não encontrado pra ${key}`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
@@ -475,35 +561,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         console.error(`↷ ${c.key} já agendada — pulando`);
         continue;
       }
+      // #2101: guard simétrico ao --create — scheduledAt passado (herança/edição manual)
+      // seria PUTado no Brevo sem validação. Abortar com mensagem clara antes do PUT.
+      if (new Date(c.scheduledAt) <= new Date()) {
+        throw new Error(
+          `--schedule: ${c.key} (campanha #${c.campaignId}) tem scheduledAt no passado/presente ` +
+          `(${c.scheduledAt}). Atualize o campaigns-summary.json ou atualize o mês hardcoded ` +
+          `em scheduledAtFor antes de agendar.`,
+        );
+      }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
       toVerify.push(c);
     }
 
-    // #2018 / regra #573 / #2061: GET-verify em paralelo pós-PUTs — confirma que
+    // #2018 / regra #573 / #2061 / #2101: GET-verify em paralelo pós-PUTs — confirma que
     // o Brevo realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
     // 21 campanhas × GET ~200ms sequencial ≈ 4s; paralelo ≈ 200ms.
     // Brevo pode aceitar PUT 204 mas não persistir em edge cases — divergência logada
     // e flag local NÃO atualizada (próximo --schedule re-tenta).
-    const verifyResults = await Promise.all(
+    //
+    // #2101: Promise.allSettled (era Promise.all) — se 1 GET lançar, os demais não
+    // são descartados. Delegado a applyVerifyResults (exportado, testável sem rede).
+    const verifySettled = await Promise.allSettled(
       toVerify.map((c) => brevoGetCampaign(apiKey, c.campaignId)),
     );
-
-    for (let i = 0; i < toVerify.length; i++) {
-      const c = toVerify[i];
-      const verified = verifyResults[i];
-      if (!isScheduledStatus(verified.status)) {
-        console.error(
-          `⚠ GET-verify ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
-          `(esperado "queued"/"scheduled" após PUT scheduledAt="${c.scheduledAt}"). ` +
-          `Status local NÃO atualizado — re-tente --schedule após checar o Brevo.`,
-        );
-        continue; // não atualiza c.status nem escreve no disco
-      }
-
-      c.status = "scheduled";
-      writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
-      console.error(`✓ ${c.key} agendada → ${c.scheduledAt} (GET-verify: status=${verified.status})`);
-    }
+    applyVerifyResults(verifySettled, toVerify, campaigns, campaignsPath);
   }
 
   console.log(JSON.stringify({ created: campaigns.length, scheduled: campaigns.filter((c) => c.status === "scheduled").length }, null, 2));
