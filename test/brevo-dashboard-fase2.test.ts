@@ -1,5 +1,5 @@
 /**
- * test/brevo-dashboard-fase2.test.ts (#2086)
+ * test/brevo-dashboard-fase2.test.ts (#2086, #2134)
  *
  * Testes unitários para os helpers de agregação da Fase 2 mínima:
  *  - extractClariceCell / parseClariceCampaignKey
@@ -8,6 +8,7 @@
  *  - detectActiveCycle
  *  - buildTrendRows
  *  - renderAbcSection / renderTrendSection (smoke de HTML)
+ *  - weekdayKeyBRT / aggregateByWeekday / renderWeekdaySection (#2134)
  *
  * Todos os helpers são funções puras exportadas de workers/brevo-dashboard/src/index.ts.
  * Não requerem mock de rede — usam fixtures locais do shape real da Brevo API.
@@ -26,6 +27,10 @@ import {
   renderDashboardHtml,
   CLARICE_PLAN_TOTAL,
   CLARICE_PLAN_S1,
+  weekdayKeyBRT,
+  aggregateByWeekday,
+  renderWeekdaySection,
+  WEEKDAY_LABELS,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -559,5 +564,281 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     const thCount = (tableSection.match(/<th /g) || []).length;
     // 11 colunas: ID, Lista, Enviado, Sent, Delivered, Opens, Clicks, Trackable, Bounces, Unsub, Spam
     assert.equal(thCount, 11, `tabela de campanhas deve ter 11 <th> mas encontrou ${thCount}`);
+  });
+
+  test("seção weekday-openrate aparece quando há campanhas Clarice News (#2134)", () => {
+    const html = renderDashboardHtml(cycle2605Campaigns);
+    assert.match(html, /weekday-openrate/, "deve conter a seção weekday-openrate");
+    assert.match(html, /Open rate por dia da semana/, "deve ter título da seção weekday");
+  });
+
+  test("seção weekday-openrate posicionada ENTRE abc-summary e campaigns-table (#2134)", () => {
+    const html = renderDashboardHtml(cycle2605Campaigns);
+    const idxAbc = html.indexOf("abc-summary");
+    const idxWeekday = html.indexOf("weekday-openrate");
+    const idxCampaigns = html.indexOf("campaigns-table");
+    assert.ok(idxAbc < idxWeekday, "weekday-openrate deve vir depois de abc-summary");
+    assert.ok(idxWeekday < idxCampaigns, "weekday-openrate deve vir antes de campaigns-table");
+  });
+});
+
+// ─── weekdayKeyBRT (#2134) ────────────────────────────────────────────────────
+
+describe("weekdayKeyBRT (#2134)", () => {
+  test("qua (2026-06-10, BRT) → 2", () => {
+    // 2026-06-10T09:05:00Z = 06:05 BRT (quarta). Índice Qua = 2.
+    assert.equal(weekdayKeyBRT("2026-06-10T09:05:00Z"), 2);
+  });
+
+  test("qui (2026-06-11, BRT) → 3", () => {
+    // 2026-06-11T09:14:00Z = 06:14 BRT (quinta). Índice Qui = 3.
+    assert.equal(weekdayKeyBRT("2026-06-11T09:14:00Z"), 3);
+  });
+
+  // Edge: envio às 23h BRT = 02h UTC do dia seguinte
+  test("edge: envio 23h BRT não cai no dia UTC seguinte", () => {
+    // 2026-06-10T02:00:00Z = 2026-06-09T23:00 BRT (terça = 1)
+    // Em UTC seria 10/jun (quarta = 2). Deve retornar 1 (terça).
+    assert.equal(weekdayKeyBRT("2026-06-10T02:00:00Z"), 1);
+  });
+
+  test("seg → 0", () => {
+    // 2026-06-08 = segunda. 09:00 BRT = 12:00 UTC.
+    assert.equal(weekdayKeyBRT("2026-06-08T12:00:00Z"), 0);
+  });
+
+  test("dom → 6", () => {
+    // 2026-06-14 = domingo. 09:00 BRT = 12:00 UTC.
+    assert.equal(weekdayKeyBRT("2026-06-14T12:00:00Z"), 6);
+  });
+
+  test("retorna null para ISO inválido", () => {
+    assert.equal(weekdayKeyBRT("not-a-date"), null);
+  });
+
+  test("retorna null para string vazia", () => {
+    assert.equal(weekdayKeyBRT(""), null);
+  });
+});
+
+// ─── aggregateByWeekday (#2134) ───────────────────────────────────────────────
+
+describe("aggregateByWeekday (#2134)", () => {
+  // cycle2605Campaigns: d01 = 2026-06-10 (qua=2), d02 = 2026-06-11 (qui=3)
+  // Células A/B/C por dia → por weekday: qua tem 3 campanhas (A+B+C), qui tem 3.
+
+  test("agrega corretamente por weekday para ciclo ativo (qua e qui presentes)", () => {
+    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const qua = rows.find((r) => r.weekday === 2); // Qua
+    const qui = rows.find((r) => r.weekday === 3); // Qui
+    assert.ok(qua, "deve ter linha para Qua");
+    assert.ok(qui, "deve ter linha para Qui");
+    // d01: A(sent=117,del=115,views=20) + B(117,117,32) + C(116,115,30) = sent=350, del=347, opens=82
+    assert.equal(qua!.count, 3);
+    assert.equal(qua!.sent, 117 + 117 + 116);
+    assert.equal(qua!.delivered, 115 + 117 + 115);
+    assert.equal(qua!.opens, 20 + 32 + 30);
+    // d02: A(184,182,35) + B(183,182,39) + C(183,183,30) = sent=550, del=547, opens=104
+    assert.equal(qui!.count, 3);
+    assert.equal(qui!.sent, 184 + 183 + 183);
+    assert.equal(qui!.delivered, 182 + 182 + 183);
+    assert.equal(qui!.opens, 35 + 39 + 30);
+  });
+
+  test("openRate calculado corretamente (opens / delivered)", () => {
+    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    const expectedRate = (82 / 347) * 100;
+    assert.ok(Math.abs(qua.openRate - expectedRate) < 0.01,
+      `openRate qua deve ser ~${expectedRate.toFixed(2)}% mas foi ${qua.openRate.toFixed(2)}%`);
+  });
+
+  test("smallSample=false quando count >= 2", () => {
+    const rows = aggregateByWeekday(cycle2605Campaigns, "2605");
+    // count=3 pra qua e qui
+    for (const r of rows) {
+      assert.equal(r.smallSample, false, `weekday ${r.label} com count=${r.count} não deve ser smallSample`);
+    }
+  });
+
+  test("smallSample=true quando count = 1", () => {
+    // Apenas 1 campanha na qua
+    const single = [cycle2605Campaigns[0]]; // d01-A (qua)
+    const rows = aggregateByWeekday(single, "2605");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].smallSample, true, "count=1 deve ser smallSample");
+  });
+
+  test("retorna [] quando ciclo não tem campanhas", () => {
+    const rows = aggregateByWeekday(cycle2605Campaigns, "9999");
+    assert.equal(rows.length, 0);
+  });
+
+  test("filtra ciclo correto (exclui campanhas de outro ciclo)", () => {
+    const mixed = [
+      ...cycle2605Campaigns,
+      makeCampaign(99, "Clarice News 2604 d01-A (qui)", "2026-05-02T09:00:00Z",
+        { sent: 500, delivered: 495, uniqueViews: 200 }),
+    ];
+    const rows = aggregateByWeekday(mixed, "2605");
+    // Campanha 2604 não deve entrar — verificar que sent total de Qui é só d02 (2605)
+    const qui = rows.find((r) => r.weekday === 3)!;
+    assert.equal(qui.sent, 184 + 183 + 183, "campanha 2604 não deve entrar no ciclo 2605");
+  });
+
+  test("usa campaignStats fallback quando globalStats ausente (mesmo fallback do render)", () => {
+    const csOnly = {
+      ...makeCampaign(77, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"),
+      statistics: {
+        campaignStats: [{
+          listId: 177, sent: 99, delivered: 97,
+          hardBounces: 1, softBounces: 1, deferred: 0,
+          uniqueViews: 40, viewed: 45, trackableViews: 30,
+          uniqueClicks: 4, clickers: 4, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: undefined,
+      },
+    };
+    const rows = aggregateByWeekday([csOnly], "2605");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].sent, 99, "deve usar campaignStats.sent quando globalStats ausente");
+    assert.equal(rows[0].opens, 40, "deve usar campaignStats.uniqueViews quando globalStats ausente");
+  });
+
+  test("omite campanhas sem sentDate", () => {
+    const noDate = { ...makeCampaign(88, "Clarice News 2605 d01-A (qua)", ""), sentDate: null };
+    const rows = aggregateByWeekday([noDate], "2605");
+    assert.equal(rows.length, 0, "campanha sem sentDate não deve gerar linha");
+  });
+
+  test("omite campanhas com stats zeradas (sent=0)", () => {
+    const zeroStats = {
+      ...makeCampaign(89, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"),
+      statistics: { globalStats: makeGlobalStats({ sent: 0, delivered: 0, uniqueViews: 0 }) },
+    };
+    const rows = aggregateByWeekday([zeroStats], "2605");
+    assert.equal(rows.length, 0, "campanha com sent=0 não deve gerar linha");
+  });
+
+  test("ordena seg→dom mesmo com sentDates fora de ordem", () => {
+    // Campanhas: qui (3) antes de seg (0) na lista
+    const outOfOrder = [
+      makeCampaign(1, "Clarice News 2605 d02-A (qui)", "2026-06-11T09:00:00Z"),
+      makeCampaign(2, "Clarice News 2605 d04-A (seg)", "2026-06-15T09:00:00Z"),
+    ];
+    const rows = aggregateByWeekday(outOfOrder, "2605");
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].weekday, 0, "Seg (0) deve vir antes de Qui (3)");
+    assert.equal(rows[1].weekday, 3, "Qui (3) deve vir depois de Seg (0)");
+  });
+
+  test("labels WEEKDAY_LABELS corretos para todos os índices", () => {
+    assert.equal(WEEKDAY_LABELS[0], "Seg");
+    assert.equal(WEEKDAY_LABELS[1], "Ter");
+    assert.equal(WEEKDAY_LABELS[2], "Qua");
+    assert.equal(WEEKDAY_LABELS[3], "Qui");
+    assert.equal(WEEKDAY_LABELS[4], "Sex");
+    assert.equal(WEEKDAY_LABELS[5], "Sáb");
+    assert.equal(WEEKDAY_LABELS[6], "Dom");
+  });
+
+  test("cycle=null agrega todas as campanhas (cross-ciclo)", () => {
+    // allCampaigns inclui 2605 e T1 (T1 não é Clarice News — filtradas pelo ciclo null)
+    // Mas T1 campaigns têm sentDate e stats → devem entrar quando cycle=null
+    const rows = aggregateByWeekday(allCampaigns, null);
+    assert.ok(rows.length > 0, "deve ter rows quando cycle=null");
+    // T1 campaigns: 2026-05-08 (sex=4), 2026-05-15 (sex=4) → devem aparecer
+    const sex = rows.find((r) => r.weekday === 4);
+    assert.ok(sex, "T1 campaigns enviadas na sexta devem aparecer com cycle=null");
+  });
+});
+
+// ─── renderWeekdaySection (#2134) ─────────────────────────────────────────────
+
+describe("renderWeekdaySection (#2134)", () => {
+  function makeRows(overrides: Partial<Parameters<typeof aggregateByWeekday>[0]> = {}) {
+    return aggregateByWeekday(cycle2605Campaigns, "2605");
+  }
+
+  test("retorna string vazia quando rows está vazio", () => {
+    assert.equal(renderWeekdaySection([], "ciclo 2605"), "");
+  });
+
+  test("contém id='weekday-openrate' para âncora", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /id="weekday-openrate"/);
+  });
+
+  test("contém labels Qua e Qui no HTML (dias das fixtures)", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /Qua/, "deve ter linha Qua");
+    assert.match(html, /Qui/, "deve ter linha Qui");
+  });
+
+  test("marca melhor dia com ▲ MELHOR DIA (1 ocorrência quando não há empate)", () => {
+    // Qua: openRate=82/347≈23.6%, Qui: openRate=104/547≈19.0% — Qua é melhor
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    const count = (html.match(/MELHOR DIA/g) ?? []).length;
+    assert.equal(count, 1, "deve ter exatamente 1 tag MELHOR DIA");
+    // Qua deve ser a linha com MELHOR DIA
+    const quaIdx = html.indexOf("Qua");
+    const tagIdx = html.indexOf("MELHOR DIA");
+    // Tag deve estar na mesma <tr> que Qua (próximo MELHOR DIA depois de Qua)
+    assert.ok(tagIdx > quaIdx, "MELHOR DIA deve aparecer depois do label Qua");
+  });
+
+  test("empate: nenhum dia recebe MELHOR DIA", () => {
+    const tiedRows = [
+      { weekday: 2, label: "Qua", count: 2, sent: 200, delivered: 200, opens: 50, openRate: 25.0, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, sent: 200, delivered: 200, opens: 50, openRate: 25.0, smallSample: false },
+    ];
+    const html = renderWeekdaySection(tiedRows, "ciclo 2605");
+    assert.doesNotMatch(html, /MELHOR DIA/, "empate não deve gerar MELHOR DIA");
+    assert.match(html, /Empate/, "empate deve mostrar texto de empate");
+  });
+
+  test("apenas 1 dia: sem MELHOR DIA (dados insuficientes)", () => {
+    // 1 único dia → validRows.length < 2 → nenhum winner
+    const single = [
+      { weekday: 2, label: "Qua", count: 3, sent: 350, delivered: 347, opens: 82, openRate: 23.6, smallSample: false },
+    ];
+    const html = renderWeekdaySection(single, "ciclo 2605");
+    assert.doesNotMatch(html, /MELHOR DIA/, "1 único dia não deve ter MELHOR DIA");
+    assert.match(html, /[Dd]ados insuficientes|insuficiente/,
+      "deve mostrar nota de dados insuficientes com 1 dia");
+  });
+
+  test("amostra pequena: exibe nota '(amostra pequena)' na linha correta", () => {
+    const rowsWithSmall = [
+      { weekday: 2, label: "Qua", count: 1, sent: 100, delivered: 98, opens: 20, openRate: 20.4, smallSample: true },
+      { weekday: 3, label: "Qui", count: 3, sent: 300, delivered: 295, opens: 70, openRate: 23.7, smallSample: false },
+    ];
+    const html = renderWeekdaySection(rowsWithSmall, "ciclo 2605");
+    assert.match(html, /amostra pequena/, "deve mostrar nota amostra pequena na linha de count=1");
+  });
+
+  test("scopeLabel aparece no título da seção", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /ciclo 2605/, "scopeLabel deve aparecer no título");
+  });
+
+  test("usa class metric na coluna open rate (padrão visual do dashboard)", () => {
+    const rows = makeRows();
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    assert.match(html, /class="metric"/, "open rate deve usar class metric");
+  });
+
+  test("all-zero openRate exibe 'aguardando dados' (não 'Empate...0.0%')", () => {
+    const zeroRows = [
+      { weekday: 2, label: "Qua", count: 2, sent: 200, delivered: 200, opens: 0, openRate: 0, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, sent: 200, delivered: 200, opens: 0, openRate: 0, smallSample: false },
+    ];
+    const html = renderWeekdaySection(zeroRows, "ciclo 2605");
+    assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate 0.0%' quando todos zero");
+    assert.match(html, /[Aa]guardando dados/, "deve mostrar 'aguardando dados' quando tudo zero");
   });
 });

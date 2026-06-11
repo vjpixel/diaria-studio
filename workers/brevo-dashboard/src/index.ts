@@ -340,6 +340,15 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   const abcSection = activeCycle ? renderAbcSection(abcRows, cumSent) : "";
   const trendRows = buildTrendRows(campaigns);
   const trendSection = renderTrendSection(trendRows);
+  // #2134: tabela de open rate por dia da semana (ciclo ativo).
+  // Escopo: ciclo ativo quando detectado; fallback "todas as campanhas" quando
+  // não há campanha Clarice News (activeCycle=null). Linha all-time separada
+  // não implementada — custo de render zero pois os dados já estão em memória,
+  // mas optamos por manter UI simples: 1 tabela por view. Revisitar se editor
+  // pedir comparação cross-ciclo explícita.
+  const weekdayScopeLabel = activeCycle ? `ciclo ${activeCycle}` : "todas as campanhas";
+  const weekdayRows = aggregateByWeekday(campaigns, activeCycle);
+  const weekdaySection = weekdayRows.length > 0 ? renderWeekdaySection(weekdayRows, weekdayScopeLabel) : "";
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -397,6 +406,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <h1>📧 Diar.ia Clarice Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
 ${abcSection}
+${weekdaySection}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Campanhas enviadas</h2>
 <div class="table-wrap">
@@ -569,6 +579,207 @@ export function detectActiveCycle(
     if (!latest || parsed.cycle > latest) latest = parsed.cycle;
   }
   return latest;
+}
+
+// ─── #2134: tabela de open rate por dia da semana ────────────────────────────
+
+/**
+ * Ordem canônica seg→dom (índice 0=seg, 6=dom).
+ * Corresponde a `new Date().getDay()` mapeado pra ordem BRT-friendly:
+ * JS getDay(): 0=dom, 1=seg, ..., 6=sab.
+ * Aqui usamos nossa própria chave 0–6 (seg–dom) — ver weekdayKey().
+ */
+export const WEEKDAY_LABELS: Record<number, string> = {
+  0: "Seg",
+  1: "Ter",
+  2: "Qua",
+  3: "Qui",
+  4: "Sex",
+  5: "Sáb",
+  6: "Dom",
+};
+
+export interface WeekdaySummary {
+  /** 0=Seg, 1=Ter, 2=Qua, 3=Qui, 4=Sex, 5=Sáb, 6=Dom */
+  weekday: number;
+  label: string;
+  /** Número de campanhas enviadas neste dia */
+  count: number;
+  sent: number;
+  delivered: number;
+  opens: number;
+  /** open rate agregado = opens / delivered (0 quando delivered=0) */
+  openRate: number;
+  /** true quando count < 2 — amostra insuficiente para conclusão */
+  smallSample: boolean;
+}
+
+/**
+ * Retorna a chave do dia da semana em BRT (0=Seg, 1=Ter, ..., 6=Dom).
+ * Converte o ISO string pra BRT antes de extrair o weekday — evita erro
+ * de "envio às 21h BRT = dia UTC seguinte" (ex: 22:00 BRT = 01:00 UTC+1dia).
+ *
+ * Estratégia: usa Intl.DateTimeFormat com timeZone BRT pra extrair o dia
+ * numérico (JS weekday: 0=dom..6=sab → mapeado pra nossa escala 0=seg..6=dom).
+ */
+export function weekdayKeyBRT(iso: string): number | null {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+
+  // Extrai partes de data em BRT via formatToParts
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+  }).formatToParts(d);
+
+  const weekdayShort = parts.find((p) => p.type === "weekday")?.value ?? "";
+
+  // Mapeia abreviação pt-BR → índice 0=Seg..6=Dom
+  // Browsers/Node retornam "seg.", "ter.", "qua.", "qui.", "sex.", "sáb.", "dom."
+  // Fazemos lowercase + strip ponto pra normalizar.
+  const normalized = weekdayShort.toLowerCase().replace(/\./g, "").trim();
+  const map: Record<string, number> = {
+    seg: 0, ter: 1, qua: 2, qui: 3, sex: 4, sáb: 5, sab: 5, dom: 6,
+  };
+  return map[normalized] ?? null;
+}
+
+/**
+ * Agrega open rate por dia da semana (seg–dom, BRT) para as campanhas do
+ * ciclo ativo. Inclui apenas campanhas com stats reais (mesmo fallback do
+ * render principal: globalStats primário, campaignStats[0] como fallback, ?? 0
+ * defensivo para campos ausentes).
+ *
+ * Retorna apenas os weekdays que tiveram ao menos 1 campanha, ordenados seg→dom.
+ * Weekdays com count < 2 são marcados com smallSample=true.
+ *
+ * @param campaigns - lista de campanhas (todas, filtradas internamente por ciclo)
+ * @param cycle     - ciclo ativo (ex: "2605"); null = incluir todas as campanhas
+ * @returns array de WeekdaySummary ordenado por weekday (0=Seg..6=Dom)
+ */
+export function aggregateByWeekday(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string | null,
+): WeekdaySummary[] {
+  type Acc = { count: number; sent: number; delivered: number; opens: number };
+  const acc: Record<number, Acc> = {};
+
+  for (const c of campaigns) {
+    // Filtro por ciclo ativo (quando passado)
+    if (cycle !== null) {
+      const parsed = parseClariceCampaignKey(c.name);
+      if (!parsed || parsed.cycle !== cycle) continue;
+    }
+
+    if (!c.sentDate) continue;
+
+    // Mesmo fallback defensivo do render principal (#2124 defensivo)
+    const gs = c.statistics?.globalStats;
+    const cs = c.statistics?.campaignStats?.[0];
+    const gsIsReal = gs && gs.sent > 0;
+    const s = gsIsReal ? gs : cs;
+    if (!s || s.sent === 0) continue;
+
+    const wk = weekdayKeyBRT(c.sentDate);
+    if (wk === null) continue;
+
+    if (!acc[wk]) acc[wk] = { count: 0, sent: 0, delivered: 0, opens: 0 };
+    acc[wk].count += 1;
+    acc[wk].sent += s.sent ?? 0;
+    acc[wk].delivered += s.delivered ?? 0;
+    acc[wk].opens += s.uniqueViews ?? 0;
+  }
+
+  // Ordenar seg→dom (chave 0..6) e construir WeekdaySummary
+  return Object.keys(acc)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((wk) => {
+      const d = acc[wk];
+      return {
+        weekday: wk,
+        label: WEEKDAY_LABELS[wk] ?? `Dia ${wk}`,
+        count: d.count,
+        sent: d.sent,
+        delivered: d.delivered,
+        opens: d.opens,
+        openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
+        smallSample: d.count < 2,
+      };
+    });
+}
+
+/**
+ * Renderiza a seção de open rate por dia da semana.
+ * Melhor dia destacado com ▲ MELHOR DIA (mesmo padrão visual do LÍDER A/B/C).
+ * Empate → mesmo tratamento do #2118/#2124 (nenhuma linha recebe tag).
+ * Semana completa seg→dom; dias sem campanha são omitidos.
+ * Exportado pra teste unitário.
+ */
+export function renderWeekdaySection(
+  rows: WeekdaySummary[],
+  scopeLabel: string,
+): string {
+  if (rows.length === 0) return "";
+
+  // Calcula melhor dia (max openRate entre rows com count >= 1)
+  // Empate: nenhuma linha recebe tag
+  const validRows = rows.filter((r) => r.count > 0);
+  const maxRate = validRows.reduce((m, r) => Math.max(m, r.openRate), 0);
+  const tiedCount = validRows.filter((r) => r.openRate === maxRate).length;
+  const isTied = validRows.length >= 2 && tiedCount > 1;
+  const winnerWk = !isTied && validRows.length >= 2
+    ? (validRows.find((r) => r.openRate === maxRate)?.weekday ?? null)
+    : null;
+
+  const tableRows = rows
+    .map((r) => {
+      const isWinner = r.weekday === winnerWk;
+      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ MELHOR DIA</strong>` : "";
+      const smallSampleNote = r.smallSample
+        ? ` <span style="color:${DS.ink};opacity:0.6;font-size:0.8em;">(amostra pequena)</span>`
+        : "";
+      const openRateFmt = r.openRate.toFixed(1) + "%";
+      return `<tr>
+        <td><strong>${escHtml(r.label)}</strong></td>
+        <td>${r.count}</td>
+        <td>${r.sent.toLocaleString("pt-BR")}</td>
+        <td>${r.delivered.toLocaleString("pt-BR")}</td>
+        <td class="metric">${openRateFmt}${winnerTag}${smallSampleNote}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const allZero = isTied && maxRate === 0;
+  const statusNote = allZero
+    ? `Aguardando dados de abertura — primeiras horas pós-envio.`
+    : isTied
+    ? `Empate entre dias com ${maxRate.toFixed(1)}% — aguardar mais dados.`
+    : validRows.length < 2
+    ? `Dados insuficientes — aguardar mais dias de envio.`
+    : winnerWk !== null
+    ? `Melhor dia provisório: <strong style="color:${DS.brand}">${WEEKDAY_LABELS[winnerWk]}</strong> — aguardar mais dados para conclusão.`
+    : `Dados insuficientes para comparação.`;
+
+  return `
+<section class="phase2-section" id="weekday-openrate">
+  <h2 class="section-title">Open rate por dia da semana — ${escHtml(scopeLabel)}</h2>
+  <p class="section-note">${statusNote}</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Dia da semana do envio (horário de Brasília)">Dia</th>
+        <th title="Número de campanhas enviadas neste dia">Campanhas</th>
+        <th title="Total enviado (todos os envios do dia)">Sent</th>
+        <th title="Total entregue">Delivered</th>
+        <th title="Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena.">Open rate agr.</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
 }
 
 export interface WaveTrendRow {
