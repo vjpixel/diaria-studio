@@ -110,4 +110,46 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
     assert.match(playbook, /resolveClickPoint/);
     assert.match(playbook, /@deprecated|deprecated|N[ÃA]O usar.*sint[ée]tico/i);
   });
+
+  it("#2075: preflight de visibilidade usa screenshot-probe antes do halt", () => {
+    // Regressão: antes do #2075, visibilityState=hidden causava halt imediato.
+    // Incidente 260611: valor era stale — screenshot funcionou normalmente.
+    // O playbook DEVE prescrever screenshot-probe antes de haltar.
+    assert.match(playbook, /screenshot.probe|screenshot-probe/i, "playbook deve prescrever screenshot-probe");
+    assert.match(
+      playbook,
+      /N[ÃA]O haltar imediatamente|n[ãa]o halt[ae]r imediatamente/i,
+      "playbook deve proibir halt imediato no visibilityState=hidden",
+    );
+    // Guard para timeout explícito de 10s
+    assert.match(
+      playbook,
+      /10s|10 s/,
+      "playbook deve mencionar o timeout de 10s do screenshot-probe",
+    );
+  });
+
+  it("#2074: §10 pós-Schedule usa verify-scheduled-post.ts + cobre dois desfechos", () => {
+    // Regressão: antes do #2074, nada no playbook exigia verificar se o Schedule
+    // virou Publish imediato. Incidente 260611: editor clicou Publish sem perceber.
+    assert.match(playbook, /verify-scheduled-post\.ts/, "playbook deve referenciar o script");
+    // Cobre desfecho A (scheduled ok)
+    assert.match(
+      playbook,
+      /scheduled.*corretamente|agendado.*corretamente/i,
+      "playbook deve cobrir desfecho scheduled corretamente",
+    );
+    // Cobre desfecho B (publicado imediato)
+    assert.match(
+      playbook,
+      /envio imediato detectado|imediato/i,
+      "playbook deve cobrir desfecho envio imediato",
+    );
+    // refresh-dedup é obrigatório no desfecho B
+    assert.match(
+      playbook,
+      /refresh-dedup/,
+      "playbook deve prescrever refresh-dedup no desfecho de envio imediato",
+    );
+  });
 });
