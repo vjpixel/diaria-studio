@@ -746,7 +746,7 @@ export function unescapeMd(s: string): string {
  * Writer agent às vezes emite links no formato:
  *
  *   - [Melhores cursos grátis de IA](
- *   https://diaria.beehiiv.com/cursos-gratuitos-de-ia
+ *   https://cursos.diaria.workers.dev
  *   )
  *
  * O parser markdown (`processInlineLinks`) opera linha-a-linha, então

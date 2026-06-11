@@ -3,7 +3,7 @@
  *
  * Gera a página "Livros sobre IA" da Diar.ia a partir de
  * `seed/books/livros-ia.json` (curadoria do editor, espelhada da página Beehiiv
- * diaria.beehiiv.com/livros-sobre-ia). Emite um HTML self-contained (dados +
+ * livros.diaria.workers.dev). Emite um HTML self-contained (dados +
  * filtros client-side inline) servido pelo Worker `livros`.
  *
  * Design editorial Diar.ia (#1936/#1935: DS canônico — Georgia serif, accent

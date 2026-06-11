@@ -59,8 +59,8 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
 Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
-- [Cursos de IA](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)
-- [Livros sobre IA](https://diaria.beehiiv.com/livros-sobre-ia)
+- [Cursos de IA](https://cursos.diaria.workers.dev)
+- [Livros sobre IA](https://livros.diaria.workers.dev)
 
 Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](https://www.linkedin.com/company/diaria/) ou no [Facebook](https://www.facebook.com/diar.ia.br)? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`,
 
