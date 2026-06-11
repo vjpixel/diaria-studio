@@ -84,7 +84,7 @@ export const PREVIEW_TEXT =
  *   3. Horário UTC: 09:00Z = 06:00 BRT; confirmar se horário alvo do próximo ciclo é o mesmo.
  *   4. Limite de range: 1..21 se o plano tem 21 envios; ajustar se número mudar.
  */
-export function scheduledAtFor(n: number, nowOverride?: Date): string {
+export function scheduledAtFor(n: number): string {
   if (n < 1 || n > 21 || !Number.isInteger(n)) {
     throw new Error(`scheduledAtFor: n deve ser inteiro 1..21, recebido: ${n}`);
   }
@@ -199,6 +199,11 @@ export function applyVerifyResults(
   writeFn: (path: string, content: string) => void = (p, c) => writeFileAtomic(p, c),
   logFn: (msg: string) => void = (m) => console.error(m),
 ): void {
+  if (settled.length !== toVerify.length) {
+    throw new Error(
+      `applyVerifyResults: invariante quebrada — settled.length (${settled.length}) !== toVerify.length (${toVerify.length})`,
+    );
+  }
   for (let i = 0; i < toVerify.length; i++) {
     const c = toVerify[i];
     const result = settled[i];
@@ -555,6 +560,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (c.status === "scheduled") {
         console.error(`↷ ${c.key} já agendada — pulando`);
         continue;
+      }
+      // #2101: guard simétrico ao --create — scheduledAt passado (herança/edição manual)
+      // seria PUTado no Brevo sem validação. Abortar com mensagem clara antes do PUT.
+      if (new Date(c.scheduledAt) <= new Date()) {
+        throw new Error(
+          `--schedule: ${c.key} (campanha #${c.campaignId}) tem scheduledAt no passado/presente ` +
+          `(${c.scheduledAt}). Atualize o campaigns-summary.json ou atualize o mês hardcoded ` +
+          `em scheduledAtFor antes de agendar.`,
+        );
       }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
       toVerify.push(c);

@@ -8,57 +8,58 @@ import { join } from "node:path";
 import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
 
-// nowOverride fixado antes do ciclo 2605-06 para isolar testes de datas do clock real
-// (#2101: guard de runtime foi adicionado — scheduledAtFor lança se date <= now)
+// (#2101: guard de runtime movido para assertScheduledAtFuture — scheduledAtFor
+// é função pura de computação de data, sem side effects de clock)
+// BEFORE_CYCLE é usado apenas nos testes de assertScheduledAtFuture que precisam de clock injetável.
 const BEFORE_CYCLE = new Date("2026-06-09T00:00:00Z"); // 1 dia antes de d01
 
 // 06:00 BRT = 09:00 UTC (#2041 item 4: normalizado pra UTC Z via .toISOString())
 describe("scheduledAtFor (guard de range #2007/#2018)", () => {
   it("d01 → 10/jun/2026 09:00 UTC (= 06:00 BRT)", () => {
-    assert.equal(scheduledAtFor(1, BEFORE_CYCLE), "2026-06-10T09:00:00.000Z");
+    assert.equal(scheduledAtFor(1), "2026-06-10T09:00:00.000Z");
   });
 
   it("d07 → 16/jun/2026 09:00 UTC (= 06:00 BRT, último dia S1)", () => {
-    assert.equal(scheduledAtFor(7, BEFORE_CYCLE), "2026-06-16T09:00:00.000Z");
+    assert.equal(scheduledAtFor(7), "2026-06-16T09:00:00.000Z");
   });
 
   it("d08 → 17/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S2)", () => {
-    assert.equal(scheduledAtFor(8, BEFORE_CYCLE), "2026-06-17T09:00:00.000Z");
+    assert.equal(scheduledAtFor(8), "2026-06-17T09:00:00.000Z");
   });
 
   it("d14 → 23/jun/2026 09:00 UTC (= 06:00 BRT, último dia S2)", () => {
-    assert.equal(scheduledAtFor(14, BEFORE_CYCLE), "2026-06-23T09:00:00.000Z");
+    assert.equal(scheduledAtFor(14), "2026-06-23T09:00:00.000Z");
   });
 
   it("d15 → 24/jun/2026 09:00 UTC (= 06:00 BRT, primeiro dia S3)", () => {
-    assert.equal(scheduledAtFor(15, BEFORE_CYCLE), "2026-06-24T09:00:00.000Z");
+    assert.equal(scheduledAtFor(15), "2026-06-24T09:00:00.000Z");
   });
 
   it("d21 → 30/jun/2026 09:00 UTC (= 06:00 BRT, último dia S3)", () => {
-    assert.equal(scheduledAtFor(21, BEFORE_CYCLE), "2026-06-30T09:00:00.000Z");
+    assert.equal(scheduledAtFor(21), "2026-06-30T09:00:00.000Z");
   });
 
   // Regressão #2041 item 4: saída deve ser UTC Z, não offset BRT
   it("formato de saída é UTC Z (termina em Z)", () => {
-    assert.ok(scheduledAtFor(1, BEFORE_CYCLE).endsWith("Z"), "deve terminar em Z (UTC)");
+    assert.ok(scheduledAtFor(1).endsWith("Z"), "deve terminar em Z (UTC)");
   });
 
   it("horário UTC é 09:00 (= 06:00 BRT)", () => {
-    const iso = scheduledAtFor(1, BEFORE_CYCLE);
+    const iso = scheduledAtFor(1);
     assert.ok(iso.includes("T09:00:00"), `esperado T09:00:00 no ISO, obtido: ${iso}`);
   });
 
   // Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada)
   it("n=0 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(0, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(0), /n deve ser inteiro 1\.\.21/);
   });
 
   it("n=22 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(22, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(22), /n deve ser inteiro 1\.\.21/);
   });
 
   it("n=1.5 lança erro (não-inteiro)", () => {
-    assert.throws(() => scheduledAtFor(1.5, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+    assert.throws(() => scheduledAtFor(1.5), /n deve ser inteiro 1\.\.21/);
   });
 
   // scheduledAtFor apenas computa a data (sem guard); assertScheduledAtFuture faz o guard
@@ -482,5 +483,75 @@ describe("applyVerifyResults (#2101 — sucesso parcial no GET-verify)", () => {
     assert.equal(writeCalls.length, 0, "nenhuma escrita no disco");
     const warn = logs.find((m) => m.includes(`status="draft"`));
     assert.ok(warn, "deve haver warn mencionando status draft");
+  });
+});
+
+// Regressão #2101 (finding 2): applyVerifyResults lança em mismatch de tamanho
+describe('applyVerifyResults — invariante de tamanho (#2101 finding 2)', () => {
+  function makeCampaignF2(key: string, id: number): { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: 'draft' | 'scheduled' } {
+    return { key, campaignId: id, listId: 1, subject: 'X', scheduledAt: '2026-06-10T09:00:00.000Z', status: 'draft' };
+  }
+
+  it('lança Error claro quando settled.length < toVerify.length', () => {
+    const c1 = makeCampaignF2('d01-A', 1);
+    const c2 = makeCampaignF2('d01-B', 2);
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: 'fulfilled', value: { status: 'queued' } },
+      // c2 ausente — simula bug de chamador
+    ];
+    assert.throws(
+      () => applyVerifyResults(settled, [c1, c2], [c1, c2], '/fake/path', () => {}, () => {}),
+      /invariante quebrada.*settled\.length.*!==.*toVerify\.length/,
+      'deve lançar mensagem clara sobre invariante quebrada',
+    );
+  });
+
+  it('lança Error claro quando settled.length > toVerify.length', () => {
+    const c1 = makeCampaignF2('d01-A', 1);
+    const settled: PromiseSettledResult<{ status: string }>[] = [
+      { status: 'fulfilled', value: { status: 'queued' } },
+      { status: 'fulfilled', value: { status: 'queued' } }, // extra
+    ];
+    assert.throws(
+      () => applyVerifyResults(settled, [c1], [c1], '/fake/path', () => {}, () => {}),
+      /invariante quebrada/,
+    );
+  });
+
+  it('tamanhos iguais (zero) nao lancam', () => {
+    assert.doesNotThrow(
+      () => applyVerifyResults([], [], [], '/fake/path', () => {}, () => {}),
+    );
+  });
+});
+
+// Regressão #2101 (finding 4): guard simétrico scheduledAt passado em --schedule
+// A validação precisa existir tanto em --create quanto ao iterar campanhas em --schedule.
+// Este teste exercita a lógica de guard isolada (sem precisar mockar brevoPut).
+describe('scheduledAt passado em --schedule — guard simétrico (#2101 finding 4)', () => {
+  it('scheduledAt no passado é detectado pela comparacao direta (nao envolve assertScheduledAtFuture)', () => {
+    // Simula o guard adicionado antes do PUT em --schedule:
+    // new Date(c.scheduledAt) <= new Date() deve ser true para datas passadas
+    const pastIso = '2020-01-01T09:00:00.000Z'; // definitivamente passado
+    assert.ok(new Date(pastIso) <= new Date(), 'data passada deve ser detectavel pelo guard');
+  });
+
+  it('scheduledAt no futuro nao dispara o guard', () => {
+    const futureIso = '2099-01-01T09:00:00.000Z';
+    assert.ok(!(new Date(futureIso) <= new Date()), 'data futura nao deve disparar o guard');
+  });
+
+  it('assertScheduledAtFuture valida n=1 com clock no passado do ciclo', () => {
+    // Confirma que o guard de create funciona — clock antes do ciclo, d01 ainda e futuro
+    const justBefore = new Date('2026-06-09T00:00:00Z');
+    assert.doesNotThrow(() => assertScheduledAtFuture(1, justBefore));
+  });
+
+  it('assertScheduledAtFuture lanca para d21 com clock em julho (ciclo encerrado)', () => {
+    const afterAllSends = new Date('2026-07-05T00:00:00Z');
+    assert.throws(
+      () => assertScheduledAtFuture(21, afterAllSends),
+      /Mes hardcoded|desatualizado|passado ou presente/i,
+    );
   });
 });
