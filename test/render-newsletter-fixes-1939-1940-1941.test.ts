@@ -168,6 +168,35 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
     assert.equal(isSponsoredCallout(undefined), false);
   });
 
+  it("régua simples antes do midCallout NÃO-patrocinado (📚) — pedido 260611", () => {
+    const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
+    try {
+      const html = renderHTML(extractContent(dir));
+      const boxIdx = html.indexOf("Promo interna");
+      assert.ok(boxIdx > -1, "box renderizado");
+      const before = html.slice(0, boxIdx);
+      const ruleIdx = before.lastIndexOf("border-bottom:1px solid");
+      assert.ok(ruleIdx > -1, "deve haver régua bege antes do box");
+      assert.ok(!before.slice(ruleIdx - 600).includes("Divulgação"), "promo interna não ganha kicker Divulgação");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("midCallout patrocinado (📣) mantém o kicker Divulgação (com régua própria), sem régua dupla", () => {
+    const dir = buildEdition("**📣 Anúncio pago [link](https://x.com).**");
+    try {
+      const html = renderHTML(extractContent(dir));
+      const boxIdx = html.indexOf("Anúncio pago");
+      const between = html.slice(html.indexOf("Importa por isso."), boxIdx);
+      assert.ok(between.includes("Divulgação"), "kicker Divulgação presente antes do anúncio");
+      const naked = (between.match(/<tr><td class="pad"[^>]*><table[^>]*><tr><td style="border-bottom:1px solid/g) || []).length;
+      assert.equal(naked, 0, "sem régua simples extra além do kicker");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("anúncio 📣 na região de intro (topo) também recebe 'Divulgação'", () => {
     const dir = buildEdition("**📚 Promo interna [link](https://x.com).**");
     try {
