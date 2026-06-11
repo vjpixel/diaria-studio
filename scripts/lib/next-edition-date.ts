@@ -17,24 +17,19 @@ export const BRT_TIMEZONE = "America/Sao_Paulo";
  * Retorna a data de amanhã no fuso America/Sao_Paulo no formato AAMMDD
  * (ex: "260427" para 27 de abril de 2026).
  *
+ * Estratégia: avança exatamente 24 h a partir de `now` e consulta o Intl
+ * para saber qual dia é em BRT. Correto em viradas de mês/ano e robusto
+ * a mudanças futuras de DST (BRT = UTC-3 fixo desde 2019, mas Intl garante
+ * mesmo que isso mude).
+ *
  * @param now - Ponto de referência para "hoje" (default: Date.now()).
  *              Injetar em testes para determinismo.
  */
 export function nextEditionDate(now: Date = new Date()): string {
-  // Obter "hoje" em BRT via Intl.DateTimeFormat
-  const todayBrt = datePartsInTz(now, BRT_TIMEZONE);
-
-  // Construir Date do início do dia BRT e avançar 1 dia
-  const tomorrowBrt = new Date(
-    Date.UTC(todayBrt.year, todayBrt.month - 1, todayBrt.day + 1),
-  );
-  // Ajustar pelo offset BRT para garantir que o +1 seja correto em viradas de mês/ano
-  // — usar novamente Intl para ler "amanhã" de forma confiável
   const tomorrowParts = datePartsInTz(
     new Date(now.getTime() + 24 * 60 * 60 * 1000),
     BRT_TIMEZONE,
   );
-
   return toAammdd(tomorrowParts);
 }
 

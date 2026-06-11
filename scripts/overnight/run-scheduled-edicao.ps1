@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 até o pre-gate.
 
@@ -48,12 +48,18 @@ $RunLogTs   = Join-Path $RepoRoot "scripts/log-event.ts"
 # Se npx falhar (node não no PATH ou node_modules ausente), usa fallback PS puro.
 $CalcScript = Join-Path $ScriptDir "calc-next-edition-date.ts"
 
-$Aammdd = & npx tsx $CalcScript 2>$null
-if (-not $Aammdd -or $Aammdd -notmatch '^\d{6}$') {
-    # Fallback puro PowerShell: UTC-3 fixo (BRT não tem DST desde 2019)
-    $NowBrt = (Get-Date).ToUniversalTime().AddHours(-3)
+$TsOutput = & npx tsx $CalcScript 2>$null
+# $TsOutput pode ser string ou array — normalizar, trim \r, filtrar warnings do Node
+$Aammdd = ($TsOutput -join "`n") -split "`n" |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -match '^\d{6}$' } |
+    Select-Object -Last 1
+
+if (-not $Aammdd) {
+    # Fallback puro PowerShell com InvariantCulture — imune a locale/calendário
+    $NowBrt   = (Get-Date).ToUniversalTime().AddHours(-3)
     $Tomorrow = $NowBrt.AddDays(1)
-    $Aammdd = $Tomorrow.ToString("yyMMdd")
+    $Aammdd   = $Tomorrow.ToString("yyMMdd", [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 $RunStart = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
@@ -69,7 +75,12 @@ function Write-ScheduleLog {
         return
     }
     $Line = "$(Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz') | $Message"
-    Add-Content -Path $LogFile -Value $Line -Encoding UTF8
+    # try/catch: lock do OneDrive no log não deve abortar o script principal
+    try {
+        Add-Content -Path $LogFile -Value $Line -Encoding UTF8
+    } catch {
+        Write-Warning "Write-ScheduleLog: falha ao gravar em $LogFile — $_"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -164,7 +175,11 @@ if ($ExitCode -eq 0) {
         -Details "{`"edition`":`"$Aammdd`",`"exit_code`":0}"
 } else {
     # Truncar output para evitar linhas gigantes no log (últimas 20 linhas)
-    $Tail = ($Output -split "`n" | Select-Object -Last 20) -join " | "
+    # Normalizar CRLF e trim para evitar tokens com CR a direita
+    $Tail = (($Output -join "`n") -split "`n" |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -ne '' } |
+        Select-Object -Last 20) -join " | "
     Write-ScheduleLog "FAIL  edition=$Aammdd exit=$ExitCode end=$RunEnd tail=$Tail"
     Write-RunLog -Level "error" -Message "scheduled-edicao: falha (exit $ExitCode)" `
         -Details "{`"edition`":`"$Aammdd`",`"exit_code`":$ExitCode}"

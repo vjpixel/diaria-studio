@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Registra (ou atualiza/remove) a task "Diaria-Edicao-Diaria" no Task Scheduler.
 
@@ -45,7 +45,7 @@ $ErrorActionPreference = "Stop"
 # Paths (derivados do script — sem hardcode de usuário/máquina)
 # ---------------------------------------------------------------------------
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot   = Resolve-Path (Join-Path $ScriptDir "../..")
+$RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $RunnerPath = Join-Path $ScriptDir "run-scheduled-edicao.ps1"
 
 $TaskName   = "Diaria-Edicao-Diaria"
