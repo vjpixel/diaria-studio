@@ -17,6 +17,8 @@ data/
 .tmp/
 # Cloudflare Wrangler local build/cache state (root + workers/*/.wrangler)
 .wrangler/
+# Tipos gerados por `wrangler types` — regenerável, não versionar
+worker-configuration.d.ts
 # #2020: artefatos de lint/review por edição — destino canônico é data/editions/{AAMMDD}/_internal/;
 # padrões aqui são rede de segurança caso um agente escreva na raiz por engano
 lint-result-*.json

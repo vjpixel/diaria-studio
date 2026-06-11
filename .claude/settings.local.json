@@ -30,7 +30,9 @@
       "Bash(python3:*)",
       "Bash(rmdir .git/rebase-merge)",
       "Bash(rm -f .git/AUTO_MERGE)",
-      "mcp__claude_ai_Stripe__stripe_api_execute"
+      "mcp__claude_ai_Stripe__stripe_api_execute",
+      "Bash(powershell *)",
+      "Bash(claude mcp *)"
     ]
   },
   "enableAllProjectMcpServers": true,
