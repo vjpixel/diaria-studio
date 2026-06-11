@@ -24,6 +24,7 @@ import {
   isLinkDeadFalsePositive,
   extractLinkDeadUrl,
   filterAgentIssues,
+  ISSUE_HANDLERS,
   type FetchFn,
 } from "../scripts/lib/agent-issue-validator.ts";
 
@@ -833,7 +834,17 @@ describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de ha
     // email:link_x não está na tabela de handlers.
     // isMergeTagUnexpandedFalsePositive casa `email:link_` + `{{poll_sig}}` → FP → dropa.
     // Isso demonstra que tipos fora da tabela chegam nos genéricos.
+    // NOTA: o prefixo precisa começar com `email:link_` (exigência do genérico,
+    // agent-issue-validator.ts ~182) — não dá pra usar um prefixo "impossível".
     const issue = "email:link_x: href contém {{poll_sig}} não expandido";
+
+    // Guard autodiagnóstico: se um handler futuro passar a cobrir email:link_x,
+    // este assert explica a falha em vez de deixar o assert de drop confundir.
+    assert.ok(
+      !ISSUE_HANDLERS.some((h) => issue.startsWith(h.prefix)),
+      "pré-condição: email:link_x não deve ser coberto por nenhum handler da tabela — se você adicionou um handler com esse prefixo, troque o tipo hipotético deste teste",
+    );
+
     const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
 
     // Deve ser DROPADO pelos genéricos de DS (isMergeTagUnexpandedFalsePositive)
@@ -846,18 +857,8 @@ describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de ha
     );
   });
 
-  it("tipo COBERTO (email:link_dead) → NUNCA alcança os genéricos, mesmo retornando not-FP", async () => {
-    // email:link_dead está na tabela. Sem fetchFn, o handler retorna { kind: "keep" }
-    // (not-FP conservador). Apesar de conter {{poll_sig}} na URL — que o genérico
-    // isMergeTagUnexpandedFalsePositive casaria — o issue é mantido porque o handler
-    // já interceptou o dispatch antes dos genéricos.
-    // Este é o invariante estrutural: handler registrado = imune aos genéricos.
-    const issue = "email:link_dead: https://poll.example.com/vote?sig={{poll_sig}}&edition=260611 → HTTP 404";
-    // Sem fetchFn → handler retorna keep conservador (sem re-verificar link)
-    const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
-
-    assert.equal(r.kept.length, 1, "link_dead coberto pelo handler deve ser mantido (kept), NÃO dropado pelo genérico");
-    assert.equal(r.dropped.length, 0, "link_dead NÃO deve ser dropado por isMergeTagUnexpandedFalsePositive");
-    assert.match(r.kept[0], /link_dead/, "o issue mantido deve ser o link_dead");
-  });
+  // A propriedade 2 (tipo coberto NUNCA alcança os genéricos, mesmo not-FP) já é
+  // garantida pelo teste de regressão do #2082 ("link_dead com {{poll_sig}} na URL
+  // sem fetchFn NÃO é dropado como merge-tag FP") — um duplicado aqui foi removido
+  // no review do #2105.
 });

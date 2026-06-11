@@ -591,7 +591,7 @@ interface IssueHandler {
  * de tipo fica na tabela, FORA da condição de `fetchFn`, garantindo que todo
  * issue `link_dead` saia por aqui e nunca caia nos genéricos de DS.
  */
-const ISSUE_HANDLERS: readonly IssueHandler[] = [
+export const ISSUE_HANDLERS: readonly IssueHandler[] = [
   {
     // encoding_drop (#1421, #2013, #2066): verifica emoji de header/callout
     // por design antes do check genérico de encoding; retorna keep se não é FP
