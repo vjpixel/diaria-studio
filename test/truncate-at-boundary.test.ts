@@ -101,6 +101,23 @@ describe("truncateAtBoundary (#2065)", () => {
     assert.match(result, /[?!.…]$/, "deve terminar em terminador ou reticências");
   });
 
+  it("não trata ponto de abreviação como fim-de-frase (guard anti-abreviação)", () => {
+    // "U.S." não tem espaço antes do ponto → não deve ser tratado como sentence-end.
+    // O resultado deve ser o fallback word-boundary ou hard-cut, não "U.S."
+    const text = "U.S. tech companies are growing rapidly in the market today.";
+    // max=20: sem o guard, regex matcharia "S." no índice 3 → retornaria "U.S." (4 chars, péssimo)
+    // com o guard, fragmento "U.S." não tem espaço → ignora; texto todo < 20 chars → retorna inteiro
+    // Testar com texto longo demais para que force algum corte
+    const longText = "U.S. tech companies are growing rapidly in the market today and beyond the horizon.";
+    assert.ok(longText.length > 20);
+    const result = truncateAtBoundary(longText, 20);
+    assert.ok(result.length <= 20, `result.length=${result.length} deve ser ≤20`);
+    // Não deve retornar apenas "U.S." (o que aconteceria com falso match de abreviação)
+    assert.notEqual(result, "U.S.", "não deve cortar abreviação como fim-de-frase");
+    // Deve conter mais chars que a abreviação isolada
+    assert.ok(result.length > 5, `resultado "${result}" é curto demais — parece que pegou só a abreviação`);
+  });
+
   it("resultado nunca ultrapassa max em nenhum caminho", () => {
     // Testar vários tamanhos e padrões
     const cases = [

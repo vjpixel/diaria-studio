@@ -21,12 +21,23 @@ export function truncateAtBoundary(text: string, max: number): string {
 
   // 1. Tentar cortar no fim de uma frase completa que caiba em `max`
   //    Procura o último terminador de frase (.!?) seguido de espaço ou fim-de-string.
+  //    Guard anti-abreviação: só aceita se o trecho antes do terminador contém
+  //    pelo menos um espaço (ex: "U.S." não tem espaço antes do ponto → ignorado).
   {
     let lastIdx = -1;
+    let lastSentenceStart = 0;
     const re = /[.!?](?=\s|$)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(candidate)) !== null) {
-      lastIdx = m.index + 1; // inclui o próprio terminador
+      // O fragmento da frase começa após o terminador anterior.
+      // Aceita como fim-de-frase somente se o fragmento desde o último
+      // terminador até este ponto contém ao menos um espaço — isso filtra
+      // abreviações como "U.S.", "Dr.", "vs." que ficam todas numa só "palavra".
+      const fragment = candidate.slice(lastSentenceStart, m.index + 1);
+      if (fragment.includes(" ")) {
+        lastIdx = m.index + 1; // inclui o próprio terminador
+      }
+      lastSentenceStart = m.index + 1;
     }
     if (lastIdx > 0) {
       return text.slice(0, lastIdx).trimEnd();

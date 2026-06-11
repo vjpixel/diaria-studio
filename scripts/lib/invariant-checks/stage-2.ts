@@ -76,6 +76,7 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     { name: "multiline-links", issue: "#1213" },
     { name: "eai-section", issue: "#481" },
     { name: "relative-time", issue: "#editorial-rules" },
+    { name: "erro-intencional-placeholder", issue: "#2078" },
   ];
   const violations: InvariantViolation[] = [];
   for (const check of checks) {
