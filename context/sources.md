@@ -197,9 +197,10 @@
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
 - Use Melhor: sim
 
-### OpenAI Cookbook
-- URL: https://developers.openai.com/cookbook
-- Site query: `site:developers.openai.com`
+### Machine Learning Mastery
+- URL: https://machinelearningmastery.com/
+- Site query: `site:machinelearningmastery.com`
+- RSS: https://machinelearningmastery.com/feed/
 - Use Melhor: sim
 
 ### Sebastian Raschka (Ahead of AI)
@@ -238,7 +239,9 @@
 - Site query: `site:hub.asimov.academy`
 - Use Melhor: sim
 
-### Weights & Biases
-- URL: https://wandb.ai/fully-connected
-- Site query: `site:wandb.ai/fully-connected`
+### Maarten Grootendorst (Visual ML)
+- URL: https://newsletter.maartengrootendorst.com/
+- Site query: `site:newsletter.maartengrootendorst.com`
+- RSS: https://newsletter.maartengrootendorst.com/feed
 - Use Melhor: sim
+- Low cadence: sim

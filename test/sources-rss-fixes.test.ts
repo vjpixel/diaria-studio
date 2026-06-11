@@ -27,16 +27,16 @@ describe("sources RSS fixes (#1266)", () => {
 
   it("#1987: host dedicado-único → site_query host-only (path-scoping sub-retornava)", () => {
     // Hosts dedicados a UMA fonte: dropar o path fixa o under-return do site:.
-    assert.equal(byName.get("OpenAI Cookbook")?.site_query, "site:developers.openai.com");
+    // OpenAI Cookbook substituída em #2077 por Simon Willison's Weblog.
     assert.equal(byName.get("LangChain Blog")?.site_query, "site:langchain.com");
     assert.equal(byName.get("Pinecone Learn")?.site_query, "site:pinecone.io");
   });
 
   it("#1987 code-review: host multi-tenant MANTÉM path (host-only floodaria de terceiros)", () => {
-    // github.com (Anthropic Cookbook) host-only → todo o GitHub; wandb.ai →
-    // projetos de qualquer usuário. SHARED_HOSTS preserva o path.
+    // github.com (Anthropic Cookbook) host-only → todo o GitHub.
+    // SHARED_HOSTS preserva o path.
+    // W&B substituída em #2077 por The Gradient.
     assert.equal(byName.get("Anthropic Cookbook")?.site_query, "site:github.com/anthropics/anthropic-cookbook");
-    assert.equal(byName.get("Weights & Biases")?.site_query, "site:wandb.ai/fully-connected");
   });
 
   it("#1987 code-review: host com >1 fonte MANTÉM path (host-only colidiria as queries)", () => {
@@ -119,10 +119,9 @@ describe("sources RSS fixes (#1266)", () => {
   // #1862: feeds RSS mortos (404 / HTML React/Webflow) — fonte mantida pra
   // WebSearch `site:`, mas RSS limpo + URL apontando pro domínio atual.
   // LangChain removida desta lista em #2077: ganhou RSS válido (rss.xml no novo domínio).
-  const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [
-    { name: "OpenAI Cookbook", url: "https://developers.openai.com/cookbook" }, // migrou de cookbook.openai.com (rss 404)
-    { name: "Weights & Biases", url: "https://wandb.ai/fully-connected" }, // /site/articles/rss.xml 404; fully-connected é React (sem XML)
-  ];
+  // OpenAI Cookbook e Weights & Biases removidas desta lista em #2077: substituídas por
+  // Machine Learning Mastery e Maarten Grootendorst (fontes ativas com RSS verificado, ≤60 dias).
+  const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [];
   for (const { name, url } of SOURCES_1862_NO_RSS) {
     it(`#1862: ${name} sem RSS (feed morto) + URL no domínio atual`, () => {
       const s = byName.get(name);
@@ -131,6 +130,35 @@ describe("sources RSS fixes (#1266)", () => {
       assert.equal(s!.url, url, `${name} URL deve apontar pro domínio atual`);
     });
   }
+
+  it("#2077: OpenAI Cookbook e W&B substituídas por fontes ativas de tutoriais", () => {
+    assert.equal(
+      byName.get("OpenAI Cookbook"),
+      undefined,
+      "OpenAI Cookbook removida de sources.md (#2077)",
+    );
+    assert.equal(
+      byName.get("Weights & Biases"),
+      undefined,
+      "Weights & Biases removida de sources.md (#2077)",
+    );
+  });
+
+  // #2077 (corrigido PR #2117): Chip Huyen estava seca (último post jan/2025, 17 meses)
+  // e The Gradient também (último post fev/2026, >60 dias). Substituídas por fontes ativas.
+  it("#2077: Machine Learning Mastery adicionada com RSS ativo (substitui OpenAI Cookbook)", () => {
+    const s = byName.get("Machine Learning Mastery");
+    assert.ok(s, "Machine Learning Mastery deve existir em sources.md");
+    assert.equal(s!.rss, "https://machinelearningmastery.com/feed/", "RSS válido verificado (posts diários)");
+    assert.equal(s!.url, "https://machinelearningmastery.com/", "URL principal correta");
+  });
+
+  it("#2077: Maarten Grootendorst adicionada com RSS ativo (substitui W&B)", () => {
+    const s = byName.get("Maarten Grootendorst (Visual ML)");
+    assert.ok(s, "Maarten Grootendorst deve existir em sources.md");
+    assert.equal(s!.rss, "https://newsletter.maartengrootendorst.com/feed", "RSS verificado (post Jun/2026)");
+    assert.equal(s!.url, "https://newsletter.maartengrootendorst.com/", "URL principal correta");
+  });
 
   it("#2077: LangChain Blog ganhou RSS válido no novo domínio", () => {
     // blog.langchain.dev/rss era morto (HTML Webflow). Novo feed:
