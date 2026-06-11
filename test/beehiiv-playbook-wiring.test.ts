@@ -110,4 +110,71 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
     assert.match(playbook, /resolveClickPoint/);
     assert.match(playbook, /@deprecated|deprecated|N[ÃA]O usar.*sint[ée]tico/i);
   });
+
+  it("#2075: preflight de visibilidade usa screenshot-probe antes do halt", () => {
+    // Regressão: antes do #2075, visibilityState=hidden causava halt imediato.
+    // Incidente 260611: valor era stale — screenshot funcionou normalmente.
+    // O playbook DEVE prescrever screenshot-probe antes de haltar.
+    assert.match(playbook, /screenshot.probe|screenshot-probe/i, "playbook deve prescrever screenshot-probe");
+    assert.match(
+      playbook,
+      /N[ÃA]O haltar imediatamente|n[ãa]o halt[ae]r imediatamente/i,
+      "playbook deve proibir halt imediato no visibilityState=hidden",
+    );
+    // Guard para timeout explícito de 10s
+    assert.match(
+      playbook,
+      /10s|10 s/,
+      "playbook deve mencionar o timeout de 10s do screenshot-probe",
+    );
+  });
+
+  it("#2074: §10 pós-Schedule usa verify-scheduled-post.ts + cobre dois desfechos", () => {
+    // Regressão: antes do #2074, nada no playbook exigia verificar se o Schedule
+    // virou Publish imediato. Incidente 260611: editor clicou Publish sem perceber.
+    assert.match(playbook, /verify-scheduled-post\.ts/, "playbook deve referenciar o script");
+    // Cobre desfecho A (scheduled ok)
+    assert.match(
+      playbook,
+      /scheduled.*corretamente|agendado.*corretamente/i,
+      "playbook deve cobrir desfecho scheduled corretamente",
+    );
+    // Cobre desfecho B (publicado imediato)
+    assert.match(
+      playbook,
+      /envio imediato detectado|imediato/i,
+      "playbook deve cobrir desfecho envio imediato",
+    );
+    // refresh-dedup é obrigatório no desfecho B
+    assert.match(
+      playbook,
+      /refresh-dedup/,
+      "playbook deve prescrever refresh-dedup no desfecho de envio imediato",
+    );
+    // close-poll.ts é obrigatório no desfecho B (CLAUDE.md: "Após publicar, rodar close-poll.ts")
+    // Garante que a reconciliação inclui close-poll, não só refresh-dedup.
+    assert.match(
+      playbook,
+      /close-poll/,
+      "playbook deve prescrever close-poll.ts no desfecho de envio imediato",
+    );
+  });
+
+  it("#2075: screenshot-probe integra workaround hide img/iframe antes do screenshot", () => {
+    // B1 regressão: o workaround de esconder img/iframe/video deve ser step 1
+    // do screenshot-probe, não um afterthought após a decisão. Um probe em página
+    // pesada sem ocultar os elementos pode falhar pelo mesmo motivo que a tela frozen.
+    const preflight = playbook.match(/### Preflight de visibilidade[\s\S]*?(?=\n### |\n## |$)/);
+    assert.ok(preflight, "seção preflight deve existir");
+    const pf = preflight![0];
+    // O workaround de hide deve aparecer ANTES da chamada do screenshot
+    const hideIdx = pf.indexOf("img/iframe/video");
+    const screenshotIdx = pf.indexOf('action: "screenshot"');
+    assert.ok(hideIdx >= 0, "preflight deve mencionar hide img/iframe/video");
+    assert.ok(screenshotIdx >= 0, "preflight deve mencionar screenshot");
+    assert.ok(
+      hideIdx < screenshotIdx,
+      "hide img/iframe/video deve aparecer ANTES da chamada screenshot (workaround pré-probe)",
+    );
+  });
 });

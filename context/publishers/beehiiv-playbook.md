@@ -73,18 +73,47 @@ Se alguma issue não puder ser corrigida automaticamente, registrar em `unfixabl
 - Etapa 3 completa (`01-eia.md`, `01-eia-A.jpg`, `01-eia-B.jpg`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` existem; edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg` em vez dos A/B — readers detectam automaticamente).
 - Chrome com Claude in Chrome ativo, logado em Beehiiv (ver `docs/browser-publish-setup.md`).
 
-### Preflight de visibilidade da aba (#2015)
+### Preflight de visibilidade da aba (#2015, #2075)
 
 **Antes de QUALQUER passo que dependa de clique real** (`computer`) — criar post
 do template, send test email, clicar Schedule — verificar via `javascript_tool`:
-`document.visibilityState`. Se `"hidden"` (janela minimizada/coberta):
-**NÃO tentar clicar** — renderizar halt banner (`render-halt-banner.ts --stage "4"
---reason "aba Beehiiv oculta (visibilityState=hidden)" --action "traga a janela
-do Chrome pra frente e responda 'retry'"`) e aguardar. Sintomas quando se ignora
-(incidente 260610, ~10 min de debug): cliques via `computer` chegam como no-op
-(zero pointerdown/click na página) e screenshots dão timeout no CDP ("renderer
-may be frozen"). Workaround pra screenshot em página pesada: esconder
-`img/iframe/video` via JS antes de capturar, restaurar depois.
+`document.visibilityState`.
+
+**Se `"hidden"` (janela aparentemente minimizada/coberta):** NÃO haltar imediatamente.
+`visibilityState` pode ser stale (incidente 260611: retornou `"hidden"` com a janela
+na frente, cliques reais funcionaram normalmente). Antes do halt, tentar um
+**screenshot-probe** para distinguir stale de frozen:
+
+1. **Esconder `img/iframe/video` via `javascript_tool`** para reduzir carga CDP antes do
+   screenshot (workaround pra páginas pesadas — previne timeout falso positivo):
+   ```js
+   document.querySelectorAll('img,iframe,video').forEach(el => el.style.visibility='hidden');
+   ```
+2. Chamar `mcp__claude-in-chrome__computer` com `action: "screenshot"`.
+3. **Restaurar** os elementos escondidos:
+   ```js
+   document.querySelectorAll('img,iframe,video').forEach(el => el.style.visibility='');
+   ```
+4. **Se o screenshot retornar a página renderizada em ≤ 10s** → `visibilityState` é
+   stale; a aba está visível. Prosseguir com os cliques normalmente — NÃO haltar.
+5. **Se o screenshot demorar > 10s ou falhar com timeout/CDP error** → frozen real.
+   Renderizar halt banner e aguardar:
+   ```bash
+   npx tsx scripts/render-halt-banner.ts \
+     --stage "4" \
+     --reason "aba Beehiiv oculta (visibilityState=hidden + screenshot timeout)" \
+     --action "traga a janela do Chrome pra frente e responda 'retry'"
+   ```
+   Aguardar resposta explícita do editor antes de qualquer ação adicional.
+
+**Decisão resumida:**
+- `visibilityState === "visible"` → prosseguir diretamente.
+- `visibilityState === "hidden"` + screenshot OK (≤ 10s) → stale; prosseguir (#2075).
+- `visibilityState === "hidden"` + screenshot timeout/falha → frozen real; halt banner.
+
+Sintomas do frozen real (incidente 260610, ~10 min de debug): cliques via `computer`
+chegam como no-op (zero pointerdown/click na página) e screenshots dão timeout
+no CDP ("renderer may be frozen").
 
 ### Config 1x da publicação — rodapé branco (#1944)
 
@@ -640,6 +669,89 @@ O script `fix-post-slug.ts` (#2011):
 **Se `fix-post-slug.ts` falhar** (API não suportou o campo, ou slug não persistiu após update): aba visível com o post já agendado (step=web), clicar no campo `#text-input-slug`, selecionar tudo, digitar o slug correto via teclado real (validado em 260610 que keystrokes reais persistem mesmo com status `scheduled` — `scheduled_at` não é alterado pela edição do slug).
 
 **Hipótese a validar (próxima edição):** setar o slug DEPOIS do título estabilizar (após confirmação da API pós-autosave) e apenas ANTES do clique de Schedule pode evitar a re-derivação. Documentar resultado em #2011.
+
+### 10. Verificar estado pós-Schedule: agendado vs publicado imediato (#2074)
+
+**⚠️ Bug confirmado 260611**: o editor respondeu "agendado" após clicar no Beehiiv,
+mas a API mostrou `status: published` com `publish_date ≈ now` — o clique foi
+**Publish (envio imediato às 22:46 BRT)**, não o Schedule matinal (06:00). O
+`status: "confirmed"` da API é ambíguo (ver `resolveBeehiivState` em
+`scripts/lib/publish-state.ts`) — só `publish_date` vs `now` distingue
+agendado de publicado.
+
+**Trigger**: após o editor confirmar que agendou ("agendado", "ok", "pronto" ou
+equivalente), **SEMPRE** executar:
+
+```bash
+# 1. Verificar estado via API determinística (#573)
+npx tsx scripts/verify-scheduled-post.ts \
+  --post-id {post_id} \
+  --edition-dir {edition_dir}
+```
+
+**Exit codes e ações:**
+
+| Exit | Estado (JSON `state`) | Ação |
+|------|----------------------|------|
+| `0` | `scheduled` — agendado corretamente | Confirmar horário: "Agendado para {scheduled_at} ✓ — {data_alvo} 06:00 BRT" |
+| `1` | `published` — envio imediato detectado | Ver sequência de reconciliação abaixo |
+| `2` | `unknown` / `draft` / erro de API / config ausente | Alertar editor; verificar manualmente no dashboard Beehiiv (`get_post` via MCP + inspecionar `publish_date` vs agora) |
+
+**Banner pré-Schedule (exibir ANTES de pedir confirmação ao editor):**
+
+Antes de pedir ao editor que clique em Schedule, exibir o alvo explícito.
+`{data_alvo}` = data da edição derivada do `edition_dir` (ex: `260612` → `12/06/2026`):
+
+```
+Próximo passo: clicar em Schedule → selecionar AMANHÃ {data_alvo} → 06:00 BRT.
+NÃO clique em "Publish now" — isso dispara envio imediato pra toda a audiência.
+```
+
+**Sequência de reconciliação (exit 1 — publicado imediato):**
+
+O script já atualiza `05-published.json` (status → published, published_at).
+Executar obrigatoriamente:
+
+```bash
+# 2. close-poll — finalizar scores de É IA? (regra CLAUDE.md: "Após publicar, rodar close-poll.ts")
+npx tsx scripts/close-poll.ts --edition {AAMMDD}
+
+# 3. refresh-dedup — regra "publicação manual requer refresh-dedup" do CLAUDE.md
+npx tsx scripts/refresh-dedup.ts
+```
+
+Em seguida, relatar ao editor:
+```
+⚠️ ENVIO IMEDIATO DETECTADO — a newsletter foi publicada agora ({published_at}),
+não agendada para amanhã 06:00 BRT.
+O botão clicado foi "Publish" (envio imediato), não "Schedule".
+05-published.json atualizado (status: published).
+data/past-editions.md regenerado via refresh-dedup.
+Ação sugerida: verificar no Beehiiv se o email já saiu ou se dá pra cancelar.
+```
+
+**Output esperado do script (JSON no stdout):**
+```json
+{
+  "state": "scheduled",
+  "post_id": "post_...",
+  "scheduled_at": "2026-06-12T09:00:00.000Z",
+  "published_at": null,
+  "immediate_send_detected": false,
+  "published_json_updated": false
+}
+```
+Ou, no caso de envio imediato:
+```json
+{
+  "state": "published",
+  "post_id": "post_...",
+  "scheduled_at": null,
+  "published_at": "2026-06-11T01:46:23.000Z",
+  "immediate_send_detected": true,
+  "published_json_updated": true
+}
+```
 
 ## Output
 
