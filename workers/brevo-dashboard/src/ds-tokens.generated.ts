@@ -1,0 +1,24 @@
+/**
+ * ds-tokens.generated.ts — GERADO AUTOMATICAMENTE. NÃO EDITAR.
+ *
+ * Gerado por scripts/generate-worker-tokens.ts (#2107) a partir de
+ * scripts/lib/design-tokens.ts (fonte canônica do DS Diar.ia).
+ *
+ * Para atualizar tokens: editar scripts/lib/design-tokens.ts e rodar:
+ *   npx tsx scripts/generate-worker-tokens.ts
+ * (ou simplesmente: npm test / wrangler deploy — ambos disparam o build step)
+ */
+
+/** Tokens de cor do DS (espelho de COLORS em design-tokens.ts). */
+export const DS_COLORS = {
+  brand:    "#00A0A0",
+  ink:      "#171411",
+  paper:    "#FBFAF6",
+  paperAlt: "#EBE5D0",
+  rule:     "#EBE5D0",
+} as const;
+
+/** Tokens de fonte do DS (espelho de FONTS em design-tokens.ts). */
+export const DS_FONTS = {
+  sans: "'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+} as const;

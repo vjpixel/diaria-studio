@@ -8,3 +8,10 @@ workers_dev = true
 #
 # Dashboard é página pública (sem auth) — preferência do editor 2026-05-12.
 # Cache 5min via Cache API economiza quota Brevo.
+
+# Build step (#2107): gera ds-tokens.generated.ts a partir de design-tokens.ts
+# antes de compilar o Worker. Garante que tokens nunca ficam stale no bundle.
+# `npx tsx ../../scripts/generate-worker-tokens.ts` lê a fonte canônica no
+# repo raiz e escreve src/ds-tokens.generated.ts aqui no worker.
+[build]
+command = "npx tsx ../../scripts/generate-worker-tokens.ts"
