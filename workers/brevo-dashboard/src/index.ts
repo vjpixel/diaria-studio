@@ -250,7 +250,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
       if (!s) {
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.5;font-style:italic;">sem stats</td></tr>`;
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
@@ -346,10 +346,10 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); opacity: 1; position: sticky; top: 0; cursor: help; border-bottom: 1px solid var(--rule); }
+  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 1px solid var(--rule); }
   td.metric { font-weight: 600; color: var(--brand); }
   td.alert { font-weight: 600; color: var(--alert); }
-  td.alert small, td.alert .rate-inline { color: var(--alert); }
+  td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
   td .rate-inline { font-weight: normal; color: var(--ink); }
   td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
@@ -382,7 +382,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 </tr>
 </thead>
 <tbody>
-${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity:0.5;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
+${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
 </tbody>
 </table>
 </div>
