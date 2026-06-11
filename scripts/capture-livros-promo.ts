@@ -85,8 +85,8 @@ export async function captureWithPuppeteer(
 }
 
 export interface CaptureResult {
-  /** "captured" = imagem nova gravada. "skipped" = md5 igual, sem mudança. */
-  status: "captured" | "skipped";
+  /** "captured" = imagem nova gravada. "dry_run" = dry-run com mudança (não gravado). "skipped" = md5 igual, sem mudança. */
+  status: "captured" | "dry_run" | "skipped";
   outPath: string;
   md5New: string;
   md5Old: string | null;
@@ -135,9 +135,11 @@ export async function captureLivrosPromo(
     // Grava (exceto --dry-run).
     if (!dryRun) {
       writeFileSync(outPath, newBuf);
+      return { status: "captured", outPath, md5New, md5Old };
     }
-
-    return { status: "captured", outPath, md5New, md5Old };
+    // #2104: dry-run com mudança detectada — NÃO gravado; status distinto de "captured"
+    // para não enganar o caller (arquivo out_path não existe / não foi atualizado).
+    return { status: "dry_run", outPath, md5New, md5Old };
   } finally {
     // Limpa o temp file (ignore erros).
     try {

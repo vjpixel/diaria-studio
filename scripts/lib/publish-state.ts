@@ -64,8 +64,10 @@ export function resolveBeehiivState(
   if (status !== "confirmed") return "unknown";
 
   // status === "confirmed" → desambiguar via publish_date
+  // #2104: guard > 0 rejeita null, 0 e negativos (timestamp pré-1970 seria
+  // "published" falso — ex: -1 de campo API mal populado).
   const publishDate = post.publish_date;
-  if (publishDate == null || publishDate === 0) return "unknown";
+  if (publishDate == null || publishDate <= 0) return "unknown";
 
   const publishMs = publishDate * 1000;
   return publishMs > now.getTime() ? "scheduled" : "published";

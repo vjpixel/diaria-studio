@@ -346,7 +346,9 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td { padding: 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
-  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 1px solid var(--rule); }
+  th { background: var(--paper-alt); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); position: sticky; top: 0; cursor: help; border-bottom: 2px solid rgba(23,20,17,0.18); }
+  /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
+     Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
   td.metric { font-weight: 600; color: var(--brand); }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }

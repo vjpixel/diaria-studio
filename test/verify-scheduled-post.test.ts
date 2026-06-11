@@ -224,6 +224,24 @@ describe("verifyScheduledPost (#2074)", () => {
     }
   });
 
+  // #2104: publish_date negativo não deve gerar 'published' falso
+  it("#2104 regressão: publish_date negativo → unknown (não immediate_send_detected)", () => {
+    const dir = makeTmpEditionDir();
+    try {
+      const post = {
+        id: "post_neg_date",
+        status: "confirmed",
+        publish_date: -1, // campo mal populado pela API
+      };
+      const result = verifyScheduledPost(post, dir, NOW);
+      assert.equal(result.state, "unknown");
+      assert.equal(result.immediate_send_detected, false, "publish_date negativo não deve disparar alerta de envio imediato");
+      assert.equal(result.published_json_updated, false);
+    } finally {
+      cleanupDir(dir);
+    }
+  });
+
   it("D3 regressão: 05-published.json contendo null não apaga campos existentes", () => {
     // JSON.parse("null") retorna null; { ...null, status } produz {} silenciosamente.
     // O guard typeof previne isso — verifica que campos originais são preservados.
