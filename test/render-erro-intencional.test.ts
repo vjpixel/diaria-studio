@@ -1203,3 +1203,63 @@ describe("render-erro-intencional CLI (#911)", () => {
     }
   });
 });
+
+describe("#2078: prev.no_error branch — frase natural no reveal", () => {
+  it("findPreviousIntentionalError inclui entrada no_error=true", () => {
+    const errors: IntentionalError[] = [
+      { edition: "260605", error_type: "none", is_feature: false, no_error: true },
+      { edition: "260604", error_type: "factual", is_feature: true, detail: "X" },
+    ];
+    const r = findPreviousIntentionalError(errors, "260606");
+    // no_error=true deve ser incluído (mais recente)
+    assert.equal(r?.edition, "260605");
+    assert.equal(r?.no_error, true);
+  });
+
+  it("integração CLI: prev no_error=true gera frase natural, não concatenação mecânica", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-none-"));
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      const errPath = join(dir, "intentional-errors.jsonl");
+      writeFileSync(
+        mdPath,
+        ["OUTRAS NOTICIAS", "", "Item.", "", "---", "", "**ASSINE**", "X"].join("\n"),
+        "utf8",
+      );
+      writeFileSync(
+        errPath,
+        JSON.stringify({
+          edition: "260605",
+          error_type: "none",
+          is_feature: false,
+          no_error: true,
+          source: "frontmatter_02_reviewed",
+          detected_by: "sync-intentional-error.ts none scalar (#2016)",
+          resolution: "no_error_declared",
+        }) + "\n",
+        "utf8",
+      );
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "render-erro-intencional.ts");
+      const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath,
+        "--edition", "260606",
+        "--md", mdPath,
+        "--errors", errPath,
+      ], { cwd: projectRoot, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.prev_revealed, true);
+      assert.equal(out.prev_edition, "260605");
+      const updated = readFileSync(mdPath, "utf8");
+      // Frase natural (#2078)
+      assert.match(updated, /Na última edição, não havia erro intencional/);
+      assert.match(updated, /quem respondeu que não há erro, acertou/);
+      // NÃO pode ter a concatenação mecânica antiga
+      assert.doesNotMatch(updated, /o correto é não há erro/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+

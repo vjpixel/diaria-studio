@@ -8,6 +8,8 @@
  * Also strips arXiv abstract prefixes and truncates to a max length.
  */
 
+import { truncateAtBoundary } from "./truncate-at-boundary.ts";
+
 const MAX_SUMMARY_LENGTH = 200;
 
 /**
@@ -99,10 +101,8 @@ export function cleanSummary(summary: string, title: string): string {
     cleaned = sentences[0];
   }
 
-  // Step 5: truncate
-  if (cleaned.length > MAX_SUMMARY_LENGTH) {
-    cleaned = cleaned.slice(0, MAX_SUMMARY_LENGTH - 1).trimEnd() + "…";
-  }
+  // Step 5: truncate — usar word-boundary pra não cortar no meio de palavra (#2065)
+  cleaned = truncateAtBoundary(cleaned, MAX_SUMMARY_LENGTH);
 
   return cleaned;
 }

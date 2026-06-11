@@ -653,10 +653,11 @@ function main(): void {
   }
   if (prev) {
     if (prev.no_error) {
-      // #2037 fix 2: edição anterior declarou explicitamente que não havia erro
-      // intencional. reveal=null faz renderSection usar a frase padrão
-      // "A edição anterior não trazia erro intencional declarado."
-      reveal = null;
+      // #2078: edição anterior declarou explicitamente que não havia erro
+      // intencional (intentional_error: none). Usar frase natural em vez de
+      // reveal=null (que emitia a genérica "A edição anterior não trazia erro
+      // intencional declarado." — pouco informativa para o leitor do concurso).
+      reveal = "Na última edição, não havia erro intencional: quem respondeu que não há erro, acertou.";
     } else {
       reveal = composeRevealText(prev as IntentionalError & { narrative?: string; gabarito?: string });
     }

@@ -24,6 +24,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,10 +116,10 @@ function cleanSummary(summary: string): { cleaned: string; truncated: boolean } 
     text = text.slice(0, sentenceEnd.index + 1);
   }
 
-  let truncated = false;
-  if (text.length > MAX_SUMMARY_LENGTH) {
-    text = text.slice(0, MAX_SUMMARY_LENGTH - 1).trimEnd() + "…";
-    truncated = true;
+  const truncated = text.length > MAX_SUMMARY_LENGTH;
+  if (truncated) {
+    // usar word-boundary pra não cortar no meio de palavra (#2065)
+    text = truncateAtBoundary(text, MAX_SUMMARY_LENGTH);
   }
 
   return { cleaned: text, truncated };

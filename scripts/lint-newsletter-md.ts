@@ -337,6 +337,37 @@ intentional_error:
     return;
   }
 
+  // Modo --check erro-intencional-placeholder (#2078) — verifica que o
+  // placeholder {PREENCHER_NARRATIVA_DO_ERRO} foi substituído pelo editor
+  // antes da publicação. Nenhum outro lint pega esse caso.
+  if (args.check === "erro-intencional-placeholder") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const hasPlaceholder = /\{PREENCHER_NARRATIVA_DO_ERRO\}/.test(md);
+    const result = {
+      ok: !hasPlaceholder,
+      label: hasPlaceholder
+        ? "erro-intencional-placeholder: placeholder {PREENCHER_NARRATIVA_DO_ERRO} ainda presente — preencha a narrativa do erro desta edição no bloco ERRO INTENCIONAL antes de publicar"
+        : undefined,
+    };
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.label}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check destaque-min-chars (#914) — valida mínimo de chars por destaque
   if (args.check === "destaque-min-chars") {
     if (!args.md) {
@@ -627,7 +658,8 @@ intentional_error:
         "  ou: lint-newsletter-md.ts --check relative-time --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>",
     );
     process.exit(2);
   }
