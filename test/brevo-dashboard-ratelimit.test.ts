@@ -16,6 +16,7 @@ import {
   mapLimit,
   isImmutableCampaign,
   BrevoRateLimitError,
+  fetchRecentCampaigns,
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // ─── mapLimit ────────────────────────────────────────────────────────────────
@@ -256,5 +257,120 @@ describe("lógica de KV cache (simulação)", () => {
     await fetchWithKV(kv, "gstats:99", false /* não imutável */, async () => "data");
 
     assert.strictEqual(kvAccessed, false, "KV não deve ser acessado para campanhas recentes");
+  });
+});
+
+// --- Integration: fetchRecentCampaigns com KV mock + fetchFn mock (#2146 finding #9) --------
+//
+// Exercita o caminho real de fetchRecentCampaigns (nao uma simulacao) com:
+//   - mock KVNamespace que registra gets e puts
+//   - mock _fetchFn que retorna dados canned
+// Verifica que KV hit evita chamada ao Brevo, que KV miss persiste, e que
+// isFresh=true bypassa o KV.
+
+describe("fetchRecentCampaigns (integration com KV mock)", () => {
+  function makeKVMock(initialData: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initialData));
+    const getCalls: string[] = [];
+    const putCalls: string[] = [];
+    return {
+      store, getCalls, putCalls,
+      kv: {
+        get: async (key: string, type?: string) => {
+          getCalls.push(key);
+          const val = store.get(key);
+          if (!val) return null;
+          if (type === "json") return JSON.parse(val);
+          return val;
+        },
+        put: async (key: string, value: string) => {
+          putCalls.push(key);
+          store.set(key, value);
+        },
+        delete: async () => {},
+        list: async () => ({ keys: [], cursor: "", list_complete: true }),
+        getWithMetadata: async () => ({ value: null, metadata: null }),
+      } as unknown as KVNamespace,
+    };
+  }
+
+  const sentDateOld = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
+  const fakeList = { id: 7, name: "Lista Teste", totalSubscribers: 500 };
+  const fakeGlobalStats = {
+    sent: 100, delivered: 95, hardBounces: 2, softBounces: 1,
+    uniqueViews: 40, viewed: 45, trackableViews: 35, uniqueClicks: 10,
+    clickers: 9, unsubscriptions: 1, complaints: 0, appleMppOpens: 5,
+  };
+  const fakeCampaign = {
+    id: 42, name: "Test Campaign", subject: "Hello", status: "sent",
+    sentDate: sentDateOld, scheduledAt: null, createdAt: sentDateOld,
+    recipients: { lists: [7] },
+    statistics: { campaignStats: [{ listId: 7, sent: 100, delivered: 95, hardBounces: 2,
+      softBounces: 1, deferred: 0, uniqueViews: 40, viewed: 45, trackableViews: 35,
+      uniqueClicks: 10, clickers: 9, unsubscriptions: 1, complaints: 0 }] },
+  };
+
+  test("KV hit de gstats imutavel evita chamada ao _fetchFn por campanha", async () => {
+    const { kv, getCalls } = makeKVMock({
+      "gstats:42": JSON.stringify(fakeGlobalStats),
+      "list:7": JSON.stringify(fakeList),
+    });
+    let detailCalled = false;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) { detailCalled = true; throw new Error("nao devia chamar"); }
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.strictEqual(detailCalled, false, "fetchFn NAO deve ser chamado com KV hit");
+    assert.ok(getCalls.includes("gstats:42"), "KV.get deve ter sido chamado");
+    assert.strictEqual(result[0].statistics?.globalStats?.sent, 100, "sent deve vir do KV");
+  });
+
+  test("KV miss de gstats chama _fetchFn e persiste no KV", async () => {
+    const { kv, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    let detailCalled = false;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) {
+        detailCalled = true;
+        return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T;
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.strictEqual(detailCalled, true, "fetchFn DEVE ser chamado em KV miss");
+    assert.ok(putCalls.includes("gstats:42"), "KV.put deve persistir gstats:42");
+  });
+
+  test("isFresh=true bypassa KV e chama _fetchFn mesmo com KV populado", async () => {
+    const { kv } = makeKVMock({
+      "gstats:42": JSON.stringify({ ...fakeGlobalStats, sent: 999 }),
+      "list:7": JSON.stringify(fakeList),
+    });
+    let detailCalled = false;
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) { detailCalled = true; return { ...fakeCampaign, statistics: { globalStats: fakeGlobalStats } } as T; }
+      if (path.includes("contacts/lists/7")) return fakeList as T;
+      throw new Error("path inesperado: " + path);
+    };
+    const result = await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, true, mockFetch as any);
+    assert.strictEqual(detailCalled, true, "fetchFn DEVE ser chamado com isFresh=true mesmo com KV hit");
+    assert.strictEqual(result[0].statistics?.globalStats?.sent, 100, "sent deve vir da Brevo (100), nao do KV (999)");
+  });
+
+  test("gstats zerado (sent=0) nao e persistido no KV", async () => {
+    const { kv, putCalls } = makeKVMock({ "list:7": JSON.stringify(fakeList) });
+    const mockFetch = async <T>(path: string, _env: unknown): Promise<T> => {
+      if (path.includes("emailCampaigns?status=sent")) return { campaigns: [fakeCampaign] } as T;
+      if (path.includes("emailCampaigns/42")) {
+        return { ...fakeCampaign, statistics: { globalStats: { ...fakeGlobalStats, sent: 0 } } } as T;
+      }
+      throw new Error("path inesperado: " + path);
+    };
+    await fetchRecentCampaigns({ BREVO_API_KEY: "t", STATS_CACHE: kv } as any, 20, false, mockFetch as any);
+    assert.strictEqual(putCalls.includes("gstats:42"), false,
+      "KV.put NAO deve ser chamado para gstats zerado (evita envenenamento permanente)");
   });
 });

@@ -140,11 +140,17 @@ export async function mapLimit<T, R>(
 ): Promise<R[]> {
   const results: R[] = new Array(arr.length);
   let idx = 0;
+  let aborted = false;
 
   async function worker(): Promise<void> {
-    while (idx < arr.length) {
+    while (idx < arr.length && !aborted) {
       const i = idx++;
-      results[i] = await fn(arr[i]);
+      try {
+        results[i] = await fn(arr[i]);
+      } catch (err) {
+        aborted = true; // Para todos os workers ao primeiro erro fatal
+        throw err;
+      }
     }
   }
 
@@ -182,7 +188,26 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
     headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
   });
   if (res.status === 429) {
-    const retryAfter = Number(res.headers.get("x-sib-ratelimit-reset") ?? res.headers.get("retry-after")) || null;
+    // Semantica observada 2026-06-10 em chamada real: x-sib-ratelimit-reset
+    // retornou "256" -- um DELTA em segundos, nao epoch Unix. Aplicamos clamp
+    // defensivo: se o valor for < 1e9 (< 31 anos), tratamos como delta direto;
+    // se for formato epoch (>= 1e9), convertemos via Math.ceil(v - Date.now()/1000).
+    // Standard retry-after (RFC 7231) e lido como delta direto quando presente.
+    let retryAfter: number | null = null;
+    const retryAfterHeader = res.headers.get("retry-after");
+    const resetHeader = res.headers.get("x-sib-ratelimit-reset");
+    if (retryAfterHeader != null) {
+      const v = Number(retryAfterHeader);
+      if (!isNaN(v) && v > 0) retryAfter = v;
+    } else if (resetHeader != null) {
+      const v = Number(resetHeader);
+      if (!isNaN(v)) {
+        // Delta direto (ex: 256s) ou epoch Unix (ex: ~1.7e9)?
+        retryAfter = v >= 1e9
+          ? Math.max(0, Math.ceil(v - Date.now() / 1000))
+          : v > 0 ? v : null;
+      }
+    }
     throw new BrevoRateLimitError(retryAfter);
   }
   if (!res.ok) {
@@ -203,11 +228,14 @@ async function brevoFetch<T>(path: string, env: Env): Promise<T> {
  * Stats de campanhas com sentDate > 7d são consideradas imutáveis e
  * cacheadas no KV STATS_CACHE sem TTL. Nomes de lista: KV com TTL 7d.
  */
-async function fetchRecentCampaigns(
+export async function fetchRecentCampaigns(
   env: Env,
   limit = 50, // #2134 follow-up: weekday agrega todos os envios — cobrir ciclos anteriores
+  isFresh = false, // #2144: fresh=1 bypassa tanto edge cache quanto KV de stats imutaveis
+  // _fetchFn: injetavel em testes para mockar chamadas Brevo (padrao: brevoFetch)
+  _fetchFn: typeof brevoFetch = brevoFetch,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
-  const data = await brevoFetch<{ campaigns: BrevoCampaign[] }>(
+  const data = await _fetchFn<{ campaigns: BrevoCampaign[] }>(
     `/v3/emailCampaigns?status=sent&limit=${limit}&sort=desc`,
     env,
   );
@@ -219,60 +247,68 @@ async function fetchRecentCampaigns(
   const listMap = new Map<number, BrevoList>();
   const globalStatsMap = new Map<number, BrevoGlobalStats>();
 
-  // Fetch nomes de lista com concorrência limitada + KV cache (TTL 7d)
-  await mapLimit(listIds, 5, async (id) => {
-    try {
-      // Tentar KV primeiro
-      const kvKey = `list:${id}`;
-      const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
-      if (cached) {
-        listMap.set(id, cached as BrevoList);
-        return;
-      }
-      const list = await brevoFetch<BrevoList>(`/v3/contacts/lists/${id}`, env);
-      listMap.set(id, list);
-      // Gravar no KV com TTL 7 dias (lista pode mudar de nome ou tamanho)
-      if (env.STATS_CACHE) {
-        await env.STATS_CACHE.put(kvKey, JSON.stringify(list), {
-          expirationTtl: 7 * 24 * 3600,
-        }).catch(() => { /* erro de KV nunca bloqueia */ });
-      }
-    } catch {
-      // Lista pode ter sido apagada — skip
-    }
-  });
-
-  // Fetch globalStats com concorrência limitada + KV cache para imutáveis
-  await mapLimit(campaigns, 5, async (c) => {
-    try {
-      const kvKey = `gstats:${c.id}`;
-      const immutable = isImmutableCampaign(c.sentDate);
-
-      // Para campanhas imutáveis: tentar KV primeiro
-      if (immutable && env.STATS_CACHE) {
-        const cached = await env.STATS_CACHE.get(kvKey, "json").catch(() => null);
+  // Fetch listas e globalStats em paralelo -- os dois batches sao independentes.
+  // mapLimit(5) por batch => concorrencia total <= 10 (bem abaixo de 100 reqs/min da Brevo).
+  // Fetch listas e globalStats em paralelo -- os dois batches sao independentes.
+  // mapLimit(5) por batch: concorrencia total <= 10, bem abaixo de 100 reqs/min da Brevo.
+  await Promise.all([
+    // Batch 1: nomes de lista com KV cache (TTL 7d)
+    mapLimit(listIds, 5, async (id) => {
+      try {
+        // Tentar KV primeiro (isFresh=1 bypassa -- operador quer dados direto da Brevo)
+        const kvKey = `list:${id}`;
+        const cached = (!isFresh && env.STATS_CACHE) ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
         if (cached) {
-          globalStatsMap.set(c.id, cached as BrevoGlobalStats);
+          listMap.set(id, cached as BrevoList);
           return;
         }
-      }
-
-      const detail = await brevoFetch<BrevoCampaign>(
-        `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
-        env,
-      );
-      const gs = detail.statistics?.globalStats;
-      if (gs) {
-        globalStatsMap.set(c.id, gs);
-        // Gravar no KV sem TTL se imutável (stats não mudam mais)
-        if (immutable && env.STATS_CACHE) {
-          await env.STATS_CACHE.put(kvKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+        const list = await _fetchFn<BrevoList>(`/v3/contacts/lists/${id}`, env);
+        listMap.set(id, list);
+        // Gravar no KV com TTL 7 dias (lista pode mudar de nome ou tamanho)
+        if (env.STATS_CACHE) {
+          await env.STATS_CACHE.put(kvKey, JSON.stringify(list), {
+            expirationTtl: 7 * 24 * 3600,
+          }).catch(() => { /* erro de KV nunca bloqueia */ });
         }
+      } catch {
+        // Lista pode ter sido apagada -- skip
       }
-    } catch {
-      // Falha individual não bloqueia o resto — campaignStats fica como fallback
-    }
-  });
+    }),
+    // Batch 2: globalStats com KV cache para campanhas imutaveis (> 7d)
+    mapLimit(campaigns, 5, async (c) => {
+      try {
+        const kvKey = `gstats:${c.id}`;
+        const immutable = isImmutableCampaign(c.sentDate);
+
+        // Para campanhas imutaveis: tentar KV primeiro (exceto fresh=1)
+        if (!isFresh && immutable && env.STATS_CACHE) {
+          const cached = await env.STATS_CACHE.get(kvKey, "json").catch(() => null);
+          if (cached) {
+            globalStatsMap.set(c.id, cached as BrevoGlobalStats);
+            return;
+          }
+        }
+
+        const detail = await _fetchFn<BrevoCampaign>(
+          `/v3/emailCampaigns/${c.id}?statistics=globalStats`,
+          env,
+        );
+        const gs = detail.statistics?.globalStats;
+        // So gravar stats REAIS (gs.sent > 0) -- Brevo pode retornar objeto
+        // zerado em certas condicoes; persistir zerado sem TTL criaria entrada
+        // permanente impossivel de recuperar sem `wrangler kv:key delete`.
+        if (gs && gs.sent > 0) {
+          globalStatsMap.set(c.id, gs);
+          // Gravar no KV sem TTL se imutavel (stats nao mudam mais)
+          if (immutable && env.STATS_CACHE) {
+            await env.STATS_CACHE.put(kvKey, JSON.stringify(gs)).catch(() => { /* nunca bloqueia */ });
+          }
+        }
+      } catch {
+        // Falha individual nao bloqueia o resto -- campaignStats fica como fallback
+      }
+    }),
+  ]); // fim Promise.all([listas, stats])
 
   return campaigns.map((c) => {
     const listId = c.recipients?.lists?.[0];
@@ -1106,7 +1142,7 @@ export default {
     }
 
     // #2144: edge cache 5min via Cache API pras rotas cacheáveis.
-    // fresh=1 → bypass completo (nem lê nem escreve no cache).
+    // fresh=1 → bypass completo: nem edge cache nem KV de stats imutáveis.
     const isFresh = url.searchParams.get("fresh") === "1";
     const isCacheable = (path === "/" || path === "/index.html" || path === "/api/campaigns");
     const cache = caches.default;
@@ -1119,11 +1155,15 @@ export default {
     if (path === "/api/campaigns") {
       try {
         const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
-        const campaigns = await fetchRecentCampaigns(env, limit);
+        const campaigns = await fetchRecentCampaigns(env, limit, isFresh);
         const response = new Response(JSON.stringify(campaigns, null, 2), {
           headers: {
             "Content-Type": "application/json",
-            "Cache-Control": "public, max-age=300",
+            // Cache-Control: private impede proxies compartilhados de cachear metricas
+            // de negocio. CDN-Cache-Control (CF-especifico) permite cache no edge do
+            // proprio Worker. fresh=1 retorna no-store para o browser nao cachear o "fresh".
+            "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+            ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
           },
         });
         if (!isFresh) {
@@ -1141,12 +1181,13 @@ export default {
 
     if (path === "/" || path === "/index.html") {
       try {
-        const campaigns = await fetchRecentCampaigns(env, 50); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+        const campaigns = await fetchRecentCampaigns(env, 50, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
         const html = renderDashboardHtml(campaigns);
         const response = new Response(html, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "public, max-age=300",
+            "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+            ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
           },
         });
         if (!isFresh) {
