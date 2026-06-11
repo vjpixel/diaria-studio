@@ -21,6 +21,12 @@
  * Sem KV — stats são fetch-on-demand a cada page load (sem cache, por
  * preferência do editor 2026-05-12 — refresh manual sempre busca fresh).
  * Volume típico baixo (~5-10 loads/dia), Brevo free tier suporta.
+ *
+ * #2086 Fase 2 mínima:
+ *   - Resumo A/B/C da S1 (checkpoint 17/jun)
+ *   - Tendência entre waves (open+bounce cronológico)
+ *   - trackableViewsRate por campanha (coluna na tabela)
+ *   - Volume cumulativo vs plano 40k
  */
 
 /**
@@ -250,7 +256,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
       const gsIsReal = gs && gs.sent > 0;
       const s = gsIsReal ? gs : cs;
       if (!s) {
-        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="6" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>`;
+        return `<tr><td>${c.id}</td><td>${escHtml(c.listName ?? "?")}</td><td>${fmtTimeBRT(c.sentDate)}</td><td>—</td><td colspan="7" style="color:${DS.ink};opacity:0.6;font-style:italic;">sem stats</td></tr>`;
       }
       const openRate = pct(s.uniqueViews, s.delivered);
       const ctr = pct(s.uniqueClicks, s.delivered);
@@ -291,6 +297,10 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         ? `${s.uniqueViews} (${opensNoMpp})`
         : `${s.uniqueViews}`;
 
+      // #2086 B2: trackableViewsRate = trackableViews / delivered
+      // Indica emails com rastreamento real (exclui MPP/bots que não carregam pixel).
+      const trackableRate = pct(s.trackableViews, s.delivered);
+
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
       // `totalSubscribers` da API, mais fiel + atualizado.
@@ -303,6 +313,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
         <td${cellClass("metric", openAlert && "alert")}>${opensTopLine}<br><small>${opensBottomLine}</small></td>
         <td${cellClass("metric")}>${ctr}<br><small>${s.uniqueClicks}</small></td>
+        <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
@@ -319,6 +330,14 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
     minute: "2-digit",
     second: "2-digit",
   });
+
+  // #2086 Fase 2: seções adicionais
+  const activeCycle = detectActiveCycle(campaigns);
+  const abcRows = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
+  const cumSent = activeCycle ? calcCumulativeSent(campaigns, activeCycle) : 0;
+  const abcSection = activeCycle ? renderAbcSection(abcRows, cumSent) : "";
+  const trendRows = buildTrendRows(campaigns);
+  const trendSection = renderTrendSection(trendRows);
 
   // #2084: CSS usa tokens do DS (DS.*/DSF.*). Vars --muted e --rule-header
   // são derivadas do DS: --muted = ink com opacity 55% (ferramenta interna,
@@ -350,6 +369,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
   td.metric { font-weight: 600; color: var(--brand); }
+  td.trackable { font-size: 0.85em; opacity: 0.85; }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }
@@ -357,6 +377,13 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   td small { color: var(--ink); opacity: 0.6; font-weight: normal; }
   .footer { color: var(--ink); opacity: 0.6; font-size: 0.75rem; margin-top: 24px; text-align: center; }
   .footer code { background: var(--paper-alt); padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
+  /* #2086: seções de fase 2 */
+  .phase2-section { margin: 32px 0 8px 0; }
+  .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
+  .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
+  .volume-note { font-family: monospace; font-size: 0.82rem; margin-top: 10px; }
+  .spark-bar { display: inline-block; letter-spacing: -1px; color: var(--brand); }
+  td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
     table { font-size: 0.8rem; }
@@ -367,6 +394,9 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <body>
 <h1>📧 Diar.ia Clarice Dashboard</h1>
 <p class="sub">Últimas ${campaigns.length} campaigns. Dados em tempo real — carregado às ${now} BRT.</p>
+${abcSection}
+<section class="phase2-section" id="campaigns-table">
+  <h2 class="section-title">Campanhas enviadas</h2>
 <div class="table-wrap">
 <table>
 <thead>
@@ -378,19 +408,22 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
 <th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
+<th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
 <th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
 <th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
 <th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
 </tr>
 </thead>
 <tbody>
-${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
+${rows || `<tr><td colspan="11" style="text-align:center;color:${DS.ink};opacity:0.6;padding:24px;">Nenhuma campaign encontrada.</td></tr>`}
 </tbody>
 </table>
 </div>
+</section>
+${trendSection}
 <p class="footer">Atualize a página (F5 / Ctrl+R / ⌘+R) pra buscar dados novos da Brevo.<br>
 Open rate e CTR calculados sobre <em>delivered</em>; bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
-Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Pra valor mais limpo, consultar <em>trackableViews</em> em <code>/api/campaigns</code>.<br>
+Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses, a taxa sem Apple MPP (ainda pode incluir outros bots). Coluna Trackable 📍 mostra aberturas com pixel real (trackableViews ÷ delivered). Dados brutos em <code>/api/campaigns</code>.<br>
 Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce ≥3%, unsub ≥3%, spam ≥0.1%).</p>
 </body>
 </html>`;
@@ -402,6 +435,306 @@ function escHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// ─── #2086 Fase 2: helpers de agregação ──────────────────────────────────────
+
+/**
+ * Volume total do plano S1/ciclo 2605-06 conforme clarice-build-edition-sends.ts.
+ * S1 = d01–d07 A/B/C = 5.600. Total S1+S2+S3 = 40.000.
+ * Exportado pra teste unitário.
+ */
+export const CLARICE_PLAN_TOTAL = 40_000;
+export const CLARICE_PLAN_S1 = 5_600;
+
+/**
+ * Extrai célula A/B/C do nome da campanha Clarice News.
+ * Padrão: "Clarice News {cycle} d{NN}-{cell} ({weekday})"
+ * ex: "Clarice News 2605 d01-A (qua)" → cell = "A"
+ * Retorna null para campanhas que não seguem o padrão (ex: T1-W1..W7).
+ */
+export function extractClariceCell(campaignName: string): "A" | "B" | "C" | null {
+  const m = campaignName.match(/Clarice News \d{4} d\d{2}-([ABC])\s/i);
+  if (!m) return null;
+  return m[1] as "A" | "B" | "C";
+}
+
+/**
+ * Extrai o ciclo e o número do dia de uma campanha Clarice News.
+ * ex: "Clarice News 2605 d02-C (qui)" → { cycle: "2605", dayNum: 2, cell: "C" }
+ * Retorna null para campanhas que não seguem o padrão.
+ */
+export function parseClariceCampaignKey(campaignName: string): {
+  cycle: string;
+  dayNum: number;
+  cell: "A" | "B" | "C";
+} | null {
+  const m = campaignName.match(/Clarice News (\d{4}) d(\d{2})-([ABC])\s/i);
+  if (!m) return null;
+  return { cycle: m[1], dayNum: parseInt(m[2], 10), cell: m[3] as "A" | "B" | "C" };
+}
+
+export interface CellSummary {
+  cell: "A" | "B" | "C";
+  /** Soma de uniqueViews das campanhas da célula */
+  totalViews: number;
+  /** Soma de delivered das campanhas da célula */
+  totalDelivered: number;
+  /** Open rate agregado (totalViews / totalDelivered) */
+  openRate: number;
+  /** Número de campanhas contabilizadas (dias enviados) */
+  campaignCount: number;
+}
+
+/**
+ * Agrega resumo A/B/C das campanhas S1 (d01–d07) de um ciclo Clarice.
+ * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
+ * Exportado pra teste unitário.
+ */
+export function aggregateAbcSummary(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string,
+): CellSummary[] {
+  const cells: Record<"A" | "B" | "C", { views: number; delivered: number; count: number }> = {
+    A: { views: 0, delivered: 0, count: 0 },
+    B: { views: 0, delivered: 0, count: 0 },
+    C: { views: 0, delivered: 0, count: 0 },
+  };
+
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name);
+    if (!parsed || parsed.cycle !== cycle) continue;
+    // S1 = d01–d07
+    if (parsed.dayNum > 7) continue;
+
+    const gs = c.statistics?.globalStats;
+    if (!gs || gs.sent === 0) continue;
+
+    cells[parsed.cell].views += gs.uniqueViews;
+    cells[parsed.cell].delivered += gs.delivered;
+    cells[parsed.cell].count += 1;
+  }
+
+  return (["A", "B", "C"] as const).map((cell) => {
+    const d = cells[cell];
+    return {
+      cell,
+      totalViews: d.views,
+      totalDelivered: d.delivered,
+      openRate: d.delivered > 0 ? (d.views / d.delivered) * 100 : 0,
+      campaignCount: d.count,
+    };
+  });
+}
+
+/**
+ * Calcula volume enviado cumulativo de campanhas Clarice News de um ciclo.
+ * Soma "sent" de todas as campanhas do ciclo (todos os dias, todas as células).
+ * Exportado pra teste unitário.
+ */
+export function calcCumulativeSent(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  cycle: string,
+): number {
+  let total = 0;
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name);
+    if (!parsed || parsed.cycle !== cycle) continue;
+    const gs = c.statistics?.globalStats;
+    if (!gs || gs.sent === 0) continue;
+    total += gs.sent;
+  }
+  return total;
+}
+
+/**
+ * Detecta o ciclo ativo (mais recente) entre campanhas Clarice News.
+ * Retorna o cycle string (ex: "2605") ou null se nenhuma encontrada.
+ * Exportado pra teste unitário.
+ */
+export function detectActiveCycle(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): string | null {
+  let latest: string | null = null;
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name);
+    if (!parsed) continue;
+    if (!latest || parsed.cycle > latest) latest = parsed.cycle;
+  }
+  return latest;
+}
+
+export interface WaveTrendRow {
+  label: string;
+  sentDate: string | null;
+  openRate: number;
+  bounceRate: number;
+  sent: number;
+  delivered: number;
+}
+
+/**
+ * Monta tabela de tendência cronológica para todas as campanhas com stats reais.
+ * Ordenada por sentDate ASC. Cada linha: label reduzido, data, open%, bounce%.
+ * Exportado pra teste unitário.
+ */
+export function buildTrendRows(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): WaveTrendRow[] {
+  const rows: WaveTrendRow[] = [];
+
+  // Ordenar por sentDate ASC (mais antigas primeiro)
+  const sorted = [...campaigns].sort((a, b) => {
+    const da = a.sentDate ? Date.parse(a.sentDate) : 0;
+    const db = b.sentDate ? Date.parse(b.sentDate) : 0;
+    return da - db;
+  });
+
+  for (const c of sorted) {
+    if (!c.sentDate) continue;
+    const gs = c.statistics?.globalStats;
+    const cs = c.statistics?.campaignStats?.[0];
+    const gsIsReal = gs && gs.sent > 0;
+    const s = gsIsReal ? gs : cs;
+    if (!s || s.sent === 0) continue;
+
+    // Label compacto: extrair a parte mais informativa do nome
+    // "Diar.ia Mensal 2604 — 2026-05-17 14:45" → "Mensal 2604 W7"
+    // "Clarice News 2605 d01-A (qua)" → "2605 d01-A"
+    let label = c.name;
+    const clariceMatch = c.name.match(/Clarice News (\d{4}) (d\d{2}-[ABC])/i);
+    const mensalMatch = c.name.match(/Diar\.ia Mensal (\d{4})/i);
+    const listNameMatch = (c.listName ?? "").match(/T1-(W\d+)/i);
+    if (clariceMatch) {
+      label = `${clariceMatch[1]} ${clariceMatch[2]}`;
+    } else if (mensalMatch && listNameMatch) {
+      label = `Mensal ${mensalMatch[1]} ${listNameMatch[1]}`;
+    } else if (mensalMatch) {
+      label = `Mensal ${mensalMatch[1]}`;
+    }
+
+    const openRate = s.delivered > 0 ? (s.uniqueViews / s.delivered) * 100 : 0;
+    const bounceRate = s.sent > 0 ? ((s.hardBounces + s.softBounces) / s.sent) * 100 : 0;
+
+    rows.push({
+      label,
+      sentDate: c.sentDate,
+      openRate,
+      bounceRate,
+      sent: s.sent,
+      delivered: s.delivered,
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Renderiza a seção de resumo A/B/C da S1.
+ * Exportado pra teste unitário.
+ */
+export function renderAbcSection(abcRows: CellSummary[], cumulativeSent: number): string {
+  if (abcRows.every((r) => r.campaignCount === 0)) return "";
+
+  const winner = abcRows.reduce((best, r) =>
+    r.openRate > best.openRate ? r : best,
+  );
+  const allSampled = abcRows.filter((r) => r.campaignCount > 0).length >= 2;
+
+  const pctBar = Math.min(100, (cumulativeSent / CLARICE_PLAN_TOTAL) * 100);
+  const pctLabel = pctBar.toFixed(1);
+  const barFill = Math.round(pctBar * 0.3); // 30 chars = 100%
+  const bar = "█".repeat(barFill) + "░".repeat(30 - barFill);
+
+  const cellRows = abcRows
+    .map((r) => {
+      const isWinner = allSampled && r.openRate === winner.openRate && r.campaignCount > 0;
+      const winnerTag = isWinner ? ` <strong style="color:${DS.brand}">▲ LÍDER</strong>` : "";
+      const openRateFmt = r.campaignCount > 0 ? r.openRate.toFixed(1) + "%" : "—";
+      return `<tr>
+        <td><strong>Célula ${r.cell}</strong></td>
+        <td>${r.campaignCount > 0 ? r.totalViews : "—"}</td>
+        <td>${r.campaignCount > 0 ? r.totalDelivered : "—"}</td>
+        <td class="${r.campaignCount > 0 ? "metric" : ""}">${openRateFmt}${winnerTag}</td>
+        <td>${r.campaignCount}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const statusNote = allSampled
+    ? `Vencedor provisório: <strong style="color:${DS.brand}">Célula ${winner.cell}</strong> — aguardar checkpoint 17/jun para decisão final.`
+    : `Dados insuficientes para comparação — aguardar mais dias de envio.`;
+
+  return `
+<section class="phase2-section" id="abc-summary">
+  <h2 class="section-title">Resumo A/B/C — S1 (d01–d07)</h2>
+  <p class="section-note">${statusNote}</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Célula do teste A/B/C">Célula</th>
+        <th title="Soma de aberturas únicas dos dias enviados">Opens (total)</th>
+        <th title="Soma de entregues dos dias enviados">Delivered (total)</th>
+        <th title="Open rate agregado: opens ÷ delivered">Open rate agr.</th>
+        <th title="Dias enviados contabilizados">Dias</th>
+      </tr>
+    </thead>
+    <tbody>${cellRows}</tbody>
+  </table>
+  </div>
+  <p class="section-note volume-note">
+    Volume enviado no ciclo: <strong>${cumulativeSent.toLocaleString("pt-BR")}</strong> de ${CLARICE_PLAN_TOTAL.toLocaleString("pt-BR")} (${pctLabel}%)<br>
+    <span class="spark-bar" title="${pctLabel}% do plano total">${bar}</span>
+  </p>
+</section>`;
+}
+
+/**
+ * Renderiza a seção de tendência entre waves (mini-tabela cronológica).
+ * Exportado pra teste unitário.
+ */
+export function renderTrendSection(rows: WaveTrendRow[]): string {
+  if (rows.length === 0) return "";
+
+  const trendRows = rows
+    .map((r) => {
+      const openAlert = r.openRate > 0 && r.openRate < 15;
+      const bounceAlert = r.bounceRate >= 3;
+      // Sparkline ASCII simples: █ = 10pp, escala 0–50%
+      const openTicks = Math.min(10, Math.round(r.openRate / 5));
+      const spark = "█".repeat(openTicks) + "░".repeat(10 - openTicks);
+      return `<tr>
+        <td>${escHtml(r.label)}</td>
+        <td>${fmtTimeBRT(r.sentDate)}</td>
+        <td${openAlert ? ` class="alert"` : ""}>${r.openRate.toFixed(1)}%</td>
+        <td${bounceAlert ? ` class="alert"` : ""}>${r.bounceRate.toFixed(1)}%</td>
+        <td class="spark">${spark}</td>
+        <td>${r.sent.toLocaleString("pt-BR")}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return `
+<section class="phase2-section" id="wave-trend">
+  <h2 class="section-title">Tendência entre waves</h2>
+  <p class="section-note">Open rate e bounce rate em ordem cronológica — do mais antigo ao mais recente.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th title="Campanha">Campanha</th>
+        <th title="Data/hora do envio (BRT)">Enviado</th>
+        <th title="Open rate (uniqueViews ÷ delivered). Alerta < 15%.">Open%</th>
+        <th title="Bounce rate ((hard+soft) ÷ sent). Alerta ≥ 3%.">Bounce%</th>
+        <th title="Sparkline de open rate (cada █ = ~5pp, escala 0–50%)">Open ▏</th>
+        <th title="Total enviado">Sent</th>
+      </tr>
+    </thead>
+    <tbody>${trendRows}</tbody>
+  </table>
+  </div>
+</section>`;
 }
 
 export default {
