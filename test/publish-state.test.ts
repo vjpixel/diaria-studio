@@ -57,6 +57,20 @@ describe("resolveBeehiivState (#782)", () => {
     );
   });
 
+  // #2104: publish_date negativo (campo mal populado pela API) → unknown, não published
+  it("#2104 regressão: confirmed + publish_date negativo → unknown (não 'published' falso)", () => {
+    assert.equal(
+      resolveBeehiivState({ status: "confirmed", publish_date: -1 }, NOW),
+      "unknown",
+      "publish_date=-1 não deve ser tratado como passado (seria 'published' falso)",
+    );
+    assert.equal(
+      resolveBeehiivState({ status: "confirmed", publish_date: -3600 }, NOW),
+      "unknown",
+      "publish_date negativo qualquer → unknown",
+    );
+  });
+
   it("archived → unknown", () => {
     assert.equal(resolveBeehiivState({ status: "archived" }, NOW), "unknown");
   });

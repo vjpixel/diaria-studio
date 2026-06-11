@@ -121,11 +121,30 @@ describe("captureLivrosPromo — lógica de idempotência (#2071)", () => {
         dryRun: true,
         captureFn: mockCapture(BYTES_A),
       });
-      assert.equal(result.status, "captured", "dry-run: md5 mudou (sem arquivo prévio)");
+      // #2104: status deve ser 'dry_run', não 'captured' (arquivo NÃO foi gravado)
+      assert.equal(result.status, "dry_run", "dry-run com mudança deve retornar 'dry_run', não 'captured'");
       assert.ok(
         !existsSync(join(dir, LIVROS_PROMO_FILENAME)),
         "dry-run NÃO deve gravar em editionDir",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #2104 regressão: dry_run com mudança ≠ captured — garante distinção de semântica
+  it("#2104 regressão: dry_run ≠ captured (não enganar caller sobre o que foi gravado)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cap-promo-"));
+    try {
+      const result = await captureLivrosPromo(dir, {
+        dryRun: true,
+        captureFn: mockCapture(BYTES_A),
+      });
+      // "captured" significa arquivo gravado. "dry_run" significa: mudança detectada mas não gravada.
+      assert.notEqual(result.status, "captured", "'dry_run' nunca deve ser confundido com 'captured'");
+      assert.equal(result.status, "dry_run");
+      // md5 deve estar presente (captura aconteceu em temp)
+      assert.equal(result.md5New, MD5_A);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -44,14 +44,15 @@
  */
 
 import "dotenv/config";
-import { readFileSync, existsSync, mkdirSync, appendFileSync, rmSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, appendFileSync, rmSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { loadBeehiivConfig, type BeehiivConfig } from "./lib/beehiiv-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG_PATH = resolve(ROOT, "platform.config.json");
+// CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
 const BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
 
@@ -66,10 +67,8 @@ export const MCP_ONLY_GAPS = [
   "per-subscriber engagement (list_post_subscriber_engagement)",
 ] as const;
 
-export interface Config {
-  apiKey: string;
-  publicationId: string;
-}
+// #2104: Config é re-exportado de scripts/lib/beehiiv-config.ts (dedup de 3 cópias)
+export type Config = BeehiivConfig;
 
 export interface EndpointSpec {
   /** Chave no manifest. */
@@ -209,31 +208,9 @@ export function hasMorePages(input: {
   return gotLength >= lim;
 }
 
+// #2104: delegado ao helper centralizado em scripts/lib/beehiiv-config.ts
 function loadConfig(): Config {
-  const apiKey = process.env.BEEHIIV_API_KEY;
-  if (!apiKey) {
-    console.error("BEEHIIV_API_KEY não definida. Configure no .env (veja .env.example).");
-    process.exit(2);
-  }
-  if (!existsSync(CONFIG_PATH)) {
-    console.error(`platform.config.json não encontrado em ${CONFIG_PATH}`);
-    process.exit(2);
-  }
-  let cfg: { beehiiv?: { publicationId?: string } };
-  try {
-    cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  } catch (e) {
-    console.error(`platform.config.json inválido: ${(e as Error).message}`);
-    process.exit(2);
-  }
-  const publicationId = process.env.BEEHIIV_PUBLICATION_ID ?? cfg.beehiiv?.publicationId ?? "";
-  if (!publicationId) {
-    console.error(
-      "publicationId ausente — adicione `beehiiv.publicationId` em platform.config.json ou exporte BEEHIIV_PUBLICATION_ID.",
-    );
-    process.exit(2);
-  }
-  return { apiKey, publicationId };
+  return loadBeehiivConfig("[backup-beehiiv]");
 }
 
 function sleep(ms: number): Promise<void> {

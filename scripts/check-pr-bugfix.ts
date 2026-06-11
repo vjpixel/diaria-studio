@@ -128,7 +128,7 @@ export async function getPrLabels(
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     }
-    lastError = r.stderr || `exit ${r.status}`;
+    lastError = r.stderr || (r.status === null ? "processo morto por sinal — possível OOM/timeout do runner" : `exit ${r.status}`);
     if (attempt < maxAttempts) {
       const delay = backoffMs[attempt - 1] ?? 30_000;
       console.warn(

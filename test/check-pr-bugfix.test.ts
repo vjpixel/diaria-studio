@@ -196,6 +196,32 @@ describe("#2060 — getPrLabels: retry+backoff em falhas transitórias da API", 
     assert.deepEqual(labels, ["bug"]);
   });
 
+  // #2104: processo morto por sinal (status null) deve ter mensagem distinta de 'exit null'
+  it("#2104 regressão: status null (signal kill) → mensagem 'processo morto por sinal'", async () => {
+    const errors: string[] = [];
+    const mockSpawn: SpawnFn = (_cmd, _args, _opts) => {
+      // status null = processo morto por sinal (ex: OOM, SIGKILL do runner)
+      return { status: null, stdout: "", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => getPrLabels("1", mockSpawn, noopSleep, 1),
+      (err: Error) => {
+        // Mensagem distinta — não deve conter 'exit null'
+        assert.ok(
+          !err.message.includes("exit null"),
+          `mensagem não deve ser 'exit null', foi: ${err.message}`,
+        );
+        assert.match(
+          err.message,
+          /processo morto por sinal/,
+          `mensagem deve indicar signal kill, foi: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
   it("#2082: maxAttempts=0 lança com mensagem coerente (não loop vazio)", async () => {
     const mockSpawn: SpawnFn = (_cmd, _args, _opts) => ({ status: 0, stdout: "bug\n", stderr: "" });
     await assert.rejects(

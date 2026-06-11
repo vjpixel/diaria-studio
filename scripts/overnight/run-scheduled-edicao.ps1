@@ -113,26 +113,43 @@ function Write-RunLog {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Início da run
+# 5. Wrapper: grava no schedule log E no run-log em uma só chamada
 # ---------------------------------------------------------------------------
-Write-ScheduleLog "START edition=$Aammdd pid=$PID"
-Write-RunLog -Level "info" -Message "scheduled-edicao: início" `
-    -Details "{`"edition`":`"$Aammdd`",`"trigger`":`"task-scheduler`"}"
+# #2104: Write-ScheduleLog + Write-RunLog eram sempre chamados em par (4 sites).
+# Write-Log é um wrapper que os une — mesma semântica, menos repetição.
+function Write-Log {
+    param(
+        [string]$ScheduleMsg,
+        [string]$Level,
+        [string]$RunMsg,
+        [string]$Details = "{}"
+    )
+    Write-ScheduleLog $ScheduleMsg
+    Write-RunLog -Level $Level -Message $RunMsg -Details $Details
+}
 
 # ---------------------------------------------------------------------------
-# 6. Verificar se claude está no PATH
+# 6. Início da run
+# ---------------------------------------------------------------------------
+Write-Log `
+    -ScheduleMsg "START edition=$Aammdd pid=$PID" `
+    -Level       "info" `
+    -RunMsg      "scheduled-edicao: início" `
+    -Details     "{`"edition`":`"$Aammdd`",`"trigger`":`"task-scheduler`"}"
+
+# ---------------------------------------------------------------------------
+# 7. Verificar se claude está no PATH
 # ---------------------------------------------------------------------------
 $ClaudePath = Get-Command "claude" -ErrorAction SilentlyContinue
 if (-not $ClaudePath) {
     $Msg = "claude CLI não encontrado no PATH. Abortando. Verifique a instalação do Claude Code."
     Write-Warning $Msg
-    Write-ScheduleLog "ERROR $Msg"
-    Write-RunLog -Level "error" -Message "scheduled-edicao: $Msg"
+    Write-Log -ScheduleMsg "ERROR $Msg" -Level "error" -RunMsg "scheduled-edicao: $Msg"
     exit 1
 }
 
 # ---------------------------------------------------------------------------
-# 7. Invocar claude -p /diaria-edicao AAMMDD --skip newsletter,linkedin,facebook
+# 8. Invocar claude -p /diaria-edicao AAMMDD --skip newsletter,linkedin,facebook
 #
 #    --permission-mode acceptEdits  → aceita edições de arquivos sem prompt
 #    --max-turns 120                → safety net; run termina naturalmente após
@@ -170,14 +187,16 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Registrar resultado
+# 9. Registrar resultado
 # ---------------------------------------------------------------------------
 $RunEnd = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
 
 if ($ExitCode -eq 0) {
-    Write-ScheduleLog "OK    edition=$Aammdd exit=0 end=$RunEnd"
-    Write-RunLog -Level "info" -Message "scheduled-edicao: concluído" `
-        -Details "{`"edition`":`"$Aammdd`",`"exit_code`":0}"
+    Write-Log `
+        -ScheduleMsg "OK    edition=$Aammdd exit=0 end=$RunEnd" `
+        -Level       "info" `
+        -RunMsg      "scheduled-edicao: concluído" `
+        -Details     "{`"edition`":`"$Aammdd`",`"exit_code`":0}"
 } else {
     # Truncar output para evitar linhas gigantes no log (últimas 20 linhas)
     # Normalizar CRLF e trim para evitar tokens com CR a direita
@@ -185,8 +204,10 @@ if ($ExitCode -eq 0) {
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ -ne '' } |
         Select-Object -Last 20) -join " | "
-    Write-ScheduleLog "FAIL  edition=$Aammdd exit=$ExitCode end=$RunEnd tail=$Tail"
-    Write-RunLog -Level "error" -Message "scheduled-edicao: falha (exit $ExitCode)" `
-        -Details "{`"edition`":`"$Aammdd`",`"exit_code`":$ExitCode}"
+    Write-Log `
+        -ScheduleMsg "FAIL  edition=$Aammdd exit=$ExitCode end=$RunEnd tail=$Tail" `
+        -Level       "error" `
+        -RunMsg      "scheduled-edicao: falha (exit $ExitCode)" `
+        -Details     "{`"edition`":`"$Aammdd`",`"exit_code`":$ExitCode}"
     exit $ExitCode
 }

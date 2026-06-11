@@ -43,6 +43,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBeehiivState } from "./lib/publish-state.ts";
+import { loadBeehiivConfig, type BeehiivConfig } from "./lib/beehiiv-config.ts";
 
 loadProjectEnv();
 
@@ -52,10 +53,8 @@ const BEEHIIV_API = process.env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
-interface Config {
-  apiKey: string;
-  publicationId: string;
-}
+// #2104: Config é agora BeehiivConfig importado de scripts/lib/beehiiv-config.ts
+type Config = BeehiivConfig;
 
 interface BeehiivPost {
   id: string;
@@ -82,44 +81,9 @@ export interface VerifyResult {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// #2104: delegado ao helper centralizado em scripts/lib/beehiiv-config.ts
 function loadConfig(): Config {
-  const apiKey = process.env.BEEHIIV_API_KEY;
-  if (!apiKey) {
-    process.stderr.write(
-      "[verify-scheduled-post] BEEHIIV_API_KEY não definida. Configure no .env (veja .env.example).\n",
-    );
-    process.exit(2);
-  }
-
-  const configPath = resolve(ROOT, "platform.config.json");
-  let publicationId = process.env.BEEHIIV_PUBLICATION_ID ?? "";
-  if (!publicationId) {
-    if (!existsSync(configPath)) {
-      process.stderr.write(
-        `[verify-scheduled-post] platform.config.json não encontrado em ${configPath}\n`,
-      );
-      process.exit(2);
-    }
-    try {
-      const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-        beehiiv?: { publicationId?: string };
-      };
-      publicationId = cfg.beehiiv?.publicationId ?? "";
-    } catch (e) {
-      process.stderr.write(
-        `[verify-scheduled-post] platform.config.json inválido: ${(e as Error).message}\n`,
-      );
-      process.exit(2);
-    }
-  }
-  if (!publicationId) {
-    process.stderr.write(
-      "[verify-scheduled-post] publicationId ausente — adicione `beehiiv.publicationId` em platform.config.json ou exporte BEEHIIV_PUBLICATION_ID.\n",
-    );
-    process.exit(2);
-  }
-
-  return { apiKey, publicationId };
+  return loadBeehiivConfig("[verify-scheduled-post]");
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -176,8 +140,9 @@ export function verifyScheduledPost(
   const state = resolveBeehiivState(post, now);
 
   // Derivar timestamps úteis para o report.
+  // #2104: guard > 0 alinhado ao resolveBeehiivState — rejeita null, 0 e negativos.
   const publishDateMs =
-    post.publish_date != null && post.publish_date !== 0
+    post.publish_date != null && post.publish_date > 0
       ? post.publish_date * 1000
       : null;
   const scheduledAtIso =
