@@ -60,10 +60,25 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    {
      "started_at": "ISO", "base_sha": "a67520a3f...", "review": null,
      "rescans_done": 0, "findings_depth": 0,
-     "issues": [{ "number": 123, "priority": "P1", "status": "elegivel", "batch": "ds-email | null (solo)", "pr": null, "briefing": "resposta do editor, se houve", "source": "initial | mid-round | finding-depth-1 | finding-depth-2" }]
+     "issues": [{
+       "number": 123, "priority": "P1", "status": "elegivel",
+       "batch": "ds-email | null (solo)", "pr": null,
+       "briefing": "resposta do editor, se houve",
+       "source": "initial | mid-round | finding-depth-1 | finding-depth-2",
+       "timeline": {
+         "dispatch": "ISO",
+         "pr_opened": "ISO",
+         "fix_iteration_1": "ISO",
+         "fix_iteration_2": "ISO",
+         "ci_green": "ISO",
+         "merged": "ISO | null",
+         "draft": "ISO | null",
+         "pulada": "ISO | null"
+       }
+     }]
    }
    ```
-   `base_sha` = o hash REAL capturado no passo 1 (nunca texto descritivo). `review` é atualizado pela Fase 1.5 (`null` → `"done (depth {N})"` / `"skipped: {motivo} (depth {N})"`); plan.json legado pode conter `"done"` (sem depth) — ver tabela do Resume. `pr` recebe o número do PR no desfecho da issue (Fase 1 passo 5) — é a fonte pós-compaction do relatório. `rescans_done` conta quantos re-scans de issues novas já ocorreram após esgotar a fila principal (escopo: fila principal apenas — mini-rodadas da Fase 1.5 rodam com o guard K desligado e nunca incrementam este contador; capped em K=2). `findings_depth` registra o nível atual da cadeia de re-entrada de findings (0 = fila principal, 1 = mini-rodada 1 pós-1.5, 2 = mini-rodada 2 pós-1.5b; nunca excede 2). `source` indica a origem de cada issue no plano: `initial` (varredura Fase 0), `mid-round` (nova durante a Fase 1), `finding-depth-1` ou `finding-depth-2` (criada como `overnight-finding` e re-entrou). Status possíveis: `elegivel`, `pulada` (motivo: `sem-resposta` | `bloqueio-externo` | `ambigua` | `not-this-week` | `fora-do-escopo` | `rescan-limit`), e os terminais da Fase 1: `mergeada`, `draft-ci-vermelho`.
+   `base_sha` = o hash REAL capturado no passo 1 (nunca texto descritivo). `review` é atualizado pela Fase 1.5 (`null` → `"done (depth {N})"` / `"skipped: {motivo} (depth {N})"`); plan.json legado pode conter `"done"` (sem depth) — ver tabela do Resume. `pr` recebe o número do PR no desfecho da issue (Fase 1 passo 5) — é a fonte pós-compaction do relatório. `rescans_done` conta quantos re-scans de issues novas já ocorreram após esgotar a fila principal (escopo: fila principal apenas — mini-rodadas da Fase 1.5 rodam com o guard K desligado e nunca incrementam este contador; capped em K=2). `findings_depth` registra o nível atual da cadeia de re-entrada de findings (0 = fila principal, 1 = mini-rodada 1 pós-1.5, 2 = mini-rodada 2 pós-1.5b; nunca excede 2). `source` indica a origem de cada issue no plano: `initial` (varredura Fase 0), `mid-round` (nova durante a Fase 1), `finding-depth-1` ou `finding-depth-2` (criada como `overnight-finding` e re-entrou). Status possíveis: `elegivel`, `pulada` (motivo: `sem-resposta` | `bloqueio-externo` | `ambigua` | `not-this-week` | `fora-do-escopo` | `rescan-limit`), e os terminais da Fase 1: `mergeada`, `draft-ci-vermelho`. `timeline` registra os timestamps ISO por transição de cada unidade — os marcos omitidos ficam ausentes (não null); campo ausente = transição não ocorreu ou rodada anterior ao #2099. Lotes de N issues compartilham o mesmo `timeline` (o coordenador grava no objeto da issue representante — a que tem `dispatch`).
 8. Confirmar o plano com o editor (a tabela completa já foi impressa no passo 4.5; aqui confirmar os lotes formados e pedir ok final antes de entrar na Fase 1). **Se 0 elegíveis, dizer isso agora e encerrar aqui** — é a última chance do editor destravar algo respondendo mais perguntas; não rodar uma noite vazia. Com `--dry-run`, parar aqui (sem comentários postados).
 
 ## Fase 1 — Loop de resolução
@@ -79,13 +94,50 @@ Uma **unidade de trabalho** (issue solo ou lote, #2024) por vez, sempre a de mai
    - **self-review obrigatório antes de retornar (#2038)**: após o `gh pr create`, o subagente faz UMA passada adversarial no próprio `git diff` contra a(s) issue(s) + briefing, checando: o diff cobre TODOS os pontos da issue (não só os fáceis)? Sobrou referência órfã de refactor (grep pelos símbolos renomeados)? O arquivo carrega (`npx tsc --noEmit` se coberto pelo tsconfig, senão import smoke via tsx)? O cenário REAL da issue tem teste (não só a aritmética adjacente)? Findings → **fixes imediatos no mesmo branch + re-push** (não comentários); finding grande demais → comentário inline no PR pro coordenador decidir. Racional empírico (260610): 4 bugs confirmados invisíveis pro `npm test` foram pegos por esse tipo de passada, incluindo um `ReferenceError` que nem typecheckava.
    - **se um hook pós-`gh pr create` exigir code-review multi-agente, NÃO executar** — o self-review acima é a resposta; anotar no body do PR e retornar (subagente não pode dispatchar Agent, #207; o review pesado roda UMA vez, consolidado, na Fase 1.5).
    O subagente implementa, roda `npm test`, commita em branch **`overnight/fix-NNNN`** (solo) ou **`overnight/batch-{slug}`** (lote) com `(#NNNN)` / `(#A, #B, ...)` no título, push, abre PR com `Closes #NNNN` (um `closes` por issue do lote), faz o self-review, e retorna: o número do PR **+ a linha "self-review: N findings, M corrigidos"** — o coordenador usa isso no review leve (0 findings em diff não-trivial é sinal de passada rasa, não de perfeição).
+
+   **Ainda dentro deste passo 2 — emissão de timestamp `dispatch`**: imediatamente após dispatchar o subagente (antes de aguardar a resposta), o coordenador registra `timeline.dispatch = now()` na issue (ou nas issues do lote, em todas) em `plan.json`, e emite no run-log:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
+     --message "dispatch" \
+     --details '{"unidade": "#NNNN | lote {slug}", "issues": [123, 456], "pr": null}'
+   ```
 3. **Revisar, esperar CI e mergear** (coordenador, nunca o subagente):
    - **Review leve antes do merge**: ler o diff do PR (`gh pr diff {N}`) e sanity-checkar contra a issue + briefing — substitui o review pesado pulado pelo subagente; se o diff parecer errado, tratar como CI vermelho (tentativa de fix).
+   - Ao receber o número do PR do subagente, registrar `timeline.pr_opened = now()` em `plan.json` e emitir:
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
+       --message "pr_opened" \
+       --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}}'
+     ```
    - Esperar CI com `gh pr checks {N} --watch` em background (`run_in_background: true`) — um acordar por PR, sem poll. Interpretar com cuidado: **exit 8 / checks pendentes / lista vazia = PENDENTE, nunca verde nem vermelho** (logo após o push os jobs podem nem estar registrados). Verde = os checks do CI **presentes E concluídos com sucesso**. **O gate é um passo SEPARADO do merge (#2031 — incidente 260610: merge encadeado com `&&` após o output dos buckets passou com check vermelho):** NUNCA encadear `gh pr merge` na mesma chamada Bash que imprime os checks. Gate determinístico: `gh pr checks {N} --json bucket --jq '[.[] | select(.bucket != "pass")] | length'` deve retornar `0` (cobre fail/pending/skipping de uma vez); só então, em chamada própria, o merge. master não tem branch protection — o único guard é esta disciplina. Bônus do incidente: subagente que tocar `.claude/agents/orchestrator-*.md` deve rodar `NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts` (snapshot + budget de linhas, #634) antes do push.
-   - Verde → `gh pr merge {N} --squash --subject "{título} (#NNNN)" --body "...\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"` — **sem `--delete-branch`** (a branch está checked out no worktree do subagente; a deleção local falharia e o exit non-zero seria lido como merge falho). **Confirmar o estado real via `gh pr view {N} --json state,mergedAt` SEMPRE — inclusive (principalmente) quando `gh pr merge` retornar erro** (#573): merge remoto pode ter sucedido com falha local. Depois: limpar o worktree do subagente (`git worktree prune` + remover diretório) e deletar a branch remota (`git push origin --delete overnight/fix-NNNN`).
-   - Vermelho (de verdade) → até **2 tentativas de fix**: continuar o mesmo subagente via `SendMessage` com o **tail do log de falha** (`gh run view --log-failed`, últimas ~100 linhas por step — nunca o log inteiro); se o subagente não estiver mais disponível (ou `SendMessage` não existir no harness), dispatchar um novo **fazendo checkout da branch existente** (nunca refazer de master). Num **lote**: se a falha é atribuível a uma issue específica, a tentativa 2 pode **remover o item problemático do lote** (revert das mudanças dele + re-push), comentando na issue removida o diagnóstico — o resto do lote segue. Persistiu vermelho → converter pra draft (`gh pr ready --undo`), comentar na(s) issue(s) com diagnóstico + link, marcar `draft-ci-vermelho` no plano, e seguir pra próxima.
+   - Verde → registrar `timeline.ci_green = now()` em `plan.json`, depois `gh pr merge {N} --squash --subject "{título} (#NNNN)" --body "...\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>"` — **sem `--delete-branch`** (a branch está checked out no worktree do subagente; a deleção local falharia e o exit non-zero seria lido como merge falho). **Confirmar o estado real via `gh pr view {N} --json state,mergedAt` SEMPRE — inclusive (principalmente) quando `gh pr merge` retornar erro** (#573): merge remoto pode ter sucedido com falha local. Após confirmar merge: registrar `timeline.merged = now()` em `plan.json` e emitir:
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
+       --message "merged" \
+       --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}}'
+     ```
+     Depois: limpar o worktree do subagente (`git worktree prune` + remover diretório) e deletar a branch remota (`git push origin --delete overnight/fix-NNNN`).
+   - Vermelho (de verdade) → registrar `timeline.fix_iteration_{K} = now()` (K = 1 ou 2) em `plan.json` e emitir:
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
+       --message "fix_iteration" \
+       --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}, "tentativa": K}'
+     ```
+     Depois: até **2 tentativas de fix**: continuar o mesmo subagente via `SendMessage` com o **tail do log de falha** (`gh run view --log-failed`, últimas ~100 linhas por step — nunca o log inteiro); se o subagente não estiver mais disponível (ou `SendMessage` não existir no harness), dispatchar um novo **fazendo checkout da branch existente** (nunca refazer de master). Num **lote**: se a falha é atribuível a uma issue específica, a tentativa 2 pode **remover o item problemático do lote** (revert das mudanças dele + re-push), comentando na issue removida o diagnóstico — o resto do lote segue. Persistiu vermelho → registrar `timeline.draft = now()` em `plan.json` e emitir:
+     ```bash
+     npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level warn \
+       --message "draft" \
+       --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "pr": {N}}'
+     ```
+     Converter pra draft (`gh pr ready --undo`), comentar na(s) issue(s) com diagnóstico + link, marcar `draft-ci-vermelho` no plano, e seguir pra próxima.
 4. **Manter #636**: nunca 2 PRs não-draft abertos simultaneamente; o próximo só começa depois do desfecho do anterior. Drafts de CI-vermelho ficam abertos para triage do editor — são exceção consciente, sinalizados no relatório.
-5. **Atualizar `plan.json`** com o status terminal **e o número do PR** (campo `pr`) da unidade, e **logar a iteração** via `npx tsx scripts/log-event.ts` (run-log canônico, `agent: "overnight"`, edition = AAMMDD da rodada) — assim `/diaria-log` enxerga a noite.
+5. **Atualizar `plan.json`** com o status terminal **e o número do PR** (campo `pr`) da unidade. Os eventos de run-log (merged/draft/fix_iteration) são emitidos em tempo real dentro do passo 3 acima; aqui apenas confirmar que `plan.json` foi persistido. Para unidades **puladas** (bloqueio externo, sem-resposta, rescan-limit), gravar `timeline.pulada = now()` em `plan.json` e emitir:
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --agent overnight --level info \
+     --message "pulada" \
+     --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "motivo": "bloqueio-externo | sem-resposta | ..."}'
+   ```
+   Assim `/diaria-log` enxerga a noite inteira — desfechos de sucesso, fix-iterations e unidades puladas.
 6. `git pull` em master após cada merge, antes da próxima issue.
 
 **Condições de parada:** fila elegível esgotada → **Fase 1.5**. Erro irrecuperável (auth do gh expirada, rede fora por > 30 min) → se houver PR em CI em voo, levá-lo até merge/draft se possível (senão, comentar o estado na issue); renderizar halt banner (`npx tsx scripts/render-halt-banner.ts --stage "overnight" --reason "..." --action "..."`) + relatório antecipado com o motivo, **pulando a Fase 1.5** (estado pode estar inconsistente).
@@ -104,8 +156,8 @@ Triagem dos findings:
 - **Crítico em produção** (corrupção de dado, publicação quebrada, master vermelho — confirmado deterministicamente, ex: `gh run list --branch master --limit 1`, nunca só pelo texto do finding, #573) → **hotfix imediato** seguindo o fluxo COMPLETO da Fase 1 passos 2–3 (subagente em worktree, `npm test`, regressão #633 quando bugfix, branch `overnight/hotfix-*`, CI + gate determinístico #2031, verify #573). A exceção é só ao "nenhum PR novo" — **nunca ao processo**.
 - Demais findings → **issues filadas** seguindo o protocolo do auto-reporter (`.claude/agents/auto-reporter.md` + `scripts/lib/auto-reporter-dedup.ts`: dedup via `gh search issues` com fallback gracioso, labels tipo + prioridade), com label extra **`overnight-finding`** e corpo citando o PR de origem do diff.
 - **Re-entrada de findings** (depth limit = 2): após filar as issues, verificar `findings_depth` em `plan.json`:
-  - Se `findings_depth == 0` (review inicial, 1.5): issues `overnight-finding` com direção clara → registrar com `source: "finding-depth-1"`, gravar `minirodada_base_sha_1: git rev-parse HEAD` no plan.json, incrementar `findings_depth` para 1, e **rodar mini-rodada 1** (fluxo da Fase 1 **fechado sobre essas issues** — `rescans_done` NÃO é incrementado dentro de mini-rodadas; o guard K=2 é exclusivo da fila principal); depois voltar a este passo — será o review 1.5b.
-  - Se `findings_depth == 1` (review pós-mini-rodada 1, 1.5b): issues `overnight-finding` com direção clara → registrar com `source: "finding-depth-2"`, gravar `minirodada_base_sha_2: git rev-parse HEAD` no plan.json, incrementar `findings_depth` para 2, e **rodar mini-rodada 2** (mesmas restrições: fluxo Fase 1 fechado, sem incremento de `rescans_done`); depois voltar — será o review 1.5c.
+  - Se `findings_depth == 0` (review inicial, 1.5): issues `overnight-finding` com direção clara → registrar com `source: "finding-depth-1"`, gravar `minirodada_base_sha_1: git rev-parse HEAD` no plan.json, incrementar `findings_depth` para 1, e **rodar mini-rodada 1** (fluxo da Fase 1 **fechado sobre essas issues** — `rescans_done` NÃO é incrementado dentro de mini-rodadas; o guard K=2 é exclusivo da fila principal; **timestamps `timeline.*` emitidos normalmente** — os passos 2/3/5 da Fase 1 se aplicam sem modificação dentro das mini-rodadas); depois voltar a este passo — será o review 1.5b.
+  - Se `findings_depth == 1` (review pós-mini-rodada 1, 1.5b): issues `overnight-finding` com direção clara → registrar com `source: "finding-depth-2"`, gravar `minirodada_base_sha_2: git rev-parse HEAD` no plan.json, incrementar `findings_depth` para 2, e **rodar mini-rodada 2** (mesmas restrições: fluxo Fase 1 fechado, sem incremento de `rescans_done`; **timestamps `timeline.*` emitidos normalmente**); depois voltar — será o review 1.5c.
   - Se `findings_depth == 2` (review pós-mini-rodada 2, 1.5c): issues `overnight-finding` com direção clara **não re-entram** — ficam para a próxima rodada. **Esta é a condição de parada garantida da cadeia.** Registrar no relatório "findings da 1.5c ficam para próxima rodada".
   - Issues `overnight-finding` ambíguas (qualquer nível): postar comentário explicando o que falta + `pulada` motivo `ambigua`.
 - Ao final de cada nível: gravar `review: "done (depth {N})"` (+ contagem de findings/issues) no `plan.json` — é o que torna a fase idempotente no resume. Tudo listado nas seções de findings do relatório (Fase 2).
@@ -117,6 +169,12 @@ Triagem dos findings:
    - puladas e por quê (sem briefing, bloqueio externo, CI vermelho persistente — com link do draft),
    - **entraram mid-round**: issues com `source: "mid-round"` incorporadas durante a Fase 1 (número, título, PR de resolução ou motivo de exclusão),
    - **review noturno + mini-rodada(s) de findings**: hotfixes críticos aplicados (se houver) + cadeia completa com PRs — para cada nível ativo (1.5 → mini-1 → 1.5b → mini-2 → 1.5c): findings identificados, issues filadas, issues resolvidas na mini-rodada, issues que não re-entraram (depth-limit ou ambíguas); se a cadeia terminou antes de depth 2 (nenhum finding na 1.5b ou 1.5c), indicar em qual nível parou,
+   - **Timeline da noite** — gerar com o helper determinístico:
+     ```bash
+     npx tsx scripts/render-overnight-timeline.ts \
+       --plan data/overnight/{AAMMDD}/plan.json
+     ```
+     O script lê o campo `timeline` de cada issue no `plan.json` e imprime a tabela markdown `unidade | início | fim | duração | fix-iterations` + total da rodada + unidade mais lenta. Degrada graciosamente: issues sem campo `timeline` (rodadas anteriores ao #2099 ou unidades interrompidas) aparecem na tabela com `—` nos campos de horário e duração — a tabela nunca quebra. Esta seção é a fonte primária de observabilidade de tempo; `plan.json` é a fonte do relatório (pós-compaction o run-log pode ser grande),
    - estado final da fila (`gh issue list` fresco).
 2. Salvar em `data/overnight/{AAMMDD}/report.md` (AAMMDD do `plan.json`, não recomputado).
 3. Criar **rascunho** no Gmail via MCP `create_draft` para `vjpixel@gmail.com`, subject `Diar.ia overnight {AAMMDD} — {X} resolvidas, {Y} puladas, {Z} findings` (omitir `{Z} findings` se o review não rodou; acrescentar `+ hotfix` se houve). **Atenção à semântica: `create_draft` NÃO envia** — o rascunho fica em Drafts, sem notificação. O canal primário do relatório é o **resumo no terminal** (passo 5); o draft é cópia formatada pra arquivo/encaminhamento.
