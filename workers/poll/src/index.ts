@@ -340,7 +340,10 @@ async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<
       }
     : null;
 
-  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand), 200);
+  // #2113(a): passa voteTs como cache-buster pra quebrar cache do navegador no link
+  // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
+  // fica com a versão vazia em cache. SÓ neste link (tráfego orgânico inalterado).
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs), 200);
 }
 
 /** Mantém counter agregado stats:{edition} — evita N+1 reads no /stats. */
@@ -423,8 +426,20 @@ async function updateScoreByMonth(
   }
 
   await env.POLL.put(key, JSON.stringify(entry));
-  // #1348: invalidate snapshot — próximo leaderboard read recompute fresh.
-  await invalidateSnapshot(env, monthSlug);
+
+  // #2113(b): upsert da própria entry no snapshot pré-computado do mês.
+  // KV eventual consistency: `list()` em computeSnapshotEntries pode demorar
+  // até ~60s pra enxergar a key recém-gravada → leitor vê "Ainda sem votos"
+  // no próprio ranking. `get()` por key é muito mais confiável (read-your-own-write).
+  // Race entre votos concorrentes: OK — snapshot é cache, recompute corrige.
+  // Em vez de só invalidar, ler + upsert + regravar garante que o próximo
+  // GET /leaderboard já veja o voto sem precisar recomputar.
+  await upsertOwnEntryInSnapshot(env, monthSlug, {
+    email,
+    nickname: entry.nickname ?? null,
+    correct: entry.correct,
+    total: entry.total,
+  });
 }
 
 /**
@@ -730,6 +745,46 @@ export async function getOrComputeSnapshot(
  */
 async function invalidateSnapshot(env: Env, slug: string): Promise<void> {
   await env.POLL.delete(`leaderboard-snapshot:${slug}`);
+}
+
+/**
+ * #2113(b): lê o snapshot do slug, faz upsert da entry do leitor e regravo.
+ * Se não houver snapshot (primeiro voto do mês), cria com só essa entry.
+ * Se o snapshot estiver corrompido, deleta e deixa o recompute lazy regenerar.
+ *
+ * Race entre votos concorrentes: última escrita vence. Snapshot é cache;
+ * o próximo recompute produz o estado correto de qualquer forma.
+ */
+export async function upsertOwnEntryInSnapshot(
+  env: Env,
+  slug: string,
+  own: SnapshotEntry,
+): Promise<void> {
+  const snapKey = `leaderboard-snapshot:${slug}`;
+  const cached = await env.POLL.get(snapKey);
+  let entries: SnapshotEntry[];
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
+      entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    } catch {
+      // Snapshot corrompido — deleta e deixa recompute lazy reconstruir.
+      await env.POLL.delete(snapKey);
+      return;
+    }
+  } else {
+    entries = [];
+  }
+  // Upsert: substitui entry existente do mesmo email ou appends.
+  const emailLower = own.email.toLowerCase();
+  const idx = entries.findIndex((e) => e.email.toLowerCase() === emailLower);
+  if (idx >= 0) {
+    entries[idx] = { ...entries[idx], ...own, email: emailLower };
+  } else {
+    entries.push({ ...own, email: emailLower });
+  }
+  const payload = { entries, computed_at: new Date().toISOString() };
+  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 86400 });
 }
 
 /**
@@ -1110,6 +1165,11 @@ export function votePageHtml(
   resultImages?: VoteResultImages | null,
   leaderboardSlug?: string | null,
   brand: Brand = "diaria",
+  /** #2113(a): cache-buster timestamp pro link "Ver leaderboard" logo após o voto.
+   * Quando fornecido, apêndice `&v={cacheBusterTs}` só neste link — quebra o
+   * cache do navegador que cacheou a página de leaderboard antes do voto.
+   * Só passado por handleVote no resultado do voto (não afeta tráfego orgânico). */
+  cacheBusterTs?: string | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -1134,6 +1194,12 @@ export function votePageHtml(
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
+
+  // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
+  const leaderboardBase = leaderboardHref(brand, leaderboardSlug);
+  const leaderboardLink = cacheBusterTs
+    ? `${leaderboardBase}${leaderboardBase.includes("?") ? "&" : "?"}v=${cacheBusterTs}`
+    : leaderboardBase;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1197,7 +1263,7 @@ export function votePageHtml(
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${formHtml}
-<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardHref(brand, leaderboardSlug)}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 </body>
 </html>`;
 }
@@ -1439,10 +1505,15 @@ export default {
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     if (path.startsWith("/leaderboard/") && request.method === "GET") {
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
-      // #2006/#2018: auto-heal: links mensais já enviados com leaderboardPeriod="year"
-      // rendem visão do ANO — emails antigos se corrigem sozinhos.
+      // #2114(b): auto-heal: links mensais já enviados com leaderboardPeriod="year"
+      // redirecionam 301 pra URL canônica anual. Antes renderizava in-place
+      // (barra de endereço mostrava /leaderboard/2026-05 com título "Leaderboard
+      // de 2026" — inconsistente). Com 301, emails antigos também ficam corrigidos.
       if (monthMatch && BRAND_INFO[brand].leaderboardPeriod === "year") {
-        return handleLeaderboardByYear(monthMatch[1].slice(0, 4), bEnv, brand);
+        const yearStr = monthMatch[1].slice(0, 4);
+        const target = new URL(request.url);
+        target.pathname = `/leaderboard/${yearStr}`;
+        return Response.redirect(target.toString(), 301);
       }
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
