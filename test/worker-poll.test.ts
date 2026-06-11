@@ -402,6 +402,23 @@ describe("editionToMonthSlug (#1345)", () => {
     assert.equal(editionToMonthSlug("261301"), null);
     assert.equal(editionToMonthSlug("260001"), null);
   });
+
+  // #2115: ciclo clarice YYMM-MM → slug do mês do CONTEÚDO (bucket leaderboard)
+  it("ciclo YYMM-MM → slug do mês do CONTEÚDO (2026-05 pra 2605-06)", () => {
+    assert.equal(editionToMonthSlug("2605-06"), "2026-05");
+    assert.equal(editionToMonthSlug("2604-05"), "2026-04");
+    assert.equal(editionToMonthSlug("2612-01"), "2026-12"); // dezembro→janeiro
+  });
+
+  it("ciclo YYMM-MM com mês inválido → null", () => {
+    assert.equal(editionToMonthSlug("2600-01"), null); // mês conteúdo 0
+    assert.equal(editionToMonthSlug("2613-02"), null); // mês conteúdo 13
+  });
+
+  it("legado 260531 e ciclo 2605-06 produzem o MESMO bucket 2026-05 (back-compat)", () => {
+    assert.equal(editionToMonthSlug("260531"), editionToMonthSlug("2605-06"),
+      "voto legado (260531) e voto novo (2605-06) devem cair no mesmo bucket de leaderboard");
+  });
 });
 
 describe("parseMonthSlug (#1345)", () => {

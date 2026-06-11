@@ -15,6 +15,7 @@ import {
   parseEiaLegend,
   renderEia,
   draftToEmail,
+  eiaEditionFromYymm,
 } from "../scripts/lib/monthly-render.ts";
 
 describe("parseEiaLegend (#1914)", () => {
@@ -114,5 +115,30 @@ describe("draftToEmail dispatch do É IA? com rótulo longo (#1914)", () => {
       !html.includes("Selecionar manualmente"),
       "o placeholder do draft não pode vazar pro email",
     );
+  });
+});
+
+// #2115: eiaEditionFromYymm agora emite o ciclo {YYMM}-{MM} em vez de AAMMDD
+describe("eiaEditionFromYymm (#2115)", () => {
+  it("emite formato de ciclo YYMM-MM", () => {
+    assert.equal(eiaEditionFromYymm("2605"), "2605-06");
+    assert.equal(eiaEditionFromYymm("2604"), "2604-05");
+    assert.equal(eiaEditionFromYymm("2601"), "2601-02");
+  });
+
+  it("dezembro → janeiro do mês seguinte (overflow correto)", () => {
+    assert.equal(eiaEditionFromYymm("2612"), "2612-01");
+  });
+
+  it("renderEia usa o ciclo no URL de voto (edition=2605-06)", () => {
+    const html = renderEia(
+      "É IA? — DESTAQUE DO MÊS\n[placeholder]",
+      "2605",
+      "https://x/A.jpg",
+      "https://x/B.jpg",
+      "Crédito.",
+    );
+    assert.ok(html.includes("edition=2605-06"), "URL de voto deve ter o ciclo 2605-06");
+    assert.ok(!html.includes("edition=260531"), "não deve usar mais o formato legado AAMMDD");
   });
 });

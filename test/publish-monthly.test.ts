@@ -444,23 +444,29 @@ Descrição do segundo item.`;
   });
 });
 
-// ─── eiaEditionFromYymm ────────────────────────────────────────────────────
+// ─── eiaEditionFromYymm (#2115) ───────────────────────────────────────────
+// #2115: agora emite ciclo YYMM-MM em vez de AAMMDD (último dia do mês legado).
+// Anterior: "2604" → "260430"; Novo: "2604" → "2604-05".
 
-describe("eiaEditionFromYymm", () => {
-  it("último dia do mês: 30 de abril (260430)", () => {
-    assert.equal(eiaEditionFromYymm("2604"), "260430");
+describe("eiaEditionFromYymm (#2115 — ciclo YYMM-MM)", () => {
+  it("emite ciclo YYMM-MM: abril (2604) → 2604-05", () => {
+    assert.equal(eiaEditionFromYymm("2604"), "2604-05");
   });
 
-  it("último dia: 31 de janeiro (260131)", () => {
-    assert.equal(eiaEditionFromYymm("2601"), "260131");
+  it("emite ciclo YYMM-MM: janeiro (2601) → 2601-02", () => {
+    assert.equal(eiaEditionFromYymm("2601"), "2601-02");
   });
 
-  it("fevereiro não-bissexto (250228)", () => {
-    assert.equal(eiaEditionFromYymm("2502"), "250228");
+  it("emite ciclo YYMM-MM: fevereiro não-bissexto (2502) → 2502-03", () => {
+    assert.equal(eiaEditionFromYymm("2502"), "2502-03");
   });
 
-  it("fevereiro bissexto (240229)", () => {
-    assert.equal(eiaEditionFromYymm("2402"), "240229");
+  it("emite ciclo YYMM-MM: fevereiro bissexto (2402) → 2402-03", () => {
+    assert.equal(eiaEditionFromYymm("2402"), "2402-03");
+  });
+
+  it("dezembro → janeiro (overflow correto): 2612 → 2612-01", () => {
+    assert.equal(eiaEditionFromYymm("2612"), "2612-01");
   });
 });
 

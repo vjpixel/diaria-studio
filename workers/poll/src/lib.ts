@@ -87,8 +87,22 @@ export function isValidEdition(set: string[] | null, edition: string): boolean {
  * Pure: AAMMDD → "YYYY-MM" (mês de publicação). Usado pra computar a key
  * `score-by-month:{slug}:{email}` no write path (#1345). Assume `20YY`
  * (consistente com formatEditionDate). Retorna null se input mal-formado.
+ *
+ * #2115: aceita também o formato de ciclo Clarice `YYMM-MM` (ex: `2605-06`),
+ * onde YYMM é o mês do CONTEÚDO e MM é o mês do ENVIO. O bucket do leaderboard
+ * usa o mês do CONTEÚDO (2026-05), mantendo o mesmo bucket do formato legado
+ * 260531 que a AAMMDD-branch usava. Back-compat: 260531 segue funcionando.
  */
 export function editionToMonthSlug(edition: string): string | null {
+  // #2115: ciclo Clarice YYMM-MM (ex: "2605-06") → slug do mês do CONTEÚDO
+  if (/^\d{4}-\d{2}$/.test(edition)) {
+    const yy = edition.slice(0, 2);
+    const mm = edition.slice(2, 4);
+    const mmNum = parseInt(mm, 10);
+    if (mmNum < 1 || mmNum > 12) return null;
+    return `20${yy}-${mm}`;
+  }
+  // Formato legado AAMMDD (diária + mensal pre-#2115)
   if (!/^\d{6}$/.test(edition)) return null;
   const yy = edition.slice(0, 2);
   const mm = edition.slice(2, 4);

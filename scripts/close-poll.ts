@@ -11,7 +11,10 @@
  *   npx tsx scripts/close-poll.ts --edition 260502 --answer A  # override manual
  *
  * Para o É IA? mensal (fluxo multi-campanha Clarice):
- *   npx tsx scripts/close-poll.ts --edition 260531 --brand clarice --cycle 2605-06
+ *   npx tsx scripts/close-poll.ts --edition 2605-06 --brand clarice --cycle 2605-06
+ *
+ * #2115: --edition agora aceita o formato de ciclo 2605-06 (novo canônico)
+ * além do legado AAMMDD 260531. Ambos funcionam: as chaves KV são opacas.
  *
  * O --cycle é obrigatório quando --brand clarice para gravar o marker de gabarito
  * em data/monthly/{cycle}/_internal/.close-poll-clarice.json. Este marker é
