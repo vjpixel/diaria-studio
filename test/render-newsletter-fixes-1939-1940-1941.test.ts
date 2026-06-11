@@ -228,16 +228,8 @@ describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parág
     assert.ok(bodyParas >= 2, `esperava ≥2 parágrafos de corpo, achou ${bodyParas}`);
   });
 
-  it("corpo de 1 parágrafo COM imagem usa estilo DS body, sem marcador (260611)", () => {
-    const html = renderMidCallout(
-      "📚 Curadoria de livros. [Confira](https://livros.diaria.workers.dev).",
-      "https://img.example/p.jpg",
-    );
-    assert.ok(!/font-weight:600/.test(html.split("Ver os livros")[0]), "corpo sem bold 600 (imagem já identifica a promo)");
-    assert.match(html, /line-height:1\.62/, "corpo usa line-height DS 1.62");
-    assert.ok(!html.includes("📚"), "marcador removido");
-    assert.ok(html.includes("Ver os livros"), "botão CTA presente");
-  });
+  // Teste canônico de single-parágrafo COM imagem em render-newsletter-midcallout.test.ts
+  // (removido daqui para evitar duplicata — #2067 Point 3).
 });
 
 describe("#1942 review #3 — strip do marcador 📣 no callout de 1 parágrafo", () => {

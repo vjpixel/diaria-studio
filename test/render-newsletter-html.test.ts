@@ -1093,6 +1093,30 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
     assert.match(html, /<b>Responda<\/b>/);
   });
 
+  it("#2080 — SORTEIO: kicker fora do box, corpo dentro de painel bege (DS)", () => {
+    const html = renderHTML(fixt({
+      sorteio: "Participe e ganhe uma caneca.\n\nResponda a esta edição.",
+    }));
+    // kicker "Sorteio" presente (DS ● sem emoji)
+    assert.match(html, /Sorteio/);
+    // conteúdo está presente
+    assert.match(html, /Participe e ganhe uma caneca/);
+    assert.match(html, /Responda a esta edição/);
+    // box painel DS: fundo SURFACE (#EBE5D0) + border-radius:12px (inline style email)
+    assert.match(html, /background:#EBE5D0.*border-radius:12px|border-radius:12px.*background:#EBE5D0/, "caixa painel bege");
+    // conteúdo do sorteio está DENTRO do box (vem depois do background #EBE5D0)
+    const boxIdx = html.indexOf("background:#EBE5D0");
+    assert.ok(boxIdx > -1, "box markup presente");
+    assert.ok(html.indexOf("Participe e ganhe uma caneca") > boxIdx, "texto dentro do box");
+  });
+
+  it("#2080 bug fix — sorteio só-whitespace não emite box vazio", () => {
+    // guard: content.sorteio?.trim() — whitespace-only não deve renderizar nada
+    const html = renderHTML(fixt({ sorteio: "   " }));
+    assert.ok(!html.includes("background:#EBE5D0"), "box vazio não deve aparecer");
+    assert.ok(!html.includes("<!-- Sorteio -->"), "bloco sorteio não deve ser emitido");
+  });
+
   it("inclui PARA ENCERRAR com pills no HTML quando presente", () => {
     const html = renderHTML(fixt({
       encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
