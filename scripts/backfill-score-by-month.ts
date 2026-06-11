@@ -34,6 +34,7 @@
  */
 
 import "dotenv/config";
+import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -120,14 +121,9 @@ async function kvDelete(key: string): Promise<void> {
   }
 }
 
-function editionToMonthSlug(edition: string): string | null {
-  if (!/^\d{6}$/.test(edition)) return null;
-  const yy = edition.slice(0, 2);
-  const mm = edition.slice(2, 4);
-  const mmNum = parseInt(mm, 10);
-  if (mmNum < 1 || mmNum > 12) return null;
-  return `20${yy}-${mm}`;
-}
+// #2123: editionToMonthSlug importado da fonte canônica (workers/poll/src/lib.ts —
+// módulo puro, sem deps de runtime do Worker). A cópia local anterior divergiu
+// silenciosamente no #2115; import direto elimina a classe de bug.
 
 async function main(): Promise<void> {
   console.log(`[backfill] mode: ${dryRun ? "DRY-RUN" : "WRITE"}${clearFirst ? " (with --clear-first)" : ""}`);
