@@ -84,10 +84,19 @@ do template, send test email, clicar Schedule — verificar via `javascript_tool
 na frente, cliques reais funcionaram normalmente). Antes do halt, tentar um
 **screenshot-probe** para distinguir stale de frozen:
 
-1. Chamar `mcp__claude-in-chrome__computer` com `action: "screenshot"`.
-2. **Se o screenshot retornar a página renderizada em ≤ 10s** → `visibilityState` é
+1. **Esconder `img/iframe/video` via `javascript_tool`** para reduzir carga CDP antes do
+   screenshot (workaround pra páginas pesadas — previne timeout falso positivo):
+   ```js
+   document.querySelectorAll('img,iframe,video').forEach(el => el.style.visibility='hidden');
+   ```
+2. Chamar `mcp__claude-in-chrome__computer` com `action: "screenshot"`.
+3. **Restaurar** os elementos escondidos:
+   ```js
+   document.querySelectorAll('img,iframe,video').forEach(el => el.style.visibility='');
+   ```
+4. **Se o screenshot retornar a página renderizada em ≤ 10s** → `visibilityState` é
    stale; a aba está visível. Prosseguir com os cliques normalmente — NÃO haltar.
-3. **Se o screenshot demorar > 10s ou falhar com timeout/CDP error** → frozen real.
+5. **Se o screenshot demorar > 10s ou falhar com timeout/CDP error** → frozen real.
    Renderizar halt banner e aguardar:
    ```bash
    npx tsx scripts/render-halt-banner.ts \
@@ -104,8 +113,7 @@ na frente, cliques reais funcionaram normalmente). Antes do halt, tentar um
 
 Sintomas do frozen real (incidente 260610, ~10 min de debug): cliques via `computer`
 chegam como no-op (zero pointerdown/click na página) e screenshots dão timeout
-no CDP ("renderer may be frozen"). Workaround pra screenshot em página pesada:
-esconder `img/iframe/video` via JS antes de capturar, restaurar depois.
+no CDP ("renderer may be frozen").
 
 ### Config 1x da publicação — rodapé branco (#1944)
 
@@ -691,7 +699,9 @@ npx tsx scripts/verify-scheduled-post.ts \
 
 **Banner pré-Schedule (exibir ANTES de pedir confirmação ao editor):**
 
-Antes de pedir ao editor que clique em Schedule, exibir o alvo explícito:
+Antes de pedir ao editor que clique em Schedule, exibir o alvo explícito.
+`{data_alvo}` = data da edição derivada do `edition_dir` (ex: `260612` → `12/06/2026`):
+
 ```
 Próximo passo: clicar em Schedule → selecionar AMANHÃ {data_alvo} → 06:00 BRT.
 NÃO clique em "Publish now" — isso dispara envio imediato pra toda a audiência.
@@ -703,7 +713,10 @@ O script já atualiza `05-published.json` (status → published, published_at).
 Executar obrigatoriamente:
 
 ```bash
-# 2. refresh-dedup — regra "publicação manual requer refresh-dedup" do CLAUDE.md
+# 2. close-poll — finalizar scores de É IA? (regra CLAUDE.md: "Após publicar, rodar close-poll.ts")
+npx tsx scripts/close-poll.ts --edition {AAMMDD}
+
+# 3. refresh-dedup — regra "publicação manual requer refresh-dedup" do CLAUDE.md
 npx tsx scripts/refresh-dedup.ts
 ```
 

@@ -223,4 +223,36 @@ describe("verifyScheduledPost (#2074)", () => {
       cleanupDir(dir);
     }
   });
+
+  it("D3 regressão: 05-published.json contendo null não apaga campos existentes", () => {
+    // JSON.parse("null") retorna null; { ...null, status } produz {} silenciosamente.
+    // O guard typeof previne isso — verifica que campos originais são preservados.
+    const dir = makeTmpEditionDir({ withPublishedJson: false });
+    try {
+      // Arquivo corrompido com conteúdo "null"
+      const internalDir = resolve(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(resolve(internalDir, "05-published.json"), "null", "utf8");
+
+      const pastDate = Math.floor(NOW.getTime() / 1000) - 100;
+      const post = {
+        id: "post_corrupt",
+        status: "confirmed",
+        publish_date: pastDate,
+      };
+      // Não deve lançar, deve atualizar status mesmo com arquivo corrompido
+      const result = verifyScheduledPost(post, dir, NOW);
+      assert.equal(result.immediate_send_detected, true);
+      assert.equal(result.published_json_updated, true);
+
+      const updated = JSON.parse(readFileSync(resolve(internalDir, "05-published.json"), "utf8")) as Record<string, unknown>;
+      assert.equal(updated.status, "published");
+      assert.ok(updated.published_at, "published_at deve estar presente");
+      // Campos originais eram null (arquivo corrompido) — garantir que não há
+      // draft_url/title fantasmas de null espalhados
+      assert.equal(Object.keys(updated).sort().join(","), "published_at,status");
+    } finally {
+      cleanupDir(dir);
+    }
+  });
 });

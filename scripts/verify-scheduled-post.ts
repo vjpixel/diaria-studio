@@ -205,7 +205,14 @@ export function verifyScheduledPost(
 
     if (publishedPath) {
       try {
-        const existing = JSON.parse(readFileSync(publishedPath, "utf8")) as Record<string, unknown>;
+        const parsed = JSON.parse(readFileSync(publishedPath, "utf8")) as unknown;
+        // Guard: JSON.parse("null") retorna null; spread de null descarta todos os campos
+        // existentes silenciosamente. Tratar arquivo corrompido como {} preservando semântica
+        // de "só sobrescrever status + published_at".
+        const existing: Record<string, unknown> =
+          parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : {};
         const updated = {
           ...existing,
           status: "published",

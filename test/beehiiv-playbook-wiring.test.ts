@@ -151,5 +151,30 @@ describe("beehiiv-playbook wiring de helpers (#1433)", () => {
       /refresh-dedup/,
       "playbook deve prescrever refresh-dedup no desfecho de envio imediato",
     );
+    // close-poll.ts é obrigatório no desfecho B (CLAUDE.md: "Após publicar, rodar close-poll.ts")
+    // Garante que a reconciliação inclui close-poll, não só refresh-dedup.
+    assert.match(
+      playbook,
+      /close-poll/,
+      "playbook deve prescrever close-poll.ts no desfecho de envio imediato",
+    );
+  });
+
+  it("#2075: screenshot-probe integra workaround hide img/iframe antes do screenshot", () => {
+    // B1 regressão: o workaround de esconder img/iframe/video deve ser step 1
+    // do screenshot-probe, não um afterthought após a decisão. Um probe em página
+    // pesada sem ocultar os elementos pode falhar pelo mesmo motivo que a tela frozen.
+    const preflight = playbook.match(/### Preflight de visibilidade[\s\S]*?(?=\n### |\n## |$)/);
+    assert.ok(preflight, "seção preflight deve existir");
+    const pf = preflight![0];
+    // O workaround de hide deve aparecer ANTES da chamada do screenshot
+    const hideIdx = pf.indexOf("img/iframe/video");
+    const screenshotIdx = pf.indexOf('action: "screenshot"');
+    assert.ok(hideIdx >= 0, "preflight deve mencionar hide img/iframe/video");
+    assert.ok(screenshotIdx >= 0, "preflight deve mencionar screenshot");
+    assert.ok(
+      hideIdx < screenshotIdx,
+      "hide img/iframe/video deve aparecer ANTES da chamada screenshot (workaround pré-probe)",
+    );
   });
 });
