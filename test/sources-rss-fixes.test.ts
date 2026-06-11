@@ -120,7 +120,7 @@ describe("sources RSS fixes (#1266)", () => {
   // WebSearch `site:`, mas RSS limpo + URL apontando pro domínio atual.
   // LangChain removida desta lista em #2077: ganhou RSS válido (rss.xml no novo domínio).
   // OpenAI Cookbook e Weights & Biases removidas desta lista em #2077: substituídas por
-  // Simon Willison's Weblog e The Gradient (fontes ativas com RSS verificado).
+  // Machine Learning Mastery e Maarten Grootendorst (fontes ativas com RSS verificado, ≤60 dias).
   const SOURCES_1862_NO_RSS: Array<{ name: string; url: string }> = [];
   for (const { name, url } of SOURCES_1862_NO_RSS) {
     it(`#1862: ${name} sem RSS (feed morto) + URL no domínio atual`, () => {
@@ -144,20 +144,20 @@ describe("sources RSS fixes (#1266)", () => {
     );
   });
 
-  // #2077: Simon Willison estava no editorial-blocklist (#1760) → não pode ser fonte.
-  // Substituição de OpenAI Cookbook: Chip Huyen (feed válido, low_cadence=1).
-  it("#2077: Chip Huyen adicionada com RSS verificado (substitui OpenAI Cookbook)", () => {
-    const s = byName.get("Chip Huyen (Blog)");
-    assert.ok(s, "Chip Huyen deve existir em sources.md");
-    assert.equal(s!.rss, "https://huyenchip.com/feed.xml", "RSS válido verificado");
-    assert.equal(s!.url, "https://huyenchip.com/blog", "URL principal correta");
+  // #2077 (corrigido PR #2117): Chip Huyen estava seca (último post jan/2025, 17 meses)
+  // e The Gradient também (último post fev/2026, >60 dias). Substituídas por fontes ativas.
+  it("#2077: Machine Learning Mastery adicionada com RSS ativo (substitui OpenAI Cookbook)", () => {
+    const s = byName.get("Machine Learning Mastery");
+    assert.ok(s, "Machine Learning Mastery deve existir em sources.md");
+    assert.equal(s!.rss, "https://machinelearningmastery.com/feed/", "RSS válido verificado (posts diários)");
+    assert.equal(s!.url, "https://machinelearningmastery.com/", "URL principal correta");
   });
 
-  it("#2077: The Gradient adicionada com RSS verificado (substitui W&B)", () => {
-    const s = byName.get("The Gradient");
-    assert.ok(s, "The Gradient deve existir em sources.md");
-    assert.equal(s!.rss, "https://thegradient.pub/rss/", "RSS verificado (post Feb/2026)");
-    assert.equal(s!.url, "https://thegradient.pub/", "URL principal correta");
+  it("#2077: Maarten Grootendorst adicionada com RSS ativo (substitui W&B)", () => {
+    const s = byName.get("Maarten Grootendorst (Visual ML)");
+    assert.ok(s, "Maarten Grootendorst deve existir em sources.md");
+    assert.equal(s!.rss, "https://newsletter.maartengrootendorst.com/feed", "RSS verificado (post Jun/2026)");
+    assert.equal(s!.url, "https://newsletter.maartengrootendorst.com/", "URL principal correta");
   });
 
   it("#2077: LangChain Blog ganhou RSS válido no novo domínio", () => {

@@ -197,12 +197,11 @@
 - RSS: https://aws.amazon.com/blogs/machine-learning/feed/
 - Use Melhor: sim
 
-### Chip Huyen (Blog)
-- URL: https://huyenchip.com/blog
-- Site query: `site:huyenchip.com`
-- RSS: https://huyenchip.com/feed.xml
+### Machine Learning Mastery
+- URL: https://machinelearningmastery.com/
+- Site query: `site:machinelearningmastery.com`
+- RSS: https://machinelearningmastery.com/feed/
 - Use Melhor: sim
-- Low cadence: sim
 
 ### Sebastian Raschka (Ahead of AI)
 - URL: https://magazine.sebastianraschka.com/
@@ -240,8 +239,9 @@
 - Site query: `site:hub.asimov.academy`
 - Use Melhor: sim
 
-### The Gradient
-- URL: https://thegradient.pub/
-- Site query: `site:thegradient.pub`
-- RSS: https://thegradient.pub/rss/
+### Maarten Grootendorst (Visual ML)
+- URL: https://newsletter.maartengrootendorst.com/
+- Site query: `site:newsletter.maartengrootendorst.com`
+- RSS: https://newsletter.maartengrootendorst.com/feed
 - Use Melhor: sim
+- Low cadence: sim
