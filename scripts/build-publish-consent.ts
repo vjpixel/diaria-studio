@@ -4,7 +4,7 @@
  *
  * CLI wrapper que escreve `_internal/05-publish-consent.json` invocando
  * o helper `scripts/lib/publish-consent.ts`. Substitui o JSON literal
- * inline no bash do orchestrator-stage-4.md (review session 2026-05-14:
+ * inline no bash do orchestrator-stage-5.md (review session 2026-05-14:
  * helper TS estava criado mas nunca chamado em prod — layering issue).
  *
  * Uso:
@@ -75,7 +75,7 @@ function usage(): string {
     "",
     "Modes (exatamente um):",
     "  --auto-approve              auto em todos os canais (source: auto_approve_default)",
-    "  --default-auto              tudo auto, default de Stage 4 (#1326) — source: default_auto",
+    "  --default-auto              tudo auto, default de Stage 5 (#1326) — source: default_auto",
     "  --default-manual            manual em todos os canais (LEGACY — source: default_manual)",
     "  --skip <channels>           tudo auto exceto canais listados (--skip newsletter,linkedin)",
     "                              canais válidos: newsletter, linkedin, facebook",

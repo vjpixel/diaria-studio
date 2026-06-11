@@ -1,10 +1,13 @@
 /**
- * test/pipeline-sentinel-stage-status.test.ts (#1563)
+ * test/pipeline-sentinel-stage-status.test.ts (#1563, #1694)
  *
  * Regressão: orchestrator esquece `update-stage-status --status done` no fim
  * do stage, mas escreve sentinel `.step-N-done.json` (invariante do gate).
  * Sentinel write deve auto-atualizar stage-status pra "done" quando row está
  * em "running".
+ *
+ * #1694: guards de edition-report.html movidos de Stage 4 → Stage 5 após split
+ * Revisão (Stage 4) + Publicação (Stage 5).
  */
 
 import { describe, it } from "node:test";
@@ -99,13 +102,14 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
     }
   });
 
-  it("step fora do range de stages (0, 5) → no-op silencioso", () => {
+  it("step fora do range de stages (0-5) → no-op silencioso (#1694: range agora 0-5)", () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-status-range-"));
     try {
       const doc = makeInitialDoc("260528");
       saveDoc(dir, doc);
 
-      assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", 5), false);
+      // 6 está fora do range 0-5
+      assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", 6), false);
       assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", -1), false);
     } finally {
       rmSync(dir, { recursive: true });
@@ -123,8 +127,33 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
     }
   });
 
-  it("Stage 4 running sem edition-report.html → no-op (respeita gate #1530)", () => {
+  it("Stage 5 (Publicação) running sem edition-report.html → no-op (respeita gate #1530, #1694)", () => {
+    // #1694: guard movida de Stage 4 → Stage 5 após split Revisão+Publicação
     const dir = mkdtempSync(join(tmpdir(), "sentinel-status-gate-"));
+    try {
+      let doc = makeInitialDoc("260528");
+      doc = applyUpdate(doc, {
+        stage: 5,
+        status: "running",
+        start: "2026-05-27T20:00:00Z",
+      });
+      saveDoc(dir, doc);
+
+      // No edition-report.html written
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 5);
+      assert.equal(updated, false, "gate #1530 deve bloquear Stage 5");
+
+      const reloaded = loadDoc(dir, "260528");
+      const stage5 = reloaded.rows.find((r) => r.stage === 5);
+      assert.equal(stage5!.status, "running", "row permanece running");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("Stage 4 (Revisão) running sem edition-report.html → marca done (#1694: sem guard)", () => {
+    // Stage 4 = Revisão — não tem o guard de edition-report; pode marcar done diretamente
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-status-stage4-"));
     try {
       let doc = makeInitialDoc("260528");
       doc = applyUpdate(doc, {
@@ -134,24 +163,25 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
       });
       saveDoc(dir, doc);
 
-      // No edition-report.html written
-      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 4);
-      assert.equal(updated, false, "gate #1530 deve bloquear");
+      // Without edition-report.html — Stage 4 should still allow done
+      const nowMs = new Date("2026-05-27T21:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 4, nowMs);
+      assert.equal(updated, true, "Stage 4 (Revisão) não tem guard de edition-report");
 
       const reloaded = loadDoc(dir, "260528");
       const stage4 = reloaded.rows.find((r) => r.stage === 4);
-      assert.equal(stage4!.status, "running", "row permanece running");
+      assert.equal(stage4!.status, "done");
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("Stage 4 running com edition-report.html → marca done", () => {
+  it("Stage 5 running com edition-report.html → marca done", () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-status-with-report-"));
     try {
       let doc = makeInitialDoc("260528");
       doc = applyUpdate(doc, {
-        stage: 4,
+        stage: 5,
         status: "running",
         start: "2026-05-27T20:00:00Z",
       });
@@ -164,12 +194,12 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
       );
 
       const nowMs = new Date("2026-05-27T22:00:00Z").getTime();
-      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 4, nowMs);
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 5, nowMs);
       assert.equal(updated, true);
 
       const reloaded = loadDoc(dir, "260528");
-      const stage4 = reloaded.rows.find((r) => r.stage === 4);
-      assert.equal(stage4!.status, "done");
+      const stage5 = reloaded.rows.find((r) => r.stage === 5);
+      assert.equal(stage5!.status, "done");
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -201,15 +231,16 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
   });
 });
 
-describe("backfill-stage-status helper logic (#1563)", () => {
+describe("backfill-stage-status helper logic (#1563, #1694)", () => {
   // Backfill CLI uses spawnSync internally; for direct unit testing,
   // we exercise the same logic — load + detect + apply.
-  it("running com sentinel manualmente escrito → backfill com completed_at", () => {
+  it("Stage 5 running com sentinel + edition-report → backfill com completed_at", () => {
+    // (#1694: backfill usa Stage 5 pois é a Publicação com guard de edition-report)
     const dir = mkdtempSync(join(tmpdir(), "backfill-stage-"));
     try {
       let doc = makeInitialDoc("260528");
       doc = applyUpdate(doc, {
-        stage: 4,
+        stage: 5,
         status: "running",
         start: "2026-05-27T20:51:00Z",
       });
@@ -218,14 +249,14 @@ describe("backfill-stage-status helper logic (#1563)", () => {
       // Escrever sentinel com completed_at fixo (simulando estado pre-fix)
       mkdirSync(join(dir, "_internal"), { recursive: true });
       writeFileSync(
-        join(dir, "_internal", ".step-4-done.json"),
+        join(dir, "_internal", ".step-5-done.json"),
         JSON.stringify({
-          step: 4,
+          step: 5,
           completed_at: "2026-05-27T22:00:00Z",
           outputs: [],
         }),
       );
-      // Real-world: stage 4 stuck running era post-publicação completa —
+      // Stage 5 (Publicação) stuck running era post-publicação completa —
       // edition-report.html já existia. Backfill respeita gate #1530.
       writeFileSync(
         join(dir, "_internal", "edition-report.html"),
@@ -235,18 +266,18 @@ describe("backfill-stage-status helper logic (#1563)", () => {
       // O backfill replica a lógica do autoUpdate, mas usa completed_at do
       // sentinel como `end` ao invés de Date.now()
       const sentinel = JSON.parse(
-        readFileSync(join(dir, "_internal", ".step-4-done.json"), "utf8"),
+        readFileSync(join(dir, "_internal", ".step-5-done.json"), "utf8"),
       );
       const completedAtMs = new Date(sentinel.completed_at).getTime();
-      const ok = autoUpdateStageStatusOnSentinel(dir, "260528", 4, completedAtMs);
+      const ok = autoUpdateStageStatusOnSentinel(dir, "260528", 5, completedAtMs);
       assert.equal(ok, true);
 
       const reloaded = loadDoc(dir, "260528");
-      const stage4 = reloaded.rows.find((r) => r.stage === 4);
-      assert.equal(stage4!.status, "done");
-      assert.equal(stage4!.end, "2026-05-27T22:00:00.000Z");
+      const stage5 = reloaded.rows.find((r) => r.stage === 5);
+      assert.equal(stage5!.status, "done");
+      assert.equal(stage5!.end, "2026-05-27T22:00:00.000Z");
       // 22:00 - 20:51 = 69 minutes
-      assert.equal(stage4!.duration_ms, 69 * 60 * 1000);
+      assert.equal(stage5!.duration_ms, 69 * 60 * 1000);
     } finally {
       rmSync(dir, { recursive: true });
     }

@@ -69,14 +69,15 @@ export interface StageStatusDoc {
   run_started_at?: string;
 }
 
-export const STAGES = [0, 1, 2, 3, 4] as const;
+export const STAGES = [0, 1, 2, 3, 4, 5] as const;
 
 export const STAGE_LABELS: Record<number, string> = {
   0: "Setup + dedup",
   1: "Pesquisa",
   2: "Escrita",
   3: "Imagens",
-  4: "Publicação",
+  4: "Revisão",
+  5: "Publicação",
 };
 
 // ---------------------------------------------------------------------------
@@ -328,14 +329,15 @@ export function blockReasonForMarkingStageDone(
   editionDir: string,
   stage: number,
 ): string | null {
-  // #1530: Stage 4 done requires edition-report.html — blocks closing
+  // #1530: Stage 5 done requires edition-report.html — blocks closing
   // without auto-reporter + report email.
-  if (stage === 4) {
+  // (#1694: was Stage 4 before split into Revisão+Publicação)
+  if (stage === 5) {
     const reportPath = resolve(editionDir, "_internal", "edition-report.html");
     if (!existsSync(reportPath)) {
-      return `Stage 4 cannot be marked done without edition report (missing ${reportPath})`;
+      return `Stage 5 cannot be marked done without edition report (missing ${reportPath})`;
     }
-    // #1577: Stage 4 done também exige review_completed=true em
+    // #1577: Stage 5 done também exige review_completed=true em
     // 05-published.json. Orchestrator escapava marcando done sem rodar
     // o loop verify→fix do test email (caso 260529: review_completed=false,
     // review_status=pending mas stage marked done).
@@ -354,7 +356,7 @@ export function blockReasonForMarkingStageDone(
           pub.review_status === "inconclusive";
         if (!pub.review_completed && !explicitTerminal) {
           return (
-            `Stage 4 cannot be marked done without review-test-email loop ` +
+            `Stage 5 cannot be marked done without review-test-email loop ` +
             `(05-published.json: review_completed=${pub.review_completed ?? "missing"}, ` +
             `review_status=${pub.review_status ?? "missing"}). Run Agent(review-test-email) first.`
           );

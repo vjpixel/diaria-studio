@@ -1,9 +1,11 @@
 /**
- * Invariants pós-publicação — Stage 5 (#1007 Fase 1).
+ * Invariants pós-publicação — Stage 5 (#1007 Fase 1, #1694).
  *
- * Rodam após Stage 4 dispatch completo (newsletter + LinkedIn + Facebook),
+ * Rodam após Stage 5 (Publicação) dispatch completo (newsletter + LinkedIn + Facebook),
  * antes do auto-reporter. Detectam falhas silenciosas que aparecem só após
  * publicar — ex: sentinel não escrito, social-published incompleto.
+ *
+ * (#1694: Stage 5 era Stage 4 antes do split Revisão+Publicação)
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -56,7 +58,7 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
         rule: "social-published-exists",
         message:
           `_internal/06-social-published.json ausente — publish-linkedin/facebook não rodaram ` +
-          `ou falharam antes de gravar. Stage 4 incompleto.`,
+          `ou falharam antes de gravar. Stage 5 (Publicação) incompleto.`,
         source_issue: "#272",
         severity: "error",
         file: path,

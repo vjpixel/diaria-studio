@@ -1,8 +1,11 @@
 /**
- * test/stage-4-review-completed.test.ts (#1577)
+ * test/stage-4-review-completed.test.ts (#1577, #1694)
  *
  * Cobre o invariant `stage-4-review-completed` em stage-5 + o gate
  * complementar em `blockReasonForMarkingStageDone` (update-stage-status.ts).
+ *
+ * #1694: os guards de review-test-email loop foram movidos de Stage 4 → Stage 5
+ * após o split Revisão (Stage 4) + Publicação (Stage 5).
  */
 
 import { describe, it } from "node:test";
@@ -110,24 +113,26 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
   });
 });
 
-describe("blockReasonForMarkingStageDone — Stage 4 + #1577 review_completed", () => {
-  it("Stage 4 + report + review_completed=true → null (transição liberada)", () => {
+describe("blockReasonForMarkingStageDone — Stage 5 + #1577 review_completed (#1694)", () => {
+  // #1694: guards movidos de Stage 4 → Stage 5 (split Revisão+Publicação)
+
+  it("Stage 5 + report + review_completed=true → null (transição liberada)", () => {
     const dir = makeEditionDir();
     try {
       writeReport(dir);
       writePublished(dir, { review_completed: true });
-      assert.equal(blockReasonForMarkingStageDone(dir, 4), null);
+      assert.equal(blockReasonForMarkingStageDone(dir, 5), null);
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("Stage 4 + report + review_completed=false + review_status=pending → block", () => {
+  it("Stage 5 + report + review_completed=false + review_status=pending → block", () => {
     const dir = makeEditionDir();
     try {
       writeReport(dir);
       writePublished(dir, { review_completed: false, review_status: "pending" });
-      const reason = blockReasonForMarkingStageDone(dir, 4);
+      const reason = blockReasonForMarkingStageDone(dir, 5);
       assert.ok(reason);
       assert.match(reason!, /review-test-email loop/);
     } finally {
@@ -135,7 +140,7 @@ describe("blockReasonForMarkingStageDone — Stage 4 + #1577 review_completed", 
     }
   });
 
-  it("Stage 4 + report + review_status=issues_unfixable (terminal) → null", () => {
+  it("Stage 5 + report + review_status=issues_unfixable (terminal) → null", () => {
     const dir = makeEditionDir();
     try {
       writeReport(dir);
@@ -143,25 +148,38 @@ describe("blockReasonForMarkingStageDone — Stage 4 + #1577 review_completed", 
         review_completed: false,
         review_status: "issues_unfixable",
       });
-      assert.equal(blockReasonForMarkingStageDone(dir, 4), null);
+      assert.equal(blockReasonForMarkingStageDone(dir, 5), null);
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("Stage 4 + report + 05-published.json ausente → null (não bloqueia)", () => {
+  it("Stage 5 + report + 05-published.json ausente → null (não bloqueia)", () => {
     // Compat: edições sem 05-published.json não devem ser bloqueadas
-    // (caso pre-Stage 4 dispatchar — edição abortada antes do publish).
+    // (caso Stage 5 abortado antes do publish).
     const dir = makeEditionDir();
     try {
       writeReport(dir);
+      assert.equal(blockReasonForMarkingStageDone(dir, 5), null);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("Stage 4 (Revisão) + report presente → null (gate não aplica a Stage 4 após #1694)", () => {
+    // Stage 4 = Revisão — não tem o guard de review_completed;
+    // marcar done sem restrição de report.
+    const dir = makeEditionDir();
+    try {
+      writeReport(dir);
+      writePublished(dir, { review_completed: false, review_status: "pending" });
       assert.equal(blockReasonForMarkingStageDone(dir, 4), null);
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("Stage 1-3 → null (gate só aplica a stage 4)", () => {
+  it("Stage 1-3 → null (gate só aplica a stage 5)", () => {
     const dir = makeEditionDir();
     try {
       assert.equal(blockReasonForMarkingStageDone(dir, 1), null);

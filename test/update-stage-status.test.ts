@@ -168,7 +168,7 @@ describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido",
 });
 
 describe("makeInitialDoc (#960)", () => {
-  it("cria doc com 5 stages todos pending", () => {
+  it("cria doc com 6 stages todos pending (#1694)", () => {
     const doc = makeInitialDoc("260508");
     assert.equal(doc.edition, "260508");
     assert.equal(doc.rows.length, STAGES.length);
@@ -177,7 +177,7 @@ describe("makeInitialDoc (#960)", () => {
     }
     assert.deepEqual(
       doc.rows.map((r) => r.stage),
-      [0, 1, 2, 3, 4],
+      [0, 1, 2, 3, 4, 5],
     );
   });
 
@@ -238,8 +238,8 @@ describe("applyUpdate (#960)", () => {
     const stage1 = updated.rows.find((r) => r.stage === 1);
     assert.equal(stage1?.status, "done");
     assert.equal(stage1?.cost_usd, 0.45);
-    // Stage 0 e 2-4 ainda pending
-    for (const stage of [0, 2, 3, 4]) {
+    // Stage 0 e 2-5 ainda pending
+    for (const stage of [0, 2, 3, 4, 5]) {
       assert.equal(updated.rows.find((r) => r.stage === stage)?.status, "pending");
     }
   });
@@ -267,14 +267,14 @@ describe("applyUpdate (#960)", () => {
 });
 
 describe("renderStageStatus (#960)", () => {
-  it("inclui header + 5 linhas + total", () => {
+  it("inclui header + 6 linhas + total (#1694)", () => {
     const doc = makeInitialDoc("260508");
     const md = renderStageStatus(doc);
     assert.match(md, /# Stage Status — edição 260508/);
     assert.match(md, /\*\*Total\*\*/);
-    // 5 stages + header
+    // 6 stages (#1694: Stage 5 Publicação adicionado)
     const tableRows = (md.match(/^\|\s*\d+\s*\|/gm) ?? []).length;
-    assert.equal(tableRows, 5, "uma linha por stage 0-4");
+    assert.equal(tableRows, 6, "uma linha por stage 0-5");
   });
 
   it("formato BRT timestamp na coluna de início", () => {
@@ -342,7 +342,7 @@ describe("update-stage-status CLI (#960)", () => {
     );
   }
 
-  it("--init cria stage-status.md com 5 stages pending", () => {
+  it("--init cria stage-status.md com 6 stages pending (#1694)", () => {
     const dir = mkdtempSync(join(tmpdir(), "stage-status-init-"));
     try {
       const editionDir = join(dir, "260508");
@@ -353,9 +353,9 @@ describe("update-stage-status CLI (#960)", () => {
       assert.ok(existsSync(path));
       const md = readFileSync(path, "utf8");
       assert.match(md, /# Stage Status — edição 260508/);
-      // 5 linhas pending
+      // 6 linhas pending (stages 0-5)
       const pendingCount = (md.match(/pending/g) ?? []).length;
-      assert.ok(pendingCount >= 5);
+      assert.ok(pendingCount >= 6);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -461,27 +461,36 @@ describe("update-stage-status CLI (#960)", () => {
     }
   });
 
-  it("#1530: Stage 4 done bloqueado sem edition-report.html", () => {
+  it("#1530 (#1694): Stage 5 done bloqueado sem edition-report.html", () => {
+    // (#1694: guard movida de Stage 4 → Stage 5 após split Revisão+Publicação)
     const dir = mkdtempSync(join(tmpdir(), "stage-status-1530-"));
     try {
       const editionDir = join(dir, "260527");
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       runCli(["--edition-dir", editionDir, "--init"]);
 
-      // Without report → exit 1
-      const r1 = runCli([
+      // Stage 4 (Revisão) done now allowed without report
+      const r0 = runCli([
         "--edition-dir", editionDir,
         "--stage", "4",
         "--status", "done",
       ]);
-      assert.equal(r1.status, 1, "should block stage 4 done without report");
+      assert.equal(r0.status, 0, "stage 4 done should not be blocked (Revisão)");
+
+      // Stage 5 (Publicação) without report → exit 1
+      const r1 = runCli([
+        "--edition-dir", editionDir,
+        "--stage", "5",
+        "--status", "done",
+      ]);
+      assert.equal(r1.status, 1, "should block stage 5 done without report");
       assert.match(r1.stderr, /edition-report\.html/);
 
       // With report → exit 0
       writeFileSync(join(editionDir, "_internal", "edition-report.html"), "<html>report</html>");
       const r2 = runCli([
         "--edition-dir", editionDir,
-        "--stage", "4",
+        "--stage", "5",
         "--status", "done",
       ]);
       assert.equal(r2.status, 0, r2.stderr);
@@ -551,7 +560,7 @@ describe("loadDoc/saveDoc (#1216)", () => {
       mkdirSync(editionDir, { recursive: true });
       const reloaded = loadDoc(editionDir, "260517");
       assert.equal(reloaded.edition, "260517");
-      assert.equal(reloaded.rows.length, 5);
+      assert.equal(reloaded.rows.length, 6); // stages 0-5 (#1694)
       for (const r of reloaded.rows) assert.equal(r.status, "pending");
     } finally {
       rmSync(dir, { recursive: true });
