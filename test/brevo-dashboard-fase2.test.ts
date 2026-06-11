@@ -296,15 +296,15 @@ describe("detectActiveCycle", () => {
 // ─── buildTrendRows ───────────────────────────────────────────────────────────
 
 describe("buildTrendRows", () => {
-  test("ordena por sentDate ASC (mais antigas primeiro)", () => {
+  test("ordena por sentDate DESC — mais recente no topo (editor 2026-06-11)", () => {
     const rows = buildTrendRows(allCampaigns);
-    // Primeiro deve ser T1-W1 (2026-05-08), último deve ser uma campanha 2605 d02
+    // Primeira linha = envio mais RECENTE; última = mais antiga (T1-W1).
     assert.ok(rows.length >= 2);
     const first = rows[0];
     const last = rows[rows.length - 1];
     const firstDate = first.sentDate ? Date.parse(first.sentDate) : 0;
     const lastDate = last.sentDate ? Date.parse(last.sentDate) : 0;
-    assert.ok(firstDate <= lastDate, "primeira linha deve ser anterior à última");
+    assert.ok(firstDate >= lastDate, "primeira linha deve ser a mais recente");
   });
 
   test("label de Clarice News é compacto (ex: '2605 d01-A')", () => {

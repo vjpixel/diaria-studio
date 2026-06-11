@@ -23,3 +23,4 @@ worker-configuration.d.ts
 # padrões aqui são rede de segurança caso um agente escreva na raiz por engano
 lint-result-*.json
 review-result-*.json
+.claude/worktrees/
