@@ -810,3 +810,54 @@ describe("#2059 — filterAgentIssues: dispatch exclusivo por tipo (sem fall-thr
     assert.equal(r.dropped.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2105 — tabela declarativa: exclusividade estrutural
+// ---------------------------------------------------------------------------
+
+describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de handlers", () => {
+  /**
+   * Garante duas propriedades invariáveis introduzidas pela tabela #2105:
+   *
+   * 1. Tipo NÃO coberto por nenhum handler → elegível para genéricos de DS.
+   *    Ex: `email:link_x` tem prefixo `link_` que isMergeTagUnexpandedFalsePositive
+   *    casaria — mas sem handler na tabela, o issue chega nos genéricos e pode
+   *    ser dropado se satisfaz a condição do genérico.
+   *
+   * 2. Tipo COBERTO por handler → NUNCA alcança os genéricos, mesmo quando o
+   *    handler retorna `{ kind: "keep" }` (not-FP). Isso é a exclusividade
+   *    estrutural: basta estar na tabela para ser isolado dos genéricos.
+   */
+
+  it("tipo hipotético email:link_x NÃO coberto por handler → vai pros genéricos (pode ser dropado por DS)", async () => {
+    // email:link_x não está na tabela de handlers.
+    // isMergeTagUnexpandedFalsePositive casa `email:link_` + `{{poll_sig}}` → FP → dropa.
+    // Isso demonstra que tipos fora da tabela chegam nos genéricos.
+    const issue = "email:link_x: href contém {{poll_sig}} não expandido";
+    const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
+
+    // Deve ser DROPADO pelos genéricos de DS (isMergeTagUnexpandedFalsePositive)
+    assert.equal(r.dropped.length, 1, "email:link_x com {{poll_sig}} deve ser dropado pelos genéricos de DS");
+    assert.equal(r.kept.length, 0, "não deve ser mantido");
+    assert.match(
+      r.dropped[0].reason,
+      /merge tags inline|poll_sig|expandem no envio/i,
+      "motivo deve vir do genérico isMergeTagUnexpandedFalsePositive",
+    );
+  });
+
+  it("tipo COBERTO (email:link_dead) → NUNCA alcança os genéricos, mesmo retornando not-FP", async () => {
+    // email:link_dead está na tabela. Sem fetchFn, o handler retorna { kind: "keep" }
+    // (not-FP conservador). Apesar de conter {{poll_sig}} na URL — que o genérico
+    // isMergeTagUnexpandedFalsePositive casaria — o issue é mantido porque o handler
+    // já interceptou o dispatch antes dos genéricos.
+    // Este é o invariante estrutural: handler registrado = imune aos genéricos.
+    const issue = "email:link_dead: https://poll.example.com/vote?sig={{poll_sig}}&edition=260611 → HTTP 404";
+    // Sem fetchFn → handler retorna keep conservador (sem re-verificar link)
+    const r = await filterAgentIssues([issue], "<p>qualquer</p>", "260611");
+
+    assert.equal(r.kept.length, 1, "link_dead coberto pelo handler deve ser mantido (kept), NÃO dropado pelo genérico");
+    assert.equal(r.dropped.length, 0, "link_dead NÃO deve ser dropado por isMergeTagUnexpandedFalsePositive");
+    assert.match(r.kept[0], /link_dead/, "o issue mantido deve ser o link_dead");
+  });
+});
