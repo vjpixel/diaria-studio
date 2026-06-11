@@ -336,7 +336,7 @@ export function renderCursosPage(courses: Course[]): string {
     color: var(--ink); border: 1px solid var(--rule); padding: 4px 9px; border-radius: 2px; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
   .summary { font-size: 16px; line-height: 1.5; color: var(--ink); margin: 14px 0 18px; flex: 1; }
-  .cta { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+  .cta { font-family: ${SANS}; font-size: 16px;
     font-weight: 700; color: var(--teal); text-decoration: none; align-self: flex-start;
     border-bottom: 1px solid transparent; padding-bottom: 2px; }
   .cta:hover { border-bottom-color: var(--teal); }
