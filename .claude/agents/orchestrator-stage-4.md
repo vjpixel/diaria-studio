@@ -186,7 +186,8 @@ Facebook  D3  "{hook_d3_facebook}"
 Aprovar e prosseguir para Publicação (Etapa 5)?
 
   sim     → segue para /diaria-5-publicar (dispatch automático)
-  editar  → halt; editor edita no Drive → responde "sim" quando pronto
+  editar  → halt; editor edita no Drive → pull → responde "sim" quando pronto
+  ajustar → editor dita a mudança no chat; orchestrator aplica e re-apresenta o resumo
   abortar → encerra sem publicar (sentinel não escrito)
   Qualquer outra resposta → repetir prompt (fail-closed)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -201,12 +202,38 @@ Regras de apresentação:
 Logar a resposta:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
-  --message "gate revisao response: {sim|editar|abortar}"
+  --message "gate revisao response: {sim|editar|ajustar|abortar}"
 ```
 
-**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita e re-roda.
+**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita no Drive e re-roda quando pronto. Adequado para revisões longas ou fora do terminal.
+
+**"ajustar":** ver §4d.1 abaixo — edição inline no chat, orchestrator aplica e volta ao gate. Adequado para tweaks rápidos.
 
 **"abortar":** logar warn `"gate_revisao_abortado"`, encerrar sem sentinel.
+
+### 4d.1 — Edição inline ("ajustar") (#1694)
+
+O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X", "tira o link do D3", "troca lança por apresenta no corpo do D1").
+
+**Fluxo:**
+
+1. **Pull antes de editar** (#494): `drive-sync --mode pull --stage 4 --files 02-reviewed.md` (e `03-social.md` se a mudança afetar social).
+2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
+3. **Cascata de título (crítico):** se a mudança alterar um TÍTULO de destaque:
+   - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
+   - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
+   - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
+4. **Logar:**
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
+     --message "gate revisao: ajustar inline aplicado ({descrição curta})"
+   ```
+5. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
+
+**Distinção `editar` vs `ajustar`:**
+- `editar`: round-trip via Drive — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.
+- `ajustar`: inline no chat — adequado para tweaks rápidos (título, palavra, link), orchestrator aplica na hora.
+- Ambos voltam ao gate; `sim` só depois de aprovação explícita.
 
 ### 4e. Escrever sentinel de conclusão (#978, adaptado de #1694)
 
