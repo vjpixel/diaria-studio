@@ -28,8 +28,8 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    | 0 | null ou ausente | → Fase 1.5 (review inicial) |
    | N > 0 | null ou ausente, e há issues `finding-depth-N` sem status terminal | → continuar mini-rodada N (Fase 1 para essas issues) |
    | N > 0 | null ou ausente, sem issues `finding-depth-N` pendentes | → Fase 1.5 no nível N (iniciar review) |
-   | N < **2** | `"done (depth N)"` ou `"skipped: * (depth N)"` | → verificar se há issues `finding-depth-{N+1}`; se sim → mini-rodada {N+1}; se não → Fase 2 |
-   | **2** | `"done (depth 2)"` ou `"skipped: * (depth 2)"` | → **Fase 2** (cadeia concluída — depth limit atingido) |
+   | N < **2** | `"done (depth N)"` ou começa com `"skipped:"` | → verificar se há issues `finding-depth-{N+1}`; se sim → mini-rodada {N+1}; se não → Fase 2 |
+   | **2** | `"done (depth 2)"` ou começa com `"skipped:"` | → **Fase 2** (cadeia concluída — depth limit atingido) |
 
    **Compatibilidade de legado:** `review: "done"` (formato de plan.json anterior a este PR, sem `depth`) → tratar como `"done (depth {findings_depth})"` — cadeia concluída no nível corrente. Nunca re-perguntar o que já foi respondido. plan.json antigo sem `base_sha` → derivar do primeiro merge da rodada (`git log --reverse --format=%H --since="{started_at}" | head -1`, usar o pai dele) ou, falhando, pular a Fase 1.5 com warning no relatório.
 1. **Sync**: `git checkout master && git pull` (o coordenador pode estar em outra branch — pull na branch errada faria os worktrees forkarem de HEAD não-master e os PRs da noite carregarem diff alheio). **Capturar `base_sha = git rev-parse HEAD` AGORA (pós-pull)** — é o ponto de partida do diff consolidado da Fase 1.5; capturado antes do pull, o diff incluiria commits alheios. Verificar `gh auth status`.
