@@ -314,8 +314,8 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
         <td>${s.sent}</td>
         <td>${pct(s.delivered, s.sent)}<br><small>${s.delivered}</small></td>
         <td${cellClass("metric", openAlert && "alert")}>${opensTopLine}<br><small>${opensBottomLine}</small></td>
-        <td${cellClass("metric")}>${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td class="metric trackable">${trackableRate}<br><small>${s.trackableViews ?? 0}</small></td>
+        <td${cellClass("metric")}>${ctr}<br><small>${s.uniqueClicks}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
         <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
@@ -393,7 +393,7 @@ export function renderDashboardHtml(campaigns: Array<BrevoCampaign & { listName?
   .section-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; color: var(--ink); border-bottom: 2px solid var(--rule); padding-bottom: 6px; }
   .section-note { font-size: 0.85rem; color: var(--ink); opacity: 0.75; margin: 0 0 12px 0; }
   .volume-note { font-family: monospace; font-size: 0.82rem; margin-top: 10px; }
-  .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; }
+  .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; white-space: nowrap; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
@@ -419,8 +419,8 @@ ${weekdaySection}
 <th title="Total de emails enviados (inclui bounces).">Sent</th>
 <th title="Emails entregues nas caixas dos leitores.">Delivered</th>
 <th title="Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.">Opens 👁️</th>
-<th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
 <th title="trackableViews ÷ delivered: aperturas com pixel rastreável (exclui MPP/bots que não disparam pixel). Sinal mais limpo de engajamento real.">Trackable 📍</th>
+<th title="Cliques únicos. Bench: 1.5-3% B2C.">Clicks 🖱️</th>
 <th title="Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. ≥3% pausa o ramp.">Bounces</th>
 <th title="Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp.">Unsub</th>
 <th title="Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp.">Spam</th>
@@ -654,7 +654,8 @@ export function weekdayKeyBRT(iso: string): number | null {
  * Weekdays com count < 2 são marcados com smallSample=true.
  *
  * @param campaigns - lista de campanhas (todas, filtradas internamente por ciclo)
- * @param cycle     - ciclo ativo (ex: "2605"); null = incluir todas as campanhas
+ * @param cycle     - filtro por ciclo (ex: "2605"); produção passa SEMPRE null (todos os envios,
+ *                    decisão do editor 2026-06-11) — o filtro vive pra testes/uso futuro
  * @returns array de WeekdaySummary ordenado por weekday (0=Seg..6=Dom)
  */
 export function aggregateByWeekday(
@@ -801,11 +802,12 @@ export function buildTrendRows(
 ): WaveTrendRow[] {
   const rows: WaveTrendRow[] = [];
 
-  // Ordenar por sentDate ASC (mais antigas primeiro)
+  // Ordenar por sentDate DESC — mais recente NO TOPO (pedido do editor 2026-06-11);
+  // a mais antiga fica embaixo.
   const sorted = [...campaigns].sort((a, b) => {
     const da = a.sentDate ? Date.parse(a.sentDate) : 0;
     const db = b.sentDate ? Date.parse(b.sentDate) : 0;
-    return da - db;
+    return db - da;
   });
 
   for (const c of sorted) {
@@ -1000,7 +1002,7 @@ export default {
 
     if (path === "/" || path === "/index.html") {
       try {
-        const campaigns = await fetchRecentCampaigns(env, 20);
+        const campaigns = await fetchRecentCampaigns(env, 50); // #2142 review: rota / hardcodava 20 e ignorava o default novo
         const html = renderDashboardHtml(campaigns);
         return new Response(html, {
           headers: {
