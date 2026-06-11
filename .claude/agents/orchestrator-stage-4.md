@@ -106,6 +106,13 @@ Exit code handling:
 
 **Executar SOMENTE quando `pre_gate = true`.** Roda APÓS 4a (sentinel-3, sync pull, invariants) — review #1600 corrigiu posição que estava antes do sync. Faz tudo que o dispatch precisa exceto enviar pros canais finais:
 
+0. **capture-livros-promo — ANTES do upload (#2071).** Re-captura o screenshot da página de livros se o conteúdo mudou (md5 diferente). Exit code 2 = sem mudança (ok, continuar); exit code 1 = erro fatal (logar warn, continuar — é opcional):
+   ```bash
+   # GUARD DE PUBLICAÇÃO: só captura localmente; upload fica pro passo 1 (upload-images-public).
+   npx tsx scripts/capture-livros-promo.ts --edition-dir data/editions/{AAMMDD}/
+   ```
+   Exit code handling: `0` = imagem nova gravada em `data/editions/{AAMMDD}/04-livros-promo.jpg`; `2` = md5 igual, nada a fazer; `1` = falha (puppeteer ou rede) — logar warn + continuar (não bloquear publicação por asset opcional).
+
 1. **upload-images-public — TODOS modos** (cobre 4c-pre completo). Newsletter mode sozinho deixa d2/d3 fora do Drive → DLQ #999:
    ```bash
    # CF: cover + d1 1x1 + EIA A/B
