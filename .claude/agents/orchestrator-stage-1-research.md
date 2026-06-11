@@ -632,14 +632,7 @@ npx tsx scripts/check-highlight-themes.ts \
   --out-json data/editions/{AAMMDD}/_internal/01-highlight-theme-check.json
 ```
 
-Exit 0 sempre. Lê `warnings[]` do JSON gerado:
-- Se `warnings[]` não-vazio: **incluir no gate** cada entrada como:
-  ```
-  ⚠️  D{rank} repete tema de {matched_edition}: "{matched_title}" (similaridade: {jaccard*100}%)
-  ```
-  O editor decide se mantém o destaque ou escolhe outro candidato.
-- Se `warnings[]` vazio: omitir (não poluir o gate).
-- Se o script falhar por qualquer motivo (past-editions.md ausente, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
+Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se o script falhar por qualquer motivo (past-editions.md ausente, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
 
 ### 1x. GATE HUMANO
 

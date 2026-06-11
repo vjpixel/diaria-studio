@@ -99,28 +99,6 @@ Links usados:
 ---
 `;
 
-/** past-editions.md sem Gemma — para testar janela vazia */
-const PAST_MD_NO_GEMMA = `# Últimas edições publicadas — para dedup
-
----
-
-## 2026-06-10 — "AI Act entra em vigor: o que muda para empresas brasileiras"
-URL: https://diaria.beehiiv.com/p/ai-act
-
-Links usados:
-- https://ec.europa.eu/ai-act
-
----
-
-## 2026-06-09 — "Mistral lança Le Chat Pro com ferramentas de agentes"
-URL: https://diaria.beehiiv.com/p/mistral-lechat
-
-Links usados:
-- https://mistral.ai/le-chat-pro
-
----
-`;
-
 /**
  * Candidatos a destaque simulando 260611: Gemma 4 12B com URL nova.
  *

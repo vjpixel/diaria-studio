@@ -37,9 +37,9 @@
  *         "candidate_title": "Gemma 4 12B: encoder-free multimodal",
  *         "matched_edition": "2026-06-04",
  *         "matched_title": "Gemma 4 12B: multimodal que roda no laptop",
- *         "jaccard": 0.57,
- *         "shared_entities": ["Gemma"],
- *         "effective_threshold": 0.25
+ *         "jaccard": 0.43,
+ *         "shared_entities": [],
+ *         "effective_threshold": 0.35
  *       }
  *     ],
  *     "checked": 6,
