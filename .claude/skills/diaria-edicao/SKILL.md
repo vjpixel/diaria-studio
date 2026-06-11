@@ -1,19 +1,19 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da Diar.ia (4 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
+description: Roda a pipeline completa da Diar.ia (5 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
 ---
 
 # /diaria-edicao
 
-Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o único gate da pipeline é no Stage 4 antes do dispatch dos publishers. Editor revisa HTML preview + social antes de qualquer publicação.
+Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o gate humano principal é no Stage 4 (Revisão) antes do dispatch dos publishers. Editor revisa HTML preview + social; aprovado → Stage 5 (Publicação) dispara.
 
 ## Argumentos
 
 - `$1` = data da edição no formato `AAMMDD` (ex: `260418`). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir amanhã como atalho principal (regra D+1 — edição é sempre o dia seguinte à pesquisa), com hoje como secundário, mas exigir confirmação:
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
 - `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
-- `--no-gates` (opcional) = pular TODOS os gates, inclusive o pre-gate do Stage 4. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
-- `--skip {canal[,canal...]}` (opcional, CSV) = encaminha lista de canais ao Stage 4 como `skip_channels`. Canais suportados: `newsletter`, `linkedin`, `facebook`. Canais listados ficam `pending_manual` no consent (`build-publish-consent.ts --skip "{lista}"`, path 1 de §4b); o Stage 4 executa pré-render completo mas NÃO dispatcha esses canais. Sem `--skip`, o comportamento default do Stage 4 (#1326) se aplica — se editor não responder ao pre-gate interativo, tudo é automático. Use `--skip newsletter,linkedin,facebook` em runs headless/automáticas (Task Scheduler) para impedir dispatch sem supervisão (#2068).
+- `--no-gates` (opcional) = pular TODOS os gates, inclusive o gate de revisão do Stage 4 e a confirmação interativa do Stage 5. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
+- `--skip {canal[,canal...]}` (opcional, CSV) = encaminha lista de canais ao Stage 5 como `skip_channels`. Canais suportados: `newsletter`, `linkedin`, `facebook`. Canais listados ficam `pending_manual` no consent (`build-publish-consent.ts --skip "{lista}"`, path 1 de §5b); o Stage 5 executa pré-render completo mas NÃO dispatcha esses canais. Sem `--skip`, o comportamento default do Stage 5 (#1326) se aplica — se editor não responder ao gate interativo, tudo é automático. Use `--skip newsletter,linkedin,facebook` em runs headless/automáticas (Task Scheduler) para impedir dispatch sem supervisão (#2068).
 
 ## Pré-requisitos
 
@@ -67,8 +67,8 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 - `edition_iso = 20${AAMMDD.slice(0,2)}-${AAMMDD.slice(2,4)}-${AAMMDD.slice(4,6)}`
 - `window_days = {valor confirmado no Passo 1}`
 - `auto_approve = true` (Stages 1-3 sempre auto-approve em `/diaria-edicao` — pre-gate mode #1523)
-- `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate antes do dispatch)
-- `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 4 §4b; se não-vazio, Stage 4 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
+- `pre_gate = true` se `--no-gates` NÃO foi passado (Stage 4 apresenta gate de revisão; Stage 5 apresenta confirmação de canais)
+- `skip_channels = {csv passado em --skip, ou vazio}` — encaminhado ao Stage 5 §5b; se não-vazio, Stage 5 usa path 1 (`build-publish-consent.ts --skip "{skip_channels}"`) sem gate interativo, sem fallback default-auto (#1326/#2068)
 
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
@@ -76,17 +76,21 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
 - **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → auto-approve
 - **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → auto-approve
 - **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → auto-approve
-- **§ 4 Etapa 4 — Publicação**:
-  1. Pré-render (HTML + imagens + upload Worker + close-poll)
-  2. **PRE-GATE** — apresenta preview HTML + social ao editor
-  3. Dispatch publishers (Beehiiv + Facebook + LinkedIn)
-  4. Test email + review loop
-  5. Auto-reporter + relatório por email
+- **§ 4 Etapa 4 — Revisão** (#1694):
+  1. Pré-render técnico (HTML + imagens + upload Worker + close-poll)
+  2. **GATE HUMANO** — apresenta resumo consolidado: destaques, títulos, links, lints, preview HTML + social ao editor
+  3. Aprovado → grava sentinel `.step-4-done.json`
+  → aguarda Stage 5
+- **§ 5 Etapa 5 — Publicação** (prereq: sentinel Stage 4 aprovado):
+  1. Confirmação de canais (interativa ou via `--skip`)
+  2. Dispatch publishers paralelos (Beehiiv + Facebook + LinkedIn)
+  3. Test email + review loop
+  4. Auto-reporter + relatório por email
   → fim
 
-**Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 pre-gate é o único ponto de interação. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor apenas no pre-gate.
+**Modo pre-gate (default):** Stages 1-3 auto-approve. Stage 4 gate de revisão é o único ponto de interação antes do dispatch. `auto_approve = true` internamente para Stages 1-3; Stage 4 consulta editor no gate de revisão; Stage 5 executa em sequência após aprovação.
 
-**Se `--no-gates`:** auto-aprovar TUDO, inclusive o pre-gate do Stage 4. Pipeline roda fim-a-fim sem interação.
+**Se `--no-gates`:** auto-aprovar TUDO, inclusive o gate do Stage 4 e a confirmação interativa do Stage 5. Pipeline roda fim-a-fim sem interação.
 
 Resume-aware: ao retomar, listar arquivos em `data/editions/{AAMMDD}/` e pular para o stage adequado conforme as condições do § 0 Setup.
 

@@ -2,14 +2,17 @@
  * find-current-edition.ts (#583)
  *
  * Detecta edições em curso para um stage da pipeline Diar.ia. Usado pelas
- * skills `/diaria-{2,3,4}-*` quando o editor omite o argumento AAMMDD: se há
+ * skills `/diaria-{2,3,4,5}-*` quando o editor omite o argumento AAMMDD: se há
  * exatamente uma edição com o stage anterior aprovado e o output do stage
  * atual faltando, a skill assume essa edição em vez de perguntar.
  *
  * Critérios por stage (relativos a `data/editions/{AAMMDD}/`):
  *   - Stage 2: prereq `_internal/01-approved.json`; output esperado `02-reviewed.md`.
  *   - Stage 3: prereq `_internal/01-approved.json`; output esperado `04-d1-1x1.jpg`.
- *   - Stage 4: prereqs `02-reviewed.md` e `03-social.md`; output esperado `_internal/05-published.json`.
+ *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md` e `03-social.md`;
+ *       output esperado `_internal/.step-4-done.json`.
+ *   - Stage 5 (Publicação, #1694): prereq `_internal/.step-4-done.json`;
+ *       output esperado `_internal/05-published.json`.
  *
  * "Em curso" = todos os prereqs presentes E ao menos um output ausente.
  *
@@ -21,7 +24,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export type Stage = 2 | 3 | 4;
+export type Stage = 2 | 3 | 4 | 5;
 
 interface StageRequirements {
   /** Files that must exist for this stage to be ready to run. */
@@ -40,7 +43,13 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
     output: ["04-d1-1x1.jpg"],
   },
   4: {
+    // Stage 4 = Revisão editorial assistida (#1694)
     prereq: ["02-reviewed.md", "03-social.md"],
+    output: ["_internal/.step-4-done.json"],
+  },
+  5: {
+    // Stage 5 = Publicação (#1694, was Stage 4 before the split)
+    prereq: ["_internal/.step-4-done.json"],
     output: ["_internal/05-published.json"],
   },
 };
@@ -101,8 +110,8 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const stageRaw = args["stage"];
   const stageNum = parseInt(stageRaw ?? "", 10);
-  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4) {
-    console.error("Uso: find-current-edition.ts --stage <2|3|4>");
+  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5) {
+    console.error("Uso: find-current-edition.ts --stage <2|3|4|5>");
     process.exit(1);
   }
   const candidates = findEditionsInProgress(stageNum as Stage);

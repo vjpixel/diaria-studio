@@ -124,7 +124,7 @@ describe("findEditionsInProgress", () => {
     }
   });
 
-  it("Stage 4: requires both 02-reviewed.md AND 03-social.md as prereq", () => {
+  it("Stage 4 (Revisão #1694): requires both 02-reviewed.md AND 03-social.md as prereq, output is .step-4-done.json", () => {
     const { root, cleanup } = setupSandbox();
     try {
       // Only 02-reviewed.md → not enough
@@ -133,9 +133,26 @@ describe("findEditionsInProgress", () => {
       // Add 03-social.md → now in progress
       makeEdition(root, "260505", ["03-social.md"]);
       assert.deepEqual(findEditionsInProgress(4, root), ["260505"]);
-      // Add output → done
-      makeEdition(root, "260505", ["_internal/05-published.json"]);
+      // Add output sentinel → done
+      makeEdition(root, "260505", ["_internal/.step-4-done.json"]);
       assert.deepEqual(findEditionsInProgress(4, root), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Stage 5 (Publicação #1694): requires _internal/.step-4-done.json as prereq, output is _internal/05-published.json", () => {
+    const { root, cleanup } = setupSandbox();
+    try {
+      // No prereq → not a candidate
+      makeEdition(root, "260505", ["02-reviewed.md", "03-social.md"]);
+      assert.deepEqual(findEditionsInProgress(5, root), []);
+      // Add Stage 4 sentinel → now in progress for Stage 5
+      makeEdition(root, "260505", ["_internal/.step-4-done.json"]);
+      assert.deepEqual(findEditionsInProgress(5, root), ["260505"]);
+      // Add Stage 5 output → done
+      makeEdition(root, "260505", ["_internal/05-published.json"]);
+      assert.deepEqual(findEditionsInProgress(5, root), []);
     } finally {
       cleanup();
     }
