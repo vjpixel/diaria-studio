@@ -19,8 +19,12 @@
  *   - `stripPublisherSuffix(title)` — puro, sem side-effects, unit-testável.
  */
 
-/** Comprimento mínimo (em chars) do que sobra antes do " | " para aceitar o strip. */
-const MIN_PREFIX_LEN = 15;
+/**
+ * Comprimento mínimo (em chars) do que sobra antes do " | " para aceitar o strip.
+ * Exportado para que os testes de boundary possam importar a constante em vez
+ * de hardcodar 14/15 — qualquer ajuste futuro fica sincronizado automaticamente.
+ */
+export const MIN_PREFIX_LEN = 15;
 
 /**
  * Remove o sufixo de atribuição de veículo de um título de artigo.
@@ -34,13 +38,14 @@ export function stripPublisherSuffix(title: string): string {
   const trimmed = title.trim();
   const idx = trimmed.indexOf(" | ");
   if (idx === -1) {
-    // Nenhum " | " no título — retornar intacto.
-    return trimmed;
+    // Nenhum " | " no título — retornar intacto (sem alterar whitespace do chamador).
+    return title;
   }
   const prefix = trimmed.slice(0, idx).trim();
   if (prefix.length < MIN_PREFIX_LEN) {
     // Anti-falso-positivo: prefixo muito curto — manter original.
-    return trimmed;
+    // Retorna `title` (não `trimmed`) para preservar espaços do chamador.
+    return title;
   }
   return prefix;
 }

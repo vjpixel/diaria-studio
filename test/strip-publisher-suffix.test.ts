@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { stripPublisherSuffix } from "../scripts/lib/strip-publisher-suffix.ts";
+import { stripPublisherSuffix, MIN_PREFIX_LEN } from "../scripts/lib/strip-publisher-suffix.ts";
 
 describe("stripPublisherSuffix (#2140)", () => {
   // ──────────────────────────────────────────────────────────
@@ -40,22 +40,23 @@ describe("stripPublisherSuffix (#2140)", () => {
   // Heurística anti-falso-positivo: prefixo curto
   // ──────────────────────────────────────────────────────────
 
-  it("preserva título original quando prefixo antes do ' | ' tem < 15 chars", () => {
-    // "IA no Brasil" = 12 chars (< 15) → não deve cortar
+  it(`preserva título original quando prefixo antes do ' | ' tem < ${MIN_PREFIX_LEN} chars`, () => {
+    // "IA no Brasil" = 12 chars (< MIN_PREFIX_LEN) → não deve cortar
     const input = "IA no Brasil | G1";
     assert.equal(stripPublisherSuffix(input), input);
   });
 
-  it("preserva título original quando prefixo tem exatamente 14 chars (< 15)", () => {
-    const input = "12345678901234 | Veículo";
+  it(`preserva título original quando prefixo tem exatamente ${MIN_PREFIX_LEN - 1} chars (< ${MIN_PREFIX_LEN})`, () => {
+    const prefix = "x".repeat(MIN_PREFIX_LEN - 1);
+    const input = `${prefix} | Veículo`;
     assert.equal(stripPublisherSuffix(input), input);
   });
 
-  it("faz strip quando prefixo tem exatamente 15 chars (= limite mínimo)", () => {
-    // "123456789012345" = 15 chars → strip deve acontecer
+  it(`faz strip quando prefixo tem exatamente ${MIN_PREFIX_LEN} chars (= limite mínimo)`, () => {
+    const prefix = "x".repeat(MIN_PREFIX_LEN);
     assert.equal(
-      stripPublisherSuffix("123456789012345 | Veículo"),
-      "123456789012345",
+      stripPublisherSuffix(`${prefix} | Veículo`),
+      prefix,
     );
   });
 
@@ -83,6 +84,22 @@ describe("stripPublisherSuffix (#2140)", () => {
 
   it("NÃO toca em pipe com espaço de um lado só", () => {
     const input = "Título |SemEspaçoDepois";
+    assert.equal(stripPublisherSuffix(input), input);
+  });
+
+  // ──────────────────────────────────────────────────────────
+  // C8: guard "return original" não normaliza whitespace (#2161)
+  // ──────────────────────────────────────────────────────────
+
+  it("C8: prefixo curto — retorna title original (sem strip de whitespace)", () => {
+    // Prefixo "curto" < MIN_PREFIX_LEN → path guard retorna `title` intacto,
+    // incluindo espaços que o chamador colocou.
+    const input = "  curto | G1  ";
+    assert.equal(stripPublisherSuffix(input), input);
+  });
+
+  it("C8: sem ' | ' — retorna title original (sem normalizar whitespace)", () => {
+    const input = "  Título sem pipe  ";
     assert.equal(stripPublisherSuffix(input), input);
   });
 
