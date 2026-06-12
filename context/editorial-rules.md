@@ -95,6 +95,29 @@ Antes de aprovar o texto final da edição, validar:
 - [ ] Texto sem markdown em parágrafos (bold permitido apenas em seções/títulos per #590; sem bullets, sem headers).
 - [ ] Máximo 3 destaques, distribuídos pelas categorias válidas.
 
+## 10. Concurso "ache o erro" — regras do erro intencional (#2149)
+
+Cada edição inclui 1 erro intencional para os leitores encontrarem. Duas regras invariáveis:
+
+**Regra 1 — Verificável SEM sair do email.**
+O leitor deve poder detectar o erro a partir do próprio email, sem clicar na fonte. Dois tipos aceitos:
+- **Inconsistência interna** (✅): o erro contradiz outro trecho do mesmo email. Ex: título diz "US$ 2 bi", corpo diz "US$ 3 bilhões".
+- **Conhecimento comum do público** (✅): qualquer leitor de IA sabe que está errado de cabeça. Ex: "Amodei, CEO da DeepMind" (é da Anthropic).
+
+Proibido:
+- **Precisa da fonte** (❌): erro só confirmável clicando no link. Ex: trocar data de viralização, mudar número de uma pesquisa.
+
+**Regra 2 — Não gerar desinformação.**
+O erro não pode ser fato ou estatística plausível-mas-falso que, se não for pego, o leitor passa a acreditar. Ex: trocar "30%" por "50%" num estudo; trocar dívida de US$ 570 bi por US$ 750 bi. Erros numéricos e de data "vazam" como desinformação real para quem não percebe. Preferir contradições internas autoevidentes ou trocas que o público corrige de cabeça.
+
+Categorias de frontmatter por risco:
+- ✅ Seguras por design: `attribution`, `version_inconsistency`, `ortografico`, `factual_synthetic`
+- ⚠️ Requerem revisão manual: `numeric`, `factual`, `data` — só válidos se forem inconsistência interna evidente (ex: título × corpo com valor diferente), não erro plausível que planta fato falso
+
+Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/intentional-error.ts` — emite `warn` (não bloqueia) para categorias ⚠️ com instrução de verificar contra as 2 regras.
+
+---
+
 ## Seção "Vídeos" (#359)
 
 Seção opcional após Outras Notícias. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho).

@@ -156,3 +156,44 @@ export function checkIntentionalError(
 
   return { ok: true, parsed };
 }
+
+/**
+ * Categorias que requerem revisão manual (#2149 — regras do concurso "ache o erro"):
+ * numeric, factual e data só são válidas como erro intencional se forem
+ * inconsistência interna evidente (ex: título × corpo com valor diferente).
+ * Quando usadas como "fato plausível mas errado", violam a Regra 2 (desinformação).
+ *
+ * Seguras por design: attribution, version_inconsistency, ortografico, factual_synthetic.
+ */
+const DESINFORMATION_RISK_CATEGORIES = new Set(["numeric", "factual", "data"]);
+
+export interface IntentionalErrorSafetyResult {
+  /** false = categoria de risco detectada; true = segura ou ausente */
+  safe: boolean;
+  /** mensagem de aviso (present only when safe=false) */
+  warn?: string;
+}
+
+/**
+ * Verifica se a categoria declarada no frontmatter pertence ao grupo de risco
+ * de desinformação (#2149, Regra 2). Emite warn (não bloqueia — a verificação
+ * se é inconsistência interna é editorial, não computacional).
+ *
+ * Usado no lint do Stage 4 após `checkIntentionalError`.
+ */
+export function checkIntentionalErrorSafety(
+  category: string | undefined,
+): IntentionalErrorSafetyResult {
+  if (!category) return { safe: true };
+  if (DESINFORMATION_RISK_CATEGORIES.has(category.toLowerCase().trim())) {
+    return {
+      safe: false,
+      warn:
+        `intentional_error.category="${category}" é categoria de risco (#2149). ` +
+        `Verificar antes de publicar: (1) é inconsistência interna evidente no próprio email? ` +
+        `(2) se não pego, o leitor passa a acreditar no fato/estatística falso? ` +
+        `Se violar a regra 2, trocar por attribution/version_inconsistency/factual_synthetic.`,
+    };
+  }
+  return { safe: true };
+}
