@@ -25,7 +25,7 @@ export const PublicImageSchema = z.object({
   url: z.string().min(1, "url obrigatória"),
   mime_type: z.string(),
   filename: z.string(),
-  target: ImageTargetSchema.optional(), // #1119 — default drive pra back-compat
+  target: ImageTargetSchema.optional(), // #1119 — campo opcional; default via defaultTargetFor() (= "cloudflare" desde #2147)
 }).passthrough();
 
 

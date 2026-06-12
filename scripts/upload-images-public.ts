@@ -63,14 +63,13 @@ export type UploadTarget = "drive" | "cloudflare";
 
 /**
  * Default de target por modo (#1119, unificado em #2147):
- * - `newsletter` → cloudflare (email-stable URLs, Cache-Control imutável)
- * - `social` → cloudflare (Worker KV — URLs JPEG direto, sem redirect; Drive
- *   `uc?id` quebra como hotlink no preview do gate por cookie/referer check)
- * - `all` → cloudflare (newsletter manda)
+ * todos os modes → cloudflare (KV). Parâmetro `mode` mantido por compat de
+ * assinatura; ignorado — o retorno é sempre "cloudflare".
  *
  * Editor pode override via flag `--target drive`/`--target cloudflare`.
  */
-export function defaultTargetFor(mode: UploadMode): UploadTarget {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function defaultTargetFor(_mode: UploadMode): UploadTarget {
   return "cloudflare";
 }
 
@@ -443,9 +442,12 @@ export async function uploadPublicImages(
   const uploadToDrive = opts.uploaders?.uploadToDrive ?? driveUploadFile;
   const makeDrivePublic = opts.uploaders?.makeDrivePublic ?? makeFilePublic;
 
-  // Cloudflare config (lazy — só carrega se target=cloudflare).
+  // Cloudflare config (lazy — só carrega se target=cloudflare e uploader real).
+  // Quando opts.uploaders.uploadToCloudflare é injetado (testes), o cfConfig
+  // não é necessário — o stub ignora o 3º arg. Isso elimina a dependência
+  // implícita de platform.config.json nos testes (#2147 finding 6).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
-  if (target === "cloudflare") {
+  if (target === "cloudflare" && !opts.uploaders?.uploadToCloudflare) {
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const kvNamespaceId = cfg?.poll?.kv_namespace_id;
@@ -587,7 +589,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache] [--force-reupload]\n" +
         "\n" +
-        "Default target: 'cloudflare' pra mode=newsletter|all (#1119), 'drive' pra mode=social.\n" +
+        "Default target: 'cloudflare' pra todos os modes (#2147 — d2/d3 social agora vão pro KV, não Drive).\n" +
         "--force-reupload: ignora cache md5/target e força re-upload (recovery após bytes locais mudarem).",
     );
     process.exit(1);

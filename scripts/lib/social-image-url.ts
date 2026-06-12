@@ -4,7 +4,7 @@
  * Resolve a URL de imagem pro preview social SEM fabricar uma key Cloudflare.
  *
  * Bug original (260601): quando faltava `cloudflare_url` e a `url` era Drive
- * (mode=social sobe d2/d3 só pro Drive), `render-social-html` montava
+ * (mode=social subia d2/d3 só pro Drive — comportamento antigo, antes de #2147), `render-social-html` montava
  * `img-{edition}-04-dN-1x1.jpg` SEM o sufixo md5 — uma key que nunca foi
  * escrita no KV (uploads usam md5 suffix desde #1584) → 404 silencioso em
  * d2/d3. A correção: usar `cloudflare_url` quando existe; senão a `url` real

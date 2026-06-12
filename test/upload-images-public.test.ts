@@ -139,7 +139,9 @@ describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?
       await uploadPublicImages({
         editionDir: dir,
         mode: "social",
-        // target omitido → defaultTargetFor("social") = cloudflare (#2147 fix)
+        // target omitido → defaultTargetFor("social") = cloudflare (#2147 fix).
+        // uploaders.uploadToCloudflare injetado → platform.config.json NÃO é lido
+        // (isolação explícita: teste não depende de config externa — #2147 finding 6).
         uploaders: {
           uploadToCloudflare: async (imagePath: string, key: string) => {
             cfUploads.push(key);
