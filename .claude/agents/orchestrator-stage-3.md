@@ -89,7 +89,7 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --out data/editions/{AAMMDD}/_internal/04-leaderboard-top1.json
   ```
   Falha do fetch (Worker offline, timeout) escreve `top1: []` — renderer detecta e omite bloco. **Não-bloqueante** — newsletter funciona sem leaderboard.
-- **Pre-gate invariants (#1007 Fase 1).** Validar que as 6 imagens existem e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
+- **Pre-gate invariants (#1007 Fase 1).** Validar que as 8 imagens existem (eia A/B + d1/d2/d3 2x1 + d1/d2/d3 1x1, #2133/#2141) e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
   ```bash
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/
   ```

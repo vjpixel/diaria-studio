@@ -19,7 +19,7 @@ Antes de publicar, o orchestrator monta um **resumo consolidado da edição fina
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 3 \
-  --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+  --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg"
 ```
 
 Exit code handling:
