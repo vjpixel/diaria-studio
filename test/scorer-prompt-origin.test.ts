@@ -70,3 +70,51 @@ describe("scorer prompts — sinal BR/INT não contradiz o profile (#1567 findin
     assert.ok(!claimsBrHigherCtr("sinal BR vs INT (ler a direção do audience-profile.md)"));
   });
 });
+
+describe("scorer-select — presença da guidance de Segurança (#2131)", () => {
+  /**
+   * Guard: scorer-select.md deve conter a instrução de não subponderar
+   * candidatos de Segurança/safety na seleção holística.
+   * Falha se alguém remover o bloco durante um cleanup sem repor o corretivo.
+   */
+  it("scorer-select.md contém o termo 'subpondere' na rubrica principal (#2131)", () => {
+    const txt = readFileSync(
+      resolve(ROOT, ".claude/agents/scorer-select.md"),
+      "utf8",
+    );
+    assert.ok(
+      txt.includes("subpondere"),
+      "scorer-select.md não contém 'subpondere' (#2131). " +
+        "Reintroduza o bullet anti-viés de Segurança na rubrica principal de seleção (não só no desempate).",
+    );
+  });
+
+  it("scorer-select.md menciona 'Segurança' na guidance anti-viés (#2131)", () => {
+    const txt = readFileSync(
+      resolve(ROOT, ".claude/agents/scorer-select.md"),
+      "utf8",
+    );
+    assert.ok(
+      txt.includes("Segurança"),
+      "scorer-select.md não contém 'Segurança' (#2131). " +
+        "Reintroduza o bullet anti-viés de Segurança/safety na rubrica principal de seleção.",
+    );
+  });
+
+  it("scorer.md contém a mesma guidance anti-viés de Segurança (#2131)", () => {
+    const txt = readFileSync(
+      resolve(ROOT, ".claude/agents/scorer.md"),
+      "utf8",
+    );
+    assert.ok(
+      txt.includes("subpondere"),
+      "scorer.md não contém 'subpondere' (#2131). " +
+        "Adicione a guidance anti-viés de Segurança na etapa de seleção do scorer (fallback path).",
+    );
+    assert.ok(
+      txt.includes("Segurança"),
+      "scorer.md não contém 'Segurança' (#2131). " +
+        "Adicione a guidance anti-viés de Segurança/safety na etapa de seleção do scorer (fallback path).",
+    );
+  });
+});
