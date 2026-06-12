@@ -760,8 +760,26 @@ async function invalidateSnapshot(env: Env, slug: string): Promise<void> {
 
 /**
  * #2113(b): lê o snapshot do slug, faz upsert da entry do leitor e regravo.
- * Se não houver snapshot (primeiro voto do mês), cria com só essa entry.
- * Se o snapshot estiver corrompido, deleta e deixa o recompute lazy regenerar.
+ *
+ * Modelo HÍBRIDO (F1/F2/F3 — PR #2155 self-review):
+ *
+ *   - Snapshot PRESENTE e é array válido → upsert da própria entry preservando
+ *     TTL 24h (#2129). Mantém read-your-own-write (#2113b) sem subrequests extras.
+ *
+ *   - Snapshot AUSENTE (null) OU corrompido (JSON inválido ou parsed.entries não
+ *     é array) → skip-on-missing: NÃO grava snapshot nenhum. Deixa o próximo
+ *     GET fazer full-compute via getOrComputeSnapshot (caminho lazy já existente).
+ *
+ * Rationale do skip-on-missing vs. computeSnapshotEntries no voto (#F3):
+ *   handleVote já consumiu ~12 subrequests. computeSnapshotEntries adiciona
+ *   1 list + N gets — para N≥35 votantes estoura o free-tier (50/req).
+ *   Skip-on-missing resolve #2152 (nunca grava snapshot de 1 que esconde os
+ *   outros N) e #F1/#F2 (corrompido não persiste como 1-entry por 24h) sem
+ *   risco de estourar o orçamento de subrequests no caminho quente do voto.
+ *   O próximo GET lazy-computa tudo corretamente.
+ *
+ * #2129 (fix): TTL 24h ao regravar — não rebaixa o cache de 24h do compute
+ *   path. Read-your-own-write é garantido pela escrita da entry, não pelo TTL.
  *
  * Race entre votos concorrentes: última escrita vence. Snapshot é cache;
  * o próximo recompute produz o estado correto de qualquer forma.
@@ -773,20 +791,28 @@ export async function upsertOwnEntryInSnapshot(
 ): Promise<void> {
   const snapKey = `leaderboard-snapshot:${slug}`;
   const cached = await env.POLL.get(snapKey);
+
+  // Snapshot AUSENTE → skip-on-missing: deixa getOrComputeSnapshot lazy-reconstruir.
+  // Gravar snapshot de 1 entrada aqui esconderia os N votantes existentes (#2152).
+  if (!cached) return;
+
   let entries: SnapshotEntry[];
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
-      entries = Array.isArray(parsed.entries) ? parsed.entries : [];
-    } catch {
-      // Snapshot corrompido — deleta e deixa recompute lazy reconstruir.
+  try {
+    const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
+    if (!Array.isArray(parsed.entries)) {
+      // Snapshot corrompido (JSON válido mas estrutura errada) → skip, lazy-rebuild.
+      // Antes do fix persistia como 1-entry por 24h (#F1).
       await env.POLL.delete(snapKey);
       return;
     }
-  } else {
-    entries = [];
+    entries = parsed.entries;
+  } catch {
+    // JSON inválido → skip, lazy-rebuild (#F2).
+    await env.POLL.delete(snapKey);
+    return;
   }
-  // Upsert: substitui entry existente do mesmo email ou appends.
+
+  // Snapshot presente e válido: upsert da própria entry.
   const emailLower = own.email.toLowerCase();
   const idx = entries.findIndex((e) => e.email.toLowerCase() === emailLower);
   if (idx >= 0) {
@@ -798,19 +824,11 @@ export async function upsertOwnEntryInSnapshot(
     entries.push({ ...own, email: emailLower });
   }
   const payload = { entries, computed_at: new Date().toISOString() };
-  // #2123: TTL curto (5 min) pós-upsert — distinguido do TTL longo do compute
-  // path (24h). Racional:
-  //   (a) read-your-own-write: leitor que vota e abre o leaderboard imediatamente
-  //       vê o próprio voto (satisfaz o objetivo de #2113b).
-  //   (b) autocorreção rápida: races entre votantes concorrentes são corrigidos
-  //       no próximo compute após expiração em 5 min, sem esperar 24h.
-  //   (c) write amplification reduzida: com TTL longo no upsert, o snapshot
-  //       pós-upsert expirava quase no mesmo momento que o compute (24h), e o
-  //       primeiro GET após expiração do upsert recomputava mesmo se o compute
-  //       ainda seria válido. Com 5 min, o compute (3600s ou 86400s) dura mais
-  //       e absorve o tráfego do leaderboard sem recompute frequente.
-  // Sem TTL (fallback eterno): inaceitável — KV eterno para races silenciosos.
-  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 300 }); // 5 min
+  // #2129: TTL 24h — same safety net do compute path (getOrComputeSnapshot).
+  // TTL 300s estava invertido: expirava 5min após o último voto →
+  // recompute (list + N gets) repetido em cada pico de leitura pós-envio.
+  // Read-your-own-write é garantido pela escrita da entry, não pelo TTL curto.
+  await env.POLL.put(snapKey, JSON.stringify(payload), { expirationTtl: 86400 }); // 24h
 }
 
 /**
