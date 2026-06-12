@@ -14,8 +14,9 @@
     sem fallback default-auto (#1326/#2068).
 
     A run termina naturalmente após o pré-render. O editor, na manhã seguinte,
-    roda /diaria-4-publicar {AAMMDD} (gate interativo normal, consent novo
-    sobrescreve o do scheduled run) ou publica manualmente.
+    roda /diaria-4-revisao {AAMMDD} (gate de revisão) e depois
+    /diaria-5-publicacao {AAMMDD} (consent novo sobrescreve o do scheduled run),
+    ou publica manualmente.
 
     --max-turns permanece como safety net para stalls inesperados.
 
