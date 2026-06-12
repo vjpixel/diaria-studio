@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 40 invariants.
+**Total**: 41 invariants.
 
 ## Static (estrutura do repo)
 
@@ -70,7 +70,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch) | #facebook |
 | `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch) | #facebook |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
-| `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971) | #971 |
+| `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
+| `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |
 | `social-published-complete` | 06-social-published.json não-vazio, sem failed (#272) | #272 |
 | `stage-5-review-completed` | review-test-email loop rodou + terminou (#1577) | #1577 |
 | `stage-5-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |

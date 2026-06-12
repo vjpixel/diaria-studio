@@ -64,6 +64,15 @@ function checkFbTokenSet(): InvariantViolation[] {
  * agendamento pro Cloudflare Worker. Sem ele, fallback é Make webhook
  * (#971 com graceful degrade). Nome confirmado em
  * scripts/publish-linkedin.ts:305.
+ *
+ * ASSIMETRIA INTENCIONAL DE SEVERIDADE (#2154 pass-2):
+ * Stage-0 verifica a mesma env var com severity="error" (linkedin-cron-creds-set).
+ * Aqui é "warning" porque Stage 5 é o momento de dispatch — se o var está ausente
+ * agora, o publish-linkedin degrada graciosamente para o Make webhook (post
+ * imediato em vez de agendado). Isso é indesejável mas não catastrófico. Em
+ * Stage 0, o error é correto: queremos parar o pipeline ANTES de 30min de
+ * pesquisa pra não chegar no Stage 5 sem config. Em Stage 5, já estamos
+ * publicando — warning informa o editor do degrade sem abortar.
  */
 function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
   const url = process.env.DIARIA_LINKEDIN_CRON_URL;
@@ -82,6 +91,10 @@ function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
   if (!/^https:\/\//.test(url)) {
     return [
       {
+        // #2154 pass-2: este rule id era ÓRFÃO — emitido pelo código mas não
+        // registrado em STAGE_5_RULES. Agora registrado como entry separada;
+        // o stage-5 rule "linkedin-worker-url-set" cobre o caso ausente,
+        // e "linkedin-worker-url-https" cobre o caso não-HTTPS.
         rule: "linkedin-worker-url-https",
         message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
         source_issue: "#971",
@@ -95,6 +108,10 @@ function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
 /**
  * `DIARIA_LINKEDIN_CRON_TOKEN` deve estar setado — autoriza POST pro worker.
  * Nome confirmado em scripts/publish-linkedin.ts:308.
+ *
+ * ASSIMETRIA INTENCIONAL DE SEVERIDADE (#2154 pass-2):
+ * Stage-0 emite "error" via linkedin-cron-creds-set; aqui é "warning" pelo
+ * mesmo motivo que checkLinkedinWorkerUrlSet: graceful degrade para Make webhook.
  */
 function checkCloudflareTokenSet(): InvariantViolation[] {
   if (
@@ -618,10 +635,38 @@ export const STAGE_5_RULES: InvariantRule[] = [
   },
   {
     id: "linkedin-worker-url-set",
-    description: "DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971)",
+    description: "DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971)",
     source_issue: "#971",
     stage: 5,
     run: () => checkLinkedinWorkerUrlSet(),
+  },
+  {
+    // #2154 pass-2: rule id linkedin-worker-url-https era ÓRFÃO — emitido por
+    // checkLinkedinWorkerUrlSet (ramo não-HTTPS) mas não registrado aqui,
+    // então list-invariants.ts e docs/editorial-invariants.md não o listavam.
+    // Registrado como entry separada: mesmo run fn (que pode emitir qualquer
+    // dos dois ids dependendo do estado), mas descrição diferente pro docs.
+    // Alternativa seria consolidar em 1 id — mas isso exigiria mudar testes
+    // existentes que assertam v[0].rule === "linkedin-worker-url-https" pelo nome.
+    id: "linkedin-worker-url-https",
+    description: "DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971)",
+    source_issue: "#971",
+    stage: 5,
+    run: () => {
+      // Só ativa quando URL está presente mas não é HTTPS.
+      // O ramo "ausente" é coberto por linkedin-worker-url-set acima.
+      const url = process.env.DIARIA_LINKEDIN_CRON_URL;
+      if (!url || url.trim().length === 0) return [];
+      if (/^https:\/\//.test(url)) return [];
+      return [
+        {
+          rule: "linkedin-worker-url-https",
+          message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
+          source_issue: "#971",
+          severity: "error",
+        },
+      ];
+    },
   },
   {
     id: "linkedin-worker-token-set",
@@ -656,4 +701,7 @@ export {
   checkFbTokenSet,
   checkLinkedinWorkerUrlSet,
   checkCloudflareTokenSet,
+  // #2154 pass-2: checkConsentBinding agora vive exclusivamente aqui (stage-5).
+  // A cópia órfã de stage-4 foi removida; testes redirecionados pra cá.
+  checkConsentBinding,
 };

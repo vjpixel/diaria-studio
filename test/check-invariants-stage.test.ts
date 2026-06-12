@@ -45,6 +45,8 @@ import {
   checkClosePollMarker,
   checkLinkedinWorkerUrlSet,
   checkFbPageIdSet,
+  checkFbTokenSet,
+  checkCloudflareTokenSet,
 } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -667,6 +669,61 @@ describe("Stage 4 invariants", () => {
       assert.equal(v[0].rule, "facebook-page-id-set");
     } finally {
       if (original !== undefined) process.env.FACEBOOK_PAGE_ID = original;
+    }
+  });
+
+  // #2154 pass-2: smoke tests para checkFbTokenSet e checkCloudflareTokenSet
+  // — cobertura faltava (were 2 das 4 funções movidas stage-4→stage-5 sem teste unitário).
+  it("facebook-token-set falha (severity=error) quando FACEBOOK_PAGE_ACCESS_TOKEN ausente", () => {
+    const original = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+    delete process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+    try {
+      const v = checkFbTokenSet();
+      assert.equal(v.length, 1, `esperava 1 violation, recebeu ${JSON.stringify(v)}`);
+      assert.equal(v[0].rule, "facebook-token-set");
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /FACEBOOK_PAGE_ACCESS_TOKEN/);
+    } finally {
+      if (original !== undefined) process.env.FACEBOOK_PAGE_ACCESS_TOKEN = original;
+    }
+  });
+
+  it("facebook-token-set ok quando FACEBOOK_PAGE_ACCESS_TOKEN setado", () => {
+    const original = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+    process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "test-token-value";
+    try {
+      const v = checkFbTokenSet();
+      assert.equal(v.length, 0, `esperava 0 violations, recebeu ${JSON.stringify(v)}`);
+    } finally {
+      if (original !== undefined) process.env.FACEBOOK_PAGE_ACCESS_TOKEN = original;
+      else delete process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+    }
+  });
+
+  it("linkedin-worker-token-set warning quando DIARIA_LINKEDIN_CRON_TOKEN ausente (graceful degrade)", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_TOKEN;
+    delete process.env.DIARIA_LINKEDIN_CRON_TOKEN;
+    try {
+      const v = checkCloudflareTokenSet();
+      assert.equal(v.length, 1, `esperava 1 violation, recebeu ${JSON.stringify(v)}`);
+      assert.equal(v[0].rule, "linkedin-worker-token-set");
+      // Assimetria intencional: stage-0 é error; stage-5 é warning (graceful degrade pra Make webhook).
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /DIARIA_LINKEDIN_CRON_TOKEN/);
+    } finally {
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_TOKEN = original;
+    }
+  });
+
+  it("linkedin-worker-token-set ok quando DIARIA_LINKEDIN_CRON_TOKEN setado", () => {
+    const original = process.env.DIARIA_LINKEDIN_CRON_TOKEN;
+    process.env.DIARIA_LINKEDIN_CRON_TOKEN = "test-bearer-token";
+    try {
+      const v = checkCloudflareTokenSet();
+      assert.equal(v.length, 0, `esperava 0 violations, recebeu ${JSON.stringify(v)}`);
+    } finally {
+      if (original !== undefined) process.env.DIARIA_LINKEDIN_CRON_TOKEN = original;
+      else delete process.env.DIARIA_LINKEDIN_CRON_TOKEN;
     }
   });
 
