@@ -114,7 +114,7 @@ Categorias de frontmatter por risco:
 - ✅ Seguras por design: `attribution`, `version_inconsistency`, `ortografico`, `factual_synthetic`
 - ⚠️ Requerem revisão manual: `numeric`, `factual`, `data` — só válidos se forem inconsistência interna evidente (ex: título × corpo com valor diferente), não erro plausível que planta fato falso
 
-Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/intentional-error.ts` — emite `warn` (não bloqueia) para categorias ⚠️ com instrução de verificar contra as 2 regras.
+Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/intentional-error.ts` — chamado por `lint-newsletter-md.ts --check intentional-error-flagged` (Stage 5, antes de criar draft no Beehiiv). Emite `warn` não-bloqueante para categorias ⚠️ com instrução de verificar contra as 2 regras.
 
 ---
 

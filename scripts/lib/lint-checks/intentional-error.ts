@@ -14,11 +14,11 @@
  * intentional_error:
  *   description: "..."
  *   location: "..."
- *   category: "factual|attribution|numeric|ortografico|data"
+ *   category: "factual|attribution|numeric|ortografico|data|version_inconsistency|factual_synthetic"
  *   correct_value: "..."
  * ```
  *
- * Roda no Stage 4 (publish-newsletter) ANTES de criar o draft no Beehiiv.
+ * Roda no Stage 5 (publish-newsletter) ANTES de criar o draft no Beehiiv.
  * Falha bloqueia publicação.
  */
 
@@ -167,19 +167,18 @@ export function checkIntentionalError(
  */
 const DESINFORMATION_RISK_CATEGORIES = new Set(["numeric", "factual", "data"]);
 
-export interface IntentionalErrorSafetyResult {
-  /** false = categoria de risco detectada; true = segura ou ausente */
-  safe: boolean;
-  /** mensagem de aviso (present only when safe=false) */
-  warn?: string;
-}
+/** Discriminated union: safe=false garantia que warn está presente (#2149 F6). */
+export type IntentionalErrorSafetyResult =
+  | { safe: true; warn?: never }
+  | { safe: false; warn: string };
 
 /**
  * Verifica se a categoria declarada no frontmatter pertence ao grupo de risco
  * de desinformação (#2149, Regra 2). Emite warn (não bloqueia — a verificação
  * se é inconsistência interna é editorial, não computacional).
  *
- * Usado no lint do Stage 4 após `checkIntentionalError`.
+ * Usado no lint do Stage 5 (--check intentional-error-flagged) após `checkIntentionalError`.
+ * Chamado por `scripts/lint-newsletter-md.ts`.
  */
 export function checkIntentionalErrorSafety(
   category: string | undefined,
@@ -189,7 +188,7 @@ export function checkIntentionalErrorSafety(
     return {
       safe: false,
       warn:
-        `intentional_error.category="${category}" é categoria de risco (#2149). ` +
+        `intentional_error.category="${category.toLowerCase().trim()}" é categoria de risco (#2149). ` +
         `Verificar antes de publicar: (1) é inconsistência interna evidente no próprio email? ` +
         `(2) se não pego, o leitor passa a acreditar no fato/estatística falso? ` +
         `Se violar a regra 2, trocar por attribution/version_inconsistency/factual_synthetic.`,

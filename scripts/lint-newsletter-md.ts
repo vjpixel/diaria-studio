@@ -51,7 +51,7 @@ import {
   MAX_TITLE_LENGTH,
 } from "./lib/lint-checks/title-length.ts";
 import { checkEiaAnswer } from "./lib/lint-checks/eia-answer-check.ts";
-import { checkIntentionalError } from "./lib/lint-checks/intentional-error.ts";
+import { checkIntentionalError, checkIntentionalErrorSafety } from "./lib/lint-checks/intentional-error.ts";
 import { checkSectionItemFormat } from "./lib/lint-checks/section-item-format.ts";
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
@@ -106,8 +106,10 @@ export {
 } from "./lib/lint-checks/eia-answer-check.ts";
 export {
   checkIntentionalError,
+  checkIntentionalErrorSafety,
   extractFrontmatter,
   type IntentionalErrorCheckResult,
+  type IntentionalErrorSafetyResult,
 } from "./lib/lint-checks/intentional-error.ts";
 export {
   checkSectionItemFormat,
@@ -329,10 +331,18 @@ function main(): void {
 intentional_error:
   description: "o que o assinante deve identificar"
   location: "DESTAQUE 2, parágrafo 2, primeira frase"
-  category: "factual"   # factual | ortografico | numerico | attribution | data
+  category: "factual"   # factual | ortografico | numeric | attribution | data | version_inconsistency | factual_synthetic
   correct_value: "valor correto"
 ---`);
       process.exit(1);
+    }
+    // F1/#2149: wire safety check — warn (não bloqueia) para categorias de risco de desinformação
+    if (!result.no_error) {
+      const safetyResult = checkIntentionalErrorSafety(result.parsed?.category);
+      if (!safetyResult.safe && safetyResult.warn) {
+        console.error(`
+⚠️  ${safetyResult.warn}`);
+      }
     }
     return;
   }

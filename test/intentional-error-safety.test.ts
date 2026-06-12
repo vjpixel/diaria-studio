@@ -31,7 +31,9 @@ describe("checkIntentionalErrorSafety (#2149 — regras do concurso)", () => {
   it("category=factual → safe=false com warn", () => {
     const result = checkIntentionalErrorSafety("factual");
     assert.equal(result.safe, false);
-    assert.ok(result.warn?.includes("factual"));
+    assert.ok(result.warn, "deve conter mensagem de aviso");
+    // F7: anchor — verifica que a categoria exata "factual" aparece no warn (não vacuamente via "factual_synthetic")
+    assert.ok(result.warn!.includes('category="factual"'), `warn deve citar categoria exata, got: ${result.warn}`);
   });
 
   it("category=attribution → safe=true (conhecimento comum)", () => {
@@ -49,11 +51,13 @@ describe("checkIntentionalErrorSafety (#2149 — regras do concurso)", () => {
   it("category=ortografico → safe=true", () => {
     const result = checkIntentionalErrorSafety("ortografico");
     assert.equal(result.safe, true);
+    assert.equal(result.warn, undefined);
   });
 
   it("category=factual_synthetic → safe=true (inconsistência fabricada não-plausível)", () => {
     const result = checkIntentionalErrorSafety("factual_synthetic");
     assert.equal(result.safe, true);
+    assert.equal(result.warn, undefined);
   });
 
   it("category undefined → safe=true (sem categoria declarada)", () => {
@@ -65,6 +69,7 @@ describe("checkIntentionalErrorSafety (#2149 — regras do concurso)", () => {
   it("category vazia → safe=true (tratado como ausente)", () => {
     const result = checkIntentionalErrorSafety("");
     assert.equal(result.safe, true);
+    assert.equal(result.warn, undefined);
   });
 
   it("category em MAIÚSCULAS normalizada corretamente (NUMERIC → risco)", () => {
