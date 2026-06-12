@@ -1,23 +1,28 @@
 /**
- * generate-worker-tokens.ts (#2107)
+ * generate-worker-tokens.ts (#2107, updated #2132)
  *
- * Gera `workers/brevo-dashboard/src/ds-tokens.generated.ts` a partir dos
+ * Gera `workers/{worker}/src/ds-tokens.generated.ts` a partir dos
  * tokens canônicos de `scripts/lib/design-tokens.ts`.
  *
- * Elimina o espelho manual: o Worker nunca mais precisa ter cópias inline dos
+ * Elimina o espelho manual: nenhum Worker precisa ter cópias inline dos
  * valores do DS. Este script é a única fonte de verdade para os tokens no bundle
- * do Worker.
+ * dos Workers.
  *
  * Executado:
- *   - Automaticamente via `[build]` no wrangler.toml (garante que deploy nunca
- *     sai com tokens stale — wrangler roda o build step antes de compilar o
- *     Worker).
+ *   - Automaticamente via `[build]` no wrangler.toml de cada worker (garante
+ *     que deploy nunca sai com tokens stale — wrangler roda o build step antes
+ *     de compilar o Worker). Passar `--out-dir workers/{worker}/src` para um
+ *     destino específico.
  *   - Via `npm run pretest` (raiz) — garante que o arquivo existe antes dos
- *     testes rodarem.
+ *     testes rodarem (gera para todos os workers).
  *   - Manualmente: `npx tsx scripts/generate-worker-tokens.ts`
  *
  * O arquivo gerado tem header "GERADO — não editar" para deixar claro que
  * mudanças devem ser feitas em `scripts/lib/design-tokens.ts`, não aqui.
+ *
+ * Flag opcional: --out-dir <dir>
+ *   Gera apenas no diretório especificado (relativo ao repo root).
+ *   Sem a flag: gera em TODOS os workers listados em OUT_DIRS (comportamento padrão).
  */
 
 import { COLORS, FONTS } from "./lib/design-tokens.ts";
@@ -26,7 +31,21 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const outPath = resolve(__dirname, "../workers/brevo-dashboard/src/ds-tokens.generated.ts");
+const repoRoot = resolve(__dirname, "..");
+
+// Workers que recebem ds-tokens.generated.ts
+const DEFAULT_OUT_DIRS = [
+  "workers/brevo-dashboard/src",
+  "workers/diaria-dashboard/src",
+];
+
+// Suporte a --out-dir para o wrangler.toml de cada worker
+const outDirFlag = (() => {
+  const idx = process.argv.indexOf("--out-dir");
+  return idx !== -1 ? process.argv[idx + 1] : null;
+})();
+
+const outDirs = outDirFlag ? [outDirFlag] : DEFAULT_OUT_DIRS;
 
 const content = `/**
  * ds-tokens.generated.ts — GERADO AUTOMATICAMENTE. NÃO EDITAR.
@@ -62,6 +81,9 @@ export const DS_FONTS = {
 } as const;
 `;
 
-mkdirSync(dirname(outPath), { recursive: true });
-writeFileSync(outPath, content, "utf8");
-console.log(`[generate-worker-tokens] Gerado: ${outPath}`);
+for (const outDir of outDirs) {
+  const outPath = resolve(repoRoot, outDir, "ds-tokens.generated.ts");
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, content, "utf8");
+  console.log(`[generate-worker-tokens] Gerado: ${outPath}`);
+}
