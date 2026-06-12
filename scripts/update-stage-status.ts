@@ -69,7 +69,7 @@ export interface StageStatusDoc {
   run_started_at?: string;
 }
 
-export const STAGES = [0, 1, 2, 3, 4, 5] as const;
+export const STAGES = [0, 1, 2, 3, 4, 5, 6] as const;
 
 export const STAGE_LABELS: Record<number, string> = {
   0: "Setup + dedup",
@@ -78,6 +78,7 @@ export const STAGE_LABELS: Record<number, string> = {
   3: "Imagens",
   4: "Revisão",
   5: "Publicação",
+  6: "Agendamento",
 };
 
 // ---------------------------------------------------------------------------
@@ -329,18 +330,11 @@ export function blockReasonForMarkingStageDone(
   editionDir: string,
   stage: number,
 ): string | null {
-  // #1530: Stage 5 done requires edition-report.html — blocks closing
-  // without auto-reporter + report email.
-  // (#1694: was Stage 4 before split into Revisão+Publicação)
+  // #1577: Stage 5 done exige review_completed=true em 05-published.json.
+  // Orchestrator escapava marcando done sem rodar o loop verify→fix do test
+  // email (caso 260529: review_completed=false, review_status=pending mas
+  // stage marked done). edition-report.html foi movido para Stage 6 (#1694).
   if (stage === 5) {
-    const reportPath = resolve(editionDir, "_internal", "edition-report.html");
-    if (!existsSync(reportPath)) {
-      return `Stage 5 cannot be marked done without edition report (missing ${reportPath})`;
-    }
-    // #1577: Stage 5 done também exige review_completed=true em
-    // 05-published.json. Orchestrator escapava marcando done sem rodar
-    // o loop verify→fix do test email (caso 260529: review_completed=false,
-    // review_status=pending mas stage marked done).
     const publishedPath = resolve(editionDir, "_internal", "05-published.json");
     if (existsSync(publishedPath)) {
       try {
@@ -363,6 +357,33 @@ export function blockReasonForMarkingStageDone(
         }
       } catch {
         // Corrupted JSON — outro check pega; não bloqueia transition aqui.
+      }
+    }
+  }
+  // Stage 6 done requires edition-report.html — blocks closing without auto-reporter + report email.
+  // (#1694: auto-reporter moved from Stage 5 to Stage 6)
+  if (stage === 6) {
+    const reportPath = resolve(editionDir, "_internal", "edition-report.html");
+    if (!existsSync(reportPath)) {
+      return `Stage 6 cannot be marked done without edition report (missing ${reportPath})`;
+    }
+    // Stage 6 done also requires scheduled_at in 05-published.json
+    // (unless status is "published" — immediate send detected, still valid)
+    const publishedPath = resolve(editionDir, "_internal", "05-published.json");
+    if (existsSync(publishedPath)) {
+      try {
+        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
+          scheduled_at?: string;
+          status?: string;
+        };
+        if (!pub.scheduled_at && pub.status !== "published") {
+          return (
+            `Stage 6 cannot be marked done without scheduled_at in 05-published.json ` +
+            `(status=${pub.status ?? "missing"}). Run the Beehiiv Schedule step first.`
+          );
+        }
+      } catch {
+        // Corrupted JSON — another check catches; don't block transition here.
       }
     }
   }

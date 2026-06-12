@@ -25,8 +25,9 @@ export interface InvariantRule {
    * Stage em que a regra deve ser checada.
    * - `0` roda no Stage 0 preflight (antes de iniciar)
    * - `1`-`4` rodam pré-gate de cada stage
-   * - `5` roda pós-publicação (após Stage 4 dispatch, antes do auto-reporter)
+   * - `5` roda pós-dispatch (após Stage 5 newsletter+social, antes do Stage 6)
+   * - `6` roda pós-agendamento (após Stage 6 Schedule+auto-reporter) (#1694)
    */
-  stage: 0 | 1 | 2 | 3 | 4 | 5;
+  stage: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   run: (editionDir: string) => InvariantViolation[];
 }

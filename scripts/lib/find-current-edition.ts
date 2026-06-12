@@ -23,10 +23,10 @@
  *   → {"stage":2,"candidates":["260505","260506"]}
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export type Stage = 2 | 3 | 4 | 5;
+export type Stage = 2 | 3 | 4 | 5 | 6;
 
 interface StageRequirements {
   /** Files that must exist for this stage to be ready to run. */
@@ -56,6 +56,15 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
     // detection if social dispatch fails (#1694 finding 3).
     prereq: ["_internal/.step-4-done.json"],
     output: ["_internal/06-social-published.json"],
+  },
+  6: {
+    // Stage 6 = Agendamento (#1694): gate humano + Schedule Beehiiv + auto-reporter.
+    // prereq: .step-5-done.json (Stage 5 completed its dispatch).
+    // output: .step-6-done.json (written after Schedule confirmed + auto-reporter done).
+    // Guard: editions that have 05-published.json with scheduled_at OR status="published"
+    //        are historical/complete — do NOT re-flag as Stage 6 in-progress.
+    prereq: ["_internal/.step-5-done.json"],
+    output: ["_internal/.step-6-done.json"],
   },
 };
 
@@ -97,6 +106,23 @@ export function findEditionsInProgress(
       continue; // already fully published — treat as complete
     }
 
+    // #1694: guard against historical editions (pre-Stage-6) being detected as Stage 6
+    // in-progress. Pre-split editions with 05-published.json that already have
+    // scheduled_at or status="published" are fully complete — Stage 6 sentinel
+    // was not written for them (feature not yet deployed). Treat as done.
+    if (stage === 6 && existsSync(join(editionDir, "_internal", "05-published.json"))) {
+      try {
+        const pub = JSON.parse(
+          readFileSync(join(editionDir, "_internal", "05-published.json"), "utf8"),
+        ) as { scheduled_at?: string; status?: string };
+        if (pub.scheduled_at || pub.status === "published") {
+          continue; // already fully completed — treat as done
+        }
+      } catch {
+        // corrupted JSON — don't skip, let normal logic handle
+      }
+    }
+
     candidates.push(entry);
   }
 
@@ -123,8 +149,8 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const stageRaw = args["stage"];
   const stageNum = parseInt(stageRaw ?? "", 10);
-  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5) {
-    console.error("Uso: find-current-edition.ts --stage <2|3|4|5>");
+  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5 && stageNum !== 6) {
+    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6>");
     process.exit(1);
   }
   const candidates = findEditionsInProgress(stageNum as Stage);

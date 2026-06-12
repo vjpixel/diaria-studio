@@ -168,7 +168,7 @@ describe("computeDurationMs (#1706) — auto-computa, trata 0 como não-medido",
 });
 
 describe("makeInitialDoc (#960)", () => {
-  it("cria doc com 6 stages todos pending (#1694)", () => {
+  it("cria doc com 7 stages todos pending (#1694)", () => {
     const doc = makeInitialDoc("260508");
     assert.equal(doc.edition, "260508");
     assert.equal(doc.rows.length, STAGES.length);
@@ -177,7 +177,7 @@ describe("makeInitialDoc (#960)", () => {
     }
     assert.deepEqual(
       doc.rows.map((r) => r.stage),
-      [0, 1, 2, 3, 4, 5],
+      [0, 1, 2, 3, 4, 5, 6],
     );
   });
 
@@ -267,14 +267,14 @@ describe("applyUpdate (#960)", () => {
 });
 
 describe("renderStageStatus (#960)", () => {
-  it("inclui header + 6 linhas + total (#1694)", () => {
+  it("inclui header + 7 linhas + total (#1694)", () => {
     const doc = makeInitialDoc("260508");
     const md = renderStageStatus(doc);
     assert.match(md, /# Stage Status — edição 260508/);
     assert.match(md, /\*\*Total\*\*/);
-    // 6 stages (#1694: Stage 5 Publicação adicionado)
+    // 7 stages (#1694: Stage 6 Agendamento adicionado)
     const tableRows = (md.match(/^\|\s*\d+\s*\|/gm) ?? []).length;
-    assert.equal(tableRows, 6, "uma linha por stage 0-5");
+    assert.equal(tableRows, 7, "uma linha por stage 0-6");
   });
 
   it("formato BRT timestamp na coluna de início", () => {
@@ -461,15 +461,15 @@ describe("update-stage-status CLI (#960)", () => {
     }
   });
 
-  it("#1530 (#1694): Stage 5 done bloqueado sem edition-report.html", () => {
-    // (#1694: guard movida de Stage 4 → Stage 5 após split Revisão+Publicação)
+  it("#1530 (#1694): Stage 5 done NAO bloqueado por edition-report.html (movido para Stage 6)", () => {
+    // (#1694: guard movida de Stage 5 → Stage 6 — auto-reporter agora corre no Stage 6)
     const dir = mkdtempSync(join(tmpdir(), "stage-status-1530-"));
     try {
       const editionDir = join(dir, "260527");
       mkdirSync(join(editionDir, "_internal"), { recursive: true });
       runCli(["--edition-dir", editionDir, "--init"]);
 
-      // Stage 4 (Revisão) done now allowed without report
+      // Stage 4 (Revisão) done allowed without report
       const r0 = runCli([
         "--edition-dir", editionDir,
         "--stage", "4",
@@ -477,23 +477,65 @@ describe("update-stage-status CLI (#960)", () => {
       ]);
       assert.equal(r0.status, 0, "stage 4 done should not be blocked (Revisão)");
 
-      // Stage 5 (Publicação) without report → exit 1
+      // Stage 5 (Publicação) sem report — agora PERMITIDO (report movido para Stage 6)
+      // Precisa de review_completed=true em 05-published.json porém
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ review_completed: true, review_status: "ok", template_used: "default" }),
+      );
       const r1 = runCli([
         "--edition-dir", editionDir,
         "--stage", "5",
         "--status", "done",
       ]);
-      assert.equal(r1.status, 1, "should block stage 5 done without report");
-      assert.match(r1.stderr, /edition-report\.html/);
+      assert.equal(r1.status, 0, "stage 5 done should not be blocked without report (moved to stage 6)");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
 
-      // With report → exit 0
-      writeFileSync(join(editionDir, "_internal", "edition-report.html"), "<html>report</html>");
-      const r2 = runCli([
+  it("#1694: Stage 6 done bloqueado sem edition-report.html", () => {
+    // (#1694: guard movida de Stage 5 → Stage 6 após split Publicação+Agendamento)
+    const dir = mkdtempSync(join(tmpdir(), "stage-status-1694-"));
+    try {
+      const editionDir = join(dir, "260527");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      runCli(["--edition-dir", editionDir, "--init"]);
+
+      // Stage 6 (Agendamento) without report → exit 1
+      const r1 = runCli([
         "--edition-dir", editionDir,
-        "--stage", "5",
+        "--stage", "6",
         "--status", "done",
       ]);
-      assert.equal(r2.status, 0, r2.stderr);
+      assert.equal(r1.status, 1, "should block stage 6 done without report");
+      assert.match(r1.stderr, /edition-report\.html/);
+
+      // With report but no scheduled_at → still blocked
+      writeFileSync(join(editionDir, "_internal", "edition-report.html"), "<html>report</html>");
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ review_completed: true, status: "draft" }),
+      );
+      const r2 = runCli([
+        "--edition-dir", editionDir,
+        "--stage", "6",
+        "--status", "done",
+      ]);
+      assert.equal(r2.status, 1, "should block stage 6 done without scheduled_at");
+      assert.match(r2.stderr, /scheduled_at/);
+
+      // With report + scheduled_at → exit 0
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ review_completed: true, scheduled_at: "2026-06-12T09:00:00Z", status: "scheduled" }),
+      );
+      const r3 = runCli([
+        "--edition-dir", editionDir,
+        "--stage", "6",
+        "--status", "done",
+      ]);
+      assert.equal(r3.status, 0, r3.stderr);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -560,7 +602,7 @@ describe("loadDoc/saveDoc (#1216)", () => {
       mkdirSync(editionDir, { recursive: true });
       const reloaded = loadDoc(editionDir, "260517");
       assert.equal(reloaded.edition, "260517");
-      assert.equal(reloaded.rows.length, 6); // stages 0-5 (#1694)
+      assert.equal(reloaded.rows.length, 7); // stages 0-6 (#1694)
       for (const r of reloaded.rows) assert.equal(r.status, "pending");
     } finally {
       rmSync(dir, { recursive: true });

@@ -13,6 +13,7 @@ import { STAGE_2_RULES } from "./stage-2.ts";
 import { STAGE_3_RULES } from "./stage-3.ts";
 import { STAGE_4_RULES } from "./stage-4.ts";
 import { STAGE_5_RULES } from "./stage-5.ts";
+import { STAGE_6_RULES } from "./stage-6.ts";
 
 export const ALL_INVARIANT_RULES: InvariantRule[] = [
   ...STAGE_0_RULES,
@@ -21,9 +22,10 @@ export const ALL_INVARIANT_RULES: InvariantRule[] = [
   ...STAGE_3_RULES,
   ...STAGE_4_RULES,
   ...STAGE_5_RULES,
+  ...STAGE_6_RULES,
 ];
 
-export function getRulesForStage(stage: 0 | 1 | 2 | 3 | 4 | 5): InvariantRule[] {
+export function getRulesForStage(stage: 0 | 1 | 2 | 3 | 4 | 5 | 6): InvariantRule[] {
   return ALL_INVARIANT_RULES.filter((r) => r.stage === stage);
 }
 

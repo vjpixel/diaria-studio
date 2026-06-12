@@ -102,14 +102,14 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
     }
   });
 
-  it("step fora do range de stages (0-5) → no-op silencioso (#1694: range agora 0-5)", () => {
+  it("step fora do range de stages (0-6) → no-op silencioso (#1694: range agora 0-6)", () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-status-range-"));
     try {
       const doc = makeInitialDoc("260528");
       saveDoc(dir, doc);
 
-      // 6 está fora do range 0-5
-      assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", 6), false);
+      // 7 está fora do range 0-6
+      assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", 7), false);
       assert.equal(autoUpdateStageStatusOnSentinel(dir, "260528", -1), false);
     } finally {
       rmSync(dir, { recursive: true });
@@ -127,8 +127,9 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
     }
   });
 
-  it("Stage 5 (Publicação) running sem edition-report.html → no-op (respeita gate #1530, #1694)", () => {
-    // #1694: guard movida de Stage 4 → Stage 5 após split Revisão+Publicação
+  it("Stage 5 (Publicação) running sem edition-report.html → marca done (#1694: guard movida para Stage 6)", () => {
+    // #1694: guard de edition-report movida de Stage 5 → Stage 6 (Agendamento)
+    // Stage 5 agora so bloqueia se 05-published.json existe e review_completed=false
     const dir = mkdtempSync(join(tmpdir(), "sentinel-status-gate-"));
     try {
       let doc = makeInitialDoc("260528");
@@ -139,13 +140,38 @@ describe("autoUpdateStageStatusOnSentinel (#1563)", () => {
       });
       saveDoc(dir, doc);
 
-      // No edition-report.html written
-      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 5);
-      assert.equal(updated, false, "gate #1530 deve bloquear Stage 5");
+      // Sem edition-report.html — Stage 5 NAO deve mais bloquear (guard movida para Stage 6)
+      const nowMs = new Date("2026-05-27T22:00:00Z").getTime();
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 5, nowMs);
+      assert.equal(updated, true, "Stage 5 sem report deve marcar done (#1694: guard em Stage 6)");
 
       const reloaded = loadDoc(dir, "260528");
       const stage5 = reloaded.rows.find((r) => r.stage === 5);
-      assert.equal(stage5!.status, "running", "row permanece running");
+      assert.equal(stage5!.status, "done");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("Stage 6 (Agendamento) running sem edition-report.html → no-op (respeita gate #1694)", () => {
+    // #1694: guard de edition-report movida de Stage 5 → Stage 6
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-status-s6-gate-"));
+    try {
+      let doc = makeInitialDoc("260528");
+      doc = applyUpdate(doc, {
+        stage: 6,
+        status: "running",
+        start: "2026-05-27T21:00:00Z",
+      });
+      saveDoc(dir, doc);
+
+      // Sem edition-report.html — Stage 6 deve bloquear
+      const updated = autoUpdateStageStatusOnSentinel(dir, "260528", 6);
+      assert.equal(updated, false, "gate #1694 deve bloquear Stage 6 sem report");
+
+      const reloaded = loadDoc(dir, "260528");
+      const stage6 = reloaded.rows.find((r) => r.stage === 6);
+      assert.equal(stage6!.status, "running", "row permanece running");
     } finally {
       rmSync(dir, { recursive: true });
     }

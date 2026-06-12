@@ -53,6 +53,7 @@ const STAGE_LABELS: Record<number, string> = {
   3: "Stage 3 — Imagens",
   4: "Stage 4 — Publicação (pré-dispatch)",
   5: "Stage 5 — Publicação (pós-dispatch)",
+  6: "Stage 6 — Agendamento",
 };
 
 function groupRules(): StageGroup[] {
@@ -73,7 +74,7 @@ function groupRules(): StageGroup[] {
       source_issue: extractSourceIssue(r.description),
     })),
   });
-  for (const stage of [0, 1, 2, 3, 4, 5] as const) {
+  for (const stage of [0, 1, 2, 3, 4, 5, 6] as const) {
     const rules = byStage.get(stage) ?? [];
     if (rules.length === 0) continue;
     groups.push({
