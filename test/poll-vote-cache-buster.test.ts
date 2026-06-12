@@ -90,18 +90,17 @@ function makeEnv(kv: KVNamespace): Env {
 }
 
 describe("upsertOwnEntryInSnapshot (#2113b)", () => {
-  it("cria snapshot novo quando não existia (primeiro voto do mês)", async () => {
+  it("snapshot ausente (primeiro voto do mês) → skip-on-missing, nenhum snapshot gravado (#2152/#F3)", async () => {
+    // Modelo híbrido: snapshot ausente → skip. O próximo GET lazy-computa via
+    // getOrComputeSnapshot. Evita gravar snapshot de 1 entrada que apagaria
+    // os N votantes existentes (#2152) e evita N gets dentro do voto (#F3).
     const kv = makeKv() as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
     const own: SnapshotEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const snapKey = "leaderboard-snapshot:2026-05";
     const raw = (kv as unknown as { _data: Record<string, string> })._data[snapKey];
-    assert.ok(raw, "snapshot deve ser gravado");
-    const parsed = JSON.parse(raw);
-    assert.equal(parsed.entries.length, 1);
-    assert.equal(parsed.entries[0].email, "a@x.com");
-    assert.equal(parsed.entries[0].correct, 1);
+    assert.equal(raw, undefined, "skip-on-missing: nenhum snapshot gravado quando ausente");
   });
 
   it("faz upsert de entry existente (substitui valores)", async () => {
@@ -138,8 +137,14 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
     assert.ok(emailsInSnapshot.includes("a@x.com"));
   });
 
-  it("email de entrada em case misto é normalizado pra lowercase na saída", async () => {
-    const kv = makeKv() as unknown as KVNamespace & { _data: Record<string, string> };
+  it("email de entrada em case misto é normalizado pra lowercase na saída (snapshot presente)", async () => {
+    // Modelo híbrido: normalização de email só ocorre quando snapshot está PRESENTE.
+    // Quando ausente, skip-on-missing (ver teste acima).
+    const existing = JSON.stringify({
+      entries: [],
+      computed_at: "2026-06-01T00:00:00Z",
+    });
+    const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
     const own: SnapshotEntry = { email: "A@X.COM", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);

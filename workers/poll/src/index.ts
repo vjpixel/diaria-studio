@@ -760,21 +760,26 @@ async function invalidateSnapshot(env: Env, slug: string): Promise<void> {
 
 /**
  * #2113(b): lê o snapshot do slug, faz upsert da entry do leitor e regravo.
- * Se o snapshot estiver corrompido, deleta e deixa o recompute lazy regenerar.
  *
- * #2152 (fix): quando `cached` é null — snapshot ausente por TTL expiry,
- * invalidação via adjustScoreByMonthCorrect/purge, ou realmente nenhum voto
- * ainda — NÃO criar snapshot de 1 entrada. Chamar computeSnapshotEntries pra
- * materializar TODOS os votantes existentes antes de upsert. Preserva
- * read-your-own-write (objetivo do #2113b) sem apagar os outros N votantes.
- * Custo: 1 list + N gets só quando o snapshot está ausente (caso raro em prod).
+ * Modelo HÍBRIDO (F1/F2/F3 — PR #2155 self-review):
  *
- * #2129 (fix): preservar o TTL de 24h do compute path ao regravar. O racional
- * antigo (TTL 300s) estava invertido — com 300s o snapshot expirava 5 min após
- * o último voto do dia e o primeiro GET subsequente recomputava (list + N gets)
- * repetidamente no pico. O objetivo do #2113b (read-your-own-write) é atendido
- * escrevendo a entry no snapshot, não por TTL curto. TTL 24h = same safety net
- * do compute path.
+ *   - Snapshot PRESENTE e é array válido → upsert da própria entry preservando
+ *     TTL 24h (#2129). Mantém read-your-own-write (#2113b) sem subrequests extras.
+ *
+ *   - Snapshot AUSENTE (null) OU corrompido (JSON inválido ou parsed.entries não
+ *     é array) → skip-on-missing: NÃO grava snapshot nenhum. Deixa o próximo
+ *     GET fazer full-compute via getOrComputeSnapshot (caminho lazy já existente).
+ *
+ * Rationale do skip-on-missing vs. computeSnapshotEntries no voto (#F3):
+ *   handleVote já consumiu ~12 subrequests. computeSnapshotEntries adiciona
+ *   1 list + N gets — para N≥35 votantes estoura o free-tier (50/req).
+ *   Skip-on-missing resolve #2152 (nunca grava snapshot de 1 que esconde os
+ *   outros N) e #F1/#F2 (corrompido não persiste como 1-entry por 24h) sem
+ *   risco de estourar o orçamento de subrequests no caminho quente do voto.
+ *   O próximo GET lazy-computa tudo corretamente.
+ *
+ * #2129 (fix): TTL 24h ao regravar — não rebaixa o cache de 24h do compute
+ *   path. Read-your-own-write é garantido pela escrita da entry, não pelo TTL.
  *
  * Race entre votos concorrentes: última escrita vence. Snapshot é cache;
  * o próximo recompute produz o estado correto de qualquer forma.
@@ -786,24 +791,28 @@ export async function upsertOwnEntryInSnapshot(
 ): Promise<void> {
   const snapKey = `leaderboard-snapshot:${slug}`;
   const cached = await env.POLL.get(snapKey);
+
+  // Snapshot AUSENTE → skip-on-missing: deixa getOrComputeSnapshot lazy-reconstruir.
+  // Gravar snapshot de 1 entrada aqui esconderia os N votantes existentes (#2152).
+  if (!cached) return;
+
   let entries: SnapshotEntry[];
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
-      entries = Array.isArray(parsed.entries) ? parsed.entries : [];
-    } catch {
-      // Snapshot corrompido — deleta e deixa recompute lazy reconstruir.
+  try {
+    const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
+    if (!Array.isArray(parsed.entries)) {
+      // Snapshot corrompido (JSON válido mas estrutura errada) → skip, lazy-rebuild.
+      // Antes do fix persistia como 1-entry por 24h (#F1).
       await env.POLL.delete(snapKey);
       return;
     }
-  } else {
-    // #2152: snapshot ausente → recompute TODOS os votantes existentes antes
-    // de upsert. "Snapshot ausente" pode ser: TTL 24h expirado em baixo tráfego,
-    // invalidação por adjustScoreByMonthCorrect/purge, ou primeiro voto do mês.
-    // Em todos os casos, partir de entries=[] apagaria os N votantes existentes.
-    entries = await computeSnapshotEntries(env, slug);
+    entries = parsed.entries;
+  } catch {
+    // JSON inválido → skip, lazy-rebuild (#F2).
+    await env.POLL.delete(snapKey);
+    return;
   }
-  // Upsert: substitui entry existente do mesmo email ou appends.
+
+  // Snapshot presente e válido: upsert da própria entry.
   const emailLower = own.email.toLowerCase();
   const idx = entries.findIndex((e) => e.email.toLowerCase() === emailLower);
   if (idx >= 0) {

@@ -4,11 +4,13 @@
  * Regressões para dois bugs em upsertOwnEntryInSnapshot:
  *
  *   #2152 (P1, PROD): snapshot ausente + N>1 score-by-month keys → após voto,
- *     snapshot deve conter TODOS os N votantes (não só o votante atual).
- *     Bug: `entries = []` quando `cached` é null destruía a visão dos outros N
- *     votantes. Fix: chamar computeSnapshotEntries quando cached é null.
+ *     o snapshot de 1 entrada NÃO deve ser gravado (skip-on-missing, modelo
+ *     híbrido). O próximo GET (getOrComputeSnapshot) vê todos os N votantes.
+ *     Bug original: `entries = []` destruía a visão dos outros N votantes.
+ *     Fix original tentou computeSnapshotEntries no voto — mas F3 mostrou que
+ *     estourava o budget de 50 subrequests/req para N≥35. Fix final: skip.
  *
- *   #2129 (P2): voto sobre snapshot fresco NÃO deve reduzir o TTL do cache
+ *   #2129 (P2): voto sobre snapshot PRESENTE NÃO deve reduzir o TTL do cache
  *     de 24h para 300s. Bug: upsert sempre gravava com expirationTtl=300,
  *     rebaixando o TTL do snapshot computado (86400). Fix: upsert usa 86400.
  */
@@ -17,34 +19,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   upsertOwnEntryInSnapshot,
+  getOrComputeSnapshot,
   type SnapshotEntry,
   type Env,
 } from "../workers/poll/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-/** KV em memória que rastreia puts (incluindo expirationTtl). */
-function makeTrackedKv(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  const puts: Array<{ key: string; value: string; opts?: { expirationTtl?: number } }> = [];
-  const kv = {
-    puts,
-    async get(key: string) { return store.get(key) ?? null; },
-    async getWithMetadata(key: string) { return { value: store.get(key) ?? null, metadata: null }; },
-    async put(key: string, value: string, opts?: { expirationTtl?: number }) {
-      puts.push({ key, value, opts });
-      store.set(key, value);
-    },
-    async delete(key: string) { store.delete(key); },
-    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
-      const keys = [...store.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-  };
-  return kv;
-}
 
 function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
   return {
@@ -55,20 +36,21 @@ function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
   };
 }
 
-// ── #2152: snapshot ausente com N>1 votantes existentes ─────────────────────
+// ── #2152: snapshot ausente com N>1 votantes — modelo híbrido (skip-on-missing) ──
 
-describe("#2152 — snapshot ausente não deve destruir votantes existentes", () => {
-  it("snapshot ausente + 21 votantes no KV → após voto, snapshot tem 22 entradas", async () => {
-    // Simula o cenário real: 21 votos no KV (score-by-month), snapshot expirou (TTL 5min).
-    // Bug antigo: entries=[] → snapshot gravado com só o votante atual.
-    // Fix: computeSnapshotEntries materializa os 21 antes do upsert.
+describe("#2152 — snapshot ausente não deve destruir votantes existentes (modelo híbrido)", () => {
+  it("snapshot ausente + N>1 votantes → após voto NÃO existe snapshot de 1 entrada gravado", async () => {
+    // Modelo híbrido: snapshot ausente → skip. Não chama computeSnapshotEntries
+    // dentro do voto (estouraria subrequest budget para N≥35, F3).
+    // Bug original: entries=[] → snapshot de 1 entrada que apagava os outros N.
     const initial: Record<string, string> = {};
     for (let i = 1; i <= 21; i++) {
+      const day = String(i).padStart(2, "0"); // F5: padStart(2) para datas ISO válidas
       initial[`score-by-month:2026-06:voter${i}@x.com`] = JSON.stringify({
         nickname: `Voter${i}`,
         correct: i,
         total: 21,
-        last_vote_ts: `2026-06-0${String(i).padStart(1, "0")}T10:00:00.000Z`,
+        last_vote_ts: `2026-06-${day}T10:00:00.000Z`,
       });
     }
     const kv = makeTrackedKv(initial); // sem snapshot (cached = null)
@@ -81,46 +63,55 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
       total: 21,
     });
 
-    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot deve ser gravado");
-    const payload = JSON.parse(put!.value);
+    const snapshotPut = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    // Modelo híbrido: ausente → skip, nenhum snapshot de 1 entrada gravado.
     assert.equal(
-      payload.entries.length,
-      22,
-      "snapshot deve ter os 21 votantes existentes + o novo (não só 1)",
+      snapshotPut,
+      undefined,
+      "snapshot ausente → skip-on-missing: nenhum snapshot de 1 entrada deve ser persistido (#2152/#F3)",
     );
-    const pixel = payload.entries.find((e: SnapshotEntry) => e.email === "pixel@x.com");
-    assert.ok(pixel, "votante atual deve estar presente no snapshot");
-    assert.equal(pixel.correct, 5, "dados do votante atual corretos");
   });
 
-  it("snapshot ausente + 1 votante existente + voto de outro → snapshot tem 2 entradas", async () => {
-    const kv = makeTrackedKv({
-      "score-by-month:2026-06:alice@x.com": JSON.stringify({
-        nickname: "Alice",
-        correct: 3,
+  it("snapshot ausente: getOrComputeSnapshot (lazy) vê os N+1 votantes após o voto", async () => {
+    // O READ (getOrComputeSnapshot) faz full-compute e vê todos os votantes.
+    // Confirma que skip-on-missing não perde dados — dados estão em score-by-month.
+    const initial: Record<string, string> = {};
+    for (let i = 1; i <= 5; i++) {
+      initial[`score-by-month:2026-06:voter${i}@x.com`] = JSON.stringify({
+        nickname: `Voter${i}`,
+        correct: i,
         total: 5,
-      }),
-      // sem snapshot
-    });
+      });
+    }
+    const kv = makeTrackedKv(initial);
     const env = makeEnv(kv);
+
+    // Voto escreve o score-by-month key do novo votante (simulado aqui diretamente)
+    // e chama upsertOwnEntryInSnapshot (que skipa — snapshot ausente).
+    await kv.put("score-by-month:2026-06:pixel@x.com", JSON.stringify({
+      nickname: "Pixel",
+      correct: 3,
+      total: 5,
+    }));
     await upsertOwnEntryInSnapshot(env, "2026-06", {
-      email: "bob@x.com",
-      nickname: "Bob",
-      correct: 2,
+      email: "pixel@x.com",
+      nickname: "Pixel",
+      correct: 3,
       total: 5,
     });
-    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot deve ser gravado");
-    const payload = JSON.parse(put!.value);
-    assert.equal(payload.entries.length, 2, "Alice + Bob no snapshot");
-    const emails = payload.entries.map((e: SnapshotEntry) => e.email).sort();
-    assert.deepEqual(emails, ["alice@x.com", "bob@x.com"]);
+
+    // Simula o próximo GET: getOrComputeSnapshot lazy-computa tudo.
+    const entries = await getOrComputeSnapshot(env, "2026-06");
+    assert.equal(
+      entries.length,
+      6,
+      "getOrComputeSnapshot deve ver os 5 votantes originais + pixel (6 total)",
+    );
   });
 
-  it("snapshot ausente + 0 votantes existentes + primeiro voto → snapshot tem 1 entrada", async () => {
-    // Caso legítimo de "primeiro voto do mês" — comportamento correto original.
-    const kv = makeTrackedKv({}); // KV vazio, sem snapshot nem score-by-month
+  it("snapshot ausente + 0 votantes (primeiro voto do mês) → skip-on-missing, nada gravado", async () => {
+    // Primeiro voto do mês: KV vazio, snapshot ausente → skip. O READ lazy-computa.
+    const kv = makeTrackedKv({});
     const env = makeEnv(kv);
     await upsertOwnEntryInSnapshot(env, "2026-06", {
       email: "alice@x.com",
@@ -129,14 +120,11 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
       total: 1,
     });
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot deve ser gravado");
-    const payload = JSON.parse(put!.value);
-    assert.equal(payload.entries.length, 1, "só Alice — primeiro voto real do mês");
-    assert.equal(payload.entries[0].email, "alice@x.com");
+    assert.equal(put, undefined, "skip-on-missing: nenhum snapshot gravado para primeiro voto");
   });
 
-  it("snapshot existente com N entradas + voto novo → N+1 entradas", async () => {
-    // Snapshot presente com 5 votantes → voto de novo votante → 6 entradas.
+  it("snapshot existente com N entradas + voto novo → N+1 entradas (upsert normal)", async () => {
+    // Snapshot PRESENTE: caminho normal do upsert não é afetado.
     const existingEntries = Array.from({ length: 5 }, (_, i) => ({
       email: `voter${i + 1}@x.com`,
       nickname: `Voter${i + 1}`,
@@ -164,6 +152,11 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
       payload.entries.find((e: SnapshotEntry) => e.email === "new@x.com"),
       "novo votante deve estar presente",
     );
+    // F8: verificar que pelo menos um votante pré-existente tem dados corretos
+    const voter1 = payload.entries.find((e: SnapshotEntry) => e.email === "voter1@x.com");
+    assert.ok(voter1, "voter1 pré-existente deve ser preservado");
+    assert.equal(voter1.correct, 1, "correct de voter1 pré-existente preservado");
+    assert.equal(voter1.nickname, "Voter1", "nickname de voter1 pré-existente preservado");
   });
 
   it("snapshot existente com N entradas + revoto do mesmo email → N entradas (upsert, não append)", async () => {
@@ -191,11 +184,15 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
     const alice = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
     assert.equal(alice.total, 4, "total de Alice atualizado");
     assert.equal(alice.correct, 3, "correct de Alice atualizado");
+    // F8: verificar que bob (pré-existente) foi preservado intacto
+    const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
+    assert.ok(bob, "bob pré-existente preservado");
+    assert.equal(bob.correct, 1, "correct de bob não alterado");
   });
 
-  it("caminho invalidação (#2152 sub-caso b): adjustScoreByMonthCorrect deleta snapshot → voto seguinte restaura todos", async () => {
+  it("caminho invalidação (#2152 sub-caso b): após adjustScoreByMonthCorrect deleta snapshot → voto seguinte skipa (lazy rebuild)", async () => {
     // adjustScoreByMonthCorrect chama invalidateSnapshot que deleta a chave.
-    // Sem o fix, o próximo voto gravaria snapshot de 1 entrada.
+    // Com modelo híbrido: próximo voto skipa (snapshot ausente). O READ lazy-computa.
     const kv = makeTrackedKv({
       // score-by-month keys existentes (N=3) — snapshot foi deletado por invalidação
       "score-by-month:2026-06:alice@x.com": JSON.stringify({ nickname: "Alice", correct: 3, total: 5 }),
@@ -205,7 +202,7 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
     });
     const env = makeEnv(kv);
 
-    // Novo voto de Dave após invalidação
+    // Novo voto de Dave após invalidação — upsert skipa (snapshot ausente)
     await upsertOwnEntryInSnapshot(env, "2026-06", {
       email: "dave@x.com",
       nickname: "Dave",
@@ -214,10 +211,15 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes", ()
     });
 
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot recriado após invalidação");
-    const payload = JSON.parse(put!.value);
-    assert.equal(payload.entries.length, 4, "Alice + Bob + Carol + Dave (não só Dave)");
-    const emails = payload.entries.map((e: SnapshotEntry) => e.email).sort();
+    assert.equal(put, undefined, "skip-on-missing: nenhum snapshot de 1 gravado após invalidação");
+
+    // Simula dave votando (score-by-month key gravado pelo handleVote real)
+    await kv.put("score-by-month:2026-06:dave@x.com", JSON.stringify({ nickname: "Dave", correct: 0, total: 1 }));
+
+    // O próximo READ (getOrComputeSnapshot) reconstrói tudo
+    const result = await getOrComputeSnapshot(env, "2026-06");
+    assert.equal(result.length, 4, "Alice + Bob + Carol + Dave (lazy rebuild via GET)");
+    const emails = result.map((e: SnapshotEntry) => e.email).sort();
     assert.deepEqual(emails, ["alice@x.com", "bob@x.com", "carol@x.com", "dave@x.com"]);
   });
 });
@@ -249,11 +251,13 @@ describe("#2129 — upsert preserva TTL 24h (não rebaixa para 300s)", () => {
       86400,
       "TTL deve ser 86400s (24h) — não rebaixar o snapshot computado para 300s",
     );
+    // F6: TTL test também verifica contagem de entries para detectar regressão de dados
+    const payload = JSON.parse(put!.value);
+    assert.equal(payload.entries.length, 2, "alice + bob ambos presentes (não só bob)");
   });
 
-  it("voto sobre snapshot ausente: TTL gravado é 86400 (não 300s)", async () => {
-    // Mesmo quando snapshot estava ausente (computeSnapshotEntries chamado),
-    // o TTL do resultado deve ser 86400 — idêntico ao getOrComputeSnapshot.
+  it("snapshot ausente: skip-on-missing — nenhum put de snapshot (TTL irrelevante)", async () => {
+    // Com modelo híbrido, snapshot ausente não gera put algum.
     const kv = makeTrackedKv({
       "score-by-month:2026-06:alice@x.com": JSON.stringify({
         nickname: "Alice", correct: 2, total: 3,
@@ -267,18 +271,18 @@ describe("#2129 — upsert preserva TTL 24h (não rebaixa para 300s)", () => {
       total: 1,
     });
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot deve ser gravado");
-    assert.equal(
-      put!.opts?.expirationTtl,
-      86400,
-      "TTL 86400s mesmo partindo de snapshot ausente",
-    );
+    assert.equal(put, undefined, "skip-on-missing: nenhum put de snapshot quando ausente");
   });
 
-  it("read-your-own-write mantido: votante vê próprios dados no snapshot após upsert", async () => {
+  it("read-your-own-write mantido: votante vê próprios dados no snapshot após upsert (snapshot presente)", async () => {
     // Objetivo original do #2113b: ler o snapshot depois do upsert mostra o voto.
-    // Com TTL 86400, isso continua funcionando — a entry está no snapshot.
-    const kv = makeTrackedKv();
+    // Com TTL 86400 e snapshot PRESENTE, a entry está no snapshot.
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [],
+        computed_at: "2026-06-11T00:00:00.000Z",
+      }),
+    });
     const env = makeEnv(kv);
     const ts = "2026-06-11T10:00:00.000Z";
     await upsertOwnEntryInSnapshot(env, "2026-06", {
@@ -297,5 +301,61 @@ describe("#2129 — upsert preserva TTL 24h (não rebaixa para 300s)", () => {
     assert.equal(alice.correct, 3);
     assert.equal(alice.total, 5);
     assert.equal(alice.last_vote_ts, ts);
+  });
+});
+
+// ── F1: structural corruption (non-array entries) → skip, não persiste 1-entry ──
+
+describe("F1 — snapshot corrompido (não-array entries) não persiste 1-entry por 24h", () => {
+  it("entries é null → deleta snapshot e retorna sem gravar (skip-on-corrupted)", async () => {
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: null, // estrutura inválida
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
+    const env = makeEnv(kv);
+    await upsertOwnEntryInSnapshot(env, "2026-06", {
+      email: "alice@x.com",
+      nickname: "Alice",
+      correct: 1,
+      total: 1,
+    });
+    // Deve deletar o snapshot corrompido mas não gravar novo snapshot de 1 entrada
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.equal(put, undefined, "corrompido (entries=null) → skip, nenhum novo snapshot gravado");
+  });
+
+  it("entries é objeto (não-array) → deleta snapshot e retorna sem gravar", async () => {
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: { foo: "bar" }, // objeto, não array
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
+    const env = makeEnv(kv);
+    await upsertOwnEntryInSnapshot(env, "2026-06", {
+      email: "alice@x.com",
+      nickname: "Alice",
+      correct: 1,
+      total: 1,
+    });
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.equal(put, undefined, "corrompido (entries=objeto) → skip, nenhum novo snapshot gravado");
+  });
+
+  it("JSON inválido → deleta snapshot e retorna sem gravar (F2)", async () => {
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": "not-valid-json{{{",
+    });
+    const env = makeEnv(kv);
+    await upsertOwnEntryInSnapshot(env, "2026-06", {
+      email: "alice@x.com",
+      nickname: "Alice",
+      correct: 1,
+      total: 1,
+    });
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.equal(put, undefined, "JSON inválido → skip, nenhum novo snapshot gravado (F2)");
   });
 });

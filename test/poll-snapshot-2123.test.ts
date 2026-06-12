@@ -4,7 +4,8 @@
  * Regressões pros 4 fixes do #2123:
  *   1. last_vote_ts em SnapshotEntry: computeSnapshotEntries + upsertOwnEntryInSnapshot
  *      propagam o campo → rankEntries usa tiebreaker real via snapshot.
- *   2. TTL curto pós-upsert: upsertOwnEntryInSnapshot grava com 300s (não 86400s).
+ *   2. TTL 24h pós-upsert: upsertOwnEntryInSnapshot grava com 86400s (24h — igual ao
+ *      compute path). TTL 300s foi o bug; veja #2129.
  *   3. Redirect do leaderboard YYMM-MM → anual é 302 (não 301 cacheável permanentemente).
  *   4. backfill-score-by-month.ts: editionToMonthSlug local aceita ciclo YYMM-MM.
  */
@@ -21,31 +22,9 @@ import {
 import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 import { rankEntries } from "../workers/poll/src/leaderboard.ts";
 import worker from "../workers/poll/src/index.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-
-/** KV mínimo em memória que rastreia opts do put (incluindo expirationTtl). */
-function makeTrackedKv(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  const puts: Array<{ key: string; value: string; opts?: { expirationTtl?: number } }> = [];
-  const kv = {
-    puts,
-    async get(key: string) { return store.get(key) ?? null; },
-    async getWithMetadata(key: string) { return { value: store.get(key) ?? null, metadata: null }; },
-    async put(key: string, value: string, opts?: { expirationTtl?: number }) {
-      puts.push({ key, value, opts });
-      store.set(key, value);
-    },
-    async delete(key: string) { store.delete(key); },
-    async list({ prefix = "" }: { prefix?: string } = {}) {
-      const keys = [...store.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((name) => ({ name }));
-      return { keys, list_complete: true, cursor: undefined };
-    },
-  };
-  return kv;
-}
 
 function makeEnv(kv: ReturnType<typeof makeTrackedKv>): Env {
   return {
@@ -133,9 +112,16 @@ describe("computeSnapshotEntries propaga last_vote_ts (#2123 fix 1a)", () => {
 // ── Fix 1b: upsertOwnEntryInSnapshot propaga last_vote_ts ───────────────────
 
 describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
-  it("inclui last_vote_ts na entry upserted quando fornecido", async () => {
+  it("inclui last_vote_ts na entry upserted quando snapshot presente", async () => {
+    // Modelo híbrido: snapshot deve estar PRESENTE para que o upsert grave.
     const ts = "2026-06-10T15:30:00.000Z";
-    const kv = makeTrackedKv();
+    const kv = makeTrackedKv({
+      // snapshot presente (mas sem entradas de alice ainda)
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
     const env = makeEnv(kv);
     const own: SnapshotEntry = {
       email: "alice@x.com",
@@ -180,7 +166,12 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
   });
 
   it("last_vote_ts ausente no own: entry no snapshot não carrega o campo", async () => {
-    const kv = makeTrackedKv();
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
     const env = makeEnv(kv);
     // SnapshotEntry sem last_vote_ts (back-compat — campo é opcional)
     const own: SnapshotEntry = {
@@ -228,10 +219,16 @@ describe("upsertOwnEntryInSnapshot — TTL 24h pós-upsert (#2129 fix)", () => {
       86400,
       "TTL do upsert deve ser 86400s (24h) — igual ao compute path, não rebaixar o cache",
     );
+    // F6: TTL test also asserts entry count — if entries were silently dropped,
+    // the TTL check would pass but data would be lost.
+    const payload = JSON.parse(put!.value);
+    assert.equal(payload.entries.length, 2, "bob + alice ambos presentes no snapshot");
   });
 
-  it("voto sobre snapshot ausente: TTL também é 86400s (não 300s)", async () => {
-    // #2152 + #2129: snapshot ausente → computeSnapshotEntries + upsert com 24h TTL
+  it("snapshot ausente: skip-on-missing — não grava snapshot de 1 entrada (#2152/#F3)", async () => {
+    // Modelo híbrido: snapshot ausente → skip (não chama computeSnapshotEntries
+    // dentro do voto para não estourar budget de subrequests).
+    // O próximo GET lazy-computa via getOrComputeSnapshot.
     const kv = makeTrackedKv({
       "score-by-month:2026-06:carol@x.com": JSON.stringify({
         nickname: "Carol", correct: 3, total: 5,
@@ -245,12 +242,8 @@ describe("upsertOwnEntryInSnapshot — TTL 24h pós-upsert (#2129 fix)", () => {
       total: 2,
     });
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
-    assert.ok(put, "snapshot deve ser gravado mesmo partindo de ausente");
-    assert.equal(
-      put!.opts?.expirationTtl,
-      86400,
-      "TTL 24h mesmo quando snapshot estava ausente (não 300s)",
-    );
+    // Modelo híbrido: ausente → skip, nenhum put de snapshot-de-1.
+    assert.equal(put, undefined, "snapshot ausente → skip-on-missing: nenhum snapshot gravado");
   });
 });
 
