@@ -152,6 +152,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 ## post_pixel
 
+<!-- destaque: d1 -->
 <!-- char_count: 980 -->
 
 <post pessoal standalone de D1 no feed do vjpixel — voz pessoal, reescrito, #1690>

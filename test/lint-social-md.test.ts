@@ -48,6 +48,26 @@ ${postPixel}
 #IA #futuro
 `;
 
+  it("falha quando post_pixel é sobre d3, não d1 (caso 260612: swap D1↔D3 Ona↔Amodei — #2145)", () => {
+    // Situação exata do bug: editor pediu D1↔D3 no gate do Stage 4.
+    // Após o swap, d1 = Amodei/Anthropic e d3 = Ona.
+    // O post_pixel ficou sobre Ona (o D1 antigo) — stale.
+    const md = mk(
+      // D1 atual (após swap): Amodei / Anthropic / modelo / estratégia
+      "Dario Amodei detalhou a estratégia da Anthropic para os próximos anos: modelos mais seguros, acesso mais amplo e foco em alinhamento como vantagem competitiva.",
+      // D2 (inalterado): outro tema neutro
+      "A OpenAI anunciou parceria com Microsoft para expandir o acesso ao GPT-5 em produtos empresariais.",
+      // D3 atual (após swap): Ona — o D1 original
+      "A Ona acaba de lançar um agente de voz com latência sub-300ms para call centers, apostando em naturalidade acima de precisão.",
+      // post_pixel STALE: fala de Ona (o D1 antigo antes do swap), não de Amodei (D1 atual)
+      "O agente de voz da Ona com latência sub-300ms é o que mais me animou hoje: naturalidade acima de precisão muda o jogo nos call centers.",
+    );
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.checked, true);
+    assert.equal(r.best_match, "d3"); // post_pixel casou com d3 (Ona), não com d1 (Amodei)
+  });
+
   it("falha quando post_pixel é sobre d2, não d1 (caso 260605: reorder MIT→D1)", () => {
     const md = mk(
       "Pesquisa do MIT mostra que automação não destruiu empregos como o pânico previa; os dados de trabalho contam outra história.",

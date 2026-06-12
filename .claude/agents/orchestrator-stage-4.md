@@ -117,6 +117,12 @@ npx tsx scripts/lint-newsletter-md.ts --check all --file data/editions/{AAMMDD}/
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
+**4c.2b — Lint social + consistência post_pixel (#2145):**
+```bash
+npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md data/editions/{AAMMDD}/03-social.md
+```
+Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. Exit 1 = ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de publicar".
+
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).
 - URL pública no Worker KV: `{newsletter_url}` (capturada em §4b step 2).
@@ -223,6 +229,12 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
+
+4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
+   - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
+   - O orchestrator **avisa** o editor imediatamente: "Reordenação detectada — o `## post_pixel` pode estar referenciando o D1 antigo. Re-verificar e re-sincronizar antes de aprovar."
+   - Re-rodar lint: `npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md data/editions/{AAMMDD}/03-social.md`. Se falhar (exit 1): o post_pixel precisa ser reescrito (ou re-despachado via `social-linkedin` apenas para a seção `post_pixel`) antes de prosseguir.
+   - Lint verde (exit 0) = post_pixel já alinhado com o D1 atual → sem bloqueio.
 4. **Logar:**
    ```bash
    npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info \
