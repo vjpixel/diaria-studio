@@ -23,10 +23,11 @@ Releia antes de selecionar:
 1. Os finalistas **já estão pontuados** — use os `score` como vieram (não recalcule). Os scores de `use_melhor` já incorporam o bônus/penalidade de `audience_affinity` (#2063) e o bônus de tutorial hands-on curto (#2143) quando presentes. Se um finalista `use_melhor` tiver `audience_affinity.matched` não-vazio, mencionar os sinais na `reason` para explicar a priorização:
    - `"hands_on:true"` + sub-sinais `"ho:*"` → o scorer-chunk já adicionou **+8 pts** ao score numérico; referencie na `reason` (ex: "tutorial hands-on detectado: passos + ferramenta consumer").
    - `"categoria:Treinamento"` ou `"tool:chatgpt"` → bônus de affinity já embutido no score.
-2. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6). Em caso de empate ou concentração temática, desempatar favorecendo:
-   - **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa);
-   - **diversidade de bucket** (evitar 6 do mesmo bucket, sem cota mínima).
-   - **Não subpondere Segurança/safety** (#2131) — candidatos sobre vulnerabilidade, exploit, ataque com IA, alignment/safety, privacidade, fraude ou deepfake chegam com score decente mas são historicamente preteridos em favor de novidade de produto. Quando um candidato de Segurança tiver score competitivo (próximo ou acima do cutoff dos 6), considere-o com o mesmo peso que um lançamento. Isso é correção de viés, não cota: não force Segurança todo dia, mas não a descarte por ser "menos empolgante".
+2. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6).
+   - **Não subpondere Segurança/safety** (#2131) — candidatos sobre vulnerabilidade, exploit, ataque com IA, alignment/safety, privacidade, fraude ou deepfake chegam com score decente mas são historicamente preteridos em favor de novidade de produto. Quando um candidato de Segurança tiver score competitivo (dentro de ~5 pts do 6º colocado), considere-o com o mesmo peso que um lançamento. Isso é correção de viés, não cota: não force Segurança todo dia, mas não a descarte por ser "menos empolgante".
+   - Em caso de empate ou concentração temática, desempatar favorecendo:
+     - **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa);
+     - **diversidade de bucket** (evitar 6 do mesmo bucket, sem cota mínima).
    - Se os finalistas tiverem `< 6` artigos, output = `finalists.length` e adicionar `warning_pool_too_small: true`.
 3. Definir a **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket. **A ordem do array `highlights` É a ordem editorial** (o `rank` é re-numerado em TS depois).
 4. Os 1-2 melhores finalistas que ficaram de fora dos 6 vão pra `runners_up[]` (fallback humano).
