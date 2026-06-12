@@ -8,6 +8,8 @@ import {
   lintRelativeTime,
   lintLinkedinSchema,
   lintPostPixelMatchesD1,
+  lintPersonalPostNewsletterDeixis,
+  checkHumanizerSectionCoverage,
 } from "../scripts/lint-social-md.ts";
 
 describe("lintPostPixelMatchesD1 (#1861)", () => {
@@ -611,5 +613,398 @@ describe("lintLinkedinSchema (#595)", () => {
       (e) => e.rule === "main_post_mentions_diaria" || e.rule === "main_post_mentions_diaria_url",
     );
     assert.equal(brandErrs.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2148 Fix A: lintPersonalPostNewsletterDeixis
+// ---------------------------------------------------------------------------
+
+/** Helper: monta 03-social.md mínimo com post_pixel e comment_pixel configuráveis */
+function mkSocialWithPersonal(opts: {
+  postPixel?: string;
+  commentPixelD1?: string;
+  mainD1?: string;
+}): string {
+  const mainD1 = opts.mainD1 ?? "Dario Amodei detalhou a estratégia da Anthropic para os próximos anos.";
+  const commentPixelD1 = opts.commentPixelD1 ?? "O frame mudou pra quem implanta agente em produção.";
+  const postPixel = opts.postPixel ?? "A frase da Anthropic sobre alinhamento é a mais honesta que ouvi de uma big lab.";
+  return `# LinkedIn
+
+## d1
+
+${mainD1}
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+${commentPixelD1}
+
+## d2
+
+Texto do d2.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Comentário d2 sem problema.
+
+## d3
+
+Texto do d3.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+Comentário d3 sem problema.
+
+## post_pixel
+
+<!-- destaque: d1 -->
+<!-- char_count: 900 -->
+
+${postPixel}
+
+#IA #Anthropic
+
+# Facebook
+
+## d1
+
+Texto do Facebook.
+
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
+`;
+}
+
+describe("lintPersonalPostNewsletterDeixis (#2148 Fix A)", () => {
+  it("FALHA: 'esta newsletter' em post_pixel (caso real 260612)", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "Esta newsletter inclusive roda em grande parte com agentes — o que ainda me surpreende.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false, "deve falhar com deixis em post_pixel");
+    assert.equal(r.matches.length, 1);
+    assert.equal(r.matches[0].section, "post_pixel");
+    assert.ok(r.matches[0].phrase.toLowerCase().includes("esta newsletter"));
+  });
+
+  it("FALHA: 'essa newsletter' em post_pixel", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "Eu nunca imaginei que essa newsletter chegaria a 10 mil leitores.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].section, "post_pixel");
+  });
+
+  it("FALHA: 'nossa newsletter' em post_pixel", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "Nossa newsletter cobre exatamente esse tipo de tensão todo dia.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].section, "post_pixel");
+  });
+
+  it("FALHA: 'esta newsletter' em comment_pixel de destaque", () => {
+    const md = mkSocialWithPersonal({
+      commentPixelD1: "Esta newsletter roda com agentes — o que me surpreende diariamente.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches[0].section.startsWith("comment_pixel"));
+    assert.ok(r.matches[0].phrase.toLowerCase().includes("esta newsletter"));
+  });
+
+  it("PASSA: menção biográfica sem deixis ('a newsletter de IA que escrevo')", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "A newsletter de IA que escrevo roda em grande parte com agentes — o que ainda me surpreende.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, true, "menção biográfica não deve ser flagada");
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("PASSA: post_pixel sem menção de newsletter", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "O frame de alinhamento como vantagem competitiva é o que mais me interessa na estratégia da Anthropic.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("NÃO flaga 'esta newsletter' no main post d1 (post de marca — OK ter deixis)", () => {
+    // O main post do d1 é postado na PÁGINA da Diar.ia — contexto de marca, OK.
+    const md = mkSocialWithPersonal({
+      mainD1: "Esta newsletter cobre as notícias de IA mais importantes do dia.",
+      postPixel: "A frase da Anthropic sobre alinhamento é a mais honesta que ouvi de uma big lab.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, true, "main post de marca não deve ser flagado");
+  });
+
+  it("sem seção LinkedIn = no-op (ok: true)", () => {
+    const r = lintPersonalPostNewsletterDeixis("# Facebook\n## d1\nTexto.");
+    assert.equal(r.ok, true);
+    assert.equal(r.matches.length, 0);
+  });
+
+  it("CLI: exit 1 com 'esta newsletter' em post_pixel, exit 0 sem deixis", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "deixis-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(process.execPath, ["--import", "tsx", scriptPath, "--check", "personal-post-no-newsletter-deixis", "--md", p], { encoding: "utf8" });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    const withDeixis = mkSocialWithPersonal({
+      postPixel: "Esta newsletter roda com agentes — o que me surpreende.",
+    });
+    assert.equal(run(withDeixis).status, 1, "deixis → exit 1");
+
+    const withoutDeixis = mkSocialWithPersonal({
+      postPixel: "A newsletter de IA que escrevo roda com agentes.",
+    });
+    assert.equal(run(withoutDeixis).status, 0, "sem deixis → exit 0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2148 Fix B: checkHumanizerSectionCoverage
+// ---------------------------------------------------------------------------
+
+/** Monta 03-social.md com seções parametrizáveis — todos os campos opcionais */
+function mkSocialForCoverage(opts: {
+  mainD1?: string;
+  mainD2?: string;
+  mainD3?: string;
+  commentPixelD1?: string;
+  commentPixelD2?: string;
+  commentPixelD3?: string;
+  postPixel?: string;
+}): string {
+  const mainD1 = opts.mainD1 ?? "Texto original do destaque d1.";
+  const mainD2 = opts.mainD2 ?? "Texto original do destaque d2.";
+  const mainD3 = opts.mainD3 ?? "Texto original do destaque d3.";
+  const commentPixelD1 = opts.commentPixelD1 ?? "Comentário original d1.";
+  const commentPixelD2 = opts.commentPixelD2 ?? "Comentário original d2.";
+  const commentPixelD3 = opts.commentPixelD3 ?? "Comentário original d3.";
+  const postPixel = opts.postPixel ?? "Post pixel original.";
+  return `# LinkedIn
+
+## d1
+
+${mainD1}
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+${commentPixelD1}
+
+## d2
+
+${mainD2}
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+${commentPixelD2}
+
+## d3
+
+${mainD3}
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
+
+### comment_pixel
+
+${commentPixelD3}
+
+## post_pixel
+
+${postPixel}
+
+# Facebook
+
+## d1
+
+Texto do Facebook.
+
+Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.
+`;
+}
+
+describe("checkHumanizerSectionCoverage (#2148 Fix B)", () => {
+  it("PASSA: todas as seções foram alteradas (humanizador completo)", () => {
+    const pre = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL d1 com marcas IA: implementando soluções robustas.",
+      mainD2: "Texto ORIGINAL d2 com marcas IA: otimizando recursos disponíveis.",
+      mainD3: "Texto ORIGINAL d3 com marcas IA: maximizando resultados esperados.",
+      commentPixelD1: "Comentário ORIGINAL d1 com IA: otimizando o framework.",
+      commentPixelD2: "Comentário ORIGINAL d2 com IA: alavancando o pipeline.",
+      commentPixelD3: "Comentário ORIGINAL d3 com IA: implementando melhorias.",
+      postPixel: "Post pixel ORIGINAL com IA: alavancando sinergias.",
+    });
+    const post = mkSocialForCoverage({
+      mainD1: "Texto reescrito d1 — sem marcas de IA.",
+      mainD2: "Texto reescrito d2 — linguagem natural.",
+      mainD3: "Texto reescrito d3 — voz editorial limpa.",
+      commentPixelD1: "Comentário reescrito d1 — voz pessoal real.",
+      commentPixelD2: "Comentário reescrito d2 — opinião direta.",
+      commentPixelD3: "Comentário reescrito d3 — prosa humana.",
+      postPixel: "Post pixel reescrito — prosa humana.",
+    });
+    const r = checkHumanizerSectionCoverage(pre, post);
+    assert.equal(r.ok, true, "todas tocadas → ok: true");
+    assert.equal(r.untouched.length, 0);
+  });
+
+  it("FALHA: post_pixel não foi tocado (humanizador pulou rodapé)", () => {
+    // Cenário real #2148: humanizador mudou main posts mas deixou post_pixel intacto.
+    // O guard whole-file (arquivo mudou no todo) não pega esse furo.
+    const pre = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL com marcas IA.",
+      commentPixelD1: "Comentário ORIGINAL com marcas IA.",
+      postPixel: "Post pixel ORIGINAL com marcas IA — não tocado pelo humanizador.",
+    });
+    const post = mkSocialForCoverage({
+      mainD1: "Texto reescrito pelo humanizador.",
+      commentPixelD1: "Comentário reescrito.",
+      postPixel: "Post pixel ORIGINAL com marcas IA — não tocado pelo humanizador.", // idêntico
+    });
+    const r = checkHumanizerSectionCoverage(pre, post);
+    assert.equal(r.ok, false, "post_pixel intacto → ok: false");
+    assert.ok(r.untouched.includes("post_pixel"), "post_pixel deve estar na lista untouched");
+  });
+
+  it("FALHA: comment_pixel_d2 não foi tocado (humanizador pulou seção)", () => {
+    // O humanizador reescreveu todas as outras seções mas deixou comment_pixel_d2 idêntico.
+    const originalD2Comment = "O frame técnico da decisão é relevante pra quem está construindo.";
+    const pre = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL d1 com marcas IA.",
+      mainD2: "Texto ORIGINAL d2 com marcas IA.",
+      mainD3: "Texto ORIGINAL d3 com marcas IA.",
+      commentPixelD1: "Comentário ORIGINAL d1.",
+      commentPixelD2: originalD2Comment, // este NÃO vai mudar no post
+      commentPixelD3: "Comentário ORIGINAL d3.",
+      postPixel: "Post pixel ORIGINAL.",
+    });
+    const post = mkSocialForCoverage({
+      mainD1: "Texto reescrito d1.",
+      mainD2: "Texto reescrito d2.",
+      mainD3: "Texto reescrito d3.",
+      commentPixelD1: "Comentário reescrito d1.",
+      commentPixelD2: originalD2Comment, // idêntico ao pre → untouched
+      commentPixelD3: "Comentário reescrito d3.",
+      postPixel: "Post pixel reescrito.",
+    });
+    const r = checkHumanizerSectionCoverage(pre, post);
+    assert.equal(r.ok, false, "comment_pixel_d2 intacto → ok: false");
+    assert.ok(r.untouched.includes("comment_pixel_d2"), "comment_pixel_d2 deve estar na lista untouched");
+  });
+
+  it("PASSA: arquivo idêntico no todo = no-op (caught pelo guard whole-file, não aqui)", () => {
+    // Se o arquivo for byte-idêntico no todo, o guard whole-file do orchestrator
+    // já bloqueia. Este check é complementar — mas também retorna untouched para
+    // todas as seções, o que é correto (todas idênticas).
+    const md = mkSocialForCoverage({});
+    const r = checkHumanizerSectionCoverage(md, md);
+    assert.equal(r.ok, false, "arquivo idêntico → todas seções untouched");
+    assert.ok(r.untouched.length > 0);
+  });
+
+  it("retorna ok:true e sections vazio quando não há seção LinkedIn", () => {
+    const r = checkHumanizerSectionCoverage("# Facebook\n## d1\nFoo", "# Facebook\n## d1\nBar");
+    assert.equal(r.ok, true);
+    assert.equal(r.sections.length, 0);
+  });
+
+  it("CLI: exit 1 quando post_pixel não tocado, exit 0 quando tudo tocado", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+
+    const run = (preMd: string, postMd: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "coverage-cli-"));
+      try {
+        const prePath = join(dir, "03-social-pre.md");
+        const postPath = join(dir, "03-social.md");
+        writeFileSync(prePath, preMd, "utf8");
+        writeFileSync(postPath, postMd, "utf8");
+        return spawnSync(
+          process.execPath,
+          ["--import", "tsx", scriptPath, "--check", "humanizer-section-coverage", "--pre", prePath, "--md", postPath],
+          { encoding: "utf8" },
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    // post_pixel idêntico → exit 1
+    const preMd = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL com marcas IA.",
+      postPixel: "Post pixel ORIGINAL — intacto.",
+    });
+    const postMd = mkSocialForCoverage({
+      mainD1: "Texto reescrito pelo humanizador.",
+      postPixel: "Post pixel ORIGINAL — intacto.", // idêntico ao pre
+    });
+    assert.equal(run(preMd, postMd).status, 1, "post_pixel intacto → exit 1");
+
+    // Tudo mudado → exit 0
+    const preMd2 = mkSocialForCoverage({
+      mainD1: "A original.", mainD2: "B original.", mainD3: "C original.",
+      commentPixelD1: "D original.", commentPixelD2: "E original.", commentPixelD3: "F original.",
+      postPixel: "G original.",
+    });
+    const postMd2 = mkSocialForCoverage({
+      mainD1: "A reescrito.", mainD2: "B reescrito.", mainD3: "C reescrito.",
+      commentPixelD1: "D reescrito.", commentPixelD2: "E reescrito.", commentPixelD3: "F reescrito.",
+      postPixel: "G reescrito.",
+    });
+    assert.equal(run(preMd2, postMd2).status, 0, "tudo tocado → exit 0");
   });
 });
