@@ -445,18 +445,27 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("{{poll_sig}}"), "merge tag {{poll_sig}} ausente");
   });
 
-  it("placeholder de imagem hero do D1 presente ({{IMG:04-d1-2x1.jpg}})", () => {
-    // Apenas D1 recebe imagem hero inline no body do email (renderDestaque:
-    // showInlineImage = d.n === 1). D2/D3 têm imageFile pra outros usos
-    // (cover upload, Beehiiv), mas NÃO são embutidas como {{IMG:}} no HTML.
+  it("placeholders de imagem hero 2x1 presentes para D1, D2 e D3 (#2133/#2141)", () => {
+    // #2133/#2141: todos os 3 destaques recebem imagem hero 2:1 inline no email.
+    // renderDestaque usa heroFile = `04-d${d.n}-2x1.jpg` — não depende de
+    // imageFile (que continua 1x1 no D2/D3 para uso no social preview).
     assert.ok(html.includes("{{IMG:04-d1-2x1.jpg}}"), "placeholder imagem D1 ausente");
     assert.ok(
+      html.includes("{{IMG:04-d2-2x1.jpg}}"),
+      "D2 deve ter imagem hero 2x1 inline (#2133/#2141)",
+    );
+    assert.ok(
+      html.includes("{{IMG:04-d3-2x1.jpg}}"),
+      "D3 deve ter imagem hero 2x1 inline (#2133/#2141)",
+    );
+    // 1x1 NÃO deve aparecer como hero (imageFile do D2/D3 é 1x1, mas hero usa 2x1):
+    assert.ok(
       !html.includes("{{IMG:04-d2-1x1.jpg}}"),
-      "D2 não deve ter imagem hero inline (invariante do DS)",
+      "hero D2 não deve usar arquivo 1x1 (deve ser 2x1)",
     );
     assert.ok(
       !html.includes("{{IMG:04-d3-1x1.jpg}}"),
-      "D3 não deve ter imagem hero inline (invariante do DS)",
+      "hero D3 não deve usar arquivo 1x1 (deve ser 2x1)",
     );
   });
 

@@ -81,13 +81,16 @@ function main() {
     process.exit(1);
   }
 
-  // #1916: --ratio força o formato. Sem a flag, default da diária (d1 wide).
+  // #1916: --ratio força o formato. Sem a flag, default da diária (todos os
+  // destaques d1/d2/d3 usam 2x1 como hero inline no email, #2133/#2141).
   const ratio = args["ratio"];
   if (ratio !== undefined && ratio !== "2x1" && ratio !== "1x1") {
     console.error(`--ratio deve ser 2x1 ou 1x1. Recebido: ${ratio}`);
     process.exit(1);
   }
-  const wide = ratio === "2x1" || (ratio === undefined && destaque === "d1");
+  // Default wide para d1/d2/d3: hero 2:1 inline. --ratio 1x1 ainda funciona
+  // como override (ex: mensal que precisasse apenas do square).
+  const wide = ratio === "2x1" || (ratio === undefined && /^d[123]$/.test(destaque));
 
   // Ler prompt editorial
   const editorialText = readFileSync(editorialPath, "utf8");

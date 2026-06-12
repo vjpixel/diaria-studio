@@ -1,9 +1,11 @@
 /**
- * Invariants de Stage 3 — Imagens (#1007 Fase 1).
+ * Invariants de Stage 3 — Imagens (#1007 Fase 1, #2133/#2141).
  *
- * Verifica que as 4 imagens existem (eia A, d1 2x1, d1 1x1, d2 1x1, d3 1x1) e
+ * Verifica que as 8 imagens existem (eia A/B, d1/d2/d3 2x1, d1/d2/d3 1x1) e
  * que prompts não violam regras editoriais (sem pixels explícitos, sem
  * Noite Estrelada).
+ *
+ * #2133/#2141: D2 e D3 agora também geram 2x1 como hero inline no email.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -15,7 +17,9 @@ const REQUIRED_IMAGES = [
   "01-eia-B.jpg",
   "04-d1-2x1.jpg",
   "04-d1-1x1.jpg",
+  "04-d2-2x1.jpg", // #2133/#2141: hero inline D2
   "04-d2-1x1.jpg",
+  "04-d3-2x1.jpg", // #2133/#2141: hero inline D3
   "04-d3-1x1.jpg",
 ];
 
@@ -26,7 +30,7 @@ const PROMPT_FILES = [
 ];
 
 /**
- * Stage 4 (publicação) precisa de todas as 6 imagens. Sem elas, Beehiiv +
+ * Stage 4 (publicação) precisa de todas as 8 imagens. Sem elas, Beehiiv +
  * social falham — pegar antes do dispatch.
  */
 function checkAllImagesExist(editionDir: string): InvariantViolation[] {
@@ -162,7 +166,7 @@ function checkEiaAnswerResolved(editionDir: string): InvariantViolation[] {
 export const STAGE_3_RULES: InvariantRule[] = [
   {
     id: "all-images-exist",
-    description: "6 imagens (eia A/B + d1 2x1/1x1 + d2/d3 1x1) presentes",
+    description: "8 imagens (eia A/B + d1/d2/d3 2x1 + d1/d2/d3 1x1) presentes (#2133/#2141)",
     source_issue: "#stage-3",
     stage: 3,
     run: checkAllImagesExist,

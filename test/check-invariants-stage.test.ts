@@ -352,7 +352,7 @@ describe("Stage 3 invariants", () => {
 
   it("all-images-exist falha quando todas ausentes", () => {
     const v = checkAllImagesExist(fixture);
-    assert.equal(v.length, 6); // 6 imagens obrigatórias
+    assert.equal(v.length, 8); // 8 imagens obrigatórias (#2133/#2141: d2/d3 2x1 adicionadas)
     for (const violation of v) {
       assert.equal(violation.severity, "error");
     }

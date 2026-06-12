@@ -193,9 +193,12 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     ];
   })();
 
-  // #1121: newsletter mode upload-a só o que o renderer de fato substitui via
-  // `{{IMG:...}}`: cover D1 + È IA? A/B. D2/D3 não têm imagem inline na
-  // newsletter (memory `feedback_newsletter_only_d1_image.md`).
+  // #1121: newsletter mode upload-a o que o renderer substitui via `{{IMG:...}}`:
+  // cover D1 (2x1), D2 hero (2x1), D3 hero (2x1), É IA? A/B.
+  //
+  // #2133/#2141: D2 e D3 passaram a ter hero inline 2:1 no email. Os arquivos
+  // `04-d2-2x1.jpg` e `04-d3-2x1.jpg` são gerados pelo Stage 3 e substituem os
+  // placeholders `{{IMG:04-d2-2x1.jpg}}` / `{{IMG:04-d3-2x1.jpg}}`.
   //
   // #1583/#1701: também subir d1/d2/d3 1x1 pra Cloudflare KV. Sem isso,
   // render-social-html constrói `img-{edition}-04-dN-1x1.jpg` mas a chave não
@@ -203,16 +206,16 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   // ANTES do social mode (target=drive), então esses entries CF ganham
   // `cloudflare_url`; quando o social mode sobrescreve com a entry Drive (pro OG
   // dos posts), o branch drive PRESERVA `cloudflare_url` (#1584) → o preview
-  // resolve d1/d2/d3 via CF. #1701: antes só d1 estava aqui, então d2/d3 ficavam
-  // só com Drive (sem cloudflare_url) e não renderizavam no preview do gate.
-  // (Essas imagens NÃO entram no email — o render só substitui {{IMG:cover}} +
-  // {{IMG:04-d1-1x1.jpg}} + eia; d2/d3 ficam disponíveis no CF só pro preview.)
+  // resolve d1/d2/d3 via CF.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d1", filename: "04-d1-1x1.jpg" },
-    // #1701: d2/d3 são best-effort (optional) — sobem ao CF pro preview quando
-    // existem, mas não bloqueiam o newsletter-mode upload se ausentes (o email
-    // não os renderiza; só cover+d1+eia entram via {{IMG}}).
+    // #2133/#2141: d2/d3 hero 2x1 entram no email como {{IMG:04-d{N}-2x1.jpg}}.
+    // optional=true: não bloqueiam o upload se ausentes (ex: re-run de edição
+    // pré-#2133, ou regeneração manual falhou parcialmente).
+    { key: "d2_2x1", filename: "04-d2-2x1.jpg", optional: true },
+    { key: "d3_2x1", filename: "04-d3-2x1.jpg", optional: true },
+    // #1701: 1x1 de d2/d3 sobem ao CF pro social preview.
     { key: "d2", filename: "04-d2-1x1.jpg", optional: true },
     { key: "d3", filename: "04-d3-1x1.jpg", optional: true },
     // #1808: box promo de livros (entre D1 e D2 no email, renderMidCallout).

@@ -73,14 +73,15 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --out-dir data/editions/{AAMMDD}/ \
     --destaque d{N}
   ```
+  **#2133/#2141:** D2 e D3 agora também geram `04-d{N}-2x1.jpg` (hero inline no email) + `04-d{N}-1x1.jpg` (social crop), igual ao D1. O default de ratio para d1/d2/d3 é 2x1.
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 
   **#1325: nunca regerar imagens existentes sem `--force` explícito.** Tanto `eia-compose.ts` quanto `image-generate.ts` já tem skip-if-exists (`exit 0` com `skipped: outputs exist`). `eia-compose` ganhou partial-state guard (#1325): se A existe e B falhou, **HALT** com exit 2 — não regenera silenciosamente. Editor responde `--force` se quiser regen do zero (vai picar nova POTD). Orchestrator NÃO deve passar `--force` automaticamente em retry — só se o editor pedir explicitamente.
 - **Sync push antes do gate:**
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   ```
-  Anotar em `sync_results[3]`; ignorar falhas.
+  Anotar em `sync_results[3]`; ignorar falhas. **#2133/#2141:** D2/D3 agora também têm `04-d{N}-2x1.jpg` — incluir no push pra o editor poder revisar os heroes no Drive antes do gate.
 - **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json`. **#1753:** o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou de fechar (período ANTERIOR ao da edição); em qualquer outra edição o script grava `top1: []` e o renderer omite. O gate é interno ao script (cruza com `data/past-editions-raw.json`) — o orchestrator só invoca normalmente. Renderer lê automaticamente:
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts \
@@ -93,12 +94,12 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/
   ```
   Exit 1 = bloquear gate até fix (regenerar imagem ausente / corrigir prompt). Violations explicam qual destaque/arquivo precisa atenção.
-- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 4 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
+- **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + 6 paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`, `04-d2-1x1.jpg`, `04-d3-2x1.jpg`, `04-d3-1x1.jpg`). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." **#2133/#2141:** todos os 3 destaques têm hero 2:1 no email. Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
 - **Escrever sentinel de conclusão do Stage 3 (após aprovação do gate):**
   ```bash
   npx tsx scripts/pipeline-sentinel.ts write \
     --edition {AAMMDD} --step 3 \
-    --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg"
+    --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg"
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X [--cost-usd Y --models "gemini,haiku"]`.

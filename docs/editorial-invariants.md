@@ -48,7 +48,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
-| `all-images-exist` | 6 imagens (eia A/B + d1 2x1/1x1 + d2/d3 1x1) presentes | #stage-3 |
+| `all-images-exist` | 8 imagens (eia A/B + d1/d2/d3 2x1 + d1/d2/d3 1x1) presentes (#2133/#2141) | #stage-3 |
 | `eia-answer-resolved` | 01-eia.md tem eia_answer A\|B resolvido (#192) | #192 |
 | `prompts-clean` | Prompts não mencionam pixels nem Noite Estrelada | #editorial-rules |
 
