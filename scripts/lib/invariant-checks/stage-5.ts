@@ -106,14 +106,24 @@ function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
  * no ramo não-HTTPS).
  */
 function checkLinkedinWorkerUrlHttps(): InvariantViolation[] {
-  const url = process.env.DIARIA_LINKEDIN_CRON_URL;
+  const raw = process.env.DIARIA_LINKEDIN_CRON_URL;
   // Ausente → não emite; checkLinkedinWorkerUrlSet cuida disso.
-  if (!url || url.trim().length === 0) return [];
-  if (/^https:\/\//.test(url)) return [];
+  // #2172 finding 8: extrair trimmedUrl uma vez (evita dupla leitura + guard duplicado).
+  const url = raw?.trim() ?? "";
+  if (!url) return [];
+  // #2172 finding 1+2: testar o valor trimado + flag /i para case-insensitive (RFC 3986).
+  if (/^https:\/\//i.test(url)) return [];
+  // #2172 finding 3: mascarar userinfo (user:token@host) para não vazar credencial na mensagem.
+  let safeScheme: string;
+  try {
+    safeScheme = new URL(url).protocol; // ex: "http:"
+  } catch {
+    safeScheme = url.split(":")[0] + ":"; // fallback se URL malformada
+  }
   return [
     {
       rule: "linkedin-worker-url-https",
-      message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
+      message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, esquema recebido: "${safeScheme}"`,
       source_issue: "#971",
       severity: "error",
     },
