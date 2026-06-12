@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import https from "node:https";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
+import { parseArgs as parseCliArgs, hasFlag } from "./lib/cli-args.ts";
 import {
   loadHealth,
   computeFailureStreak,
@@ -437,9 +437,19 @@ async function pushToKV(
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
+/**
+ * #2132 fix: `--push` é booleano (documentado) e o parser `cli-args.ts` o põe em
+ * `flags`, não em `values`. O check antigo `!values["push"]` caía sempre em dry-run
+ * com `--push` sozinho. Usa o `hasFlag` compartilhado — que é exatamente o helper
+ * que o código deveria ter usado desde o início (a raiz do #2132 foi não usá-lo).
+ */
+export function isPushRequested(argv: string[]): boolean {
+  return hasFlag(argv, "push");
+}
+
 async function main() {
   const { values } = parseCliArgs(process.argv.slice(2));
-  const isDryRun = !values["push"];
+  const isDryRun = !isPushRequested(process.argv.slice(2));
   const kvNamespaceId = (values["kv-namespace-id"] as string | undefined)
     ?? process.env["DASHBOARD_KV_NAMESPACE_ID"];
 

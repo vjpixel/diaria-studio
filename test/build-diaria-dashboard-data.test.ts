@@ -552,3 +552,20 @@ describe("regressão: XSS javascript: URI bloqueado no href (finding #1)", () =>
     assert.ok(html.includes('href="https://perplexity.ai/tutorial"'), "URL https válida deve aparecer em href");
   });
 });
+
+// ─── #2132 fix: detecção de --push (bug: --push sozinho caía em dry-run) ──────
+
+describe("isPushRequested (#2132 fix)", () => {
+  test("--push sozinho (boolean) → push mode (o caso real do #2132)", async () => {
+    const { isPushRequested } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(isPushRequested(["--push"]), true);
+    // --push seguido de outra flag continua boolean (vai pra flags, nao values)
+    assert.equal(isPushRequested(["--push", "--kv-namespace-id", "abc"]), true);
+  });
+  test("sem --push (ou --dry-run) → dry-run", async () => {
+    const { isPushRequested } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(isPushRequested([]), false);
+    assert.equal(isPushRequested(["--dry-run"]), false);
+    assert.equal(isPushRequested(["--kv-namespace-id", "abc"]), false);
+  });
+});
