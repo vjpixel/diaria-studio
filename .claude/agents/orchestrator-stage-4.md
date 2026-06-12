@@ -185,7 +185,7 @@ Facebook  D3  "{hook_d3_facebook}"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?
 
-  sim     → segue para /diaria-5-publicar (dispatch automático)
+  sim     → segue para /diaria-5-publicacao (dispatch automático)
   editar  → halt; editor edita no Drive → pull → responde "sim" quando pronto
   ajustar → editor dita a mudança no chat; orchestrator aplica e re-apresenta o resumo
   abortar → encerra sem publicar (sentinel não escrito)

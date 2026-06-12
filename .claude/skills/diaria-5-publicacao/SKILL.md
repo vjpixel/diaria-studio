@@ -1,22 +1,22 @@
 ---
-name: diaria-5-publicar
-description: Roda a Etapa 5 (publicação paralela — newsletter Beehiiv + 6 posts sociais) com gate único, e auto-reporter. Uso — `/diaria-5-publicar [all|newsletter|social] AAMMDD`.
+name: diaria-5-publicacao
+description: Roda a Etapa 5 (publicação paralela — newsletter Beehiiv + 6 posts sociais) com gate único, e auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
 ---
 
-# /diaria-5-publicar
+# /diaria-5-publicacao
 
 Dispara a Etapa 5 unificada (publicação paralela: Beehiiv + Facebook + LinkedIn em paralelo, gate único) e em seguida o auto-reporter.
 
 ## Argumentos
 
-- `/diaria-5-publicar all AAMMDD` — roda publicação paralela + auto-reporter
-- `/diaria-5-publicar newsletter AAMMDD` — re-dispara só `publish-newsletter` (Beehiiv); útil pra fix isolado após template errado
-- `/diaria-5-publicar social AAMMDD` — re-dispara só `publish-facebook` + `publish-linkedin`; útil pra retry de social falhado sem regerar Beehiiv
+- `/diaria-5-publicacao all AAMMDD` — roda publicação paralela + auto-reporter
+- `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só `publish-newsletter` (Beehiiv); útil pra fix isolado após template errado
+- `/diaria-5-publicacao social AAMMDD` — re-dispara só `publish-facebook` + `publish-linkedin`; útil pra retry de social falhado sem regerar Beehiiv
 
 **Opt-out por canal (#1326):** flag `--skip {newsletter,linkedin,facebook}` (CSV) ignora dispatch dos canais listados. Default = tudo auto. Exemplos:
-- `/diaria-5-publicar AAMMDD --skip newsletter` — só social automático, newsletter manual
-- `/diaria-5-publicar AAMMDD --skip linkedin,facebook` — só newsletter automático
-- `/diaria-5-publicar AAMMDD --skip newsletter,linkedin,facebook` — tudo manual
+- `/diaria-5-publicacao AAMMDD --skip newsletter` — só social automático, newsletter manual
+- `/diaria-5-publicacao AAMMDD --skip linkedin,facebook` — só newsletter automático
+- `/diaria-5-publicacao AAMMDD --skip newsletter,linkedin,facebook` — tudo manual
 
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 5` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.

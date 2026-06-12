@@ -499,8 +499,8 @@ Etapa 5a (LinkedIn × 3): pulado (claude-in-chrome MCP indisponível)
 Facebook × 3: agendado normal via Graph API ✓
 
 Quando o MCP estiver ativo, rodar:
-  /diaria-5-publicar newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
-  /diaria-5-publicar social {AAMMDD}       # cria 3 posts LinkedIn (Facebook já agendado)
+  /diaria-5-publicacao newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste
+  /diaria-5-publicacao social {AAMMDD}       # cria 3 posts LinkedIn (Facebook já agendado)
 ```
 
 Se nenhum stage foi pulado, omitir esse bloco — só listar outputs e métricas finais.

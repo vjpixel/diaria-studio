@@ -15,7 +15,7 @@ Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send 
 
 **Histórico do arquivo**: este arquivo era `.claude/agents/publish-newsletter.md` até #1114 (2026-05-12). Movido pra `context/publishers/` pra refletir o que ele é de fato: um **playbook lido pelo top-level Claude Code**, não um subagent dispatchável. Razão técnica original em #1054: `mcp__claude-in-chrome__javascript_tool` é restrito ao top-level — subagentes não conseguem chamá-la. E como o paste-into-htmlSnippet exige JS direto no DOM, nenhum subagent completaria o passo 5.
 
-**Fluxo correto** (invocado por `/diaria-5-publicar`, orchestrator-stage-5):
+**Fluxo correto** (invocado por `/diaria-5-publicacao`, orchestrator-stage-5):
 - Top-level Claude Code lê este arquivo como playbook
 - Executa Bash, Read, Write, Chrome MCP tools direto
 - **Não tente dispatchar via `Agent({ subagent_type: "publish-newsletter" })`** — o tipo não existe mais e javascript_tool falharia em qualquer subagent
@@ -151,7 +151,7 @@ Exit codes:
     ```json
     { "error": "intentional_error_missing", "details": "Editor não declarou intentional_error em 02-reviewed.md. Edite o arquivo (+ Drive sync) e adicione frontmatter conforme exemplo no stderr do lint." }
     ```
-    Editor precisa editar o arquivo (instruções claras no stderr) e re-rodar `/diaria-5-publicar`.
+    Editor precisa editar o arquivo (instruções claras no stderr) e re-rodar `/diaria-5-publicacao`.
 - `2`: erro de uso (path inválido) — abortar com `{ "error": "lint_cli_failed" }`.
 
 Esse lint roda ANTES de criar o draft no Beehiiv pra garantir que erros

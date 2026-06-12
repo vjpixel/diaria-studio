@@ -67,7 +67,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --s
 
 ## Próximo passo
 
-Após aprovação: `/diaria-5-publicar {AAMMDD}` para dispatch da newsletter e social.
+Após aprovação: `/diaria-5-publicacao {AAMMDD}` para dispatch da newsletter e social.
 
 ## Notas
 

@@ -5,7 +5,7 @@ model: claude-opus-4-8
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
-> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicar`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
+> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
 
@@ -126,7 +126,7 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 Quando rodando dentro do harness Claude Code (`/diaria-*` skills), o top-level usa `TaskCreate`/`TaskUpdate` pra refletir progresso na UI. **Invariante**: nenhuma task fica `in_progress` depois que o stage dela fecha. Sintoma do bug: timer "10m 24s" continua ativo em `Stage 1x — GATE HUMANO` mesmo com Stage 2 já rodando.
 
 Regras:
-1. **Cada skill** (`/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicar`) cria suas próprias tasks no início — uma por sub-stage interno. (`/diaria-4-publicar` é alias retrocompat — delega para `/diaria-4-revisao` + `/diaria-5-publicar`.) Ver instruções específicas em cada `SKILL.md`.
+1. **Cada skill** (`/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`) cria suas próprias tasks no início — uma por sub-stage interno. (`/diaria-4-publicar` é alias retrocompat — delega para `/diaria-4-revisao` + `/diaria-5-publicacao`.) Ver instruções específicas em cada `SKILL.md`.
 2. **Marcar `completed` imediatamente após o gate aprovar** (ou imediatamente após o sentinel ser escrito quando `auto_approve=true`). Não esperar o próximo skill começar — a aprovação do gate é o ponto natural de fechamento.
 3. **Defensive cleanup no início de cada skill**: antes de criar tasks novas, varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de stages anteriores (`Stage 0*`, `Stage 1*`, etc., quando entrando em Stage ≥2; `Stage 5*` quando `/diaria-4-revisao` é re-rodado via alias). Cobre o caso de skill anterior ter sido interrompida sem fechar suas tasks.
 4. **Resume**: se um skill detecta que o stage anterior foi aprovado (sentinel/output existe) mas alguma task daquele stage ainda está `in_progress`, marcar como `completed` com nota `auto-cleanup at next stage start`.
