@@ -1137,8 +1137,13 @@ Agora interaja!`,
     // #2138: pills com font-size:16px (não 12px)
     assert.match(html, /border-radius:999px[^>]*font-size:16px/, "pills devem ter font-size:16px (#2138)");
     assert.doesNotMatch(html, /border-radius:999px[^>]*font-size:12px/, "pills não devem ter font-size:12px (#2138)");
-    // #2139: table de pills centralizada via align="center"
-    assert.match(html, /align="center"[^>]*cellpadding="0"[^>]*cellspacing="0"/, "table de pills deve ter align=center (#2139)");
+    // #2139/#2160: table de pills centralizada via align="center" + margin:0 auto (Outlook fix).
+    // Ancorada no bloco ENCERRAR (href das curadorias na mesma table) pra não casar mid-callout.
+    assert.match(
+      html,
+      /align="center"[^>]*cellpadding="0"[^>]*style="margin:0 auto;"[^]*?https:\/\/example\.com\/cursos/,
+      "table de pills deve ter align=center + margin:0 auto, com pills do ENCERRAR (#2139/#2160)",
+    );
     // kicker permanece em 12px (label de seção — NÃO é botão)
     assert.match(html, /font-size:12px[^>]*>Acesse nossas curadorias:/, "kicker deve permanecer em 12px");
   });

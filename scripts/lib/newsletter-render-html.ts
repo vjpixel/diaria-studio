@@ -766,21 +766,25 @@ export function renderEncerrar(text: string): string {
   // DS: lista `- [label](url)` vira PILLS (borda bege, radius 999px) precedidas
   // do rótulo "Acesse:". Parágrafos = sans ink com links underline teal.
   // #2138: font-size 12→16px (CTA no tamanho do corpo, alinhado c/ #2079).
-  // #2139: centralizado via align="center" na table abaixo (email-safe).
-  const pillStyle = `display:inline-block;border:1px solid ${RULE};border-radius:999px;padding:10px 18px;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
+  // #2139: centralizado via align="center" + margin:0 auto (Outlook word-renderer
+  // ignora align= em <table> — ambos os atributos garantem centralização cross-client).
+  // #2160: padding reduzido 18→14px pra caber 3 pills sem overflow em iPhone SE (320px).
+  // Layout: pills ficam dentro de um único <td> como inline-block — o navegador/cliente
+  // faz wrap natural quando a linha encher. Não usamos nowrap, não forçamos uma linha só.
+  const pillStyle = `display:inline-block;border:1px solid ${RULE};border-radius:999px;padding:10px 14px;margin:0 6px 8px 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
   const renderBlock = (b: { type: "p" | "ul"; content: string[] }) => {
     if (b.type === "ul") {
-      const cells = b.content.map((c) => {
+      const pills = b.content.map((c) => {
         const m = c.match(/^\[([^\]]+)\]\((.+)\)$/);
         // Link puro → pill clicável. Senão, mdInlineToHtml (links/bold inline)
         // pra NUNCA vazar markdown cru (invariante "output sem markdown").
-        const pill = m
+        return m
           ? `<a href="${esc(m[2].trim())}" style="${pillStyle}">${esc(m[1])}</a>`
           : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
-        return `<td style="padding:0 10px 10px 0;">${pill}</td>`;
       }).join("");
+      // Pills numa única <td> permitem wrap natural — não forçamos nowrap.
       return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
-  <table role="presentation" align="center" cellpadding="0" cellspacing="0"><tr>${cells}</tr></table>`;
+  <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td>${pills}</td></tr></table>`;
     }
     return bodyP("22px 0 0", mdInlineToHtml(b.content.join(" ")));
   };
