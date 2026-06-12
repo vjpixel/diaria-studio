@@ -153,6 +153,25 @@ diar.ia.br
     assert.equal(r.best_match, "d2");
   });
 
+  it("passa quando post_pixel é atualizado para D1 após swap D1↔D3 (happy-path #2145)", () => {
+    // Mesmo cenário do caso 260612, mas com o post_pixel CORRETAMENTE atualizado
+    // para o novo D1 (Amodei/Anthropic) após o swap. O lint deve passar (exit 0).
+    const md = mk(
+      // D1 atual (após swap): Amodei / Anthropic / modelo / alinhamento
+      "Dario Amodei detalhou a estratégia da Anthropic para os próximos anos: modelos mais seguros, acesso mais amplo e foco em alinhamento como vantagem competitiva.",
+      // D2 (inalterado): outro tema neutro
+      "A OpenAI anunciou parceria com Microsoft para expandir o acesso ao GPT-5 em produtos empresariais.",
+      // D3 atual (após swap): Ona
+      "A Ona acaba de lançar um agente de voz com latência sub-300ms para call centers, apostando em naturalidade acima de precisão.",
+      // post_pixel ATUALIZADO para o novo D1 (Amodei/Anthropic/alinhamento)
+      "A frase da Anthropic sobre alinhamento como vantagem competitiva é a mais honesta que ouvi de uma big lab em tempos: eles apostam que modelos mais seguros ganham no longo prazo.",
+    );
+    const r = lintPostPixelMatchesD1(md);
+    assert.equal(r.ok, true);
+    assert.equal(r.checked, true);
+    assert.equal(r.best_match, "d1"); // post_pixel agora bate com d1 (Amodei)
+  });
+
   it("CLI: exit 1 quando post_pixel desalinhado, exit 0 quando alinhado", async () => {
     const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");

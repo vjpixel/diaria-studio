@@ -511,14 +511,35 @@ export interface PostPixelMatchResult {
   best_match?: string;
   sims?: Record<string, number>;
   detail?: string;
+  /**
+   * Valor do label `<!-- destaque: d{N} -->` emitido pelo social-linkedin no bloco
+   * `## post_pixel`. Quando presente, indica a qual destaque o bloco declarou
+   * pertencer. O lint usa isso como cross-check: se `declared_destaque` difere de
+   * `best_match` Jaccard, a inconsistência é mais forte (label desatualizado é
+   * evidência adicional de stale). Undefined = label ausente no bloco.
+   */
+  declared_destaque?: string;
 }
 
 const POST_PIXEL_MARGIN = 0.05; // bestOther tem que bater simD1 por ≥ 5 pontos
 const POST_PIXEL_FLOOR = 0.08; // e ser um match topical real, não 1-2 tokens de ruído
 
-/** Tokeniza prosa social: strip comments + hashtags, depois tokenizeForJaccard. */
+/**
+ * Tokeniza prosa social: strip comments + hashtags (em ambos os lados da
+ * comparação, de forma simétrica), depois tokenizeForJaccard.
+ *
+ * Stripping simétrico evita falso-positivo quando entidades aparecem como
+ * hashtag apenas no post_pixel (ex: #Anthropic) — sem symmetry, o tag inflaria
+ * o union do post_pixel sem contrapartida no main do destaque, derrubando
+ * artificialmente as sims (#2145 finding 6).
+ */
 function socialProseTokens(s: string): Set<string> {
-  const clean = s.replace(/<!--[\s\S]*?-->/g, "").replace(/#[\p{L}\w-]+/gu, " ");
+  // Strip HTML comments primeiro, depois hashtags (ex: #InteligenciaArtificial).
+  // A ordem importa: um hashtag dentro de um comment seria removido pelo
+  // comment-strip; remover hashtags depois garante que sobraram só no texto.
+  const clean = s
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/#[\p{L}\w-]+/gu, " ");
   return tokenizeForJaccard(clean);
 }
 
@@ -539,6 +560,12 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
   if (!postPixelRaw || postPixelRaw.trim().length === 0) {
     return { ok: true, checked: false };
   }
+
+  // Extrair label `<!-- destaque: d{N} -->` emitido pelo social-linkedin.
+  // Usado como cross-check: se o label diz "d1" mas Jaccard aponta outro destaque,
+  // reforça a evidência de stale. Se ausente → undefined (não bloqueia).
+  const labelMatch = postPixelRaw.match(/<!--\s*destaque:\s*(d\d+)\s*-->/i);
+  const declaredDestaque = labelMatch ? labelMatch[1].toLowerCase() : undefined;
 
   // Main text de um destaque = conteúdo antes do 1º `### ` (subseções comment).
   const destaqueMain = (name: string): string | null => {
@@ -574,18 +601,22 @@ export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
   }
 
   if (bestOther >= simD1 + POST_PIXEL_MARGIN && bestOther >= POST_PIXEL_FLOOR) {
+    const labelHint = declaredDestaque && declaredDestaque !== "d1"
+      ? ` Label '<!-- destaque: ${declaredDestaque} -->' confirma dessincronização.`
+      : "";
     return {
       ok: false,
       checked: true,
       best_match: bestOtherName,
       sims,
+      declared_destaque: declaredDestaque,
       detail:
         `post_pixel parece sobre ${bestOtherName} (Jaccard ${bestOther.toFixed(2)}), não d1 ` +
         `(Jaccard ${simD1.toFixed(2)}). Reordenou destaques após gerar o social? Re-sincronize ` +
-        `o post_pixel pro D1 atual (#1861).`,
+        `o post_pixel pro D1 atual (#1861).${labelHint}`,
     };
   }
-  return { ok: true, checked: true, best_match: simD1 > 0 ? "d1" : undefined, sims };
+  return { ok: true, checked: true, best_match: simD1 > 0 ? "d1" : undefined, sims, declared_destaque: declaredDestaque };
 }
 
 export function lastMeaningfulSentence(body: string): string {
