@@ -604,11 +604,32 @@ export function stripMidCalloutFromD1(text: string): string {
 }
 
 /**
+ * #2136: discrimina se o midCallout é o box de livros (📚 ou link para
+ * livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE 📣).
+ * A imagem livros_promo só deve ser associada ao box de livros.
+ */
+export function isMidCalloutLivros(text: string | null | undefined): boolean {
+  if (!text) return false;
+  // Marcador 📚 OU link apontando para livros.diaria.workers.dev
+  return /^\s*📚/u.test(text) || /livros\.diaria\.workers\.dev/i.test(text);
+}
+
+/**
  * URL pública da imagem do box do meio (entry `livros_promo` de
  * `06-public-images.json`), se presente. Lida no momento do render (o cache já
  * existe — upload-images-public roda antes). Graceful: ausente → null.
+ *
+ * #2136: só retorna a imagem se o midCallout for o box de livros. Box 📣
+ * CLARICE (e outros sem link livros.diaria.workers.dev) → null (sem hero).
  */
-export function readMidCalloutImage(editionDir: string): string | null {
+export function readMidCalloutImage(
+  editionDir: string,
+  midCalloutText?: string | null,
+): string | null {
+  // #2136: imagem livros_promo só vai pro box de livros, nunca pro box CLARICE.
+  if (midCalloutText !== undefined && !isMidCalloutLivros(midCalloutText)) {
+    return null;
+  }
   const p = resolve(editionDir, "06-public-images.json");
   if (!existsSync(p)) return null;
   try {
@@ -704,7 +725,9 @@ export function extractContent(editionDir: string): NewsletterContent {
   const introCallout = extractIntroCallout(reviewedText);
   // Box entre D1 e D2 (ex: promo da página de livros).
   const midCallout = extractMidCallout(reviewedText);
-  const midCalloutImage = readMidCalloutImage(editionDir);
+  // #2136: passa o texto do midCallout pra discriminar livros vs CLARICE.
+  // Imagem só vai pro box de livros; box 📣 CLARICE recebe null (sem hero).
+  const midCalloutImage = readMidCalloutImage(editionDir, midCallout);
 
   return {
     title: destaques[0].title,

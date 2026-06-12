@@ -235,6 +235,13 @@ export function renderCoverage(text: string): string {
 /**
  * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). DS: box
  * "painel" (bege), texto peso 600. Links via processInlineLinks (underline teal).
+ *
+ * #2136: callout patrocinado (📣) multi-parágrafo → último link vira botão
+ * pill DS centralizado (bg paper, borda bege, radius 999px, Geist bold 16px,
+ * padding 12px 22px, SEM seta). Parágrafos anteriores ao último (que é só o
+ * link/CTA) ficam no corpo normal. Para o parágrafo que seja só `→ [label](url)`
+ * ou `[label](url)` (sem outro texto), o parágrafo inteiro vira o botão e não
+ * é emitido como `<p>` de corpo — evita `→` orphan e <p> vazio.
  */
 export function renderIntroCallout(text: string): string {
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
@@ -249,14 +256,57 @@ export function renderIntroCallout(text: string): string {
     // multi-parágrafo: 1º = título serif (marcador 📣/📚/🎉 removido), demais = corpo normal.
     const title = stripCalloutMarker(paras[0]);
     const titleHtml = `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
-    const bodyHtml = paras
-      .slice(1)
+
+    // #2136: callout patrocinado → verifica se o último parágrafo é só o link
+    // CTA (possivelmente prefixado por `→ ` ou `Acesse `). Se sim, extrai o
+    // link como botão pill centralizado; remove-o dos parágrafos de corpo.
+    let bodyParas = paras.slice(1);
+    let ctaButtonHtml = "";
+    if (sponsored && bodyParas.length > 0) {
+      const lastPara = bodyParas[bodyParas.length - 1];
+      // Strip `→ ` / `Acesse ` prefix antes de testar se sobrou só um link.
+      const lastStripped = lastPara.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
+      const lastLinks = findMarkdownLinks(lastStripped);
+      if (lastLinks.length > 0) {
+        // Verifica se o parágrafo é apenas o link (sem outro texto substancial).
+        const firstLink = lastLinks[0];
+        let remainingText = lastStripped.slice(0, firstLink.start) + lastStripped.slice(firstLink.end);
+        // Ponto final após o link é aceitável, mas qualquer outro texto → não é só-link.
+        remainingText = remainingText.replace(/^\.?\s*$/, "").trim();
+        if (!remainingText) {
+          // O parágrafo é só o link (+ possível ponto) → botão pill.
+          const linkLabel = lastStripped.slice(firstLink.start + 1, lastStripped.indexOf("](", firstLink.start));
+          const safeLabel = esc(linkLabel);
+          const safeHref = esc(firstLink.url);
+          ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">` +
+            `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
+            `</td></tr>`;
+          bodyParas = bodyParas.slice(0, -1);
+        }
+      }
+    }
+
+    const bodyHtml = bodyParas
       .map(
         (p, i) =>
           bodyP(`${i === 0 ? "0" : "12px"} 0 0`, processInlineLinks(p))
       )
       .join("\n      ");
     inner = `${titleHtml}\n      ${bodyHtml}`;
+
+    if (ctaButtonHtml) {
+      // Botão pill em linha separada dentro do mesmo box, centralizado.
+      return `<!-- #1648 intro callout (sorteio/CTA) -->
+<tr><td class="pad" style="padding:8px 32px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
+    <tr><td style="padding:16px 20px;">
+      ${inner}
+    </td></tr>
+    ${ctaButtonHtml}
+    <tr><td style="padding:0 0 16px;"></td></tr>
+  </table>
+</td></tr>`;
+    }
   } else {
     // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
     // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
@@ -326,7 +376,13 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   let body = text;
   for (let i = links.length - 1; i >= 0; i--) {
     let { start, end } = links[i];
-    while (start > 0 && /\s/.test(body[start - 1])) start--; // engole espaço antes
+    // #2136: engole também `→ ` / `Acesse ` literais imediatamente antes do link
+    // (além do whitespace genérico) — evita seta orphan no corpo pós-strip.
+    while (start > 0 && /\s/.test(body[start - 1])) start--;
+    // Recua mais para consumir `→` ou `Acesse` imediatamente antes do espaço.
+    const prefix = body.slice(0, start);
+    const arrowMatch = prefix.match(/(?:→|Acesse)\s*$/u);
+    if (arrowMatch) start -= arrowMatch[0].length;
     if (body[end] === ".") end++; // e o ponto final do markdown-link
     body = body.slice(0, start) + body.slice(end);
   }
@@ -336,8 +392,8 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const safeImg = esc(imageUrl);
   const safeLink = link ? esc(link) : null;
   // #2067: alt e label do CTA derivados do anchor text do 1º link no texto do box.
-  // Fallback: alt vazio (imagem decorativa), label genérico "Acesse →".
-  const ctaLabel = firstLinkLabel ? `${esc(firstLinkLabel)} →` : "Acesse →";
+  // #2136: sem seta no ctaLabel (decisão do editor 260612).
+  const ctaLabel = firstLinkLabel ? esc(firstLinkLabel) : "Acesse";
   const imgAlt = firstLinkLabel ? esc(firstLinkLabel) : "";
   const imgTag = `<img src="${safeImg}" width="100%" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
