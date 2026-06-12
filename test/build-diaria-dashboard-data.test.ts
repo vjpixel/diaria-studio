@@ -556,14 +556,11 @@ describe("regressão: XSS javascript: URI bloqueado no href (finding #1)", () =>
 // ─── #2132 fix: detecção de --push (bug: --push sozinho caía em dry-run) ──────
 
 describe("isPushRequested (#2132 fix)", () => {
-  test("--push sozinho (boolean) → push mode", async () => {
+  test("--push sozinho (boolean) → push mode (o caso real do #2132)", async () => {
     const { isPushRequested } = await import("../scripts/build-diaria-dashboard-data.ts");
     assert.equal(isPushRequested(["--push"]), true);
+    // --push seguido de outra flag continua boolean (vai pra flags, nao values)
     assert.equal(isPushRequested(["--push", "--kv-namespace-id", "abc"]), true);
-  });
-  test("--push <valor> também → push mode", async () => {
-    const { isPushRequested } = await import("../scripts/build-diaria-dashboard-data.ts");
-    assert.equal(isPushRequested(["--push", "true"]), true);
   });
   test("sem --push (ou --dry-run) → dry-run", async () => {
     const { isPushRequested } = await import("../scripts/build-diaria-dashboard-data.ts");
