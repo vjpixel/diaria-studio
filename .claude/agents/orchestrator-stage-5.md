@@ -80,7 +80,7 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
 - Verificar pre-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edicoes pre-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
 - **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. Falha = abort imediato — evita DLQ recurrence (incident 260508 #999):
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 4 --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/check-invariants.ts --stage 5 --edition-dir data/editions/{AAMMDD}/
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
