@@ -15,6 +15,8 @@ import {
   stripMidCalloutFromD1,
   renderMidCallout,
   readMidCalloutImage,
+  isMidCalloutLivros,
+  renderIntroCallout,
 } from "../scripts/render-newsletter-html.ts";
 import { parseDestaques } from "../scripts/extract-destaques.ts";
 
@@ -176,7 +178,8 @@ describe("midCallout — box entre D1 e D2", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl, url: cfUrl } } }),
       );
-      const url = readMidCalloutImage(dir);
+      // #finding-6: agora o caller precisa passar o texto do callout explicitamente.
+      const url = readMidCalloutImage(dir, "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).");
       assert.equal(url, cfUrl, "readMidCalloutImage deve ler a cloudflare_url do produtor");
       const html = renderMidCallout(
         "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).",
@@ -194,7 +197,8 @@ describe("midCallout — box entre D1 e D2", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
     try {
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "x" } } }));
-      assert.equal(readMidCalloutImage(dir), null);
+      // No livros_promo entry → null even for livros callout.
+      assert.equal(readMidCalloutImage(dir, "📚 Promo. [Ver](https://livros.diaria.workers.dev)."), null);
       const html = renderMidCallout("📚 Promo. [Ver](https://livros.diaria.workers.dev).", null);
       assert.ok(!html.includes("<img"), "sem produtor → box degrada pra só-texto");
     } finally {
@@ -211,6 +215,173 @@ describe("midCallout — box entre D1 e D2", () => {
     assert.ok(!html.includes("[ali]"), "2º markdown-link também removido do corpo");
     // o destino da imagem/CTA é o primeiro link
     assert.ok(html.includes("https://a.com"), "CTA usa o primeiro link");
+  });
+});
+
+// ── #2136 — regressão: imagem livros_promo não contamina box CLARICE ─────────
+
+const CLARICE_CALLOUT = `📣 Escreva melhor em português com a Clarice.ai
+
+A única IA criada por brasileiros para brasileiros. A Clarice.ai foi treinada para entender as nuances da língua portuguesa.
+
+Use a Clarice.ai para revisar, refinar e humanizar seus textos.
+
+→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)`;
+
+const LIVROS_CALLOUT = `📚 Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diaria.workers.dev).`;
+
+describe("#2136 — discriminação livros vs CLARICE + setas", () => {
+  // (a) midCallout CLARICE → readMidCalloutImage retorna null (sem hero)
+  it("readMidCalloutImage: CLARICE callout (📣, link não-livros) → null, mesmo com livros_promo no cache", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      const url = readMidCalloutImage(dir, CLARICE_CALLOUT);
+      assert.equal(url, null, "box CLARICE NÃO deve receber a imagem livros_promo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // (b) midCallout livros → readMidCalloutImage retorna URL
+  it("readMidCalloutImage: livros callout (📚 + livros.diaria.workers.dev) → retorna URL da imagem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-livros-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      const url = readMidCalloutImage(dir, LIVROS_CALLOUT);
+      assert.equal(url, cfUrl, "box livros deve receber a imagem livros_promo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // isMidCalloutLivros: discriminação correta
+  it("isMidCalloutLivros: 📚 com link livros.diaria.workers.dev → true", () => {
+    assert.equal(isMidCalloutLivros(LIVROS_CALLOUT), true);
+  });
+
+  it("isMidCalloutLivros: 📣 CLARICE (link clarice.ai) → false", () => {
+    assert.equal(isMidCalloutLivros(CLARICE_CALLOUT), false);
+  });
+
+  it("isMidCalloutLivros: null/undefined → false (sem crash)", () => {
+    assert.equal(isMidCalloutLivros(null), false);
+    assert.equal(isMidCalloutLivros(undefined), false);
+    assert.equal(isMidCalloutLivros(""), false);
+  });
+
+  // (c) corpo CLARICE não termina com → orphan (renderMidCallout sem imagem)
+  it("renderMidCallout CLARICE sem imagem: corpo não termina com → orphan", () => {
+    const html = renderMidCallout(CLARICE_CALLOUT, null);
+    // o → antes do link não deve aparecer no HTML como texto solto
+    assert.ok(!/→\s*<\/p>/.test(html), "→ orphan não deve aparecer no fim de parágrafo de corpo");
+    // o link CTA deve ser renderizado (como botão ou inline), não desaparecer
+    assert.ok(html.includes("clarice.ai"), "URL da Clarice deve estar no HTML");
+  });
+
+  // (d) ctaLabel sem seta — renderMidCallout COM imagem (livros box)
+  it("renderMidCallout COM imagem (livros): ctaLabel sem seta →", () => {
+    const html = renderMidCallout(
+      LIVROS_CALLOUT,
+      "https://img.example/livros.jpg",
+    );
+    // O CTA deve ter o label do link sem "→"
+    assert.ok(html.includes("Confira a nova página"), "label do CTA presente");
+    // Deve ter botão pill (border-radius:999px) sem "→" no texto do botão
+    // #finding-5: assert não-vacuo — se o regex falhar, o teste falha explicitamente.
+    const pillMatch = html.match(/border-radius:999px[^>]*>([^<]*)</);
+    assert.ok(pillMatch, "deve ter botão pill (border-radius:999px) no HTML");
+    assert.ok(!pillMatch![1].includes("→"), "texto do botão pill não deve ter seta →");
+  });
+
+  // Regressão completa: e2e CLARICE com livros_promo no cache → cai em renderIntroCallout com botão
+  it("e2e #2136: midCallout CLARICE + livros_promo presente → box SEM imagem hero", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-2136-e2e-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      // Simula o fluxo real: readMidCalloutImage com texto da Clarice → null
+      const url = readMidCalloutImage(dir, CLARICE_CALLOUT);
+      assert.equal(url, null, "readMidCalloutImage deve retornar null para CLARICE");
+      const html = renderMidCallout(CLARICE_CALLOUT, url);
+      assert.ok(!html.includes("<img"), "HTML não deve ter <img> de livros_promo");
+      assert.ok(!html.includes(cfUrl), "URL da imagem livros_promo não deve aparecer");
+      assert.ok(html.includes("clarice.ai"), "link da Clarice deve estar presente");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // (e) CLARICE sem imagem → botão pill DS centralizado (renderIntroCallout com sponsored)
+  it("renderIntroCallout CLARICE multi-para: último link vira botão pill centralizado, sem seta", () => {
+    const html = renderIntroCallout(CLARICE_CALLOUT);
+    // Deve ter botão pill (border-radius:999px)
+    assert.ok(html.includes("border-radius:999px"), "deve ter botão pill DS");
+    // Deve estar centralizado (text-align:center)
+    assert.ok(html.includes("text-align:center"), "botão deve ser centralizado");
+    // Label do botão = anchor text do link, sem →
+    assert.ok(html.includes("Acesse e use os cupons NEWS25 ou NEWS50"), "label do botão correto");
+    assert.ok(!html.match(/border-radius:999px[^>]*>[^<]*→/), "botão sem seta →");
+    // O → da fonte (snippet) não deve vazar no HTML como texto
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza pro corpo HTML");
+    // O parágrafo com só o link CTA não fica inline no corpo
+    assert.ok(!html.includes("[Acesse e use os cupons"), "markdown-link não vaza cru");
+  });
+
+  // #finding-1: CTA deve funcionar com pontuação diferente de `.` (!, ?, ,)
+  it("renderIntroCallout: CTA com ! final → botão pill gerado sem seta", () => {
+    const callout = `📣 Teste de pontuação\n\nCorpo do callout.\n\n→ [Veja agora!](https://clarice.ai/precos-planos?via=diaria)!`;
+    const html = renderIntroCallout(callout);
+    assert.ok(html.includes("border-radius:999px"), "deve ter botão pill mesmo com ! final");
+    assert.ok(html.includes("Veja agora!"), "label do botão preservado");
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza");
+  });
+
+  it("renderIntroCallout: CTA com ? final → botão pill gerado sem seta", () => {
+    const callout = `📣 Teste de pontuação\n\nCorpo do callout.\n\n→ [Quer saber mais?](https://clarice.ai/precos-planos?via=diaria)?`;
+    const html = renderIntroCallout(callout);
+    assert.ok(html.includes("border-radius:999px"), "deve ter botão pill mesmo com ? final");
+    assert.ok(html.includes("Quer saber mais?"), "label do botão preservado");
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza");
+  });
+
+  // #finding-2: fall-through (pontuação extra que impede detecção CTA) NÃO deixa → orphan
+  it("renderIntroCallout: fall-through (extra texto após link) NÃO deixa → orphan no corpo", () => {
+    // Tem → + link + texto extra — não vai virar botão pill. Mas o → NÃO deve vazar.
+    const callout = `📣 Título do callout\n\nCorpo aqui.\n\n→ [Acesse](https://clarice.ai) e aproveite agora`;
+    const html = renderIntroCallout(callout);
+    // O → do prefixo não deve aparecer como texto solto no HTML
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não deve aparecer no fim de parágrafo");
+    assert.ok(!html.match(/>\s*→\s*\[/), "markdown prefixado com → não deve vazar cru");
+    // O link deve estar presente (inline, já que não virou pill)
+    assert.ok(html.includes("clarice.ai"), "link ainda presente no corpo");
+  });
+
+  // #finding-6: readMidCalloutImage com undefined (sem texto) → null por segurança
+  it("readMidCalloutImage: undefined midCalloutText → null (sem crash, contrato seguro)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-f6-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      // undefined (caller não passou texto) → null, nunca reaproveita imagem silenciosamente
+      assert.equal(readMidCalloutImage(dir, undefined), null, "undefined deve retornar null");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

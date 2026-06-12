@@ -46,6 +46,7 @@ export {
   extractMidCallout,
   stripMidCalloutFromD1,
   readMidCalloutImage,
+  isMidCalloutLivros,
   extractContent,
   unescapeMd,
   joinMultilineLinks,
