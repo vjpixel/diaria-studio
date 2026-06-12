@@ -13,6 +13,169 @@ import { truncateAtBoundary } from "./truncate-at-boundary.ts";
 const MAX_SUMMARY_LENGTH = 200;
 
 /**
+ * Named HTML entity map — PT-BR accented chars + common typographic entities.
+ * Finding #4: catch-all was deleting accented PT-BR characters (&eacute; → é etc).
+ */
+const NAMED_ENTITIES: Record<string, string> = {
+  // basics
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  // typographic
+  hellip: "…",
+  mdash: "—",
+  ndash: "–",
+  rsquo: "’",
+  lsquo: "‘",
+  rdquo: "”",
+  ldquo: "“",
+  // latin-1 PT-BR accented (lowercase)
+  aacute: "á",
+  agrave: "à",
+  acirc: "â",
+  atilde: "ã",
+  auml: "ä",
+  eacute: "é",
+  egrave: "è",
+  ecirc: "ê",
+  euml: "ë",
+  iacute: "í",
+  igrave: "ì",
+  icirc: "î",
+  iuml: "ï",
+  oacute: "ó",
+  ograve: "ò",
+  ocirc: "ô",
+  otilde: "õ",
+  ouml: "ö",
+  uacute: "ú",
+  ugrave: "ù",
+  ucirc: "û",
+  uuml: "ü",
+  ccedil: "ç",
+  ntilde: "ñ",
+  // latin-1 accented (uppercase)
+  Aacute: "Á",
+  Agrave: "À",
+  Acirc: "Â",
+  Atilde: "Ã",
+  Auml: "Ä",
+  Eacute: "É",
+  Egrave: "È",
+  Ecirc: "Ê",
+  Euml: "Ë",
+  Iacute: "Í",
+  Igrave: "Ì",
+  Icirc: "Î",
+  Iuml: "Ï",
+  Oacute: "Ó",
+  Ograve: "Ò",
+  Ocirc: "Ô",
+  Otilde: "Õ",
+  Ouml: "Ö",
+  Uacute: "Ú",
+  Ugrave: "Ù",
+  Ucirc: "Û",
+  Uuml: "Ü",
+  Ccedil: "Ç",
+  Ntilde: "Ñ",
+};
+
+/**
+ * Decode a single HTML entity reference (numeric decimal, hex, or named).
+ * Returns the decoded character, or empty string for invalid/unsafe code points.
+ * Finding #1: RangeError on invalid code points (>0x10FFFF or surrogates).
+ * Finding #6: hex entities (&#x41;) were not decoded.
+ * Finding #4: named PT-BR entities were deleted instead of decoded.
+ */
+function decodeEntity(entity: string): string {
+  if (entity.startsWith("#x") || entity.startsWith("#X")) {
+    // Finding #6: hex numeric entity &#x41; etc.
+    const cp = parseInt(entity.slice(2), 16);
+    return safeFromCodePoint(cp);
+  }
+  if (entity.startsWith("#")) {
+    // Decimal numeric entity &#65; etc.
+    const cp = parseInt(entity.slice(1), 10);
+    return safeFromCodePoint(cp);
+  }
+  // Named entity — look up in our map; unknown → empty (don't crash).
+  return NAMED_ENTITIES[entity] ?? "";
+}
+
+/**
+ * Convert a Unicode code point to a character, guarding against:
+ * - Code points > 0x10FFFF (RangeError in String.fromCodePoint)
+ * - Lone surrogates (0xD800–0xDFFF)
+ * Returns empty string for invalid code points (Finding #1).
+ */
+function safeFromCodePoint(cp: number): string {
+  if (!Number.isInteger(cp) || cp < 0 || cp > 0x10FFFF) return "";
+  // Lone surrogates are technically in range but invalid in JS strings/DOM.
+  if (cp >= 0xD800 && cp <= 0xDFFF) return "";
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * stripHtml — remove HTML tags de um campo de texto livre antes do stitch (#2151).
+ *
+ * Regras:
+ * - `<a href="X">Y</a>` completo → preserva o texto interno Y (link semântico mantido como texto).
+ * - `<a href=...` truncada (tag sem fechar) → strippe limpo, sem `<` solto.
+ * - Block elements (<p>, <br>, <div>, <li>, <tr>, <h1>-<h6>) → inserem espaço antes do strip
+ *   so sentence boundaries are preserved (Finding #5).
+ * - Qualquer outra tag → remove silenciosamente.
+ * - Decodifica entities (named, decimal, hex) → caracteres Unicode (Findings #1/#4/#6).
+ * - Colapsa whitespace em excesso incluindo \n\r (Finding #7).
+ *
+ * Aplicado na entrada de cleanSummary — garante que HTML cru upstream (AI extraction
+ * imprecisa, truncamento em word-boundary de tag) nunca propague para o stitch.
+ */
+export function stripHtml(text: string): string {
+  if (!text) return text;
+
+  // Finding #2: Double-decode problem — strip tags BEFORE decoding entities.
+  // Order: replace complete anchors → block tags → strip all tags → decode entities.
+  // This prevents &amp;lt; → &lt; → < (double-decode bypassing the tag strip).
+
+  // 1. Substituir tags <a href="...">texto</a> completas → preserva texto interno.
+  let out = text.replace(/<a\s[^>]*>([\s\S]*?)<\/a>/gi, "$1");
+
+  // 2. Finding #5: block/inline-block elements → insert space before removing, so
+  //    sentence boundaries don't collapse ("</p><p>" → " " not "").
+  out = out.replace(/<\/?(p|div|li|td|th|tr|br|h[1-6]|blockquote|pre|ul|ol|header|footer|section|article|nav|aside|figure|figcaption)\b[^>]*>/gi, " ");
+
+  // 3. Finding #3 (CENTRAL BUG OF #2151): strip ALL remaining tags, including
+  //    malformed/truncated tags that appear in the MIDDLE of the string.
+  //    The original code used /<[^>]*$/g which only caught fragments at the END.
+  //    Strategy: remove any well-formed tag first, then remove any remaining `<`
+  //    up to the next `>` or end-of-string to catch mid-string truncated tags.
+  out = out.replace(/<[^>]*>/g, "");       // well-formed tags (with closing >)
+  out = out.replace(/<[^>]*/g, "");        // Finding #3 fix: truncated tag anywhere (no closing >)
+
+  // 4. Finding #1, #4, #6: decode HTML entities AFTER stripping tags.
+  //    - Named entities: mapped to Unicode (PT-BR accents preserved, not deleted).
+  //    - Decimal numeric &#N;: safe code point conversion (RangeError guarded).
+  //    - Hex numeric &#xN;: now also decoded (was silently passed through before).
+  out = out.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (_, ref) => decodeEntity(ref));
+
+  // 5. Finding #7: collapse ALL whitespace (including \n, \r, \t, multiple spaces).
+  //    Original only collapsed [ \t]{2,} — newlines from multi-line og:descriptions
+  //    were left embedded in the output.
+  //    Using \s+ (not \s{2,}) to collapse even a single \n/\r to a space.
+  out = out.replace(/\s+/g, " ").trim();
+
+  return out;
+}
+
+/**
  * PT-BR + EN stopwords — excluded when comparing sentence relevance to title.
  */
 const STOPWORDS = new Set([
@@ -76,8 +239,13 @@ function splitSentences(text: string): string[] {
 export function cleanSummary(summary: string, title: string): string {
   if (!summary) return "";
 
+  // Step 0: strip HTML antes de qualquer processamento (#2151 — HTML cru do upstream
+  // nunca deve propagar para o markdown/stitch).
+  const stripped = stripHtml(summary);
+  if (!stripped) return "";
+
   // Step 1: strip arXiv prefix
-  let cleaned = summary.replace(ARXIV_PREFIX_RE, "").trim();
+  let cleaned = stripped.replace(ARXIV_PREFIX_RE, "").trim();
   if (!cleaned) return "";
 
   // Step 2: split into sentences
