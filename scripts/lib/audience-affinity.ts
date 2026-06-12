@@ -52,11 +52,13 @@ const RELATIVE_SURVEY_JSON = "data/audience-raw.json";
  *   tempo estimado, setup mínimo, ferramenta consumer PT-BR/casual). Quando
  *   `true`, o scorer deve adicionar +8 pontos ao score do artigo (ver rubrica
  *   em scorer.md e scorer-chunk.md). Sinal puro de texto — não depende de dados
- *   de audiência — portanto é computado mesmo quando `signals.loaded === false`.
+ *   de audiência. Computado dentro de `annotateAudienceAffinity`, portanto **não**
+ *   disponível quando `signals.loaded === false` (retorno `null`). Se hands_on
+ *   independente de dados de audiência for necessário, chamar `detectHandsOnShort`
+ *   diretamente.
  *
  * O campo é `null` quando não há dados de audiência disponíveis — o scorer
  * ignora a anotação nesse caso (comportamento pré-#2063).
- * Exceção: `hands_on` é sempre computed (ver `detectHandsOnShort`).
  */
 export interface AudienceAffinity {
   affinity: number; // 0..1
@@ -382,19 +384,37 @@ export const HANDS_ON_BONUS_PTS = 8;
  */
 
 /** Regex de passos numerados / estrutura step-by-step. */
-const RE_NUMBERED_STEPS = /\b(passo a passo|step[- ]by[- ]step|step \d|etapas?|passsos?|steps?:|\d\.\s|\bpasso \d)/i;
+const RE_NUMBERED_STEPS = /\b(passo a passo|step[- ]by[- ]step|step \d|etapas?|passos?|steps?:|\d\.\s|\bpasso \d)/i;
 
-/** Regex de tempo estimado (≤2h — heurística: menção de minutos ou horas pequenas). */
-const RE_TIME_ESTIMATE = /\b(\d+\s*(min(uto)?s?|hora?s?|h\b)|em menos de \d|~\d|em \d+(h|min)|quick(ly)?|rapido|rápido|em poucos minutos|em menos de uma hora)/i;
+/** Regex de tempo estimado (≤2h — heurística: menção de minutos ou horas pequenas).
+ * Nota: `~\d` só funciona sobre rawText (título/summary) — tilde é stripped por normalizeTool em `hay`.
+ * `quick(ly)?` foi removido: dispara em adjetivos de notícias ("OpenAI quickly added X"), gerando
+ * falso-positivo quando combinado com RE_CONSUMER_TOOL. Usar `rapido`/`rápido`/`em poucos minutos`.
+ */
+const RE_TIME_ESTIMATE = /\b(\d+\s*(min(utes?|uto)?s?|h(ou)?r?s?|hora?s?)\b|em menos de \d|~\d|em \d+(h|min)\b|rapido|rápido|em poucos minutos|em menos de uma hora)/i;
 
-/** Regex de ferramentas consumer (interface web, sem API key/cloud obrigatório). */
-const RE_CONSUMER_TOOL = /\b(notebooklm|notebook lm|gemini|chatgpt|chat gpt|claude\.ai|copilot|gpt[- ]?4?o?|openai|transformers\.js|scikit[- ]?llm|gemini for workspace|google ai studio|openai academy|openai playground)\b/i;
+/** Regex de ferramentas consumer (interface web, sem API key/cloud obrigatório).
+ * `openai` bare foi restringido a `openai (academy|playground|api|platform)` para evitar falso-
+ * positivo em artigos de financiamento/política ("OpenAI raises $40B"). `gpt[- ]?4?o?` foi
+ * restringido para exigir sufixo concreto (4, 4o, o, o1, etc.) — a versão anterior degenerava
+ * para `/\bgpt\b/` com todos os sufixos opcionais, capturando surveys teóricos sobre "GPT architecture".
+ */
+const RE_CONSUMER_TOOL = /\b(notebooklm|notebook lm|gemini|chatgpt|chat gpt|claude\.ai|copilot|gpt[- ]?(?:4o?|o1?|3\.5|4\.?\d)|openai\s+(?:academy|playground|platform|api)|transformers\.js|scikit[- ]?llm|gemini for workspace|google ai studio)\b/i;
 
-/** Regex de scope fechado / quickstart. */
-const RE_CLOSED_SCOPE = /\b(guia|guia pratico|guia prático|tutorial|quickstart|getting started|mini[- ]?curso|introdução|introducao|iniciante|para iniciantes|beginners?|primeiros passos|hello[- ]world|hands[- ]?on|pratica|prática|exercicio|exercício|lab\b)/i;
+/** Regex de scope fechado / quickstart.
+ * `lab` foi removido: é demasiado genérico em inglês ("AI Safety Lab", "DeepMind Lab",
+ * "research lab") e dispara falso-positivo em artigos de política/produto. O sinal pretendido
+ * ("Jupyter Lab", "Google Colab") já é coberto por `hands-on` + `getting started`.
+ * `guide` foi adicionado: equivalente EN de `guia` — sem ele, tutoriais EN eram sistematicamente
+ * menos prováveis de atingir o threshold vs PT-BR equivalentes.
+ */
+const RE_CLOSED_SCOPE = /\b(guia|guia pratico|guia prático|tutorial|guide|quickstart|getting started|mini[- ]?curso|introdução|introducao|iniciante|para iniciantes|beginners?|primeiros passos|hello[- ]world|hands[- ]?on|pratica|prática|exercicio|exercício)\b/i;
 
-/** Regex de idioma PT-BR explícito no conteúdo ou origem. */
-const RE_PTBR = /\b(pt[- ]?br|português|portugues|em português|em portugues|brasil|brazilian|zently\.com\.br|\.com\.br\/)\b/i;
+/** Regex de idioma PT-BR explícito no conteúdo ou origem.
+ * `\.com\.br\/` substituído por `\.com\.br\b` — a versão anterior exigia path component
+ * após o domínio (site.com.br/tutorial OK, mas https://dados.com.br sem trailing slash falhava).
+ */
+const RE_PTBR = /\b(pt[- ]?br|português|portugues|em português|em portugues|brasil|brazilian|zently\.com\.br)|\b\.com\.br\b/i;
 
 /**
  * Detecta deterministicamente se um artigo USE MELHOR é um "tutorial hands-on curto"
@@ -483,11 +503,14 @@ export function annotateAudienceAffinity(
 
   // ─── 3. Hands-on curto (#2143) ─────────────────────────────────────────────
   // Sinal determinístico — independente de dados de audiência. Emite
-  // "hands_on:true" em `matched` quando detectado: o scorer LLM adiciona
-  // HANDS_ON_BONUS_PTS ao score do artigo (ver rubrica em scorer.md).
-  const { isHandsOn } = detectHandsOnShort(article);
+  // "hands_on:true" + sub-sinais "ho:{sinal}" em `matched` quando detectado:
+  // o scorer LLM adiciona HANDS_ON_BONUS_PTS ao score do artigo (ver rubrica em scorer.md).
+  // Os sub-sinais (ex: "ho:numbered_steps", "ho:consumer_tool") são para explicabilidade
+  // na `reason` do scorer — permitem justificar "detectado porque: passos + ferramenta".
+  const { isHandsOn, signals: hoSignals } = detectHandsOnShort(article);
   if (isHandsOn) {
     matched.push("hands_on:true");
+    for (const s of hoSignals) matched.push(`ho:${s}`);
   }
 
   // ─── Composite ─────────────────────────────────────────────────────────────

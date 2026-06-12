@@ -721,4 +721,110 @@ describe("annotateAudienceAffinity — campo hands_on (#2143)", () => {
     assert.equal(r1.hands_on, true);
     assert.equal(r2.hands_on, false);
   });
+
+  it("ho:* sub-sinais aparecem em matched quando hands_on:true (explicabilidade #2143 pass2)", () => {
+    // Garante que os sub-sinais de detectHandsOnShort são propagados para matched[]
+    // para explicabilidade do scorer. Regressão: pass1 descartava signals, expondo só 'hands_on:true'.
+    const article = {
+      url: "https://zently.com.br/notebooklm-tutorial",
+      title: "Tutorial NotebookLM passo a passo: guia para iniciantes",
+      summary: "Como usar o NotebookLM do Google em menos de 30 minutos",
+    };
+    const result = annotateAudienceAffinity(article, signals);
+    assert.ok(result !== null, "deve retornar anotação");
+    assert.ok(result.matched.includes("hands_on:true"), "'hands_on:true' deve estar em matched");
+    // Ao menos 1 sub-sinal "ho:*" deve estar presente
+    const hoSignals = result.matched.filter(m => m.startsWith("ho:"));
+    assert.ok(hoSignals.length > 0, "sub-sinais 'ho:*' devem estar em matched para explicabilidade");
+  });
+});
+
+// ─── Regressões pass2 (#2143 pass2) ─────────────────────────────────────────
+
+describe("detectHandsOnShort — regressões pass2 (#2143 pass2)", () => {
+  it("BUG-FIX: 'Primeiros passos com o Gemini' detecta numbered_steps (typo passsos? corrigido)", () => {
+    // Regressão: RE_NUMBERED_STEPS tinha 'passsos?' (triple-s) que nunca matcha
+    // a palavra real 'passos' (double-s). Fix: 'passos?' (double-s + optional s).
+    const { signals } = detectHandsOnShort({
+      title: "Primeiros passos com o Gemini",
+      summary: "Como começar a usar o Gemini",
+    });
+    assert.ok(signals.includes("numbered_steps"),
+      "'passos' deve detectar numbered_steps — regressão do typo passsos?");
+  });
+
+  it("BUG-FIX: 'Tutorial em 30 minutes' detecta time_estimate (EN support)", () => {
+    // 'minutes'/'hours' não eram cobertos antes; RE_TIME_ESTIMATE suportava só PT-BR.
+    const { signals } = detectHandsOnShort({
+      title: "Complete ChatGPT setup in 30 minutes",
+      summary: "A beginner guide to using ChatGPT",
+    });
+    assert.ok(signals.includes("time_estimate"),
+      "'30 minutes' deve detectar time_estimate — antes não cobria EN");
+  });
+
+  it("BUG-FIX: 'quickly' sozinho NÃO dispara time_estimate (falso-positivo removido)", () => {
+    // 'quick(ly)?' foi removido de RE_TIME_ESTIMATE por gerar falso-positivo em notícias
+    // como "OpenAI quickly added safety guardrails" (consumer_tool + time_estimate = hands-on incorreto).
+    const { isHandsOn, signals } = detectHandsOnShort({
+      title: "OpenAI quickly raised 6B in funding round",
+      summary: "The company quickly closed the round with major investors",
+    });
+    assert.ok(!signals.includes("time_estimate"),
+      "'quickly' não deve mais disparar time_estimate");
+    assert.equal(isHandsOn, false,
+      "notícia de financiamento com 'quickly' não deve ser hands-on");
+  });
+
+  it("BUG-FIX: 'openai' bare NÃO dispara consumer_tool em notícia de funding (falso-positivo)", () => {
+    // 'openai' bare estava em RE_CONSUMER_TOOL — disparava em "OpenAI raises $40B".
+    // Fix: restringido a 'openai (academy|playground|platform|api)'.
+    const { signals } = detectHandsOnShort({
+      title: "OpenAI anuncia nova rodada de captação de US$ 10 bilhões",
+      summary: "A empresa levantou recursos para expansão de infraestrutura",
+    });
+    assert.ok(!signals.includes("consumer_tool"),
+      "'OpenAI' bare em notícia de funding não deve disparar consumer_tool");
+  });
+
+  it("BUG-FIX: 'AI Safety Lab releases report' NÃO dispara closed_scope (lab removido)", () => {
+    // 'lab' era demasiado genérico — disparava em "AI Safety Lab", "DeepMind Lab" etc.
+    const { signals } = detectHandsOnShort({
+      title: "AI Safety Lab releases new alignment report",
+      summary: "The research lab published findings on LLM safety",
+    });
+    assert.ok(!signals.includes("closed_scope"),
+      "'lab' em nome de organização não deve disparar closed_scope");
+  });
+
+  it("BUG-FIX: 'A complete guide to ChatGPT' detecta closed_scope (guide adicionado para EN)", () => {
+    // 'guia' PT-BR estava em RE_CLOSED_SCOPE mas 'guide' EN estava ausente — assimetria.
+    const { signals } = detectHandsOnShort({
+      title: "A complete guide to ChatGPT for marketers",
+      summary: "Learn how to use ChatGPT effectively",
+    });
+    assert.ok(signals.includes("closed_scope"),
+      "'guide' em inglês deve detectar closed_scope — simetria com 'guia' PT-BR");
+  });
+
+  it("BUG-FIX: URL sem trailing slash (dados.com.br) detecta ptbr (com.br word boundary)", () => {
+    // \.com\.br\/ exigia trailing slash — falhava com URL sem path.
+    // Fix: \.com\.br\b (word boundary).
+    const { signals } = detectHandsOnShort({
+      url: "https://dados.com.br",
+      title: "Tutorial de análise de dados",
+      summary: "Guia prático para iniciantes",
+    });
+    assert.ok(signals.includes("ptbr"),
+      "URL .com.br sem trailing slash deve detectar ptbr");
+  });
+
+  it("'2 hours' detecta time_estimate (EN hours support)", () => {
+    const { signals } = detectHandsOnShort({
+      title: "Build a RAG chatbot in 2 hours: hands-on tutorial",
+      summary: "Complete step-by-step guide",
+    });
+    assert.ok(signals.includes("time_estimate"),
+      "'2 hours' deve detectar time_estimate");
+  });
 });
