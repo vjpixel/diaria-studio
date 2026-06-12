@@ -36,7 +36,7 @@
 import { COLORS, FONTS } from "./lib/design-tokens.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -99,11 +99,18 @@ export const DS_FONTS = {
 `;
 }
 
-const content = generateTokensContent(COLORS, FONTS);
+// Guard de main-module: só escreve arquivos quando executado como script (não no import).
+// Sem este guard, qualquer `import { generateTokensContent }` do módulo sobrescreveria
+// os arquivos gerados em disco — tornando o teste de drift auto-realizável (sempre passa).
+// process.argv[1] pode ser undefined quando executado via `node --input-type=module` ou eval —
+// nesse caso o módulo está definitivamente sendo importado, não executado como script.
+if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const content = generateTokensContent(COLORS, FONTS);
 
-for (const outDir of outDirs) {
-  const outPath = resolve(repoRoot, outDir, "ds-tokens.generated.ts");
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, content, "utf8");
-  console.log(`[generate-worker-tokens] Gerado: ${outPath}`);
+  for (const outDir of outDirs) {
+    const outPath = resolve(repoRoot, outDir, "ds-tokens.generated.ts");
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, content, "utf8");
+    console.log(`[generate-worker-tokens] Gerado: ${outPath}`);
+  }
 }

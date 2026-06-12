@@ -50,17 +50,20 @@ describe("scheduledAtFor (guard de range #2007/#2018)", () => {
     assert.ok(iso.includes("T09:00:00"), `esperado T09:00:00 no ISO, obtido: ${iso}`);
   });
 
-  // Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada)
+  // Guard de range: n fora de 1..SENDS.length lança erro explícito (nunca data silenciosamente errada)
   it("n=0 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(0), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(0), rangeRe);
   });
 
-  it("n=22 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(22), /n deve ser inteiro 1\.\.21/);
+  it(`n=${SENDS.length + 1} lança erro (fora do range)`, () => {
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(SENDS.length + 1), rangeRe);
   });
 
   it("n=1.5 lança erro (não-inteiro)", () => {
-    assert.throws(() => scheduledAtFor(1.5), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(1.5), rangeRe);
   });
 
   // scheduledAtFor apenas computa a data (sem guard); assertScheduledAtFuture faz o guard
@@ -106,11 +109,11 @@ describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--
     );
   });
 
-  it("lança quando ciclo desatualizado (clock em julho, mês hardcoded ainda junho)", () => {
+  it("lança quando ciclo desatualizado (clock em julho, scheduledAt de SENDS ainda em junho)", () => {
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
       () => assertScheduledAtFuture(1, afterCycle),
-      /Mês hardcoded "2026-06" está desatualizado/,
+      /desatualizado|passado ou presente/,
     );
   });
 
@@ -118,12 +121,13 @@ describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
       () => assertScheduledAtFuture(21, afterCycle),
-      /Mês hardcoded "2026-06" está desatualizado/,
+      /desatualizado|passado ou presente/,
     );
   });
 
   it("n=0 lança erro de range (delegado a scheduledAtFor)", () => {
-    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), rangeRe);
   });
 });
 

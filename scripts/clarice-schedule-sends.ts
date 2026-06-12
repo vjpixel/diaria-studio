@@ -113,7 +113,7 @@ export function assertScheduledAtFuture(n: number, nowOverride?: Date): void {
     throw new Error(
       `scheduledAtFor: data computada (${iso}) é passado ou presente ` +
       `(now=${now.toISOString()}). ` +
-      `Mês hardcoded "2026-06" está desatualizado — atualize ao copiar para o próximo ciclo.`,
+      `Mês do ciclo em SENDS está desatualizado — atualize scheduledAt em clarice-build-edition-sends.ts ao copiar para o próximo ciclo.`,
     );
   }
 }
