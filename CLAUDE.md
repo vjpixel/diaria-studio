@@ -2,7 +2,7 @@
 
 Projeto Claude Code fim-a-fim para produção da newsletter **Diar.ia** (diar.ia.br).
 
-O fluxo editorial é modelado como 5 etapas com gate humano em cada uma. A execução acontece via skills (`/diaria-edicao`, `/diaria-1-pesquisa`, etc.) que disparam um orquestrador; o orquestrador distribui trabalho para subagentes especializados em paralelo quando possível.
+O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4: revisão; Stage 6: agendamento). A execução acontece via skills (`/diaria-edicao`, `/diaria-1-pesquisa`, etc.) que disparam um orquestrador; o orquestrador distribui trabalho para subagentes especializados em paralelo quando possível.
 
 ---
 
@@ -41,6 +41,7 @@ O fluxo editorial é modelado como 5 etapas com gate humano em cada uma. A execu
    - **Etapa 3** (imagens): `/diaria-3-imagens [eia|d1|d2|d3]` (É IA? + imagens de destaque).
    - **Etapa 4** (revisão editorial): `/diaria-4-revisao` (pré-render + resumo consolidado + gate humano).
    - **Etapa 5** (publicação): `/diaria-5-publicacao [all|newsletter|social]`.
+   - **Etapa 6** (agendamento): `/diaria-6-agendamento [AAMMDD]` (gate humano: Schedule Beehiiv + auto-reporter).
 3. Skills auxiliares (debug, raramente usadas):
    - `/diaria-refresh-dedup` — testa conexão com Beehiiv MCP.
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
@@ -64,7 +65,8 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 | 2 | Escrita | **`writer-destaque` × 3** (paralelo, #1158/#1451) + `social-linkedin` + `social-facebook` em paralelo, todos a partir de `_internal/01-approved.json` → stitch + merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
 | 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
 | 4 | Revisão (#1694) | pré-render técnico (HTML + imagens + upload Worker + close-poll) → resumo consolidado (destaques, títulos, lints, preview) → **gate humano pré-publicação** | `_internal/.step-4-done.json` + `_internal/newsletter-final.html` |
-| 5 | Publicação (#1694) | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `publish-social` (Chrome → LinkedIn × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| 5 | Publicação (#1694) | `publish-newsletter` (Chrome → Beehiiv draft) + `scripts/publish-facebook.ts` (Graph API × 3, `--schedule`) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| 6 | Agendamento (#1694) | resumo de agendamento → **gate humano** → Schedule Beehiiv → `verify-scheduled-post.ts` → auto-reporter → `send-edition-report.ts` | `_internal/05-published.json` (com `scheduled_at`) + `_internal/edition-report.html` |
 
 **Sync com Google Drive (entre etapas):** **antes de cada gate** (etapas 1–4), `scripts/drive-sync.ts` sobe os outputs da etapa para `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` — assim o editor pode revisar no celular antes de aprovar no terminal. **Antes de cada etapa** que consome inputs que podem ter sido editados no Drive (2, 3, 4, 5), um pull traz a versão mais recente para o local. Retry cria `.v2`, `.v3` (versões contadas via `push_count` no cache). Falha de sync vira warning, nunca bloqueia. Cache em `data/drive-cache.json` (gitignored). Credenciais OAuth em `data/.credentials.json` — gerado com `npx tsx scripts/oauth-setup.ts` (setup único; requer `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`).
 
@@ -93,7 +95,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Data da edição é sempre explícita.** Skills `/diaria-*` que aceitam `AAMMDD` **nunca** inferem a partir de `today()` ou da edição mais recente em `data/editions/`. Se o usuário não passar a data, perguntar com sugestão de hoje/ontem como atalho mas exigir confirmação. Risco de rodar stage destrutivo/publicador (Stage 5) na edição errada é alto demais pra default silencioso.
 
-  Exceção (#583): skills `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao` aceitam AAMMDD opcional. Se omitido, rodar `npx tsx scripts/lib/find-current-edition.ts --stage N` e — se exatamente 1 edição estiver em curso (prereq do stage atendido + output faltando) — assumir essa edição com info log. Caso 0 candidatos: erro. Caso ≥2: perguntar como antes. Stage 1 não muda — cria a edição.
+  Exceção (#583): skills `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`, `/diaria-6-agendamento` aceitam AAMMDD opcional. Se omitido, rodar `npx tsx scripts/lib/find-current-edition.ts --stage N` e — se exatamente 1 edição estiver em curso (prereq do stage atendido + output faltando) — assumir essa edição com info log. Caso 0 candidatos: erro. Caso ≥2: perguntar como antes. Stage 1 não muda — cria a edição.
 
 - **Edição é sempre D+1.** A pesquisa (Etapa 1) é rodada no dia *anterior* à publicação — a data da edição é sempre **amanhã** (`today + 1 dia`), não hoje. Exemplo: se a rotina roda em 2026-04-26, a edição é `260427`. Isso vale para chamadas automáticas (CI, automação) e para chamadas manuais sem data explícita. Quando o usuário passar a data explicitamente, usar a data informada sem ajuste.
 
@@ -101,7 +103,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 
 - **Sempre indicar prioridade ao criar issues.** Nova issue **deve** entrar com 1 label `P0`/`P1`/`P2`/`P3` além do tipo (`enhancement`/`bug`/etc). Se a prioridade não estiver óbvia, sugerir uma com justificativa breve no corpo da issue (não deixar pra triagem depois). Default: `P2` pra bug com workaround / enhancement importante; `P3` pra cleanup, scoping, produto/decisão editorial; `P1` pra bug que afeta produção atual sem workaround; `P0` só pra fire (publicação corrompida, leak, etc).
 
-- **Etapa 5 (publicadores) default = tudo automático (#336 invertido em #1326, #1694).** Stage 5 é dispatch — editor já revisou no gate do Stage 4 (Revisão). Default em modo interativo, em `auto_approve`, e em `--no-gates` é o mesmo: dispatchar nos 3 canais (newsletter Beehiiv via Worker-hosted, LinkedIn agendado 17:00 BRT, Facebook imediato). Editor pode opt-out por canal via flag `--skip {newsletter,linkedin,facebook}` ou via gate interativo (`/diaria-5-publicacao` apresenta menu numérico). Se editor não responder no gate, fallback é tudo auto. Blast radius alto mas mitigado: Beehiiv sai como rascunho (com test email loop antes do schedule), LinkedIn agenda 24h+ à frente, Facebook é o único imediato — todos reversíveis por ação do editor no dashboard de cada plataforma. Logar source da decisão em `_internal/05-publish-consent.json` (`source: "default_auto" | "skip_flag_X" | "editor_response_X" | "auto_approve_default"`).
+- **Etapa 5 (publicadores) default = tudo automático (#336 invertido em #1326, #1694).** Stage 5 é dispatch — editor já revisou no gate do Stage 4 (Revisão). Default em modo interativo, em `auto_approve`, e em `--no-gates` é o mesmo: dispatchar nos 3 canais (newsletter Beehiiv via Worker-hosted, LinkedIn agendado 17:00 BRT, Facebook agendado via `--schedule`). Editor pode opt-out por canal via flag `--skip {newsletter,linkedin,facebook}` ou via gate interativo (`/diaria-5-publicacao` apresenta menu numérico). Se editor não responder no gate, fallback é tudo auto. Blast radius alto mas mitigado: Beehiiv sai como rascunho (com test email loop antes do schedule), LinkedIn agenda 24h+ à frente, Facebook é agendado — todos reversíveis por ação do editor no dashboard de cada plataforma. Logar source da decisão em `_internal/05-publish-consent.json` (`source: "default_auto" | "skip_flag_X" | "editor_response_X" | "auto_approve_default"`). O Schedule do Beehiiv (agendamento final da newsletter) ocorre no Stage 6 com gate humano; com `--no-gates` é auto-agendado para amanhã 06:00 BRT.
 
 - **Pull antes de editar arquivo que existe no Drive (#494).** Antes de usar `Edit` ou `Write` em qualquer arquivo que o editor pode ter modificado no Google Drive (`01-categorized.md`, `02-reviewed.md`, `03-social.md`), sempre fazer pull para trazer a versão mais recente: `npx tsx scripts/drive-sync.ts --mode pull --edition-dir {edition_dir} --stage {N} --files {arquivo}`. Nunca assumir que o arquivo local está atualizado.
 
@@ -165,4 +167,4 @@ platform.config.json     # { newsletter: "beehiiv", socials: [...] }
 
 ## Estado atual
 
-**Pipeline completo implementado** (5 etapas, #1694). Fluxo: Pesquisa → Escrita (newsletter + social em paralelo) → Imagens (É IA? + destaques) → Revisão (pré-render + gate humano pré-publicação) → Publicação (Beehiiv rascunho + teste + LinkedIn + Facebook). Editor revisa no gate da Revisão e dispara a publicação via `/diaria-5-publicacao`.
+**Pipeline completo implementado** (6 etapas, #1694). Fluxo: Pesquisa → Escrita → Imagens → Revisão (gate humano pré-publicação) → Publicação (Beehiiv draft + social agendado, auto) → Agendamento (gate humano: Schedule Beehiiv + auto-reporter). Gates humanos: Stage 4 (revisão editorial) e Stage 6 (agendamento final).
