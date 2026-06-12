@@ -14,14 +14,123 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
 // 06-social-published.json) que só existem no Stage 5 (Publicação).
-// #1694 finding 8: env-var checks de publicação (facebook, linkedin) importadas
-// de stage-4.ts onde as funções ainda residem (stage-4 as their origin is fine).
-import {
-  checkFbPageIdSet,
-  checkFbTokenSet,
-  checkLinkedinWorkerUrlSet,
-  checkCloudflareTokenSet,
-} from "./stage-4.ts";
+// #2154: env-var checks de publicação (facebook, linkedin) movidas para cá —
+// eliminando o import cross-stage stage-5→stage-4. As funções pertencem
+// logicamente ao Stage 5 (Publicação) onde são de fato necessárias.
+
+/**
+ * `FACEBOOK_PAGE_ID` env var deve estar setada — publish-facebook usa pra postar
+ * via Graph API. Nome confirmado em scripts/publish-facebook.ts:376.
+ */
+function checkFbPageIdSet(): InvariantViolation[] {
+  if (!process.env.FACEBOOK_PAGE_ID || process.env.FACEBOOK_PAGE_ID.trim().length === 0) {
+    return [
+      {
+        rule: "facebook-page-id-set",
+        message:
+          "FACEBOOK_PAGE_ID env var ausente — publish-facebook vai falhar. " +
+          "Configure em .env.local.",
+        source_issue: "#facebook",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `FACEBOOK_PAGE_ACCESS_TOKEN` deve estar setado. Nome confirmado em
+ * scripts/publish-facebook.ts:377.
+ */
+function checkFbTokenSet(): InvariantViolation[] {
+  if (
+    !process.env.FACEBOOK_PAGE_ACCESS_TOKEN ||
+    process.env.FACEBOOK_PAGE_ACCESS_TOKEN.trim().length === 0
+  ) {
+    return [
+      {
+        rule: "facebook-token-set",
+        message: "FACEBOOK_PAGE_ACCESS_TOKEN ausente — Facebook publishing vai falhar",
+        source_issue: "#facebook",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `DIARIA_LINKEDIN_CRON_URL` deve estar setado — publish-linkedin envia
+ * agendamento pro Cloudflare Worker. Sem ele, fallback é Make webhook
+ * (#971 com graceful degrade). Nome confirmado em
+ * scripts/publish-linkedin.ts:305.
+ *
+ * ASSIMETRIA INTENCIONAL DE SEVERIDADE (#2154 pass-2):
+ * Stage-0 verifica a mesma env var com severity="error" (linkedin-cron-creds-set).
+ * Aqui é "warning" porque Stage 5 é o momento de dispatch — se o var está ausente
+ * agora, o publish-linkedin degrada graciosamente para o Make webhook (post
+ * imediato em vez de agendado). Isso é indesejável mas não catastrófico. Em
+ * Stage 0, o error é correto: queremos parar o pipeline ANTES de 30min de
+ * pesquisa pra não chegar no Stage 5 sem config. Em Stage 5, já estamos
+ * publicando — warning informa o editor do degrade sem abortar.
+ */
+function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
+  const url = process.env.DIARIA_LINKEDIN_CRON_URL;
+  if (!url || url.trim().length === 0) {
+    return [
+      {
+        rule: "linkedin-worker-url-set",
+        message:
+          "DIARIA_LINKEDIN_CRON_URL env var ausente — publish-linkedin cai pra Make webhook " +
+          "(post imediato, sem agendamento). Configure em .env.local pra evitar.",
+        source_issue: "#971",
+        severity: "warning",
+      },
+    ];
+  }
+  if (!/^https:\/\//.test(url)) {
+    return [
+      {
+        // #2154 pass-2: este rule id era ÓRFÃO — emitido pelo código mas não
+        // registrado em STAGE_5_RULES. Agora registrado como entry separada;
+        // o stage-5 rule "linkedin-worker-url-set" cobre o caso ausente,
+        // e "linkedin-worker-url-https" cobre o caso não-HTTPS.
+        rule: "linkedin-worker-url-https",
+        message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
+        source_issue: "#971",
+        severity: "error",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `DIARIA_LINKEDIN_CRON_TOKEN` deve estar setado — autoriza POST pro worker.
+ * Nome confirmado em scripts/publish-linkedin.ts:308.
+ *
+ * ASSIMETRIA INTENCIONAL DE SEVERIDADE (#2154 pass-2):
+ * Stage-0 emite "error" via linkedin-cron-creds-set; aqui é "warning" pelo
+ * mesmo motivo que checkLinkedinWorkerUrlSet: graceful degrade para Make webhook.
+ */
+function checkCloudflareTokenSet(): InvariantViolation[] {
+  if (
+    !process.env.DIARIA_LINKEDIN_CRON_TOKEN ||
+    process.env.DIARIA_LINKEDIN_CRON_TOKEN.trim().length === 0
+  ) {
+    return [
+      {
+        rule: "linkedin-worker-token-set",
+        message:
+          "DIARIA_LINKEDIN_CRON_TOKEN ausente — publish-linkedin não consegue autenticar no worker " +
+          "(cai pra Make webhook).",
+        source_issue: "#971",
+        severity: "warning",
+      },
+    ];
+  }
+  return [];
+}
 
 interface SocialPublishedJson {
   posts?: Array<{ platform?: string; status?: string }>;
@@ -526,10 +635,38 @@ export const STAGE_5_RULES: InvariantRule[] = [
   },
   {
     id: "linkedin-worker-url-set",
-    description: "DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971)",
+    description: "DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971)",
     source_issue: "#971",
     stage: 5,
     run: () => checkLinkedinWorkerUrlSet(),
+  },
+  {
+    // #2154 pass-2: rule id linkedin-worker-url-https era ÓRFÃO — emitido por
+    // checkLinkedinWorkerUrlSet (ramo não-HTTPS) mas não registrado aqui,
+    // então list-invariants.ts e docs/editorial-invariants.md não o listavam.
+    // Registrado como entry separada: mesmo run fn (que pode emitir qualquer
+    // dos dois ids dependendo do estado), mas descrição diferente pro docs.
+    // Alternativa seria consolidar em 1 id — mas isso exigiria mudar testes
+    // existentes que assertam v[0].rule === "linkedin-worker-url-https" pelo nome.
+    id: "linkedin-worker-url-https",
+    description: "DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971)",
+    source_issue: "#971",
+    stage: 5,
+    run: () => {
+      // Só ativa quando URL está presente mas não é HTTPS.
+      // O ramo "ausente" é coberto por linkedin-worker-url-set acima.
+      const url = process.env.DIARIA_LINKEDIN_CRON_URL;
+      if (!url || url.trim().length === 0) return [];
+      if (/^https:\/\//.test(url)) return [];
+      return [
+        {
+          rule: "linkedin-worker-url-https",
+          message: `DIARIA_LINKEDIN_CRON_URL deve ser HTTPS, recebido: "${url.slice(0, 50)}"`,
+          source_issue: "#971",
+          severity: "error",
+        },
+      ];
+    },
   },
   {
     id: "linkedin-worker-token-set",
@@ -560,4 +697,11 @@ export {
   checkStage4ReviewLoop,
   checkStage4ReviewCompleted,
   checkClosePollMarker,
+  checkFbPageIdSet,
+  checkFbTokenSet,
+  checkLinkedinWorkerUrlSet,
+  checkCloudflareTokenSet,
+  // #2154 pass-2: checkConsentBinding agora vive exclusivamente aqui (stage-5).
+  // A cópia órfã de stage-4 foi removida; testes redirecionados pra cá.
+  checkConsentBinding,
 };

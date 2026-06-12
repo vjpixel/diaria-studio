@@ -16,8 +16,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { checkConsentBinding, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
-import { STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
+// #2154 pass-2: checkConsentBinding vive em stage-5.ts (dados pós-dispatch).
+// A cópia órfã em stage-4.ts foi removida; testes agora importam da fonte canônica.
+import { STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { checkConsentBinding, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
 
 function makeEditionDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "consent-binding-"));
