@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 45 fontes (14 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 47 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -243,5 +243,20 @@
 - URL: https://newsletter.maartengrootendorst.com/
 - Site query: `site:newsletter.maartengrootendorst.com`
 - RSS: https://newsletter.maartengrootendorst.com/feed
+- Use Melhor: sim
+- Low cadence: sim
+
+### Blog do Google Brasil (IA)
+- URL: https://blog.google/intl/pt-br/novidades/tecnologia/
+- Site query: `site:blog.google/intl/pt-br/novidades/tecnologia`
+- RSS: https://blog.google/intl/pt-br/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
+- Use Melhor: sim
+- Low cadence: sim
+
+### Google Codelabs (IA)
+- URL: https://codelabs.developers.google.com/
+- Site query: `site:codelabs.developers.google.com`
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 - Use Melhor: sim
 - Low cadence: sim
