@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSection, stitchNewsletter, loadClariceCallout } from "../scripts/stitch-newsletter.ts";
 import { extractMidCallout } from "../scripts/render-newsletter-html.ts";
+import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
 describe("renderSection (#1463)", () => {
   it("retorna vazio quando não há items", () => {
@@ -524,5 +525,73 @@ describe("#1938 — midCallout CLARICE auto-injetado entre D1 e D2", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// ─── #2151 — stripHtml: sanitização de HTML cru em campos de texto ────────────
+
+describe("#2151 — stripHtml: sanitiza HTML cru antes do stitch", () => {
+  it("caso real 260612: anchor truncada (<a href=...) → sem HTML cru no output", () => {
+    // Caso exato do bug: entity extraction capturou início de <a href sem fechar.
+    const raw = "Acesse o tutorial <a href=\"https://example.com/tutorial";
+    const out = stripHtml(raw);
+    // Nenhum `<` solto deve restar
+    assert.ok(!out.includes("<"), `sem < solto; got: ${out}`);
+    assert.ok(!out.includes(">"), `sem > solto; got: ${out}`);
+    // Texto antes da tag deve sobrar
+    assert.match(out, /Acesse o tutorial/);
+  });
+
+  it("anchor completa → extrai texto interno, descarta markup", () => {
+    const raw = 'Clique <a href="https://example.com">aqui</a> para saber mais.';
+    const out = stripHtml(raw);
+    assert.doesNotMatch(out, /<a/i);
+    assert.match(out, /Clique aqui para saber mais\./);
+  });
+
+  it("summary limpo → inalterado (sem regressão)", () => {
+    const raw = "Pesquisadores apresentaram nova técnica de fine-tuning com 30% menos dados.";
+    const out = stripHtml(raw);
+    assert.equal(out, raw);
+  });
+
+  it("entities HTML comuns → decodificadas corretamente", () => {
+    const raw = "Texto&nbsp;com&nbsp;espaços &amp; caracteres &lt;especiais&gt;.";
+    const out = stripHtml(raw);
+    assert.doesNotMatch(out, /&nbsp;|&amp;|&lt;|&gt;/);
+    assert.match(out, /Texto com espaços & caracteres/);
+  });
+
+  it("tag bem-formada genérica → removida, texto preservado", () => {
+    const raw = "Um <strong>resultado</strong> importante foi publicado.";
+    const out = stripHtml(raw);
+    assert.doesNotMatch(out, /<strong>|<\/strong>/);
+    assert.match(out, /Um resultado importante foi publicado\./);
+  });
+});
+
+describe("#2151 — renderSection: summary com HTML cru não vaza pro markdown", () => {
+  it("anchor truncada no summary → output sem HTML cru", () => {
+    const out = renderSection("🛠️", "USE MELHOR", "USE MELHOR", [
+      {
+        title: "Tutorial de fine-tuning",
+        url: "https://example.com/tutorial",
+        summary: 'Aprenda a treinar modelos. <a href="https://example.com/deep',
+      },
+    ]);
+    assert.ok(!out.includes("<"), `sem < solto; got: ${out}`);
+    assert.match(out, /Aprenda a treinar modelos/);
+  });
+
+  it("anchor completa no summary → texto extraído sem markup", () => {
+    const out = renderSection("📡", "RADAR", "RADAR", [
+      {
+        title: "Novo modelo lançado",
+        url: "https://example.com/news",
+        summary: 'Veja o <a href="https://example.com/full">artigo completo</a> sobre o modelo.',
+      },
+    ]);
+    assert.doesNotMatch(out, /<a/i);
+    assert.match(out, /artigo completo/);
   });
 });

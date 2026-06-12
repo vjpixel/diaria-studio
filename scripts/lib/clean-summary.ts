@@ -13,6 +13,46 @@ import { truncateAtBoundary } from "./truncate-at-boundary.ts";
 const MAX_SUMMARY_LENGTH = 200;
 
 /**
+ * stripHtml — remove HTML tags de um campo de texto livre antes do stitch (#2151).
+ *
+ * Regras:
+ * - `<a href="X">Y</a>` completo → preserva o texto interno Y (link semântico mantido como texto).
+ * - `<a href=...` truncada (tag sem fechar) → strippe limpo, sem `<` solto.
+ * - Qualquer outra tag → remove silenciosamente.
+ * - Decodifica entities comuns (&nbsp; → ' ', &amp; → '&', &lt; → '<', &gt; → '>').
+ * - Colapsa espaços em excesso.
+ *
+ * Aplicado na entrada de cleanSummary — garante que HTML cru upstream (AI extraction
+ * imprecisa, truncamento em word-boundary de tag) nunca propague para o stitch.
+ */
+export function stripHtml(text: string): string {
+  if (!text) return text;
+
+  // 1. Substituir tags <a href="...">texto</a> completas → preserva texto interno.
+  let out = text.replace(/<a\s[^>]*>([\s\S]*?)<\/a>/gi, "$1");
+
+  // 2. Remover quaisquer tags restantes (incluindo incompletas/truncadas como `<a href=...`).
+  //    Usa dois passes: primeiro fecha tags bem-formadas residuais, depois limpa fragmentos.
+  out = out.replace(/<[^>]*>/g, "");   // tags fechadas normais
+  out = out.replace(/<[^>]*$/g, "");   // fragmento truncado sem `>` (ex: `<a href=...`)
+
+  // 3. Decodificar HTML entities.
+  out = out
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&[a-z]+;/gi, ""); // entities desconhecidas → remove
+
+  // 4. Colapsar whitespace em excesso.
+  out = out.replace(/[ \t]{2,}/g, " ").trim();
+
+  return out;
+}
+
+/**
  * PT-BR + EN stopwords — excluded when comparing sentence relevance to title.
  */
 const STOPWORDS = new Set([
@@ -76,8 +116,13 @@ function splitSentences(text: string): string[] {
 export function cleanSummary(summary: string, title: string): string {
   if (!summary) return "";
 
+  // Step 0: strip HTML antes de qualquer processamento (#2151 — HTML cru do upstream
+  // nunca deve propagar para o markdown/stitch).
+  const stripped = stripHtml(summary);
+  if (!stripped) return "";
+
   // Step 1: strip arXiv prefix
-  let cleaned = summary.replace(ARXIV_PREFIX_RE, "").trim();
+  let cleaned = stripped.replace(ARXIV_PREFIX_RE, "").trim();
   if (!cleaned) return "";
 
   // Step 2: split into sentences
