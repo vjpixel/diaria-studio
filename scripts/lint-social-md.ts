@@ -813,6 +813,8 @@ export interface SectionCoverageResult {
   sections: Array<{ name: string; touched: boolean }>;
   /** Seções que ficaram idênticas antes vs depois. */
   untouched: string[];
+  /** Seções presentes no pre mas ausentes no post (corrupção estrutural). */
+  deleted: string[];
 }
 
 /** Extrai blocos nomeados de nível `##` e `###` da seção LinkedIn. */
@@ -865,15 +867,22 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
 
   const sections: Array<{ name: string; touched: boolean }> = [];
   const untouched: string[] = [];
+  const deleted: string[] = [];
 
   for (const name of SECTIONS_TO_CHECK) {
     const pre = preSections[name];
     const post = postSections[name];
     // Seção ausente em ambos = não existe nesta edição → skip (ok, não untouched)
     if (pre === undefined && post === undefined) continue;
-    // Seção ausente no pre mas presente no post = algo mudou estruturalmente → touched
-    if (pre === undefined || post === undefined) {
+    // Seção ausente no pre mas presente no post = algo adicionado → touched (ok)
+    if (pre === undefined) {
       sections.push({ name, touched: true });
+      continue;
+    }
+    // Seção presente no pre mas ausente no post = corrupção estrutural (humanizador deletou)
+    if (post === undefined) {
+      sections.push({ name, touched: false });
+      deleted.push(name);
       continue;
     }
     const touched = pre.trim() !== post.trim();
@@ -881,7 +890,7 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
     if (!touched) untouched.push(name);
   }
 
-  return { ok: untouched.length === 0, sections, untouched };
+  return { ok: untouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -1012,13 +1021,23 @@ function main(): void {
     const result = checkHumanizerSectionCoverage(preMd, md);
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) {
-      console.error(
-        `\n❌ ${result.untouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,
-      );
-      for (const s of result.untouched) {
-        console.error(`  ${s}: idêntica antes/depois do humanizador`);
+      if (result.deleted.length > 0) {
+        console.error(
+          `\n❌ ${result.deleted.length} seção(ões) deletada(s) pelo humanizador (corrupção estrutural, #2148):`,
+        );
+        for (const s of result.deleted) {
+          console.error(`  ${s}: presente antes do humanizador, ausente depois`);
+        }
       }
-      console.error(`\n  Re-invocar humanizador mirando: ${result.untouched.join(", ")}`);
+      if (result.untouched.length > 0) {
+        console.error(
+          `\n❌ ${result.untouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,
+        );
+        for (const s of result.untouched) {
+          console.error(`  ${s}: idêntica antes/depois do humanizador`);
+        }
+        console.error(`\n  Re-invocar humanizador mirando: ${result.untouched.join(", ")}`);
+      }
       process.exit(1);
     }
     return;
