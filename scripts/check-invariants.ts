@@ -224,15 +224,15 @@ async function main(): Promise<void> {
   const onlyRule = args.rule as string | undefined;
   const stageRaw = args.stage;
   const stage =
-    typeof stageRaw === "string" && /^[0-5]$/.test(stageRaw)
-      ? (Number(stageRaw) as 0 | 1 | 2 | 3 | 4 | 5)
+    typeof stageRaw === "string" && /^[0-6]$/.test(stageRaw)
+      ? (Number(stageRaw) as 0 | 1 | 2 | 3 | 4 | 5 | 6)
       : undefined;
 
   if (!isStatic && !editionDir && stage === undefined) {
     console.error(
       "Uso: check-invariants.ts --static [--rule <id>]\n" +
         "  ou: check-invariants.ts --edition-dir <path> [--rule <id>]\n" +
-        "  ou: check-invariants.ts --stage <0-5> [--edition-dir <path>] [--rule <id>]",
+        "  ou: check-invariants.ts --stage <0-6> [--edition-dir <path>] [--rule <id>]",
     );
     process.exit(2);
   }

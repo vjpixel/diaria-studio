@@ -882,7 +882,7 @@ describe("Stage 5 invariants (pós-publicação)", () => {
   });
 
   // #1410 — stage-4 review loop enforcement
-  describe("stage-4-review-loop-enforced (#1410)", () => {
+  describe("stage-5-review-loop-enforced (#1410)", () => {
     it("passa silenciosamente quando 05-published.json ausente (outro check pega)", () => {
       const v = checkStage4ReviewLoop(fixture);
       assert.equal(v.length, 0);
@@ -913,7 +913,7 @@ describe("Stage 5 invariants (pós-publicação)", () => {
       );
       const v = checkStage4ReviewLoop(fixture);
       assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "stage-4-review-loop-enforced");
+      assert.equal(v[0].rule, "stage-5-review-loop-enforced");
       assert.match(v[0].message, /review_attempts=1/);
       assert.match(v[0].message, /fix-mode/);
     });
@@ -944,7 +944,7 @@ describe("Stage 5 invariants (pós-publicação)", () => {
       );
       const v = checkStage4ReviewLoop(fixture);
       assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "stage-4-review-loop-parseable");
+      assert.equal(v[0].rule, "stage-5-review-loop-parseable");
     });
   });
 

@@ -1,11 +1,11 @@
 ---
 name: orchestrator
-description: Playbook da pipeline Diar.ia (4 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
+description: Playbook da pipeline Diar.ia (6 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
 model: claude-opus-4-8
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
-> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
+> **#207 — este arquivo é um playbook, não um subagente invocável.** Skills (`/diaria-edicao`, `/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`) instruem o top-level Claude Code a ler este documento e executar os passos diretamente, porque o runtime bloqueia `Agent` dentro de subagentes. O top-level tem `Agent` disponível e dispara `source-researcher`, `writer`, `social-*`, `publish-*`, etc. conforme cada etapa prescreve. Os pronomes "você" abaixo se referem ao executor top-level, não a um subagente.
 
 Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu trabalho é coordenar subagentes especializados para cada stage, pausar em cada gate humano, e persistir outputs.
 
@@ -19,8 +19,8 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual.
 5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` no Drive em sincronia com `data/editions/{AAMMDD}/`:
-   - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4, 5 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
-   - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 5, 6, 7 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
+   - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
+   - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 4, 5 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
    - Chamar via `Bash("npx tsx scripts/drive-sync.ts --mode {push|pull} --edition-dir {edition_dir} --stage {N} --files {file1.md,file2.jpg}")`. Ler JSON de stdout; warnings no output — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
    - **Surface no gate (#121).** Se `JSON.warnings.length > 0` após qualquer sync push, **incluir no resumo do gate humano** uma linha tipo: `⚠️ Drive sync: {N} warning(s) em Stage {N} — detalhes em /diaria-log filtrando agent=drive-sync`. Tracking acumulado: contar stages com sync degradado em `sync_results`; se ≥3 stages consecutivos retornam warnings, escalar mensagem para `🔴 Drive sync degradado em N stages consecutivos — verificar credenciais (data/.credentials.json) ou rodar npx tsx scripts/oauth-setup.ts pra re-autenticar`. Não bloqueia, mas torna o estado visível pro editor reagir.
    - Lista de arquivos por stage hardcoded nos sub-arquivos de detalhe. Só outputs finais entram — prompts e raws ficam local.
@@ -35,7 +35,9 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 | 1 | Pesquisa | N× `source-researcher` + M× `discovery-searcher` + `eia-composer` (em paralelo, É IA? em background) → `scripts/verify-accessibility.ts` → `scripts/dedup.ts` → `scripts/categorize.ts` → `research-reviewer` → `scorer` → `scripts/render-categorized-md.ts` | `01-categorized.md` → `_internal/01-approved.json` |
 | 2 | Escrita | `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, todos a partir de `_internal/01-approved.json` → merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
 | 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
-| 4 | Publicação | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| **4** | **Revisão** (#1694) | pré-render HTML + imagens + upload + close-poll → resumo consolidado (destaques + títulos + links + lints + imagens) → **gate humano** | sentinel step-4 + `_internal/newsletter-final.html` + `_internal/05-social-preview.json` |
+| **5** | **Publicação** (#1694) | `publish-newsletter` (Chrome → Beehiiv draft) + `scripts/publish-facebook.ts` (Graph API × 3, `--schedule`) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| **6** | **Agendamento** (#1694) | resumo de agendamento → **gate humano** → Schedule Beehiiv → `verify-scheduled-post.ts` → auto-reporter → `send-edition-report.ts` | `_internal/05-published.json` (com `scheduled_at`) + `_internal/edition-report.html` |
 
 ---
 
@@ -47,7 +49,9 @@ O detalhamento completo de cada stage está nos arquivos abaixo. **Leia o sub-ar
 - `@see .claude/agents/orchestrator-stage-1-research.md` — Stage 1 (pesquisa + É IA?) (#634 split)
 - `@see .claude/agents/orchestrator-stage-2.md` — Etapa 2 (escrita — newsletter + social em paralelo)
 - `@see .claude/agents/orchestrator-stage-3.md` — Etapa 3 (imagens — É IA? coleta + destaques)
-- `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (publicação paralela + auto-reporter)
+- `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (revisão editorial assistida + gate humano pré-publicação) (#1694)
+- `@see .claude/agents/orchestrator-stage-5.md` — Etapa 5 (publicação paralela + auto-reporter)
+- `@see .claude/agents/orchestrator-stage-6.md` — Etapa 6 (agendamento + gate humano + auto-reporter) (#1694)
 
 ---
 
@@ -124,8 +128,8 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 Quando rodando dentro do harness Claude Code (`/diaria-*` skills), o top-level usa `TaskCreate`/`TaskUpdate` pra refletir progresso na UI. **Invariante**: nenhuma task fica `in_progress` depois que o stage dela fecha. Sintoma do bug: timer "10m 24s" continua ativo em `Stage 1x — GATE HUMANO` mesmo com Stage 2 já rodando.
 
 Regras:
-1. **Cada skill** (`/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-publicar`) cria suas próprias tasks no início — uma por sub-stage interno. Ver instruções específicas em cada `SKILL.md`.
+1. **Cada skill** (`/diaria-1-pesquisa`, `/diaria-2-escrita`, `/diaria-3-imagens`, `/diaria-4-revisao`, `/diaria-5-publicacao`) cria suas próprias tasks no início — uma por sub-stage interno. Ver instruções específicas em cada `SKILL.md`.
 2. **Marcar `completed` imediatamente após o gate aprovar** (ou imediatamente após o sentinel ser escrito quando `auto_approve=true`). Não esperar o próximo skill começar — a aprovação do gate é o ponto natural de fechamento.
-3. **Defensive cleanup no início de cada skill**: antes de criar tasks novas, varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de stages anteriores (`Stage 0*`, `Stage 1*`, etc., quando entrando em Stage ≥2). Cobre o caso de skill anterior ter sido interrompida sem fechar suas tasks.
+3. **Defensive cleanup no início de cada skill**: antes de criar tasks novas, varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de stages anteriores (`Stage 0*`, `Stage 1*`, etc., quando entrando em Stage ≥2; `Stage 5*` quando `/diaria-4-revisao` é re-rodado via alias). Cobre o caso de skill anterior ter sido interrompida sem fechar suas tasks.
 4. **Resume**: se um skill detecta que o stage anterior foi aprovado (sentinel/output existe) mas alguma task daquele stage ainda está `in_progress`, marcar como `completed` com nota `auto-cleanup at next stage start`.
 5. **No-op em modo CLI puro** (sem harness Claude Code): chamadas TaskCreate/TaskUpdate são opcionais — se a tool não estiver disponível, pular silenciosamente. Não bloqueia.

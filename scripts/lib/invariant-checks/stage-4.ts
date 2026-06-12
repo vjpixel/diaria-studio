@@ -640,37 +640,9 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkIntroCountConsistent,
   },
-  // Review #1602: consent-binding movida pra STAGE_5_RULES — os arquivos
-  // que ela verifica (05-published.json, 06-social-published.json) só
-  // existem POST-dispatch. Roda no check pós-publish (--stage 5).
-  {
-    id: "facebook-page-id-set",
-    description: "FACEBOOK_PAGE_ID env var presente",
-    source_issue: "#facebook",
-    stage: 4,
-    run: () => checkFbPageIdSet(),
-  },
-  {
-    id: "facebook-token-set",
-    description: "FACEBOOK_PAGE_ACCESS_TOKEN env var presente",
-    source_issue: "#facebook",
-    stage: 4,
-    run: () => checkFbTokenSet(),
-  },
-  {
-    id: "linkedin-worker-url-set",
-    description: "DIARIA_LINKEDIN_CRON_URL env var presente e HTTPS (#971)",
-    source_issue: "#971",
-    stage: 4,
-    run: () => checkLinkedinWorkerUrlSet(),
-  },
-  {
-    id: "linkedin-worker-token-set",
-    description: "DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971)",
-    source_issue: "#971",
-    stage: 4,
-    run: () => checkCloudflareTokenSet(),
-  },
+  // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
+  // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
+  // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
 ];
 
 export {

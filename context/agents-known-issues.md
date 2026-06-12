@@ -19,7 +19,7 @@ emails com caracteres não-ASCII:
 - Merge tags Beehiiv (`{{poll_sig}}`) ocasionalmente reportadas como
   "stripped" mesmo presentes no HTML.
 
-**Mitigation** (#1421): orchestrator-stage-4.md §4f.5 chama
+**Mitigation** (#1421): orchestrator-stage-5.md §5f.5 chama
 `scripts/lib/agent-issue-validator.ts::filterAgentIssues()` antes de disparar
 fix-mode. Tipos `encoding_drop`, `poll_sig_missing`, `vote_edition_malformed`
 são cross-checked contra HTML local — se ground truth confirma OK, dropped.
@@ -35,7 +35,7 @@ Quando o email não chega ao Gmail em 30s, agent retorna
 `status: "inconclusive"`. Pre-#1212 isso virava `email_not_found` que o
 orchestrator tratava como "review limpo" — falso negativo estrutural.
 
-**Mitigation**: §4f passo 3 — `inconclusive` faz orchestrator sair do loop
+**Mitigation**: §5f passo 3 — `inconclusive` faz orchestrator sair do loop
 com `review_status: "inconclusive"`, NÃO `review_completed: true`. Editor
 revisa visualmente no gate.
 

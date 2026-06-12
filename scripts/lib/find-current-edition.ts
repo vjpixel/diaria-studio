@@ -2,14 +2,19 @@
  * find-current-edition.ts (#583)
  *
  * Detecta edições em curso para um stage da pipeline Diar.ia. Usado pelas
- * skills `/diaria-{2,3,4}-*` quando o editor omite o argumento AAMMDD: se há
+ * skills `/diaria-{2,3,4,5}-*` quando o editor omite o argumento AAMMDD: se há
  * exatamente uma edição com o stage anterior aprovado e o output do stage
  * atual faltando, a skill assume essa edição em vez de perguntar.
  *
  * Critérios por stage (relativos a `data/editions/{AAMMDD}/`):
  *   - Stage 2: prereq `_internal/01-approved.json`; output esperado `02-reviewed.md`.
  *   - Stage 3: prereq `_internal/01-approved.json`; output esperado `04-d1-1x1.jpg`.
- *   - Stage 4: prereqs `02-reviewed.md` e `03-social.md`; output esperado `_internal/05-published.json`.
+ *   - Stage 4 (Revisão, #1694): prereqs `02-reviewed.md` e `03-social.md`;
+ *       output esperado `_internal/.step-4-done.json`.
+ *   - Stage 5 (Publicação, #1694): prereq `_internal/.step-4-done.json`;
+ *       output esperado `_internal/06-social-published.json` (escrito após social
+ *       dispatch; 05-published.json é escrito mid-stage e causaria falso-done se
+ *       social falhasse — #1694 finding 3).
  *
  * "Em curso" = todos os prereqs presentes E ao menos um output ausente.
  *
@@ -18,10 +23,10 @@
  *   → {"stage":2,"candidates":["260505","260506"]}
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export type Stage = 2 | 3 | 4;
+export type Stage = 2 | 3 | 4 | 5 | 6;
 
 interface StageRequirements {
   /** Files that must exist for this stage to be ready to run. */
@@ -40,8 +45,26 @@ const STAGE_REQUIREMENTS: Record<Stage, StageRequirements> = {
     output: ["04-d1-1x1.jpg"],
   },
   4: {
+    // Stage 4 = Revisão editorial assistida (#1694)
     prereq: ["02-reviewed.md", "03-social.md"],
-    output: ["_internal/05-published.json"],
+    output: ["_internal/.step-4-done.json"],
+  },
+  5: {
+    // Stage 5 = Publicação (#1694, was Stage 4 before the split)
+    // Output marker is 06-social-published.json (written after social dispatch, end of Stage 5).
+    // 05-published.json is written mid-stage (newsletter only) and would cause false-done
+    // detection if social dispatch fails (#1694 finding 3).
+    prereq: ["_internal/.step-4-done.json"],
+    output: ["_internal/06-social-published.json"],
+  },
+  6: {
+    // Stage 6 = Agendamento (#1694): gate humano + Schedule Beehiiv + auto-reporter.
+    // prereq: .step-5-done.json (Stage 5 completed its dispatch).
+    // output: .step-6-done.json (written after Schedule confirmed + auto-reporter done).
+    // Guard: editions that have 05-published.json with scheduled_at OR status="published"
+    //        are historical/complete — do NOT re-flag as Stage 6 in-progress.
+    prereq: ["_internal/.step-5-done.json"],
+    output: ["_internal/.step-6-done.json"],
   },
 };
 
@@ -75,6 +98,31 @@ export function findEditionsInProgress(
     const outputDone = reqs.output.every((f) => existsSync(join(editionDir, f)));
     if (outputDone) continue;
 
+    // #1694 finding 2: guard against pre-#1694 editions being detected as Stage 4
+    // in-progress. Pre-split editions have 05-published.json (already published) but
+    // lack .step-4-done.json (the new Stage 4 sentinel). Without this guard, they would
+    // be flagged as Stage 4 candidates and Stage 4 Revisão would re-run on a published edition.
+    if (stage === 4 && existsSync(join(editionDir, "_internal", "05-published.json"))) {
+      continue; // already fully published — treat as complete
+    }
+
+    // #1694: guard against historical editions (pre-Stage-6) being detected as Stage 6
+    // in-progress. Pre-split editions with 05-published.json that already have
+    // scheduled_at or status="published" are fully complete — Stage 6 sentinel
+    // was not written for them (feature not yet deployed). Treat as done.
+    if (stage === 6 && existsSync(join(editionDir, "_internal", "05-published.json"))) {
+      try {
+        const pub = JSON.parse(
+          readFileSync(join(editionDir, "_internal", "05-published.json"), "utf8"),
+        ) as { scheduled_at?: string; status?: string };
+        if (pub.scheduled_at || pub.status === "published") {
+          continue; // already fully completed — treat as done
+        }
+      } catch {
+        // corrupted JSON — don't skip, let normal logic handle
+      }
+    }
+
     candidates.push(entry);
   }
 
@@ -101,8 +149,8 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const stageRaw = args["stage"];
   const stageNum = parseInt(stageRaw ?? "", 10);
-  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4) {
-    console.error("Uso: find-current-edition.ts --stage <2|3|4>");
+  if (stageNum !== 2 && stageNum !== 3 && stageNum !== 4 && stageNum !== 5 && stageNum !== 6) {
+    console.error("Uso: find-current-edition.ts --stage <2|3|4|5|6>");
     process.exit(1);
   }
   const candidates = findEditionsInProgress(stageNum as Stage);
