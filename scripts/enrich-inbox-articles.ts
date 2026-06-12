@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { request } from "undici";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
+import { stripPublisherSuffix } from "./lib/strip-publisher-suffix.ts"; // #2140
 
 // ---------------------------------------------------------------------------
 // Types
@@ -405,6 +406,14 @@ export async function enrichArticles(
 
   const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
   await Promise.all(workers);
+
+  // #2140: strip publisher suffix from ALL articles' titles after enrichment,
+  // before dedup (clean titles improve Jaccard similarity).
+  for (const article of out) {
+    if (typeof article.title === "string" && article.title.length > 0) {
+      article.title = stripPublisherSuffix(article.title);
+    }
+  }
 
   return { articles: out, outcomes, stats };
 }
