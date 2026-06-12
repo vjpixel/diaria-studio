@@ -46,14 +46,22 @@ const RELATIVE_SURVEY_JSON = "data/audience-raw.json";
  *   Calculado como (CTR_relativo × 0.6) + (survey_match × 0.4), ambos
  *   normalizados 0-1 (ver implementação).
  * - `matched` — lista de sinais que contribuíram (para explicabilidade / `reason`
- *   dos agentes scorers).
+ *   dos agentes scorers). Inclui `"hands_on:true"` quando detectado (#2143).
+ * - `hands_on` — sinal "hands-on curto" detectado deterministicamente (#2143).
+ *   `true` quando o artigo tem ≥2 sinais de tutorial hands-on (passos numerados,
+ *   tempo estimado, setup mínimo, ferramenta consumer PT-BR/casual). Quando
+ *   `true`, o scorer deve adicionar +8 pontos ao score do artigo (ver rubrica
+ *   em scorer.md e scorer-chunk.md). Sinal puro de texto — não depende de dados
+ *   de audiência — portanto é computado mesmo quando `signals.loaded === false`.
  *
  * O campo é `null` quando não há dados de audiência disponíveis — o scorer
  * ignora a anotação nesse caso (comportamento pré-#2063).
+ * Exceção: `hands_on` é sempre computed (ver `detectHandsOnShort`).
  */
 export interface AudienceAffinity {
   affinity: number; // 0..1
-  matched: string[]; // ex: ["categoria:Treinamento", "categoria:Ferramenta", "tool:ChatGPT"]
+  matched: string[]; // ex: ["categoria:Treinamento", "categoria:Ferramenta", "tool:ChatGPT", "hands_on:true"]
+  hands_on: boolean; // sinal determinístico de tutorial hands-on curto (#2143)
 }
 
 /**
@@ -339,6 +347,98 @@ export function loadAudienceSignals(root?: string): AudienceSignals {
 const MAX_CTR_RATIO = 6.0;
 const MAX_TOOL_MATCHES = 3;
 
+// ─── Detecção de tutorial hands-on curto (#2143) ──────────────────────────────
+
+/**
+ * Bonus de score aplicado pelo scorer LLM quando `hands_on === true`.
+ * Exportado para referência nos testes e na rubrica do prompt.
+ *
+ * +8 pontos: suficiente para colocar um bom tutorial casual acima de um guia
+ * conceitual equivalente (gap típico entre ambos = 5-10 pts), sem distorcer
+ * o ranking de notícias de alto impacto (que chegam com 85-95 de base).
+ */
+export const HANDS_ON_BONUS_PTS = 8;
+
+/**
+ * Sinais textuais de tutorial "hands-on curto" (#2143).
+ *
+ * Um artigo é classificado como hands-on curto quando atende ≥2 sinais abaixo.
+ * Cada sinal é detectado por regex sobre o texto normalizado do artigo
+ * (título + summary + slug da URL). O threshold de 2 evita falsos positivos
+ * de artigos que mencionam apenas "passo a passo" na chamada mas são deep-dives.
+ *
+ * Critérios derivados da decisão editorial de 260612 (issue #2143):
+ *   - Passos numerados / passo a passo / step-by-step (estrutura de tutorial)
+ *   - Tempo estimado de conclusão explícito (≤2h como critério editorial)
+ *   - Ferramenta consumer sem setup cloud/API key obrigatório
+ *     (NotebookLM, Gems, GPTs, ChatGPT, Gemini, Claude — interface web)
+ *   - Sinal de scope fechado (guia prático, quickstart, getting started, mini-curso)
+ *   - Idioma PT-BR (bônus de audiência — 58,6% da base é casual/consciente)
+ *
+ * Nota: os sinais de "ferramenta consumer" e "setup mínimo" são detectados
+ * via palavras-chave no texto, não via verificação do artigo completo — é uma
+ * heurística boa o suficiente para pré-filtragem; o scorer LLM faz a decisão
+ * final com o contexto completo do artigo.
+ */
+
+/** Regex de passos numerados / estrutura step-by-step. */
+const RE_NUMBERED_STEPS = /\b(passo a passo|step[- ]by[- ]step|step \d|etapas?|passsos?|steps?:|\d\.\s|\bpasso \d)/i;
+
+/** Regex de tempo estimado (≤2h — heurística: menção de minutos ou horas pequenas). */
+const RE_TIME_ESTIMATE = /\b(\d+\s*(min(uto)?s?|hora?s?|h\b)|em menos de \d|~\d|em \d+(h|min)|quick(ly)?|rapido|rápido|em poucos minutos|em menos de uma hora)/i;
+
+/** Regex de ferramentas consumer (interface web, sem API key/cloud obrigatório). */
+const RE_CONSUMER_TOOL = /\b(notebooklm|notebook lm|gemini|chatgpt|chat gpt|claude\.ai|copilot|gpt[- ]?4?o?|openai|transformers\.js|scikit[- ]?llm|gemini for workspace|google ai studio|openai academy|openai playground)\b/i;
+
+/** Regex de scope fechado / quickstart. */
+const RE_CLOSED_SCOPE = /\b(guia|guia pratico|guia prático|tutorial|quickstart|getting started|mini[- ]?curso|introdução|introducao|iniciante|para iniciantes|beginners?|primeiros passos|hello[- ]world|hands[- ]?on|pratica|prática|exercicio|exercício|lab\b)/i;
+
+/** Regex de idioma PT-BR explícito no conteúdo ou origem. */
+const RE_PTBR = /\b(pt[- ]?br|português|portugues|em português|em portugues|brasil|brazilian|zently\.com\.br|\.com\.br\/)\b/i;
+
+/**
+ * Detecta deterministicamente se um artigo USE MELHOR é um "tutorial hands-on curto"
+ * (#2143).
+ *
+ * @param article  Artigo com `url`, `title` e/ou `summary`.
+ * @returns        `{ isHandsOn, signals }` — `isHandsOn` é `true` quando ≥2 sinais
+ *                 distintos forem detectados. `signals` lista quais foram detectados
+ *                 (para explicabilidade na `reason` do scorer).
+ */
+export function detectHandsOnShort(
+  article: { url?: string; title?: string; summary?: string },
+): { isHandsOn: boolean; signals: string[] } {
+  const hay = normalizeTool([
+    article.title ?? "",
+    article.summary ?? "",
+    extractSlug(article.url ?? ""),
+    // inclui o domínio bruto (para detectar .com.br, zently.com.br etc.)
+    (() => { try { return new URL(article.url ?? "").hostname; } catch { return ""; } })(),
+  ].join(" "));
+
+  const rawText = [article.title ?? "", article.summary ?? ""].join(" ");
+
+  const signals: string[] = [];
+
+  if (RE_NUMBERED_STEPS.test(rawText) || RE_NUMBERED_STEPS.test(hay)) {
+    signals.push("numbered_steps");
+  }
+  if (RE_TIME_ESTIMATE.test(rawText) || RE_TIME_ESTIMATE.test(hay)) {
+    signals.push("time_estimate");
+  }
+  if (RE_CONSUMER_TOOL.test(rawText) || RE_CONSUMER_TOOL.test(hay)) {
+    signals.push("consumer_tool");
+  }
+  if (RE_CLOSED_SCOPE.test(rawText) || RE_CLOSED_SCOPE.test(hay)) {
+    signals.push("closed_scope");
+  }
+  if (RE_PTBR.test(rawText) || RE_PTBR.test(article.url ?? "")) {
+    signals.push("ptbr");
+  }
+
+  return { isHandsOn: signals.length >= 2, signals };
+}
+
 export function annotateAudienceAffinity(
   article: { url?: string; title?: string; summary?: string; category?: string },
   signals: AudienceSignals,
@@ -381,10 +481,19 @@ export function annotateAudienceAffinity(
     surveyScore = Math.min(toolMatches / MAX_TOOL_MATCHES, 1);
   }
 
+  // ─── 3. Hands-on curto (#2143) ─────────────────────────────────────────────
+  // Sinal determinístico — independente de dados de audiência. Emite
+  // "hands_on:true" em `matched` quando detectado: o scorer LLM adiciona
+  // HANDS_ON_BONUS_PTS ao score do artigo (ver rubrica em scorer.md).
+  const { isHandsOn } = detectHandsOnShort(article);
+  if (isHandsOn) {
+    matched.push("hands_on:true");
+  }
+
   // ─── Composite ─────────────────────────────────────────────────────────────
   const affinity = parseFloat(((ctrScore * 0.6) + (surveyScore * 0.4)).toFixed(3));
 
-  return { affinity, matched };
+  return { affinity, matched, hands_on: isHandsOn };
 }
 
 // ─── Annotate bucket ──────────────────────────────────────────────────────────
