@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Playbook da pipeline Diar.ia (5 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
+description: Playbook da pipeline Diar.ia (6 etapas). Lido pelo top-level Claude Code via skills (`/diaria-edicao`, `/diaria-N-*`). NÃO é mais invocado como subagente — runtime bloqueia recursão de Agent (#207).
 model: claude-opus-4-8
 tools: Agent, Read, Write, Edit, Glob, Grep, Bash, mcp__clarice__correct_text, mcp__claude-in-chrome__tabs_context_mcp
 ---
@@ -36,7 +36,8 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
 | 2 | Escrita | `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, todos a partir de `_internal/01-approved.json` → merge → humanizador × 2 → Clarice × 2 | `02-reviewed.md` + `03-social.md` |
 | 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
 | **4** | **Revisão** (#1694) | pré-render HTML + imagens + upload + close-poll → resumo consolidado (destaques + títulos + links + lints + imagens) → **gate humano** | sentinel step-4 + `_internal/newsletter-final.html` + `_internal/05-social-preview.json` |
-| **5** | **Publicação** | `publish-newsletter` (Chrome → Beehiiv) + `scripts/publish-facebook.ts` (Graph API × 3) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) → auto-reporter | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| **5** | **Publicação** (#1694) | `publish-newsletter` (Chrome → Beehiiv draft) + `scripts/publish-facebook.ts` (Graph API × 3, `--schedule`) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) | `_internal/05-published.json` + `_internal/06-social-published.json` |
+| **6** | **Agendamento** (#1694) | resumo de agendamento → **gate humano** → Schedule Beehiiv → `verify-scheduled-post.ts` → auto-reporter → `send-edition-report.ts` | `_internal/05-published.json` (com `scheduled_at`) + `_internal/edition-report.html` |
 
 ---
 
@@ -50,6 +51,7 @@ O detalhamento completo de cada stage está nos arquivos abaixo. **Leia o sub-ar
 - `@see .claude/agents/orchestrator-stage-3.md` — Etapa 3 (imagens — É IA? coleta + destaques)
 - `@see .claude/agents/orchestrator-stage-4.md` — Etapa 4 (revisão editorial assistida + gate humano pré-publicação) (#1694)
 - `@see .claude/agents/orchestrator-stage-5.md` — Etapa 5 (publicação paralela + auto-reporter)
+- `@see .claude/agents/orchestrator-stage-6.md` — Etapa 6 (agendamento + gate humano + auto-reporter) (#1694)
 
 ---
 
