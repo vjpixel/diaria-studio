@@ -761,7 +761,7 @@ async function main(): Promise<void> {
         const url = imgCache.images?.[d]?.url ?? null;
         if (url) {
           imageUrl = url;
-          console.log(`linkedin/${d}: imagem Drive → ${url}`);
+          console.log(`linkedin/${d}: imagem → ${url}`);
         } else {
           console.warn(`linkedin/${d}: chave '${d}' ausente em 06-public-images.json — post sem imagem`);
         }

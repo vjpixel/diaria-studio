@@ -14,6 +14,7 @@ import {
   shouldReuseCachedUpload,
   mergeBaseFromCache,
   uploadPublicImages,
+  defaultTargetFor,
   type PublicImage,
 } from "../scripts/upload-images-public.ts";
 
@@ -111,6 +112,109 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
       assert.equal(out.d1.cloudflare_url, "u-d1-cf");
       // --no-cache forçou re-upload dos 3 (não reusou).
       assert.equal(driveUploads.length, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#2147 regression: social mode default → cloudflare KV, sem Drive uc?id no preview", () => {
+  it("defaultTargetFor('social') retorna cloudflare (não drive)", () => {
+    // O bug era que social mode mandava d1/d2/d3 pro Drive, cujo uc?id quebra
+    // como <img> hotlinked por cookie/referer check — exatamente o cenário do
+    // preview do gate. Agora social usa cloudflare por default.
+    assert.equal(defaultTargetFor("social"), "cloudflare");
+  });
+
+  it("e2e: run() social default (cloudflare) → 06-public-images.json SEM drive.google.com/uc (#2147)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260613-2147-"));
+    try {
+      // Imagens 1x1 de todos os destaques presentes no disco.
+      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+        writeFileSync(join(dir, f), `fake-bytes-${f}`, "utf8");
+      }
+
+      const cfUploads: string[] = [];
+      const WORKER = "https://poll.diaria.workers.dev";
+      await uploadPublicImages({
+        editionDir: dir,
+        mode: "social",
+        // target omitido → defaultTargetFor("social") = cloudflare (#2147 fix)
+        uploaders: {
+          uploadToCloudflare: async (imagePath: string, key: string) => {
+            cfUploads.push(key);
+            return `${WORKER}/img/${key}`;
+          },
+        },
+      });
+
+      const out = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")).images;
+
+      // Todos os 3 destaques presentes e via Cloudflare KV.
+      for (const key of ["d1", "d2", "d3"]) {
+        assert.ok(out[key], `${key} deve estar no cache`);
+        // URLs de consumo NÃO contêm drive.google.com/uc (era o bug #2147).
+        assert.ok(
+          !out[key].url.includes("drive.google.com"),
+          `${key}.url não deve ser Drive uc?id — foi: ${out[key].url}`,
+        );
+        // URL deve ser do Worker KV.
+        assert.ok(
+          out[key].url.startsWith(WORKER),
+          `${key}.url deve ser Worker KV URL — foi: ${out[key].url}`,
+        );
+        // cloudflare_url também setado (usado pelo render-social-html via resolveSocialImageUrl).
+        assert.ok(
+          out[key].cloudflare_url?.startsWith(WORKER),
+          `${key}.cloudflare_url deve ser Worker KV URL`,
+        );
+        assert.equal(out[key].target, "cloudflare");
+      }
+      // 3 uploads Cloudflare realizados.
+      assert.equal(cfUploads.length, 3, "3 uploads CF realizados (d1/d2/d3)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("e2e: social default → 06-public-images.json preserva cover/eia do newsletter (#1865 + #2147)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260613-2147b-"));
+    try {
+      // newsletter mode já gravou cover/eia_a/eia_b (simulação pré-existente).
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({
+          images: {
+            cover: { file_id: "cf-cover", url: "https://poll.diaria.workers.dev/img/cover", target: "cloudflare", cloudflare_url: "https://poll.diaria.workers.dev/img/cover", md5: "m1" },
+            eia_a: { file_id: "cf-eia-a", url: "https://poll.diaria.workers.dev/img/eia-a", target: "cloudflare", md5: "m2" },
+            eia_b: { file_id: "cf-eia-b", url: "https://poll.diaria.workers.dev/img/eia-b", target: "cloudflare", md5: "m3" },
+          },
+        }),
+        "utf8",
+      );
+      for (const f of ["04-d1-1x1.jpg", "04-d2-1x1.jpg", "04-d3-1x1.jpg"]) {
+        writeFileSync(join(dir, f), `fresh-${f}`, "utf8");
+      }
+
+      const WORKER = "https://poll.diaria.workers.dev";
+      await uploadPublicImages({
+        editionDir: dir,
+        mode: "social",
+        uploaders: {
+          uploadToCloudflare: async (_imagePath: string, key: string) =>
+            `${WORKER}/img/${key}`,
+        },
+      });
+
+      const out = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")).images;
+      // Cross-mode keys do newsletter preservadas.
+      assert.ok(out.cover, "cover preservada");
+      assert.ok(out.eia_a && out.eia_b, "eia_a/eia_b preservadas");
+      // Social keys adicionadas via KV — nenhuma URL de Drive.
+      for (const key of ["d1", "d2", "d3"]) {
+        assert.ok(!out[key]?.url?.includes("drive.google.com"), `${key} não deve ter Drive URL`);
+        assert.ok(out[key]?.url?.startsWith(WORKER), `${key} deve ser Worker KV URL`);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

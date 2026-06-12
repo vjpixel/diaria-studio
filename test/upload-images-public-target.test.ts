@@ -27,8 +27,8 @@ describe("defaultTargetFor (#1119)", () => {
     assert.equal(defaultTargetFor("all"), "cloudflare");
   });
 
-  it("social → drive (LinkedIn/Facebook OG preview)", () => {
-    assert.equal(defaultTargetFor("social"), "drive");
+  it("#2147: social → cloudflare (KV Worker URLs — Drive uc?id quebra como hotlink no preview)", () => {
+    assert.equal(defaultTargetFor("social"), "cloudflare");
   });
 
   it("é determinístico — chamadas repetidas retornam o mesmo target", () => {

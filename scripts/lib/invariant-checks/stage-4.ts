@@ -27,9 +27,10 @@ interface PublicImagesJson {
 }
 
 /**
- * `06-public-images.json` deve ter URLs Drive públicas pra d1, d2, d3
+ * `06-public-images.json` deve ter URLs públicas pra d1, d2, d3
  * (1x1 cada — formato consumido por LinkedIn + Facebook). Sem isso,
  * publish-linkedin envia image_url=null e Make rejeita (DLQ incident 260508).
+ * #2147: desde o fix, URLs d1/d2/d3 são KV Worker (não Drive uc?id).
  *
  * #2133/#2141: também valida d2_2x1/d3_2x1/cover (hero 2:1 consumidos pelo email
  * body via substitute-image-urls). Ausentes aqui = email sai com placeholders crus.
