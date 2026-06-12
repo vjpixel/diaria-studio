@@ -271,18 +271,32 @@ export function renderIntroCallout(text: string): string {
         // Verifica se o parágrafo é apenas o link (sem outro texto substancial).
         const firstLink = lastLinks[0];
         let remainingText = lastStripped.slice(0, firstLink.start) + lastStripped.slice(firstLink.end);
-        // Ponto final após o link é aceitável, mas qualquer outro texto → não é só-link.
-        remainingText = remainingText.replace(/^\.?\s*$/, "").trim();
+        // Qualquer pontuação terminal após o link é aceitável (`.`, `!`, `?`, `,`, `…`),
+        // mas qualquer outro texto → não é só-link. (#finding-1: regex ampliado)
+        remainingText = remainingText.replace(/^[.,!?…\s]*$/, "").trim();
         if (!remainingText) {
-          // O parágrafo é só o link (+ possível ponto) → botão pill.
-          const linkLabel = lastStripped.slice(firstLink.start + 1, lastStripped.indexOf("](", firstLink.start));
-          const safeLabel = esc(linkLabel);
+          // O parágrafo é só o link (+ possível pontuação) → botão pill.
+          // (#finding-4: label vem do campo `label` de findMarkdownLinks, dedup com renderMidCallout)
+          const safeLabel = esc(firstLink.label);
           const safeHref = esc(firstLink.url);
           ctaButtonHtml = `<tr><td style="padding:16px 20px 0;text-align:center;">` +
             `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
             `</td></tr>`;
           bodyParas = bodyParas.slice(0, -1);
+        } else {
+          // #finding-2: CTA detection failed (e.g., extra punctuation) — strip `→ ` prefix
+          // from the last paragraph so it doesn't render as an orphan arrow in the body.
+          bodyParas = [
+            ...bodyParas.slice(0, -1),
+            lastPara.replace(/^→\s*/u, ""),
+          ];
         }
+      } else {
+        // #finding-2: no links in lastPara — strip `→ ` prefix regardless.
+        bodyParas = [
+          ...bodyParas.slice(0, -1),
+          lastPara.replace(/^→\s*/u, ""),
+        ];
       }
     }
 
@@ -292,7 +306,8 @@ export function renderIntroCallout(text: string): string {
           bodyP(`${i === 0 ? "0" : "12px"} 0 0`, processInlineLinks(p))
       )
       .join("\n      ");
-    inner = `${titleHtml}\n      ${bodyHtml}`;
+    // #finding-3: bodyHtml vazio não deve deixar whitespace no inner.
+    inner = bodyHtml ? `${titleHtml}\n      ${bodyHtml}` : titleHtml;
 
     if (ctaButtonHtml) {
       // Botão pill em linha separada dentro do mesmo box, centralizado.
@@ -332,11 +347,12 @@ export function renderIntroCallout(text: string): string {
  */
 export function findMarkdownLinks(
   s: string,
-): { url: string; start: number; end: number }[] {
-  const out: { url: string; start: number; end: number }[] = [];
-  const linkStart = /\[[^\]]+\]\(/g;
+): { url: string; label: string; start: number; end: number }[] {
+  const out: { url: string; label: string; start: number; end: number }[] = [];
+  const linkStart = /\[([^\]]+)\]\(/g;
   let m: RegExpExecArray | null;
   while ((m = linkStart.exec(s)) !== null) {
+    const label = m[1];
     const destStart = m.index + m[0].length;
     let depth = 0;
     let j = destStart;
@@ -349,7 +365,7 @@ export function findMarkdownLinks(
       }
     }
     if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
-    out.push({ url: s.slice(destStart, j).trim(), start: m.index, end: j + 1 });
+    out.push({ url: s.slice(destStart, j).trim(), label, start: m.index, end: j + 1 });
     linkStart.lastIndex = j + 1;
   }
   return out;
@@ -368,11 +384,8 @@ export function renderMidCallout(text: string, imageUrl: string | null): string 
   const links = findMarkdownLinks(text);
   const firstLink = links.length ? links[0] : null;
   const link = firstLink ? firstLink.url : null;
-  // Extrai o label do 1º markdown-link: entre `[` e `](`. findMarkdownLinks já
-  // garantiu que o `[` começa em firstLink.start — procura o `]` logo antes de `(`.
-  const firstLinkLabel = firstLink
-    ? text.slice(firstLink.start + 1, text.indexOf("](", firstLink.start))
-    : "";
+  // #finding-4: label vem do campo `label` de findMarkdownLinks (dedup com renderIntroCallout).
+  const firstLinkLabel = firstLink ? firstLink.label : "";
   let body = text;
   for (let i = links.length - 1; i >= 0; i--) {
     let { start, end } = links[i];

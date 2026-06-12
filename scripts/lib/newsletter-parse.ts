@@ -627,7 +627,11 @@ export function readMidCalloutImage(
   midCalloutText?: string | null,
 ): string | null {
   // #2136: imagem livros_promo só vai pro box de livros, nunca pro box CLARICE.
-  if (midCalloutText !== undefined && !isMidCalloutLivros(midCalloutText)) {
+  // #finding-6: undefined (sem texto) é tratado como "desconhecido" → null por segurança.
+  // Apenas `null` explícito bypassa (back-compat para callers antigos sem texto disponível).
+  // Contrato: passe o texto do callout sempre que disponível; omitir é seguro mas
+  // conservador (nunca anexa imagem livros_promo sem confirmação explícita de ser box livros).
+  if (midCalloutText == null || !isMidCalloutLivros(midCalloutText)) {
     return null;
   }
   const p = resolve(editionDir, "06-public-images.json");

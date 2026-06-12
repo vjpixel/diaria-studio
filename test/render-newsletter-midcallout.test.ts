@@ -178,7 +178,8 @@ describe("midCallout — box entre D1 e D2", () => {
         join(dir, "06-public-images.json"),
         JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl, url: cfUrl } } }),
       );
-      const url = readMidCalloutImage(dir);
+      // #finding-6: agora o caller precisa passar o texto do callout explicitamente.
+      const url = readMidCalloutImage(dir, "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).");
       assert.equal(url, cfUrl, "readMidCalloutImage deve ler a cloudflare_url do produtor");
       const html = renderMidCallout(
         "📚 Curadoria de livros. [Ver a página](https://livros.diaria.workers.dev).",
@@ -196,7 +197,8 @@ describe("midCallout — box entre D1 e D2", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
     try {
       writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "x" } } }));
-      assert.equal(readMidCalloutImage(dir), null);
+      // No livros_promo entry → null even for livros callout.
+      assert.equal(readMidCalloutImage(dir, "📚 Promo. [Ver](https://livros.diaria.workers.dev)."), null);
       const html = renderMidCallout("📚 Promo. [Ver](https://livros.diaria.workers.dev).", null);
       assert.ok(!html.includes("<img"), "sem produtor → box degrada pra só-texto");
     } finally {
@@ -294,10 +296,10 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
     // O CTA deve ter o label do link sem "→"
     assert.ok(html.includes("Confira a nova página"), "label do CTA presente");
     // Deve ter botão pill (border-radius:999px) sem "→" no texto do botão
+    // #finding-5: assert não-vacuo — se o regex falhar, o teste falha explicitamente.
     const pillMatch = html.match(/border-radius:999px[^>]*>([^<]*)</);
-    if (pillMatch) {
-      assert.ok(!pillMatch[1].includes("→"), "texto do botão pill não deve ter seta →");
-    }
+    assert.ok(pillMatch, "deve ter botão pill (border-radius:999px) no HTML");
+    assert.ok(!pillMatch![1].includes("→"), "texto do botão pill não deve ter seta →");
   });
 
   // Regressão completa: e2e CLARICE com livros_promo no cache → cai em renderIntroCallout com botão
@@ -335,6 +337,51 @@ describe("#2136 — discriminação livros vs CLARICE + setas", () => {
     assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza pro corpo HTML");
     // O parágrafo com só o link CTA não fica inline no corpo
     assert.ok(!html.includes("[Acesse e use os cupons"), "markdown-link não vaza cru");
+  });
+
+  // #finding-1: CTA deve funcionar com pontuação diferente de `.` (!, ?, ,)
+  it("renderIntroCallout: CTA com ! final → botão pill gerado sem seta", () => {
+    const callout = `📣 Teste de pontuação\n\nCorpo do callout.\n\n→ [Veja agora!](https://clarice.ai/precos-planos?via=diaria)!`;
+    const html = renderIntroCallout(callout);
+    assert.ok(html.includes("border-radius:999px"), "deve ter botão pill mesmo com ! final");
+    assert.ok(html.includes("Veja agora!"), "label do botão preservado");
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza");
+  });
+
+  it("renderIntroCallout: CTA com ? final → botão pill gerado sem seta", () => {
+    const callout = `📣 Teste de pontuação\n\nCorpo do callout.\n\n→ [Quer saber mais?](https://clarice.ai/precos-planos?via=diaria)?`;
+    const html = renderIntroCallout(callout);
+    assert.ok(html.includes("border-radius:999px"), "deve ter botão pill mesmo com ? final");
+    assert.ok(html.includes("Quer saber mais?"), "label do botão preservado");
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não vaza");
+  });
+
+  // #finding-2: fall-through (pontuação extra que impede detecção CTA) NÃO deixa → orphan
+  it("renderIntroCallout: fall-through (extra texto após link) NÃO deixa → orphan no corpo", () => {
+    // Tem → + link + texto extra — não vai virar botão pill. Mas o → NÃO deve vazar.
+    const callout = `📣 Título do callout\n\nCorpo aqui.\n\n→ [Acesse](https://clarice.ai) e aproveite agora`;
+    const html = renderIntroCallout(callout);
+    // O → do prefixo não deve aparecer como texto solto no HTML
+    assert.ok(!html.match(/→\s*<\/p>/), "→ orphan não deve aparecer no fim de parágrafo");
+    assert.ok(!html.match(/>\s*→\s*\[/), "markdown prefixado com → não deve vazar cru");
+    // O link deve estar presente (inline, já que não virou pill)
+    assert.ok(html.includes("clarice.ai"), "link ainda presente no corpo");
+  });
+
+  // #finding-6: readMidCalloutImage com undefined (sem texto) → null por segurança
+  it("readMidCalloutImage: undefined midCalloutText → null (sem crash, contrato seguro)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "midcallout-f6-"));
+    try {
+      const cfUrl = "https://poll.diaria.workers.dev/img/img-260612-04-livros-promo.jpg";
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({ images: { livros_promo: { cloudflare_url: cfUrl } } }),
+      );
+      // undefined (caller não passou texto) → null, nunca reaproveita imagem silenciosamente
+      assert.equal(readMidCalloutImage(dir, undefined), null, "undefined deve retornar null");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
