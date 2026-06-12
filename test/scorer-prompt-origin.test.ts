@@ -70,3 +70,22 @@ describe("scorer prompts — sinal BR/INT não contradiz o profile (#1567 findin
     assert.ok(!claimsBrHigherCtr("sinal BR vs INT (ler a direção do audience-profile.md)"));
   });
 });
+
+describe("scorer-select — presença da guidance de Segurança (#2131)", () => {
+  /**
+   * Guard: scorer-select.md deve conter a instrução de não subponderar
+   * candidatos de Segurança/safety na seleção holística.
+   * Falha se alguém remover o bloco durante um cleanup sem repor o corretivo.
+   */
+  it("scorer-select.md contém a correção de viés de Segurança", () => {
+    const txt = readFileSync(
+      resolve(ROOT, ".claude/agents/scorer-select.md"),
+      "utf8",
+    );
+    assert.ok(
+      txt.includes("subpondere") && txt.includes("Segurança"),
+      "scorer-select.md não contém a guidance de não-subponderação de Segurança/safety (#2131). " +
+        "Reintroduza o bullet na seção de desempate do processo de seleção.",
+    );
+  });
+});

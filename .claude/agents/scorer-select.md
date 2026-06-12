@@ -26,6 +26,7 @@ Releia antes de selecionar:
 2. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6). Em caso de empate ou concentração temática, desempatar favorecendo:
    - **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa);
    - **diversidade de bucket** (evitar 6 do mesmo bucket, sem cota mínima).
+   - **Não subpondere Segurança/safety** (#2131) — candidatos sobre vulnerabilidade, exploit, ataque com IA, alignment/safety, privacidade, fraude ou deepfake chegam com score decente mas são historicamente preteridos em favor de novidade de produto. Quando um candidato de Segurança tiver score competitivo (próximo ou acima do cutoff dos 6), considere-o com o mesmo peso que um lançamento. Isso é correção de viés, não cota: não force Segurança todo dia, mas não a descarte por ser "menos empolgante".
    - Se os finalistas tiverem `< 6` artigos, output = `finalists.length` e adicionar `warning_pool_too_small: true`.
 3. Definir a **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket. **A ordem do array `highlights` É a ordem editorial** (o `rank` é re-numerado em TS depois).
 4. Os 1-2 melhores finalistas que ficaram de fora dos 6 vão pra `runners_up[]` (fallback humano).
