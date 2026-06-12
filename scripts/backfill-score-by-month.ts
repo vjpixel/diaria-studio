@@ -33,6 +33,10 @@
  * em re-runs de produção.
  */
 
+// #2130: A extensão `.ts` no import abaixo é intencional — convenção do repo (tsx).
+// Quebraria com `node --experimental-strip-types` (que exige `.js`), mas esse
+// script é executado exclusivamente via `npx tsx` (ver shebang acima). NÃO
+// normalizar para `.js` sem migrar o runner do repo inteiro.
 import "dotenv/config";
 import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 

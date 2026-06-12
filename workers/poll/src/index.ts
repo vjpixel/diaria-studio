@@ -830,7 +830,17 @@ export async function upsertOwnEntryInSnapshot(
   if (idx >= 0) {
     // #2123 (review): own com last_vote_ts EXPLICITAMENTE undefined apagaria o valor
     // existente via spread — filtra chaves undefined antes do merge.
-    const ownDefined = Object.fromEntries(Object.entries(own).filter(([, v]) => v !== undefined));
+    // #2130 (pass2): filtro field-aware — null é filtrado só onde é inválido (ex:
+    // last_vote_ts nunca é null em produção — ver computeSnapshotEntries). Para campos
+    // onde null tem semântica de "limpar" (nickname: string | null), null é PRESERVADO
+    // intencionalmente, permitindo que upsert limpe um nickname existente.
+    const ownDefined = Object.fromEntries(
+      Object.entries(own).filter(([k, v]) => {
+        if (v === undefined) return false; // nunca spreada undefined
+        if (v === null && k === "last_vote_ts") return false; // null aqui é fantasma
+        return true; // nickname:null e outros null são valores legítimos
+      }),
+    );
     entries[idx] = { ...entries[idx], ...ownDefined, email: emailLower } as SnapshotEntry;
   } else {
     entries.push({ ...own, email: emailLower });
@@ -888,7 +898,10 @@ export async function computeSnapshotEntries(
         correct: entry.correct ?? 0,
         total: entry.total ?? 0,
       };
-      if (entry.last_vote_ts !== undefined) snapshotEntry.last_vote_ts = entry.last_vote_ts;
+      // #2130 (pass2): guarda pra SnapshotEntry só quando é string não-nula —
+      // guarda assimétrico (!== undefined mas não !== null) criava gap onde null
+      // passava direto e corrupia o campo no snapshot (tiebreaker de dense-rank).
+      if (entry.last_vote_ts != null) snapshotEntry.last_vote_ts = entry.last_vote_ts;
       entries.push(snapshotEntry);
     }
   }
@@ -1582,7 +1595,13 @@ export default {
         const yearStr = monthMatch[1].slice(0, 4);
         const target = new URL(request.url);
         target.pathname = `/leaderboard/${yearStr}`;
-        return Response.redirect(target.toString(), 302);
+        // #2130: Cache-Control: no-store evita que proxies/link-preview cacheiem o
+        // redirect e sirvam destino stale se leaderboardPeriod mudar no futuro.
+        // Response.redirect() não aceita headers — usamos Response manual com 302.
+        return new Response(null, {
+          status: 302,
+          headers: { Location: target.toString(), "Cache-Control": "no-store" },
+        });
       }
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
