@@ -544,10 +544,12 @@ export function assertCacheCompleteness(
   const expectedKeys = (() => {
     if (mode === "social") return ["d1", "d2", "d3"];
     // #1583: newsletter sobe cover/d1/eia (o que o EMAIL usa). #1701: d2/d3
-    // também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional) —
-    // NÃO entram nas keys exigidas aqui, pra não falhar o newsletter-mode upload
-    // standalone (publicação manual/email) quando d2/d3 não existem.
-    if (mode === "newsletter") return ["cover", "d1", "eia_a", "eia_b"];
+    // 1x1 também sobem ao CF (pro social preview) mas são BEST-EFFORT (optional).
+    // #2133/#2141: d2_2x1/d3_2x1 são required — email body usa {{IMG:04-d2-2x1.jpg}}
+    // / {{IMG:04-d3-2x1.jpg}}; se ausentes, substitute-image-urls.ts escreve o HTML
+    // com placeholders crus e sai com exit 2. Defense-in-depth na camada de upload.
+    if (mode === "newsletter")
+      return ["cover", "d1", "eia_a", "eia_b", "d2_2x1", "d3_2x1"];
     // mode === "all"
     return ["cover", "eia_a", "eia_b", "d1", "d2", "d3"];
   })();
