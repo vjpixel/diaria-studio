@@ -624,10 +624,14 @@ describe("lintLinkedinSchema (#595)", () => {
 function mkSocialWithPersonal(opts: {
   postPixel?: string;
   commentPixelD1?: string;
+  commentPixelD2?: string;
+  commentPixelD3?: string;
   mainD1?: string;
 }): string {
   const mainD1 = opts.mainD1 ?? "Dario Amodei detalhou a estratégia da Anthropic para os próximos anos.";
   const commentPixelD1 = opts.commentPixelD1 ?? "O frame mudou pra quem implanta agente em produção.";
+  const commentPixelD2 = opts.commentPixelD2 ?? "Comentário d2 sem problema.";
+  const commentPixelD3 = opts.commentPixelD3 ?? "Comentário d3 sem problema.";
   const postPixel = opts.postPixel ?? "A frase da Anthropic sobre alinhamento é a mais honesta que ouvi de uma big lab.";
   return `# LinkedIn
 
@@ -657,7 +661,7 @@ Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
 
 ### comment_pixel
 
-Comentário d2 sem problema.
+${commentPixelD2}
 
 ## d3
 
@@ -671,7 +675,7 @@ Receba a Diar.ia todo dia por e-mail, assine grátis em diar.ia.br
 
 ### comment_pixel
 
-Comentário d3 sem problema.
+${commentPixelD3}
 
 ## post_pixel
 
@@ -722,7 +726,7 @@ describe("lintPersonalPostNewsletterDeixis (#2148 Fix A)", () => {
     assert.equal(r.matches[0].section, "post_pixel");
   });
 
-  it("FALHA: 'esta newsletter' em comment_pixel de destaque", () => {
+  it("FALHA: 'esta newsletter' em comment_pixel de destaque (d1)", () => {
     const md = mkSocialWithPersonal({
       commentPixelD1: "Esta newsletter roda com agentes — o que me surpreende diariamente.",
     });
@@ -730,6 +734,35 @@ describe("lintPersonalPostNewsletterDeixis (#2148 Fix A)", () => {
     assert.equal(r.ok, false);
     assert.ok(r.matches[0].section.startsWith("comment_pixel"));
     assert.ok(r.matches[0].phrase.toLowerCase().includes("esta newsletter"));
+  });
+
+  it("FALHA: 'essa newsletter' em comment_pixel de d2", () => {
+    const md = mkSocialWithPersonal({
+      commentPixelD2: "Essa newsletter antecipou esse movimento há semanas.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches[0].section.includes("d2"), `esperado d2, got: ${r.matches[0]?.section}`);
+  });
+
+  it("FALHA: 'esse boletim' em comment_pixel de d3 (forma masculina)", () => {
+    const md = mkSocialWithPersonal({
+      commentPixelD3: "Esse boletim que faço me obriga a ler tudo com mais cuidado.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.ok(r.matches[0].section.includes("d3"), `esperado d3, got: ${r.matches[0]?.section}`);
+    assert.ok(r.matches[0].phrase.toLowerCase().includes("esse boletim"));
+  });
+
+  it("FALHA: 'nosso boletim' em post_pixel (forma masculina)", () => {
+    const md = mkSocialWithPersonal({
+      postPixel: "Nosso boletim tem cobertura melhor do que qualquer outra fonte que conheço.",
+    });
+    const r = lintPersonalPostNewsletterDeixis(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.matches[0].section, "post_pixel");
+    assert.ok(r.matches[0].phrase.toLowerCase().includes("nosso boletim"));
   });
 
   it("PASSA: menção biográfica sem deixis ('a newsletter de IA que escrevo')", () => {

@@ -696,11 +696,12 @@ export interface PersonalPostDeixisResult {
 }
 
 // Âncoras de deixis que pressupõem o leitor na Diar.ia.
-// Forma: "esta newsletter", "essa newsletter", "nossa newsletter",
-// "este boletim", "esse boletim", "nosso boletim",
-// "esta edição", "essa edição", "nossa edição".
+// Formas femininas: "esta newsletter", "essa newsletter", "nossa newsletter",
+//                  "esta edição",     "essa edição",     "nossa edição".
+// Formas masculinas: "este boletim", "esse boletim", "nosso boletim".
+// ("boletim" é masculino — "esse/este/nosso boletim", não "essa/esta/nossa boletim".)
 const NEWSLETTER_DEIXIS_RE =
-  /\b(esta|essa|nossa)\s+(newsletter|boletim|edi[çc][ãa]o)\b/gi;
+  /\b(esta|essa|nossa|este|esse|nosso)\s+(newsletter|boletim|edi[çc][ãa]o)\b/gi;
 
 /**
  * Extrai o texto de `## post_pixel` de uma seção LinkedIn.
