@@ -1,6 +1,6 @@
 ---
 name: diaria-5-publicacao
-description: Roda a Etapa 5 (publicação paralela — newsletter Beehiiv + 6 posts sociais) com gate único, e auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
+description: Roda a Etapa 5 (publicacao auto — draft Beehiiv + Facebook/LinkedIn agendados). Sem gate. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
 ---
 
 # /diaria-5-publicacao
@@ -101,20 +101,21 @@ Após todos retornarem, **loop de review-test-email** roda em cima do draft Beeh
 
 **Gate único** (legacy `pre_gate = false`) ou **auto-approve** (quando `pre_gate = true` e aprovação ocorreu no Stage 4).
 
-### Etapa 5c — Auto-reporter (#57 / #79)
+### Etapa 5c — Resumo e encaminhamento ao Stage 6
 
-1. Coleta sinais da edição (`collect-edition-signals.ts`).
-2. Se `signals_count > 0`: dispara agent `auto-reporter` (gate humano de issues GitHub).
-3. Gate do auto-reporter é **auto-aprovado** quando `auto_approve = true` (conforme §5b-3 — auto-reporter roda em todos os modos).
+Stage 5 encerra com o dispatch completo (newsletter draft + social agendado). Auto-reporter e relatorio por email foram movidos para o **Stage 6 (Agendamento)** — rodam apos o editor confirmar o Schedule do Beehiiv.
 
 ## Output
 
 - `_internal/05-published.json` — `draft_url`, `test_email_sent_at`, `template_used`, `review_completed`
 - `_internal/06-social-published.json` — 6 posts com `platform`, `destaque`, `url`, `status`, `scheduled_at`
-- `_internal/issues-draft.json` (se auto-reporter rodou) — sinais coletados
+- `_internal/.step-5-done.json` — sentinel de conclusao do Stage 5
+
+Auto-reporter + relatorio por email → Stage 6 (`/diaria-6-agendamento`).
 
 ## Notas
 
-- **Nada é publicado automaticamente.** Newsletter vira rascunho + teste; social vira rascunho ou agendado. Editor dispara manualmente via dashboard.
-- **Resume-aware**: re-rodar pula o que já existe.
+- **Newsletter fica como rascunho.** Test email enviado, loop review concluido. O Schedule Beehiiv e feito no Stage 6 (`/diaria-6-agendamento`). Social (LinkedIn + Facebook) e agendado automaticamente (`--schedule`).
+- **Resume-aware**: re-rodar pula o que ja existe.
+- **Proximo passo → /diaria-6-agendamento {AAMMDD}** — agendamento Beehiiv + auto-reporter.
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.
