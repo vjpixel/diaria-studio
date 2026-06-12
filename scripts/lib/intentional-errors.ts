@@ -28,7 +28,8 @@ export type ErrorType =
   | "factual"
   | "factual_synthetic"
   | "ortografico"
-  | "attribution";
+  | "attribution"
+  | "data";
 
 export interface IntentionalError {
   edition: string;
