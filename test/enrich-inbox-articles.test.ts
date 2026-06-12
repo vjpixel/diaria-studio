@@ -501,6 +501,100 @@ describe("enrichArticles — fallback submitted_subject quando fetch falha (#164
   });
 });
 
+describe("enrichArticles — #2140 strip publisher suffix gate by origin (C9)", () => {
+  it("artigo de imprensa (worker, needsEnrichment=true) com ' | Publisher' → strip dentro do worker (observabilidade)", async () => {
+    // Simula artigo de fonte regular (não-inbox) com título RSS contendo sufixo de
+    // veículo e sem summary → entra no worker (#1696, cache-only), recebe summary do
+    // cache, strip aplicado ao título existente antes de gravar `out`, garantindo que
+    // `title_updated` no outcome reflita o estado final correto.
+    const dir = mkdtempSync(join(tmpdir(), "enrich-2140-worker-"));
+    try {
+      const url = "https://g1.com/artigo-worker";
+      writeFileSync(
+        join(dir, bodyCacheFilename(url)),
+        `<meta property="og:description" content="Resumo extraído do cache."/>`,
+      );
+      const articles = [
+        {
+          url,
+          title: "Especialistas criticam regulamentação da IA no Brasil | G1",
+          summary: "", // sem summary → needsEnrichment=true, entra no worker
+        },
+      ];
+      const fetcher = async (): Promise<string | null> => null;
+      const { articles: out } = await enrichArticles(articles, fetcher, { bodiesDir: dir });
+      assert.equal(
+        out[0].title,
+        "Especialistas criticam regulamentação da IA no Brasil",
+        "sufixo '| G1' deve ser removido de artigo de imprensa dentro do worker",
+      );
+      assert.equal(out[0].summary, "Resumo extraído do cache.", "summary preenchido do cache");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("artigo editorial com ' | ' legítimo no submitted_subject → preservado intacto (C3/C6)", async () => {
+    // Editor enviou um link com assunto contendo ' | ' — não é sufixo de veículo.
+    // O fetch falha (anti-bot), então o título vem do submitted_subject.
+    const articles = [
+      {
+        url: "https://anti-bot.com/artigo",
+        title: "(inbox)",
+        flag: "editor_submitted",
+        submitted_subject: "Modelos open-source dominam | pesquisa nova",
+      },
+    ];
+    const fetcher = async (): Promise<string | null> => null; // simula anti-bot
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Modelos open-source dominam | pesquisa nova",
+      "título editorial com ' | ' NÃO deve ser strippado (C3/C6)",
+    );
+  });
+
+  it("artigo inbox curado com título real que contém ' | ' → preservado (C6)", async () => {
+    // Inbox article com título curado diretamente (não placeholder).
+    // O og:title da página daria summary mas o título editorial é preservado pelo mergeMetadata.
+    const articles = [
+      {
+        url: "https://mistral.ai/blog",
+        title: "Mistral 7B | Mistral AI",
+        summary: "",
+        source: "inbox",
+      },
+    ];
+    const fetcher = async (): Promise<string | null> =>
+      `<meta property="og:description" content="Descricão da página."/>`;
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Mistral 7B | Mistral AI",
+      "título curado pelo editor NÃO deve ser strippado (C6 — 'NÃO toca o título')",
+    );
+  });
+
+  it("artigo RSS não-enriquecível (needsEnrichment=false) com sufixo → strippado no pós-loop", async () => {
+    // Artigo RSS com título real E summary já preenchido → needsEnrichment=false, não entra no worker.
+    // O pós-loop (não-targets) deve strippar o sufixo de imprensa.
+    const articles = [
+      {
+        url: "https://g1.com/outro",
+        title: "Gigantes da IA terão IPOs bilionários | CNN Brasil",
+        summary: "Resumo já preenchido pelo RSS.",
+      },
+    ];
+    const fetcher = async (): Promise<string | null> => null; // não deve ser chamado
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Gigantes da IA terão IPOs bilionários",
+      "artigo RSS não-enriquecível com sufixo deve ser strippado no pós-loop",
+    );
+  });
+});
+
 describe("enrichArticles — #1696 non-inbox summary fallback (cache-only)", () => {
   it("non-inbox sem summary + body cacheado → preenche summary, NÃO toca título, sem network", async () => {
     const dir = mkdtempSync(join(tmpdir(), "enrich-1696-hit-"));
