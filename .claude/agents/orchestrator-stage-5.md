@@ -140,7 +140,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator -
 
 ### 5c-pre. Upload de imagens publicas (#999 fix — pre-requisito do dispatch)
 
-**ANTES** do dispatch paralelo, se LinkedIn ou Facebook automatico foram autorizados em 5b, rodar upload-images-public.ts pra popular o cache `06-public-images.json` com URLs Drive publicas:
+**ANTES** do dispatch paralelo, se LinkedIn ou Facebook automatico foram autorizados em 5b, rodar upload-images-public.ts pra popular o cache `06-public-images.json` com URLs Cloudflare KV (d1/d2/d3 vao pro KV desde #2147):
 
 ```bash
 npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --mode social
@@ -150,8 +150,8 @@ npx tsx scripts/upload-images-public.ts --edition-dir data/editions/{AAMMDD}/ --
 ```bash
 npx tsx scripts/render-halt-banner.ts \
   --stage "5 — Publicacao" \
-  --reason "upload-images-public.ts falhou: imagens nao estao no Drive como publica" \
-  --action "verifique credenciais Google + tente novamente, ou pule LinkedIn/FB automatico em 5b"
+  --reason "upload-images-public.ts falhou: upload de d1/d2/d3 pro Cloudflare KV nao completou" \
+  --action "verifique CLOUDFLARE_API_TOKEN + platform.config.json poll.kv_namespace_id + tente novamente, ou pule LinkedIn/FB automatico em 5b"
 ```
 
 Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b.

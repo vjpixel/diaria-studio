@@ -14,7 +14,7 @@
  *   {
  *     "out_path": "data/editions/260424/06-public-images.json",
  *     "images": {
- *       "d1": { "file_id": "...", "url": "https://drive.google.com/uc?id=...&export=view" },
+ *       "d1": { "file_id": "img-260424-04-d1-1x1-HASH.jpg", "url": "https://poll.diaria.workers.dev/img/..." },
  *       "d2": { ... },
  *       "d3": { ... }
  *     }
@@ -62,15 +62,15 @@ export interface PublicImage {
 export type UploadTarget = "drive" | "cloudflare";
 
 /**
- * Default de target por modo (#1119):
- * - `newsletter` → cloudflare (email-stable URLs, Cache-Control imutável)
- * - `social` → drive (LinkedIn/Facebook OG preview funciona com Drive URLs)
- * - `all` → cloudflare (newsletter manda)
+ * Default de target por modo (#1119, unificado em #2147):
+ * todos os modes → cloudflare (KV). Parâmetro `mode` mantido por compat de
+ * assinatura; ignorado — o retorno é sempre "cloudflare".
  *
  * Editor pode override via flag `--target drive`/`--target cloudflare`.
  */
-export function defaultTargetFor(mode: UploadMode): UploadTarget {
-  return mode === "social" ? "drive" : "cloudflare";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function defaultTargetFor(_mode: UploadMode): UploadTarget {
+  return "cloudflare";
 }
 
 export interface PublicImagesOutput {
@@ -200,13 +200,12 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
   // `04-d2-2x1.jpg` e `04-d3-2x1.jpg` são gerados pelo Stage 3 e substituem os
   // placeholders `{{IMG:04-d2-2x1.jpg}}` / `{{IMG:04-d3-2x1.jpg}}`.
   //
-  // #1583/#1701: também subir d1/d2/d3 1x1 pra Cloudflare KV. Sem isso,
-  // render-social-html constrói `img-{edition}-04-dN-1x1.jpg` mas a chave não
-  // existe → 404 silencioso (social preview quebra). O newsletter mode roda
-  // ANTES do social mode (target=drive), então esses entries CF ganham
-  // `cloudflare_url`; quando o social mode sobrescreve com a entry Drive (pro OG
-  // dos posts), o branch drive PRESERVA `cloudflare_url` (#1584) → o preview
-  // resolve d1/d2/d3 via CF.
+  // #1583/#1701/#2147: d2/d3 1x1 sobem ao CF KV. Antes, social mode mandava
+  // d1/d2/d3 pro Drive e o preview usava Drive `uc?id` pra d2/d3 (quebrava
+  // como hotlink por cookie/referer check). Agora social mode usa cloudflare
+  // por default → d1/d2/d3 têm URLs KV estáveis em `url` e `cloudflare_url`.
+  // Newsletter mode também sobe d2/d3 1x1 (best-effort, optional) pra garantir
+  // `cloudflare_url` nos entries antes do social mode rodar.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
     { key: "d1", filename: "04-d1-1x1.jpg" },
@@ -443,9 +442,12 @@ export async function uploadPublicImages(
   const uploadToDrive = opts.uploaders?.uploadToDrive ?? driveUploadFile;
   const makeDrivePublic = opts.uploaders?.makeDrivePublic ?? makeFilePublic;
 
-  // Cloudflare config (lazy — só carrega se target=cloudflare).
+  // Cloudflare config (lazy — só carrega se target=cloudflare e uploader real).
+  // Quando opts.uploaders.uploadToCloudflare é injetado (testes), o cfConfig
+  // não é necessário — o stub ignora o 3º arg. Isso elimina a dependência
+  // implícita de platform.config.json nos testes (#2147 finding 6).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
-  if (target === "cloudflare") {
+  if (target === "cloudflare" && !opts.uploaders?.uploadToCloudflare) {
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const kvNamespaceId = cfg?.poll?.kv_namespace_id;
@@ -587,7 +589,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache] [--force-reupload]\n" +
         "\n" +
-        "Default target: 'cloudflare' pra mode=newsletter|all (#1119), 'drive' pra mode=social.\n" +
+        "Default target: 'cloudflare' pra todos os modes (#2147 — d2/d3 social agora vão pro KV, não Drive).\n" +
         "--force-reupload: ignora cache md5/target e força re-upload (recovery após bytes locais mudarem).",
     );
     process.exit(1);
