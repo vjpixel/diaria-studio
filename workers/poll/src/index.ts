@@ -830,7 +830,9 @@ export async function upsertOwnEntryInSnapshot(
   if (idx >= 0) {
     // #2123 (review): own com last_vote_ts EXPLICITAMENTE undefined apagaria o valor
     // existente via spread — filtra chaves undefined antes do merge.
-    const ownDefined = Object.fromEntries(Object.entries(own).filter(([, v]) => v !== undefined));
+    // #2130: filtra null também — JSON.parse pode retornar null para campos opcionais
+    // e null no spread sobrescreveria um last_vote_ts existente com timestamp fantasma.
+    const ownDefined = Object.fromEntries(Object.entries(own).filter(([, v]) => v !== undefined && v !== null));
     entries[idx] = { ...entries[idx], ...ownDefined, email: emailLower } as SnapshotEntry;
   } else {
     entries.push({ ...own, email: emailLower });
@@ -1582,7 +1584,13 @@ export default {
         const yearStr = monthMatch[1].slice(0, 4);
         const target = new URL(request.url);
         target.pathname = `/leaderboard/${yearStr}`;
-        return Response.redirect(target.toString(), 302);
+        // #2130: Cache-Control: no-store evita que proxies/link-preview cacheiem o
+        // redirect e sirvam destino stale se leaderboardPeriod mudar no futuro.
+        // Response.redirect() não aceita headers — usamos Response manual com 302.
+        return new Response(null, {
+          status: 302,
+          headers: { Location: target.toString(), "Cache-Control": "no-store" },
+        });
       }
       if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)

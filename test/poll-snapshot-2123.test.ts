@@ -298,6 +298,105 @@ describe("redirect /leaderboard/{YYYY-MM} → anual usa 302, não 301 (#2123 fix
   });
 });
 
+// ── #2130: filtro null no merge de upsertOwnEntryInSnapshot ─────────────────
+
+describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", () => {
+  it("null em last_vote_ts não sobrescreve valor existente (timestamp fantasma)", async () => {
+    // Cenário: snapshot existente com last_vote_ts válido. Um caller passa
+    // last_vote_ts: null (JSON.parse pode retornar null em campos opcionais).
+    // Antes do fix, null passava o filtro `v !== undefined` e sobrescrevia o ts.
+    const existingTs = "2026-06-10T10:00:00.000Z";
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [
+          { email: "alice@x.com", nickname: "Alice", correct: 3, total: 5, last_vote_ts: existingTs },
+        ],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
+    const env = makeEnv(kv);
+
+    // Simula caller com last_vote_ts: null (campo nullable via JSON parse)
+    const own = {
+      email: "alice@x.com",
+      nickname: "Alice",
+      correct: 4,
+      total: 6,
+      last_vote_ts: null as unknown as string, // null injetado via JSON
+    };
+    await upsertOwnEntryInSnapshot(env, "2026-06", own as SnapshotEntry);
+
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.ok(put, "snapshot deve ser regravado");
+    const payload = JSON.parse(put!.value);
+    const alice = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
+    assert.ok(alice, "alice deve estar no snapshot");
+    assert.equal(alice.correct, 4, "correct atualizado");
+    assert.equal(
+      alice.last_vote_ts,
+      existingTs,
+      "last_vote_ts existente NÃO deve ser sobrescrito por null — filtro #2130",
+    );
+  });
+
+  it("null em nickname não sobrescreve nickname existente", async () => {
+    const kv = makeTrackedKv({
+      "leaderboard-snapshot:2026-06": JSON.stringify({
+        entries: [
+          { email: "bob@x.com", nickname: "Bob", correct: 2, total: 4 },
+        ],
+        computed_at: "2026-06-10T00:00:00.000Z",
+      }),
+    });
+    const env = makeEnv(kv);
+    const own = {
+      email: "bob@x.com",
+      nickname: null as unknown as string, // null injetado
+      correct: 3,
+      total: 5,
+    };
+    await upsertOwnEntryInSnapshot(env, "2026-06", own as SnapshotEntry);
+    const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
+    assert.ok(put);
+    const payload = JSON.parse(put!.value);
+    const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
+    assert.equal(bob.correct, 3, "correct atualizado");
+    assert.equal(bob.nickname, "Bob", "nickname existente não deve ser sobrescrito por null — filtro #2130");
+  });
+});
+
+// ── #2130: Cache-Control: no-store no redirect 302 do leaderboard ────────────
+
+describe("#2130 — redirect 302 do leaderboard emite Cache-Control: no-store", () => {
+  const makeWorkerEnv = (): Env & { POLL: ReturnType<typeof makeTrackedKv> } => ({
+    POLL: makeTrackedKv() as unknown as ReturnType<typeof makeTrackedKv> & KVNamespace,
+    POLL_SECRET: "test-secret",
+    ADMIN_SECRET: "test-admin",
+    ALLOWED_ORIGINS: "*",
+  });
+
+  it("brand=clarice: 302 emite Cache-Control: no-store (proxies/link-preview não cacheiam)", async () => {
+    const env = makeWorkerEnv();
+    const req = new Request("https://poll.test/leaderboard/2026-05?brand=clarice");
+    const res = await worker.fetch(req, env as unknown as Env);
+    assert.equal(res.status, 302, "deve ser 302");
+    const cc = res.headers.get("Cache-Control");
+    assert.ok(
+      cc?.includes("no-store"),
+      `Cache-Control deve incluir no-store para evitar cache de proxy/link-preview: got "${cc}"`,
+    );
+  });
+
+  it("brand=diaria (sem redirect): não impõe Cache-Control: no-store via redirect path", async () => {
+    // brand=diaria renderiza normalmente — não deve ser afetado pelo redirect path
+    const env = makeWorkerEnv();
+    const req = new Request("https://poll.test/leaderboard/2026-05");
+    const res = await worker.fetch(req, env as unknown as Env);
+    // Apenas verifica que não é um redirect — o Cache-Control da página normal é gerenciado separadamente
+    assert.notEqual(res.status, 302, "brand=diaria não deve redirecionar");
+  });
+});
+
 // ── Fix 4: backfill editionToMonthSlug aceita ciclo YYMM-MM ─────────────────
 
 describe("backfill editionToMonthSlug local aceita ciclo YYMM-MM (#2123 fix 4)", async () => {
