@@ -70,6 +70,19 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
+**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md`:
+
+```bash
+node -e "
+  const fs=require('fs');
+  const md=fs.readFileSync('data/editions/{AAMMDD}/03-social.md','utf8');
+  const m=md.match(/^## post_pixel\b[^\n]*\n([\s\S]*?)(?=\n## |\$)/m);
+  process.stdout.write(m?m[1].trim():'(nao encontrado)');
+"
+```
+
+Guardar em `POST_PIXEL_TEXT`.
+
 **Se modo interativo:** apresentar gate:
 
 ```
@@ -82,6 +95,14 @@ Test email:            {test_email_sent_at} ✓
 Social agendado:
   LinkedIn  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
   Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel
+Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
+  Imagem: data/editions/{AAMMDD}/04-d1-1x1.jpg
+
+{POST_PIXEL_TEXT}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Agendar envio da newsletter no Beehiiv?
 
