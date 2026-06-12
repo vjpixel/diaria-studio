@@ -501,6 +501,21 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("Livros sobre IA"), "pill 'Livros sobre IA' ausente");
     assert.ok(html.includes("Agora que chegou"), "CTA 'Agora que chegou' ausente");
     assert.ok(html.includes("border-radius:999px"), "pills sem border-radius:999px");
+    // #2138: pills devem ter font-size:16px (CTA no tamanho do corpo)
+    // Verifica que no bloco pill a âncora tem 16px (não 12px)
+    const pillAnchorMatch = html.match(/border-radius:999px;padding:10px[^>]*font-size:(\d+)px/);
+    assert.ok(pillAnchorMatch, "pill âncora não encontrada");
+    assert.equal(pillAnchorMatch![1], "16", "pills devem ter font-size:16px (#2138)");
+    // #2139: table de pills deve ser centralizada via align="center"
+    assert.ok(
+      html.includes('align="center" cellpadding="0" cellspacing="0"><tr><td style="padding:0 10px 10px 0;"'),
+      "table de pills deve ter align=\"center\" (#2139)",
+    );
+    // Kicker "Acesse nossas curadorias:" permanece em 12px (label de seção, não botão)
+    assert.ok(
+      html.includes('font-size:12px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase'),
+      "kicker curadorias deve permanecer em 12px",
+    );
   });
 
   it("output não contém valores ad-hoc do canvas antigo (#1936)", () => {

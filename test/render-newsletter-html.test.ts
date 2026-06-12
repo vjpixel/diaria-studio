@@ -1134,6 +1134,13 @@ Agora interaja!`,
     assert.match(html, /href="https:\/\/example\.com\/cursos"/);
     assert.match(html, /href="https:\/\/example\.com\/livros"/);
     assert.match(html, /Agora interaja/);
+    // #2138: pills com font-size:16px (não 12px)
+    assert.match(html, /border-radius:999px[^>]*font-size:16px/, "pills devem ter font-size:16px (#2138)");
+    assert.doesNotMatch(html, /border-radius:999px[^>]*font-size:12px/, "pills não devem ter font-size:12px (#2138)");
+    // #2139: table de pills centralizada via align="center"
+    assert.match(html, /align="center"[^>]*cellpadding="0"[^>]*cellspacing="0"/, "table de pills deve ter align=center (#2139)");
+    // kicker permanece em 12px (label de seção — NÃO é botão)
+    assert.match(html, /font-size:12px[^>]*>Acesse nossas curadorias:/, "kicker deve permanecer em 12px");
   });
 
   it("#1936: item de pill com conteúdo misto NÃO vaza markdown cru", () => {
