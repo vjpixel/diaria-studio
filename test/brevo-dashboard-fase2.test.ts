@@ -2,7 +2,7 @@
  * test/brevo-dashboard-fase2.test.ts (#2086, #2134)
  *
  * Testes unitários para os helpers de agregação da Fase 2 mínima:
- *  - extractClariceCell / parseClariceCampaignKey
+ *  - parseClariceCampaignKey
  *  - aggregateAbcSummary
  *  - calcCumulativeSent
  *  - detectActiveCycle
@@ -15,8 +15,8 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { SENDS as EDITION_SENDS } from "../scripts/clarice-build-edition-sends.ts";
 import {
-  extractClariceCell,
   parseClariceCampaignKey,
   aggregateAbcSummary,
   calcCumulativeSent,
@@ -86,30 +86,6 @@ const t1Campaigns = [
 ];
 
 const allCampaigns = [...cycle2605Campaigns, ...t1Campaigns];
-
-// ─── extractClariceCell ───────────────────────────────────────────────────────
-
-describe("extractClariceCell", () => {
-  test("extrai A de nome d01-A", () => {
-    assert.equal(extractClariceCell("Clarice News 2605 d01-A (qua)"), "A");
-  });
-
-  test("extrai B de nome d02-B", () => {
-    assert.equal(extractClariceCell("Clarice News 2605 d02-B (qui)"), "B");
-  });
-
-  test("extrai C de nome d07-C", () => {
-    assert.equal(extractClariceCell("Clarice News 2605 d07-C (ter)"), "C");
-  });
-
-  test("retorna null para campanha T1", () => {
-    assert.equal(extractClariceCell("Diar.ia Mensal 2604 — 2026-05-14 19:26"), null);
-  });
-
-  test("retorna null para string vazia", () => {
-    assert.equal(extractClariceCell(""), null);
-  });
-});
 
 // ─── parseClariceCampaignKey ──────────────────────────────────────────────────
 
@@ -267,6 +243,30 @@ describe("calcCumulativeSent", () => {
 
   test("CLARICE_PLAN_S1 é 5600", () => {
     assert.equal(CLARICE_PLAN_S1, 5_600);
+  });
+
+  // #2125: drift test — CLARICE_PLAN_TOTAL e CLARICE_PLAN_S1 não devem driftar de SENDS.
+  // Se o plano for ajustado (volumes no array SENDS), estas constantes hardcoded no
+  // dashboard devem ser atualizadas na mesma mudança. Este teste fará o CI falhar caso
+  // o editor atualize SENDS mas esqueça de sincronizar as constantes do dashboard.
+  test("CLARICE_PLAN_TOTAL não drifta de SENDS.volume total (#2125)", () => {
+    const totalFromSends = EDITION_SENDS.reduce((acc, s) => acc + s.volume, 0);
+    assert.equal(
+      CLARICE_PLAN_TOTAL,
+      totalFromSends,
+      `CLARICE_PLAN_TOTAL (${CLARICE_PLAN_TOTAL}) driftou de SENDS total (${totalFromSends}) — ` +
+      "atualize a constante em workers/brevo-dashboard/src/index.ts",
+    );
+  });
+
+  test("CLARICE_PLAN_S1 não drifta de SENDS semana 1 total (#2125)", () => {
+    const s1FromSends = EDITION_SENDS.filter((s) => s.week === 1).reduce((acc, s) => acc + s.volume, 0);
+    assert.equal(
+      CLARICE_PLAN_S1,
+      s1FromSends,
+      `CLARICE_PLAN_S1 (${CLARICE_PLAN_S1}) driftou de SENDS S1 total (${s1FromSends}) — ` +
+      "atualize a constante em workers/brevo-dashboard/src/index.ts",
+    );
   });
 });
 

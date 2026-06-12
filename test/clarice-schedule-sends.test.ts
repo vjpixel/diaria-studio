@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scheduledAtFor, assertScheduledAtFuture, SUBJECTS, PREVIEW_TEXT, parseWeeksArg, buildKeysInScope, checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
+import { SENDS } from "../scripts/clarice-build-edition-sends.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/monthly-paths.ts";
 
 // (#2101: guard de runtime movido para assertScheduledAtFuture — scheduledAtFor
@@ -49,23 +50,47 @@ describe("scheduledAtFor (guard de range #2007/#2018)", () => {
     assert.ok(iso.includes("T09:00:00"), `esperado T09:00:00 no ISO, obtido: ${iso}`);
   });
 
-  // Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada)
+  // Guard de range: n fora de 1..SENDS.length lança erro explícito (nunca data silenciosamente errada)
   it("n=0 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(0), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(0), rangeRe);
   });
 
-  it("n=22 lança erro (fora do range)", () => {
-    assert.throws(() => scheduledAtFor(22), /n deve ser inteiro 1\.\.21/);
+  it(`n=${SENDS.length + 1} lança erro (fora do range)`, () => {
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(SENDS.length + 1), rangeRe);
   });
 
   it("n=1.5 lança erro (não-inteiro)", () => {
-    assert.throws(() => scheduledAtFor(1.5), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => scheduledAtFor(1.5), rangeRe);
   });
 
   // scheduledAtFor apenas computa a data (sem guard); assertScheduledAtFuture faz o guard
   it("retorna data passada sem lançar (guard separado em assertScheduledAtFuture)", () => {
     // d01 (10/jun/2026) já é passado no clock real — scheduledAtFor não deve lançar
     assert.doesNotThrow(() => scheduledAtFor(1)); // sem nowOverride = clock real
+  });
+
+  // #2125: scheduledAtFor deve derivar de SENDS (fonte única do calendário), não de aritmética própria.
+  it("deriva do campo scheduledAt de SENDS[n-1] (fonte única do calendário)", () => {
+    for (const s of SENDS) {
+      assert.equal(
+        scheduledAtFor(s.n),
+        s.scheduledAt,
+        `scheduledAtFor(${s.n}) deve igualar SENDS[${s.n - 1}].scheduledAt`,
+      );
+    }
+  });
+
+  it("todos os 21 envios derivam de SENDS sem aritmética própria", () => {
+    // Verifica que a cobertura é total: 21 entradas, sem gaps.
+    assert.equal(SENDS.length, 21, "SENDS deve ter 21 entradas");
+    for (let n = 1; n <= 21; n++) {
+      const send = SENDS.find((s) => s.n === n);
+      assert.ok(send, `SENDS deve ter entrada para n=${n}`);
+      assert.equal(scheduledAtFor(n), send!.scheduledAt);
+    }
   });
 });
 
@@ -84,11 +109,11 @@ describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--
     );
   });
 
-  it("lança quando ciclo desatualizado (clock em julho, mês hardcoded ainda junho)", () => {
+  it("lança quando ciclo desatualizado (clock em julho, scheduledAt de SENDS ainda em junho)", () => {
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
       () => assertScheduledAtFuture(1, afterCycle),
-      /Mês hardcoded "2026-06" está desatualizado/,
+      /desatualizado|passado ou presente/,
     );
   });
 
@@ -96,12 +121,13 @@ describe("assertScheduledAtFuture (#2101 — guard de data futura em --create/--
     const afterCycle = new Date("2026-07-01T00:00:00Z");
     assert.throws(
       () => assertScheduledAtFuture(21, afterCycle),
-      /Mês hardcoded "2026-06" está desatualizado/,
+      /desatualizado|passado ou presente/,
     );
   });
 
   it("n=0 lança erro de range (delegado a scheduledAtFor)", () => {
-    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), /n deve ser inteiro 1\.\.21/);
+    const rangeRe = new RegExp(`n deve ser inteiro 1\\.\\.${SENDS.length}`);
+    assert.throws(() => assertScheduledAtFuture(0, BEFORE_CYCLE), rangeRe);
   });
 });
 

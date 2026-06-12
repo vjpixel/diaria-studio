@@ -69,28 +69,28 @@ export const SUBJECTS: Record<string, string> = {
 export const PREVIEW_TEXT =
   "Marco legal, unicórnio de IA e agentes substituindo equipes: maio foi o mês das decisões.";
 
-/** Ciclo 2605-06: d01=10/jun/2026 … d21=30/jun — 06:00 BRT = 09:00 UTC.
+/** Retorna o `scheduledAt` (ISO 8601 UTC Z) do envio n (1..21) do ciclo 2605-06.
  *
- * Guard de range: n fora de 1..21 lança erro explícito (nunca data silenciosamente errada).
- * (#2007 / #2018)
+ * (#2125) Fonte única: campo `scheduledAt` do array `SENDS` em
+ * clarice-build-edition-sends.ts. Ao copiar pra próximo ciclo, atualizar apenas
+ * os campos `scheduledAt` no array SENDS — esta função não precisa mais de ajuste.
  *
- * Normalizado pra UTC Z via .toISOString(), consistente com publish-monthly.ts
- * (padrão pré-existente do repo). Equivalência horária: 06:00 BRT (-03:00) = 09:00Z.
+ * Guard de range: n fora de 1..SENDS.length lança erro explícito (nunca data
+ * silenciosamente errada). (#2007 / #2018)
  *
- * ⚠️  HARDCODED pra ciclo 2605-06 (#2061): mês, datas de início (9+n) e horário UTC são
- * específicos deste ciclo. Ao copiar pra próximo ciclo (ex: 2606-07), ATUALIZAR:
- *   1. Mês: "2026-06" → "2026-07" (e ano se necessário)
- *   2. Offset: `9 + n` depende da data do 1º envio do ciclo (d01 = qual dia do mês?)
- *   3. Horário UTC: 09:00Z = 06:00 BRT; confirmar se horário alvo do próximo ciclo é o mesmo.
- *   4. Limite de range: 1..21 se o plano tem 21 envios; ajustar se número mudar.
+ * Formato: UTC Z via .toISOString(). Equivalência horária: 06:00 BRT (-03:00) = 09:00Z.
  */
 export function scheduledAtFor(n: number): string {
-  if (n < 1 || n > 21 || !Number.isInteger(n)) {
-    throw new Error(`scheduledAtFor: n deve ser inteiro 1..21, recebido: ${n}`);
+  const total = SENDS.length;
+  if (n < 1 || n > total || !Number.isInteger(n)) {
+    throw new Error(`scheduledAtFor: n deve ser inteiro 1..${total}, recebido: ${n}`);
   }
-  const day = 9 + n; // d01 -> dia 10, d21 -> dia 30 (base: ciclo 2605-06 começa 10/jun)
-  // 06:00 BRT = 09:00 UTC; usar UTC Z (formato .toISOString()) para consistência com Brevo
-  return new Date(`2026-06-${String(day).padStart(2, "0")}T09:00:00Z`).toISOString();
+  // SENDS é indexado por n (n=1 → índice 0). Verificamos invariante de forma defensiva.
+  const send = SENDS[n - 1];
+  if (send.n !== n) {
+    throw new Error(`scheduledAtFor: invariante SENDS[${n - 1}].n === ${n} quebrada (got ${send.n}) — SENDS está fora de ordem?`);
+  }
+  return send.scheduledAt;
 }
 
 /**
@@ -113,7 +113,7 @@ export function assertScheduledAtFuture(n: number, nowOverride?: Date): void {
     throw new Error(
       `scheduledAtFor: data computada (${iso}) é passado ou presente ` +
       `(now=${now.toISOString()}). ` +
-      `Mês hardcoded "2026-06" está desatualizado — atualize ao copiar para o próximo ciclo.`,
+      `Mês do ciclo em SENDS está desatualizado — atualize scheduledAt em clarice-build-edition-sends.ts ao copiar para o próximo ciclo.`,
     );
   }
 }

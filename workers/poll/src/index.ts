@@ -783,6 +783,18 @@ async function invalidateSnapshot(env: Env, slug: string): Promise<void> {
  *
  * Race entre votos concorrentes: última escrita vence. Snapshot é cache;
  * o próximo recompute produz o estado correto de qualquer forma.
+ *
+ * Cap de entradas no snapshot (#2125 — documentado):
+ *   O upsert NÃO capa o número de entries no snapshot intencionalmente. O snapshot
+ *   persiste TODOS os votantes para que o compute-path (getOrComputeSnapshot) possa
+ *   fazer ranking correto sobre o conjunto completo. O cap visual de 50 é aplicado
+ *   APENAS no render (handleLeaderboardByMonth: `rankEntries(scores).slice(0, 50)`)
+ *   — não aqui. Capar no write esconderia votantes #51+ do ranking e quebraria o
+ *   dense-rank para quem está perto do corte.
+ *
+ *   Volume esperado: ~50–200 votantes/mês em produção (Diar.ia). O snapshot por
+ *   mês (JSON em KV) cresce ~200 bytes/votante → <40KB para 200 votantes, bem
+ *   abaixo do limite de 128MB do KV da Cloudflare.
  */
 export async function upsertOwnEntryInSnapshot(
   env: Env,
