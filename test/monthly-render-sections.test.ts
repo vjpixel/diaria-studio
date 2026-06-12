@@ -14,6 +14,7 @@ import {
   isSectionLabel,
   renderLinkListSection,
   renderOutrasNoticias,
+  renderEncerramento,
   draftToEmail,
 } from "../scripts/lib/monthly-render.ts";
 
@@ -125,5 +126,59 @@ describe("draftToEmail — render das seções Use Melhor + Radar", () => {
     assert.ok(rShort.html.includes("Radar"));
     assert.ok(!rShort.html.includes("Radar do Mês"));
     assert.ok(rShort.html.includes("DeepSeek corta 75%"));
+  });
+});
+
+describe("renderEncerramento (#2160 — cobertura de teste)", () => {
+  // Conteúdo com pills + último parágrafo (vira box bege)
+  const body = [
+    "Texto de abertura do encerramento.",
+    "",
+    "- [Cursos de IA](https://cursos.diar.ia)",
+    "- [Livros sobre IA](https://livros.diar.ia)",
+    "",
+    "Responda este e-mail com sugestões.",
+  ].join("\n");
+
+  const html = renderEncerramento(body);
+
+  it("emite o kicker 'Para encerrar'", () => {
+    assert.ok(html.includes("Para encerrar"), "kicker 'Para encerrar' ausente");
+  });
+
+  it("converte bullets em pills com border-radius:999px e font-size:16px", () => {
+    assert.match(html, /border-radius:999px/, "pills sem border-radius:999px");
+    assert.match(html, /font-size:16px/, "pills sem font-size:16px");
+    assert.ok(html.includes("https://cursos.diar.ia"), "URL do pill 1 ausente");
+    assert.ok(html.includes("https://livros.diar.ia"), "URL do pill 2 ausente");
+    assert.ok(html.includes("Cursos de IA"), "label do pill 1 ausente");
+    assert.ok(html.includes("Livros sobre IA"), "label do pill 2 ausente");
+  });
+
+  it("table de pills tem align='center' + margin:0 auto (Outlook fix #2160)", () => {
+    // Outlook 2007–2019 ignora align= em <table>; margin:0 auto garante centralização.
+    assert.match(
+      html,
+      /align="center"[^>]*style="margin:0 auto;"/,
+      "table de pills sem margin:0 auto — Outlook quebrado",
+    );
+  });
+
+  it("último parágrafo vira box bege (não cai como prosa solta)", () => {
+    // Regressão: último bloco de prosa deve entrar na <table> com background bege,
+    // não ser renderizado como <p> solto.
+    assert.match(html, /background:[^;]+;border-radius:12px/, "box bege ausente");
+    assert.ok(html.includes("Responda este e-mail com sugestões."), "texto do box bege ausente");
+  });
+
+  it("prosa intermediária aparece como parágrafo (não cai no box bege)", () => {
+    assert.ok(html.includes("Texto de abertura do encerramento."), "prosa de abertura ausente");
+  });
+
+  it("sem pills: só kicker + box bege", () => {
+    const simple = renderEncerramento("Parágrafo único sem pills.");
+    assert.ok(simple.includes("Para encerrar"), "kicker ausente");
+    assert.ok(simple.includes("Parágrafo único sem pills."), "prosa ausente");
+    assert.doesNotMatch(simple, /border-radius:999px/, "pill não deve aparecer sem bullets");
   });
 });

@@ -501,6 +501,23 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("Livros sobre IA"), "pill 'Livros sobre IA' ausente");
     assert.ok(html.includes("Agora que chegou"), "CTA 'Agora que chegou' ausente");
     assert.ok(html.includes("border-radius:999px"), "pills sem border-radius:999px");
+    // #2138: pills devem ter font-size:16px (CTA no tamanho do corpo)
+    // Âncora pill: border-radius:999px + font-size:16px (#2160: padding pode variar).
+    assert.match(html, /border-radius:999px[^>]*font-size:16px/, "pills devem ter font-size:16px (#2138)");
+    assert.doesNotMatch(html, /border-radius:999px[^>]*font-size:12px/, "pills não devem ter font-size:12px");
+    // #2139: table de pills centralizada via align="center" + margin:0 auto (Outlook fix #2160)
+    assert.match(
+      html,
+      /align="center"[^>]*cellpadding="0"[^>]*style="margin:0 auto;"/,
+      "table de pills deve ter align=center + margin:0 auto (#2139/#2160)",
+    );
+    // Kicker "Acesse nossas curadorias:" permanece em 12px (label de seção, não botão).
+    // Ancorado no texto do kicker pra não casar com os boxes "Por que isso importa" (#2160).
+    assert.match(
+      html,
+      /font-size:12px[^>]*>Acesse nossas curadorias:/,
+      "kicker curadorias deve permanecer em 12px",
+    );
   });
 
   it("output não contém valores ad-hoc do canvas antigo (#1936)", () => {

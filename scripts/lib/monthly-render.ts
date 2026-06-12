@@ -494,7 +494,9 @@ export function renderEncerramento(body: string): string {
     parts.push(
       `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
     );
-    parts.push(`<div>${pills.join("")}</div>`);
+    // #2139: centralizar via table align="center" + margin:0 auto (Outlook word-renderer
+    // ignora align= em <table> — margin:auto garante centralização no Outlook 2007–2019).
+    parts.push(`<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${pills.join("")}</td></tr></table>`);
   }
   if (last) {
     parts.push(
