@@ -1,0 +1,21 @@
+name = "diaria-dashboard"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# Sem secrets necessários — dados vêm de KV populado offline pelo editor.
+# O script build-diaria-dashboard-data.ts --push faz o push pro KV.
+
+# KV namespace para o JSON de dados agregados.
+# Setup pelo editor:
+#   wrangler kv:namespace create DASHBOARD_DATA
+# Depois substituir os ids abaixo pelo id retornado.
+[[kv_namespaces]]
+binding = "DASHBOARD_DATA"
+id = "PLACEHOLDER_DASHBOARD_KV_ID"
+preview_id = "PLACEHOLDER_DASHBOARD_KV_ID"
+
+# Build step: gera ds-tokens.generated.ts a partir da fonte canônica do DS.
+# Mesmo padrão do brevo-dashboard (#2107).
+[build]
+command = "npx tsx ../../scripts/generate-worker-tokens.ts --out-dir workers/diaria-dashboard/src"

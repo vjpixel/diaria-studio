@@ -1,0 +1,12 @@
+{
+  "name": "diaria-dashboard",
+  "private": true,
+  "description": "Worker que serve o dashboard de dados operacionais da Diar.ia",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.6.0"
+  }
+}

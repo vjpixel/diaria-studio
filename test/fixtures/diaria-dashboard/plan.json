@@ -1,0 +1,53 @@
+{
+  "started_at": "2026-06-11T01:00:00Z",
+  "issues": [
+    {
+      "number": 2100,
+      "priority": "P1",
+      "status": "merged",
+      "batch": null,
+      "pr": 301,
+      "timeline": {
+        "dispatch": "2026-06-11T01:05:00Z",
+        "pr_opened": "2026-06-11T01:20:00Z",
+        "ci_green": "2026-06-11T01:30:00Z",
+        "merged": "2026-06-11T01:35:00Z"
+      }
+    },
+    {
+      "number": 2101,
+      "priority": "P2",
+      "status": "merged",
+      "batch": "batch-ui",
+      "pr": 302,
+      "timeline": {
+        "dispatch": "2026-06-11T01:36:00Z",
+        "pr_opened": "2026-06-11T01:50:00Z",
+        "fix_iteration_1": "2026-06-11T02:00:00Z",
+        "ci_green": "2026-06-11T02:10:00Z",
+        "merged": "2026-06-11T02:15:00Z"
+      }
+    },
+    {
+      "number": 2102,
+      "priority": "P2",
+      "status": "merged",
+      "batch": "batch-ui",
+      "pr": 303,
+      "timeline": {
+        "dispatch": "2026-06-11T01:36:00Z",
+        "merged": "2026-06-11T02:15:00Z"
+      }
+    },
+    {
+      "number": 2103,
+      "priority": "P3",
+      "status": "pulada",
+      "batch": null,
+      "pr": null,
+      "timeline": {
+        "pulada": "2026-06-11T02:16:00Z"
+      }
+    }
+  ]
+}

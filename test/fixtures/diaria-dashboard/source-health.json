@@ -1,0 +1,51 @@
+{
+  "sources": {
+    "MIT Technology Review": {
+      "attempts": 10,
+      "successes": 9,
+      "failures": 1,
+      "timeouts": 0,
+      "last_success_iso": "2026-06-10T14:00:00Z",
+      "last_failure_iso": "2026-06-08T14:00:00Z",
+      "last_duration_ms": 3200,
+      "recent_outcomes": [
+        { "outcome": "ok", "timestamp": "2026-06-10T14:00:00Z" },
+        { "outcome": "ok", "timestamp": "2026-06-09T14:00:00Z" },
+        { "outcome": "fail", "timestamp": "2026-06-08T14:00:00Z" },
+        { "outcome": "ok", "timestamp": "2026-06-07T14:00:00Z" }
+      ],
+      "total_articles": 42
+    },
+    "AI Breakfast": {
+      "attempts": 5,
+      "successes": 1,
+      "failures": 2,
+      "timeouts": 2,
+      "last_success_iso": "2026-06-01T14:00:00Z",
+      "last_failure_iso": "2026-06-10T14:00:00Z",
+      "last_duration_ms": 180000,
+      "recent_outcomes": [
+        { "outcome": "ok", "timestamp": "2026-06-01T14:00:00Z" },
+        { "outcome": "timeout", "timestamp": "2026-06-08T14:00:00Z" },
+        { "outcome": "timeout", "timestamp": "2026-06-09T14:00:00Z" },
+        { "outcome": "fail", "timestamp": "2026-06-10T14:00:00Z" }
+      ],
+      "total_articles": 5
+    },
+    "DeepMind Blog": {
+      "attempts": 15,
+      "successes": 14,
+      "failures": 0,
+      "timeouts": 1,
+      "last_success_iso": "2026-06-11T14:00:00Z",
+      "last_failure_iso": null,
+      "last_duration_ms": 2100,
+      "recent_outcomes": [
+        { "outcome": "ok", "timestamp": "2026-06-11T14:00:00Z" },
+        { "outcome": "ok", "timestamp": "2026-06-10T14:00:00Z" },
+        { "outcome": "ok", "timestamp": "2026-06-09T14:00:00Z" }
+      ],
+      "total_articles": 60
+    }
+  }
+}
